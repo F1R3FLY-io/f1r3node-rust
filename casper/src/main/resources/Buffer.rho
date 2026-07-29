@@ -10,7 +10,6 @@
 // Deferred to follow-up commits:
 //   - `writeByte`, `slice`, `validUtf8PrefixLen`, `view`, `clear`
 //     (§Buffer > Reads / Writes / Lifecycle).
-//   - `Rows` agent + `allocRows` (§Fixed-size line reading).
 //   - Publication to a fixed registry URN (currently the allocator is
 //     minted but not published — tests scope it via inline `new`).
 //   - The pairwise-merge helper `mergePairs` — for the MVP the `read`
@@ -31,7 +30,10 @@
 // token on every exit path.  The catch-all `_` arm makes the mutex
 // robust against a hypothetical third payload shape.
 
-new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
+new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
+    gatherChunks, drainChunks,
+    allocInnersLoop, parkInnersLoop,
+    clearInnersLoop, closeInnersLoop in {
 
   // ==================================================================
   // Buffer agent
@@ -580,11 +582,12 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
       }
     } |
 
-    method allocBytes(@n) {
-      match n {
+    // Parameter name matches spec §430 (`nUnits`, not `n`).
+    method allocBytes(@nUnits) {
+      match nUnits {
         i /\ Int => {
           match i <= 0 {
-            true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "nUnits must be positive"])
             false => {
               match i > 1073741824 {
                 true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
@@ -597,15 +600,15 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
             }
           }
         }
-        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "nUnits must be an integer"])
       }
     } |
 
-    method allocUtf8(@n) {
-      match n {
+    method allocUtf8(@nUnits) {
+      match nUnits {
         i /\ Int => {
           match i <= 0 {
-            true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "nUnits must be positive"])
             false => {
               match i > 268435456 {
                 true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
@@ -618,7 +621,265 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
             }
           }
         }
-        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "nUnits must be an integer"])
+      }
+    } |
+
+    // allocRows(m, innerN, innerUnit) — spec §443:
+    //   "a buffer of buffers: m inner byte buffers, each allocated
+    //    by alloc(innerN, innerUnit)".
+    //
+    // Type-guards each arg per spec §Buffers.  Fails atomically: if
+    // any inner buffer allocation would exceed the aggregate platform
+    // cap, no inner is allocated.  Failure taxonomy: same as `alloc`
+    // (BUFERR_INVALID_ARGUMENT / BUFERR_INVALID_CAPACITY /
+    // BUFERR_INVALID_UNIT).
+    //
+    // The utf8 cap is 256 MB (m * innerN ≤ 2^28 units, each unit ≤ 4
+    // bytes → aggregate ≤ 2^30 bytes).  Bytes cap is 1 GB aggregate.
+    //
+    // ## Known deferral — FSERR_QUOTA_EXCEEDED (spec §446)
+    //
+    // Spec §446 lists a fourth failure code, `FSERR_QUOTA_EXCEEDED`,
+    // returned when a quota agent declines the reservation.  The
+    // quota-agent hook is scheduled for a separate quota-infrastructure
+    // slice; until then, only the three platform-cap failures above
+    // are surfaced.  The M-13-2 atomicity fix in `allocInnersLoop`
+    // makes the eventual quota wire-in a one-line change (forward the
+    // quota agent's decline reply through the same first-failure
+    // path).
+    method allocRows(@m, @innerN, @innerUnit) {
+      match m {
+        mi /\ Int => {
+          match innerN {
+            ni /\ Int => {
+              match mi <= 0 {
+                true => return!(
+                  [false, "BUFERR_INVALID_CAPACITY", "m must be positive"])
+                false => {
+                  match ni <= 0 {
+                    true => return!(
+                      [false, "BUFERR_INVALID_CAPACITY", "innerN must be positive"])
+                    false => {
+                      match innerUnit {
+                        "bytes" => {
+                          match mi > 1073741824 / ni {
+                            true => return!(
+                              [false, "BUFERR_INVALID_CAPACITY",
+                               "aggregate m*innerN exceeds platform cap"])
+                            false => {
+                              new innersRet in {
+                                allocInnersLoop!(mi, ni, "bytes", [], *innersRet) |
+                                for (@innersReply <- innersRet) {
+                                  match innersReply {
+                                    [true, inners] => {
+                                      for (@rowsHandle <- Rows!?(mi, "bytes", inners)) {
+                                        return!([true, rowsHandle])
+                                      }
+                                    }
+                                    _ => return!(innersReply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        "utf8" => {
+                          match mi > 268435456 / ni {
+                            true => return!(
+                              [false, "BUFERR_INVALID_CAPACITY",
+                               "aggregate m*innerN exceeds platform cap"])
+                            false => {
+                              new innersRet in {
+                                allocInnersLoop!(mi, ni * 4, "utf8", [], *innersRet) |
+                                for (@innersReply <- innersRet) {
+                                  match innersReply {
+                                    [true, inners] => {
+                                      for (@rowsHandle <- Rows!?(mi, "utf8", inners)) {
+                                        return!([true, rowsHandle])
+                                      }
+                                    }
+                                    _ => return!(innersReply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => return!(
+                          [false, "BUFERR_INVALID_UNIT",
+                           "innerUnit must be bytes or utf8"])
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => return!(
+              [false, "BUFERR_INVALID_ARGUMENT", "innerN must be an integer"])
+          }
+        }
+        _ => return!(
+          [false, "BUFERR_INVALID_ARGUMENT", "m must be an integer"])
+      }
+    } |
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "BUFERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Rows agent — the buffer-of-buffers (§Fixed-size line reading).
+  //
+  // A distinct type from Buffer: its "elements" are inner buffer
+  // handles, not bytes.  The outer holds `m` inner buffers, all with
+  // the same unit.  Callers reach an inner via `getAt(i)` and use it
+  // as a normal Buffer (writeBytes, remaining, beginFill, etc.).
+  //
+  // ## Delivered methods (spec §578-583)
+  //
+  //   capacityRows, innerUnit, getAt, clear, close, default.
+  //
+  // ## State layout
+  //
+  //   rowsMetaP  → (m, unit, "live" | "revoked")
+  //   innerP[i]  → inner buffer handle for i ∈ [0, m).  Parked once
+  //                at construction (peek-only from getAt).
+  //
+  // Every method acquires the metadata token via linear-recv, checks
+  // for the revoked tombstone, then does its work.  Methods that
+  // touch every inner (clear, close) iterate via a module-level
+  // helper contract to keep the metadata critical section bounded.
+  // ==================================================================
+  agent Rows {
+    // Constructor is called by allocRows with an already-allocated
+    // list of inner handles.  It parks each inner at its index
+    // (via parkInnersLoop) and installs the "live" metadata token.
+    constructor(@m, @unit, @inners) {
+      @[*private, *rowsMetaP]!((m, unit, "live")) |
+      parkInnersLoop!(*private, *innerP, 0, m, inners)
+    } |
+
+    method capacityRows() {
+      for (@meta <<- @[*private, *rowsMetaP]) {
+        match meta {
+          (m, _unit, "live") => return!([true, m])
+          (_m, _unit, "revoked") => return!(
+            [false, "BUFERR_REVOKED", "rows is closed"])
+          _ => return!(
+            [false, "BUFERR_REVOKED", "rows state unrecognized"])
+        }
+      }
+    } |
+
+    method innerUnit() {
+      for (@meta <<- @[*private, *rowsMetaP]) {
+        match meta {
+          (_m, unit, "live") => return!([true, unit])
+          (_m, _unit, "revoked") => return!(
+            [false, "BUFERR_REVOKED", "rows is closed"])
+          _ => return!(
+            [false, "BUFERR_REVOKED", "rows state unrecognized"])
+        }
+      }
+    } |
+
+    // getAt(i) — peek the inner handle at index i (no consumption).
+    // Type-guarded on i; range-checked before touching innerP.
+    method getAt(@i) {
+      match i {
+        idx /\ Int => {
+          for (@meta <<- @[*private, *rowsMetaP]) {
+            match meta {
+              (m, _unit, "live") => {
+                match idx < 0 {
+                  true => return!(
+                    [false, "BUFERR_OUT_OF_RANGE", "index must be non-negative"])
+                  false => {
+                    match idx >= m {
+                      true => return!(
+                        [false, "BUFERR_OUT_OF_RANGE",
+                         "index out of range"])
+                      false => {
+                        for (@inner <<- @[*private, *innerP, idx]) {
+                          return!([true, inner])
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              (_m, _unit, "revoked") => return!(
+                [false, "BUFERR_REVOKED", "rows is closed"])
+              _ => return!(
+                [false, "BUFERR_REVOKED", "rows state unrecognized"])
+            }
+          }
+        }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "i must be an integer"])
+      }
+    } |
+
+    // clear() — clears every inner buffer.  Fails if outer revoked.
+    //
+    // Best-effort on individual inners: `clearInnersLoop` consumes
+    // each inner's `clear()` reply and continues regardless of
+    // success or failure of that individual call.  Rationale: an
+    // outer clear() is a bulk recovery operation; failing the whole
+    // call because ONE inner was independently closed by another
+    // party would leave callers unable to recover.  (m-13-1 docstring
+    // fix: earlier text said replies were "propagated"; the code has
+    // always been best-effort.)
+    method clear() {
+      for (@meta <- @[*private, *rowsMetaP]) {
+        match meta {
+          (m, unit, "live") => {
+            new doneCh in {
+              clearInnersLoop!(*private, *innerP, 0, m, *doneCh) |
+              for (@_ <- doneCh) {
+                @[*private, *rowsMetaP]!((m, unit, "live")) |
+                return!([true])
+              }
+            }
+          }
+          (m, unit, "revoked") => {
+            @[*private, *rowsMetaP]!((m, unit, "revoked")) |
+            return!([false, "BUFERR_REVOKED", "rows is closed"])
+          }
+          _ => {
+            @[*private, *rowsMetaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "rows state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // close() — closes every inner buffer AND marks the outer
+    // "revoked".  Idempotent on already-closed outer.
+    method close() {
+      for (@meta <- @[*private, *rowsMetaP]) {
+        match meta {
+          (m, unit, "live") => {
+            new doneCh in {
+              closeInnersLoop!(*private, *innerP, 0, m, *doneCh) |
+              for (@_ <- doneCh) {
+                @[*private, *rowsMetaP]!((m, unit, "revoked")) |
+                return!([true])
+              }
+            }
+          }
+          (m, unit, "revoked") => {
+            @[*private, *rowsMetaP]!((m, unit, "revoked")) |
+            return!([true])
+          }
+          _ => {
+            @[*private, *rowsMetaP]!(meta) |
+            return!([true])
+          }
+        }
       }
     } |
 
@@ -688,6 +949,114 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
           match hi - lo == 1 {
             true  => done!(Nil)
             false => drainChunks!(privateName, chunkPName, lo + 1, hi, *done)
+          }
+        }
+      }
+    }
+  } |
+
+  // ==================================================================
+  // allocInnersLoop — recursively allocate `remaining` fresh inner
+  // Buffers, each of capacity `capBytes` bytes and unit `unit`, and
+  // accumulate them into a List via `acc`.  Returns `[true, inners]`
+  // via `ret` on success, or `[false, code, msg]` on the first
+  // Buffer-mint failure (spec §446: "on any failure it allocates no
+  // inner buffers").  The accumulator is discarded on error, so
+  // partially-allocated inner Buffers become unreachable and get
+  // reclaimed by the deploy-end GC — no leak (M-13-2 fix).
+  //
+  // Note: Buffer's current implementation replies with a bare handle
+  // rather than `[true, handle]`.  We shape-match both shapes so the
+  // atomicity guarantee holds even if Buffer's reply format later
+  // gains an ok-flag (matching Buffer!?'s !? sugar convention).
+  //
+  // Precondition: `remaining >= 0`, `capBytes > 0`.
+  // ==================================================================
+  contract allocInnersLoop(@remaining, @capBytes, @unit, @acc, ret) = {
+    match remaining <= 0 {
+      true  => ret!([true, acc])
+      false => {
+        // TODO(quota): when the FSERR_QUOTA_EXCEEDED quota-agent hook
+        // lands (spec §446), invoke it here BEFORE Buffer!? and
+        // forward its decline via the [false, _code, _msg] arm below.
+        // The M-13-2 atomicity guarantee (discard the accumulator on
+        // first failure) already handles the propagation shape.
+        for (@bufReply <- Buffer!?(capBytes, unit)) {
+          match bufReply {
+            [true, bufHandle] => {
+              allocInnersLoop!(remaining - 1, capBytes, unit,
+                acc ++ [bufHandle], *ret)
+            }
+            [false, _code, _msg] => {
+              // First-failure atomicity: discard the accumulator,
+              // forward the error unchanged.  The already-allocated
+              // buffers have no other holders and become unreachable.
+              ret!(bufReply)
+            }
+            _ => {
+              // Malformed reply — treat as a bare handle for
+              // backward compat with Buffer's current constructor
+              // shape (which returns just the handle).
+              allocInnersLoop!(remaining - 1, capBytes, unit,
+                acc ++ [bufReply], *ret)
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // ==================================================================
+  // parkInnersLoop — park each element of `inners` at
+  // @[privateName, innerPName, i] for i in [0, m).  Used ONCE at
+  // Rows construction; the parked handles are peeked (via <<-) by
+  // getAt, so they stay in the tuplespace for the Rows instance's
+  // lifetime.
+  //
+  // Precondition: inners.length() == m.
+  // ==================================================================
+  contract parkInnersLoop(@privateName, @innerPName, @i, @m, @inners) = {
+    match i >= m {
+      true  => Nil
+      false => {
+        @[privateName, innerPName, i]!(inners.nth(i)) |
+        parkInnersLoop!(privateName, innerPName, i + 1, m, inners)
+      }
+    }
+  } |
+
+  // ==================================================================
+  // clearInnersLoop — invoke `clear()` on each inner buffer parked at
+  // @[privateName, innerPName, i] for i in [lo, hi).  Awaits each
+  // reply sequentially before signalling `done`.  Ignores individual
+  // clear failures; the outer Rows.clear reports [true] as long as
+  // the loop completes.
+  // ==================================================================
+  contract clearInnersLoop(@privateName, @innerPName, @lo, @hi, done) = {
+    match lo >= hi {
+      true => done!(Nil)
+      false => {
+        for (@inner <<- @[privateName, innerPName, lo]) {
+          for (@_reply <- @inner!?("clear")) {
+            clearInnersLoop!(privateName, innerPName, lo + 1, hi, *done)
+          }
+        }
+      }
+    }
+  } |
+
+  // ==================================================================
+  // closeInnersLoop — invoke `close()` on each inner buffer parked at
+  // @[privateName, innerPName, i] for i in [lo, hi).  Same
+  // sequencing discipline as clearInnersLoop.
+  // ==================================================================
+  contract closeInnersLoop(@privateName, @innerPName, @lo, @hi, done) = {
+    match lo >= hi {
+      true => done!(Nil)
+      false => {
+        for (@inner <<- @[privateName, innerPName, lo]) {
+          for (@_reply <- @inner!?("close")) {
+            closeInnersLoop!(privateName, innerPName, lo + 1, hi, *done)
           }
         }
       }

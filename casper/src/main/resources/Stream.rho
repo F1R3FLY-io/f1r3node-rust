@@ -37,7 +37,14 @@
 //        [false, "EOS", msg]  — end-of-stream (normal termination)
 //        [false, code, msg]   — real error
 //     Producers are stateful (they hold their own cursor); the Stream
-//     agent invokes them serially, never concurrently.
+//     agent invokes them serially, never concurrently.  NB: the
+//     serial-invocation guarantee is PER-STREAM-CAP, not per-
+//     producer-function — if two Stream caps share a producer (e.g.,
+//     via a shared source cap like a `File` returned from an Fs cache
+//     under the shared-Fs MVP, see File.rho §Shared-Fs caveat), the
+//     underlying producer receives interleaved invocations from both
+//     streams.  Each stream's invocations remain serial, but the
+//     shared producer's cursor advances across both.
 //
 //   `chunkBuilder(values, returnCh)` — a contract that packs a List
 //     of individual values into the specialization's chunk container
@@ -73,7 +80,7 @@
 // work, re-parks on every exit path.  Third-arm _ catch-all keeps
 // the mutex robust against a hypothetical fourth payload shape.
 
-new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
+new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {
 
   agent Stream {
     constructor(@producer, @chunkBuilder) {
@@ -255,6 +262,45 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
       }
     } |
 
+    // -- foldChunks(init, chunkSize, combineChunk) -----------------
+    //
+    // Sequential chunk-oriented fold (spec §184, §204).  Calls
+    // `chunk(chunkSize)` in a loop; each container (never empty per
+    // §chunk method) is passed to `combineChunk(retCh, acc, container)`
+    // which sends the next accumulator back on `retCh`.  On EOS from
+    // chunk, returns `[true, finalAccumulator]` without invoking
+    // `combineChunk` again.
+    //
+    // Type-guarded on chunkSize before touching state (Mi-3 pattern).
+    // Same close-on-exit and error-propagation semantics as fold.
+    //
+    // Not supported on LineStream: chunk itself returns
+    // FSERR_UNSUPPORTED there, so foldChunks surfaces that same
+    // error unchanged.
+    method foldChunks(@init, @chunkSize, @combineChunk) {
+      match chunkSize {
+        i /\ Int => {
+          match i <= 0 {
+            true => return!(
+              [false, "FSERR_BAD_ARG", "chunkSize must be positive"])
+            false => {
+              new loopCh in {
+                foldChunksLoop!(*this, chunkSize, combineChunk,
+                  init, *loopCh) |
+                for (@result <- loopCh) {
+                  for (@_ <- @(*this)!?("close")) {
+                    return!(result)
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "chunkSize must be an integer"])
+      }
+    } |
+
     // -- Default arm -----------------------------------------------
 
     default(...@args) {
@@ -277,7 +323,12 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
   // terminal directly.
   contract gatherN(@stream, @n, @acc, ret) = {
     match n <= 0 {
-      true => ret!([acc, [true, Nil]])
+      // M-P5-7 hardening: the n <= 0 case is a defensive fallback
+      // (chunk() shape-validates n > 0 up front, so this arm never
+      // fires in practice).  If it EVER did, return an unambiguously
+      // terminal reply — [true, Nil] could be confused with a real
+      // producer value; [false, "EOS", ...] cannot.
+      true => ret!([acc, [false, "EOS", "gather limit reached"]])
       false => {
         for (@reply <- @stream!?("next")) {
           match reply {
@@ -330,6 +381,38 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
         [false, "EOS", _]  => ret!([true])
         [false, code, msg] => ret!([false, code, msg])
         _                  => ret!([false, "FSERR_IO", "unexpected reply shape"])
+      }
+    }
+  } |
+
+  // foldChunksLoop(stream, chunkSize, combineChunk, acc, ret) —
+  // per iteration: call chunk(chunkSize), then hand the container
+  // to combineChunk(retCh, acc, container).  Same acc-shape convention
+  // as fold: combineChunk returns the new accumulator as a bare Par
+  // (or [false, code, msg] to abort).  Terminals:
+  //   [false, "EOS", _]  → [true, acc]
+  //   [false, code, msg] → [false, code, msg] (forwarded)
+  //   malformed          → [false, "FSERR_IO", ...]
+  contract foldChunksLoop(@stream, @chunkSize, @combineChunk,
+                          @acc, ret) = {
+    for (@reply <- @stream!?("chunk", chunkSize)) {
+      match reply {
+        [true, container] => {
+          new combCh in {
+            @combineChunk!(*combCh, acc, container) |
+            for (@combResult <- combCh) {
+              match combResult {
+                [false, code, msg] => ret!([false, code, msg])
+                newAcc             => foldChunksLoop!(
+                  stream, chunkSize, combineChunk, newAcc, *ret)
+              }
+            }
+          }
+        }
+        [false, "EOS", _]  => ret!([true, acc])
+        [false, code, msg] => ret!([false, code, msg])
+        _                  => ret!(
+          [false, "FSERR_IO", "chunk returned malformed reply"])
       }
     }
   }

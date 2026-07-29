@@ -75,6 +75,72 @@ new Dir, rootP in {
       }
     } |
 
+    // -- entries() --------------------------------------------------
+    //
+    // Returns [true, EntryStream] — a Stream whose elements are per-
+    // entry record Maps (see spec §Dir > Listing).  Read op; allowed
+    // on both "r" and "rw" Dirs.
+    //
+    // Backing native is `fs_entries`, which returns the entries as a
+    // single sorted list capped at MAX_ENTRIES (Phase 1 constant).
+    // We wrap that list in a producer+builder pair and mint a Stream;
+    // callers see the standard §Stream.next() / .chunk(n) / .fold(...)
+    // surface.  A future slice can swap the backing to the real
+    // streaming primitive (fs_entries_stream, currently a Phase 1
+    // stub) without changing the caller API.
+    //
+    // Root-Dir limitation: with subPath == "", the dispatch to
+    // fs_entries with an empty rel triggers Phase 1's safe_descend
+    // "empty rel" rejection (FSERR_BAD_ARG "empty relative path").
+    // Nested Dirs (subPath non-empty) work.  A one-line Phase 1
+    // tweak to fs_entries — accept empty rel as "list root itself" —
+    // enables the root case; deferred until the streaming backing
+    // arrives so both changes land together.
+    method entries() {
+      for (@params <<- @[*private, *rootP]) {
+        match params {
+          (canonRoot, subPath, _mode, _fileCtor) => {
+            new retCh in {
+              fsEntries!(canonRoot, subPath, *retCh) |
+              for (@reply <- retCh) {
+                match reply {
+                  [true, entryList] => {
+                    new listState, entryProducer, entryBuilder in {
+                      listState!(entryList) |
+                      contract entryProducer(rc) = {
+                        for (@lst <- listState) {
+                          match lst {
+                            []              => {
+                              listState!([]) |
+                              rc!([false, "EOS", "no more entries"])
+                            }
+                            [head ...tail]  => {
+                              listState!(tail) |
+                              rc!([true, head])
+                            }
+                          }
+                        }
+                      } |
+                      contract entryBuilder(@vals, rc) = {
+                        // EntryStream chunk container is List of records
+                        // per spec §337 — identity build.
+                        rc!([true, vals])
+                      } |
+                      for (@stream <- Stream!?(*entryProducer, *entryBuilder)) {
+                        return!([true, stream])
+                      }
+                    }
+                  }
+                  _ => return!(reply)
+                }
+              }
+            }
+          }
+          _ => return!([false, "FSERR_IO", "root params malformed"])
+        }
+      }
+    } |
+
     // -- exists(rel) ------------------------------------------------
     method exists(@rel) {
       match rel {
@@ -111,27 +177,21 @@ new Dir, rootP in {
               for (@params <<- @[*private, *rootP]) {
                 match params {
                   (canonRoot, subPath, dirMode, fileCtor) => {
+                    // Mode whitelist via \/ disjunction — patterns match
+                    // if m equals any of the alternatives.  Disjunction
+                    // arms cannot bind variables (both sides must be
+                    // ground), so we pass `m` through unchanged rather
+                    // than a per-arm literal.
                     match m {
                       "r" => openFileImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
-                      _   => {
+                      "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" => {
                         match dirMode {
-                          "rw" => {
-                            match m {
-                              "rw"   => openFileImpl!(canonRoot, subPath, r, "rw",   fileCtor, *return)
-                              "w"    => openFileImpl!(canonRoot, subPath, r, "w",    fileCtor, *return)
-                              "w+"   => openFileImpl!(canonRoot, subPath, r, "w+",   fileCtor, *return)
-                              "wx"   => openFileImpl!(canonRoot, subPath, r, "wx",   fileCtor, *return)
-                              "w+x"  => openFileImpl!(canonRoot, subPath, r, "w+x",  fileCtor, *return)
-                              "a"    => openFileImpl!(canonRoot, subPath, r, "a",    fileCtor, *return)
-                              "a+"   => openFileImpl!(canonRoot, subPath, r, "a+",   fileCtor, *return)
-                              _      => return!([false, "FSERR_BAD_ARG",
-                                                 "unknown file mode"])
-                            }
-                          }
+                          "rw" => openFileImpl!(canonRoot, subPath, r, m, fileCtor, *return)
                           _ => return!([false, "FSERR_UNSUPPORTED",
                             "requested mode exceeds Dir attenuation"])
                         }
                       }
+                      _ => return!([false, "FSERR_BAD_ARG", "unknown file mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -164,7 +224,7 @@ new Dir, rootP in {
                       "r" => openDirImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
                       "rw" => {
                         match dirMode {
-                          "rw" => openDirImpl!(canonRoot, subPath, r, "rw", fileCtor, *return)
+                          "rw" => openDirImpl!(canonRoot, subPath, r, m, fileCtor, *return)
                           _ => return!([false, "FSERR_UNSUPPORTED",
                             "requested mode exceeds Dir attenuation"])
                         }

@@ -105,9 +105,10 @@ impl Genesis {
             native_token_decimals,
             shard_id,
         );
+        let fs_generator = standard_deploys::fs_generator(shard_id);
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
-        let mut all_deploys = Vec::with_capacity(12 + vault_deploys.len());
+        let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
         all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
@@ -119,6 +120,7 @@ impl Genesis {
         all_deploys.push(multi_sig_system_vault);
         all_deploys.push(stack);
         all_deploys.push(token_metadata);
+        all_deploys.push(fs_generator);
         all_deploys.extend(vault_deploys);
         all_deploys.push(pos_generator);
 

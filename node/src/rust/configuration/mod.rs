@@ -6,6 +6,7 @@
 
 pub mod commandline;
 pub mod config_check;
+pub mod file_io_provisioning;
 pub mod model;
 
 pub use commandline::Options;

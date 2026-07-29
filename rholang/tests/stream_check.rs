@@ -34,7 +34,7 @@ fn stream_lib_body() -> String {
 /// outer `new` scope.
 fn with_lib(test_snippet: &str) -> String {
     format!(
-        "new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {{\n{}|\n{}\n}}",
+        "new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {{\n{}|\n{}\n}}",
         stream_lib_body(),
         test_snippet
     )
@@ -521,6 +521,219 @@ async fn chunk_builder_malformed_reply_yields_fserr_io() {
           } |
           for (@stream <- Stream!?(*producer, *badBuilder)) {
             for (@r <- @stream!?("chunk", 2)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_IO");
+}
+
+// ---------------------------------------------------------------------
+// Phase 5 review — foldChunks (M-P5-1) + forEach error propagation
+// (m-P5-5) + chunk type-guard (M-P5-6).
+// ---------------------------------------------------------------------
+
+/// foldChunks(0, 2, sum) over a 5-element stream sums all elements
+/// via 2-element chunks — [1,2], [3,4], [5] — then EOS returns
+/// [true, 15].
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fold_chunks_sums_all_elements() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new listState, producer, listBuilder, sumChunk in {
+          listState!([1, 2, 3, 4, 5]) |
+          contract producer(retCh) = {
+            for (@lst <- listState) {
+              match lst {
+                []             => { listState!([]) | retCh!([false, "EOS", ""]) }
+                [head ...tail] => { listState!(tail) | retCh!([true, head]) }
+              }
+            }
+          } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          // combineChunk(retCh, acc, container): sum container into acc.
+          contract sumChunk(retCh, @acc, @container) = {
+            match container {
+              lst /\ List => {
+                new inner in {
+                  inner!(0) |
+                  new loop in {
+                    contract loop(@i, ret) = {
+                      match i >= lst.length() {
+                        true => ret!(Nil)
+                        false => {
+                          for (@cur <- inner) {
+                            inner!(cur + lst.nth(i)) |
+                            loop!(i + 1, *ret)
+                          }
+                        }
+                      }
+                    } |
+                    new done in {
+                      loop!(0, *done) |
+                      for (@_ <- done) {
+                        for (@total <- inner) {
+                          retCh!(acc + total)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              _ => retCh!([false, "FSERR_IO", "container not a list"])
+            }
+          } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("foldChunks", 0, 2, *sumChunk)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, sum, _) = extract_reply(&reply);
+    assert!(ok);
+    assert_eq!(sum, Some(15));
+}
+
+/// foldChunks on empty stream returns [true, init] (init unchanged;
+/// combineChunk never called).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fold_chunks_on_empty_stream_returns_init() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new producer, listBuilder, noop in {
+          contract producer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          contract noop(retCh, @_acc, @_c) = { retCh!(Nil) } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("foldChunks", 42, 5, *noop)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, i, _) = extract_reply(&reply);
+    assert!(ok);
+    assert_eq!(i, Some(42), "init untouched");
+}
+
+/// foldChunks with non-Int chunkSize is rejected (Mi-3 pattern).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fold_chunks_non_int_chunk_size_rejected() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new producer, listBuilder, noop in {
+          contract producer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          contract noop(retCh, @_a, @_c) = { retCh!(Nil) } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("foldChunks", 0, "big", *noop)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+/// foldChunks with chunkSize <= 0 rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fold_chunks_non_positive_chunk_size_rejected() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new producer, listBuilder, noop in {
+          contract producer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          contract noop(retCh, @_a, @_c) = { retCh!(Nil) } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("foldChunks", 0, 0, *noop)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+/// foldChunks forwards mid-stream producer errors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fold_chunks_forwards_producer_error() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new state, producer, listBuilder, noop in {
+          state!(0) |
+          contract producer(retCh) = {
+            for (@n <- state) {
+              match n {
+                0 => { state!(1) | retCh!([true, 1]) }
+                _ => { state!(n) | retCh!([false, "FSERR_IO", "simulated"]) }
+              }
+            }
+          } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          contract noop(retCh, @acc, @_c) = { retCh!(acc) } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("foldChunks", 0, 4, *noop)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_IO");
+}
+
+/// forEach forwards mid-stream producer errors (m-P5-5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn for_each_forwards_producer_error() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new state, producer, listBuilder, noop in {
+          state!(0) |
+          contract producer(retCh) = {
+            for (@n <- state) {
+              match n {
+                0 => { state!(1) | retCh!([true, 1]) }
+                _ => { state!(n) | retCh!([false, "FSERR_IO", "boom"]) }
+              }
+            }
+          } |
+          contract listBuilder(@vals, retCh) = { retCh!([true, vals]) } |
+          contract noop(retCh, @_v) = { retCh!(Nil) } |
+          for (@stream <- Stream!?(*producer, *listBuilder)) {
+            for (@r <- @stream!?("forEach", *noop)) {
               @"out"!(r)
             }
           }

@@ -1,0 +1,798 @@
+// Stdin.rho — File I/O FIP §The Stdin agent.
+//
+// Wraps process stdin as a read-only, sequential-forward-only agent.
+// Backing primitive: fsRead(fd, n) — the powerbox binds fd to the
+// actual stdin at Fs construction; tests inject a mock fsRead over
+// mockFdCell.
+//
+// ## Delivered methods (spec §1079-1085)
+//
+//   constructor(@fd) — powerbox-provided process stdin fd
+//   chars(), bytes(), lines(), readLine(), close(), default.
+//
+// ## Not supported (spec §1087)
+//
+//   Positional methods (seek, tell, size, bytesAt) fall through the
+//   default arm → [false, "FSERR_UNSUPPORTED", ...].
+//
+// ## Lifecycle (spec §1085)
+//
+// close() marks THIS Stdin cap as closed; subsequent calls return
+// FSERR_CLOSED.  Does NOT close the underlying process fd (the
+// powerbox owns that).  A fresh Fs!stdin() call after close returns
+// a new Stdin cap that CAN still read.  Active streams held via
+// bundle+ are NOT force-closed here — that's a follow-up (matches
+// slice-11 M-11-2 outer.close limitation).
+//
+// ## Reused helpers
+//
+// scanLineForLF, codepointLen, concatStringsLoop, fsRead — all live
+// in the shared outer scope (with_libs in tests; FsGenesis in prod)
+// and are captured lexically by Stdin's producer contracts.
+
+new Stdin, stdinFdP, stdinStateP in {
+
+  agent Stdin {
+    constructor(@fd) {
+      @[*private, *stdinFdP]!(fd) |
+      @[*private, *stdinStateP]!("open")
+    } |
+
+    // -- chars() ---------------------------------------------------
+    //
+    // CharStream over stdin bytes decoded as UTF-8.  Same codepoint
+    // logic as File.chars: per-byte codepointLen, refill on truncated
+    // codepoint at pending's end, EOS on 0-byte fsRead.
+    method chars() {
+      for (@state <- @[*private, *stdinStateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin is closed"])
+          }
+          "open" => {
+            for (@fd <<- @[*private, *stdinFdP]) {
+              new charProducer, charBuilder, pendingCell in {
+                pendingCell!(("".hexToBytes(), 0, false)) |
+
+                contract charProducer(retCh) = {
+                  for (@(pending, idx, eofSeen) <- pendingCell) {
+                    match idx >= pending.length() {
+                      true => {
+                        match eofSeen {
+                          true => {
+                            pendingCell!((pending, idx, true)) |
+                            retCh!([false, "EOS", "end of input"])
+                          }
+                          false => {
+                            new readCh in {
+                              fsRead!(fd, 4096, *readCh) |
+                              for (@reply <- readCh) {
+                                match reply {
+                                  [true, ba /\ ByteArray] => {
+                                    match ba.length() {
+                                      0 => {
+                                        pendingCell!((pending, idx, true)) |
+                                        retCh!([false, "EOS", "end of input"])
+                                      }
+                                      _ => {
+                                        pendingCell!((ba, 0, false)) |
+                                        charProducer!(*retCh)
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    pendingCell!((pending, idx, eofSeen)) |
+                                    retCh!(reply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                      false => {
+                        new lenCh in {
+                          codepointLen!(pending.nth(idx), *lenCh) |
+                          for (@n <- lenCh) {
+                            match n {
+                              -1 => {
+                                pendingCell!((pending, idx, eofSeen)) |
+                                retCh!([false, "FSERR_IO",
+                                  "invalid UTF-8 start byte"])
+                              }
+                              _ => {
+                                match idx + n <= pending.length() {
+                                  true => {
+                                    pendingCell!((pending, idx + n, eofSeen)) |
+                                    retCh!([true,
+                                      pending.slice(idx, idx + n).decodeUtf8()])
+                                  }
+                                  false => {
+                                    match eofSeen {
+                                      true => {
+                                        pendingCell!((pending, idx, true)) |
+                                        retCh!([false, "FSERR_IO",
+                                          "truncated UTF-8 at end of input"])
+                                      }
+                                      false => {
+                                        new readCh in {
+                                          fsRead!(fd, 4096, *readCh) |
+                                          for (@reply <- readCh) {
+                                            match reply {
+                                              [true, ba /\ ByteArray] => {
+                                                match ba.length() {
+                                                  0 => {
+                                                    pendingCell!((pending, idx, true)) |
+                                                    retCh!([false, "FSERR_IO",
+                                                      "truncated UTF-8 at end of input"])
+                                                  }
+                                                  _ => {
+                                                    pendingCell!((
+                                                      [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                      0, false)) |
+                                                    charProducer!(*retCh)
+                                                  }
+                                                }
+                                              }
+                                              _ => {
+                                                pendingCell!((pending, idx, eofSeen)) |
+                                                retCh!(reply)
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } |
+
+                contract charBuilder(@vals, retCh) = {
+                  match vals {
+                    v /\ List => concatStringsLoop!(v, "", *retCh)
+                    _ => retCh!([false, "FSERR_IO",
+                      "chunk builder expected List"])
+                  }
+                } |
+
+                for (@streamHandle <- Stream!?(*charProducer, *charBuilder)) {
+                  @[*private, *stdinStateP]!("open") |
+                  return!([true, streamHandle])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- bytes() ---------------------------------------------------
+    //
+    // ByteStream: one Int per next(), refilling in 4096-byte chunks.
+    // No decoding; just relay bytes.
+    method bytes() {
+      for (@state <- @[*private, *stdinStateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin is closed"])
+          }
+          "open" => {
+            for (@fd <<- @[*private, *stdinFdP]) {
+              new byteProducer, byteBuilder, pendingCell in {
+                pendingCell!(("".hexToBytes(), 0, false)) |
+
+                contract byteProducer(retCh) = {
+                  for (@(pending, idx, eofSeen) <- pendingCell) {
+                    match idx >= pending.length() {
+                      true => {
+                        match eofSeen {
+                          true => {
+                            pendingCell!((pending, idx, true)) |
+                            retCh!([false, "EOS", "end of input"])
+                          }
+                          false => {
+                            new readCh in {
+                              fsRead!(fd, 4096, *readCh) |
+                              for (@reply <- readCh) {
+                                match reply {
+                                  [true, ba /\ ByteArray] => {
+                                    match ba.length() {
+                                      0 => {
+                                        pendingCell!((pending, idx, true)) |
+                                        retCh!([false, "EOS", "end of input"])
+                                      }
+                                      _ => {
+                                        pendingCell!((ba, 0, false)) |
+                                        byteProducer!(*retCh)
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    pendingCell!((pending, idx, eofSeen)) |
+                                    retCh!(reply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                      false => {
+                        pendingCell!((pending, idx + 1, eofSeen)) |
+                        retCh!([true, pending.nth(idx)])
+                      }
+                    }
+                  }
+                } |
+
+                contract byteBuilder(@vals, retCh) = {
+                  match vals {
+                    v /\ List => retCh!([true, v])
+                    _ => retCh!([false, "FSERR_IO",
+                      "chunk builder expected List"])
+                  }
+                } |
+
+                for (@streamHandle <- Stream!?(*byteProducer, *byteBuilder)) {
+                  @[*private, *stdinStateP]!("open") |
+                  return!([true, streamHandle])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- readLine() ------------------------------------------------
+    //
+    // Single-shot CharStream over the next line.  Yields 1-codepoint
+    // Strings until LF; LF is consumed but NOT emitted.  Pre-exhausted
+    // stream if stdin is at end of input.  MVP: LF only (spec §618
+    // full \R deferred, matching File.readLine).
+    //
+    // ## Error paths (not "pre-exhausted"; spec §1084 leaves these
+    //    implicit — behavior matches File.readLine)
+    //
+    // - Invalid UTF-8 start byte at the reader's position surfaces
+    //   as `[false, "FSERR_IO", "invalid UTF-8 start byte"]`.
+    // - Truncated multi-byte codepoint at end of input surfaces as
+    //   `[false, "FSERR_IO", "truncated UTF-8 at end of input"]` —
+    //   the reader has committed to the codepoint's lead byte and
+    //   cannot back out.  Callers that need EOS-shaped termination
+    //   MUST validate their input is well-formed UTF-8.
+    method readLine() {
+      for (@state <- @[*private, *stdinStateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin is closed"])
+          }
+          "open" => {
+            for (@fd <<- @[*private, *stdinFdP]) {
+              new lineProducer, lineBuilder, lineCell in {
+                // State: (pending, idx, eofSeen, doneAtLF).
+                lineCell!(("".hexToBytes(), 0, false, false)) |
+
+                contract lineProducer(retCh) = {
+                  for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
+                    match doneAtLF {
+                      true => {
+                        lineCell!((pending, idx, eofSeen, true)) |
+                        retCh!([false, "EOS", "end of line"])
+                      }
+                      false => {
+                        match idx >= pending.length() {
+                          true => {
+                            match eofSeen {
+                              true => {
+                                lineCell!((pending, idx, true, false)) |
+                                retCh!([false, "EOS", "end of input"])
+                              }
+                              false => {
+                                new readCh in {
+                                  fsRead!(fd, 4096, *readCh) |
+                                  for (@reply <- readCh) {
+                                    match reply {
+                                      [true, ba /\ ByteArray] => {
+                                        match ba.length() {
+                                          0 => {
+                                            lineCell!((pending, idx, true, false)) |
+                                            retCh!([false, "EOS", "end of input"])
+                                          }
+                                          _ => {
+                                            lineCell!((ba, 0, false, false)) |
+                                            lineProducer!(*retCh)
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        lineCell!((pending, idx, eofSeen, false)) |
+                                        retCh!(reply)
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          false => {
+                            new byteAt in {
+                              byteAt!(pending.nth(idx)) |
+                              for (@b <- byteAt) {
+                                match b {
+                                  10 => {
+                                    // LF: consume it, mark done.  No
+                                    // seek-back (stdin has no cursor
+                                    // to rewind; the pending buffer
+                                    // has already been read from fd).
+                                    // Bytes past LF sit in pending for
+                                    // this readLine's lifetime but are
+                                    // orphaned — a subsequent readLine
+                                    // starts fresh with empty pending
+                                    // and re-reads.  This is the
+                                    // "stdin readLine is single-shot"
+                                    // limitation; multi-line reads
+                                    // should use lines() instead.
+                                    lineCell!((pending, idx + 1, eofSeen, true)) |
+                                    retCh!([false, "EOS", "end of line"])
+                                  }
+                                  _ => {
+                                    new lenCh in {
+                                      codepointLen!(b, *lenCh) |
+                                      for (@n <- lenCh) {
+                                        match n {
+                                          -1 => {
+                                            lineCell!((pending, idx, eofSeen, false)) |
+                                            retCh!([false, "FSERR_IO",
+                                              "invalid UTF-8 start byte"])
+                                          }
+                                          _ => {
+                                            match idx + n <= pending.length() {
+                                              true => {
+                                                lineCell!((pending, idx + n, eofSeen, false)) |
+                                                retCh!([true,
+                                                  pending.slice(idx, idx + n).decodeUtf8()])
+                                              }
+                                              false => {
+                                                match eofSeen {
+                                                  true => {
+                                                    lineCell!((pending, idx, true, false)) |
+                                                    retCh!([false, "FSERR_IO",
+                                                      "truncated UTF-8 at end of input"])
+                                                  }
+                                                  false => {
+                                                    new readCh in {
+                                                      fsRead!(fd, 4096, *readCh) |
+                                                      for (@reply <- readCh) {
+                                                        match reply {
+                                                          [true, ba /\ ByteArray] => {
+                                                            match ba.length() {
+                                                              0 => {
+                                                                lineCell!((pending, idx, true, false)) |
+                                                                retCh!([false, "FSERR_IO",
+                                                                  "truncated UTF-8 at end of input"])
+                                                              }
+                                                              _ => {
+                                                                lineCell!((
+                                                                  [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                                  0, false, false)) |
+                                                                lineProducer!(*retCh)
+                                                              }
+                                                            }
+                                                          }
+                                                          _ => {
+                                                            lineCell!((pending, idx, eofSeen, false)) |
+                                                            retCh!(reply)
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } |
+
+                contract lineBuilder(@vals, retCh) = {
+                  match vals {
+                    v /\ List => concatStringsLoop!(v, "", *retCh)
+                    _ => retCh!([false, "FSERR_IO",
+                      "chunk builder expected List"])
+                  }
+                } |
+
+                for (@streamHandle <- Stream!?(*lineProducer, *lineBuilder)) {
+                  @[*private, *stdinStateP]!("open") |
+                  return!([true, streamHandle])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- lines() ---------------------------------------------------
+    //
+    // Outer LineStream over stdin.  Same structure as File.lines():
+    // shared sourceCell across outer + inner, single-active-inner
+    // rule, drained-inners-fail-closed.  chunk() unsupported.
+    //
+    // Same shallow-close limitations as File.lines (M-11-1, M-11-2):
+    // inner.close() and outer.close() are bare Stream.close — the
+    // source drain happens naturally on outer.next() force-drain,
+    // which is the only observation path under compliant usage.
+    method lines() {
+      for (@state <- @[*private, *stdinStateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin is closed"])
+          }
+          "open" => {
+            for (@fd <<- @[*private, *stdinFdP]) {
+              new sourceCell, activeInnerCell,
+                  scanRefill, mintInner, outerProd, outerBuild in {
+                sourceCell!(("".hexToBytes(), 0, false)) |
+                activeInnerCell!(Nil) |
+
+                contract scanRefill(@pending, @idx, @eofSeen, ret) = {
+                  new scanRet in {
+                    scanLineForLF!(pending, idx, 0,
+                      pending.length() + 1, *scanRet) |
+                    for (@scanReply <- scanRet) {
+                      match scanReply {
+                        [true, "LF_FOUND", lfPos, _] => {
+                          ret!((pending, lfPos + 1, eofSeen))
+                        }
+                        _ => {
+                          match eofSeen {
+                            true => ret!((pending, pending.length(), true))
+                            false => {
+                              new readCh in {
+                                fsRead!(fd, 4096, *readCh) |
+                                for (@rr <- readCh) {
+                                  match rr {
+                                    [true, ba /\ ByteArray] => {
+                                      match ba.length() {
+                                        0 => ret!((pending, pending.length(), true))
+                                        _ => {
+                                          new nextP in {
+                                            nextP!(
+                                              [pending.slice(idx, pending.length()),
+                                               ba].concatBytes()) |
+                                            for (@np <- nextP) {
+                                              scanRefill!(np, 0, false, *ret)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    _ => ret!((pending, idx, eofSeen))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } |
+
+                contract mintInner(@pending, @idx, @eofSeen, retCh) = {
+                  new innerStatusCh, innerProducer, innerBuilder in {
+                    innerStatusCh!("open") |
+
+                    contract innerBuilder(@vals, cbRet) = {
+                      match vals {
+                        v /\ List => concatStringsLoop!(v, "", *cbRet)
+                        _ => cbRet!([false, "FSERR_IO",
+                          "chunk builder expected List"])
+                      }
+                    } |
+
+                    contract innerProducer(ipRet) = {
+                      for (@stat <- innerStatusCh) {
+                        match stat {
+                          "revoked" => {
+                            innerStatusCh!("revoked") |
+                            ipRet!([false, "FSERR_CLOSED",
+                              "inner drained by outer"])
+                          }
+                          "eos" => {
+                            innerStatusCh!("eos") |
+                            ipRet!([false, "EOS", "end of line"])
+                          }
+                          "open" => {
+                            for (@(p, i, eof) <- sourceCell) {
+                              match i >= p.length() {
+                                true => {
+                                  match eof {
+                                    true => {
+                                      sourceCell!((p, i, true)) |
+                                      innerStatusCh!("eos") |
+                                      ipRet!([false, "EOS", "end of input"])
+                                    }
+                                    false => {
+                                      new readCh in {
+                                        fsRead!(fd, 4096, *readCh) |
+                                        for (@rr <- readCh) {
+                                          match rr {
+                                            [true, ba /\ ByteArray] => {
+                                              match ba.length() {
+                                                0 => {
+                                                  sourceCell!((p, i, true)) |
+                                                  innerStatusCh!("eos") |
+                                                  ipRet!([false, "EOS", "end of input"])
+                                                }
+                                                _ => {
+                                                  sourceCell!((ba, 0, false)) |
+                                                  innerStatusCh!("open") |
+                                                  innerProducer!(*ipRet)
+                                                }
+                                              }
+                                            }
+                                            _ => {
+                                              sourceCell!((p, i, eof)) |
+                                              innerStatusCh!("open") |
+                                              ipRet!(rr)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                false => {
+                                  match p.nth(i) {
+                                    10 => {
+                                      sourceCell!((p, i + 1, eof)) |
+                                      innerStatusCh!("eos") |
+                                      ipRet!([false, "EOS", "end of line"])
+                                    }
+                                    b => {
+                                      new lenCh in {
+                                        codepointLen!(b, *lenCh) |
+                                        for (@n <- lenCh) {
+                                          match n {
+                                            -1 => {
+                                              sourceCell!((p, i, eof)) |
+                                              innerStatusCh!("open") |
+                                              ipRet!([false, "FSERR_IO",
+                                                "invalid UTF-8 start byte"])
+                                            }
+                                            _ => {
+                                              match i + n <= p.length() {
+                                                true => {
+                                                  sourceCell!((p, i + n, eof)) |
+                                                  innerStatusCh!("open") |
+                                                  ipRet!([true,
+                                                    p.slice(i, i + n).decodeUtf8()])
+                                                }
+                                                false => {
+                                                  match eof {
+                                                    true => {
+                                                      sourceCell!((p, i, true)) |
+                                                      innerStatusCh!("open") |
+                                                      ipRet!([false, "FSERR_IO",
+                                                        "truncated UTF-8 at end of input"])
+                                                    }
+                                                    false => {
+                                                      new readCh in {
+                                                        fsRead!(fd, 4096, *readCh) |
+                                                        for (@rr <- readCh) {
+                                                          match rr {
+                                                            [true, ba /\ ByteArray] => {
+                                                              match ba.length() {
+                                                                0 => {
+                                                                  sourceCell!((p, i, true)) |
+                                                                  innerStatusCh!("open") |
+                                                                  ipRet!([false, "FSERR_IO",
+                                                                    "truncated UTF-8 at end of input"])
+                                                                }
+                                                                _ => {
+                                                                  sourceCell!((
+                                                                    [p.slice(i, p.length()),
+                                                                     ba].concatBytes(),
+                                                                    0, false)) |
+                                                                  innerStatusCh!("open") |
+                                                                  innerProducer!(*ipRet)
+                                                                }
+                                                              }
+                                                            }
+                                                            _ => {
+                                                              sourceCell!((p, i, eof)) |
+                                                              innerStatusCh!("open") |
+                                                              ipRet!(rr)
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            innerStatusCh!(stat) |
+                            ipRet!([false, "FSERR_IO",
+                              "inner state unrecognized"])
+                          }
+                        }
+                      }
+                    } |
+
+                    for (@innerHandle <-
+                      Stream!?(*innerProducer, *innerBuilder)) {
+                      activeInnerCell!(*innerStatusCh) |
+                      sourceCell!((pending, idx, eofSeen)) |
+                      retCh!([true, innerHandle])
+                    }
+                  }
+                } |
+
+                contract outerProd(retCh) = {
+                  new needsDrainCh in {
+                    for (@innerRef <- activeInnerCell) {
+                      match innerRef {
+                        Nil => needsDrainCh!(false)
+                        _ => {
+                          for (@innerStatus <- @innerRef) {
+                            match innerStatus {
+                              "open" => {
+                                @innerRef!("revoked") |
+                                needsDrainCh!(true)
+                              }
+                              _ => {
+                                @innerRef!("revoked") |
+                                needsDrainCh!(false)
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+                    for (@needsDrain <- needsDrainCh) {
+                      for (@(pending, idx, eofSeen) <- sourceCell) {
+                        new drainedCh in {
+                          match needsDrain {
+                            true => scanRefill!(pending, idx, eofSeen, *drainedCh)
+                            false => drainedCh!((pending, idx, eofSeen))
+                          } |
+                          for (@(p, i, eof) <- drainedCh) {
+                            match i >= p.length() {
+                              true => {
+                                match eof {
+                                  true => {
+                                    activeInnerCell!(Nil) |
+                                    sourceCell!((p, i, true)) |
+                                    retCh!([false, "EOS", "end of input"])
+                                  }
+                                  false => {
+                                    new readCh in {
+                                      fsRead!(fd, 4096, *readCh) |
+                                      for (@rr <- readCh) {
+                                        match rr {
+                                          [true, ba /\ ByteArray] => {
+                                            match ba.length() {
+                                              0 => {
+                                                activeInnerCell!(Nil) |
+                                                sourceCell!((p, i, true)) |
+                                                retCh!([false, "EOS", "end of input"])
+                                              }
+                                              _ => {
+                                                mintInner!(ba, 0, false, *retCh)
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            activeInnerCell!(Nil) |
+                                            sourceCell!((p, i, eof)) |
+                                            retCh!(rr)
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              false => {
+                                mintInner!(p, i, eof, *retCh)
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } |
+
+                contract outerBuild(@_vals, cbRet) = {
+                  cbRet!([false, "FSERR_UNSUPPORTED",
+                    "chunk unsupported on LineStream (single-active-inner rule)"])
+                } |
+
+                for (@outerHandle <- Stream!?(*outerProd, *outerBuild)) {
+                  @[*private, *stdinStateP]!("open") |
+                  return!([true, outerHandle])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stdinStateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stdin state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- close() ---------------------------------------------------
+    //
+    // Mark this Stdin cap "closed"; subsequent method calls return
+    // FSERR_CLOSED via the state check.  Does NOT call fsClose —
+    // the powerbox owns the process fd (spec §1085).
+    method close() {
+      for (@_state <- @[*private, *stdinStateP]) {
+        @[*private, *stdinStateP]!("closed") |
+        return!([true])
+      }
+    } |
+
+    // -- Default arm ----------------------------------------------
+    //
+    // Catches seek/tell/size/bytesAt (spec §1087 says they return
+    // FSERR_UNSUPPORTED) and any other unknown method.
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED",
+          "unknown method or not supported on Stdin"])
+      }
+    }
+  }
+}

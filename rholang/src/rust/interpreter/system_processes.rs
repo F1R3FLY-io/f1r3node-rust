@@ -721,6 +721,12 @@ impl SystemProcesses {
         Ok(vec![])
     }
 
+    // Legacy stdio handlers.  These URNs are deprecated per File I/O
+    // FIP §1122 (`rho:io:fs:1.0.0` deprecation, removal target
+    // `rho:io:fs:2.*`) but preserved for backward compatibility with
+    // pre-`fs!stdout()` code.  See rho_runtime.rs's registration block
+    // for the deferral rationale (no runtime warning).
+
     pub async fn std_out(
         &mut self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),

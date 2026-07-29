@@ -13,10 +13,10 @@ use rholang::rust::build::compile_rholang_source::{
     CompiledRholangSource, CompiledRholangTemplate,
 };
 
-use super::embedded_rho;
 use super::proof_of_stake::ProofOfStake;
 use super::vault::Vault;
 use super::vaults_generator::VaultsGenerator;
+use super::{embedded_rho, fs_genesis};
 
 /// Build a `CompiledRholangSource` from an embedded `.rho` constant. The
 /// `name` is preserved on the resulting source as identification metadata
@@ -56,6 +56,12 @@ pub const STACK_PK: &str = "c94e647de6876c954ebb7b64c40a220227770f9be003635edfe3
 // one-off generator and the derivation table at the top of TokenMetadata.rhox.
 pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
+// File I/O FIP genesis deploy (slice 19).  The composed source is
+// built in `fs_genesis::compose_fs_genesis_source`; the signature
+// hex is derived deterministically from FS_GENERATOR_PK +
+// FS_GENERATOR_TIMESTAMP + FS_NONCE at deploy-construction time.
+pub const FS_GENERATOR_PK: &str =
+    "0f190f190f190f190f190f190f190f190f190f190f190f190f190f190f190f19";
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
@@ -69,6 +75,7 @@ pub const MULTI_SIG_SYSTEM_VAULT_TIMESTAMP: i64 = 1571408470880;
 pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
+pub const FS_GENERATOR_TIMESTAMP: i64 = 1785600000000;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
@@ -84,6 +91,7 @@ lazy_static! {
     pub static ref VAULTS_GENERATOR_PUB_KEY: PublicKey = to_public(VAULTS_GENERATOR_PK);
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
+    pub static ref FS_GENERATOR_PUB_KEY: PublicKey = to_public(FS_GENERATOR_PK);
 }
 
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
@@ -101,6 +109,7 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &VAULTS_GENERATOR_PUB_KEY,
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
+        &FS_GENERATOR_PUB_KEY,
     ]
 }
 
@@ -216,6 +225,30 @@ pub fn stack(shard_id: &str) -> Signed<DeployData> {
         embedded_source("Stack.rho", embedded_rho::STACK),
         STACK_PK,
         STACK_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Composes the File I/O FIP library agents (File / Dir / Stream /
+/// Buffer / Stdin / Stdout / Fs) into a single genesis deploy that
+/// publishes a shared Fs cap at the registry URI derived from
+/// FS_GENERATOR_PK.  Source assembly happens in `fs_genesis`; the
+/// signature is derived deterministically from the well-known
+/// FS_GENERATOR_PK + FS_GENERATOR_TIMESTAMP + FS_NONCE triple.
+///
+/// See `fs_genesis` module docstring for the MVP simplifications
+/// (shared-Fs model, empty static bundle, hardwired stdio fds).
+pub fn fs_generator(shard_id: &str) -> Signed<DeployData> {
+    let sk = PrivateKey::from_bytes(
+        &hex::decode(FS_GENERATOR_PK).expect("FS_GENERATOR_PK must be valid hex"),
+    );
+    let sig_hex = fs_genesis::fs_genesis_signature_hex(&sk, FS_GENERATOR_TIMESTAMP);
+    let pk_hex = hex::encode(FS_GENERATOR_PUB_KEY.bytes.clone());
+    let source = fs_genesis::compose_fs_genesis_source(&pk_hex, &sig_hex);
+    to_deploy(
+        embedded_source("FsGenesis.rho", &source),
+        FS_GENERATOR_PK,
+        FS_GENERATOR_TIMESTAMP,
         shard_id,
     )
 }

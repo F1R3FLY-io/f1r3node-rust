@@ -23,7 +23,10 @@
 //                            receive on every mutating call to serialize
 //                            concurrent holders.
 
-new File, fdP, stateP in {
+new File, fdP, stateP,
+    writeBytesLoop, writeBytesAtLoop, writeCharsLoop,
+    codepointLen, concatStringsLoop, scanLineForLF
+in {
 
   agent File {
     constructor(@fd, @canonRoot, @rel, @mode) {
@@ -92,6 +95,16 @@ new File, fdP, stateP in {
     } |
 
     // -- readN(n) ---------------------------------------------------
+    //
+    // ## Non-normative extension
+    //
+    // Not in the spec's §Read-side stream producers table (§915-989).
+    // MVP convenience: a bounded, non-streaming read that returns the
+    // next n bytes at cursor as a single ByteArray.  Spec-mandated
+    // callers use `bytes()` (unbounded stream) or `readInto(buf)`
+    // (bounded fill into a caller-owned buffer).  Kept because a
+    // handful of Phase 5 tests use it as a lightweight verification
+    // primitive; can be removed at spec-freeze if callers migrate.
     //
     // n = 0 is a no-op returning [true, empty ByteArray] — matches
     // Unix read(2) semantics.  Negative n is rejected as FSERR_BAD_ARG.
@@ -574,6 +587,18 @@ new File, fdP, stateP in {
     // reads on the same fd; the caller must not create overlapping
     // sequential streams.  Positional producers (bytesAt) are safe
     // to interleave with sequential ones by design.
+    //
+    // ## Shared-Fs caveat (Phase 6 MVP)
+    //
+    // Under the current shared-Fs model (see PB-M-1 / PB-M-11 in
+    // FIPS/fileio/.../powerbox-requirements.md), two distinct deploys
+    // both calling `openFile("shared")` receive the SAME File cap
+    // from the Fs cache — so what Phase 5 documented as a same-deploy
+    // discipline ("don't create overlapping sequential streams")
+    // silently becomes a cross-deploy hazard.  Alice's `bytes()`
+    // stream and Bob's `bytes()` stream on the shared File interleave
+    // reads on the same fd.  Fixed when per-principal Fs delegation
+    // lands (PB-M-1).
     method bytes() {
       for (@state <- @[*private, *stateP]) {
         match state {
@@ -821,11 +846,3110 @@ new File, fdP, stateP in {
       }
     } |
 
+    // -- writeBytes(byteStream) ------------------------------------
+    //
+    // Sequential ByteStream consumer.  Drains `byteStream` via next()
+    // in a loop, forwarding each byte to `fsWrite(fd, ...)` at the
+    // current cursor.  Advances the cursor.  On success (producer
+    // EOS): returns `[true]`.  On mid-stream error (either the
+    // producer errored or fsWrite failed): returns `[false, code,
+    // "wrote N bytes before failure: MSG"]` with the running byte
+    // count interpolated in.  The input stream is closed on every
+    // exit path (success and failure) so producer resources release
+    // cleanly.
+    //
+    // Read-only File rejects with FSERR_UNSUPPORTED (spec §File >
+    // Write-side stream consumers implicitly requires write mode).
+    //
+    // Concurrency: like bytes(), this is a sequential operation that
+    // should exclude any other sequential stream on the same File.
+    // Phase 8 will add the cursor-lease exclusion; today two callers
+    // that racily invoke writeBytes/bytes/readN interleave on the fd.
+    method writeBytes(@byteStream) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, mode) => {
+                  match mode {
+                    "r" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "writeBytes requires a write-capable mode"])
+                    }
+                    _ => {
+                      new loopRet in {
+                        writeBytesLoop!(byteStream, fd, 0, *loopRet) |
+                        for (@finalReply <- loopRet) {
+                          @[*private, *stateP]!("open") |
+                          return!(finalReply)
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- writeBytesAt(offset, maxLength, byteStream) --------------
+    //
+    // Positional ByteStream consumer via fsWriteAt.  Writes up to
+    // `maxLength` bytes starting at absolute file offset `offset`;
+    // does NOT touch the sequential cursor.  Stops early on EOS.
+    //
+    // `maxLength` is required per spec §Read-side stream producers >
+    // Positional consumers (line ~953): "the range lock needs to know
+    // the write's extent when the lock is acquired, not when the
+    // stream drains".  Passing 0 makes this a no-op.
+    //
+    // Type-guarded on offset (Int, non-negative) and maxLength (Int,
+    // non-negative).  Read-only File rejects.  Input stream closed on
+    // every exit path.
+    method writeBytesAt(@offset, @maxLength, @byteStream) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              match maxLength {
+                mx /\ Int => {
+                  match mx < 0 {
+                    true => return!([false, "FSERR_BAD_ARG",
+                      "maxLength must be non-negative"])
+                    false => {
+                      for (@state <- @[*private, *stateP]) {
+                        match state {
+                          "closed" => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file is closed"])
+                          }
+                          "open" => {
+                            for (@params <<- @[*private, *fdP]) {
+                              match params {
+                                (fd, _root, _rel, fmode) => {
+                                  match fmode {
+                                    "r" => {
+                                      @[*private, *stateP]!("open") |
+                                      return!([false, "FSERR_UNSUPPORTED",
+                                        "writeBytesAt requires a write-capable mode"])
+                                    }
+                                    _ => {
+                                      new loopRet in {
+                                        writeBytesAtLoop!(byteStream, fd, off, mx, 0, *loopRet) |
+                                        for (@finalReply <- loopRet) {
+                                          @[*private, *stateP]!("open") |
+                                          return!(finalReply)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  @[*private, *stateP]!("open") |
+                                  return!([false, "FSERR_IO", "fd params malformed"])
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!([false, "FSERR_BAD_ARG", "maxLength must be an integer"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- chars() ---------------------------------------------------
+    //
+    // Sequential CharStream producer.  Iterates the file's UTF-8
+    // content codepoint-by-codepoint from the current cursor,
+    // emitting 1-codepoint Strings per `next()` (spec §327).
+    //
+    // ## Codepoint framing
+    //
+    // Rholang has no char-based String access — `String.slice` is
+    // byte-indexed and panics on non-UTF-8-boundary offsets.  The
+    // producer therefore works in ByteArrays throughout: it reads a
+    // 4KB chunk, and for each `next()` it (a) looks at the byte at
+    // `idx` to determine the codepoint length via the standard UTF-8
+    // start-byte pattern (module helper `codepointLen`), (b)
+    // slices `pending[idx..idx+n]` from the ByteArray (byte-level,
+    // total), and (c) `decodeUtf8`s that slice to yield the 1-
+    // codepoint String.
+    //
+    // ## Refill across codepoint boundary
+    //
+    // A 4KB fsRead may end mid-codepoint.  When `idx+n > pending
+    // .length()` the producer preserves the unconsumed tail
+    // (`pending.slice(idx, end)`), fsReads more bytes, concatBytes-
+    // joins them, and resets `idx = 0` before retrying.  Truncated
+    // UTF-8 at EOF surfaces as FSERR_IO "truncated UTF-8 at EOF"
+    // rather than a decode panic.
+    //
+    // ## Concurrency
+    //
+    // Same MVP note as `bytes()`: this is a sequential producer that
+    // should exclude other sequential streams on the same File.
+    // Phase 8 lands cursor-lease exclusion; today two live sequential
+    // streams on the same File interleave reads on the fd.
+    method chars() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  new charProducer, charBuilder, pendingCell in {
+                    pendingCell!(("".hexToBytes(), 0, false)) |
+
+                    contract charProducer(retCh) = {
+                      for (@(pending, idx, eofSeen) <- pendingCell) {
+                        match idx >= pending.length() {
+                          true => {
+                            // Fully consumed; either refill or EOS.
+                            match eofSeen {
+                              true => {
+                                pendingCell!((pending, idx, true)) |
+                                retCh!([false, "EOS", "end of file"])
+                              }
+                              false => {
+                                new readCh in {
+                                  fsRead!(fd, 4096, *readCh) |
+                                  for (@reply <- readCh) {
+                                    match reply {
+                                      [true, ba /\ ByteArray] => {
+                                        match ba.length() {
+                                          0 => {
+                                            pendingCell!((pending, idx, true)) |
+                                            retCh!([false, "EOS", "end of file"])
+                                          }
+                                          _ => {
+                                            pendingCell!((ba, 0, false)) |
+                                            charProducer!(*retCh)
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        pendingCell!((pending, idx, eofSeen)) |
+                                        retCh!(reply)
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          false => {
+                            // Bytes available at idx; determine
+                            // codepoint length from the start byte.
+                            new lenCh in {
+                              codepointLen!(pending.nth(idx), *lenCh) |
+                              for (@n <- lenCh) {
+                                match n {
+                                  -1 => {
+                                    pendingCell!((pending, idx, eofSeen)) |
+                                    retCh!([false, "FSERR_IO",
+                                      "invalid UTF-8 start byte"])
+                                  }
+                                  _ => {
+                                    match idx + n <= pending.length() {
+                                      true => {
+                                        // Have the full codepoint; slice
+                                        // and decode.
+                                        pendingCell!((pending, idx + n, eofSeen)) |
+                                        retCh!([true,
+                                          pending.slice(idx, idx + n).decodeUtf8()])
+                                      }
+                                      false => {
+                                        // Incomplete at end of pending;
+                                        // refill or fail if EOF.
+                                        match eofSeen {
+                                          true => {
+                                            pendingCell!((pending, idx, true)) |
+                                            retCh!([false, "FSERR_IO",
+                                              "truncated UTF-8 at EOF"])
+                                          }
+                                          false => {
+                                            new readCh in {
+                                              fsRead!(fd, 4096, *readCh) |
+                                              for (@reply <- readCh) {
+                                                match reply {
+                                                  [true, ba /\ ByteArray] => {
+                                                    match ba.length() {
+                                                      0 => {
+                                                        pendingCell!((pending, idx, true)) |
+                                                        retCh!([false, "FSERR_IO",
+                                                          "truncated UTF-8 at EOF"])
+                                                      }
+                                                      _ => {
+                                                        // Merge tail + new bytes.
+                                                        pendingCell!((
+                                                          [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                          0,
+                                                          false
+                                                        )) |
+                                                        charProducer!(*retCh)
+                                                      }
+                                                    }
+                                                  }
+                                                  _ => {
+                                                    pendingCell!((pending, idx, eofSeen)) |
+                                                    retCh!(reply)
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+
+                    contract charBuilder(@vals, retCh) = {
+                      match vals {
+                        v /\ List => concatStringsLoop!(v, "", *retCh)
+                        _ => retCh!([false, "FSERR_IO",
+                          "chunk builder expected List"])
+                      }
+                    } |
+
+                    for (@streamHandle <- Stream!?(*charProducer, *charBuilder)) {
+                      @[*private, *stateP]!("open") |
+                      return!([true, streamHandle])
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- readLine() ------------------------------------------------
+    //
+    // Single-shot CharStream over the next line from the cursor.
+    // Yields 1-codepoint Strings until LF (spec §926); the LF byte
+    // is consumed (cursor advances past it) but NOT emitted.  If
+    // the cursor is at EOF, the stream is pre-exhausted — the first
+    // next() returns [false, "EOS", ...].  An unterminated final
+    // line (bytes exist but no LF before EOF) is drained through
+    // the returned stream, ending in EOS on the call that would
+    // have needed more bytes.
+    //
+    // ## Line terminator (MVP: LF only)
+    //
+    // Same limitation as linesAsStrings — spec §923's full `\R`
+    // class deferred; CR/CRLF/NEL/LS/PS/FF/VT not stripped.
+    //
+    // ## Structure vs. chars()
+    //
+    // Producer state is chars()'s (pending, idx, eofSeen) plus a
+    // `doneAtLF` flag that turns the stream into an EOS-forever
+    // sink once LF has been consumed.  Codepoint framing (via
+    // codepointLen + decodeUtf8) is identical.
+    //
+    // ## Known limitation — partial drain leaves fd cursor mid-chunk
+    //
+    // The producer buffers up to 4KB per fsRead into a private
+    // `lineCell`; the fd's kernel cursor advances by the fsRead
+    // length, but the caller "logically" consumes only up to the
+    // last emitted codepoint.  If the caller drops the returned
+    // stream before reaching EOS (either the LF terminator or
+    // file EOF), the fd cursor is left at the end of the last
+    // fsRead chunk — up to 4KB PAST the position the caller thinks
+    // they're at.  Subsequent fd-cursor-based operations (readN,
+    // tell, chars, another readLine) then see a stale position.
+    //
+    // The only clean fixes require either (a) a stream-close hook
+    // that seeks back to the logical position, or (b) a proper
+    // cursor-lease exclusion protocol (Phase 8's `{"wait": true}`
+    // + FSERR_BUSY infrastructure).  For MVP: drain readLine
+    // streams to completion before touching the fd via other
+    // methods.  This limitation is inherited by chars() and bytes()
+    // as well; readLine's single-line contract makes the
+    // interleaving hazard more likely to arise in practice.
+    method readLine() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  new lineProducer, lineBuilder, lineCell in {
+                    // State: (pending, idx, eofSeen, doneAtLF).
+                    lineCell!(("".hexToBytes(), 0, false, false)) |
+
+                    contract lineProducer(retCh) = {
+                      for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
+                        match doneAtLF {
+                          true => {
+                            lineCell!((pending, idx, eofSeen, true)) |
+                            retCh!([false, "EOS", "end of line"])
+                          }
+                          false => {
+                            match idx >= pending.length() {
+                              true => {
+                                // Consumed all pending; refill or EOS.
+                                match eofSeen {
+                                  true => {
+                                    lineCell!((pending, idx, true, false)) |
+                                    retCh!([false, "EOS", "end of file"])
+                                  }
+                                  false => {
+                                    new readCh in {
+                                      fsRead!(fd, 4096, *readCh) |
+                                      for (@reply <- readCh) {
+                                        match reply {
+                                          [true, ba /\ ByteArray] => {
+                                            match ba.length() {
+                                              0 => {
+                                                lineCell!((pending, idx, true, false)) |
+                                                retCh!([false, "EOS", "end of file"])
+                                              }
+                                              _ => {
+                                                lineCell!((ba, 0, false, false)) |
+                                                lineProducer!(*retCh)
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            lineCell!((pending, idx, eofSeen, false)) |
+                                            retCh!(reply)
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              false => {
+                                // Bytes available at idx.  Check for LF
+                                // FIRST — if pending[idx] == 0x0A,
+                                // consume it and mark done.
+                                new byteAt in {
+                                  byteAt!(pending.nth(idx)) |
+                                  for (@b <- byteAt) {
+                                    match b {
+                                      10 => {
+                                        // LF: consume and terminate.  Seek
+                                        // fd back to the byte-after-LF so a
+                                        // subsequent readLine (or any other
+                                        // cursor-based op) sees the correct
+                                        // position.  Without this rewind,
+                                        // the fd cursor is left at the end
+                                        // of the last fsRead chunk (up to
+                                        // 4096 bytes past LF), stranding
+                                        // any unread tail.
+                                        new overshotCh in {
+                                          overshotCh!(pending.length() - (idx + 1)) |
+                                          for (@overshot <- overshotCh) {
+                                            match overshot > 0 {
+                                              true => {
+                                                new seekCh in {
+                                                  fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                  for (@_seekReply <- seekCh) {
+                                                    lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                    retCh!([false, "EOS", "end of line"])
+                                                  }
+                                                }
+                                              }
+                                              false => {
+                                                lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                retCh!([false, "EOS", "end of line"])
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        // Regular codepoint start byte;
+                                        // same slice+decode as chars().
+                                        new lenCh in {
+                                          codepointLen!(b, *lenCh) |
+                                          for (@n <- lenCh) {
+                                            match n {
+                                              -1 => {
+                                                lineCell!((pending, idx, eofSeen, false)) |
+                                                retCh!([false, "FSERR_IO",
+                                                  "invalid UTF-8 start byte"])
+                                              }
+                                              _ => {
+                                                match idx + n <= pending.length() {
+                                                  true => {
+                                                    lineCell!((pending, idx + n, eofSeen, false)) |
+                                                    retCh!([true,
+                                                      pending.slice(idx, idx + n).decodeUtf8()])
+                                                  }
+                                                  false => {
+                                                    match eofSeen {
+                                                      true => {
+                                                        lineCell!((pending, idx, true, false)) |
+                                                        retCh!([false, "FSERR_IO",
+                                                          "truncated UTF-8 at EOF"])
+                                                      }
+                                                      false => {
+                                                        new readCh in {
+                                                          fsRead!(fd, 4096, *readCh) |
+                                                          for (@reply <- readCh) {
+                                                            match reply {
+                                                              [true, ba /\ ByteArray] => {
+                                                                match ba.length() {
+                                                                  0 => {
+                                                                    lineCell!((pending, idx, true, false)) |
+                                                                    retCh!([false, "FSERR_IO",
+                                                                      "truncated UTF-8 at EOF"])
+                                                                  }
+                                                                  _ => {
+                                                                    lineCell!((
+                                                                      [pending.slice(idx, pending.length()), ba].concatBytes(),
+                                                                      0,
+                                                                      false,
+                                                                      false
+                                                                    )) |
+                                                                    lineProducer!(*retCh)
+                                                                  }
+                                                                }
+                                                              }
+                                                              _ => {
+                                                                lineCell!((pending, idx, eofSeen, false)) |
+                                                                retCh!(reply)
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+
+                    contract lineBuilder(@vals, retCh) = {
+                      match vals {
+                        v /\ List => concatStringsLoop!(v, "", *retCh)
+                        _ => retCh!([false, "FSERR_IO",
+                          "chunk builder expected List"])
+                      }
+                    } |
+
+                    for (@streamHandle <- Stream!?(*lineProducer, *lineBuilder)) {
+                      @[*private, *stateP]!("open") |
+                      return!([true, streamHandle])
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- lines() ----------------------------------------------------
+    //
+    // Outer `LineStream` (a Stream whose elements are inner
+    // `CharStream`s, one per line).  Splits on LF (0x0A) per the same
+    // MVP terminator rule as `linesAsStrings` — full `\R` support is
+    // deferred.  Each inner emits the characters of one line
+    // (terminator excluded) then EOS.
+    //
+    // ## Single-active-inner rule (spec §349)
+    //
+    // Outer and its currently-produced inner share the file's cursor
+    // (via a private `sourceCell` holding `(pending, idx, eofSeen)`).
+    // Only one inner is active at a time.  When outer.next() is
+    // called while an inner is still open, the outer:
+    //   1. Sets the inner's status to "revoked".
+    //   2. Drains the source past the inner's current line's LF.
+    //   3. Then produces a fresh inner over the next line.
+    //
+    // ## Drained inners fail closed (spec §357)
+    //
+    // A caller who retains a handle to an inner drained by the outer
+    // and later invokes next/chunk/fold sees
+    // `[false, "FSERR_CLOSED", ...]`, NOT silent-read-wrong-data.
+    // This is enforced by the inner's producer reading its status
+    // cell first and short-circuiting on "revoked".
+    //
+    // ## chunk() unsupported on LineStream (spec §111)
+    //
+    // LineStream chunking would require multiple concurrently-active
+    // inners sharing the cursor, breaking the single-active-inner
+    // invariant.  The outer's chunk builder always returns
+    // `[false, "FSERR_UNSUPPORTED", ...]` so any `chunk` call fails
+    // cleanly.
+    //
+    // ## Known limitation — inner.close() is shallow (spec §353)
+    //
+    // Spec §353 says "Closing an inner. Advances the source past the
+    // inner's logical group boundary (past the current line's
+    // terminator)."  This MVP returns the inner as a bare
+    // Stream.close() — it marks the inner's Stream state as "closed"
+    // but does NOT advance the shared sourceCell past the LF.
+    //
+    // Practical impact is zero for compliant callers.  The source
+    // drain happens naturally on the next outer.next() call (which
+    // detects innerStatusCh still == "open" and force-drains).  Callers
+    // that use outer.next() / fold / forEach after inner.close() get
+    // the same source advancement they would have gotten had close()
+    // done the drain itself.  Only a caller that closes inner AND
+    // never touches the outer again observes a difference (the source
+    // cursor sits mid-line inside sourceCell) — but that state is
+    // dead because nothing reads it.
+    //
+    // ## Known limitation — outer.close() is shallow (spec §355)
+    //
+    // Spec §355 says "Closing the outer.  Closes any active inner
+    // first, then releases the source cursor."  This MVP returns the
+    // outer as a bare Stream.close() — it marks the outer's Stream
+    // state as "closed" but does NOT force-drain the active inner or
+    // release sourceCell.  Same rationale as above: the sourceCell,
+    // activeInnerCell, and innerStatusCh tuples remain live in the
+    // tuplespace but no compliant caller can observe them (they're
+    // only reachable through outer's producer, which is unreachable
+    // once outer's Stream state is "closed").  A follow-up slice can
+    // wrap both handles in a shim agent whose close() runs the spec
+    // drain before delegating to Stream.close().
+    method lines() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  new sourceCell, activeInnerCell,
+                      scanForLFRefilling, outerMint,
+                      outerProducer, outerBuilder in {
+                    // Shared source state: bytes read ahead of the
+                    // consumer, plus cursor and EOF flag.
+                    sourceCell!(("".hexToBytes(), 0, false)) |
+                    // Nil means no inner currently active.
+                    activeInnerCell!(Nil) |
+
+                    // scanForLFRefilling(pending, idx, eofSeen, ret)
+                    // — starting at idx in pending, find the next LF
+                    // (refilling via fsRead as needed).  Returns
+                    // (newPending, newIdx, newEof) via ret, where
+                    // newIdx is either lfPos+1 (LF consumed) or
+                    // newPending.length() (no LF, hit EOF).  On fsRead
+                    // error, returns (pending, idx, eofSeen) via ret
+                    // — the caller decides how to surface the fsRead
+                    // failure.
+                    //
+                    // This helper does NOT touch sourceCell — callers
+                    // pass the state in and receive updated state
+                    // back, so the caller can hold sourceCell (or
+                    // any other lock) atomically across the drain.
+                    contract scanForLFRefilling(@pending, @idx, @eofSeen, ret) = {
+                      new scanRet in {
+                        // scanLineForLF's `cap` counts CODEPOINTS.
+                        // pending.length() is a BYTE count, and every
+                        // codepoint occupies ≥1 byte, so bytes+1 is a
+                        // strict upper bound on the codepoint count of
+                        // pending — the quota (`cpCount >= cap`) can
+                        // never trigger during our drain (we don't
+                        // want quota errors here; the caller of
+                        // scanForLFRefilling is doing an unbounded
+                        // line skip, not a bounded-cap scan).
+                        scanLineForLF!(pending, idx, 0,
+                          pending.length() + 1, *scanRet) |
+                        for (@scanReply <- scanRet) {
+                          match scanReply {
+                            [true, "LF_FOUND", lfPos, _] => {
+                              ret!((pending, lfPos + 1, eofSeen))
+                            }
+                            _ => {
+                              match eofSeen {
+                                true => {
+                                  ret!(
+                                    (pending, pending.length(), true))
+                                }
+                                false => {
+                                  new readCh in {
+                                    fsRead!(fd, 4096, *readCh) |
+                                    for (@rr <- readCh) {
+                                      match rr {
+                                        [true, ba /\ ByteArray] => {
+                                          match ba.length() {
+                                            0 => {
+                                              ret!(
+                                                (pending,
+                                                 pending.length(),
+                                                 true))
+                                            }
+                                            _ => {
+                                              new nextP in {
+                                                nextP!(
+                                                  [pending.slice(idx,
+                                                     pending.length()),
+                                                   ba].concatBytes()) |
+                                                for (@np <- nextP) {
+                                                  scanForLFRefilling!(
+                                                    np, 0, false, *ret)
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        _ => {
+                                          // fsRead error surface — return
+                                          // original state, caller must
+                                          // detect and forward.
+                                          ret!(
+                                            (pending, idx, eofSeen))
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+
+                    // outerMint(pending, idx, eofSeen, retCh) — mint
+                    // a fresh inner CharStream over the given source
+                    // state, publish it to activeInnerCell, and put
+                    // sourceCell back at (pending, idx, eofSeen).
+                    // Reply on retCh with [true, innerHandle].
+                    //
+                    // Called ONLY when we're ready to hand back a new
+                    // inner (caller has already decided idx < length
+                    // and inner-slot is free).
+                    contract outerMint(@pending, @idx, @eofSeen, retCh) = {
+                      new innerStatusCh, innerProducer, innerBuilder in {
+                        innerStatusCh!("open") |
+
+                        // Inner chunk builder: same shape as
+                        // CharStream / readLine builder.
+                        contract innerBuilder(@vals, cbRet) = {
+                          match vals {
+                            v /\ List =>
+                              concatStringsLoop!(v, "", *cbRet)
+                            _ => cbRet!(
+                              [false, "FSERR_IO",
+                               "chunk builder expected List"])
+                          }
+                        } |
+
+                        // Inner CharStream producer.  Acquisition
+                        // order (matches outerProducer): innerStatusCh
+                        // FIRST, then sourceCell.
+                        contract innerProducer(ipRet) = {
+                          for (@stat <- innerStatusCh) {
+                            match stat {
+                              "revoked" => {
+                                innerStatusCh!("revoked") |
+                                ipRet!(
+                                  [false, "FSERR_CLOSED",
+                                   "inner drained by outer"])
+                              }
+                              "eos" => {
+                                innerStatusCh!("eos") |
+                                ipRet!(
+                                  [false, "EOS", "end of line"])
+                              }
+                              "open" => {
+                                for (@(p, i, eof) <- sourceCell) {
+                                  match i >= p.length() {
+                                    true => {
+                                      match eof {
+                                        true => {
+                                          sourceCell!((p, i, true)) |
+                                          innerStatusCh!("eos") |
+                                          ipRet!(
+                                            [false, "EOS",
+                                             "end of file"])
+                                        }
+                                        false => {
+                                          new readCh in {
+                                            fsRead!(fd, 4096, *readCh) |
+                                            for (@rr <- readCh) {
+                                              match rr {
+                                                [true, ba /\ ByteArray] => {
+                                                  match ba.length() {
+                                                    0 => {
+                                                      sourceCell!(
+                                                        (p, i, true)) |
+                                                      innerStatusCh!("eos") |
+                                                      ipRet!(
+                                                        [false, "EOS",
+                                                         "end of file"])
+                                                    }
+                                                    _ => {
+                                                      sourceCell!(
+                                                        (ba, 0, false)) |
+                                                      innerStatusCh!("open") |
+                                                      innerProducer!(*ipRet)
+                                                    }
+                                                  }
+                                                }
+                                                _ => {
+                                                  sourceCell!((p, i, eof)) |
+                                                  innerStatusCh!("open") |
+                                                  ipRet!(rr)
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    false => {
+                                      match p.nth(i) {
+                                        10 => {
+                                          sourceCell!(
+                                            (p, i + 1, eof)) |
+                                          innerStatusCh!("eos") |
+                                          ipRet!(
+                                            [false, "EOS",
+                                             "end of line"])
+                                        }
+                                        b => {
+                                          new lenCh in {
+                                            codepointLen!(b, *lenCh) |
+                                            for (@n <- lenCh) {
+                                              match n {
+                                                -1 => {
+                                                  sourceCell!((p, i, eof)) |
+                                                  innerStatusCh!("open") |
+                                                  ipRet!(
+                                                    [false, "FSERR_IO",
+                                                     "invalid UTF-8 start byte"])
+                                                }
+                                                _ => {
+                                                  match i + n <= p.length() {
+                                                    true => {
+                                                      sourceCell!(
+                                                        (p, i + n, eof)) |
+                                                      innerStatusCh!("open") |
+                                                      ipRet!(
+                                                        [true,
+                                                         p.slice(i, i + n).decodeUtf8()])
+                                                    }
+                                                    false => {
+                                                      match eof {
+                                                        true => {
+                                                          sourceCell!((p, i, true)) |
+                                                          innerStatusCh!("open") |
+                                                          ipRet!(
+                                                            [false, "FSERR_IO",
+                                                             "truncated UTF-8 at EOF"])
+                                                        }
+                                                        false => {
+                                                          new readCh in {
+                                                            fsRead!(fd, 4096, *readCh) |
+                                                            for (@rr <- readCh) {
+                                                              match rr {
+                                                                [true, ba /\ ByteArray] => {
+                                                                  match ba.length() {
+                                                                    0 => {
+                                                                      sourceCell!((p, i, true)) |
+                                                                      innerStatusCh!("open") |
+                                                                      ipRet!(
+                                                                        [false, "FSERR_IO",
+                                                                         "truncated UTF-8 at EOF"])
+                                                                    }
+                                                                    _ => {
+                                                                      sourceCell!(
+                                                                        ([p.slice(i, p.length()),
+                                                                          ba].concatBytes(),
+                                                                         0, false)) |
+                                                                      innerStatusCh!("open") |
+                                                                      innerProducer!(*ipRet)
+                                                                    }
+                                                                  }
+                                                                }
+                                                                _ => {
+                                                                  sourceCell!((p, i, eof)) |
+                                                                  innerStatusCh!("open") |
+                                                                  ipRet!(rr)
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              _ => {
+                                innerStatusCh!(stat) |
+                                ipRet!(
+                                  [false, "FSERR_IO",
+                                   "inner state unrecognized"])
+                              }
+                            }
+                          }
+                        } |
+
+                        for (@innerHandle <-
+                          Stream!?(*innerProducer, *innerBuilder)) {
+                          activeInnerCell!(*innerStatusCh) |
+                          sourceCell!((pending, idx, eofSeen)) |
+                          retCh!([true, innerHandle])
+                        }
+                      }
+                    } |
+
+                    // Outer LineStream producer.
+                    //
+                    // Acquisition order: activeInnerCell → (optionally
+                    // innerStatusCh) → sourceCell.  Inner producer
+                    // uses innerStatusCh → sourceCell — a strict
+                    // subset — so the two never deadlock.
+                    //
+                    // The old design had drainSourcePastLF and outer
+                    // both take-and-put sourceCell in separate
+                    // transactions with a signalling gap in between.
+                    // Concurrent scheduling meant outer's re-read
+                    // sometimes picked up an unrelated (stale) tuple
+                    // and inner2 saw the wrong position.  New design
+                    // holds sourceCell for the WHOLE outer.next()
+                    // operation — no gap, no race.
+                    contract outerProducer(retCh) = {
+                      // Step 1: consult and revoke active inner.
+                      // DO NOT put activeInnerCell back here — the
+                      // final activeInnerCell state is set exactly
+                      // ONCE at the terminal step (mint or EOS).
+                      // Putting it back Nil here AND letting
+                      // outerMint put back *statusCh would leave TWO
+                      // tuples parked, and the next outer.next() call
+                      // would non-deterministically pick one — often
+                      // the stale Nil, so revokeActiveInner would
+                      // skip the drain and inner2 would start mid-
+                      // way through inner1's line.  (Bug found via
+                      // debug tracing.)
+                      new needsDrainCh in {
+                        for (@innerRef <- activeInnerCell) {
+                          match innerRef {
+                            Nil => needsDrainCh!(false)
+                            _ => {
+                              for (@innerStatus <- @innerRef) {
+                                match innerStatus {
+                                  "open" => {
+                                    @innerRef!("revoked") |
+                                    needsDrainCh!(true)
+                                  }
+                                  _ => {
+                                    @innerRef!("revoked") |
+                                    needsDrainCh!(false)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        } |
+                        for (@needsDrain <- needsDrainCh) {
+                          for (@(pending, idx, eofSeen) <- sourceCell) {
+                            new drainedCh in {
+                              match needsDrain {
+                                true => scanForLFRefilling!(
+                                  pending, idx, eofSeen, *drainedCh)
+                                false => drainedCh!(
+                                  (pending, idx, eofSeen))
+                              } |
+                              for (@(p, i, eof) <- drainedCh) {
+                                match i >= p.length() {
+                                  true => {
+                                    match eof {
+                                      true => {
+                                        activeInnerCell!(Nil) |
+                                        sourceCell!((p, i, true)) |
+                                        retCh!(
+                                          [false, "EOS",
+                                           "end of file"])
+                                      }
+                                      false => {
+                                        new readCh in {
+                                          fsRead!(fd, 4096, *readCh) |
+                                          for (@rr <- readCh) {
+                                            match rr {
+                                              [true, ba /\ ByteArray] => {
+                                                match ba.length() {
+                                                  0 => {
+                                                    activeInnerCell!(Nil) |
+                                                    sourceCell!((p, i, true)) |
+                                                    retCh!(
+                                                      [false, "EOS",
+                                                       "end of file"])
+                                                  }
+                                                  _ => {
+                                                    outerMint!(
+                                                      ba, 0, false, *retCh)
+                                                  }
+                                                }
+                                              }
+                                              _ => {
+                                                activeInnerCell!(Nil) |
+                                                sourceCell!((p, i, eof)) |
+                                                retCh!(rr)
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  false => {
+                                    outerMint!(p, i, eof, *retCh)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+
+                    // Outer chunk builder: chunk() unsupported on
+                    // LineStream (spec §111).
+                    contract outerBuilder(@_vals, cbRet) = {
+                      cbRet!(
+                        [false, "FSERR_UNSUPPORTED",
+                         "chunk unsupported on LineStream (single-active-inner rule)"])
+                    } |
+
+                    for (@outerHandle <-
+                      Stream!?(*outerProducer, *outerBuilder)) {
+                      @[*private, *stateP]!("open") |
+                      return!([true, outerHandle])
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- linesAsStrings(perLineCap) --------------------------------
+    //
+    // Sequential Stream[String] producer.  Each next() yields one
+    // line of the file — bytes up to (but excluding) the next LF —
+    // as a decoded String.  A final unterminated line (file doesn't
+    // end with LF) is emitted as its own element; a trailing LF
+    // does NOT emit a following empty line (POSIX text convention).
+    //
+    // ## Cap enforcement
+    //
+    // `perLineCap` bounds the code point count per line.  If a line
+    // exceeds the cap before its terminator is found, next() returns
+    // FSERR_QUOTA_EXCEEDED and the stream transitions to error.  Cap
+    // is enforced during byte scanning by counting codepoint-start
+    // bytes (b < 128 OR b >= 194 per our UTF-8 lead-byte pattern) —
+    // no need to fully decode.
+    //
+    // ## Line terminator (MVP: LF only)
+    //
+    // Spec §923 says `\R` — the Unicode line-break class covering
+    // LF, CR, CRLF, NEL, LS, PS, FF, VT.  This MVP recognizes LF
+    // (0x0A) only.  CR and CRLF are NOT stripped; a Windows CRLF
+    // file yields lines with a trailing CR byte in each String
+    // element.  Full `\R` support is deferred to a follow-up slice.
+    //
+    // ## Type-guard on cap
+    //
+    // Cap must be a non-negative Int.  A cap of 0 rejects every
+    // line (including the empty one at EOF, which is not emitted
+    // anyway).  Non-Int cap → FSERR_BAD_ARG.
+    method linesAsStrings(@perLineCap) {
+      match perLineCap {
+        cap /\ Int => {
+          match cap < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "perLineCap must be non-negative"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lineProducer, lineBuilder, lineCell in {
+                            // State: (pending, lineStart, scanPos,
+                            //         cpSoFar, eofSeen)
+                            lineCell!(("".hexToBytes(), 0, 0, 0, false)) |
+
+                            contract lineProducer(retCh) = {
+                              for (@(pending, lineStart, scanPos, cpSoFar, eofSeen) <- lineCell) {
+                                new scanRet in {
+                                  scanLineForLF!(pending, scanPos, cpSoFar, cap, *scanRet) |
+                                  for (@scanReply <- scanRet) {
+                                    match scanReply {
+                                      [true, "LF_FOUND", lfPos, _endCp] => {
+                                        // Emit line pending[lineStart..lfPos].
+                                        lineCell!((pending, lfPos + 1, lfPos + 1, 0, eofSeen)) |
+                                        retCh!([true,
+                                          pending.slice(lineStart, lfPos).decodeUtf8()])
+                                      }
+                                      [true, "END", newCp] => {
+                                        match eofSeen {
+                                          true => {
+                                            // Final line: pending[lineStart..end].
+                                            // Empty → EOS; else emit as last line
+                                            // and set state so next call yields EOS.
+                                            match lineStart >= pending.length() {
+                                              true => {
+                                                lineCell!((pending, lineStart, scanPos, cpSoFar, true)) |
+                                                retCh!([false, "EOS", "end of file"])
+                                              }
+                                              false => {
+                                                // Consume the tail; next call
+                                                // will see lineStart == length
+                                                // and return EOS.
+                                                lineCell!((pending, pending.length(),
+                                                          pending.length(), 0, true)) |
+                                                retCh!([true,
+                                                  pending.slice(lineStart, pending.length()).decodeUtf8()])
+                                              }
+                                            }
+                                          }
+                                          false => {
+                                            // Refill: preserve tail, fsRead,
+                                            // resume scan at new tail-length.
+                                            new readCh in {
+                                              fsRead!(fd, 4096, *readCh) |
+                                              for (@reply <- readCh) {
+                                                match reply {
+                                                  [true, ba /\ ByteArray] => {
+                                                    match ba.length() {
+                                                      0 => {
+                                                        // EOF while refilling; retry
+                                                        // (scanPos preserved).
+                                                        lineCell!((pending, lineStart, scanPos, newCp, true)) |
+                                                        lineProducer!(*retCh)
+                                                      }
+                                                      _ => {
+                                                        // Adjust indices: tail
+                                                        // = pending[lineStart..end]
+                                                        // becomes new [0..tail.length()].
+                                                        new tail in {
+                                                          tail!(pending.slice(lineStart, pending.length())) |
+                                                          for (@t <- tail) {
+                                                            new newPending in {
+                                                              newPending!([t, ba].concatBytes()) |
+                                                              for (@np <- newPending) {
+                                                                lineCell!((np, 0, t.length(), newCp, false)) |
+                                                                lineProducer!(*retCh)
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                  _ => {
+                                                    lineCell!((pending, lineStart, scanPos, cpSoFar, eofSeen)) |
+                                                    retCh!(reply)
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      [false, code, msg] => {
+                                        // Scan-side error (e.g., quota
+                                        // exceeded).  Preserve state; Stream
+                                        // will transition to error on the
+                                        // next() reply.
+                                        lineCell!((pending, lineStart, scanPos, cpSoFar, eofSeen)) |
+                                        retCh!([false, code, msg])
+                                      }
+                                      _ => {
+                                        lineCell!((pending, lineStart, scanPos, cpSoFar, eofSeen)) |
+                                        retCh!([false, "FSERR_IO",
+                                          "scanLineForLF returned malformed reply"])
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            } |
+
+                            // Chunk container for Stream[String]: fold via
+                            // `++`.  Same shape as CharStream builder.
+                            contract lineBuilder(@vals, retCh) = {
+                              match vals {
+                                v /\ List => concatStringsLoop!(v, "", *retCh)
+                                _ => retCh!([false, "FSERR_IO",
+                                  "chunk builder expected List"])
+                              }
+                            } |
+
+                            for (@streamHandle <- Stream!?(*lineProducer, *lineBuilder)) {
+                              @[*private, *stateP]!("open") |
+                              return!([true, streamHandle])
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "perLineCap must be an integer"])
+      }
+    } |
+
+    // -- forEachLine(handler, perLineCap) --------------------------
+    //
+    // Convenience: linesAsStrings(perLineCap) then Stream.forEach on
+    // it.  Handler is invoked once per line with (returnCh, lineStr);
+    // handler must reply on returnCh for the fold to advance.
+    //
+    // Reply matches Stream.forEach: [true] on success, [false, ...]
+    // on error (either producer error or handler error).
+    method forEachLine(@handler, @perLineCap) {
+      for (@laReply <- @(*this)!?("linesAsStrings", perLineCap)) {
+        match laReply {
+          [true, stream] => {
+            for (@r <- @stream!?("forEach", handler)) {
+              return!(r)
+            }
+          }
+          _ => return!(laReply)
+        }
+      }
+    } |
+
+    // -- writeChars(charStream) ------------------------------------
+    //
+    // Sequential CharStream consumer.  Drains `charStream` via
+    // next() in a loop, encoding each 1-codepoint String element to
+    // UTF-8 bytes via `toUtf8Bytes()` and forwarding to
+    // `fsWrite(fd, ...)` at the current cursor.  Advances the cursor.
+    //
+    // Success (producer EOS): returns [true].  On mid-stream failure
+    // (producer error, fsWrite error, or producer emits a non-String
+    // element): returns [false, code, "wrote N bytes before failure:
+    // MSG"] with the running byte count interpolated per spec §938.
+    // Input stream is closed on every exit path.
+    //
+    // Read-only File rejects with FSERR_UNSUPPORTED.  Producer
+    // elements that are NOT String are surfaced as FSERR_IO rather
+    // than silently coerced — this catches producer bugs (e.g., a
+    // ByteStream mistakenly handed to writeChars).
+    method writeChars(@charStream) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, mode) => {
+                  match mode {
+                    "r" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "writeChars requires a write-capable mode"])
+                    }
+                    _ => {
+                      new loopRet in {
+                        writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                        for (@finalReply <- loopRet) {
+                          @[*private, *stateP]!("open") |
+                          return!(finalReply)
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- writeLine(charStream) -------------------------------------
+    //
+    // Drains `charStream` via writeChars-style loop, then appends a
+    // single LF byte (0x0A) at the current cursor.  Cursor advances
+    // past both the char content and the LF.  Success: [true].
+    //
+    // Line separator on write side is always `\n` (LF) per spec §959.
+    // Callers needing CRLF write it into the stream themselves via
+    // writeString or writeChars.
+    //
+    // If the char-drain phase errors, we forward that error and do
+    // NOT append LF (partial line, no terminator).  If the LF write
+    // fails after a successful drain, we forward the LF-write error.
+    method writeLine(@charStream) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, mode) => {
+                  match mode {
+                    "r" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "writeLine requires a write-capable mode"])
+                    }
+                    _ => {
+                      new loopRet in {
+                        writeCharsLoop!(charStream, fd, 0, *loopRet) |
+                        for (@charsReply <- loopRet) {
+                          match charsReply {
+                            [true] => {
+                              // Append LF (0x0A) at the current cursor.
+                              new lfCh in {
+                                fsWrite!(fd, "0a".hexToBytes(), *lfCh) |
+                                for (@lfReply <- lfCh) {
+                                  match lfReply {
+                                    [true, _] => {
+                                      @[*private, *stateP]!("open") |
+                                      return!([true])
+                                    }
+                                    [false, code, msg] => {
+                                      // Forward fsWrite's error unchanged
+                                      // — spec §938 reply shape preserved.
+                                      @[*private, *stateP]!("open") |
+                                      return!([false, code, msg])
+                                    }
+                                    _ => {
+                                      // Malformed fsWrite reply — normalize
+                                      // to FSERR_IO so callers pattern-
+                                      // matching [true] | [false, code, msg]
+                                      // never see an unexpected shape.
+                                      @[*private, *stateP]!("open") |
+                                      return!([false, "FSERR_IO",
+                                        "fsWrite for LF terminator returned malformed reply"])
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            _ => {
+                              @[*private, *stateP]!("open") |
+                              return!(charsReply)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- writeLines(lineStream) ------------------------------------
+    //
+    // Drains an outer `LineStream` (e.g., from `otherFile!lines()`
+    // or `stdin!lines()`), writing each inner `CharStream` as a full
+    // line via the existing `writeLine(inner)` method.  Terminator
+    // is always LF (spec §959, matching writeLine).
+    //
+    // Sequential; holds the file cursor for the whole call.  Success:
+    // `[true]`.  On any inner-write failure or LineStream error,
+    // returns `[false, code,
+    //   "wrote N lines before failure: MSG"]` and closes the input
+    // lineStream (best-effort).  N is the number of lines
+    // successfully written (INCLUDING their LFs) before the failure.
+    //
+    // Cursor discipline: on both success and failure, `stateP` is
+    // restored to "open"; the file itself remains usable.  Only the
+    // LineStream is closed on exit.
+    //
+    // Mode gate: requires a write-capable mode ("w" or "rw"); "r"
+    // returns FSERR_UNSUPPORTED with no side effects.
+    method writeLines(@lineStream) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (_fd, _root, _rel, mode) => {
+                  match mode {
+                    "r" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "writeLines requires a write-capable mode"])
+                    }
+                    _ => {
+                      // Release stateP BEFORE starting the loop:
+                      // writeLinesLoop calls back into writeLine
+                      // (a File method that acquires stateP), so
+                      // holding it here would deadlock.  Each
+                      // writeLine per iteration is responsible for
+                      // its own stateP acquire/release.
+                      @[*private, *stateP]!("open") |
+                      new loopRet in {
+                        writeLinesLoop!(*this, lineStream, 0, *loopRet) |
+                        for (@finalReply <- loopRet) {
+                          return!(finalReply)
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- readInto(buf) ---------------------------------------------
+    //
+    // Fill `buf` from the file's current cursor position, up to
+    // `buf!remaining()` bytes.  Advances the cursor by nRead.  Reply
+    // is `[true, [nRead, eof]]` per spec §967.
+    //
+    // ## Fill-lease discipline (per spec §978)
+    //
+    // Order:
+    //   1. beginFill → get token.  Doing this BEFORE peeking
+    //      remaining is a review-fix (M-9a-1) that shrinks a TOCTOU
+    //      window: with the lease held, no concurrent filler can
+    //      change buffer state.  (Buffer's writeBytes doesn't require
+    //      the lease, so raw non-fill writers can still race — but
+    //      that's the "single-filler discipline" the spec assumes.)
+    //   2. Peek buf.remaining() and buf.unit() under the lease.
+    //      Guard remaining as Int (m-9a-1).
+    //   3. fsRead(fd, remBytes) into a chunk.
+    //   4. UTF-8 boundary rule (B-9a-1 fix, spec §976): if unit is
+    //      "utf8", truncate the chunk to validUtf8PrefixLen so we
+    //      never write a partial multi-byte sequence into the buffer.
+    //   5. buf.writeBytes(truncated-chunk) → actualN.  Buffer may
+    //      still short-write (concurrent non-fill writer shrank
+    //      remaining, or unit truncation).
+    //   6. If any bytes are unwritten (chunk.length() > actualN),
+    //      seek the fd BACK by the overshoot so the next call sees
+    //      those bytes at the cursor.  Prevents silent data loss
+    //      (M-9a-1 + B-9a-1 partial-write recovery).
+    //   7. endFill(token) — released on every exit path (including
+    //      errors).
+    //   8. Reply [true, [actualN, eof]] where eof reflects whether
+    //      the ORIGINAL fsRead returned 0 bytes.
+    //
+    // ## Deferred (Phase 8)
+    //
+    // Range-lock check per spec §974 — Phase 8 range-lock interval
+    // tree.  Multi-fsRead loop for POSIX short reads — a follow-up
+    // slice can wrap this in a retry loop until buffer fills or EOF.
+    //
+    // ## Reachability caveat (Phase 6 MVP)
+    //
+    // Buffer-taking methods (this one, `writeFrom`, `readAtInto`,
+    // `writeFromAt`, `readLineInto`, `readLinesInto`) require the
+    // caller to hold a `Buffer` cap.  Under the current Phase 6
+    // shared-Fs / no-Allocator-publication model, no path exists for
+    // deploys to obtain one — `Allocator` compiles into the genesis
+    // scope but isn't published (see fs_genesis.rs §MVP simplification
+    // #6 and PB-B-5).  These methods are functionally dead in Phase 6
+    // until a future powerbox slice publishes `rho:lang:buffer:1.0.0`.
+    method readInto(@buf) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  // (1) Acquire lease FIRST (M-9a-1 TOCTOU narrowing).
+                  for (@leaseReply <- @buf!?("beginFill")) {
+                    match leaseReply {
+                      [true, token] => {
+                        // (2a) Peek remaining, type-guarded (m-9a-1).
+                        for (@remReply <- @buf!?("remaining")) {
+                          match remReply {
+                            [true, remBytes /\ Int] => {
+                              // (2b) Peek unit for UTF-8 boundary rule.
+                              for (@unitReply <- @buf!?("unit")) {
+                                match unitReply {
+                                  [true, unit] => {
+                                    // (3) fsRead.
+                                    new readCh in {
+                                      fsRead!(fd, remBytes, *readCh) |
+                                      for (@readReply <- readCh) {
+                                        match readReply {
+                                          [true, chunk /\ ByteArray] => {
+                                            // (4) UTF-8 truncation.
+                                            new toWrite in {
+                                              match unit == "utf8" {
+                                                true => {
+                                                  match chunk.length() {
+                                                    0 => toWrite!(chunk)
+                                                    _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                  }
+                                                }
+                                                false => toWrite!(chunk)
+                                              } |
+                                              for (@writeChunk <- toWrite) {
+                                                // (5) writeBytes.
+                                                new wCh in {
+                                                  @buf!(*wCh, "writeBytes", writeChunk) |
+                                                  for (@wReply <- wCh) {
+                                                    match wReply {
+                                                      [true, actualN] => {
+                                                        // (6) Seek back for unwritten bytes
+                                                        // (UTF-8 truncation OR buffer short-write).
+                                                        new overshotCh in {
+                                                          overshotCh!(chunk.length() - actualN) |
+                                                          for (@overshot <- overshotCh) {
+                                                            match overshot > 0 {
+                                                              true => {
+                                                                new seekCh in {
+                                                                  fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                                  for (@_seekReply <- seekCh) {
+                                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                                      @[*private, *stateP]!("open") |
+                                                                      return!([true, [actualN, chunk.length() == 0]])
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                              false => {
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  @[*private, *stateP]!("open") |
+                                                                  return!([true, [actualN, chunk.length() == 0]])
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                      _ => {
+                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                          @[*private, *stateP]!("open") |
+                                                          return!(wReply)
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            // fsRead failed; release lease.
+                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                              @[*private, *stateP]!("open") |
+                                              return!(readReply)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                      @[*private, *stateP]!("open") |
+                                      return!(unitReply)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            _ => {
+                              // Malformed remaining reply (m-9a-1 guard).
+                              for (@_endReply <- @buf!?("endFill", token)) {
+                                @[*private, *stateP]!("open") |
+                                return!([false, "FSERR_IO",
+                                  "buffer.remaining() returned malformed reply"])
+                              }
+                            }
+                          }
+                        }
+                      }
+                      _ => {
+                        // beginFill failed; no lease to release.
+                        @[*private, *stateP]!("open") |
+                        return!(leaseReply)
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- writeFrom(buf) --------------------------------------------
+    //
+    // Drain the filled region `[0, buf!length())` of `buf` to the
+    // file at the current cursor position; advance cursor.  Reply is
+    // `[true, nWritten]` per spec §971.  Write-mode gated.
+    //
+    // ## No fill lease
+    //
+    // Per spec §978: "writeFrom is a drain, not a fill, and does not
+    // take the lease."  This means a concurrent filler can be
+    // modifying the buffer during the drain — see spec §Fill lease
+    // > Disclosure.  The caller is responsible for ensuring buffer
+    // content coherence (single-filler discipline).
+    //
+    // ## Empty buffer
+    //
+    // `buf!toByteArray()` on an empty buffer returns
+    // `[true, empty-bytes]`; we then fsWrite 0 bytes and reply
+    // `[true, 0]`.
+    //
+    // ## Lease conflict
+    //
+    // If a fill lease is currently held on `buf`, `toByteArray`
+    // returns `[false, "BUFERR_FILLING", ...]` per Buffer.rho.  We
+    // forward that error unchanged — the caller can retry after the
+    // filler releases.
+    method writeFrom(@buf) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, mode) => {
+                  match mode {
+                    "r" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "writeFrom requires a write-capable mode"])
+                    }
+                    _ => {
+                      for (@baReply <- @buf!?("toByteArray")) {
+                        match baReply {
+                          [true, bytes /\ ByteArray] => {
+                            new writeCh in {
+                              fsWrite!(fd, bytes, *writeCh) |
+                              for (@writeReply <- writeCh) {
+                                match writeReply {
+                                  [true, n] => {
+                                    @[*private, *stateP]!("open") |
+                                    return!([true, n])
+                                  }
+                                  _ => {
+                                    @[*private, *stateP]!("open") |
+                                    return!(writeReply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            // toByteArray failed (revoked or lease
+                            // conflict) — forward.
+                            @[*private, *stateP]!("open") |
+                            return!(baReply)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- readAtInto(offset, buf) -----------------------------------
+    //
+    // Positional variant of readInto (spec §968).  Reads from
+    // absolute file offset `offset` into `buf` via `fsReadAt`.  Does
+    // NOT touch the sequential cursor — multiple positional readers
+    // may coexist (subject to Phase 8 range locks).
+    //
+    // ## Same discipline as readInto
+    //
+    // Fill-lease acquired FIRST (M-9a-1 pattern), then peek
+    // remaining + unit, then fsReadAt, then UTF-8 truncation if
+    // unit == "utf8", then writeBytes.
+    //
+    // ## No seek-back
+    //
+    // Unlike readInto, readAtInto's fsReadAt does not advance any
+    // cursor.  If the buffer accepts fewer bytes than fsReadAt
+    // returned (due to UTF-8 truncation or a raced non-fill writer
+    // shrinking the buffer), the caller simply re-invokes with
+    // `offset + actualN` to resume — no rewind needed.
+    //
+    // ## Read allowed on read-only files
+    //
+    // Reading doesn't require write mode (same as readInto).
+    method readAtInto(@offset, @buf) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          for (@leaseReply <- @buf!?("beginFill")) {
+                            match leaseReply {
+                              [true, token] => {
+                                for (@remReply <- @buf!?("remaining")) {
+                                  match remReply {
+                                    [true, remBytes /\ Int] => {
+                                      for (@unitReply <- @buf!?("unit")) {
+                                        match unitReply {
+                                          [true, unit] => {
+                                            new readCh in {
+                                              fsReadAt!(fd, off, remBytes, *readCh) |
+                                              for (@readReply <- readCh) {
+                                                match readReply {
+                                                  [true, chunk /\ ByteArray] => {
+                                                    // UTF-8 truncation for utf8 buffers.
+                                                    new toWrite in {
+                                                      match unit == "utf8" {
+                                                        true => {
+                                                          match chunk.length() {
+                                                            0 => toWrite!(chunk)
+                                                            _ => toWrite!(chunk.slice(0, chunk.validUtf8PrefixLen()))
+                                                          }
+                                                        }
+                                                        false => toWrite!(chunk)
+                                                      } |
+                                                      for (@writeChunk <- toWrite) {
+                                                        new wCh in {
+                                                          @buf!(*wCh, "writeBytes", writeChunk) |
+                                                          for (@wReply <- wCh) {
+                                                            match wReply {
+                                                              [true, actualN] => {
+                                                                // No seek-back for positional
+                                                                // reads — the fd cursor is
+                                                                // unchanged by fsReadAt.
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  @[*private, *stateP]!("open") |
+                                                                  return!([true, [actualN, chunk.length() == 0]])
+                                                                }
+                                                              }
+                                                              _ => {
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  @[*private, *stateP]!("open") |
+                                                                  return!(wReply)
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                  _ => {
+                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                      @[*private, *stateP]!("open") |
+                                                      return!(readReply)
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                              @[*private, *stateP]!("open") |
+                                              return!(unitReply)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    _ => {
+                                      for (@_endReply <- @buf!?("endFill", token)) {
+                                        @[*private, *stateP]!("open") |
+                                        return!([false, "FSERR_IO",
+                                          "buffer.remaining() returned malformed reply"])
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              _ => {
+                                @[*private, *stateP]!("open") |
+                                return!(leaseReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- writeFromAt(offset, buf) ----------------------------------
+    //
+    // Positional variant of writeFrom (spec §972).  Writes buf's
+    // filled region to absolute offset `offset` via `fsWriteAt`.
+    // Does NOT touch the sequential cursor.  Does NOT take the fill
+    // lease (spec §978).  Write-mode gated.
+    method writeFromAt(@offset, @buf) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, _rel, mode) => {
+                          match mode {
+                            "r" => {
+                              @[*private, *stateP]!("open") |
+                              return!([false, "FSERR_UNSUPPORTED",
+                                "writeFromAt requires a write-capable mode"])
+                            }
+                            _ => {
+                              for (@baReply <- @buf!?("toByteArray")) {
+                                match baReply {
+                                  [true, bytes /\ ByteArray] => {
+                                    new writeCh in {
+                                      fsWriteAt!(fd, off, bytes, *writeCh) |
+                                      for (@writeReply <- writeCh) {
+                                        match writeReply {
+                                          [true, n] => {
+                                            @[*private, *stateP]!("open") |
+                                            return!([true, n])
+                                          }
+                                          _ => {
+                                            @[*private, *stateP]!("open") |
+                                            return!(writeReply)
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    @[*private, *stateP]!("open") |
+                                    return!(baReply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- readLineInto(buf) -----------------------------------------
+    //
+    // Line-oriented buffer-taking read (spec §969).  Reply:
+    //   [true, [nRead, {"eof": Bool, "truncated": Bool}]]
+    //
+    // ## Behavior matrix
+    //
+    //   buf.remaining() == 0 (full buffer):
+    //     nRead=0, eof=false, truncated=true
+    //     Preflight — do NOT fsRead(0), which would falsely return
+    //     [true, ""] and be misinterpreted as EOF (M-1 review fix).
+    //
+    //   fsRead returns 0 bytes:
+    //     nRead=0, eof=true, truncated=false
+    //
+    //   LF found at pos K, all content bytes fit in buf:
+    //     content = chunk[0..K], write to buf, seek past LF.
+    //     nRead=K, eof=false, truncated=false
+    //
+    //   LF found at K, content had to be truncated (utf8 boundary
+    //   or buf short-write):
+    //     Write actualN < K bytes.  Do NOT consume LF.  Seek back so
+    //     the byte after actualN is available on the next call.
+    //     nRead=actualN, eof=false, truncated=true
+    //
+    //   No LF, chunk shorter than requested:
+    //     Heuristic — treat as EOF (unterminated final line).  See
+    //     "Known limitation" below.  Write content (utf8-truncated
+    //     if needed).  Seek back unwritten trailing bytes.
+    //     nRead=actualN, eof=true, truncated=false.
+    //
+    //   No LF, chunk fills the request (line longer than buf):
+    //     Write actualN bytes.  Seek back overshoot.
+    //     nRead=actualN, eof=false, truncated=true
+    //
+    //   unit == "utf8" AND content starts with an invalid UTF-8
+    //   byte (validUtf8PrefixLen == 0 on non-empty content):
+    //     FSERR_IO "invalid UTF-8 at cursor" (m-1 review fix).
+    //     Without this preflight, a caller loop would spin forever:
+    //     truncated=true, actualN=0, no progress across retries.
+    //
+    // ## Fill-lease + write-mode discipline
+    //
+    // Lease acquired FIRST (M-9a-1 pattern).  Lease RELEASED before
+    // fsSeek (m-2 review fix) so long-tail seek syscalls don't
+    // starve other buffer users.  No mode gate (reads).
+    //
+    // ## Known limitation — short-read EOF heuristic (M-3)
+    //
+    // Distinguishing "fsRead returned less than requested because
+    // EOF" from "fsRead returned less than requested for a non-EOF
+    // reason" (POSIX signal interruption, non-blocking fd, network
+    // fs) requires a second probe read.  The current MVP assumes
+    // short read == EOF because our mock fsRead is deterministic
+    // and only short-reads at EOF.  Against a real filesystem with
+    // adverse conditions, this can produce a false eof=true.
+    //
+    // Callers targeting non-standard filesystems should verify
+    // against fsSize() or re-invoke readLineInto after seeing
+    // eof=true to confirm.  A follow-up slice can promote this to
+    // a definitive probe (single fsRead(1) after ambiguous short
+    // read).
+    method readLineInto(@buf) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  for (@leaseReply <- @buf!?("beginFill")) {
+                    match leaseReply {
+                      [true, token] => {
+                        for (@remReply <- @buf!?("remaining")) {
+                          match remReply {
+                            [true, remBytes /\ Int] => {
+                              // M-1 review fix: preflight full-buffer case
+                              // (remaining == 0).  fsRead(fd, 0) returns 0
+                              // bytes, which our code would misinterpret as
+                              // EOF.  Return truncated=true, eof=false so
+                              // callers loop-until-eof see the real state.
+                              match remBytes {
+                                0 => {
+                                  for (@_endReply <- @buf!?("endFill", token)) {
+                                    @[*private, *stateP]!("open") |
+                                    return!([true, [0,
+                                      {"eof": false, "truncated": true}]])
+                                  }
+                                }
+                                _ => {
+                              for (@unitReply <- @buf!?("unit")) {
+                                match unitReply {
+                                  [true, unit] => {
+                                    new readCh in {
+                                      fsRead!(fd, remBytes, *readCh) |
+                                      for (@readReply <- readCh) {
+                                        match readReply {
+                                          [true, chunk /\ ByteArray] => {
+                                            match chunk.length() {
+                                              0 => {
+                                                // Case: EOF, nothing to write.
+                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                  @[*private, *stateP]!("open") |
+                                                  return!([true, [0,
+                                                    {"eof": true, "truncated": false}]])
+                                                }
+                                              }
+                                              chunkLen => {
+                                                // Scan for LF.
+                                                new scanRet in {
+                                                  // cap = chunkLen (never triggers quota — we
+                                                  // just want the LF position).
+                                                  scanLineForLF!(chunk, 0, 0, chunkLen + 1, *scanRet) |
+                                                  for (@scanReply <- scanRet) {
+                                                    // Determine content bytes.
+                                                    new contentCh, lfFoundCh in {
+                                                      match scanReply {
+                                                        [true, "LF_FOUND", lfPos, _] => {
+                                                          contentCh!(chunk.slice(0, lfPos)) |
+                                                          lfFoundCh!(true)
+                                                        }
+                                                        _ => {
+                                                          contentCh!(chunk) |
+                                                          lfFoundCh!(false)
+                                                        }
+                                                      } |
+                                                      for (@content <- contentCh; @lfFound <- lfFoundCh) {
+                                                        // UTF-8 boundary rule + m-1 preflight for
+                                                        // invalid start byte (validUtf8PrefixLen
+                                                        // returns 0 on non-empty content).  The
+                                                        // wrapping shape is [true, chunkToWrite]
+                                                        // or [false, code, msg] so the downstream
+                                                        // logic can short-circuit on error.
+                                                        new toWriteOrErr in {
+                                                          match unit == "utf8" {
+                                                            true => {
+                                                              match content.length() {
+                                                                0 => toWriteOrErr!([true, content])
+                                                                _ => {
+                                                                  match content.validUtf8PrefixLen() {
+                                                                    0 => toWriteOrErr!([false, "FSERR_IO",
+                                                                      "invalid UTF-8 at cursor"])
+                                                                    validLen => toWriteOrErr!(
+                                                                      [true, content.slice(0, validLen)])
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                            false => toWriteOrErr!([true, content])
+                                                          } |
+                                                          for (@wrapped <- toWriteOrErr) {
+                                                            match wrapped {
+                                                              [false, code, msg] => {
+                                                                // m-1: invalid UTF-8; release
+                                                                // lease and surface FSERR_IO.
+                                                                for (@_endReply <- @buf!?("endFill", token)) {
+                                                                  @[*private, *stateP]!("open") |
+                                                                  return!([false, code, msg])
+                                                                }
+                                                              }
+                                                              [true, writeChunk] => {
+                                                            new wCh in {
+                                                              @buf!(*wCh, "writeBytes", writeChunk) |
+                                                              for (@wReply <- wCh) {
+                                                                match wReply {
+                                                                  [true, actualN] => {
+                                                                    // Compute the consumed fd
+                                                                    // position and truncated
+                                                                    // flag.  Rules:
+                                                                    //  - LF found and all
+                                                                    //    content fit: consume
+                                                                    //    lfPos+1, not truncated
+                                                                    //  - LF found but content
+                                                                    //    truncated: consume
+                                                                    //    actualN (leave LF for
+                                                                    //    next call), truncated=T
+                                                                    //  - No LF: consume actualN,
+                                                                    //    truncated=(chunkLen ==
+                                                                    //    remBytes; else eof)
+                                                                    new consumeCh, truncCh, eofCh in {
+                                                                      match lfFound {
+                                                                        true => {
+                                                                          match actualN == content.length() {
+                                                                            true => {
+                                                                              // consume includes LF
+                                                                              consumeCh!(content.length() + 1) |
+                                                                              truncCh!(false) |
+                                                                              eofCh!(false)
+                                                                            }
+                                                                            false => {
+                                                                              consumeCh!(actualN) |
+                                                                              truncCh!(true) |
+                                                                              eofCh!(false)
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                        false => {
+                                                                          // No LF.  If chunk short-
+                                                                          // read AND all content
+                                                                          // fit → probable EOF.
+                                                                          consumeCh!(actualN) |
+                                                                          match actualN == content.length() {
+                                                                            true => {
+                                                                              // All content written; if
+                                                                              // chunk was short vs remBytes,
+                                                                              // treat as EOF.
+                                                                              match chunkLen < remBytes {
+                                                                                true => {
+                                                                                  truncCh!(false) |
+                                                                                  eofCh!(true)
+                                                                                }
+                                                                                false => {
+                                                                                  truncCh!(true) |
+                                                                                  eofCh!(false)
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                            false => {
+                                                                              // Content couldn't be
+                                                                              // fully written; truncated.
+                                                                              truncCh!(true) |
+                                                                              eofCh!(false)
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      } |
+                                                                      for (@consume <- consumeCh; @truncated <- truncCh; @eof <- eofCh) {
+                                                                        // m-2 review fix: release the fill
+                                                                        // lease BEFORE the seek so long-tail
+                                                                        // syscalls don't starve other buffer
+                                                                        // users.  The buffer is already fully
+                                                                        // written; seek is fd-only cleanup.
+                                                                        for (@_endReply <- @buf!?("endFill", token)) {
+                                                                          new overshotCh in {
+                                                                            overshotCh!(chunkLen - consume) |
+                                                                            for (@overshot <- overshotCh) {
+                                                                              match overshot > 0 {
+                                                                                true => {
+                                                                                  new seekCh in {
+                                                                                    fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                                                                    for (@_seekReply <- seekCh) {
+                                                                                      @[*private, *stateP]!("open") |
+                                                                                      return!([true, [actualN,
+                                                                                        {"eof": eof, "truncated": truncated}]])
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                                false => {
+                                                                                  @[*private, *stateP]!("open") |
+                                                                                  return!([true, [actualN,
+                                                                                    {"eof": eof, "truncated": truncated}]])
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                  _ => {
+                                                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                                                      @[*private, *stateP]!("open") |
+                                                                      return!(wReply)
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                              }  // close [true, writeChunk] arm
+                                                            }    // close match wrapped
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                          _ => {
+                                            for (@_endReply <- @buf!?("endFill", token)) {
+                                              @[*private, *stateP]!("open") |
+                                              return!(readReply)
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    for (@_endReply <- @buf!?("endFill", token)) {
+                                      @[*private, *stateP]!("open") |
+                                      return!(unitReply)
+                                    }
+                                  }
+                                }
+                              }
+                                }  // close _ arm of match remBytes
+                              }    // close match remBytes
+                            }
+                            _ => {
+                              for (@_endReply <- @buf!?("endFill", token)) {
+                                @[*private, *stateP]!("open") |
+                                return!([false, "FSERR_IO",
+                                  "buffer.remaining() returned malformed reply"])
+                              }
+                            }
+                          }
+                        }
+                      }
+                      _ => {
+                        @[*private, *stateP]!("open") |
+                        return!(leaseReply)
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- readLinesInto(rows) ---------------------------------------
+    //
+    // Fill each inner buffer of `rows` with one line from the file,
+    // stopping when either `rows.capacityRows()` inners are filled
+    // OR the file reaches EOF.  Returns
+    //   `[true, [nLines, {"eof": bool, "truncated": bool}]]`
+    // per spec §970.
+    //
+    // ## Fill algorithm (spec §587-607, MVP: LF-only terminator)
+    //
+    // For each inner slot i in [0, m):
+    //   1. inner ← rows.getAt(i); inner.clear()
+    //   2. readLineInto(inner)  — fills up to LF or capacity, per
+    //      slice 12 semantics
+    //   3. If truncated: drain source past next LF (overflow drop),
+    //      setting truncatedAny = true; a drain that hits EOF sets
+    //      eofSeen = true.
+    //   4. If eof reached: stop (may include the current unterminated
+    //      final line if it had content).
+    //
+    // ## Difference from `readLineInto` overflow semantics
+    //
+    // `readLineInto` leaves the source cursor mid-line on truncation
+    // (caller must re-call with a fresh buffer to continue the line).
+    // `readLinesInto` DROPS the overflow: after a full inner, we read
+    // and discard bytes until the next LF, then advance to the next
+    // inner.  This matches spec §635-645 and gives the bounded-memory
+    // guarantee of the "buffer of buffers" pattern.
+    //
+    // ## Concurrency partition
+    //
+    // Same as readLineInto: line-based, holds the whole-file cursor.
+    // Mixing with in-flight byte-level calls yields FSERR_BUSY (not
+    // enforced in this MVP — see §Concurrency deferrals).
+    //
+    // ## Known limitation — LF-only terminator (spec §618-631)
+    //
+    // Spec §618 says split on `\R` (Unicode line-break class).  This
+    // MVP recognizes only LF (0x0A), matching `linesAsStrings` and
+    // `lines()`.  CR, CRLF, NEL, LS, PS, FF, VT are treated as
+    // content.  A follow-up slice adds full `\R` support in one place
+    // (scanLineForLF) which propagates to all three line methods.
+    //
+    // ## Known limitation — short-read EOF heuristic (M-3, slice 12)
+    //
+    // Inherits the M-3 ambiguity from `readLineInto`: a chunk that
+    // fills the inner buffer EXACTLY without an LF is treated as
+    // overflow (marked truncated, drain runs).  In the rare case where
+    // the file's last line happens to be exactly capacity bytes with
+    // no trailing LF, we'll over-classify it as truncated and drain
+    // (find nothing → EOF).
+    method readLinesInto(@rows) {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  for (@capReply <- @rows!?("capacityRows")) {
+                    match capReply {
+                      [true, m /\ Int] => {
+                        // Release stateP BEFORE the loop: the loop
+                        // calls back into readLineInto per inner
+                        // (which acquires stateP), so holding it here
+                        // would deadlock — same pattern as writeLines.
+                        @[*private, *stateP]!("open") |
+                        new loopRet in {
+                          readLinesIntoLoop!(*this, fd, rows, m, 0, 0,
+                            false, false, *loopRet) |
+                          for (@finalReply <- loopRet) {
+                            return!(finalReply)
+                          }
+                        }
+                      }
+                      _ => {
+                        @[*private, *stateP]!("open") |
+                        return!(capReply)
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
     // -- Default arm -----------------------------------------------
 
     default(...@args) {
       match args {
         [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helpers.
+  // ==================================================================
+
+  // writeBytesLoop — tail-recursive stream drain for writeBytes.
+  //
+  // Loop state:
+  //   stream        the ByteStream handle to drain
+  //   fd            the target file descriptor
+  //   bytesWritten  running total (for error-message interpolation)
+  //   ret           where to send the final reply
+  //
+  // Each iteration:
+  //   1. stream.next() → reply
+  //   2. reply == [true, chunk] → fsWrite(fd, chunk); on success
+  //      recur with bytesWritten + n; on failure close stream and
+  //      return [false, code, "wrote N bytes before failure: MSG"]
+  //   3. reply == [false, "EOS", _] → close stream, return [true]
+  //   4. reply == [false, code, msg] → close stream, forward with
+  //      the byte-count prefix
+  //   5. malformed reply → close stream, FSERR_IO
+  //
+  // The stream close is best-effort; its reply is ignored because the
+  // consumer's result is already determined by the loop outcome.
+  contract writeBytesLoop(@stream, @fd, @bytesWritten, ret) = {
+    for (@reply <- @stream!?("next")) {
+      match reply {
+        [true, chunk] => {
+          new writeCh in {
+            fsWrite!(fd, chunk, *writeCh) |
+            for (@writeReply <- writeCh) {
+              match writeReply {
+                [true, n] => writeBytesLoop!(stream, fd, bytesWritten + n, *ret)
+                [false, code, msg] => {
+                  // M-1 review fix: guard msg type before interpolation.
+                  // Rholang's %% operator raises ReduceError if a map
+                  // value is not String/Int/Bool/Uri.  Because this
+                  // interpolation sits inside a `for/ret!` continuation,
+                  // a raise would prevent `ret!` from ever firing —
+                  // silently bricking the caller.  Non-String msg is
+                  // substituted with a placeholder so a reply always
+                  // reaches the caller.
+                  new nm in {
+                    match msg {
+                      s /\ String => nm!(s)
+                      _           => nm!("[non-string msg suppressed]")
+                    } |
+                    for (@normalizedMsg <- nm) {
+                      for (@_ <- @stream!?("close")) {
+                        ret!([false, code,
+                          "wrote ${n} bytes before failure: ${m}" %%
+                            {"n": bytesWritten, "m": normalizedMsg}])
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  for (@_ <- @stream!?("close")) {
+                    ret!([false, "FSERR_IO",
+                      "wrote ${n} bytes before fsWrite returned malformed reply" %%
+                        {"n": bytesWritten}])
+                  }
+                }
+              }
+            }
+          }
+        }
+        [false, "EOS", _] => {
+          for (@_ <- @stream!?("close")) { ret!([true]) }
+        }
+        [false, code, msg] => {
+          // M-1 review fix: guard msg type before interpolation (see
+          // note on the fsWrite failure arm above).
+          new nm in {
+            match msg {
+              s /\ String => nm!(s)
+              _           => nm!("[non-string msg suppressed]")
+            } |
+            for (@normalizedMsg <- nm) {
+              for (@_ <- @stream!?("close")) {
+                ret!([false, code,
+                  "wrote ${n} bytes before producer failure: ${m}" %%
+                    {"n": bytesWritten, "m": normalizedMsg}])
+              }
+            }
+          }
+        }
+        _ => {
+          for (@_ <- @stream!?("close")) {
+            ret!([false, "FSERR_IO",
+              "wrote ${n} bytes before producer returned malformed reply" %%
+                {"n": bytesWritten}])
+          }
+        }
+      }
+    }
+  } |
+
+  // writeBytesAtLoop — same shape as writeBytesLoop but positional.
+  //
+  // Extra state:
+  //   nextOff       the next absolute offset to write at
+  //   remaining     bytes still allowed under the maxLength cap;
+  //                 0 → stop (cap reached, treat as success)
+  //
+  // Producer chunks larger than `remaining` are truncated to `remaining`
+  // before fsWriteAt.  On a successful partial write of n < requested,
+  // the loop advances nextOff by n and re-enters with the un-written
+  // tail... except the producer's 1-byte-per-next() convention makes
+  // this trivial (n is always 0 or 1).  For future producers that vend
+  // multi-byte chunks, we forward whatever fsWriteAt actually wrote.
+  contract writeBytesAtLoop(@stream, @fd, @nextOff, @remaining, @bytesWritten, ret) = {
+    match remaining {
+      0 => {
+        for (@_ <- @stream!?("close")) { ret!([true]) }
+      }
+      _ => {
+        for (@reply <- @stream!?("next")) {
+          match reply {
+            [true, chunk] => {
+              // Cap the chunk at `remaining` bytes.
+              new toWrite in {
+                match chunk.length() <= remaining {
+                  true  => toWrite!(chunk)
+                  false => toWrite!(chunk.slice(0, remaining))
+                } |
+                for (@c <- toWrite) {
+                  new writeCh in {
+                    fsWriteAt!(fd, nextOff, c, *writeCh) |
+                    for (@writeReply <- writeCh) {
+                      match writeReply {
+                        [true, n] => {
+                          writeBytesAtLoop!(stream, fd, nextOff + n,
+                            remaining - n, bytesWritten + n, *ret)
+                        }
+                        [false, code, msg] => {
+                          // M-1 review fix: guard msg type (see
+                          // writeBytesLoop's fsWrite failure arm).
+                          new nm in {
+                            match msg {
+                              s /\ String => nm!(s)
+                              _           => nm!("[non-string msg suppressed]")
+                            } |
+                            for (@normalizedMsg <- nm) {
+                              for (@_ <- @stream!?("close")) {
+                                ret!([false, code,
+                                  "wrote ${n} bytes before failure: ${m}" %%
+                                    {"n": bytesWritten, "m": normalizedMsg}])
+                              }
+                            }
+                          }
+                        }
+                        _ => {
+                          for (@_ <- @stream!?("close")) {
+                            ret!([false, "FSERR_IO",
+                              "wrote ${n} bytes before fsWriteAt returned malformed reply" %%
+                                {"n": bytesWritten}])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            [false, "EOS", _] => {
+              for (@_ <- @stream!?("close")) { ret!([true]) }
+            }
+            [false, code, msg] => {
+              // M-1 review fix: guard msg type before interpolation.
+              new nm in {
+                match msg {
+                  s /\ String => nm!(s)
+                  _           => nm!("[non-string msg suppressed]")
+                } |
+                for (@normalizedMsg <- nm) {
+                  for (@_ <- @stream!?("close")) {
+                    ret!([false, code,
+                      "wrote ${n} bytes before producer failure: ${m}" %%
+                        {"n": bytesWritten, "m": normalizedMsg}])
+                  }
+                }
+              }
+            }
+            _ => {
+              for (@_ <- @stream!?("close")) {
+                ret!([false, "FSERR_IO",
+                  "wrote ${n} bytes before producer returned malformed reply" %%
+                    {"n": bytesWritten}])
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // writeCharsLoop — tail-recursive drain of a CharStream.
+  //
+  // Same shape as writeBytesLoop but the producer emits String
+  // elements (1 codepoint each per spec §327); this loop encodes
+  // each via `.toUtf8Bytes()` before dispatching to fsWrite.  A
+  // producer that emits a non-String value is caught by the inner
+  // type-guard and surfaces as FSERR_IO — this preserves the
+  // "write-side consumers close the stream and reply cleanly on
+  // any producer misbehavior" contract from writeBytes.
+  //
+  // Error msg is guarded per M-1: non-String msg from producer or
+  // fsWrite is substituted with a placeholder so the caller always
+  // gets a reply.
+  contract writeCharsLoop(@stream, @fd, @bytesWritten, ret) = {
+    for (@reply <- @stream!?("next")) {
+      match reply {
+        [true, str] => {
+          match str {
+            s /\ String => {
+              new writeCh in {
+                fsWrite!(fd, s.toUtf8Bytes(), *writeCh) |
+                for (@writeReply <- writeCh) {
+                  match writeReply {
+                    [true, n] => writeCharsLoop!(stream, fd, bytesWritten + n, *ret)
+                    [false, code, msg] => {
+                      new nm in {
+                        match msg {
+                          m /\ String => nm!(m)
+                          _           => nm!("[non-string msg suppressed]")
+                        } |
+                        for (@normalizedMsg <- nm) {
+                          for (@_ <- @stream!?("close")) {
+                            ret!([false, code,
+                              "wrote ${n} bytes before failure: ${m}" %%
+                                {"n": bytesWritten, "m": normalizedMsg}])
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      for (@_ <- @stream!?("close")) {
+                        ret!([false, "FSERR_IO",
+                          "wrote ${n} bytes before fsWrite returned malformed reply" %%
+                            {"n": bytesWritten}])
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => {
+              for (@_ <- @stream!?("close")) {
+                ret!([false, "FSERR_IO",
+                  "wrote ${n} bytes before producer returned non-String element" %%
+                    {"n": bytesWritten}])
+              }
+            }
+          }
+        }
+        [false, "EOS", _] => {
+          for (@_ <- @stream!?("close")) { ret!([true]) }
+        }
+        [false, code, msg] => {
+          new nm in {
+            match msg {
+              m /\ String => nm!(m)
+              _           => nm!("[non-string msg suppressed]")
+            } |
+            for (@normalizedMsg <- nm) {
+              for (@_ <- @stream!?("close")) {
+                ret!([false, code,
+                  "wrote ${n} bytes before producer failure: ${m}" %%
+                    {"n": bytesWritten, "m": normalizedMsg}])
+              }
+            }
+          }
+        }
+        _ => {
+          for (@_ <- @stream!?("close")) {
+            ret!([false, "FSERR_IO",
+              "wrote ${n} bytes before producer returned malformed reply" %%
+                {"n": bytesWritten}])
+          }
+        }
+      }
+    }
+  } |
+
+  // writeLinesLoop — tail-recursive LineStream drain for writeLines.
+  //
+  // Each iteration:
+  //   1. outer.next() → reply
+  //   2. reply == [true, innerCharStream] →
+  //        fileHandle!writeLine(innerCharStream); on success recur
+  //        with linesWritten + 1; on failure close outer and return
+  //        [false, code, "wrote N lines before failure: MSG"]
+  //   3. reply == [false, "EOS", _] → close outer, return [true]
+  //   4. reply == [false, code, msg] → close outer, forward with
+  //      the line-count prefix
+  //   5. malformed reply → close outer, FSERR_IO
+  //
+  // The inner CharStream is drained by writeLine's own writeCharsLoop
+  // (which closes the inner on exit); we do NOT re-close it here.
+  contract writeLinesLoop(@fileHandle, @lineStream, @linesWritten, ret) = {
+    for (@reply <- @lineStream!?("next")) {
+      match reply {
+        [true, innerStream] => {
+          for (@wReply <- @fileHandle!?("writeLine", innerStream)) {
+            match wReply {
+              [true] => writeLinesLoop!(
+                fileHandle, lineStream, linesWritten + 1, *ret)
+              [false, code, msg] => {
+                new nm in {
+                  match msg {
+                    m /\ String => nm!(m)
+                    _           => nm!("[non-string msg suppressed]")
+                  } |
+                  for (@normalizedMsg <- nm) {
+                    for (@_ <- @lineStream!?("close")) {
+                      ret!([false, code,
+                        "wrote ${n} lines before failure: ${m}" %%
+                          {"n": linesWritten, "m": normalizedMsg}])
+                    }
+                  }
+                }
+              }
+              _ => {
+                for (@_ <- @lineStream!?("close")) {
+                  ret!([false, "FSERR_IO",
+                    "wrote ${n} lines before writeLine returned malformed reply" %%
+                      {"n": linesWritten}])
+                }
+              }
+            }
+          }
+        }
+        [false, "EOS", _] => {
+          for (@_ <- @lineStream!?("close")) { ret!([true]) }
+        }
+        [false, code, msg] => {
+          new nm in {
+            match msg {
+              m /\ String => nm!(m)
+              _           => nm!("[non-string msg suppressed]")
+            } |
+            for (@normalizedMsg <- nm) {
+              for (@_ <- @lineStream!?("close")) {
+                ret!([false, code,
+                  "wrote ${n} lines before producer failure: ${m}" %%
+                    {"n": linesWritten, "m": normalizedMsg}])
+              }
+            }
+          }
+        }
+        _ => {
+          for (@_ <- @lineStream!?("close")) {
+            ret!([false, "FSERR_IO",
+              "wrote ${n} lines before producer returned malformed reply" %%
+                {"n": linesWritten}])
+          }
+        }
+      }
+    }
+  } |
+
+  // readLinesIntoLoop — per-inner fill iterator for readLinesInto.
+  //
+  // Loop state: (fileH, fd, rows, m, i, nLines, truncAny, eofSeen).
+  //
+  // Per iteration (i < m and not eofSeen):
+  //   1. rows.getAt(i) → inner.
+  //   2. inner.clear().
+  //   3. fileH.readLineInto(inner) → per-line reply.
+  //   4. Decide:
+  //      - eof=true, nRead=0: EOF hit with no content; stop without
+  //        counting a line.
+  //      - eof=true, nRead>0: unterminated final line; count it, stop.
+  //      - eof=false, truncated=false: normal line; count and recurse.
+  //      - eof=false, truncated=true: line overflowed inner; drain
+  //        source past next LF (via drainToNextLF), count, recurse
+  //        with truncAny=true and possibly eofSeen updated.
+  //
+  // On error from getAt, clear, or readLineInto, forward as-is.
+  contract readLinesIntoLoop(@fileH, @fd, @rows, @m, @i, @nLines,
+                             @truncAny, @eofSeen, ret) = {
+    match i >= m {
+      true => ret!(
+        [true, [nLines, {"eof": eofSeen, "truncated": truncAny}]])
+      false => {
+        match eofSeen {
+          true => ret!(
+            [true, [nLines, {"eof": true, "truncated": truncAny}]])
+          false => {
+            for (@getReply <- @rows!?("getAt", i)) {
+              match getReply {
+                [true, inner] => {
+                  for (@clearReply <- @inner!?("clear")) {
+                    match clearReply {
+                      [true] => {
+                        for (@readReply <- @fileH!?("readLineInto", inner)) {
+                          match readReply {
+                            [true, [nRead /\ Int,
+                                    {"eof": eofFlag,
+                                     "truncated": truncFlag}]] => {
+                              match eofFlag {
+                                true => {
+                                  match nRead {
+                                    0 => ret!(
+                                      [true, [nLines,
+                                              {"eof": true,
+                                               "truncated": truncAny}]])
+                                    _ => ret!(
+                                      [true, [nLines + 1,
+                                              {"eof": true,
+                                               "truncated": truncAny}]])
+                                  }
+                                }
+                                false => {
+                                  match truncFlag {
+                                    true => {
+                                      // Overflow: drain past next LF.
+                                      new drainRet in {
+                                        drainToNextLF!(fd, *drainRet) |
+                                        for (@drainReply <- drainRet) {
+                                          match drainReply {
+                                            [true, eofDuringDrain] => {
+                                              readLinesIntoLoop!(fileH, fd,
+                                                rows, m, i + 1,
+                                                nLines + 1, true,
+                                                eofDuringDrain, *ret)
+                                            }
+                                            _ => ret!(drainReply)
+                                          }
+                                        }
+                                      }
+                                    }
+                                    false => {
+                                      readLinesIntoLoop!(fileH, fd,
+                                        rows, m, i + 1, nLines + 1,
+                                        truncAny, false, *ret)
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            _ => ret!(readReply)
+                          }
+                        }
+                      }
+                      _ => ret!(clearReply)
+                    }
+                  }
+                }
+                _ => ret!(getReply)
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // drainToNextLF — read and discard bytes from the file until the
+  // next LF (consumed) or EOF (not consumed).  Returns
+  //   [true, hitEof]
+  // where hitEof=true iff we reached EOF without seeing an LF.
+  // Forwards fsRead / fsSeek errors as-is.
+  //
+  // Uses a chunked approach: fsRead a 4096-byte block, scan for LF;
+  // if found, seek back to just past the LF; if not, recurse for
+  // more.  When fsRead returns 0 bytes, we're at EOF.
+  contract drainToNextLF(@fd, ret) = {
+    new readCh in {
+      fsRead!(fd, 4096, *readCh) |
+      for (@reply <- readCh) {
+        match reply {
+          [true, ba /\ ByteArray] => {
+            match ba.length() {
+              0 => ret!([true, true])
+              _ => {
+                new scanRet in {
+                  scanLineForLF!(ba, 0, 0, ba.length() + 1, *scanRet) |
+                  for (@scanReply <- scanRet) {
+                    match scanReply {
+                      [true, "LF_FOUND", lfPos, _] => {
+                        // fsRead consumed the whole ba.  Seek back
+                        // to just past the LF (ba.length() - (lfPos+1)
+                        // bytes back).  M-13-1 fix: shape-match the
+                        // fsSeek reply and forward errors — previously
+                        // the seek reply was discarded, silently
+                        // masking a wrong-position fd if seek failed.
+                        new overshotCh in {
+                          overshotCh!(ba.length() - (lfPos + 1)) |
+                          for (@overshot <- overshotCh) {
+                            match overshot > 0 {
+                              true => {
+                                new seekCh in {
+                                  fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
+                                  for (@seekReply <- seekCh) {
+                                    match seekReply {
+                                      [true, _] => ret!([true, false])
+                                      [true]    => ret!([true, false])
+                                      _         => ret!(seekReply)
+                                    }
+                                  }
+                                }
+                              }
+                              false => ret!([true, false])
+                            }
+                          }
+                        }
+                      }
+                      _ => {
+                        // No LF in this chunk; recurse.
+                        drainToNextLF!(fd, *ret)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          _ => ret!(reply)
+        }
+      }
+    }
+  } |
+
+  // codepointLen — given the first byte of a UTF-8 codepoint,
+  // return how many bytes the codepoint occupies:
+  //   1 for ASCII (b < 128)
+  //   2 for 2-byte lead     (194 <= b < 224)
+  //   3 for 3-byte lead     (224 <= b < 240)
+  //   4 for 4-byte lead     (240 <= b < 245)
+  //   -1 for invalid start  (128 <= b < 194, or b >= 245)
+  //
+  // A caller receiving -1 should surface FSERR_IO "invalid UTF-8".
+  //
+  // ## Boundary rationale
+  //
+  // The exclusions at 192/193 and 245-247 close two classes of RFC
+  // 3629 invalid UTF-8 that Rust's `String::from_utf8_lossy` would
+  // otherwise substitute with U+FFFD:
+  //
+  //   - 0xC0 and 0xC1 are 2-byte leads that can only encode overlong
+  //     forms of U+0000..U+007F (ASCII, already representable in one
+  //     byte).  Overlong encodings are ill-formed per RFC 3629.
+  //     Without this check, our 2-byte slice would decode to two
+  //     replacement chars, violating the "1 codepoint per next()"
+  //     contract of §CharStream.
+  //
+  //   - 0xF5, 0xF6, 0xF7 are 4-byte leads whose codepoints exceed the
+  //     Unicode maximum U+10FFFF.  Same "multi-replacement-char"
+  //     failure mode as above.
+  //
+  //   - 0xFE and 0xFF are never valid UTF-8 leads (rejected via the
+  //     `>= 245` check).
+  //
+  //   - Continuation bytes (10xxxxxx, 128–191) at codepoint-start
+  //     position are also invalid.
+  contract codepointLen(@b, ret) = {
+    match b < 128 {
+      true => ret!(1)
+      false => {
+        match b < 194 {
+          true => ret!(-1)
+          false => {
+            match b < 224 {
+              true => ret!(2)
+              false => {
+                match b < 240 {
+                  true => ret!(3)
+                  false => {
+                    match b < 245 {
+                      true => ret!(4)
+                      false => ret!(-1)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // concatStringsLoop — tail-recursive String concatenation over a
+  // List[String].  Used by CharStream's chunk builder to fold
+  // 1-codepoint elements into a single String.  Rholang's built-in
+  // List has no map/reduce; a manual loop with `++` is the idiom.
+  contract concatStringsLoop(@lst, @acc, ret) = {
+    match lst {
+      [] => ret!([true, acc])
+      [head ...tail] => {
+        match head {
+          h /\ String => concatStringsLoop!(tail, acc ++ h, *ret)
+          _ => ret!([false, "FSERR_IO",
+            "chunk element was not a String"])
+        }
+      }
+    }
+  } |
+
+  // scanLineForLF — tail-recursive byte scan for LF (0x0A) starting
+  // at `pos` in `bytes`.  Counts codepoint-start bytes along the way
+  // and fails with FSERR_QUOTA_EXCEEDED if the running count would
+  // exceed `cap`.
+  //
+  // Reply shapes:
+  //   [true, "LF_FOUND", pos-of-LF, cpCount]  — LF at position;
+  //     caller emits bytes[lineStart..pos-of-LF] and advances past LF
+  //   [true, "END", cpCount]                    — reached end of buffer
+  //     without finding LF; caller decides refill vs emit-final-vs-EOS
+  //   [false, "FSERR_QUOTA_EXCEEDED", msg]      — line exceeded cap
+  //
+  // Codepoint-start rule: a byte b is treated as a codepoint start
+  // if b < 128 (ASCII) OR b >= 194 (multi-byte lead per
+  // codepointLen's tightened boundaries).  Continuation bytes and
+  // invalid leads (128-193, 245+) don't advance the count.  This
+  // matches how many code points the decoded String will contain for
+  // well-formed UTF-8; malformed input may see decodeUtf8 substitute
+  // U+FFFD, which would advance the "actual" count slightly — the
+  // cap check is thus a conservative under-estimate for malformed
+  // input, biased safe.
+  contract scanLineForLF(@bytes, @pos, @cpCount, @cap, ret) = {
+    match pos >= bytes.length() {
+      true => ret!([true, "END", cpCount])
+      false => {
+        new byteAt in {
+          byteAt!(bytes.nth(pos)) |
+          for (@b <- byteAt) {
+            match b {
+              10 => ret!([true, "LF_FOUND", pos, cpCount])
+              _ => {
+                new isLead in {
+                  match b < 128 {
+                    true => isLead!(true)
+                    false => {
+                      match b < 194 {
+                        true  => isLead!(false)  // continuation / invalid
+                        false => isLead!(true)   // multi-byte lead
+                      }
+                    }
+                  } |
+                  for (@lead <- isLead) {
+                    match lead {
+                      true => {
+                        match cpCount >= cap {
+                          true => ret!([false, "FSERR_QUOTA_EXCEEDED",
+                            "line exceeds perLineCap code points"])
+                          false => scanLineForLF!(bytes, pos + 1, cpCount + 1, cap, *ret)
+                        }
+                      }
+                      false => scanLineForLF!(bytes, pos + 1, cpCount, cap, *ret)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

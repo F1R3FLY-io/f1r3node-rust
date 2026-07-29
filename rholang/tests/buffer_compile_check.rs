@@ -35,10 +35,17 @@ fn buffer_lib_body() -> String {
 
 /// Build a `.rho` source that includes the Buffer library and a test
 /// snippet, sharing the same `new` scope so the test can reference
-/// `Buffer`, `Allocator`, `metaP`, `chunkP`, and `gatherChunks`.
+/// `Buffer`, `Allocator`, `Rows`, and their per-agent state cells.
+/// Name list must match Buffer.rho's outer `new` clause verbatim —
+/// otherwise the body's `contract allocInnersLoop(...)` etc. become
+/// implicit `new` bindings in the composed scope and collide with
+/// each other (UnexpectedReuseOfNameContextFree).
 fn with_lib(test_snippet: &str) -> String {
     format!(
-        "new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {{\n{}|\n{}\n}}",
+        "new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP, \
+         gatherChunks, drainChunks, \
+         allocInnersLoop, parkInnersLoop, \
+         clearInnersLoop, closeInnersLoop in {{\n{}|\n{}\n}}",
         buffer_lib_body(),
         test_snippet
     )

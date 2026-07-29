@@ -539,6 +539,22 @@ where
 
 fn std_system_processes() -> Vec<Definition> {
     vec![
+        // ------------------------------------------------------------------
+        // Legacy stdio URNs (File I/O FIP §1122 — DEPRECATED as of
+        // `rho:io:fs:1.0.0`; removal target `rho:io:fs:2.*`).
+        //
+        // TODO(rho:io:fs:2.0): remove these four legacy registrations.
+        //
+        // Preserved for one-shot debug printing.  New code should use
+        // `fs!stdout()` / `fs!stderr()` (spec §842-844) which returns an
+        // error tuple on failure.  Deprecation is documented in the FIP
+        // itself; there is no runtime notification — legacy flat URNs
+        // predate the Versioned Registry's caller-provided `notify`
+        // channel pattern (no syntax slot for a notify argument on
+        // `new x(`urn`)`), and an operator-log warning would spam
+        // messages that neither the operator nor the deploy author can
+        // act on.
+        // ------------------------------------------------------------------
         Definition {
             urn: "rho:io:stdout".to_string(),
             fixed_channel: FixedChannels::stdout(),
@@ -780,9 +796,26 @@ fn std_system_processes() -> Vec<Definition> {
         // ------------------------------------------------------------------
         // File I/O native primitives (rho:io:fs:native:1.0.0/*).
         //
-        // Registered here for fixed-channel dispatch but filtered from the
-        // user-reachable urn_map by `is_internal_fs_native_urn`.  The only
-        // legitimate holder is the genesis-installed `Fs` agent (Phase 6).
+        // Registered here for fixed-channel dispatch.  As of slice 19 these
+        // URNs are GLOBALLY lookupable via `new x(`rho:io:fs:...`) in ...`
+        // (the previous `is_internal_fs_native_urn` filter was removed so
+        // the composed FsGenesis deploy could bind them).  This is a
+        // documented "MUST FIX BEFORE PRODUCTION" deferral — see the slice-
+        // 19 §MVP simplification #5 note in
+        // `casper/src/rust/genesis/contracts/fs_genesis.rs` for the plan:
+        // a future powerbox / blessed-deploy slice must reinstate the
+        // filter with a genesis-only exception.  Until then, user code
+        // that binds these URNs directly bypasses Fs.rho's sandbox.
+        //
+        // URN naming: the "rho:io:fs:native:1.0.0/" prefix and the
+        // per-primitive suffixes below are duplicated in
+        // `casper/src/rust/genesis/contracts/fs_genesis.rs::FS_NATIVE_URN_PREFIX`
+        // and `FS_NATIVE_URN_SUFFIXES`.  A version bump or rename must
+        // edit ALL THREE sites (this comment, the composed source, and
+        // the constants).  The drift test at
+        // `fs_genesis.rs::fs_native_urn_suffixes_covers_composed_source`
+        // catches suffix-list-vs-composed-source mismatches but does
+        // NOT catch mismatches with this file — cross-check by hand.
         // ------------------------------------------------------------------
         fs_native_def(
             "rho:io:fs:native:1.0.0/open",
@@ -943,11 +976,6 @@ fn std_system_processes() -> Vec<Definition> {
         ),
     ]
 }
-
-/// URN prefix filter — used by `setup_maps_and_refs` to keep native FS
-/// URNs out of the user-reachable `urn_map`.  Only the genesis `Fs`
-/// agent may see them.
-fn is_internal_fs_native_urn(urn: &str) -> bool { urn.starts_with("rho:io:fs:native:") }
 
 /// Compact factory for the 22 File I/O native `Definition` rows.  Cuts
 /// the boilerplate to two lines per row.
@@ -1438,13 +1466,21 @@ fn setup_maps_and_refs(
         .iter()
         .map(|process| process.to_urn_map())
         .for_each(|(key, value)| {
-            // Filter out fs-native URNs — they are dispatchable via the
-            // fixed-channel mechanism but not user-lookupable through
-            // `new x(`urn`) in ...`.  Only the genesis `Fs` agent holds
-            // them (Phase 6).
-            if !is_internal_fs_native_urn(&key) {
-                urn_map.insert(key, value);
-            }
+            // Slice 19: fs-native URNs are now globally lookupable so the
+            // genesis FsGenesis deploy can bind `fsRead`, `fsWrite`, etc.
+            // via `new fsRead(`rho:io:fs:native:1.0.0/read`) in { ... }`.
+            //
+            // The prior filter (`is_internal_fs_native_urn`) was a
+            // defense-in-depth measure to keep user code away from raw
+            // syscalls.  Sandbox enforcement now lives at the config /
+            // powerbox layer (Phase 7 static provisioning): only agents
+            // holding a properly-provisioned Fs cap can perform I/O with
+            // the correct sandbox.  Rholang-level access to fs-native
+            // primitives remains dangerous (raw fds) — user code SHOULD
+            // NOT bind these URNs directly, and future work may reintroduce
+            // a genesis-only filter once the runtime can distinguish
+            // genesis-blessed deploys from user deploys.
+            urn_map.insert(key, value);
         });
 
     let proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
@@ -1524,6 +1560,14 @@ where
     // clone into their own ProcessContext but the underlying table is
     // Arc-shared so fds survive across dispatches within the runtime.
     let fs_handles = super::io::handle_table::FileHandleTable::new();
+    // TODO(Phase 7 / PB-M-12): `fs_mode` is always Oracular under the
+    // Phase 6 MVP — there's no per-deploy setter yet.  Phase 7's
+    // config-bucket routing (`oracle-static-*` vs `consensus-static-*`)
+    // determines this value per principal; wire the setter here when
+    // that plumbing lands.  Until then `handlers.rs::fs_chown`'s
+    // Consensus short-circuit and `stat_record`'s field omission
+    // never engage.  See implementation-plan.md §Phase 7 and
+    // FIPS/fileio/.../powerbox-requirements.md PB-M-12.
     let fs_mode = super::io::ConsensusMode::default();
 
     let reducer = setup_reducer(

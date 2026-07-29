@@ -176,6 +176,16 @@ pub struct ApiServer {
 pub struct Storage {
     #[serde(rename = "data-dir")]
     pub data_dir: PathBuf,
+
+    /// File I/O FIP §Static provisioning (Phase 7 slice 21):
+    /// `oracle-static-files` / `oracle-static-dirs` /
+    /// `consensus-static-files` / `consensus-static-dirs`.  See
+    /// `file_io_provisioning` module for schema + validation.  Fields
+    /// are flattened into the `storage {}` block; each defaults to
+    /// empty so a node config that doesn't provision static entries
+    /// parses unchanged.
+    #[serde(default, flatten)]
+    pub file_io_provisioning: crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
 }
 
 /// TLS configuration

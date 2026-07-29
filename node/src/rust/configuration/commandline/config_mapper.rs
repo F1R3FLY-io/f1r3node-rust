@@ -745,6 +745,7 @@ mod tests {
             },
             storage: crate::rust::configuration::model::Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
+                file_io_provisioning: Default::default(),
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),

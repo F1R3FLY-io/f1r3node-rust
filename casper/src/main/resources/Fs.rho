@@ -1,0 +1,446 @@
+// Fs.rho — File I/O FIP §The Fs agent.
+//
+// Top-level entry point.  Provisioned at genesis with a static bundle
+// mapping logical names to (canonRoot, rel, mode, kind) tuples; the
+// powerbox delegates the resulting Fs cap to deploys.  Deploys open
+// files/dirs by their logical name, never by absolute host path.
+//
+// ## Delivered methods (through slice 19)
+//
+//   constructor(stdinFd, stdoutFd, stderrFd, bMap)
+//                                              — stash stdio fds + bundle
+//   openFile(name, options)  → [true, fileCap] — look up + mode-cap + open (cached)
+//   openDir(name, options)   → [true, dirCap]  — look up + mode-cap + open (cached)
+//   stdin()   → [true, stdinCap]               — mint fresh Stdin(fd)
+//   stdout()  → [true, stdoutCap]              — mint fresh Stdout(stdoutFd)
+//   stderr()  → [true, stderrCap]              — mint fresh Stdout(stderrFd)
+//   default(...@args)                           — mandatory catch-all
+//
+// Constructor arity/order is a coordination contract with the genesis
+// wiring slice (19); do not change without updating StandardDeploys.
+//
+// ## Publication (slice 19)
+//
+// A single Fs instance is composed with the other library agents into
+// FsGenesis (`casper/src/rust/genesis/contracts/fs_genesis.rs`), which
+// runs at genesis and publishes the resulting `bundle+{*fs}` at the
+// registry URI derived from `FS_GENERATOR_PK`.  Deploys reach the Fs
+// via `getFS(rho:id:<hash>)`; the canonical spec URI
+// `rho:io:fs:1.0.0` is NOT yet wired (tracked as PB-B-3 in
+// FIPS/fileio/.../powerbox-requirements.md).  MVP simplification #1
+// in the fs_genesis docstring notes the shared-Fs model — all deploys
+// look up the same handle.  Per-principal delegation waits on the
+// powerbox slice (PB-M-1).
+//
+// ## Stdio (slice 18 — spec §842-844, §867, §1085, §1114)
+//
+// Each `stdin()` / `stdout()` / `stderr()` call mints a FRESH Stdin
+// (or Stdout) capability wrapping the fd the powerbox handed us at
+// construction.  Two calls on the same Fs return DISTINCT caps —
+// this matches spec §1085 ("a distinct Stdin cap obtained from
+// Fs.stdin() later can still read") and §1114 ("A fresh Fs!stdout()
+// call after close returns a new Stdout cap that CAN still write").
+// Caching would break those clauses: a well-meaning `close()` would
+// permanently disable stdio for the rest of the Fs's life.
+//
+// Stdio does NOT participate in the `fsCacheP` used by openFile /
+// openDir — three dedicated cells hold just the fds passed by the
+// powerbox at construction (`fsStdinFdP` / `fsStdoutFdP` /
+// `fsStderrFdP`), and each stdio method peeks its cell then invokes
+// the Stdin / Stdout constructor.
+//
+// Cross-Fs isolation (spec §867) holds trivially: Alice's Fs holds
+// its own `*private` cells with its own fd values; Bob's Fs holds
+// its own.  Any minted Stdin / Stdout has a fresh `*private` scope
+// on each `!?`, so the per-instance state cells inside Stdin.rho /
+// Stdout.rho are disjoint even when two agents wrap the same fd.
+// Closing Alice's cap doesn't affect Bob's.  NB: under the shared-Fs
+// MVP (see §Publication above), all deploys hold the SAME Fs, so the
+// "fresh cap after close" guarantee is per-cap-instance only — the
+// underlying fd is shared across every deploy on the validator.
+// Isolation returns to per-deploy scope when PB-M-1 lands.
+//
+// Ambient-authority note: Stdin and Stdout are module-level agents.
+// The genesis wiring slice (19) MUST NOT export `Stdin` / `Stdout`
+// to deploy scope — only `Fs` and its bundle+ interface.  Otherwise
+// a deploy could bypass Fs.stdin() with a raw `Stdin!?(0)`.  See
+// slice-19 acceptance criteria.
+//
+// Trust boundary: the constructor accepts fds as unchecked Pars.
+// Genesis is responsible for supplying Int fds and a Map bMap; Fs
+// treats them as opaque data and forwards to Stdin/Stdout mints
+// (which likewise trust their fd) and to bMap lookups (which
+// tolerate empty/missing entries via `.contains`).
+//
+// ## Cache (slice 17 — spec §863-869)
+//
+// Repeated `openFile(name, options)` on the same Fs instance for the
+// same `(canonicalPath, resolvedMode)` returns the SAME cached agent
+// handle.  Two calls sharing the cache also share the underlying fd
+// and cursor state, so a client who reads part of the file and then
+// re-opens can pick up where it left off (spec §865).
+//
+// Cache scope: per-Fs-instance.  The `fsCacheP` cell lives at
+// `@[*private, *fsCacheP]` — since `*private` is per-instance, two
+// distinct Fs caps have distinct caches.  A subordinate handed an
+// attenuated File cap (or an entire Fs) via powerbox delegation
+// operates on its own state (spec §867).
+//
+// Cache key: `(canonRoot, rel, resolvedMode)` tuple.  Different modes
+// on the same name yield distinct entries (different capability;
+// distinct fd in the real system).
+//
+// Cache semantics on error paths: if `openFileImpl` / `openDirImpl`
+// return `[false, code, msg]` (stat-verify fail, fsOpen fail, etc.),
+// no entry is added; a subsequent retry re-attempts the underlying
+// open.
+//
+// ## Bundle shape
+//
+// Each bundle entry is a 4-tuple `(canonRoot, rel, provisionedMode,
+// kind)`:
+//   canonRoot         — absolute directory (validated at load time to
+//                       be absolute and symlink-free per spec §1269)
+//   rel               — path within canonRoot; joinRel(subPath="", rel)
+//                       used by openFileImpl / openDirImpl produces the
+//                       full relative segment
+//   provisionedMode   — max attenuation ("r" / "rw" for dirs; any file
+//                       mode from spec §File modes for files)
+//   kind              — "file" or "dir"
+//
+// The genesis wiring slice (19) converts the config-block shape
+// `{"path": "...", "mode": "..."}` into these tuples before minting Fs.
+//
+// ## Options handling
+//
+// `options` is a Map (spec §848).  Rholang has no lightweight `x /\
+// Map` type predicate, so this MVP uses structural patterns:
+//   `{}`                          → no options, default mode "r"
+//   `{"mode": modeVal ..._}`      → mode explicitly set
+//   `{_ : _ ..._}`                → non-empty Map without "mode" → default
+//   any other shape               → FSERR_BAD_ARG "options must be a Map"
+// Additional options like `create`, `exclusive`, `path` (spec §855-861)
+// are accepted (captured in the wildcard remainder) but ignored in this
+// slice.
+//
+// ## Mode-cap logic (spec §847)
+//
+// A downgrade succeeds; an upgrade → FSERR_UNSUPPORTED.  Mirrors
+// Dir.openFile / Dir.openDir:
+//   - Request `"r"` is always allowed.
+//   - Any other requested mode requires provisioned `"rw"` (or the
+//     analogous write-capable dir mode).
+//
+// ## Known limitation — narrow-provisioned mode-cap (m-16-5)
+//
+// The "r" always-allowed rule means a `"w"`-only provisioned entry
+// would still grant `"r"` reads — technically wider than spec §847's
+// strict "capped at provisioned" reading.  Matches the pre-existing
+// Dir.openFile behavior; deferred to a broader mode-taxonomy pass
+// that also removes the non-spec `"rw"` file mode (m-16-6) from
+// File.rho / Dir.openFile / Fs.openFile whitelists.
+//
+// ## Map pattern-match ordering assumption
+//
+// `{"mode": modeVal ..._}` extracts the `"mode"` key from a Map
+// regardless of insertion order.  Rholang's current tuplespace Map
+// implementation supports keyed extraction independent of order; if
+// that ever changes, this pattern would silently stop matching Maps
+// where `"mode"` isn't the first key.  Add an ordering-independent
+// probe (`.contains` + `.get`) here if the guarantee is ever weakened.
+//
+// ## Not-in-bundle
+//
+// `openFile("nope", ...)` and `openDir("nope", ...)` both fail with
+// `[false, "FSERR_UNSUPPORTED", "logical name not in static bundle"]`
+// per spec §846.
+
+new Fs, fsBundleP, fsCacheP,
+    fsStdinFdP, fsStdoutFdP, fsStderrFdP,
+    cacheAndOpenFile, cacheAndOpenDir in {
+
+  // -- cacheAndOpenFile(privateName, canonRoot, rel, mode, ret) -
+  //
+  // Cache-aware wrapper around openFileImpl.  Linear-recv on
+  // fsCacheP (held on the Fs instance's `*private` channel; scoping
+  // is safe because helper is invoked from inside an Fs method
+  // whose `*this` — and thus `*private` — is fixed for the call).
+  //
+  // Module-level: this contract lives in the outer `new` scope
+  // alongside `Fs` itself.  It is NOT exposed to Fs clients — the
+  // `Fs` bundle exports only the agent's methods (openFile, openDir,
+  // default).  Callers cannot fabricate a `privateName` argument
+  // for another agent's cache because `*private` is minted inside
+  // the Fs agent block and never leaks.
+  //
+  // - Hit:  put fsCacheP back unchanged, forward cached handle.
+  // - Miss: put fsCacheP back unchanged (so other calls can proceed
+  //         during the syscall), invoke openFileImpl.  On success,
+  //         re-consume fsCacheP and set the entry — a concurrent
+  //         second caller for the same key could race and mint a
+  //         second handle; the second one wins the cache slot but
+  //         the first caller's handle isn't invalidated.  Both
+  //         handles are functional; only the caching contract is
+  //         weakened under contention.  Acceptable MVP concurrency
+  //         behavior (spec §863-869 doesn't require strict single-
+  //         mint semantics).
+  //
+  // Cache key: (canonRoot, rel, mode, "file") tuple.  The "file" tag
+  // guards against a bundle with two logical names — one file, one
+  // dir — collapsing to the same (canonRoot, rel, mode) triple.
+  // Without the tag such a bundle would silently hand back the
+  // wrong-kind handle (m-P6-4).
+  contract cacheAndOpenFile(@privateName, @canonRoot, @rel, @mode, ret) = {
+    for (@cache <- @[privateName, *fsCacheP]) {
+      new keyCh in {
+        keyCh!((canonRoot, rel, mode, "file")) |
+        for (@key <- keyCh) {
+          match cache.contains(key) {
+            true => {
+              @[privateName, *fsCacheP]!(cache) |
+              ret!([true, cache.get(key)])
+            }
+            false => {
+              @[privateName, *fsCacheP]!(cache) |
+              new implRet in {
+                openFileImpl!(canonRoot, "", rel, mode, *File, *implRet) |
+                for (@reply <- implRet) {
+                  match reply {
+                    [true, handle] => {
+                      for (@c2 <- @[privateName, *fsCacheP]) {
+                        @[privateName, *fsCacheP]!(c2.set(key, handle)) |
+                        ret!([true, handle])
+                      }
+                    }
+                    _ => ret!(reply)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  // -- cacheAndOpenDir(privateName, canonRoot, rel, mode, ret) --
+  //
+  // Same discipline as cacheAndOpenFile but delegating to
+  // openDirImpl.  Cache slot is the same shape — kind-tagged
+  // ("dir") in the key so an openDir cannot collide with an openFile
+  // cache entry at the same (canonRoot, rel, mode) triple.
+  //
+  // Module-level: same scoping caveat as cacheAndOpenFile — this
+  // contract is not exposed via the Fs bundle; `privateName` is
+  // always the calling Fs method's `*private`.
+  contract cacheAndOpenDir(@privateName, @canonRoot, @rel, @mode, ret) = {
+    for (@cache <- @[privateName, *fsCacheP]) {
+      new keyCh in {
+        keyCh!((canonRoot, rel, mode, "dir")) |
+        for (@key <- keyCh) {
+          match cache.contains(key) {
+            true => {
+              @[privateName, *fsCacheP]!(cache) |
+              ret!([true, cache.get(key)])
+            }
+            false => {
+              @[privateName, *fsCacheP]!(cache) |
+              new implRet in {
+                openDirImpl!(canonRoot, "", rel, mode, *File, *implRet) |
+                for (@reply <- implRet) {
+                  match reply {
+                    [true, handle] => {
+                      for (@c2 <- @[privateName, *fsCacheP]) {
+                        @[privateName, *fsCacheP]!(c2.set(key, handle)) |
+                        ret!([true, handle])
+                      }
+                    }
+                    _ => ret!(reply)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+
+  agent Fs {
+    // -- constructor(stdinFd, stdoutFd, stderrFd, bMap) -----------
+    //
+    // Powerbox provides the three stdio fds and the static bundle at
+    // mint time.  Fds are stashed unchanged; each stdio method mints
+    // a fresh Stdin / Stdout on demand (spec §1085 / §1114 require
+    // fresh-cap-after-close).
+    constructor(@stdinFd, @stdoutFd, @stderrFd, @bMap) {
+      @[*private, *fsBundleP]!(bMap) |
+      @[*private, *fsCacheP]!({}) |
+      @[*private, *fsStdinFdP]!(stdinFd) |
+      @[*private, *fsStdoutFdP]!(stdoutFd) |
+      @[*private, *fsStderrFdP]!(stderrFd)
+    } |
+
+    // -- stdin() / stdout() / stderr() ----------------------------
+    //
+    // Fresh-mint per call.  Two calls on the same Fs return DISTINCT
+    // caps; closing one does not affect any subsequent call.  Fd
+    // cell is read non-linearly so unbounded parallel calls are safe.
+    method stdin() {
+      for (@fd <<- @[*private, *fsStdinFdP]) {
+        for (@cap <- Stdin!?(fd)) {
+          return!([true, cap])
+        }
+      }
+    } |
+
+    method stdout() {
+      for (@fd <<- @[*private, *fsStdoutFdP]) {
+        for (@cap <- Stdout!?(fd)) {
+          return!([true, cap])
+        }
+      }
+    } |
+
+    method stderr() {
+      for (@fd <<- @[*private, *fsStderrFdP]) {
+        for (@cap <- Stdout!?(fd)) {
+          return!([true, cap])
+        }
+      }
+    } |
+
+    // -- openFile(name, options) -----------------------------------
+    method openFile(@name, @options) {
+      match name {
+        n /\ String => {
+          new modeCh in {
+            match options {
+              {} => modeCh!("r")
+              {"mode": modeVal ..._} => modeCh!(modeVal)
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!(
+                  [false, "FSERR_BAD_ARG", "options must be a Map"])
+                m /\ String => {
+                  for (@bMap <<- @[*private, *fsBundleP]) {
+                    match bMap.contains(n) {
+                      false => return!(
+                        [false, "FSERR_UNSUPPORTED",
+                         "logical name not in static bundle"])
+                      true => {
+                        match bMap.get(n) {
+                          (canonRoot, rel, provisioned, "file") => {
+                            match m {
+                              "r" => cacheAndOpenFile!(
+                                *private, canonRoot, rel, "r", *return)
+                              "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                                match provisioned {
+                                  "rw" => cacheAndOpenFile!(
+                                    *private, canonRoot, rel, m, *return)
+                                  _ => return!(
+                                    [false, "FSERR_UNSUPPORTED",
+                                     "requested mode exceeds provisioned attenuation"])
+                                }
+                              }
+                              _ => return!(
+                                [false, "FSERR_BAD_ARG", "unknown file mode"])
+                            }
+                          }
+                          (_, _, _, "dir") => return!(
+                            [false, "FSERR_BAD_ARG",
+                             "logical name is a directory; use openDir"])
+                          _ => return!(
+                            [false, "FSERR_IO",
+                             "malformed bundle entry"])
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!(
+                  [false, "FSERR_BAD_ARG", "mode must be a String"])
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "name must be a String"])
+      }
+    } |
+
+    // -- openDir(name, options) ------------------------------------
+    method openDir(@name, @options) {
+      match name {
+        n /\ String => {
+          new modeCh in {
+            match options {
+              {} => modeCh!("r")
+              {"mode": modeVal ..._} => modeCh!(modeVal)
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!(
+                  [false, "FSERR_BAD_ARG", "options must be a Map"])
+                m /\ String => {
+                  for (@bMap <<- @[*private, *fsBundleP]) {
+                    match bMap.contains(n) {
+                      false => return!(
+                        [false, "FSERR_UNSUPPORTED",
+                         "logical name not in static bundle"])
+                      true => {
+                        match bMap.get(n) {
+                          (canonRoot, rel, provisioned, "dir") => {
+                            match m {
+                              "r" => cacheAndOpenDir!(
+                                *private, canonRoot, rel, "r", *return)
+                              "rw" => {
+                                match provisioned {
+                                  "rw" => cacheAndOpenDir!(
+                                    *private, canonRoot, rel, m, *return)
+                                  _ => return!(
+                                    [false, "FSERR_UNSUPPORTED",
+                                     "requested mode exceeds provisioned attenuation"])
+                                }
+                              }
+                              _ => return!(
+                                [false, "FSERR_BAD_ARG",
+                                 "dir mode must be \"r\" or \"rw\""])
+                            }
+                          }
+                          (_, _, _, "file") => return!(
+                            [false, "FSERR_BAD_ARG",
+                             "logical name is a file; use openFile"])
+                          _ => return!(
+                            [false, "FSERR_IO",
+                             "malformed bundle entry"])
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => return!(
+                  [false, "FSERR_BAD_ARG", "mode must be a String"])
+              }
+            }
+          }
+        }
+        _ => return!(
+          [false, "FSERR_BAD_ARG", "name must be a String"])
+      }
+    } |
+
+    // -- Default arm ----------------------------------------------
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED",
+          "unknown method or not implemented in this slice"])
+      }
+    }
+  }
+}
