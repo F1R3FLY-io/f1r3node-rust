@@ -119,16 +119,32 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 })
             }
 
-            Some(ConnOrBody(connective_body)) => {
-                // println!("\nhit ConnOrBody");
-
-                connective_body.ps.into_iter().find_map(|p| {
-                    let matches = self.free_map.clone();
-                    self.spatial_match(target.clone(), p)?;
-                    self.free_map = matches;
-                    Some(())
-                })
-            }
+            // ★ A DISJUNCTION BRANCH OWNS ITS OWN STATE, ON BOTH PATHS.
+            //
+            // Scala unites the branches with `Alternative_[F].unite`
+            // (`SpatialMatcher.scala:377-386`), which hands EVERY branch the
+            // same input state; a branch that fails is an empty stream whose
+            // bindings never propagate anywhere. The explicit
+            // `freeMap.set(matches)` there is needed only for the SUCCESS path
+            // — a disjunction binds nothing, because its branches disagree
+            // about which variables they would bind.
+            //
+            // The port kept the success half and lost the failure half: `?` on
+            // the branch returned from the CLOSURE, skipping the restore. A
+            // refused branch's bindings were therefore still in `free_map` when
+            // the next branch was attempted, and escaped to the caller when
+            // every branch refused. Restoring unconditionally is the whole fix,
+            // and it is the same invariant as task 144's `match_function`
+            // isolation at a distinct site: an attempt owns its own state.
+            //
+            // Verdict-invariant by construction — no branch's decision reads
+            // `free_map`, so which branch `find_map` selects cannot change.
+            Some(ConnOrBody(connective_body)) => connective_body.ps.into_iter().find_map(|p| {
+                let matches = self.free_map.clone();
+                let branch = self.spatial_match(target.clone(), p);
+                self.free_map = matches;
+                branch
+            }),
 
             Some(ConnNotBody(p)) => {
                 // Check if there is a ConnOrBody inside the ConnNotBody
