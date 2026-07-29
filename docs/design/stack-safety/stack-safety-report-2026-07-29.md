@@ -1,0 +1,2285 @@
+# Stack Safety in the F1r3node Rholang Interpreter
+
+### A design and results report on the elimination of depth-proportional native-stack consumption over the `Par` term family
+
+**Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
+**Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
+**Report date** 2026-07-29 · **Measurement tree** `8853f839`
+**Audit ledgers superseded by nothing; this report *cites* them** —
+`docs/design/audits/theta-depth-traversals-2026-07-26.md`,
+`docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`,
+`docs/design/audits/four-quadrant-s2-prost-encoder-2026-07-28.md`
+
+---
+
+## Evidentiary convention
+
+Every factual claim in this report carries one of two tags.
+
+| tag | meaning |
+|---|---|
+| **DERIVED** | read from source, from a build artefact, or from a commit body. The provenance is named inline (`file:line`, commit hash, or `crate-version/path`). |
+| **MEASURED** | observed by executing something. Either **(q)** *quoted* from a recorded measurement, with the commit or document that recorded it named, or **(f)** *freshly measured for this report* on 2026-07-29, with the teed log named. |
+
+A claim with no tag is a definition or an argument, not a fact about the system.
+Where a number could **not** be obtained it is written **NOT MEASURED**, with the reason. There are seven such entries; they are collected in §5.9 and §7.
+
+---
+
+## 0. THE FIX REGISTER — the scannable index
+
+★ **This is a living document.** It is maintained on the same standing obligation as the consensus register: when a stack-safety fix lands, it is added here. The register below is the index a reader scans without opening a single body; the identifiers are **stable and never reused**, so a fix may be cited as *"SS-C1"* from a commit message, an issue, or another document and the citation will still resolve after the document is reorganised.
+
+**Adding a fix is filling in a form, not inventing a shape.** The blank form is [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape); the mechanism that is supposed to notice when this register goes stale is [Appendix G](#appendix-g--keeping-this-document-current).
+
+**Conventions.** `$`B_0 \rightarrow B_1`$` is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
+
+| ID | commit | repo | traversal | $`B_0 \rightarrow B_1`$ | class change? | § |
+|---|---|---|---|---|:---:|---|
+| **SS-A1** | `f0894109` | f1r3node | substitution SCC (strongly connected component), leg-1 de-clone | 36,416 $`\rightarrow`$ 27,179 | **no** ($`-`$ 25.4 % only) | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A2** | `f11ffb54` | f1r3node | substitution SCC $`\rightarrow`$ explicit worklist | 195,728 $`\rightarrow`$ **0** *(debug)* | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A3** | `6ce7c5b9` | f1r3node | score tree: comparator, sibling walk, `Clone`, `Drop`, `PartialEq` | 1,329 / 201 / 1,578 / 370 / 719 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A4** | `6ce7c5b9` | f1r3node | `ParSortMatcher` — `sort`, `sort_wide` | 78,592 $`\rightarrow`$ **0** *(debug)* | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A5** | `a3fd6fe4` | f1r3node | `rho-pure-eval`'s `eval_with` SCC | 3,359 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A6** | staged | f1r3node | `PrettyPrinter` pushdown driver | ⌀ $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
+| **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
+| **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
+| **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`par_codec`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
+| **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`wire_encode`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
+| **SS-C3** | `7c74260d` | f1r3node | wire-schema generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
+| **SS-C4** | `56fb1fd0` | f1r3node | prost encoder: $`\Theta(d^2) \rightarrow \Theta(n)`$ **work** | 302 $`\rightarrow`$ 302 | ⚠ **no** — and **dormant** | [5.3.5](#535-the-prost-network-encoder-56fb1fd0--converted-in-work-not-in-stack-and-dormant) |
+| **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
+| **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
+| **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
+| **SS-D4** | `a09f1de2`, `3b265eb7` | f1r3node | gRPC ingress teardown | 96.0 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
+| **SS-D5** | `64a5d2bc` | f1r3node | metered wrappers take term by value | 2,852 $`\rightarrow`$ **146** | **no** — `encoded_len` remains | [5.5.4](#554-results-and-a-control-that-behaved-exactly-as-predicted) |
+| **SS-F1** | `3c0c3585` | mettail | 87-member lowering component $`\rightarrow`$ one worklist | 2,157 $`\rightarrow`$ **1** | **yes** | [5.6.1](#561-the-lowering-component-3c0c3585) |
+| **SS-G1** | `9c55d81d`, `651499e2` | mettail | ★★ AST (abstract syntax tree) children `Box` $`\rightarrow`$ `Arc`; `Clone` becomes a refcount bump | 30 GB $`\rightarrow`$ **112 MB**; **0 B/level**; **0 bytes allocated** | **yes**, by *representation* | [5.11](#511--ss-g1--the-arc-fix-eliminating-a-traversal-instead-of-converting-it) |
+| **SS-G3** | `ecbe352c`, `f8f71f4c` | mettail | the eight UNMEASURED generated drivers get subjects | ⌀ $`\rightarrow`$ **measured: 8 of 9 SLOPED** | ⚠ **defect found** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
+| **SS-G2** | generator | mettail | nine generated `*_iterative` drivers (`Hash`, `Ord`, `Drop`, `Debug`, `Display`, …) | **flat on a pure chain; 1,215–10,592 debug on an alternating one** | ⚠ **only within one category** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
+
+**Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate).
+
+⚠★ **Read `SS-D3` and `SS-D5` correctly.** Both eliminate a **call to** `<Par as Clone>::clone`; **neither converts the impl**, and no commit in the history does. `<Par as Clone>::clone` remains in `TRIPWIRE_DEPTH` at **3,254 B/level** — the largest unconverted traversal in the system after `prost_de`. The campaign's strategy is **call-site elimination**, argued in [§5.10.5a](#5105a--the-strategy-is-call-site-elimination-not-impl-conversion--and-it-should-be-argued-not-inferred); the residual is [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de). Two one-line task summaries read otherwise and are corrected in [§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker).
+
+---
+
+## Abstract
+
+A `Par` — the term representation of the Rholang interpreter — is a mutually recursive family of 37 protobuf message types whose every cycle passes through `Par` itself (**MEASURED (q)**, `7c74260d`: 58 nodes, 95 edges, 22 strongly connected components, exactly one cyclic). Until 2026-07-26, essentially every traversal of that family was written as recursive descent, so each consumed native stack in proportion to the *nesting depth of an attacker-chosen term*. Because a native-stack overflow in Rust is a `SIGSEGV` on the guard page and not a catchable panic, program-controlled nesting depth controlled node liveness. The worst reachable instance measured **8.8 kB of source text aborting a node** through the term *destructor* alone (**MEASURED (q)**, `291bc217`), and a second, on unauthenticated pre-consensus gRPC ingress, at **43,565 bytes** (**MEASURED (q)**, `3b265eb7`).
+
+This report documents **twenty code fixes across five families**, the **eighteen instrument commits** that make their results admissible, and **one candidate rejected** from the list as not belonging to this problem at all. Nineteen traversals — thirteen on the depth axis and six on the width axis — are now **measured flat**: identical minimum surviving stack at depth 4 and depth 4,096, and at width 4 and width 65,536, in both build profiles (**MEASURED (f)**, `/tmp/sd_gate_release.log`).
+
+Headline results, all **MEASURED**:
+
+| what | before | after | factor |
+|---|---:|---:|---:|
+| substitution driver, `substitute_no_sort` (debug) | 195,728 B/level | **0** | class change |
+| the normalizer, `normalize` (debug / release) | 43,542 / 7,261 B/level | **0 / 0** | class change |
+| cold-store **decoder** (debug / release) | 28,362 / 12,894 B/level | **0 / 0** | class change |
+| cold-store **encoder** (release, in-binary control) | ~224 B/level | **0** | class change |
+| `inj_attempt` metering handshake (release) | 2,852 B/level, $`D_{\max}=729`$ | **0**, $`D_{\max} \geq 1{,}048{,}576`$ | $`\geq 1438\times`$ |
+| gRPC ingress teardown (release) | 96.0 B/level, $`D_{\max}=21{,}781`$ | **0**, no ceiling $`< 262{,}144`$ | $`\geq 12\times`$ |
+| metered wrapper `subst_and_charge` (release) | 2,852 B/level | **146** B/level | $`19.5\times`$ |
+| end-to-end `plain_deploy` on a 2 MiB worker | 286 levels | **6,831** levels | $`23.9\times`$ |
+| end-to-end `env_get_deploy` — **the control** | 283 levels | **274** levels (2026-07-29) | **$`\approx 1\times`$, as predicted** |
+| cold-store encode, production-weighted wall clock | — | $`1.194 \pm 0.005\times`$ **faster** | see §5.4 |
+| cold-store encode, allocations (reused-buffer form) | 20,022 blocks / 20k calls | **26** blocks / 20k calls | $`770\times`$ fewer |
+
+The costs are reported with the same candour. The single-walk encoder performs **$`3.25\times`$ more heap writes** than the derive it replaces and **doubles peak heap** on the production shape, because it retains two thread-local arenas (**MEASURED (f)**, DHAT (dynamic heap analysis tool)). The prost network encoder's memoised rewrite trades $`O(1)`$ space for $`\Theta(n)`$ space to buy $`\Theta(d^2) \rightarrow \Theta(n)`$ work, and is **dormant** — not wired into any `src/` tree (**DERIVED**, `56fb1fd0`).
+
+Three predictions were **falsified by measurement and are reported as results**: that `Env::get` was the deploy path's bound (§5.5.1), that the ingress slope was 84.3 B/level (§5.5.2), and — in the companion repository — that the Rholang parser was depth-independent (§5.6.3). Two recorded constants have **drifted at HEAD** and are corrected here (§5.5.4, §5.5.5).
+
+The residual is named, not implied. **The protobuf network format is still recursive on both sides** — 302 B/level writing, 4,096 B/level reading — and its reader is capped at term depth **33 / 32 / 31** by a private `prost` constant while its writer has no cap at all. That is the **write/read asymmetry** (§6.4): a term that can be built, reduced and serialised, and cannot be read back. It has now surfaced four independent times.
+
+---
+
+## Table of contents
+
+- [0. THE FIX REGISTER — the scannable index](#0-the-fix-register--the-scannable-index)
+- [1. Introduction](#1-introduction)
+- [2. Background](#2-background)
+  - [2.1 The term family](#21-the-term-family)
+  - [2.2 The two wire formats](#22-the-two-wire-formats)
+  - [2.3 The observable: `B/level`](#23-the-observable-blevel)
+  - [2.4 Glossary](#24-glossary--every-term-defined-before-first-use)
+- [3. Related work](#3-related-work)
+- [4. Methods](#4-methods)
+- [5. Results](#5-results)
+  - [5.1 Family A — the substitution, sorting, normalisation and evaluation cores](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores)
+  - [5.2 Family B — the expression evaluator and the `tokio` fire-and-forget driver](#52-family-b--the-expression-evaluator-and-the-tokio-fire-and-forget-driver)
+  - [5.3 Family C — the codecs, and the malloc profile](#53-family-c--the-codecs-and-the-malloc-profile)
+  - [5.4 Throughput and CPU profile of the codec conversion](#54-throughput-and-cpu-profile-of-the-codec-conversion)
+  - [5.5 Family D — the deploy path](#55-family-d--the-deploy-path)
+  - [5.6 Family F — fixes originating in `mettail-rust`](#56-family-f--fixes-originating-in-mettail-rust)
+  - [5.7 Family E — the instrument](#57-family-e--the-instrument-and-what-it-caught-in-itself)
+  - [5.8 The rejected candidate](#58-the-rejected-candidate)
+  - [5.9 Measurements that could not be obtained](#59-measurements-that-could-not-be-obtained)
+  - [5.10 ★★ The generated trait implementations, and the `Clone` question](#510--the-generated-trait-implementations-and-the-clone-question)
+  - [5.11 ★★ SS-G1 — the Arc fix](#511--ss-g1--the-arc-fix-eliminating-a-traversal-instead-of-converting-it)
+- [6. Discussion](#6-discussion)
+- [7. Threats to validity](#7-threats-to-validity)
+- [8. Residuals and future work](#8-residuals-and-future-work)
+- [9. Conclusions](#9-conclusions)
+- [References](#references)
+- [Appendix A — reproduction commands](#appendix-a--reproduction-commands)
+- [Appendix B — raw data locations](#appendix-b--raw-data-locations)
+- [Appendix C — the complete fix inventory](#appendix-c--the-complete-fix-inventory)
+- [Appendix D — corrections to the commissioning brief](#appendix-d--corrections-to-the-commissioning-brief)
+- [Appendix E — documentation-guideline conformance](#appendix-e--documentation-guideline-conformance)
+- [Appendix F — the per-fix template](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)
+- [Appendix G — keeping this document current](#appendix-g--keeping-this-document-current)
+
+---
+
+## 1. Introduction
+
+### 1.1 The problem is liveness, not performance
+
+Rholang is a concurrent language in the reflective higher-order calculus tradition [[Meredith & Radestock 2005](#ref-meredith2005)], itself descended from the $`\pi`$-calculus [[Milner, Parrow & Walker 1992](#ref-milner1992)]. Its terms nest without bound: `[[[[0]]]]` is a legal list, and so is the same expression with a million brackets. A node accepts such terms from the network, normalises them, evaluates them, serialises them, and stores them.
+
+Every one of those verbs was, until this campaign, implemented as **recursive descent** — a function that calls itself (or a mutually recursive partner) once per nesting level. In Rust, that consumes the **native call stack**: a fixed-size region, allocated at thread creation, terminated by a **guard page**. Running off the end raises `SIGSEGV`, which the Rust runtime converts to
+
+```text
+thread '<name>' has overflowed its stack
+fatal runtime error: stack overflow, aborting
+```
+
+followed by `abort()`. Shell status **134** = `128 + SIGABRT`.
+
+★ **This is not a panic.** `catch_unwind` cannot intercept it. An enclosing `Err(e) => …` arm cannot observe it. The whole **process** dies, not one worker task. So the question *"how deep may an incoming term be?"* is not a performance question; it is the question *"can an unauthenticated party stop this node?"*, and in a consensus system that is a liveness and availability property.
+
+**MEASURED (q)** — `f0894109`: a **30-character** Rholang program with no guest language and no $`\lambda`$-calculus, `@"OUT"!([[[[[[[[[[0]]]]]]]]]])` at nesting depth 10, aborted the reducer on the 2 MiB stack a `tokio` worker gets.
+
+### 1.2 What makes a fix a fix
+
+A constant-factor improvement is not a fix. Reducing a traversal from 195,728 B/level to 27,179 B/level multiplies the maximum admissible depth by seven and leaves the class — and therefore the vulnerability — exactly where it was. The campaign therefore adopted a **binary criterion**, enforced mechanically:
+
+> A traversal is **converted** when its minimum surviving native stack is *identical* at nesting depth 4 and at nesting depth 4,096, in **both** build profiles.
+
+and a matching admission rule, stated at the definition of the register itself (**DERIVED**, `rholang/tests/stack_depth_gate.rs:725-728`):
+
+> *"Membership is the deliverable; it only ever grows. A traversal enters only by being converted, never by having a ceiling raised."*
+
+Everything not yet converted sits in a **tripwire** list under a per-profile ceiling that certifies only *"not worse"*. §5 reports both lists in full, because a document that lists conversions without listing the residual reads as far more finished than the code is.
+
+### 1.3 Contributions
+
+1. A **complete inventory** of the stack-safety work in this worktree — 20 code fixes, 18 instrument commits, 1 rejected candidate — each with its defect, its repair architecture, and the alternatives that architecture was chosen over (§5, Appendix C).
+2. **Fresh measurements** of the whole gate, the S0 baseline, and the end-to-end deploy ceiling on the report tree (§5, Appendix A), which reproduce the recorded figures **exactly** in ten of twelve cases and disagree in two, both reported (§5.5.4, §5.5.5).
+3. The **first heap profile** of the codec conversion — massif and DHAT — answering the question *where did the allocations move?* quantitatively (§5.3.4).
+4. A first-class treatment of the **`tokio` fire-and-forget** family, including the establishment — rather than the assumption — of its relationship to stack safety (§5.2.2).
+5. An account of the **write/read asymmetry** that the campaign kept re-discovering, and of why only one of the two wire formats was repaired (§6.4).
+
+---
+
+## 2. Background
+
+### 2.1 The term family
+
+`Par` is the Rholang process term. It is defined in `models/src/main/protobuf/RhoTypes.proto` and compiled by `prost` into `models`.
+
+**DERIVED** (`7c74260d`, cross-checked at build time by `models/build.rs`, and re-verified for this report against `target/release/build/models-949e215e3c72bc99/out/rhoapi.rs`): the schema has **57** messages carrying `::prost::Message` and **5** carrying `::prost::Oneof`. The child relation over them has **58 nodes and 95 edges**, decomposing into **22 strongly connected components** by Tarjan's algorithm [[Tarjan 1972](#ref-tarjan1972)], of which **exactly one is cyclic**, with **37 members**.
+
+★ **$`\{\mathtt{Par}\}`$ is a feedback vertex set of size one.** Removing `Par` and recomputing leaves nothing cyclic (**MEASURED (q)**, `7c74260d`, test `par_is_a_feedback_vertex_set_of_size_one`). This was *computed*, not assumed: the incoming analysis asserted "the cycle is $`\mathtt{Par} \rightarrow \mathtt{Expr} \rightarrow \mathtt{ExprInstance} \rightarrow \mathtt{Par}`$, so about three frames", and a 37-member component may contain sub-cycles avoiding any given vertex. It does not — but that is a theorem about this schema, not a general fact.
+
+Two consequences follow and are used throughout:
+
+* the longest chain of derived traversal that can run **before** reaching a `Par` is **3 edges**, attained uniquely by $`\mathtt{Expr} \rightarrow \mathtt{EMap} \rightarrow \mathtt{KeyValuePair} \rightarrow \mathtt{Par}`$ (**MEASURED (q)**, `7c74260d`) — so the per-level cost of any derived traversal is bounded by the schema, not by the input; and
+* one iterative teardown of `Par` would bound the whole schema — which is why `impl Drop for Par` keeps being proposed, and why §8.2 records precisely what it would break.
+
+### 2.2 The two wire formats
+
+A `Par` is serialised **two different ways**, by two different codecs, for two different purposes. This is the single most load-bearing structural fact in the report.
+
+![two wire formats](figures/two-wire-formats.svg)
+
+**Figure 1** — *`figures/two-wire-formats.puml`*. One term, two wire formats. Only the cold-store pair was trampolined on both sides.
+
+| | **cold store** | **network / consensus** |
+|---|---|---|
+| codec | `bincode` 1.3.3 over `serde` | protobuf via `prost` 0.13.5 |
+| direction of travel | node-local, into LMDB (lightning memory-mapped database) | between nodes, and into blocks |
+| writer | `wire_encode::encode` — **CONVERTED** | `<Par as Message>::encode_raw` — recursive |
+| reader | `par_codec::cold_decode` — **CONVERTED** | `<Par as Message>::merge_field` — recursive |
+| writer depth limit | none | none |
+| reader depth limit | none | **`RECURSION_LIMIT = 100`** |
+
+**DERIVED**: `prost`'s `RECURSION_LIMIT` is `const RECURSION_LIMIT: u32 = 100;` at `prost-0.13.5/src/lib.rs:30`. It is **private and unconfigurable**. Because the `Par` cycle costs three message levels per Rholang nesting level, and an envelope of wrapper depth $`W`$ consumes $`W`$ of the budget, the admissible term depth is
+
+```math
+D_{\max}(W) \;=\; \left\lfloor \frac{100 - 1 - W}{3} \right\rfloor
+```
+
+which yields **three distinct ceilings — 33, 32 and 31** across the nine real envelopes the gate drives (**MEASURED (f)**, `/tmp/sd_gate_release.log`: `read ceiling: 9 envelopes, 3 distinct ceilings {31, 32, 33} (bare 33)`). The gate's test *fails if it ever yields fewer than three*, because it exists to refute the sentence "the ceiling is one number".
+
+**DERIVED** (`9a5521a2`): `bincode` has no recursion limit — **1.3.3, 2.0.1 and `bincode-next` 3.1.1 alike** offer only a *byte* limit defaulting to `NoLimit`. That is why the cold-store reader was a $`\Theta(d)`$ traversal with **no ceiling other than the stack**, and why its failure mode was uniquely bad: `rspace_importer` writes cold-store bytes to LMDB *without deep-decoding them*, so a too-deep datum enters storage through a path that structurally cannot observe its depth, and then aborts the node **on every read-back, on every restart, on every peer that synced the same state**. Every other member of the family is a transient worker fault; this one is **permanent and replicated**.
+
+### 2.3 The observable: `B/level`
+
+Let $`S(d)`$ be the smallest thread stack, in bytes, on which a given traversal survives an input of nesting depth $`d`$. Empirically every traversal in this family is affine in $`d`$:
+
+```math
+S(d) \;=\; c \;+\; B \cdot d
+```
+
+where $`c`$ is a fixed **intercept** (the traversal's own set-up: parser tables, driver frame, the deepest non-recursive prelude) and $`B`$ is the **slope**, in *bytes of native stack per nesting level* — written **B/level** throughout. The estimator is a two-point difference over a ladder $`[d_{\mathrm{lo}}, d_{\mathrm{hi}}]`$:
+
+```math
+\hat{B} \;=\; \frac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}
+```
+
+with each $`S`$ obtained by **bisecting the thread's `stack_size`** to a 4,096 B resolution, in a **forked child process** (an overflow aborts and cannot be caught, so an in-process probe would take every already-passing assertion down with it).
+
+**Why this observable and not wall-clock or peak RSS (resident set size).** The quantity that decides liveness is $`D_{\max} = \lfloor (S_{\text{avail}} - c)/B \rfloor`$, and only $`B`$ distinguishes the complexity classes. A conversion must drive **$`B`$ to zero**; it is explicitly *not* required to reduce $`c`$, and in several cases it raises $`c`$ (§5.1.2). Asserting a *shape* — "the two ends are equal" — rather than a byte count also makes the criterion **profile-independent by construction**, which matters because the debug-to-release ratio in this family ranges from $`2.2\times`$ to $`12.1\times`$ and is *per traversal*, not uniform (**MEASURED (q)**, `f0894109`).
+
+⚠ **Two symmetric hazards of this estimator**, both encountered and both recorded:
+
+1. **A large intercept masks a small slope.** If both ladder ends sit inside $`c`$, the measured growth is zero and the traversal reads as converted when it is not. This produced a *retracted claim* about the Rholang parser (§5.6.3).
+2. **A short ladder quantises to noise.** Release `par_drop` at ~144 B/level bisects to 12,288 B at *both* ends of a 16 $`\rightarrow`$ 128 ladder — inside the bisector's initial 16 KiB probe window — and reports 36 B/level, which is quantisation, not measurement. The S0 harness therefore **doubles its deep end until the growth exceeds $`8 \times`$ the resolution**, and fails loudly at the cap with a message that distinguishes *"the traversal is depth-independent"* from *"the ladder is too short"*, because those need opposite responses (**MEASURED (q)**, `44535d75`).
+
+![recursive vs trampolined](figures/recursive-vs-trampolined.svg)
+
+**Figure 2** — *`figures/recursive-vs-trampolined.puml`*. The central picture: why recursive descent grows the native stack and an explicit-worklist driver does not.
+
+### 2.4 Glossary — every term defined before first use
+
+| term | definition |
+|---|---|
+| **stack-safe** | a traversal whose native-stack consumption is $`O(1)`$ in the nesting depth of its input, i.e. $`B = 0`$. It may still be $`\Theta(d)`$ in *heap*; that is the point of the transformation, not a failure of it. |
+| **B/level** | bytes of native stack consumed per additional nesting level; the slope $`B`$ of §2.3. |
+| **guard page** | an unmapped page placed immediately past the end of a thread's stack by the operating system. Touching it raises `SIGSEGV`; Rust's handler prints `fatal runtime error: stack overflow` and calls `abort()`. Not a panic, not unwindable. |
+| **trampoline** | a control structure in which a function, instead of calling its continuation, *returns* a description of the remaining work to a driver loop that performs it. The loop's single frame replaces the recursion's $`d`$ frames [[Ganz, Friedman & Wand 1999](#ref-ganz1999)]. |
+| **explicit continuation** | the "rest of the computation", represented as a **first-class data value** on the heap rather than implicitly as the return address and live locals of a stack frame. |
+| **defunctionalisation** | Reynolds's transformation replacing higher-order continuation *functions* with a first-order *data type* plus an `apply` function [[Reynolds 1972](#ref-reynolds1972); [Danvy & Nielsen 2001](#ref-danvy2001)]. The work-item enums in §5 are defunctionalised continuations. |
+| **CEK** | *machine* — an abstract machine for the $`\lambda`$-calculus whose state is a triple of $`C`$ ontrol, $`E`$ nvironment and $`K`$ ontinuation, with the continuation an explicit stack of frames [[Felleisen & Friedman 1987](#ref-felleisen1987)]; the ancestor, via [[Ager et al. 2003](#ref-ager2003)], of every driver in §5. |
+| **worklist / work stack** | the concrete `Vec` holding pending work items. LIFO gives depth-first order, matching what recursive descent did. |
+| **value stack** | a companion `Vec` holding *completed* children, parked until their parent's combining step is reached. Only *bottom-up* (post-order) drivers need one. |
+| **fire-and-forget** | of a spawned asynchronous task: the spawner does **not** hold or await its `JoinHandle`. Completion and errors are conveyed by some other channel — here an atomic counter and an error sink (§5.2.2). |
+| **SCC** | strongly connected component of the call graph or of the type-child graph; the unit at which a conversion must be scoped, because converting a proper subset leaves the class intact. |
+| **converted / tripwire** | the two registers in `rholang/tests/stack_depth_gate.rs`. *Converted* = measured $`B = 0`$ at both ladder ends in both profiles. *Tripwire* = measured $`B > 0`$, held under a ceiling. |
+| **anti-vacuity** | a check that the *checker* can fail: a control the assertion must reject, run in-suite, so that a green result cannot be produced by a probe that measures nothing. |
+| **$`D_{\max}`$** | the greatest nesting depth a traversal survives on a given stack: $`\lfloor (S_{\text{avail}} - c)/B \rfloor`$. |
+
+---
+
+## 3. Related work
+
+The transformation applied throughout §5 is not novel and was not treated as such; its value here is that it was applied at the **SCC** granularity, with **differential oracles**, to a **consensus-critical** codebase.
+
+**Explicit continuations and abstract machines.** Landin's SECD (stack, environment, control, dump) machine [[Landin 1964](#ref-landin1964)] introduced the idea of making the control state of an evaluator an explicit data structure. Felleisen and Friedman's CEK (control, environment, kontinuation) machine [[Felleisen & Friedman 1987](#ref-felleisen1987)] gave the modern three-component form in which the continuation is a *stack of frames*. Ager, Biernacki, Danvy and Midtgaard [[Ager et al. 2003](#ref-ager2003)] established the *functional correspondence*: a compositional evaluator, CPS-transformed and then defunctionalised, **is** an abstract machine. That correspondence is exactly the recipe used here — every driver in §5 is a defunctionalised continuation over a term walk — and it is also why each conversion could be paired with a *retained recursive oracle* and checked differentially: the two are meant to be equal by construction, so any divergence is a bug in the mechanisation rather than a design question.
+
+**Defunctionalisation.** Reynolds [[Reynolds 1972](#ref-reynolds1972)] introduced the transformation; Danvy and Nielsen [[Danvy & Nielsen 2001](#ref-danvy2001)] gave the systematic account. The `Op`, `Work`, `Kont` and `EvWork` enumerations of §5 are first-order representations of the continuations that recursive descent left implicit in return addresses.
+
+**Trampolining.** Ganz, Friedman and Wand [[Ganz et al. 1999](#ref-ganz1999)] define *trampolined style*, in which a computation returns a thunk to a driver loop rather than calling its continuation. The interpreter's expression evaluator (§5.2.1) is trampolined in exactly this sense; the codecs (§5.3) go further and are *fully defunctionalised*, carrying no closures at all.
+
+**Iterative traversal of recursive structures.** The problem is old in garbage collection, where a collector may not itself allocate stack. Schorr and Waite [[Schorr & Waite 1967](#ref-schorr1967)] traverse an arbitrary list structure in constant auxiliary space by **pointer reversal**, temporarily overwriting the very pointers being followed. Cheney [[Cheney 1970](#ref-cheney1970)] achieves constant auxiliary space differently, by using the *to-space itself* as the queue.
+
+★ **Both were considered and neither was adopted**, and the reasons are worth recording because they explain the shape actually chosen:
+
+* **Pointer reversal** requires mutating the structure during traversal. Several traversals here run on `&`-borrowed terms (the encoder walks `&dyn WireNode`), several run on terms shared behind `Arc`, and the sorter's output is *signed* — a traversal that transiently mutates a term another thread may observe is not admissible in this setting. Constant auxiliary space was also never the requirement: $`\Theta(d)`$ **heap** is entirely acceptable, because the heap can refuse.
+* **Cheney's trick** presumes the output region is being built contiguously and can double as the queue. The encoder's output *is* contiguous — and, notably, the encoder needs no value stack at all for that reason (§5.3.2) — but the decoder must reassemble a pointer-rich `Par` whose children are not adjacent, so there is no to-space to borrow.
+
+**Statistics.** Throughput comparisons use Welch's unequal-variances $`t`$-test [[Welch 1947](#ref-welch1947)], as implemented in the repository's own bench harness.
+
+**Instruments.** Heap measurements use Valgrind's massif and DHAT tools [[Nethercote & Seward 2007](#ref-nethercote2007)].
+
+**Presentation.** Algorithms are given in Knuth's literate style [[Knuth 1984](#ref-knuth1984)]: a captioned block, then prose that walks its steps and says why each exists.
+
+---
+
+## 4. Methods
+
+### 4.1 Hardware
+
+**DERIVED** — from `/home/dylon/.claude/hardware-specifications.md`, cross-checked against `lscpu` on the measurement host.
+
+| | |
+|---|---|
+| CPU | AMD Ryzen Threadripper PRO 5975WX, Zen 3 (Chagall), family 25 model 8 stepping 2 |
+| cores / threads | 32 physical / 64 logical, 4 CCDs $`\times`$ 8 cores |
+| clocks | base $`\approx`$ 3.6 GHz, max boost **4,561.833 MHz**, min 412.214 MHz |
+| caches | L1d 32 KiB/core, L1i 32 KiB/core, L2 512 KiB/core, L3 32 MiB/CCD (128 MiB total) |
+| memory | 128 GiB, 8 $`\times`$ 16 GiB DDR4-2933 ECC (error-correcting code) RDIMM (registered dual in-line memory module), 8 channels, 1 NUMA (non-uniform memory access) node |
+| storage | NVMe, `/home` on `/dev/nvme0n1p4` |
+| frequency driver | `amd-pstate-epp` (active mode) |
+
+### 4.2 Machine state at measurement time
+
+**MEASURED (f)**, recorded at each measurement cell.
+
+* **Governor**: `performance` on every core (`/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`).
+* **Swappiness**: `vm.swappiness = 0`.
+* ⚠ **Frequency**: the measurement host was **shared with concurrent agent workloads throughout**. At the timing cell, core 8 (the pinned core) read `scaling_cur_freq = 3,520,772 kHz` against `scaling_max_freq = 4,561,833 kHz` — i.e. **77.2 % of maximum boost**. The bench harness printed cpu0 at `3,433,018 kHz` in its own environment block. **The cores were therefore *not* at maximum frequency**, and this is recorded as a fact rather than asserted away. It is a threat to the *absolute* timings (§7.2) and not to the *relative* ones, because the harness interleaves the two arms within each repetition.
+* ⚠ **Load**: 1-minute load average was **35.70** when the session began, **13.22 / 13.37 / 14.14** at the starts of timing runs 1 / 2 / 3. This is a 32-core machine, so a load of ~13 is roughly 40 % subscription — not an idle machine.
+* **Settle**: a settle interval was started at 14:22:36 and the first timing cell began at 14:27:38 — **302 s**, satisfying the $`\geq 300`$ s discipline, though the machine was never *quiescent* in the interval, only quieter.
+
+### 4.3 Toolchain and build configuration
+
+**DERIVED**.
+
+| | |
+|---|---|
+| rustc | `1.95.0-nightly (6efa357bf 2026-02-08)` |
+| cargo | `1.95.0-nightly (fe2f314ae 2026-01-30)` |
+| profile for all measurements in §5 | **release** (`[profile.release]`, `opt-level = 3`), unless a row says *debug* |
+| `[profile.dev]` | `debug = true` only — ⚠ **no `codegen-backend = "cranelift"` is configured in this workspace**; verified by grep over `Cargo.toml`, every member `Cargo.toml`, and `.cargo/config.toml`. Every debug figure quoted here is therefore an ordinary `-O0` figure from LLVM (the compiler back end rustc emits through). |
+| `rustflags` | `-C target-cpu=native` (from `.cargo/config.toml`) |
+| `RUST_MIN_STACK` | `8388608` from `.cargo/config.toml`. ⚠ It affects **spawned threads only**, never a main thread, and every stack probe overrides it by passing an explicit `stack_size` to `std::thread::Builder`, so neither it nor `ulimit -s` can mask a regression. |
+| feature flags | workspace defaults; no `--features` passed |
+
+⚠ **A pre-existing `-D warnings` break, reported and not repaired.** CI runs `cargo test --release -p rholang`; at HEAD that fails to compile because `NormKont::arity` / `filled` are dead under `-D warnings`. All builds for this report were therefore made **without** `-D warnings`. The break is in a file owned by concurrent in-flight work and was deliberately not touched. A parallel instance of the same hazard is recorded in `56fb1fd0` for `models`.
+
+### 4.4 Instruments, and which produced which number
+
+| instrument | what it produced | invocation |
+|---|---|---|
+| `rholang/tests/stack_depth_gate.rs` | every **B/level** figure and every *converted* / *tripwire* verdict, by forked-child `stack_size` bisection at 4,096 B resolution | §A.1 |
+| `four_quadrant_s0_baseline` (an `#[ignore]`d test in the same file) | the eight-traversal baseline table of §5.3.1 | §A.2 |
+| `rholang/tests/deploy_depth_ceiling.rs` | the **end-to-end** deploy ceilings, from source text through the real runtime on an explicit 2 MiB `tokio` worker | §A.3 |
+| `valgrind --tool=massif --time-unit=B` | **peak heap** and the heap-over-time series of §5.3.4 | §A.4 |
+| `valgrind --tool=dhat` | **allocation counts**, total bytes, and heap read/write traffic | §A.5 |
+| `models/benches/wire_encode_bench.rs` | wall-clock throughput with Welch's $`t`$-test, interleaved A/B, 60 reps after 10 warm-up | §A.6 |
+| `perf record -e cpu-clock --call-graph dwarf` | the CPU profile of §5.4.2 | §A.7 |
+
+⚠ **`perf record --call-graph lbr` could not be used.** The hardware PMU (performance monitoring unit) refused every cycles event on this host:
+
+```text
+Failure to open event 'cpu/cycles/Pu' on PMU 'cpu'
+The sys_perf_event_open() syscall failed for event (cpu/cycles/Pu): Invalid argument
+```
+
+with `kernel.perf_event_paranoid = 2`. The profile was taken with the **software** `cpu-clock` event and DWARF unwinding instead. This is a deviation from the standing measurement discipline and is recorded as such; the substitution costs sampling fidelity (software timer rather than cycle counter) but not symbol attribution, which is what §5.4.2 uses.
+
+### 4.5 Procedure
+
+* **Pinning.** Every measurement cell ran under `taskset`: the gate on cores 16–23, the deploy bisection on 24–27, massif and DHAT on cores 4–8 and 10–14 (one arm per core, run in parallel — heap metrics are deterministic under Valgrind's serialised execution and unaffected by co-residency), the timing bench on **core 8 alone**, `perf` on core 12.
+* **Resource limits.** Every build and every heavy test ran under `systemd-run --user --scope -p MemoryMax=28G`.
+* **`n` and warm-up.** The timing bench performs `REPS = 60` measured repetitions after `WARMUP = 10` discarded ones, per arm, per cell; the whole bench was then run **3 times** end-to-end, so the between-run figures in §5.4.1 are $`n = 3`$ over means each of which is itself $`n = 60`$.
+* **Teeing.** Every command's output was written to a file and the file analysed; no benchmark was re-run to see a different part of its output. Locations in Appendix B.
+* **Overlap rule.** A difference is reported as a result only if the arms' $`[\text{mean} - \text{sd},\ \text{mean} + \text{sd}]`$ intervals do **not** overlap, in addition to the harness's own Welch test at $`\alpha = 0.01`$. Where they overlap, the row says *no measured difference*.
+
+### 4.6 Anti-vacuity discipline
+
+Every measurement in §5 comes from a harness that has been **shown to fail**. This is not decoration; four false zeros in this campaign came from probes that measured nothing (a decode probe with a wrong proto field number, so `prost` skipped the payload as unknown; a generator whose collection sizes were `0..1`, meaning *exactly zero elements, always*; a scan rule that discarded 97 % of the largest interpreter file; a `zsh` `set --` that does not word-split). The gate accordingly carries **synthetic controls that its own checkers must reject** — `synthetic_recurse` at **111 B/level** release and `synthetic_drop` at **31 B/level** release — alongside their iterative twins at **0**, and the tripwire refuses to finish unless the set of subjects it actually drove is *exactly* the declared `TRIPWIRE_DEPTH` (**MEASURED (f)**, `/tmp/sd_gate_release.log`).
+
+---
+
+## 5. Results
+
+Nineteen traversals are converted. §5.1 – §5.6 give each family its defect, architecture, transformation and numbers; §5.7 covers the instrument; §5.8 the rejected candidate; §5.9 what could not be measured.
+
+![depth vs stack ladder](figures/depth-vs-stack-ladder.svg)
+
+**Figure 3** — *`figures/depth-vs-stack-ladder.puml`*. Every gate subject, converted and tripwired, with the freshly measured release figures of 2026-07-29.
+
+**MEASURED (f)** — the complete register, `/tmp/sd_gate_release.log`, release, this tree, 2026-07-29:
+
+**Converted, depth axis (13).** `substitute_no_sort` 28 KiB $`\rightarrow`$ 28 KiB · `substitute_binders` 28 $`\rightarrow`$ 28 · `substitute` 32 $`\rightarrow`$ 32 · `sort` 12 $`\rightarrow`$ 12 · `score_cmp` 12 $`\rightarrow`$ 12 · `tree_drop` 12 $`\rightarrow`$ 12 · `tree_clone` 12 $`\rightarrow`$ 12 · `eval_with_nots` 12 $`\rightarrow`$ 12 · `bincode_de` 12 $`\rightarrow`$ 12 · `bincode_ser` 12 $`\rightarrow`$ 12 · `pretty` 12 $`\rightarrow`$ 12 · `normalize` 32 $`\rightarrow`$ 32 · `inj_attempt_clone` 32 $`\rightarrow`$ 32 — every one identical at depth 4 and depth 4,096.
+
+**Converted, width axis (6).** `substitute_wide` 32 $`\rightarrow`$ 32 · `sort_wide` 12 $`\rightarrow`$ 12 · `score_cmp_wide` 12 $`\rightarrow`$ 12 · `free_check` 12 $`\rightarrow`$ 12 · `pretty_wide` 12 $`\rightarrow`$ 12 · `normalize_wide` 32 $`\rightarrow`$ 32 — identical at width 4 and width **65,536**.
+
+**Tripwire, depth axis (9), release B/level.** `sort_nested_map` **7,509** (ceiling 10,394) · `substitute_deep_binding` **7,460** (12,000) · `sort_nested_set` **4,778** (7,680) · `clone_nested_set` **4,096** (9,000) · `clone` **3,254** (5,000) · `encode` **302** (1,500) · `subst_and_charge` **146** (700) · `par_drop` **144** (800) · `normalize_drop` **144** (800).
+
+**Tripwire, width axis: empty** — and that is an *executed* claim, not an absence.
+
+---
+
+### 5.1 Family A — the substitution, sorting, normalisation and evaluation cores
+
+#### 5.1.1 The defect
+
+**DERIVED** — `rholang/src/rust/interpreter/substitute.rs`. `Substitute::substitute` and its partners formed a mutually recursive strongly connected component that descended one call per term level. Enumeration was **derived, not recalled**: Tarjan over `RhoTypes.proto` gave the 37-member type family; a per-`(file, name)` call-graph search over **4,503 functions**, with an explicit cross-file trait-dispatch pass, yielded **153 candidates in 53 files**, each of which was read, dispositioned and — where genuine — measured in both profiles (**MEASURED (q)**, `f0894109`).
+
+**MEASURED (q)** — `f0894109`, by bisection on threads with explicit `stack_size`, no parser, no reducer, no tuple space, no `tokio`:
+
+```math
+S(N) \;=\; 225{,}280 \;+\; 194{,}970 \cdot N \quad \text{bytes (debug)}
+```
+
+against a relayed 194,694 B/level — agreement to **0.14 %**. Under `gdb` the per-level delta is a dead-constant **194,992 B** across ten consecutive levels. The fit predicts that depth 9 fits in 2 MiB and depth 10 does not; Rust's default spawned-thread stack is *exactly* 2 MiB, so **the measurement recovers the reported threshold without having been shown it**.
+
+★ **Why one level cost 195 kB.** `gdb` per-frame attribution over the 20-frame cycle put **169,728 B — 87 % — in `SubstituteTrait<Expr>::substitute_no_sort` alone**. It is a 40-arm `match` over `ExprInstance`, and rustc does not overlap the stack slots of mutually exclusive arms at `-O0` (**MEASURED (q)**, `f0894109`). This is the single most useful diagnostic in the campaign: it explains why debug-to-release ratios are large and per-traversal, and why a hand-written work item is *smaller* than the frame it replaces (§6.1).
+
+#### 5.1.2 Architecture of the repair, and why this shape
+
+The chosen shape is an **explicit LIFO work stack of defunctionalised continuations, over borrowed sub-terms, with the environment carried as a delta into a borrowed root**.
+
+Three design decisions, each with its rejected alternative.
+
+**(a) Work items borrow; they do not own.** The recursion's frames held `&`-references into the input; a worklist of *owned* sub-terms would have had to clone them, and `<Par as Clone>::clone` is itself $`\Theta(d)`$ at 3,254 B/level release. Borrowing keeps the conversion honest: the heap grows by the *size of a work item* per level, not by the size of a subtree.
+
+**(b) ★ The environment rides as a delta, and this was measured before it was designed.** `Env::shift(j)` is `Env { shift: self.shift + j, ..(*self).clone() }` — a full `HashMap<i32, Par>` clone, hence a $`\Theta(d)`$ `Par` clone of *every bound value*, *at every binder level*. **A worklist storing an owned `Env` per item would therefore have stayed $`\Theta(d)`$ however the traversal itself was written.**
+
+**MEASURED (q)** — `f11ffb54`, *before* the conversion: **48,878 B/level** under a deep binding against **33,242 B/level** under a ground one. The difference, **15,636 B/level**, is `Par::clone`'s 15,875 to within **1.5 %**. Diagnosis confirmed.
+
+The repair reads the SCC's *entire* use of `Env` — `get`, the `shift` field, and `shift(j)`; **there is no `put`** — and replaces it with a work item carrying `(depth, shift_delta)` plus **one borrowed root environment**, resolving
+
+```rust
+// ELIDED — the resolution rule, not compilable in isolation.
+// Production form: rholang/src/rust/interpreter/substitute_drive.rs
+root.env_map[(root.level + root.shift + shift_delta) - k - 1]
+```
+
+Equality with a chain of owned `Env::shift`s is *by construction*, and two guards keep it so: a source scan asserting `.put(` never appears in the SCC, and a test comparing the view against an actual chain of `Env::shift`s. **MEASURED (q)** — after the conversion the deep-environment and ground-environment readings are **identical (0 B/level both)**, which is the mechanism confirmed rather than assumed.
+
+**(c) A hand-written driver, not one mode-flagged driver over a shared table.** The conversion removed a *dead* `SubstituteTrait<Expr>::substitute` that had silently diverged from its live twin — its `EMinusBody` arm rebuilt the term as an `EPlusBody`. A single mode-flagged driver would have made the dead method's behaviour a *configuration* of the live one and quietly promoted it (**DERIVED**, `f11ffb54`).
+
+**Algorithm 1 (SUBSTITUTE-DRIVE).** *The shape shared by every driver in Family A.*
+
+```pseudocode
+ 1  procedure DRIVE(root, env_root)
+ 2      work  ← [ Descend(root, depth 0, shift 0) ]      ▷ LIFO; the only frame is this one
+ 3      vals  ← [ ]                                       ▷ completed children, in order
+ 4      while work is not empty do
+ 5          item ← POP(work)
+ 6          case item of
+ 7            Descend(t, d, s) →
+ 8                (children, k) ← SPLIT(t)                ▷ the canonical child-slot table
+ 9                PUSH(work, Combine(SHELL(t), k))        ▷ the resume point, pushed FIRST
+10                for c in REVERSE(children) do           ▷ reversed, so POP yields left-to-right
+11                    PUSH(work, Descend(c, d', s'))      ▷ d', s' per the binder rule of t
+12            Combine(shell, k) →
+13                kids ← SPLIT_OFF(vals, |vals| − k)      ▷ takes exactly what this Descend pushed
+14                PUSH(vals, REBUILD(shell, kids))
+15      return POP(vals)
+```
+
+Read line by line. Line 2 seeds the work stack with the root; line 3 the value stack, which exists because this is a *bottom-up* fold — a node cannot be rebuilt until its children are. Line 9 is the whole trick: **the resume point is pushed before the children**, so it is popped after them, which is what "return to the parent" meant in the recursive form. Line 10's reversal makes `POP` yield children left to right, reproducing the recursive traversal order **exactly** — and order matters, because a differential that only compared final values would pass on a driver that visited children in the wrong order for every commutative operator. Line 13's `split_off` is the invariant that makes the two stacks agree: *every `Descend` eventually pushes exactly one value, and every `Combine` removes exactly the values its own `Descend` pushed*. Line 8's `SPLIT` is not written per driver; it is the **canonical child-slot table** of §5.7.2, whose matches are exhaustive with no `_` arm, so a schema change is a compile error rather than a silently skipped child.
+
+#### 5.1.3 Results
+
+| subject | before (debug) | after | before (release) | after | provenance |
+|---|---:|---:|---:|---:|---|
+| `substitute_no_sort` | 195,728 | **0** | 27,179 | **0** | **(q)** `f11ffb54`; **(f)** flat 28 KiB↔28 KiB |
+| `substitute` (sorted entry) | 195,754 | **0** | — | **0** | **(q)** `f11ffb54`; **(f)** flat 32 KiB↔32 KiB |
+| `substitute_binders`, deep env | 48,878 | **0** | — | **0** | **(q)** `f11ffb54`; **(f)** flat 28 KiB↔28 KiB |
+| `substitute_binders`, ground env | 33,242 | **0** | — | **0** | **(q)** `f11ffb54` |
+| `sort` (ParSortMatcher) | 78,592 | **0** | 6,485 | **0** | **(q)** `9ab6b0eb`, `f11ffb54`; **(f)** flat 12 KiB |
+| `score_cmp` | 1,329 | **0** | 128 | **0** | **(q)** `6ce7c5b9`; **(f)** flat 12 KiB |
+| `score_cmp_wide` (**width** axis) | 201 | **0** | 0 | **0** | **(q)** `6ce7c5b9`; **(f)** flat to width 65,536 |
+| `tree_clone` | 1,578 | **0** | 485 | **0** | **(q)** `6ce7c5b9`; **(f)** flat 12 KiB |
+| `tree_drop` | 370 | **0** | 204 | **0** | **(q)** `6ce7c5b9`; **(f)** flat 12 KiB |
+| `Tree`'s derived `PartialEq` | 719 | **0** | — | **0** | **(q)** `6ce7c5b9` |
+| `normalize` | 43,542 | **0** | 7,261 | **0** | **(q)** `CONVERTED_DEPTH` note; **(f)** flat 32 KiB |
+| `eval_with_nots` | 21,584 | **0** | 3,359 | **0** | **(q)** `a3fd6fe4`; **(f)** flat 12 KiB |
+| `pretty`, `pretty_wide` | — | **0** | — | **0** | **(f)** flat 12 KiB both axes |
+
+**The reported reproducer is fixed.** `@"OUT"!([[[[[[[[[[0]]]]]]]]]])` at depth 10 now survives the 2 MiB stack a `tokio` worker gets, and `reported_reproducer_depth_survives_a_default_worker_stack` is no longer `#[ignore]`d — **MEASURED (f)**: it passes in the fresh release run.
+
+#### 5.1.4 What it cost, and what leg-1 did *not* buy
+
+★ **Leg-1 was honest about being insufficient, and that is a result.** Before any conversion, a de-cloning pass removed deep copies from `prepend_expr`/`_connective`/`_new`/`_bundle`, from four `Par::prepend_*` methods, from `sub_exp`'s discriminant read, from both `SubstituteTrait<Expr>` entries, and from twelve `.iter().map(p.clone())` sites.
+
+**MEASURED (q)** — `f0894109`: debug **194,970 $`\rightarrow`$ 195,728 B/level** (+0.4 %, within bisection resolution — i.e. **unchanged**); release **36,416 $`\rightarrow`$ 27,179 B/level** (**$`-`$ 25.4 %**). Its own verdict: *it removes $`O(D^2)`$ heap churn and a real slice of the constant, and it cannot change the class.* Reported here because a report that showed only the successful leg would misrepresent how much work a class change actually takes.
+
+**A latent bug surfaced by the unification.** `reduce.rs`'s private `expr_locally_free_ref` hard-coded depth 0 in its `EVar` arm where the by-value trait threads `depth` through — sound at its only call site, **wrong** at `prepend_expr`, which `sub_exp` calls at pattern depth $`> 0`$ (**DERIVED**, `f0894109`).
+
+**Intercepts rose.** The converted subjects sit at 12–32 KiB minimum stack where several pre-conversion subjects sat at 12 KiB. The criterion is slope, not intercept (§2.3), and this is the expected direction: a driver frame holding two `Vec`s and a match on a work item is bigger than a leaf call.
+
+**A scope correction that changed the enumeration method.** The audit's original enumeration was a Tarjan SCC over `RhoTypes.proto`. That method **structurally cannot see a recursive Rust type that is not a proto message** — and `models/src/rust/rholang/sorter/score_tree.rs` defines one, `Tree<T>`, carrying four $`\Theta`$ traversals plus a fifth on the width axis (**MEASURED (q)**, `6ce7c5b9`). The lesson is methodological and is recorded in §7.4.
+
+⚠ **A trap the gate's own probe would have fallen into.** A linear chain sorts as a **one-element** vector, and `Vec::sort_by` on one element performs **zero** comparisons — so `compare_score` is *never entered* by the `sort` subject. Converting `sort_match` alone would have left the comparator $`\Theta(d)`$ **and the gate would still have passed**. The comparator is therefore a subject in its own right, driven by a *pair* of terms that differ only at the leaf (**DERIVED**, `6ce7c5b9`).
+
+⚠ **A width-axis defect that only `-O0` could see.** `compare_score_nodes` recursed on the list *tail* (`&left[1..]`). At `-O2` LLVM turns that into a loop and the measured slope is **0**; at `-O0` it is **201 B per sibling**. Relying on a codegen accident for a consensus-liveness property is not acceptable, so it was made an explicit loop, which holds by construction in both profiles (**MEASURED (q)**, `6ce7c5b9`).
+
+#### 5.1.5 The named residual of Family A
+
+`Env::get` returns its value **cloned**, because substituting a `BoundVar` splices the bound term into the result. That clone is `<Par as Clone>::clone`, and **this call site cannot be removed, because the copy *is* the meaning of substitution**. **MEASURED (q)** `f11ffb54`: 15,850 B/level debug — `Par::clone` to within 0.2 % — identical in the recursive form, and bounded by the depth of the **bound value** rather than of the term traversed. **MEASURED (f)**: 7,460 B/level release at HEAD. It sits in the tripwire as `substitute_deep_binding`, never in the converted list, *so that the residual is visible instead of folded into a claim of full depth-independence*.
+
+Two sorter arms remain: `sort_nested_set` **4,778** and `sort_nested_map` **7,509** B/level release (**MEASURED (f)**), self-contained arms measured against the derived floor `clone_nested_set` at **4,096**.
+
+---
+
+### 5.2 Family B — the expression evaluator and the `tokio` fire-and-forget driver
+
+#### 5.2.1 The expression-evaluator trampoline (`a929a2d6`)
+
+**The defect. DERIVED** — six mutually recursive evaluators in `rholang/src/rust/interpreter/reduce.rs` — `eval_expr`, `eval_expr_to_par`, `eval_expr_to_expr`, `eval_single_expr`, `eval_to_bool`, `eval_to_i64` — form a post-order fold whose native call depth is $`\Theta`$(term nesting).
+
+**MEASURED (q)** — `a929a2d6`, `rholang/examples/so_probe.rs` on a **default 8 MiB** thread stack, release: arithmetic nesting (`EPlus`) overflowed at depth **$`\approx`$ 1,500**; list nesting (`EList`) at **$`\approx`$ 750**.
+
+**The architecture.** The six become **thin wrappers over a single explicit-worklist driver `eval_drive`**: an `EvWork` heap stack (LIFO DFS (depth-first search), children pushed reversed so they pop left to right) and an `EvVal` value stack, with each arm's post-order body factored into a shared `combine_*` helper **used verbatim by both the driver and a retained recursive twin**.
+
+★ **Why a *shared* combining helper rather than two independent implementations.** The differential oracle is only worth running if the two sides can actually disagree about the thing under test. Sharing the arm bodies makes the differential test the **driving** — push order, pop order, fold resumption, error position — which is what a worklist conversion can actually get wrong, while arm *semantics* are guarded separately by a round-trip identity test. §5.7.5 shows this was not theoretical: a later structural check found that the twins share **18 `combine_*` helpers**, every one of which is also called from outside the twin family.
+
+**Owned intermediates are re-entered, not linearised.** Values that are *not* sub-terms of the input — `eval_var` results, method-apply results, `%%`/`++`/`--` `Set`/`Map` results, sorted `Set`/`Map` elements — are re-evaluated by direct wrapper calls, **each a fresh bounded drive**. This bounds them by the depth of the *bound value*, exactly as §5.1.5 does, rather than pretending they vanish.
+
+**★ The interleaving a naïve post-order would have silently broken.** The five binary-operator helpers do **not** evaluate both operands and then check them:
+
+```rust
+// ELIDED — the pre-conversion shape, quoted for its ORDER, from `a929a2d6`.
+let v1 = single_expr_instance(&eval_with(p1)?)?;   // check p1 HERE
+let v2 = single_expr_instance(&eval_with(p2)?)?;   // only then touch p2
+```
+
+so if `p1` evaluates but is not a single value, **`p2` is never evaluated**. A machine that evaluated both children and then extracted would report `p2`'s error where the recursive form reports `p1`'s — an observable divergence in `EvalError`, on the path that decides `where`-clause guards. The machine therefore carries an `extract` flag on the operand work item and applies `single_expr_instance` through an `Extract` continuation pushed **before** that operand's `ParK`, so it runs the instant that operand finishes and strictly before the next is popped (**DERIVED**, `a3fd6fe4`).
+
+⚠ **And the differential proves the order matters.** A binary `Combine` that pops its two children in the wrong order yields the same **multiset** of operands — indistinguishable from correct for every commutative operator (`+`, `*`, `==`, `&&`). The corpus therefore runs all 13 binary arms at 12 operand pairs, **each pair in both orders**, and `swapping_operands_actually_changes_the_answer` asserts that at least seven operators genuinely disagree under swap. Without it, an ordered-equality differential could pass on a corpus where order never mattered — *rigorous-looking and worthless*.
+
+**The charge freeze.** Every `reserve_primitive` / `substitute_and_charge` / `Cost::` call is **relocated whole** — same count, order, operands, and charge-before-error ordering. Pre-order charges run in the descend handler before any child push; post-order charges run in `Combine` after all child values are available. Production `reserve_` site count **unchanged at 108** (**DERIVED**, `a929a2d6`).
+
+**Results. MEASURED (q)** — `a929a2d6`, `so_probe`, default 8 MiB stack, release:
+
+| family | before | after |
+|---|---:|---|
+| `plus` (nested `EPlus`) | overflow at $`\approx`$ 1,500 | **OK at 20,000 and 50,000** |
+| `list` (nested `EList`) | overflow at $`\approx`$ 750 | **OK at 20,000 and 50,000** |
+| `methodchain` (deep `EMethod` target) | *(new subject)* | **OK at 20,000** |
+
+**MEASURED (q)** — `a3fd6fe4`, the separate `rho-pure-eval` SCC: `eval_with_nots` **21,584 $`\rightarrow`$ 0** debug, **3,359 $`\rightarrow`$ 0** release; `the_machine_survives_a_depth_the_oracle_could_not` evaluates **20,000 nested negations** on an ordinary test thread, where at the old constant the recursive form would have needed **$`\approx`$ 412 MiB**. **MEASURED (f)**: flat at 12 KiB, both ends.
+
+**Cost. DERIVED**, `a929a2d6`: the residual ceiling of ~75k–100k is `drop_in_place::<Par>` — the *inherent* recursive `Drop` of a 100k-deep data structure, `gdb`-confirmed, with the evaluator **absent** from the overflow trace. That is a property of the data depth, not of the evaluator, and it is Family D's problem (§8.2).
+
+⚠ **Named, not fixed** (**MEASURED (q)**, `a3fd6fe4`): the `eval_with` subject on a nested `EList` chain still measures **15,872 B/level**, which is `<Par as Clone>::clone` exactly. That is *not* this SCC — the `EListBody` arm returns `par_with_expr(expr.clone())` **without descending** — so on that shape the probe measures the derived class and nothing else. The gate subject is `eval_with_nots` precisely because it is the shape that actually recurses.
+
+#### 5.2.2 ★ The `tokio` fire-and-forget driver — establishing the mechanism, not assuming it
+
+![async detached driver](figures/async-detached-driver.svg)
+
+**Figure 4** — *`figures/async-detached-driver.puml`*. Two resources, two defects, one repair.
+
+**The relationship to stack safety had to be established rather than assumed, and it turns out there were *two* distinct $`\Theta(N)`$ chains on this path, in two different resources.**
+
+**Chain (i) — nested `poll`, in the native stack. DERIVED** from the deleted code, `git show 9843e4b6 -- rholang/src/rust/interpreter/reduce.rs`. The reduction path $`\mathtt{eval} \rightarrow \mathtt{produce}/\mathtt{consume} \rightarrow \mathtt{dispatch} \rightarrow \mathtt{eval}`$ was a chain of futures **awaited inline** through `Box::pin`. Awaiting a future inline means the outer future's `poll` calls the inner future's `poll` **in the same native frame**. A depth-$`N`$ chain of inline awaits is therefore a depth-$`N`$ chain of `poll` frames — recursion wearing an `async` costume. The mitigation that had been shipped is the evidence:
+
+```rust
+// VERBATIM, deleted by 9843e4b6 from rholang/src/rust/interpreter/reduce.rs.
+const STACK_RED_ZONE: usize = 1024 * 1024;      // 1 MB
+const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+
+struct StackGrowingFuture<F> { inner: F }
+
+impl<F: Future> Future for StackGrowingFuture<F> {
+    type Output = F::Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || inner.poll(cx))
+    }
+}
+```
+
+Its own doc comment named the mechanism: *"Each poll of this recursive future chain adds stack frames. In debug builds, unoptimized async state machines consume ~1–2 kB per recursion level, causing stack overflow with the default 2 MB thread stack."* ★ **The red zone had already been raised from 128 kB to 1 MB** because *"a single recursion frame in the Rholang interpreter consumes more than 128 kB between stacker checks"*. That is a $`\Theta(d)`$ native-stack traversal being **fed** rather than removed.
+
+**Chain (ii) — parked parents, in the heap. DERIVED**, `reduce.rs:96-99`: *"`tokio::spawn` already gives an $`O(1)`$ async stack, but each parent `await`ing its children pins an $`O(N)`$ parked-parent chain (`shortslow`: 32,768 parked parents)."* This is a **different resource**. A parent that awaits a *spawned* child does not nest `poll` frames — the child is rooted in its own task — but the parent's future object stays **live and parked on the heap** until the whole subtree finishes. 32,768 nested continuations meant 32,768 simultaneously live future objects.
+
+$`\Rightarrow`$ **The two are genuinely distinct and both were real.** Conflating them would have produced either a wrong fix or a wrong claim; the report keeps them apart.
+
+**The architecture of the repair.** A **per-deploy atomic completion counter** with an error sink, and **detached** spawns at all five join sites.
+
+```rust
+// VERBATIM — rholang/src/rust/interpreter/reduce.rs:112-158, quoted in full
+// because the ordering of the three fields' operations is the whole design.
+pub(crate) struct DriveState {
+    /// Outstanding tasks (root + all live detached children). Initialised to 1 (the root eval task).
+    live: AtomicUsize,
+    /// Flat, `Located`-wrapped errors pushed by detached tasks.
+    sink: Mutex<Vec<InterpreterError>>,
+    /// Fired exactly once, on the 1->0 transition, to wake `inj`.
+    done: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+/// RAII decrement of `live`. Dropped LAST inside each detached task (after the error push), so the
+/// sink is complete when `done` fires. Covers Ok / Err / `?` / panic — no missed decrement.
+struct LiveGuard(Arc<DriveState>);
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        if self.0.live.fetch_sub(1, Ordering::AcqRel) == 1 {
+            if let Some(tx) = self.0.done.lock()
+                .expect("DriveState.done mutex poisoned").take()
+            {
+                let _ = tx.send(());
+            }
+        }
+    }
+}
+```
+
+**Algorithm 2 (SPAWN-DETACHED).** *The counted, unawaited spawn.* Production form at `reduce.rs:345-379`.
+
+```pseudocode
+ 1  procedure SPAWN-DETACHED(drive, child_path, fut)
+ 2      FETCH-ADD(drive.live, 1, AcqRel)          ▷ ★ INCREMENT BEFORE SPAWN
+ 3      spawn detached task:
+ 4          guard ← LiveGuard(drive)              ▷ dropped LAST, after line 8
+ 5          outcome ← AWAIT(CATCH-UNWIND(fut))
+ 6          case outcome of
+ 7            Ok(Ok(_))  → ()                     ▷ the child's value is DISCARDED
+ 8            Ok(Err(e)) → PUSH(drive.sink, Located{path: child_path, source: e})
+ 9            Err(panic) → PUSH(drive.sink, Located{path: child_path, source: ReduceError})
+10      return immediately                        ▷ the parent does NOT await
+```
+
+Line 2 is not an optimisation, it is a correctness requirement: incrementing **inside** the spawned task would allow `live` to reach 0 between the parent's return and the child's first poll, firing `done` while work remains. Line 4's guard is RAII (resource acquisition is initialisation) so that **`Ok`, `Err`, `?`-propagation and panic** all decrement — there is no path that misses one. Line 5's `catch_unwind` is **mandatory** rather than defensive: a panicking deploy must still record an error, or `is_failed` would flip to *success*. Line 7 discards the child's `Ok`: these five sites only ever conveyed `Skip`/error upward, and both the old aggregate and this sink discard `Ok(_)` and capture only `Err` — so the error plumbing is byte-identical (**DERIVED**, `a0a50473`).
+
+The complementary half is in `inj`: seed a fresh `DriveState` with `live = 1` (the root eval), install it on `self.drive`, run the root eval, **drop the root guard**, await the `oneshot`, then sort the sink by `located_path` for a deterministic **display** order — explicitly *not* consensus (**DERIVED**, `reduce.rs:664-692`).
+
+**Why this shape rather than the alternatives.**
+
+* **`FuturesUnordered`** — the previously required architecture — still has the parent awaiting the join, so it keeps chain (ii) intact. The repro spec was updated to *forbid* it and require `spawn_detached`, and it records why: detaching is *"a strictly stronger form of the non-blocking, completion-order branch draining this repro spec guards"* (**DERIVED**, `53b8a85f`).
+* **`stacker`-based stack growth** attacks chain (i) only, by *feeding* the recursion, and does nothing about chain (ii). It was deleted, not retuned.
+* **A `JoinSet`** would reintroduce the awaiting parent.
+
+**Consensus neutrality.** Concurrency is *unchanged* — the same spawns happen — so COMM order is unchanged. The differential harness checks this rather than arguing it: **MEASURED (q)**, `55b97f84` (5/5 fresh-genesis) and `a0a50473` (6/6): cost, `is_failed`, balance and the **COMM multiset** byte-identical old-vs-new, with Layer-1 replay $`=`$ play exactly.
+
+**Results. MEASURED (q)** — `857c62fe`, the `deep_recursion_{long,short}slow` contracts (32,768 self-calls), debug:
+
+| condition | load | wall | thread CPU | %CPU |
+|---|---:|---:|---:|---:|
+| idle | ~6 | 95.96 s | 93.66 s | 97 % |
+| 32 spinners ($`2\times`$) | ~40 | 121.91 s | **93.73 s** | 77 % |
+| 96 spinners ($`4\times`$) | ~108 | **609.6 s** | 93.4 s | — |
+
+The pre-conversion parked-parent chain required a **300 s** budget for the same work; the heap-bound driver needs **93.7 s of CPU** (**DERIVED**, `857c62fe`, from the budget the file used to carry). That is the throughput result of the async conversion: **$`\approx 3.2\times`$ less work for the same contract**, measured in the one clock that is invariant to contention.
+
+**What it cost.** The error sink's **push order is non-deterministic** (that is inherent to detachment), so `inj` sorts it; the ordering is documented as *display* only. And `catch_unwind` on every child is not free — **NOT MEASURED**: no isolated benchmark of `spawn_detached`'s per-spawn overhead exists, and none was constructed for this report (§5.9).
+
+⚠ **A methodology defect found in this family and fixed as an instrument.** The two contract tests carried a single 180 s `tokio::time::timeout` doing two jobs — liveness *and* work. Wall time is computation divided by the share of a CPU the scheduler granted, and that denominator belongs to every other process on the machine. It caused **one false attribution**: a full-suite run at load ~125 recorded both RED, they were investigated as a regression, and they passed in isolation on the same tree. ★ **No larger wall budget fixes it**: a budget $`B`$ is safe iff $`B \geq T_{\text{idle}} \cdot C`$ where $`C`$ is contention imposed by *other* processes, and $`C`$ is unbounded. The instrument was therefore changed, not the number: `LIVENESS_TIMEOUT = 900 s` wall, `CPU_WORK_BUDGET = 180 s` **thread CPU**, read from `/proc/thread-self/stat` fields 14/15. **MEASURED (q)**, `857c62fe`: the two in-process readings sum to 189.4 s against `/usr/bin/time`'s 189.43 s — **0.02 %** agreement, which validates the field indices, the ticks-per-second constant and the single-thread attribution simultaneously.
+
+---
+
+### 5.3 Family C — the codecs, and the malloc profile
+
+#### 5.3.1 The baseline: what had never been measured
+
+★★ **Four of the eight traversals over the `Par` family had never been measured at all.** `eq`, `hash`, `ord` and `debug` appeared **nowhere** in the gate at that point — not in `CONVERTED_DEPTH`, not in `TRIPWIRE_DEPTH`, and in no `assert_slope_below` call. **Their absence meant *unmeasured*, not *flat*, and the two are indistinguishable from outside.**
+
+**MEASURED (f)** — re-run in full for this report: `/tmp/sd_s0_release.log`, release, 2026-07-29. It reproduces the recorded S0 table **to the byte in every row**:
+
+| subject | four-quadrant label | ladder | $`S_{\mathrm{lo}}`$ (B) | $`S_{\mathrm{hi}}`$ (B) | growth (B) | **B/level** |
+|---|---|---|---:|---:|---:|---:|
+| `clone` | `clone` | 16 $`\rightarrow`$ 128 | 65,536 | 430,080 | 364,544 | **3,254** |
+| `par_drop` | `par_drop` | 16 $`\rightarrow`$ 256 | 12,288 | 45,056 | 32,768 | **136** |
+| `eq` | `eq` | 16 $`\rightarrow`$ 256 | 12,288 | 65,536 | 53,248 | **221** |
+| `hash` | `hash` | 16 $`\rightarrow`$ 256 | 12,288 | 45,056 | 32,768 | **136** |
+| `ord` | `ord` | 16 $`\rightarrow`$ 128 | 12,288 | 61,440 | 49,152 | **438** |
+| `debug` | `debug` | 16 $`\rightarrow`$ 128 | 28,672 | 167,936 | 139,264 | **1,243** |
+| `encode` | `prost_ser` | 16 $`\rightarrow`$ 128 | 12,288 | 45,056 | 32,768 | **292** |
+| `prost_de` | `prost_de` | 4 $`\rightarrow`$ 32 | 12,288 | 126,976 | 114,688 | **4,096** |
+| `par_drop` | `par_drop@gate` | 256 $`\rightarrow`$ 4096 | 45,056 | 598,016 | 552,960 | **144** |
+| `encode` | `prost_ser@gate` | 64 $`\rightarrow`$ 1024 | 28,672 | 319,488 | 290,816 | **302** |
+
+Three facts the table makes visible:
+
+1. **`prost_de` is the most expensive per level of the eight**, by $`\approx 1.26\times`$ over `clone` — and it is the **only** one of the eight that `prost` itself caps.
+2. **`hash` is the cheapest**, at parity with `par_drop`. It had never been measured, and reading *unmeasured* as *unimportant* would have been supported by this number — while the *reason* it is cheap (the hand-written impl walks the same field set as `PartialEq` and allocates nothing) is exactly why it is also the easiest to convert.
+3. **`ord` costs $`\approx 2\times`$ `eq`** despite comparing the same structure, because rustc's derived `cmp` materialises an `Ordering` per field and cannot reuse `eq`'s early-exit shape.
+
+★ **The three columns are themselves the finding.** A driver list read off a `#[derive]` scan sees only the derived column: `PartialEq` and `Hash` are **stripped** from `prost`'s output by `models/build.rs` and written **by hand** in `models/src/lib.rs` — where `<Par as PartialEq>::eq` deliberately ignores `locally_free`, which no derive would do — and `Drop` is rustc's implicit glue with **no `impl` anywhere**. That is why the generated `DERIVE_DISPOSITION_REGISTRY` states in its own doc comment that it is a **lower bound**, and why a hand-picked list of four already missed `Hash` once (**DERIVED**, `7c74260d`, `44535d75`).
+
+#### 5.3.2 The cold-store **encoder** — a single-walk trampolined serializer (`c28f4cf6`, `a169cc61`)
+
+**The defect. DERIVED** — the derived `Serialize` recursed once per level, *and* `bincode::serialize` **traverses the term twice**: `serialized_size` then `serialize_into` (`bincode-1.3.3 src/internal.rs:25-37`). **MEASURED (q)**, `a169cc61`, by an in-binary control: `bincode_ser_derived` needed 8,191 B at depth 4 and **925,688 B at depth 4,096** — ~**224 B/level** release.
+
+**The architecture: a pre-order op stack over borrows, with no value stack at all.**
+
+```rust
+// VERBATIM — models/src/rust/rholang/wire_encode.rs:150-170 (comments elided).
+#[derive(Clone, Copy)]
+enum Op<'a> {
+    Node { node: &'a dyn WireNode, field: u16 },
+    Seq { seq: &'a dyn WireSeq, index: u32, len: u32 },
+    MapEntries,
+}
+```
+
+★ **Why *no* value stack, when §5.1's driver needs one.** Serialisation is **pre-order into a contiguous buffer**: a node's bytes are complete the moment its last child has been written, so nothing has to be parked and recombined. This is the same structural observation that makes Cheney's algorithm work [[Cheney 1970](#ref-cheney1970)] — the output region *is* the accumulator — and it is why the encoder's per-level heap cost (**64 B**, §5.3.4) is a quarter of the decoder's (**304.7 B**).
+
+★ **Why the table is generated from the protobuf `FileDescriptorSet` rather than from `#[prost(...)]` attributes.** The attributes describe the *protobuf* wire. This encoding is `bincode` over `serde`, whose layout is serde's **declaration order**, which serde's derive exposes **nowhere at run time**. The descriptor is the only artefact carrying it (**DERIVED**, `c28f4cf6`).
+
+**Three bugs the suite found, each recorded where it was made** (**DERIVED**, `c28f4cf6`) — reported because they are the actual difficulty of this transformation:
+
+1. **`prost` does not interleave oneofs with plain fields.** It emits every plain field first, then every oneof (`prost-build-0.14.3 code_generator.rs:270-291`). `TaggedContinuation` declares its oneof *before* `guard`, so the intuitive rule produced a **95-byte encoding with its halves exchanged — same length, same byte multiset**. No round-trip could see it; the *write* differential did.
+2. **`&'static` slices with identical contents are merged by the linker.** `EPATHMAP_PROGRAM` is byte-for-byte `ELIST_PROGRAM`, so a downcast keyed on the program's *address* reinterpreted an `EList` as an `EPathMap` — **SIGSEGV (the segmentation-fault signal)**. Replaced by an explicit `WireNode::wire_as_pathmap`; the merge is now an asserted fact.
+3. **A global allocation counter counts other test threads.** Made per-thread — the assertion had passed at `--test-threads=1` and failed in the suite.
+
+**Why round-trip is not the property.** *A codec that encodes differently but decodes its own output round-trips — and forks.* The derived `Serialize` therefore **stays compiled** as the encode oracle, for the same reason `par_codec_differential` keeps the derived `Deserialize`: it is generated by the compiler and **cannot drift**. Anti-vacuity is executed, not asserted: `the_encode_differential_can_go_red` perturbs two field emissions and one variant index and requires the verdict to **reject**, naming the clause, with a control passing before and after.
+
+**Results — space. MEASURED (q)**, `a169cc61`, release, by bisection with the pre-conversion body in the **same binary**:
+
+| subject | depth 4 | depth 4,096 | slope |
+|---|---:|---:|---:|
+| `bincode_ser` (converted) | 8,191 B | **8,191 B** | **0 B/level** |
+| `bincode_ser_derived` (control) | 8,191 B | 925,688 B | ~224 B/level |
+| `bincode_de` (converted, Stage F) | 8,191 B | **8,191 B** | **0 B/level** |
+
+**MEASURED (f)**: `bincode_ser` and `bincode_de` both flat at **12 KiB** at depth 4 and depth 4,096, release.
+
+**MEASURED (q)**, `c28f4cf6`, `models/tests/wire_encode_space.rs`: the op stack is $`\Theta(\text{depth})`$ **not** $`\Theta(\text{size})`$ — **5 entries at width 4 and at width 65,536**; **2.000 entries per nesting level** (down from 4.000, because *a sequence's last element is a tail call, exactly as a node's last field is*); `size_of::<Op>() = 32` B.
+
+★ **Independently confirmed for this report.** §5.3.4's massif series gives the op stack at depth 4,096 as **524,288 B** = 16,384 entries $`\times`$ 32 B for a high-water of ~8,194 entries — i.e. **2.00 entries per level**, arrived at by a completely different instrument.
+
+#### 5.3.3 The cold-store **decoder** — an obligation stack with eighteen value stacks (`9a5521a2`)
+
+**The defect. MEASURED (q)**, `9a5521a2`: `Par` decode is $`\Theta(d)`$ at **28,362 B/level debug / 12,894 release** — $`D_{\max}`$ **73 / 161** on a 2 MiB worker, **the shallowest member of the whole family**, 1.8–4.5 $`\times`$ below `<Par as Clone>::clone`. And, as §2.2 records, the only member whose failure is **permanent and replicated**.
+
+★★ **Leg-2 made it reachable.** Before the substitution conversion, `substitute` capped the reducer at depth 75; afterwards `substitute` and the sorter are unbounded, so terms deep enough to break the decoder can now be *produced*. **A conversion can promote a latent defect to a live one**, and this is the campaign's worked example.
+
+★ **Why a hand-written parser, and why wrapping `serde` cannot work.** The reduction is short and decisive: to *defer* a child you need its **byte extent**; in a **non-self-describing** format an extent requires a **schema-driven parser**; *that parser is this decoder*. Confirmed independently rather than argued: `bincode`'s `deserialize_ignored_any` returns `Err("Bincode does not support Deserializer::deserialize_ignored_any")`, killing `IgnoredAny`; and `DeserializeSeed` passes state *into* a child and never returns control *out of* a partially-completed visitor. ⚠ The one `serde` wrapper the ecosystem shipped for this problem, `serde_stacker`, **grows the stack** — the same non-solution as `stacker` in §5.2.2 (**DERIVED**, `9a5521a2`).
+
+**Algorithm 3 (COLD-DECODE).** *An obligation stack of bounded opcodes plus per-type value stacks.*
+
+```pseudocode
+ 1  procedure COLD-DECODE(bytes)
+ 2      ops  ← [ ParStart ]                    ▷ bounded opcode alphabet, LIFO
+ 3      vals ← 18 per-TYPE value stacks        ▷ pars, sends, receives, exprs, …
+ 4      while ops is not empty do
+ 5          op ← POP(ops)
+ 6          case op of
+ 7            XStart →                          ▷ read X's own scalar fields NOW
+ 8                (flags, counts) ← READ-HEADER(bytes)
+ 9                PUSH(ops, XBuild(flags, counts))          ▷ the resume point FIRST
+10                for each child slot s of X, in REVERSE do
+11                    PUSH(ops, Rep(kind(s), count(s)))
+12            Rep(kind, n) →
+13                if n > 0 then
+14                    PUSH(ops, Rep(kind, n − 1))           ▷ ★ n ops are NEVER materialised
+15                    PUSH(ops, START-OP(kind))
+16            XBuild(flags, counts) →
+17                kids ← SPLIT-OFF(vals[kind], |vals[kind]| − counts)
+18                PUSH(vals[X], CONSTRUCT-X(flags, kids))   ▷ COMPLETE struct literal
+19      assert exactly one value remains, on vals[Par]
+20      return POP(vals[Par])
+```
+
+Line 14 is the hostile-input defence and deserves its own sentence. A counted repeat is re-pushed with $`\mathtt{remaining} - 1`$ **rather than expanded into $`n`$ opcodes**, so a declared `n = u64::MAX` costs $`O(1)`$ memory and dies on the first element that runs out of input. Combined with the fact that **every value costs at least one input byte**, allocation is $`O(\text{input})`$ for *every* input, including malformed ones. Line 17's `split_off` both preserves sibling **order** and is the same one-value-per-`Start` invariant as Algorithm 1. Line 18's *complete* struct literal — no `..Default::default()` anywhere in any decode path — makes a new schema field a **compile error** rather than a silently defaulted one.
+
+**★ Teardown is iterative too, and that is not an afterthought.** `<Par as Drop>` is $`\Theta(d)`$ at 470 B/level, so a decode that **failed at the last byte of a deep term** would abort *while rejecting a hostile input* — the same `SIGSEGV`, on the error path. `Drop for Machine` funnels every value stack through `par_children::dismantle_all`.
+
+**The obligation is language identity, not round-trip.** For every byte string $`b`$, `cold_decode` and `bincode::deserialize` must agree: same `Ok` value, **or both `Err`**. ★ The `Err` half is the consensus-visible one — *a node that accepts a byte string another rejects forks*.
+
+**Validation. MEASURED (q)**, `9a5521a2`:
+
+* differential against the **retained derived oracle** (compiler-generated, so it cannot drift) over an exhaustive corpus — one representative of all **36** `ExprInstance` and all **9** `ConnectiveInstance` arms, every `Par` field, both `EPathMap` serialize arms, every root type;
+* a falsification experiment confirmed the differential **fails** on a single-field drift (`ETuple` reading a `remainder` it does not have) — **and that the three `generate_par` proptests stayed GREEN through it**, which is precisely why the constructed corpus exists;
+* **1.88 M malformed inputs**, all agreeing: 117,601 truncations at every byte offset; 472,568 byte substitutions; 586,455 out-of-range variant indices; 701,898 hostile `u64` lengths (the family that would abort one side with an OOM (out-of-memory) kill without serde's `size_hint::cautious` cap, reproduced verbatim); trailing bytes **accepted** by both, because tightening that would *narrow the language*;
+* depth 4,096 decoded on a **256 KiB** stack, and a *truncated* depth-4,096 term **rejected** on a 256 KiB stack — the error path proved too.
+
+**A partition that is guarded, not asserted.** 47 types go on the machine; **16 keep the derived impl as bounded leaf calls**, on the principled ground that a type outside the `Par` SCC has fixed maximum nesting hence fixed maximum stack — the §2.1 result put to work.
+
+⚠ **A trap worth recording**: the serde oneof numbering is **declaration order, not proto tag**. `EPathmapBody` is proto tag 32 and serde index 25, so reading tags as indices mis-decodes **12 of 36** arms.
+
+#### 5.3.4 ★★ The malloc profile — where the allocations moved
+
+![heap: where the allocations moved](figures/heap-where-allocations-moved.svg)
+
+**Figure 5** — *`figures/heap-where-allocations-moved.puml`*. The heap result, from massif and DHAT.
+
+All figures in this section are **MEASURED (f)**, 2026-07-29, one arm per process, pinned, via `models/benches/wire_encode_massif.rs`. Raw data in Appendix B.
+
+**(a) Production shape** — the datum is depth 2, which is **95.43 %** of measured produces (**MEASURED (q)**, the distribution instrumented over five interpreter suites, 1,773 datums, `models/benches/wire_encode_bench.rs`). 20,000 encodes per arm.
+
+| arm | total bytes | total blocks | blocks / call | peak heap (`t-gmax`) | heap **reads** | heap **writes** |
+|---|---:|---:|---:|---|---:|---:|
+| `derived` = `bincode::serialize` | 12,828,259 | 20,022 | **1.0011** | 6,187 B in 15 blocks | 39.88 MB | 12.83 MB |
+| `machine` = `wire_encode::encode` | 12,834,467 | 20,026 | **1.0013** | **12,395 B** in 19 blocks | 45.74 MB | **41.65 MB** |
+| `reused` = `wire_encode::with_encoded` | **14,466** | **26** | **0.0013** | 12,394 B in 19 blocks | 32.92 MB | 28.83 MB |
+
+Reading the table:
+
+* **Block count per call is *identical* between the derive and the like-for-like replacement — one allocation each.** `bincode::serialize` sizes then writes into a single exactly-sized `Vec`; `wire_encode::encode` writes into a pooled buffer and hands back one `to_vec`. The conversion is **malloc-neutral** in the like-for-like form.
+* **Total bytes differ by exactly +6,208 B over the whole run** — the two thread-local arenas (`OUT` at 4,096 B and `OPS` at 2,048 B), allocated **once**, plus 64 B. Not per call.
+* ★ **The peak heap doubles, 6,187 $`\rightarrow`$ 12,395 B, and that is deliberate.** The arenas are *retained*, which is the mechanism that makes the third row possible.
+* ★★ **The third row is the actual malloc result.** Where the caller does not need ownership, 20,000 encodes cost **26 blocks and 14,466 bytes in total** — $`770\times`$ fewer blocks and $`887\times`$ fewer bytes than the derive. The pooling policy is bounded on purpose: `MAX_POOLED_OPS = 4096` entries (128 KiB, covering a 2,048-deep term), so *a single pathological encode cannot pin its high-water mark for the life of the thread*.
+* ⚠ **The cost, stated plainly: the machine performs $`3.25\times`$ more heap writes** (41.65 MB vs 12.83 MB). Those writes are the op stack. They were previously **native-stack** traffic, which DHAT does not count — so this is a **relocation made visible**, not new work invented. It is nonetheless real memory traffic against real caches, and §5.4 shows it does not cost wall-clock time on this workload.
+
+**(b) Deep shape** — a 4,096-deep `Par`, from the massif time series.
+
+The encoder's working set decomposes **exactly**:
+
+```math
+\underbrace{4{,}133{,}992}_{\text{peak}} \;-\; \underbrace{3{,}347{,}560}_{\text{term alone}} \;=\; \underbrace{786{,}432}_{768\ \mathrm{KiB}} \;=\; \underbrace{524{,}288}_{\text{op stack}} \;+\; \underbrace{262{,}144}_{\text{output buffer}}
+```
+
+* **op stack 524,288 B** = 16,384 `Op` entries $`\times`$ 32 B, for a high-water of ~8,194 entries — **2.00 entries per level**, confirming `wire_encode_space.rs` by an independent instrument;
+* **output buffer 262,144 B**, holding an encoding of **148,546 B** (from the arm's own printed `sink`, $`9{,}506{,}944 / 64`$) — a `Vec` doubling from 4,096 reaches 262,144 at that size, exactly;
+* and the massif series shows a **524,288 B sawtooth** thereafter, which is the op-stack allocation being *freed and reallocated* every iteration — the `MAX_POOLED_OPS` policy working as designed, because 16,384 entries exceeds the 4,096-entry pooling cap.
+
+The decoder's transient working set is **1,248,192 B**, obtained as the difference between each decode's peak and the plateau it settles to, and **reproduced to the byte on every observed decode**: peaks 8,364,155 / 11,444,347 / 14,524,539 against plateaux 7,115,963 / 10,196,155 / 13,276,347. That is **304.7 B per nesting level** of heap value stacks.
+
+Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,192 B in 8,193 blocks** — *bit-for-bit the same heap footprint as one built directly*, which is a useful sanity check on the decoder's construction.
+
+**(c) The migration, per nesting level — the number the user asked for**
+
+| codec | native stack **before** | native **after** | heap **before** | heap **after** | bytes/level ratio |
+|---|---:|---:|---:|---:|---:|
+| cold-store **writer** | 329 B/level (release, `q`) | **0** | 0 | **64 B/level** | $`5.1\times`$ cheaper |
+| cold-store **reader** | 12,894 B/level (release, `q`) | **0** | 0 | **304.7 B/level** | $`42.3\times`$ cheaper |
+
+★ **This is the whole trade in one line.** The conversion does not *remove* the $`\Theta(d)`$ state — a depth-$`d`$ traversal must remember $`d`$ things. It **relocates** that state from a fixed 2 MiB region whose exhaustion is a `SIGSEGV` to a growable region whose exhaustion is an `Err` — and on these two codecs it happens to need **5–42 $`\times`$ fewer bytes per level** as well, because a hand-written work item carries only what the resumption needs, where a compiler-laid-out frame carries every live local of a 40-arm `match` (§5.1.1).
+
+#### 5.3.5 The prost network encoder (`56fb1fd0`) — converted in *work*, not in *stack*, and dormant
+
+★ **This fix is included because it is on the ser/de path and because its honest description is unusual: it does not make anything stack-safe.**
+
+**The defect. DERIVED**, from `prost` source: `Message::encode_to_vec` calls `encoded_len()` — a full recursive walk — and then `encode_raw`; and `encoding::message::encode` calls `msg.encoded_len()` **again for every nested message it writes**. A node's subtree is therefore measured **once per ancestor**:
+
+```math
+\sum_{v} |\mathrm{subtree}(v)| \;=\; \Theta(d^2) \quad\text{on a depth-}d\text{ chain}
+```
+
+**The repair.** A memoised bottom-up pass measures each node **once** — $`\Theta(n)`$ work at $`\Theta(n)`$ **space** (4 B per message node) where prost's is $`O(1)`$ space. **That is the whole trade, stated as a trade.**
+
+★ **One monotonic cursor suffices, and that is structural rather than lucky.** Pass 1 allocates pre-order ids *at the moment of descent*; pass 2 descends in the same order through the same generated walk, the same counted repeat and the same `BTreeMap` iterator — so the sequence of nodes needing a length prefix **is** the sequence in which ids were allocated. It is bounded on both sides: `open_child` panics naming the slot if the cursor runs **past** the table, and `finish_emit` panics if it stops **short** — the latter being what a pass-2 walk that skipped a child would do, producing a perfectly well-formed protobuf message **with a field missing**.
+
+⚠ **Both passes are still $`\Theta(\text{depth})`$ in native stack.** No stack-safety claim is made and none should be read.
+
+⚠ **It is dormant.** `prost_encode::` appears in **no `src/` tree** of `models`, `rholang`, `rspace++`, `casper`, `node`, `comm` or `shared` — verified mechanically, not by intention (**DERIVED**, `56fb1fd0`).
+
+⚠⚠ **A named residual inside the fix.** `EPathMap` is an **opaque leaf**: its `encode_raw` has three arms — memcpy of interned canonical bytes, ground field-8, or the field walk — and *which* fires depends on a `OnceLock` another thread may fill. Both passes intercept it at exact parity with `prost::encoding::message::encode`. **Correct** and **not depth-independent** are two separate statements, and only the first is claimed.
+
+★★ **The mutation proof runs at the generator, not at the verdict** — and this is the strongest methodological result in the campaign. Two near-misses earlier in this work were mutations that *reported green because they had not applied*. A byte-level mutation proves the **judge** can reject; only a generator-level one proves the **encoder** would have been caught. Three generator mutations, each rebuilt and each required to change `OUT_DIR/rhoapi_prost_wire.rs` before its verdict was accepted (**MEASURED (q)**, `56fb1fd0`):
+
+| mutation | lines | verdict | why it is invisible to weaker checks |
+|---|---:|---|---|
+| M1 `sort_by_key(min_tag)` removed (declaration order) | 34 | **REJECTED** | `Par::all_par_fields` differs first at byte 925 — **both are 1,031 bytes**, a pure permutation. No length check, no round-trip, and **no protobuf decoder anywhere** can see it. |
+| M2 sort key `(is_oneof, min_tag)` | 10 | **REJECTED** | `TaggedContinuation::par_body` differs at byte 0 — **both 1,140 bytes, same byte multiset, halves exchanged**. ⚠⚠ The mirror of the serde defect of §5.3.2(1) — and for protobuf the correct order is **the opposite** of that fix. |
+| M3 skip-if-default $`\rightarrow`$ `if true` for `bool` | 68 | **REJECTED** | lengths 18 vs 14, 11 vs 9, 17 vs 11, 8 vs 6 across the corpus. |
+
+⚠ **The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally, never by timing** — a timing assertion in a test suite is a flake. The length table must grow **linearly** across $`d \in \{4, 8, 16, 32\}`$, i.e. constant entries per level; a growing per-level cost **is** the quadratic. **NOT MEASURED**: no wall-clock benchmark of `prost_encode` against `prost`'s own encoder exists, and none was constructed for this report, because the code is dormant and benchmarking a dormant path would report a number nobody can collect (§5.9).
+
+---
+
+### 5.4 Throughput and CPU profile of the codec conversion
+
+#### 5.4.1 Wall clock
+
+**Hypothesis, stated before the measurement** (and stated in the harness's own header): *"$`2\times`$ faster at depth 6,000 and 20 % slower at depth 3 is a NET LOSS."* The conversion's value is a class change, so the acceptance criterion was **not a speed-up** but *no regression on the production-weighted mix*. The measured distribution is 95.43 % depth 2 and **nothing deeper than 6 was observed**, so the verdict cell is deliberately the shallow one, where a per-node dispatch cost would show up worst.
+
+**MEASURED (f)** — `/tmp/sd_wire_bench.log`, release, core 8, 3 independent whole-bench runs $`\times`$ 60 measured repetitions after 10 warm-up, interleaved A/B within each repetition. Production-weighted mix, 2,001 datums/pass, 693 B/datum.
+
+| run | `derived` mean ± sd (ns) | `machine` mean ± sd (ns) | `machine_reused` mean ± sd (ns) |
+|---|---:|---:|---:|
+| 1 | 1,043,789 ± 24,237 | 870,283 ± 10,301 | 830,347 ± 13,786 |
+| 2 | 1,030,173 ± 22,662 | 864,163 ± 34,753 | 823,346 ± 32,306 |
+| 3 | 1,026,084 ± 14,119 | 862,601 ± 10,952 | 835,020 ± 11,588 |
+| **between-run mean ± sd ($`n=3`$)** | **1,033,349 ± 9,259** | **865,682 ± 4,072** | **829,571 ± 5,876** |
+
+**Overlap check.** `derived` spans $`[1{,}011{,}965,\ 1{,}068{,}026]`$ ns across all runs at $`\pm 1`$ sd; `machine` spans $`[851{,}649,\ 905{,}036]`$. **The ranges do not overlap.** The harness's own Welch test [[Welch 1947](#ref-welch1947)] reports $`t = 51.03,\ 30.99,\ 70.87`$ at $`\mathrm{df} \approx 80\text{–}111`$, significant at $`\alpha = 0.01`$ in all three runs.
+
+| comparison | run 1 | run 2 | run 3 | mean ± sd |
+|---|---:|---:|---:|---:|
+| `derived` $`\rightarrow`$ `machine` (like-for-like, owned `Vec`) | 1.199 $`\times`$ | 1.192 $`\times`$ | 1.190 $`\times`$ | **1.194 ± 0.005 $`\times`$** |
+| `derived` $`\rightarrow`$ `machine_reused` (contract change) | 1.257 $`\times`$ | 1.251 $`\times`$ | 1.229 $`\times`$ | **1.246 ± 0.015 $`\times`$** |
+
+★ **The prediction was that the conversion would cost throughput on shallow terms, and it was wrong in the favourable direction.** The single-walk machine is **$`1.194\times`$ faster** on the exact distribution production sees. §5.4.2 says why.
+
+**The rest of the shape space** (run 3, one representative; all cells $`\alpha = 0.01`$ significant, all ranges non-overlapping):
+
+| shape | `derived` $`\rightarrow`$ `machine` |
+|---|---:|
+| depth 1 | 1.205 $`\times`$ |
+| depth 2 (95.43 % of production) | 1.203 $`\times`$ |
+| depth 3 | 1.241 $`\times`$ |
+| depth 4 | 1.171 $`\times`$ |
+| depth 6 (deepest observed in production) | 1.171 $`\times`$ |
+| depth 16 | 1.294 $`\times`$ |
+| depth 64 | 1.389 $`\times`$ |
+| `map(64 entries)` | 1.299 $`\times`$ |
+| `map(1024 entries)` | 1.311 $`\times`$ |
+| `wide(4096 siblings)` | 1.531 $`\times`$ |
+| depth 256 (never weighted) | 1.521 $`\times`$ |
+| depth 1024 (never weighted) | 1.501 $`\times`$ |
+
+⚠ **The `depth 64` cell is the noisiest in the file** (relative sd 4.5–14.3 % against ~1–2 % elsewhere) and its ranges *do* overlap between runs, though not between arms within a run. It is reported with that caveat rather than smoothed.
+
+#### 5.4.2 CPU profile — where the derived path's time actually goes
+
+**MEASURED (f)** — `perf record -e cpu-clock -F 9999 --call-graph dwarf,16384` over the interleaved A/B bench, 29,436 samples, 0 lost. Full flat profile at `/tmp/sd_perf/report.flat.txt`.
+
+⚠ **The gross per-arm totals are *not* a valid A/B comparison** and are not presented as one: the bench runs `derived` once but `machine` **and** `machine_reused`, so the `wire_encode` bucket covers two arms. The wall clock of §5.4.1 is the comparison. What the profile *does* establish is the **internal structure of the derived arm**, which no timing can show:
+
+| bucket within the derived arm | % of total samples |
+|---|---:|
+| `SizeChecker` pass — i.e. `serialized_size` | **19.40 %** |
+| `Serializer` pass — i.e. `serialize_into` | 14.54 % |
+| `drop_in_place::<bincode::error::ErrorKind>` | **9.23 %** |
+| derived total | 43.17 % |
+
+Two findings:
+
+1. ★★ **The traversal the single-walk machine deletes is the *more expensive* of bincode's two** — $`19.40 / 14.54 = 1.334\times`$. The claim in `c28f4cf6` that *"the win is deleting a whole traversal, not shaving a loop"* is thereby confirmed by profile, and it explains §5.4.1's direction: a $`1.33/2.33 \approx 57\%`$ reduction in serde work comfortably absorbs the per-node dispatch the op stack adds.
+2. ★ **`drop_in_place::<bincode::error::ErrorKind>` accounts for 9.23 % of the whole profile — 21 % of the derived arm's own cost — on the *success* path.** Every `serde` call returns a `Result<_, Box<ErrorKind>>` and every one of them is destroyed. The op-stack machine returns `()` from its emit steps and pays none of it. This was not a designed win and is recorded as an observation.
+
+The machine's own hot symbols are `encode_into` (21.89 %), `<Par as WireNode>::wire_emit` (16.96 %) and `<Expr as WireNode>::wire_emit` (8.25 %) — i.e. the driver loop and the two generated emit tables, which is what a well-behaved defunctionalised walk should look like.
+
+---
+
+### 5.5 Family D — the deploy path
+
+![deploy path ceilings](figures/deploy-path-ceilings.svg)
+
+**Figure 6** — *`figures/deploy-path-ceilings.puml`*. The deploy path end-to-end, with each traversal's measured ceiling.
+
+#### 5.5.1 ★ A refuted hypothesis, reported as a result
+
+**Hypothesis (E86, recorded before the measurement):** the deploy path's binding constraint is `Env::get`'s un-removable clone, because that is where a deep term enters the environment.
+
+**MEASURED (q)**, `e72dcae8`, release, explicit 2 MiB worker, real runtime, deploy driven from source:
+
+* `@"out"!([[…[0]…]])` — no binder at all — max depth **286**;
+* `for(@x <- @"c"){@"out"!(x)} | @"c"!(…)` — the COMM'd binder — max depth **283**.
+
+★★ **The hypothesis is refuted.** The binder shape costs **three levels of headroom**, not a new ceiling. Both shapes measure the *same* 7,253 B/level (identical growth, 1,740,800 B over 16 $`\rightarrow`$ 256); they differ only in a 20,480 B **intercept**. And the arithmetic estimate of ~289 levels ($`2\ \mathrm{MiB} / 7{,}247`$) lands near the right number **for the wrong reason**.
+
+**What was actually binding, and nobody had recorded it.** `Substitute::substitute_and_charge` took `term: &A` and opened with `self.substitute(term.clone(), …)` — so **every substitution copied its input** through `<Par as Clone>::clone`, on the **ordinary send path**, with no binder, no COMM and no environment. Established by `gdb` at the overflow: a clean 3-frame repetition
+
+```text
+<Par as Clone>::clone
+  → <ExprInstance as Clone>::clone
+    → <Expr as ConvertVec>::to_vec
+```
+
+under frame #103 `substitute_and_charge::<Par>`, called from `eval_send`'s data-substitution `map`, on a `spawn_detached` worker.
+
+#### 5.5.2 ★ A withdrawn claim, reported as a result
+
+**Claim as recorded (E89):** the gRPC ingress teardown costs **84.3 B/level**, and the ingress ceiling *depends on the spelling of the discard* — `mk_term(..).map(drop)` measuring 135.5 B/level against the literal `match … Ok(_parsed_term) => …` at 84.3, a $`1.6\times`$ spread from source form alone.
+
+**WITHDRAWN. MEASURED (q)**, `ee1dfdad`. The 84.3 came from a **two-point min-stack ladder whose low point is clamped at the 77,824 B parse/normalise floor**, which biases the estimate downward — hazard (1) of §2.3. Four fixed-stack depth bisections resolve it:
+
+| stack | ceiling | pairwise B/level |
+|---:|---:|---:|
+| 256 KiB | 2,667 | — |
+| 512 KiB | 5,398 | 95.988 |
+| 1 MiB | 10,859 | 96.006 |
+| 2 MiB | 21,782 | 95.997 |
+
+Least squares: **95.999 B/level at $`r^2 = 1.0000`$**, intercept 6,106 B, largest residual **21 B**. The disassembly gives the same number independently: 48 B + 48 B per level across the two frames of the `Par` $`\leftrightarrows`$ `ExprInstance` cycle.
+
+★ **And the shape-sensitivity conclusion is superseded too.** The *identical* function `drop_in_place::<models::rhoapi::Par>` is emitted with **5 pushes and no `sub rsp` (48 B)** in casper's binary and **7 pushes (64 B)** in rholang's, and the cycles bisect to **96 vs 144 B/level** — a $`1.5\times`$ spread from **register allocation alone, with no source difference**. E89's $`1.6\times`$ between two spellings sits inside that. The conclusion "the call shape matters" was an artefact of ordinary per-build codegen variance.
+
+★ **Corrected record: 84.3 $`\rightarrow`$ 96.0 B/level.**
+
+#### 5.5.3 The three repairs
+
+**(a) The ingress discard (`a09f1de2` + `3b265eb7`).** `admit_deploy` and `admit_deploy_cosigned` validated a deploy by parsing its term and throwing the result away — `Ok(_parsed_term)`, bound with a leading underscore, never read, released when the match arm ends. `Par` is prost-generated, so that release is the derived `drop_in_place::<Par>` $`\leftrightarrows`$ `drop_in_place::<ExprInstance>` cycle across the `EList.ps: Vec<Par>` edge.
+
+⚠ **The severity was *reachability*, not depth.** Ingress was the **highest** of the deploy path's three ceilings, not the binding one:
+
+```text
+env_get_deploy (reduction)          283   ← the binding constraint
+plain_deploy   (reduction)        6,831
+ingress admit_deploy_cosigned    21,781
+```
+
+What made it worth fixing first is *where it sat*. Every hop was read: `DeployService/doDeploy` $`\rightarrow`$ `deploy_grpc_service_v1.rs:256` $`\rightarrow`$ `block_api.rs:477 deploy_cosigned` (**synchronous, inline on the tokio worker, no `spawn_blocking`**) $`\rightarrow`$ `dispatch.rs:66` $`\rightarrow`$ `block_admission.rs:105`. So it fired **on unauthenticated network input, on the receiving node, before the deploy was stored, before consensus, and with no `RuntimeBudget` in scope** — cost accounting could not bound it, not because the charge would be too small but because **no charge exists yet**. The inbound cap is 16 MiB, **385 $`\times`$ more headroom than the attack needed**, and the signature is trivially generated with a fresh keypair.
+
+The repair is one owner, `validate_deploy_term`, which parses the same way and hands the term to `par_children::dismantle` — an explicit `Vec<Par>` worklist. It is a **function** rather than three copies of one discard because there are two production call sites *and a measurement probe that must stay the same shape as production or its numbers describe something else*.
+
+★ **Nothing observable moves, for three independent and individually sufficient reasons** (**DERIVED**, `3b265eb7`): the signature is over the **source** (`DeployData::to_message`'s `term` field is the source string, so the normalised `Par` is never in the signed payload); storage is the source (admission persists `Signed<DeployData>` plus the cosigner sidecar, and **no `Par` is written**); and the term is rebuilt later anyway (the proposer re-normalises at `acceptance.rs:321`).
+
+**(b) The metering handshake (`9082d12c`).** `InterpreterImpl::inj_attempt`'s set-initial-cost phase handed the freshly normalised `Par` to `SignedProcess::metered`, then **eleven lines later asked for it back** with `source_process().cloned()`, and dropped the original at the closing brace. Two $`\Theta(d)`$ traversals of native stack where a **move** suffices.
+
+★ **And neither bought anything.** `RuntimeBudget::reset_from_signed_process` reads only `SignedProcess::token()`, and `token()` returns `None` on the `Signed` arm — **so the metering handshake never observes `process` at all**. The clone was a read-back of the line above it.
+
+The repair is `SignedProcess::into_source_process`, the by-move twin: it walks the `Par(Box, Box)` spine with an explicit worklist, **pushes RIGHT before LEFT so `pop` reproduces `source_process`'s left-biased `.or_else` order exactly**, returns the first `Signed`'s `process` **by move**, and hands any further `Signed` arms to `par_children::dismantle_all`.
+
+**(c) The metered wrappers take their term by value (`64a5d2bc`, `94dc983f`, `d2591fa1`).** The `substitute_and_charge` copy of §5.5.1 is removed by making the wrapper take ownership, which requires ownership to run all the way from the task-spawn boundary. `d2591fa1` deletes the per-branch `Par` deep clone in `eval_par` — the spawned future is `'static` so the branch term must be **owned**, but it does not have to be **copied** — by re-typing `split` to take `term_count: usize` (its entire body read `terms.len()`) and `into_iter()`-ing the terms. `94dc983f` then carries ownership through `generated_message_eval`, removing **15 deep copies**, seven named by the plan and **eight more that fell out of the same plumbing because the sibling arms had the identical shape**.
+
+★ **And one that was worse than a clone.** `eval_match`'s loop held `(Par, Vec<MatchCase>)` as state and rebuilt the tail with `case_rem.to_vec()` on every failed case: a deep copy of every **remaining** case, once per case tried — $`\Theta(n^2)`$ `Par` clones over an $`n`$-case `match`. Draining an owning iterator removes it.
+
+#### 5.5.4 Results, and a control that behaved exactly as predicted
+
+**MEASURED (q)** — `64a5d2bc`, `ee1dfdad`, `9082d12c`:
+
+| subject | before | after | factor |
+|---|---:|---:|---:|
+| `subst_and_charge` (release) | 2,852 B/level | **146** | 19.5 $`\times`$ |
+| `subst_and_charge` (debug) | 15,872 B/level | **1,462** | 10.9 $`\times`$ |
+| `inj_attempt_clone` (release) | 2,852 B/level, $`D_{\max}=729`$ | **0**, $`\geq 1{,}048{,}576`$ | class change |
+| ingress teardown (release) | 96.0 B/level, ceiling 21,781 | **0**, no ceiling $`< 262{,}144`$ | class change |
+| ingress teardown (debug) | 429.9 B/level, ceiling 4,503 | **0** | class change |
+| **`plain_deploy`**, end-to-end, 2 MiB worker | 286 levels | **6,831** | **23.9 $`\times`$** |
+| **`env_get_deploy`**, end-to-end — **the control** | 283 levels | **283** | **1.00 $`\times`$** |
+
+★★ **The control is the reason this result is credible.** `env_get_deploy` exercises `Env::get`'s clone, which *nothing in this repair touches*. It was predicted to be unmoved and it was unmoved — *by a single level*. A report quoting only `plain_deploy` would be false: what changed is **which shape is worst**. Before, `Env::get` cost 3 levels of headroom on top of a 286-level ceiling; now it is the **sole** ceiling of its shape, 24 $`\times`$ below the other. Any deploy whose deep value arrives over a channel is **unimproved by this repair**.
+
+⚠ **A drift found by this report. MEASURED (f)** — `/tmp/sd_deploy_ceiling.log`, fresh bisection at HEAD `8853f839`:
+
+```text
+deploy depth ceiling on a 2 MiB worker: plain_deploy 6831, env_get_deploy 274
+  plain_deploy    : depth 6831 runs, depth 6832 exits ExitStatus(unix_wait_status(134))
+  env_get_deploy  : depth 274 runs, depth 275 exits ExitStatus(unix_wait_status(134))
+```
+
+`plain_deploy` reproduces **exactly** (6,831). **`env_get_deploy` reads 274, not 283** — a loss of **9 levels ($`-`$ 3.2 %)** since `64a5d2bc`. The candidate causes are the four `rholang` commits landed since (`8853f839` substituting a `matches` pattern at `depth + 1`, `eaa905fe` restoring bindings on a refused disjunction, `f5fd6c34` giving each matcher attempt its own `FreeMap`, `76de7d44` `cursor_kind`), each of which adds state on the binder path — but **the attribution was not established** and is not asserted. What *is* asserted is that the recorded 283 is stale at HEAD.
+
+⚠ **A consequence for the gate.** `stack_depth_gate.rs`'s `BUILD_DEPTH_INVENTORY` carries **283** as a transcribed constant and computes its headroom ratio from it: the fresh run prints `tightest env_get_deploy at 283 vs widest read ceiling 33 — 8× (floor 8×)`. With the true 274 the ratio is $`274/33 = 8.30`$, still above the floor — so **the gate passes, and it passes on a stale number**. The inventory is the one place in this system where a figure is transcribed rather than derived, and it has drifted, exactly as §5.7.1 predicts of any transcribed figure.
+
+#### 5.5.5 A second correction to the record
+
+**MEASURED (q)**, `291bc217`: the recorded **219 B/level** release figure for `par_drop` *does not reproduce*; direct bisection gives **144** (debug's 470 reproduces at 464), making the profile ratio **3.22**, not the 2.1 that had been derived from the 219. **MEASURED (f)**: `par_drop` **144** B/level release at HEAD, on the gate's own 256 $`\rightarrow`$ 4,096 ladder, and **136** on the S0 16 $`\rightarrow`$ 256 ladder. **The 219 is withdrawn.**
+
+#### 5.5.6 How bad it was before — the severity of what was fixed
+
+Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flatter:
+
+* `291bc217`: on a 2 MiB worker, `normalize` survives depth $`\geq 39{,}960`$ but `par_drop` **aborts at 4,453**. $`\Rightarrow`$ **A source of 4,415 bracket levels — 8,831 bytes, one TCP (transmission control protocol) segment — normalises without difficulty and then aborts the process on teardown**, via `SIGSEGV` on the guard page. Not a panic, so no `catch_unwind` sees it; `inj_attempt`'s `ParserError` arm cannot run; and `build-normalized-term` precedes `set-initial-cost`, so **no budget exists to charge**. At 8 MiB the boundary is 17,929 / 17,987, which reproduces the originally reported "16,000 ok / 32,000 aborts" exactly.
+* `3b265eb7`: a **depth-21,782 deploy — 43,565 bytes of source** — sent to `doDeploy` aborted the node with `SIGABRT`, exit 134, pre-storage and pre-consensus.
+
+⚠ **And a bound on the severity, from the same measurement**: the **wire** path was *not* affected, because prost's `RECURSION_LIMIT` caps a network-delivered term at depth 33. **A `Par` too deep to arrive over the network can be built from source text.** That sentence is the asymmetry of §6.4, first observed here.
+
+---
+
+### 5.6 Family F — fixes originating in `mettail-rust`
+
+`mettail-rust` is the companion repository that lowers guest-language terms into `rhoapi::Par`. Two of its findings are in scope because the fix originates there; three more are included because they are methodological results this report depends on.
+
+#### 5.6.1 The lowering component (`3c0c3585`)
+
+**The defect. MEASURED (q)**: `@"OUT"!([[[…1…]]])` aborted the `rhocalc` binary with `SIGSEGV` on the guard page at nesting depth **169**.
+
+★ **The scope was the *component*, not the self-calls.** The reproducer never recurses through a self-call: its cycle is `lower_proc ▸ CastList ▸ lower_list ▸ lower_proc`, with twelve `core::iter` adapter monomorphisations in between. A Tarjan decomposition puts **87** functions in one component. **Converting the 18 direct self-call sites would have left the reported reproducer exactly as it was.**
+
+⚠ **An earlier attempt is the control.** M-1 split `lower_proc`'s 89 arms into per-arm frames and bought **$`3.20\times`$ in debug and $`1.07\times`$ in release** — because at `opt-level=3` LLVM was *already* overlaying the arms M-1 hoisted. **The class was untouched.** This is §5.1.4's lesson in a second costume.
+
+**Results. MEASURED (q)**, `3c0c3585`, by direct bisection of `RLIMIT_STACK` on the probe's **main thread** — not a spawned thread with a `stack_size`, because the member runs on the main thread and `RUST_MIN_STACK` cannot reach it — debug / release B/level:
+
+| subject | before | after |
+|---|---:|---:|
+| `lower_depth` | 15,132 / 2,157 | **1 / 0** |
+| `lower_leak` (the lowering *alone*) | — | **0 / 1** |
+| `lower_add`, `lower_par`, `lower_neg` | — | 0–1 / 0–1 |
+| `lower_width` (65,536 siblings) | — | 1 / 0 |
+| whole `rhocalc` binary | — / 7,277 | — / **2,567** |
+
+★ **Anti-vacuity changed a conclusion here.** `lower_depth` first read **252 B/level**, and the obvious reading — *"the conversion is incomplete"* — was **wrong**: `ast_drop`, which lowers nothing at all, read **254**. The slope was the teardown of the AST (abstract syntax tree) itself. `lower_leak` (lower, then `mem::forget` both sides) isolates the conversion and reads **0**.
+
+**The named residue, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. The two `Drop`s are the derived-impl class and **are not reachable by the pushdown transform applied here: `drop_in_place` has no text to rewrite.**
+
+⚠ **`ast_drop` is that class with a twist worth recording.** The `language!` macro *does* emit a pooled iterative `Drop`, and a pure `Proc::Add(Arc<Proc>, …)` chain is flat under it — but `Proc::CastList(Arc<List>)` $`\leftrightarrows`$ `List::ListLit(Vec<Proc>)` **alternates types**, and the worklist does not follow the hop.
+
+#### 5.6.2 The environment-as-delta result, reproduced independently
+
+`3c0c3585`'s `BoundEnv` rides as a **delta** into an arena whose root is borrowed, materialised once per **binder site** — because *"an owned env per work item clones a `HashMap` per level and leaves the traversal $`\Theta(d)`$ in heap anyway"*. That is §5.1.2(b) arrived at independently in a different repository, which is the strongest available evidence that it is the *right* shape for this transformation rather than a local trick.
+
+#### 5.6.3 ★★ A retracted claim — the parser is **not** depth-independent (`1339c1e2`, then `6275b0e2`)
+
+**Claim as published (`1339c1e2`):** `Proc::parse_via_wpda` is depth-**independent**, on a ladder at depths 16 / 32 / 64 / 128 that read **471,040 bytes at every rung — identical to the byte**.
+
+**RETRACTED within the hour.** `assert_no_slope`, which bisects at both ends of a 4 $`\rightarrow`$ 4,096 ladder rather than sampling a narrow one, failed with
+
+```text
+ZERO-SLOPE GATE FAILED for `parse_depth`: minimum stack grew 5264 KiB between
+depth = 4 (460 KiB) and depth = 4096 (5724 KiB), which is 1317 B per step.
+```
+
+**MEASURED (q)**, `6275b0e2` — widening the ladder resolves it cleanly:
+
+| depth | min stack (B) | pairwise B/level |
+|---:|---:|---:|
+| 128 | 471,040 | — |
+| 256 | 499,712 | 224 |
+| 512 | 815,104 | 1,232 |
+| 1,024 | 1,536,000 | **1,408** |
+| 2,048 | 2,977,792 | **1,408** |
+| 4,096 | 5,861,376 | **1,408** |
+
+Asymptote **1,408 B/level**, stable to the byte across the last three intervals. Flat to depth ~256, linear thereafter; ⚠ **the mechanism behind the knee is not established and is deliberately not guessed at.**
+
+★ **Why the first measurement lied.** 471,040 B is the parser's **own fixed intercept** — ~460 KiB of generated recogniser tables and driver frame. It is not a harness artefact: the cheapest subject in the same binary bisects to 98,304 B. Below depth ~256 the per-level cost is entirely **masked** by that intercept.
+
+★★ **The rule adopted, which generalises past this subject:** *both probe points of a slope measurement must sit clear of the subject's own floor, or the derived slope is understated — here, all the way to zero.* This is hazard (1) of §2.3, and it is the dual of the hazard the same file's header already warned about. **The superseded claim is left standing in the previous commit message rather than rewritten, because the retraction is part of the record.**
+
+#### 5.6.4 Two further methodology corrections from the same repository
+
+**A guessed ceiling, corrected by measuring (`d72740e6`).** `lowering_theta_depth_tripwire` carried `ceiling(23_000, 6_000)`; the 6,000 was extrapolated from a `ulimit` bisection of the **whole binary** before any release gate run existed. Measured release slopes at the tripwire's own probe points: `lower_depth` **2,157**, `lower_add` **2,450**, `lower_par` **1,206** B/level $`\Rightarrow`$ the correct release ceiling is ~4,000. **The committed 6,000 was both too loose for the subjects it gates and derived from the wrong scope.**
+
+★★ **The binary's slope is not the lowering's slope**, and recording that in advance prevented a false claim later:
+
+| measurement | release B/level |
+|---|---:|
+| gate `lower_depth` (lowering alone) | 2,157 |
+| gate `parse_depth` (parser alone) | 304 |
+| gate `reproducer` (parse + lower + iterative teardown) | 2,128 |
+| `bisect_ulimit` on `target/release/rhocalc` (whole main thread) | **7,266** |
+
+the `reproducer` subject and the `lower_depth` subject agree to within measurement noise, so parse and lower **do not sum** — the deeper dominates. But the **binary** costs ~5,100 B/level *more* than parse + lower together, and that residue is neither: it is rendering the observation, and the derived recursive `Drop` of the deep `Par`. $`\Rightarrow`$ *"The lowering is fixed" and "`rhocalc` is depth-independent" are different claims, and only the first was made.*
+
+**An inert remedy retired (`73c774a3`).** Every run line in a demo run-sheet carried `RUST_MIN_STACK=134217728`, and a gate asserted the prefix was **present**. **MEASURED (q)**: all thirteen committed demos run to their documented exit status with **no `RUST_MIN_STACK` set**, at the default `ulimit -s`. ★ **And the prefix was never a correct remedy here**: `RUST_MIN_STACK` is read only by `std::thread`'s spawn path, so **it cannot resize a main thread** — and the binary is `#[tokio::main] async fn main`, which is where parsing and lowering run. *A sheet that recommends an inert knob teaches a presenter to mis-diagnose, which is worse than silence.* The gate was **inverted** rather than deleted, so that restoring the prefix under presentation pressure fails the build and points at the real gate.
+
+**A gate that was red because it did not finish (`21c51d10`).** One test bisected four residue subjects at depths 512 and 4,096; at ~20 child processes per bisection it ran ~500 s and `cargo nextest` **terminated it at its 300 s per-test cap**. *A gate that is red because it did not finish is worse than no gate: it reports failure without having measured anything, and the natural response under pressure is to delete it.* Split one-per-test: 3.3 s, 3.4 s, 171 s, 206 s.
+
+---
+
+### 5.7 Family E — the instrument, and what it caught in itself
+
+The measurements above are only admissible because the instrument is itself under test. Eight results from the instrument are load-bearing for this report.
+
+#### 5.7.1 The register became DERIVED, because every transcription drifted
+
+**MEASURED (q)**, `291bc217`: the converted list existed in **four places** and every copy had drifted — §11.4 named 7 subjects, §12.6 and §12.9 named 13, the gate carried 17, and §12.9 claimed two subjects were "commented out" when they were not. *Both prose copies had gone stale within the hour of being reconciled, twice.*
+
+The direction of truth is now declared and **checked**: the gate's constants are the source, the audit carries one generated block, and `the_audit_agrees_with_the_gate` **fails at the commit that separates them**. The register cannot lie about itself either — `theta_depth_tripwire` **records** every subject it drives and refuses to finish unless that set is *exactly* `TRIPWIRE_DEPTH`.
+
+★ **It was shown red four times before green**, and the fourth is the interesting one: *in the gate but not the audit `[normalize_drop, par_drop]`; in the audit but not the gate `[drop, pretty]`.* **Both counts were 9, so a count check would have missed it entirely.**
+
+★ **A naming defect that hid a subject.** `drop_in_place::<Par>` had been a gate subject since the gate was written — under the name **`drop`**, which says *which operation* and never says *on what*. `mettail-rust`'s twin gate calls the identical traversal **`par_drop`**, so a cross-repository search for `par_drop` found the twin and **missed this one**. One name for one traversal, in both repositories.
+
+★ **And the gate's own headline test was fixture-dependent.** `the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort` certified source depth 100,000 **only because its fixture ended in `par_children::dismantle`**. No production caller does that. *The distance between "100,000 is fine" and "4,415 aborts the node" was one call in a fixture.*
+
+#### 5.7.2 The canonical child-slot table
+
+Four independent enumerations of the 36-variant `ExprInstance` schema already existed — substitute, the sorter family, the pretty printer, and a `collect_nodes` in a test — and **each worklist driver would have added another**. `models/src/rust/rholang/par_children.rs` makes drift a **compile error**: every match lists every variant with no `_` arm. It provides the structural children by reference, a by-move twin kept in step by `move_and_borrow_tables_agree`, the generalised iterative `dismantle`/`dismantle_all`, and `substitute_descends_into` — a *checkable record* that `EPathmapBody` and `EZipperBody` are **not** descended into by substitution today, because reproducing that verbatim is a requirement (descending would change substituted bytes, hence **signed** bytes), not an oversight.
+
+#### 5.7.3 The harness prerequisite that was totally vacuous
+
+★★ **MEASURED (q)**, `550b967a`: `generate_par` sized every collection with an **exclusive `0..1`**. proptest's `SizeRange::end_incl()` is `end - 1`, so `0..1` means **exactly zero elements, always**. `generate_par(d)` therefore produced, for every `d`, one of only **two** values — the empty `Par`, and the empty `Par` with `connective_used = true` — and `generate_send`/`_receive`/`_new`/`_match`/`_bundle`/`_connective` were **never invoked at all**. Everything driven by these generators was quantifying over a two-element set, **including the sorter's only property tests**.
+
+⚠ **A finding that follows**: the sorter is a **normaliser** and is therefore **not injective**. Directly measured — `Par{exprs:[GInt 1, GInt 2]}` and `Par{exprs:[GInt 2, GInt 1]}` are `!=` yet sort to equal terms **and equal scores**. Three tests assert an *iff* that is consequently false; they pass only because two independent draws are unlikely to be permutations of each other. **They must not be relied on to gate the sorter's own conversion.**
+
+#### 5.7.4 The checkers were given subjects they must reject (`dd0ba13f`)
+
+Until this commit, **every assertion in the gate was a rejecter and none had ever been shown to refuse anything**. `theta_width_tripwire`'s *entire body* was a `println!` — and a `println!` cannot fail.
+
+The prerequisite was a refactor: `assert_no_slope` and `assert_slope_below` welded their verdict to their measurement, so a verdict could only be run on data the gate could still produce — **and every real $`\Theta(d)`$ traversal had been converted**. Splitting them into pure `zero_slope_verdict` / `slope_below_verdict` over a `Ladder` observation is what made the rest possible.
+
+| checker | `synthetic_sloped` (111 B/level) | `synthetic_flat` (0) |
+|---|---|---|
+| fixed-stack half (1 MiB) | **ACCEPTS** ⚠ | accepts |
+| `zero_slope_verdict` | rejects ✓ | accepts ✓ |
+| `slope_below_verdict` | rejects ✓ | accepts ✓ |
+
+★ **The first row is not a defect — it is the measurement the gate had described in prose and never run**: a $`\Theta(d)`$ subject **passes** the fixed-stack half at depths 4..256, which is precisely why the zero-slope half exists.
+
+Verified red by four controlled mutations, all reverted, each failing at a *named* assertion.
+
+⚠ **One unexplained transient is recorded as unexplained**: a single early `theta_depth_tripwire` failure, never reproduced across 12 consecutive passes including under a concurrent release build, with every ladder bit-stable. The message was not captured. What *was* found is that the leg had a **zero-margin comparison** — two independent bisections required to land in the same 4 KiB bucket — and that is now bounded explicitly. *A guard whose margin is one bucket is a guard waiting to flake for a reason that is not a regression.*
+
+#### 5.7.5 The trampoline-twin check stopped counting lines (`5dc1aad7`)
+
+The check that the recursive twin is *"a rewrite, not a copy"* pinned `(name, pre lines, twin lines)` and read the **pre** column out of git and the **twin** column out of the **working tree**. A frozen blob cannot move; the live file moves whenever anyone edits it. An unrelated 1,057-line change to `reduce.rs` turned `11, 44, 167, 20, 28, 28` into `17, 47, 226, 24, 32, 32` and the test failed **having found nothing wrong with the twin**.
+
+⚠ **The repair is not to update the numbers.** *A count is a proxy: it is not the property the test's name asserts, it merely correlated with it once. Updating it buys one refactor's worth of silence and costs the next reader the same afternoon.* (The numbers were verified correct at HEAD, so "just bump it" was available and was **declined on purpose**.)
+
+The live claim is now checked structurally, three ways, none reading a line number: **token-for-token non-identity** per function (strictly stronger than byte identity — a twin re-copied and then reformatted is byte-different and token-identical); **the sharing, positively** — the pre-trampoline `reduce.rs` contains the token `combine_` **zero** times, while the twin calls **18** helpers every one of which is also called from **outside** the twin family; and **the lifting, as an inequality on tokens** — `eval_expr_to_expr` was **8,737** tokens and its twin is **2,320** ($`3.77\times`$), floored at $`3\times`$.
+
+Both directions are demonstrated permanently in-suite: reformatting the twin leaves the verdict **green** (the case the line count failed), and replacing it with a renamed copy of the pre-trampoline body turns it **red on all three claims**, asserted individually so no single check carries the result.
+
+#### 5.7.6 A control calibrated in the wrong profile (`0a7be7f4`)
+
+`theta_depth_tripwire` was **red in release and green in debug**, at the leg demanding that the destructor control clear $`8 \times`$ the zero-slope tolerance.
+
+★ **Not a regression: the two controls never shared a slope.** What a ladder *produces* is $`\text{slope} \times \text{span}`$, and the destructor control had borrowed the *function* control's span:
+
+| control | debug | release |
+|---|---:|---:|
+| `synthetic_recurse` (a function) | 159 B/level | **111 B/level** |
+| `DropChain`'s glue (a destructor) | 95 B/level | **32 B/level** |
+
+At 32 B/level the destructor delivers 126,976 B over a 4 $`\rightarrow`$ 4,096 span — short of the 131,072 B bar by **exactly one 4,096 B bisection bucket, $`0.97\times`$**. Debug delivered $`2.97\times`$, which is why the leg had been calibrated there and shipped green.
+
+★ **The gap is structural and could not be closed by enlarging the ballast.** `synthetic_recurse` observes its ballast with `black_box` **after** the recursive call, so the array is live across it and must hold a frame slot; `drop_in_place::<DropChain>` **never reads the ballast at all** (`[u8; N]` has no destructor), so at `-O2` the frame carries the tail pointer and the saved registers and nothing else — **32 B whatever $`N`$ is**.
+
+So the **calibration** was fixed and the bar untouched: `DESTRUCTOR_CONTROL_HI = 16_384` restores parity of evidence ($`3.97\times`$ against the function control's $`3.47\times`$). ★ Lengthening a ladder raises every growth reading, so the hazard introduced is that the clause becomes satisfiable by **any** subject — the leg therefore runs the same clause on the **iterative twin over the same 16,384-rung ladder** and requires `false`, watched red before being trusted. **MEASURED (f)**:
+
+```text
+synthetic DESTRUCTOR (depth): recursive 31 B/level (12 KiB -> 520 KiB over 4 -> 16384), iterative 0 B/level -- checkers separate them
+```
+
+#### 5.7.7 The gate had never been run in release (`9ab6b0eb`)
+
+Doing so produced the more interesting result:
+
+| subject | debug B/level | release B/level |
+|---|---:|---:|
+| `substitute` | 195,754 | 27,136 |
+| `sort` | 78,592 | 6,485 |
+| `clone` | 15,872 | 2,852 |
+| `encode` | 1,932 | 302 |
+| `drop` | 464 | 144 |
+| `reported_reproducer_…` | **RED at depth 10** | **PASSES at depth 70** |
+
+★ **The reproducer fails in debug and passes in release. The class is present in both; only the constant decides which profile notices.** A gate validated in one profile would have reported success here — which is precisely why the real assertion asserts a **shape** and never a byte count.
+
+The same commit settled the `RUST_MIN_STACK=134217728` workaround question **with data rather than caution**: measured depth ceilings, post-leg-1, bisecting depth at fixed stack — 2 MiB: 9 / 75 · 8 MiB: 41 / 307 · 128 MiB: 684 / >4,095 (debug / release). Derived and measured agree exactly: $`\lfloor (2{,}097{,}152 - 34{,}905)/27{,}179 \rfloor = 75`$.
+
+#### 5.7.8 The read-ceiling registry, and a fifth site it can detect
+
+`rholang/tests/par_read_ceiling_site_registry.rs` **scans production** for every bounded read of a `Par` and requires each to declare what feeds it: **22 sites, 11 file/reader pairs, 6 asymmetric**. It is a *scan* rather than a list precisely so that a fifth instance cannot be added without someone deciding what it is.
+
+⚠ **Its exclusion rule is where the test could have quietly died.** The first rule tried was *"truncate each file at its first `#[cfg(test)]` module"*. `reduce.rs` has such a module at **line 225 of 10,053**, so that rule discarded **97 %** of the largest interpreter file — including all five of its `decode_trie_path` sites — and *the scan came back clean and wrong*. A calibration test now pins both directions.
+
+---
+
+### 5.8 The rejected candidate
+
+**`cf35ab53` — "six `PartialEq` impls stop being exhaustive by fiat" — is NOT a stack-safety fix, and is excluded.**
+
+**DERIVED**, from the commit and from `models/src/lib.rs`. The defect is that `_ => false` makes a `match` exhaustive **to the compiler**, so a 37th `ExprInstance` variant would compile, fall through to `false`, and compare **unequal to itself** — while `#[derive(Eq, Ord, PartialOrd)]` sits over the hand-written `PartialEq`, asserting $`x = x`$ for exactly the code that would stop honouring it. Live consumers are `HashSet<Par>` and `impl Eq for EPathMap`. The repair is a per-variant *residue* arm below the same-variant arms.
+
+That is a **reflexivity and hashing correctness** defect. It has no depth axis, no `B/level`, no recursion, and no interaction with the stack. It belongs to a different family and is documented in its own commit. Including it here would have diluted the report's subject.
+
+★ It is nonetheless **methodologically adjacent** in one respect worth a sentence: its sibling enumeration found **seven** catch-alls across all 1,089 `.rs` files, fixed six, and **allowlisted the seventh with its reason** (`DispatcherMessage`'s catch-all *delegates* rather than answering `false`, so a new variant keeps $`x = x`$ true by construction). That is the same discipline §5.7 applies to gate subjects, and it is why the exclusion is stated rather than silent.
+
+### 5.9 Measurements that could not be obtained
+
+Seven, each with its reason. None is estimated.
+
+| # | what | why not |
+|---|---|---|
+| 1 | **`spawn_detached` per-spawn overhead** (`catch_unwind`, the atomic, the `Arc` clone) | No isolated micro-benchmark exists in the tree and none was constructed. The end-to-end CPU figure of §5.2.2 includes it but cannot separate it. |
+| 2 | **`prost_encode` wall-clock vs `prost`'s own encoder** | The code is **dormant** (§5.3.5); a number from a path production does not execute would be misleading. The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally instead. |
+| 3 | **massif/DHAT profiles for the substitution, sorter, normaliser and evaluator conversions** | No heap-profiling harness exists for those subjects. Building four correct ones — each needing an off-thread $`\Theta(d)`$ set-up so the harness does not measure itself, per §5.7 — was out of scope for this report. Their heap costs are therefore **unquantified**; only their native-stack slopes are measured. |
+| 4 | **`perf record --call-graph lbr`** | The hardware PMU refused every cycles event on this host (§4.4). Substituted with software `cpu-clock` + DWARF, which is recorded as a deviation. |
+| 5 | **A cycle-accurate CPU profile of the decoder** | Same PMU limitation, plus no decode benchmark harness exists (only the massif arm). |
+| 6 | **Attribution of the `env_get_deploy` 283 $`\rightarrow`$ 274 drift** | Requires bisecting four `rholang` commits through a 6-second end-to-end runtime bisection each; the drift is *reported* (§5.5.4) and its cause is **not** asserted. |
+| 7 | **The falsified prediction the commissioning brief cited as `#103`** (*"predicted d=6 at 55–60 ms, measured 103.57 ms; the cost model was wrong"*) | **Not found in this worktree.** `grep` over all `*.md` and `*.rs` for `103.57`, `55-60` and `55–60` returns nothing outside `target/`. Either it belongs to a different repository or a different document. Three falsified predictions **were** found and are reported (§5.5.1, §5.5.2, §5.6.3). |
+| 8 | ~~Depth-axis slopes for 8 of the 9 `mettail` generated drivers~~ | ★★ **OBTAINED** 2026-07-29 — 18 new probe subjects (`ecbe352c`, `f8f71f4c`), both profiles, two ladders. **Eight of nine are SLOPED and it is a live defect class.** See [§5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped). |
+| 9 | **A bisected $`D_{\max}`$ for the standalone `clone` subject** | §5.10.6's **640 levels** is an *extrapolation* from the S0 two-point ladder ($`c = 13\,472`$, $`B = 3254`$), not a bisection. The comparable bisected figure that exists — **729** — belongs to the `inj_attempt_clone` *composition*, a different subject. |
+| 10 | ~~A heap profile of `mettail`'s `Arc`-shared AST at HEAD~~ | ★★ **PARTLY OBTAINED** 2026-07-29 — DHAT now shows a depth-4,096 clone allocating **0 additional bytes in 0 additional blocks** ([§5.11.4](#5114-results--space-time-and-the-malloc-analysis)). ⚠ The $`270\times`$ / $`57\times`$ `chain_*` peak-memory figures remain **MEASURED (q)** from `9c55d81d` and were **not** re-run: reproducing them needs the pre-Arc tree, which no longer exists. |
+| 11 | **A settling ladder for `ast_semantic_hash_add`** | It reads **2.0 B/level** (two bisection buckets) on the pure chain — flat within the gate's four-bucket tolerance, but not decisively. A $`512 \rightarrow 32{,}768`$ ladder would settle it; not run. |
+| 12 | ★★ **Heap profiles for the two fixes that removed QUADRATIC copying** — `SS-A1` (12 `.iter().map(p.clone())` sites, four `..p.clone()` FRUs) and `SS-D2` (the $`O(n^2)`$ `case_rem.to_vec()`) | Both were gated on **native stack only**. `SS-A1`'s own verdict claims it *"removes $`O(D^2)`$ heap churn"* — **quoted, never measured**. [§5.11.3](#5113--how-it-was-decided--falsified-on-time-accepted-on-space) argues this is now the highest-value unobtained measurement in the document, because it is the same shape as the defect the Arc fix found. |
+| 13 | **Whether the eight sloped drivers are reachable from a deploy** | The slopes are measured; the *reachability* of a 198-level `ast_cmp` from Rholang source is not established. The same discipline `80f5e5d3` applied to #129 — measure the write side before asserting severity — has **not** been applied here. |
+
+---
+
+### 5.10 ★★ The generated trait implementations, and the `Clone` question
+
+This section exists because a direct question was asked of the record — *was the conversion of `Par`'s `clone` in the stack-safety plan, and what happened to it?* — and because the answer that the campaign's **task tracker** gives and the answer that the **git diffs** give are not the same answer. Both tracker summaries are treated here as **hypotheses**; the diffs decide.
+
+#### 5.10.1 The tracker's chain, and why it cannot be read literally
+
+The tracker records:
+
+| item | commit | closure summary, verbatim |
+|---|---|---|
+| **#76** | `291bc217` | *"`par_drop` gated + reachability measured — 8.8 kB of source aborts a node; **clone is worse $`\rightarrow`$ #77**"* |
+| **#77** | `9082d12c` | *"**2,852 B/level $`\rightarrow`$ 0**; depth **729 $`\rightarrow`$ $`\geq`$ 1,048,576**"* |
+
+Read literally that chain says: *the `Clone` implementation was identified as the worse defect, routed to #77, and converted.* ⚠ **It says something the commits do not.**
+
+#### 5.10.2 What `291bc217` actually routed — a CALL SITE, and it says so
+
+**DERIVED**, `291bc217`, quoted in full because the compression is the whole defect:
+
+> ⚠ BOY SCOUT — a worse traversal on the same path: `inj_attempt` also `.cloned()`s the deploy term (`SignedProcess::Signed` holds it by value), i.e. `<Par as Clone>::clone` at 2,852 B/level release = 735 levels on a 2 MiB worker, ~1.5 kB of source. That is 20x tighter than the destructor's own bound and only 2.6x above the 288-deep AST the 577-byte reproducer already produces. **Logged with its number, not fixed: distinct call site, distinct repair, metering surface.**
+
+★ The routed object is *"`inj_attempt` also `.cloned()`s the deploy term"*, and the commit names it a **distinct call site** in the same sentence. What was routed to #77 was **a call**, not an impl.
+
+#### 5.10.3 What `9082d12c` actually converted — one line, and `models/` is untouched
+
+**DERIVED**, `git show 9082d12c --stat`: four files — the audit, `accounting/mod.rs` (+318, the new by-move accessor), `stack_depth_gate.rs` (+223, the new subject and its guards), and **thirteen lines of `interpreter.rs`**. `git show 9082d12c -- models/` is **empty**: the crate that defines `Par` was not touched.
+
+The entire production change is this (**VERBATIM**, from the diff):
+
+```diff
+                 signed_process
+-                    .source_process()
+-                    .cloned()
++                    .into_source_process()
+                     .expect("metered deploy must retain source process")
+```
+
+$`\Rightarrow`$ **`9082d12c` deleted a *call to* `<Par as Clone>::clone`. It did not convert `<Par as Clone>::clone`.**
+
+#### 5.10.4 Does any commit convert it? No — and the search is stated so it can be repeated
+
+**DERIVED** — `git log -S … --all` over five spellings, whole history:
+
+| needle | commits |
+|---|---:|
+| `impl Clone for Par` | **0** |
+| `clone_iterative` | **0** |
+| `iterative_clone` | **0** |
+| `fn clone_drive` | **0** |
+| `clone_no_recurse` | **0** |
+
+Corroborated three ways: `models/src/lib.rs` contains **0** `impl Clone` blocks (against 62 `PartialEq` and 62 `Hash`); the generated declaration is `#[derive(Clone,  ::prost::Message)] pub struct Par`; and `models/build.rs`, which **does** strip `PartialEq`/`Eq`/`Hash` from prost's output so they can be hand-written, **does not strip `Clone`**. `Clone` is rustc's derive over `Box`/`Vec` children, and a derived `Clone` over a `Box` child must deep-copy — hence the recursion.
+
+#### 5.10.5 The verdict, and the correction to the tracker
+
+**The deliverable was not dropped, and the tracker's record is nonetheless wrong as written.**
+
+* What #76 **routed** (the `.cloned()` at `inj_attempt`) is exactly what #77 **converted**. No work item was closed on unrelated work.
+* But #76's summary compressed *"the `.cloned()` call at `inj_attempt`"* down to the bare word **"clone"**, and #77's summary reports **2,852 $`\rightarrow`$ 0** without saying *of what*. A reader inheriting those two lines concludes that `<Par as Clone>::clone` is converted. **It is not, and it never was in a plan to be**: its standing disposition, from the first audit onward, is *"derived impl — Leg-1 only: remove the call sites, not the impl."*
+* ★ This is [§5.7.1](#571-the-register-became-derived-because-every-transcription-drifted)'s class for the third time in this campaign: a figure transcribed into a summary, detached from the subject it measured, and then trusted. The gate is immune to it — `CONVERTED_DEPTH` carries `inj_attempt_clone`, a name that says *which composition*, and `TRIPWIRE_DEPTH` still carries `clone` — but the tracker is not, because nothing checks the tracker.
+
+**Corrected wording, for whoever updates the tracker:**
+
+> **#76** $`\rightarrow`$ *"`par_drop` gated + reachability measured. ⚠ Routed to #77: the `.cloned()` **call site** in `inj_attempt`, whose composition costs 2,852 B/level — **not** `<Par as Clone>::clone` itself, which stays in `TRIPWIRE_DEPTH`."*
+> **#77** $`\rightarrow`$ *"`inj_attempt`'s set-initial-cost phase converted by move: the **composition** 2,852 B/level $`\rightarrow`$ 0, ceiling 729 $`\rightarrow`$ $`\geq`$ 1,048,576. `<Par as Clone>::clone` untouched."*
+
+★ **And the gate already carries a warning against exactly this misreading**, which means it has caught someone before. **DERIVED**, `rholang/tests/stack_depth_gate.rs:3050`, the `four_quadrant_s0_baseline` doc comment, verbatim:
+
+> ⚠ **The audit's §12.6 constants (2,852 / 144 / 310 / 1,244) are NOT inherited here.** `9082d12c` removed a *call* to `<Par as Clone>::clone` at `inj_attempt`'s set-initial-cost phase and entered the COMPOSITION in `CONVERTED_DEPTH` as `inj_attempt_clone`; **`<Par as Clone>::clone` itself is untouched and still in `TRIPWIRE_DEPTH`**. And `tree_clone` / `tree_drop` are `score_tree::Tree<T>`, not `Par`. Every number this test prints is re-measured at HEAD.
+
+$`\Rightarrow`$ **The executable artefacts are consistent and correct throughout; only the prose summaries drifted.** That is [§5.7.1](#571-the-register-became-derived-because-every-transcription-drifted)'s finding restated: the copy that is *checked* stays true, and the copy that is merely *written* does not.
+
+#### 5.10.5a ★★ The strategy is CALL-SITE ELIMINATION, not impl conversion — and it should be argued, not inferred
+
+This is the actual design decision of the whole `Clone` thread, and neither tracker line states it.
+
+> **The campaign eliminates `Par`-clone *call sites* rather than converting `<Par as Clone>::clone`.**
+
+**Why elimination beats conversion, per site.** A converted clone still *copies the term*: it would be $`O(1)`$ in native stack and still $`\Theta(n)`$ in time and in **allocation**. Deleting the call saves the traversal **and** the allocation **and** the peak heap. Where a caller can be given ownership instead of a copy, elimination strictly dominates.
+
+**Two sites eliminated, both measured:**
+
+| site | before | after | commit |
+|---|---:|---:|---|
+| `inj_attempt` set-initial-cost | 2,852 B/level, ceiling 729 | **0**, $`\geq`$ 1,048,576 | `9082d12c` |
+| `substitute_and_charge`'s internal `term.clone()` | 2,852 release / 15,872 debug | **146** / **1,462** | `64a5d2bc` |
+
+**$`\Rightarrow`$ The residual is therefore not a number, it is a question: *which callers remain?*** Two are named and measured, and both are named because they are *not* removable:
+
+* **`subst_and_charge`** stays sloped **by design** at 146 B/level — what remains is `encoded_len`, which must walk the term because **its return value *is* the charge** ([§6.3](#63-neutrality-is-the-hard-part-not-the-driver)).
+* **`substitute_deep_binding`** at 7,460 B/level — `Env::get` returns its value cloned, and **the copy *is* the meaning of substitution** ([§5.1.5](#515-the-named-residual-of-family-a)).
+
+⚠ **The full caller set is NOT enumerated here, and that is deliberate.** Hand-enumerating callers is this campaign's single most-repeated failure class — [§7.4](#74-enumeration-completeness) records three enumeration methods each of which has a blind spot that was hit at least once, and [§5.10.7](#5107--what-the-mettail-rust-generator-emits-through-a-stack-safe-driver--the-complete-list)'s neighbour [§5.3.1](#531-the-baseline-what-had-never-been-measured) records a hand-picked list of four that missed `Hash`. A residual stated as *"these are the remaining callers"* would be a claim no method in this report can currently support. It is stated as **unenumerated**, and deriving it — a call-graph query for `<Par as Clone>::clone` call sites, in the idiom of the read-ceiling **scan** ([§5.7.8](#578-the-read-ceiling-registry-and-a-fifth-site-it-can-detect)) rather than a list — is named as work in [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de).
+
+#### 5.10.5b ★ The conversion technique is in-tree and proven — it was simply never applied to `Par`
+
+This converts *"we did not do it"* into *"here is the shape of the fix, and here is why it was not taken"*, which is a far more useful thing for a maintainer to inherit.
+
+**DERIVED**, `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`:
+
+```text
+    // Stage C-1 — Tree's hand-written Clone   (an element of CONVERTED_DEPTH)
+    "tree_clone",
+```
+
+★ **A hand-written iterative `Clone`, driven by an explicit worklist, already exists in this repository and is in the converted register** — for `sorter::score_tree::Tree<T>`, measured **1,578 / 485 B/level $`\rightarrow`$ 0** ([§5.1.3](#513-results)). The pattern is therefore not hypothetical, not borrowed from another project, and not blocked on a technique nobody has written: it is `SS-A3`, shipped, with its own differential oracle.
+
+**What stops the same shape being applied to `Par`:**
+
+* `Tree<T>` is a **hand-written** type in `models/src/rust/rholang/sorter/score_tree.rs` — its `Clone` is source that a person owns and can replace. `Par`'s `Clone` is **rustc's derive over prost-generated code**, regenerated from `RhoTypes.proto` on every build; replacing it means hand-writing and maintaining `Clone` for **57 message types** whose field lists move with the schema.
+* `models/build.rs` already demonstrates the mechanism that would be needed — it **strips** `PartialEq`/`Eq`/`Hash` from prost's output so the 62 + 62 hand-written impls in `models/src/lib.rs` can take over ([§5.10.9](#5109-why-the-same-fix-does-not-transfer-to-par--two-types-two-layers)). Stripping `Clone` too is mechanically the same edit. **The cost is 57 more hand-written impls to keep in step with the schema**, against a defect whose call sites are being removed one at a time instead.
+* $`\Rightarrow`$ **The choice is defensible and it is a choice, not an omission.** It should be recorded as such rather than left for the next reader to rediscover from a tracker line.
+
+#### 5.10.6 Reconciling 729, 2,852 and 3,254 — three numbers, three subjects
+
+They are not in conflict; they measure three different things, and saying which is which is the point.
+
+| figure | subject | what it is |
+|---:|---|---|
+| **735** | arithmetic | $`\lfloor 2\,097\,152 / 2852 \rfloor`$ — an **upper bound**, circulated before anyone bisected it |
+| **729** | `inj_attempt_clone` — the *composition* (clone **+** the derived drop of the original) | **MEASURED (q)**, `9082d12c`, bisected; depth 730 aborts with status 134 |
+| **2,852** | the same composition's slope, at that call site | **MEASURED (q)** — the clone dominates it, so composition slope $`\approx`$ clone slope there |
+| **3,254** | `clone` — the *standalone* gate subject, 16 $`\rightarrow`$ 128 ladder | **MEASURED (f)** at HEAD, **twice**, by two instruments in one binary |
+
+The 2,852-vs-3,254 gap is **inlining context**, not disagreement: `9082d12c` itself records that 729 agreed *"to the level with the standalone `clone` subject's own bisected maximum"* on the ladder in use then. The S0 harness later drove the standalone subject on its own self-selected 16 $`\rightarrow`$ 128 ladder and got 3,254; both numbers are real, and the gate publishes the standalone one because that is the traversal that still exists.
+
+**MEASURED (f)**, 2026-07-29, at HEAD, two independent readings in the same release binary:
+
+```text
+/tmp/sd_gate_release.log   clone: 3254 B/level (ceiling 5000)
+/tmp/sd_s0_release.log     clone,clone,release,16,65536,128,430080,364544,3254
+```
+
+**Reachable depth, DERIVED** from the S0 row: intercept $`c = 65\,536 - 16 \times 3254 = 13\,472`$ B, so on the 2 MiB stack a `tokio` worker gets,
+
+```math
+D_{\max} \;=\; \left\lfloor \frac{2\,097\,152 - 13\,472}{3254} \right\rfloor \;=\; 640 \ \text{levels}
+```
+
+⚠ That is an **extrapolation from a two-point ladder, not a bisection**; it is offered as an order of magnitude and is listed in [§5.9](#59-measurements-that-could-not-be-obtained) as an unbisected figure.
+
+#### 5.10.7 ★ What the `mettail-rust` generator emits through a stack-safe driver — the complete list
+
+The companion generator solves the same problem for a *different* term family, and it solves it for more traversals. **DERIVED** from `macros/src/gen/term_ops/mod.rs`, `macros/src/gen/mod.rs`'s `spill_and_include` call list, and the emitted tree at `target/generated/rholang/`.
+
+**Nine generated modules, each carrying a task enum, a thread-local pool and a `*_iterative` driver:**
+
+| generated file | traits / operations implemented | driver entry point |
+|---|---|---|
+| `iterative_cmp.rs` | `PartialEq`, `Eq`, `PartialOrd`, `Ord` | `eq_iterative`, `cmp_iterative` |
+| `iterative_hash.rs` | `std::hash::Hash` | `hash_iterative` |
+| `iterative_drop.rs` | `Drop` | *(driver inlined in the impl)* |
+| `debug.rs` | `std::fmt::Debug` | `debug_iterative` |
+| `display.rs` | `std::fmt::Display` | `display_iterative` |
+| `semantic_hash.rs` | $`\alpha`$-canonical identity (inherent) | `semantic_hash_iterative` |
+| `subst.rs` | capture-avoiding substitution (inherent) | `subst_iterative` |
+| `normalize.rs` | collection canonicalisation (inherent) | `normalize_iterative` |
+| `match_pattern.rs` | pattern matching (inherent) | `match_pattern_iterative` |
+
+**Count: 9 modules, covering 6 standard traits (`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `Drop`, `Debug`, `Display` — 8 counting each separately) and 4 inherent term operations.** Emitted once per language; the tree carries **76** copies of each of `iterative_cmp.rs`, `iterative_drop.rs` and `iterative_hash.rs`, one per generated language.
+
+★★ **`Clone` is deliberately NOT among them, and that is the interesting part.**
+
+#### 5.10.8 ★★ `Clone` was converted — and then the conversion was *deleted*, because the representation made it unnecessary
+
+**DERIVED**, `macros/src/gen/types/enums.rs:249-263`, quoted verbatim from the generator:
+
+> NOTE: Clone IS derived (ARC refactor, 2026-05-28). Recursive AST children are now `std::sync::Arc<Cat>` (was `Box<Cat>`), so derived `Clone` is `Arc::clone` per child — $`O(1)`$ and NON-recursive (it stops at the Arc boundary, never descending the subtree). … The old iterative work-stack clone (`gen/term_ops/iterative_clone.rs`) existed solely to avoid stack overflow on deep `Box` chains — obsolete now that `Arc::clone` does not recurse; that module was removed (2026-06-22).
+
+**Confirmed in the emitted tree** (**DERIVED**, `target/generated/rholang/ast_enums.rs`): `#[derive(Clone, mettail_runtime::BoundTerm)]`, **206** occurrences of `Arc<Proc>`, and **`Box<` occurs 0 times**. `iterative_clone.rs` was removed by `651499e2`, whose body records it was already *"uncompiled"*.
+
+★ **So mettail's `Clone` is stack-safe by *representation*, not by a driver.** A refcount increment cannot recurse. That is a strictly better answer than a trampoline — no driver to maintain, no differential oracle to keep in step, no work item to allocate — and it is available only because the AST is *shared*, which a term rewriter can be and a protobuf message cannot.
+
+**And the arc it took is a two-step scientific record worth preserving in full**, because the first step reached the *opposite* conclusion and was right to.
+
+| date | commit | verdict |
+|---|---|---|
+| 2026-05-23 | `ff506dc5` | **HYPOTHESIS FALSIFIED.** A Stage-1 profile gate measured AST clone at **0.78 % of total runtime** on `rhocalc_bench::replication/basic`, the rewrite-heaviest workload in the workspace — $`\approx 13\times`$ below the 10 % gate threshold. *"Even at 100 % elimination … the maximum achievable speedup is < 0.78 % wall-clock — below Criterion's intra-sample noise floor."* Do **not** proceed. Effort: 2 h against the 17–20 h the implementation would have cost. |
+| 2026-05-28 | `9c55d81d` | **DONE ANYWAY — on the other axis.** `heaptrack` proved **96 % of `chain_1000` peak heap (288 / 300 MB)** was `clone_iterative` deep-copying the accumulated subtree at every chain step, $`N^2`$ calls, because children were `Box<Cat>`. |
+
+★★ **The methodological lesson, and it generalises past this subject: the same hypothesis was correctly *refused* on the time axis and correctly *accepted* on the space axis.** A gate that profiles only wall clock will refuse a fix worth two orders of magnitude in memory. Neither decision was wrong; the first gate simply measured the wrong resource for the defect that was actually there.
+
+**Results, MEASURED (q), `9c55d81d`, release:**
+
+| workload | before | after | factor |
+|---|---:|---:|---:|
+| `chain_10000` peak memory | $`\approx`$ 30 GB (OOM) | **112 MB** | $`\approx 270\times`$ |
+| `chain_2000` peak memory | 1.53 GB | **26.5 MB** | $`57\times`$ |
+| `chain_2000` wall clock | 4.34 s | **0.11 s** | $`39\times`$ |
+| asymptotic memory | $`O(N^2)`$ | $`O(N)`$ | class change |
+
+★ It also **overturned a prior conclusion**: *"the 44.7 GB architectural ceiling requires a different parser algorithm"* was wrong — *"it was AST-clone, fixed by representation, no algorithm substitution."*
+
+#### 5.10.9 Why the same fix does not transfer to `Par` — two types, two layers
+
+| | `mettail`'s `Proc` | `f1r3node`'s `Par` |
+|---|---|---|
+| defined by | the `language!` macro | `prost-build` from `RhoTypes.proto` |
+| recursive child | `std::sync::Arc<Cat>` (**206**, `Box<` = **0**) | `Box<T>` / `Vec<T>`, as prost emits |
+| `Clone` | derived — `Arc::clone`, **non-recursive** | derived — **deep copy, recursive** |
+| measured | $`O(1)`$ per node by construction | **3,254 B/level** |
+| `PartialEq` / `Hash` | generated iterative drivers | **62 + 62 hand-written impls** in `models/src/lib.rs` |
+| `Drop` | generated iterative driver ⚠ (see below) | rustc's implicit glue, **144 B/level** |
+
+$`\Rightarrow`$ **The repair that fixed `Clone` in `mettail` is a change of *data representation*, and on the `f1r3node` side that means changing what `prost-build` emits.** `Box` $`\rightarrow`$ `Arc` for recursive protobuf fields is a codegen change in a third-party crate, and it would alter the public type signature of every `Par` field — consensus-adjacent and upstream. It is the one repair that would retire `clone` (3,254), `par_drop` (144), `eq` (221), `hash` (136) and `ord` (438) **simultaneously**, and it is not this campaign's to take. Recorded in [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de) as the standing alternative to converting five traversals one at a time.
+
+#### 5.10.10 ★★ THE GAP IS NOW CLOSED BY MEASUREMENT — and eight of the nine drivers are SLOPED
+
+The previous revision of this section said the eight undriven modules were **DERIVED**-safe and not **MEASURED**-safe, and listed the gap in §5.9. ★ **That gap has been closed, and the drivers failed.**
+
+**Instrument.** Eighteen new subjects in `rholang-runtime/src/bin/stack_depth_probe.rs` (commits `ecbe352c`, `f8f71f4c`), driven by `RLIMIT_STACK` bisection on the **child's main thread** at 4 KiB resolution — the idiom the gate's existing fifteen subjects use, because `RUST_MIN_STACK` cannot reach a main thread. Ladder $`16 \rightarrow 4{,}096`$, **both profiles**. Every subject `mem::forget`s its terms so no ladder carries `ast_drop`'s own slope, and every subject carries an anti-vacuity assertion forced by its own shape (`eq` twins must compare **equal** or the walk short-circuits; `cmp` twins differ **only at the leaf**; `hash` must give two digests for two leaves; the printers must emit more bytes than the depth; `subst`'s variable sits at the **leaf**; `match_pattern` must **match**).
+
+★★ **The experiment is a 2 $`\times`$ 2: nine drivers $`\times`$ two ladders that differ only in the SHAPE walked.**
+
+| ladder | shape | does a cross-type hop exist? |
+|---|---|---|
+| **A — alternating** | `nested_list`: `Proc::CastList(Arc<List>)` then `List::ListLit(Vec<Proc>)` | **yes, at every level** |
+| **B — pure chain** | `nested_add`: `Proc::Add(Arc<Proc>, Arc<Proc>)` | **no** |
+
+⚠ **The polarity matters and is stated because it is easy to invert:** the *list* ladder is the alternating one — `Proc` $`\rightarrow`$ `List` $`\rightarrow`$ `Proc` at every level, confirmed from `target/generated/rholang/ast_enums.rs:52` (`CastList(Arc<List>)`) and `:3014` (`ListLit(Vec<Proc>)`) — and the *add* ladder is the pure one (`:81`, `Add(Arc<Proc>, Arc<Proc>)`).
+
+![generated drivers, two ladders](figures/generated-drivers-two-ladders.svg)
+
+**Figure 7** — *`figures/generated-drivers-two-ladders.puml`*. The 2 $`\times`$ 2 that identifies the mechanism.
+
+**MEASURED (f)**, 2026-07-29. B/level, **debug / release**. Logs: `/tmp/sd_mettail_debug_alt.log`, `/tmp/sd_mettail_release.log`, `/tmp/sd_mettail_debug_pure.log`, `/tmp/sd_mettail_release_add.log`, `/tmp/sd_mettail_debug_clone.log`, `/tmp/sd_mettail_release_clone.log`.
+
+| driver / module | **ladder A — alternating** | **ladder B — pure chain** | verdict |
+|---|---:|---:|---|
+| `ast_cmp` — `iterative_cmp.rs` (`Ord`) | **10,592.4 / 335.3** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_debug` — `debug.rs` | **10,544.2 / 463.8** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_eq` — `iterative_cmp.rs` (`PartialEq`) | **6,144.0 / 175.7** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_normalize` — `normalize.rs` | **6,144.0 / 176.7** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_match_pattern` — `match_pattern.rs` | **6,138.0 / 174.7** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_subst` — `subst.rs` | **6,134.0 / 174.7** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_hash` — `iterative_hash.rs` | **1,216.8 / 206.8** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** |
+| `ast_semantic_hash` — `semantic_hash.rs` | **1,214.7 / 206.8** | 2.0 / 0.0 | ⚠ **SLOPED** |
+| `ast_drop` — `iterative_drop.rs` | **254.0 / 96.4** | $`\approx 0`$ / 0.0 | ⚠ **SLOPED** *(already on record)* |
+| `ast_display` — `display.rs` | **0.0 / 0** | $`\approx 0`$ / 0.0 | ★ **FLAT on both** |
+| `ast_clone` — **no driver**, `Arc::clone` | **2.0 / 0** | 1.0 / 0.0 | ★ **FLAT on both** |
+| `build_twins` — **control, runs no driver** | 1.0 / 0.0 | $`\approx 0`$ / 0.0 | control flat |
+| `build_one` — **control, no clone** | — | 0.0 / 0 | control flat |
+
+#### 5.10.10a ★★★ The mechanism is confirmed, 9 for 9 — and this is a live defect class
+
+**Every driver is sloped on ladder A and flat on ladder B. The controls are flat on both.** So the slope is the **driver's own**, not the builder's, not the `Arc` bumps', and not the harness's.
+
+$`\Rightarrow`$ **The generated work stacks are typed per category and do not follow an edge that leaves their own type.** The hypothesis stated in `ast_drop`'s own note is confirmed for **nine of nine** drivers, not merely for `Drop`.
+
+★ **Instrument validated against the one figure already on record.** `ast_drop` bisects to **254.0 B/level debug**, reproducing `3c0c3585`'s recorded 254 **to the byte**, and **96.4 release** against the recorded 96. A harness that disagreed with the one pre-existing measurement would have produced a table nobody could reconcile.
+
+⚠⚠ **These eight are a LIVE DEFECT CLASS in `macros/src/gen/`, not a documentation gap.** Depth-independence is these modules' entire purpose — they exist *because* the derives would overflow. `ast_cmp` at 10,592 B/level debug reaches its ceiling on a 2 MiB stack at roughly **198 levels**; `ast_debug` at 10,544 likewise. Filed as such, with slopes, mechanism and owner, rather than buried in a table.
+
+★★ **`ast_display` is the most valuable cell in the experiment.** It is flat on **both** ladders — so `display.rs`'s driver **does** follow the cross-type hop. The defect is therefore **not inherent to the generator's approach**, and there is an **in-tree reference implementation** to copy. That converts "eight drivers are broken" into "eight drivers should be rewritten the way the ninth already is", which is a far more actionable finding.
+
+⚠ **One cell needs a wider ladder to settle.** `ast_semantic_hash_add` reads **2.0 B/level** (growth 8,192 B = two bisection buckets). The gate's own zero-slope tolerance is **four** buckets, so it is flat within resolution; it is recorded as *flat within tolerance* rather than silently rounded, and a $`512 \rightarrow 32{,}768`$ ladder would decide it. Added to [§5.9](#59-measurements-that-could-not-be-obtained).
+
+⚠ **Both claims are now reconciled, and neither is left standing against the other.** The earlier text carried *"the drivers are DERIVED-safe"* and *"`ast_drop` is not flat"* simultaneously. Measurement resolves it in favour of the second: **the drivers are safe only on shapes that stay inside one category**, and the family's own most common shape — a collection literal — does not.
+
+### 5.11 ★★ SS-G1 — the Arc fix: eliminating a traversal instead of converting it
+
+Every other fix in this report **converts** a recursive traversal into an iterative one. This one **removes the traversal**, and it is the most effective fix in the corpus by two orders of magnitude. It earns its own section because its mechanism is unique here and because the way it was decided is the report's best methodological lesson.
+
+#### 5.11.1 The defect
+
+**MEASURED (q)**, `9c55d81d`: `heaptrack` attributed **96 % of `chain_1000`'s peak heap — 288 MB of 300 MB —** to `clone_iterative` deep-copying the accumulated subtree at **every chain step**, i.e. $`\Theta(N)`$ calls each costing $`\Theta(N)`$, hence $`\Theta(N^2)`$ total. **Root cause, DERIVED**: the generated AST enums held recursive children as `Box<Cat>`, so every `.clone()` deep-copied the whole subtree.
+
+★ At `chain_10000` this was **~30 GB and an OOM (out-of-memory) kill** — and it had been *misdiagnosed as an architectural limit*: a standing conclusion held that *"the 44.7 GB ceiling requires a different parser algorithm."*
+
+#### 5.11.2 The architecture of the repair, and why this shape
+
+Recursive AST children become `std::sync::Arc<Cat>`. Derived `Clone` is then `Arc::clone` per child — **$`O(1)`$, non-recursive, stopping at the `Arc` boundary and never descending**. `iterative_clone.rs`, the work-stack driver that existed *solely* to keep deep `Box` chains off the native stack, became dead and was deleted (`651499e2`, its body recording that the module was already *"uncompiled"*).
+
+**Why representation rather than a driver — and this is the general point:** a converted clone is still $`O(1)`$ in native stack and still $`\Theta(n)`$ in **time** and in **allocation**, because it still copies. Sharing makes the copy *not happen*. There is no driver to maintain, no differential oracle to keep in step, and no work item to allocate.
+
+⚠ **It is available only because the AST is immutable and shared.** A term rewriter can share subterms; §5.11.6 is why a protobuf message cannot.
+
+**DERIVED**, `target/generated/rholang/ast_enums.rs`: `#[derive(Clone, mettail_runtime::BoundTerm)]`, **206** occurrences of `Arc<Proc>`, and **`Box<` occurs ZERO times**.
+
+#### 5.11.3 ★★ How it was decided — falsified on time, accepted on space
+
+This is the pedagogical centrepiece of the report.
+
+| date | commit | axis | verdict |
+|---|---|---|---|
+| 2026-05-23 | `ff506dc5` | **time** | **HYPOTHESIS FALSIFIED.** A Stage-1 profile gate measured AST clone at **0.78 % of total runtime** on `rhocalc_bench::replication/basic`, the rewrite-heaviest workload in the workspace — $`\approx 13\times`$ below the 10 % gate threshold. *"Even at 100 % elimination … the maximum achievable speedup is < 0.78 % wall-clock — below Criterion's intra-sample noise floor."* Do **not** proceed. Cost: 2 h, against the 17–20 h the implementation would have taken. |
+| 2026-05-28 | `9c55d81d` | **space** | **DONE, and it won two orders of magnitude.** `heaptrack` on the memory axis found the 96 % attribution above. |
+
+★★ **The same hypothesis was correctly refused on the time axis and correctly accepted on the space axis. Neither decision was wrong.** The first gate was a well-run experiment that measured *the wrong resource for the defect that was actually there*.
+
+> **The general lesson: a wall-clock-only acceptance gate will refuse a fix worth $`270\times`$ in memory.** An acceptance gate must name the resource it is gating, and a "no motivation" verdict is only as broad as the resource profiled.
+
+⚠★ **So the question this raises has to be asked of the rest of the register, not just admired here.** Which other fixes were gated on **time alone** and might deserve a space re-examination?
+
+| fix | what gated it | space-examined? |
+|---|---|---|
+| **SS-C2** cold-store encoder | wall clock **and** massif **and** DHAT ([§5.3.4](#534--the-malloc-profile--where-the-allocations-moved)) | ✅ yes — that is where the $`770\times`$ block-count win was found, and it was **not** the reason the fix was undertaken |
+| **SS-C1** cold-store decoder | native stack; heap measured here for the first time | ✅ yes — 304.7 B/level of value stacks |
+| **SS-A1** substitution leg-1 de-clone | native stack B/level only | ⚠ **NO** — and it is the strongest candidate: it removed 12 `.iter().map(p.clone())` sites and four `..p.clone()` functional-record-updates from a $`\Theta(d)`$ type. Its own verdict says it *"removes $`O(D^2)`$ heap churn"* — **quoted, never measured.** |
+| **SS-D2** ownership to the substitution | native stack; the $`O(n^2)`$ `case_rem.to_vec()` reasoned about, not profiled | ⚠ **NO** — same shape as the Arc defect: a quadratic *copy* pattern |
+| **SS-A2/A5/A7, SS-B1** the worklist conversions | native stack B/level only | ⚠ **NO** — [§5.9](#59-measurements-that-could-not-be-obtained) #3 |
+
+$`\Rightarrow`$ **Two fixes in this register removed quadratic copying and neither has a heap profile.** That is now the highest-value unobtained measurement in the document, and it is recorded in [§8.4](#84-not-measured-and-worth-measuring) as such rather than as a nice-to-have.
+
+#### 5.11.4 Results — space, time, and the malloc analysis
+
+**MEASURED (q)**, `9c55d81d`, release:
+
+| workload | before | after | factor |
+|---|---:|---:|---:|
+| `chain_10000` peak memory | $`\approx`$ 30 GB (OOM kill) | **112 MB** | $`\approx 270\times`$ |
+| `chain_2000` peak memory | 1.53 GB | **26.5 MB** | $`57\times`$ |
+| `chain_2000` wall clock | 4.34 s | **0.11 s** | $`39\times`$ |
+| asymptotic memory | $`O(N^2)`$ | $`O(N)`$ | class change |
+
+★ **MEASURED (f)** — the allocation analysis, obtained for this report and not previously available. Valgrind DHAT, debug, comparing `ast_clone` (build a term **and clone it**) against `build_one` (build the identical term, **no clone**), so the cost of one clone is a **subtraction** rather than an inference from the type:
+
+| subject | depth | total bytes | total blocks |
+|---|---:|---:|---:|
+| `build_one` | 16 | 4,487 | 44 |
+| `ast_clone` | 16 | **4,487** | **44** |
+| `build_one` | 4,096 | 461,449 | 8,204 |
+| `ast_clone` | 4,096 | **461,449** | **8,204** |
+
+★★ **Byte-for-byte and block-for-block identical at both depths. Cloning a depth-4,096 term allocates ZERO additional bytes in ZERO additional blocks.** The clone is refcount increments and nothing else — the mechanism confirmed by measurement, not by reading `Arc`'s documentation.
+
+**And the native stack, MEASURED (f)** (ladder $`16 \rightarrow 4{,}096`$, debug / release): `ast_clone` **2.0 / 0** B/level on the **alternating** ladder — flat within the gate's four-bucket tolerance — where on that same ladder `ast_eq` is **6,144.0** and `ast_cmp` is **10,592.4**. `Clone` is flat on the shape that defeats every generated driver, *because it does not traverse at all*.
+
+#### 5.11.5 What it cost
+
+* **Sharing is now observable.** `Hash`/`Eq`/`semantic_hash` had to be deref-transparent, and binder operations became copy-on-write via `Arc::make_mut` (**DERIVED**, `9c55d81d`).
+* **`Drop` had to change with it** — `iterative_drop` uses `Arc::into_inner`, which is $`O(1)`$ for a *shared* subtree. ⚠ And [§5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) shows that teardown is still **254.0 / 96.4** B/level across the cross-type hop, so the Arc fix did not make `Drop` flat; it made the *clone* free.
+* **A secondary residual was named at the time and not fixed:** `emit_sppf_subforest` recurses $`\approx N/2`$ deep, so `chain_10000` needed a large stack (**DERIVED**, `9c55d81d`).
+* **Blast radius.** It touched `enums.rs`, the semantic actions, `subst`, `normalize`, `iterative_drop`, the binder and congruence passes, `eval`, `ast::pattern`, every `test_gen` emitter, a hand-written grammar, `numeric_dispatch`, and 12 test files.
+
+#### 5.11.6 ⚠ Why it does NOT transfer to f1r3node's `Par` — three independent reasons
+
+Each is sufficient on its own, and [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de)'s residual depends on all three.
+
+1. **`Par`'s recursion runs through `Vec<T>`, not `Box<T>`.** The Arc trick collapses `Box` *chains*; a `Vec<Send>` clone must clone **every element** regardless of what wraps `Send`. The repeated fields are the recursion, and sharing the wrapper does not remove the element copies.
+2. **`Par` is mutated in place.** `Message::clear` and `merge_field` mutate, and there are **38** `Par { .., ..Default::default() }` functional-record-update sites in `models` **alone** (**MEASURED (q)**, `44535d75`'s E0509 probe). Every one would need copy-on-write.
+3. **`prost-build` cannot emit it.** `Config` offers **`boxed(path)`** and **no `arc` equivalent**, and prost's generated `Message` impl is written against the concrete field types — an `Arc` rewrite would not compile.
+
+$`\Rightarrow`$ **The representation route is closed for `Par`.** The traversal route is the one being taken; [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de) records the programme.
+
+#### 5.11.7 What is still recursive
+
+`Drop` across the cross-type hop (254.0 / 96.4 B/level, [§5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped)); the eight sloped generated drivers, which the Arc fix does not touch because they *traverse* rather than copy; and `emit_sppf_subforest`'s $`N/2`$ recursion.
+
+---
+
+## 6. Discussion
+
+### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
+
+Every conversion in §5 is the same transformation: make the continuation a **first-class value** and drive it with a loop [[Reynolds 1972](#ref-reynolds1972); [Ager et al. 2003](#ref-ager2003)]. The choice among the family's variants was made per traversal, and the discriminating question each time was *what does the resumption actually need to remember?*
+
+| traversal shape | driver shape | why |
+|---|---|---|
+| pre-order into a contiguous buffer (encoder) | **op stack only, no value stack** | the output *is* the accumulator, so nothing needs parking — cf. [[Cheney 1970](#ref-cheney1970)] |
+| bottom-up reassembly (decoder, substitution, sorter) | **work stack + value stack(s)** | a parent cannot be constructed until its children exist |
+| post-order fold with *interleaved* checks (expression evaluator) | **work stack + value stack + an `Extract` continuation** | error **position** is observable, so per-operand checks must fire between siblings (§5.2.1) |
+| a `Par` spine with a left-biased search (`into_source_process`) | **work stack, push RIGHT before LEFT** | reproduce the `.or_else` order exactly |
+| a discard (ingress, teardown) | **worklist, no reconstruction at all** (`dismantle`) | nothing reads the value; only the frees are reordered |
+
+★ **The counter-intuitive empirical result is that the heap cost per level is far *below* the stack cost it replaces** — $`5.1\times`$ for the encoder and $`42.3\times`$ for the decoder (§5.3.4). The explanation is §5.1.1's `gdb` attribution: a compiler-laid-out frame for a 40-arm `match` reserves slots for **every** arm's live locals and does not overlap mutually exclusive arms at `-O0`, whereas a work item is a hand-designed 32-byte `enum`. Trampolining is usually presented as trading space for safety; here it bought both, and the reason is that the thing it replaced was *fat*, not that the thing it introduced is *thin*.
+
+### 6.2 Why the SCC is the unit of conversion
+
+Three independent instances say the same thing.
+
+* **Substitution**: converting a subset would have left the cycle intact.
+* **Lowering** (§5.6.1): the reproducer's cycle passes through **twelve `core::iter` adapter monomorphisations**; the 18 direct self-call sites are *not* the component, and converting them would have left the reproducer exactly as it was.
+* **The sorter** (§5.1.4): converting `sort_match` alone would have left `compare_score` $`\Theta(d)`$ **and the gate would still have passed**, because a linear chain sorts as a one-element vector on which `sort_by` performs zero comparisons.
+
+$`\Rightarrow`$ **Scope by Tarjan, not by intuition**, and — §5.1.4 again — remember that a Tarjan run over the *schema* cannot see a recursive Rust type that is not a schema message.
+
+### 6.3 Neutrality is the hard part, not the driver
+
+Every one of these traversals is on a consensus-visible path. The drivers were the easy half; the expensive half was proving that nothing observable moved.
+
+The obligations differ by traversal and were derived per traversal rather than assumed:
+
+* **Substitution** is cost-neutral **by construction**: `substitute_and_charge` charges `encoded_len()` of the **result**, once, *outside* the recursion, and the SCC contains **zero** `reserve_*`/`Cost::` calls — asserted mechanically over all 97 corpus cases, not left as prose.
+* **The sorter** takes no metering handle, which makes the *cost* obligation vacuous and therefore makes the **result** obligation the whole obligation: `cost_accounting/sig.rs` signs `sort_match(&par).term.encode_to_vec()`, so **a one-element reordering is a fork**. `sort_by` is kept and `sort_unstable_by` refused, because the comparator returns `Equal` for distinct terms with equal scores and an unstable sort would be free to reorder them.
+* **The codecs** owe *byte identity* on the write side and *language identity* — including the `Err` half — on the read side.
+* **The async driver** owes COMM order, checked by a differential on the ordered `(BillableKind, weight)` trace, not on a final state.
+
+★ **And `encoded_len` is called out as the one member not covered by the neutrality argument**, because **its return value *is* the charge**. That is why `subst_and_charge` remains sloped at 146 B/level after a $`19.5\times`$ improvement, and why it will stay sloped.
+
+### 6.4 ★ The write/read asymmetry — one section, because it is one class
+
+The campaign kept re-discovering one shape:
+
+> A `Par` is **written by an unbounded encoder** and later **read by a bounded decoder**, with the two ends on different paths, different processes, or different times.
+
+**Both halves matter**, and that is not pedantry: the **bincode** wire is iterative and depth-unlimited in *both* directions, measured flat from depth 4 to 4,096, and is therefore **not in the class** — which is why the cold store does not appear in the registry at all.
+
+Four independent instances (**DERIVED**, `rholang/tests/par_read_ceiling_site_registry.rs:1-11`):
+
+| # | where | shape |
+|---|---|---|
+| **#120** | the audit's §7.3 | a term can be built, reduced and serialised but **not read back** |
+| **#129** | `output_value` | play accepts a depth-34 payload; replay refuses it |
+| **#130** | the trie's value slot | `decode_trie_path` is not total on `encode_trie_path`'s image |
+| **#4** | `EPathMap`'s own prost wire, tag 8 | a map encodes at entry depth 34 and refuses to decode |
+
+**#129 was downgraded by measurement, and that is a result.** The claim under test was *"a proposer-controlled consensus divergence"*, resting on a fixture that **spliced** a depth-34 `Par` into a recorded log — and that fixture's own header said splicing proves the decode asymmetry and *not* reachability. **Nobody had measured the write side.** Driving all seven reachable non-deterministic operations through real deploys on a real runtime (**MEASURED (q)**, `80f5e5d3`):
+
+```text
+rho:ai:gpt4 / dalle3 / textToAudio    depth 0
+rho:ollama:chat / generate            depth 0
+rho:ollama:models                     depth 1   ← the deepest
+rho:io:grpcTell                       depth 0
+rho:chroma:…:query (compiled out)     depth 2   recorded, not driven
+```
+
+Read ceiling 33; **tightest margin 31 levels**. $`\Rightarrow`$ **#129 is LATENT, not live.**
+
+★ **And the defect that *is* real is not the one in the title.** The previous guard was a *sentence* — "all eight of those operations' return constructions were read" — with a hand-listed denominator. Add a ninth operation and the sentence stays grammatical, the fixture stays green, and the block-killing behaviour is live with no compile error anywhere. The denominator is now `non_deterministic_ops()` itself, read from production at run time.
+
+**A second axis nobody had enumerated (`0e0f9719`).** Everything above concerns **depth**. `EMinus { Par p1 = 1; }` is proto3, so the field is optional **on the wire** and `prost` returns `None` for an absent one **without error**. An absent required child is therefore not something `Par::decode` *refuses*; it is something `Par::decode` **returns**. **Ten bytes** — `[2a 08 52 06 12 04 2a 02 10 04]` — are accepted by `Par::decode` and fault four independent consumers: `has_locally_free.rs` (94 sites), `spatial_matcher.rs` (55), `par_map_type_mapper.rs` (1), and the FFI (foreign function interface) rows. The disposition is settled once: an absent required child is an **internal invariant violation**, not a decidable negative, so the sites assert (`.expect`) and the fix belongs at the boundary admitting foreign bytes — because `spatial_match` returns `Option<()>`, whose inhabitants are *matched* and *did not match*, and answering `None` would make a malformed term indistinguishable from a well-formed non-matching one.
+
+⚠ **Reachability of that axis came out split**, and is reported split: the first fault is the normaliser's own path, not the matcher; on the consensus path it is **LATENT for a structural reason** (on replay the tuple space is trace-driven, so the only pattern a spliced value ever meets is one that already matched a well-formed value at play time — five deploy-writable receive shapes all replay clean); and through the FFI it is **worse than a thread panic**, because the implicit non-unwinding shim **aborts**, so `catch_unwind` cannot intercept and the whole process dies. Severity is bounded only by there being **no in-tree caller**: a live public ABI (application binary interface) with no live consumer.
+
+### 6.5 What a "fix" for the asymmetry would have to be
+
+Three options exist and **none is this campaign's to take**:
+
+1. **Cap the writer.** A construction bound is **consensus-visible** — it changes the set of accepted terms — so it is F1r3node's decision, not a repair.
+2. **Uncap the reader.** `RECURSION_LIMIT` is private and unconfigurable in `prost`; raising it *widens* the accepted byte-string set, which is equally consensus-visible and needs a coordinated version bump.
+3. **Convert the prost paths**, as the cold store was converted. This is the only option that changes no accepted-input set — the S2 encoder (§5.3.5) is the first half of it, done and dormant. The **decoder** half is not started.
+
+The gate therefore asserts what is *true* rather than what is *desired*: **the wire is the binding constraint, and every build path clears it with headroom**, tripwired on the **ratio** ($`283/33 = 8.57`$, floored at $`8\times`$) so that it fires when a build path regresses **or** a read ceiling rises. ⚠ As §5.5.4 records, that inventory's 283 is stale at 274 and the ratio is now 8.30 — still passing, on a number that has drifted.
+
+---
+
+## 7. Threats to validity
+
+### 7.1 The observable is a proxy
+
+`B/level` is the slope of *minimum surviving stack*, bisected to 4,096 B. It is **not** a direct measurement of frame size, and it aggregates every frame in the cycle. Two specific consequences:
+
+* A traversal with $`B < 4096/\text{span}`$ is indistinguishable from $`B = 0`$ by this instrument. The gate's zero-slope ceiling over a 4 $`\rightarrow`$ 4,096 span is **4 B/level in integer arithmetic**, with the sloped control ~40 $`\times`$ above it — so the margin is real but finite.
+* The estimator is affine-by-assumption. §5.6.3 exhibits a subject that is **flat then linear**, with a knee at depth ~256 whose mechanism is *not established*. Any subject measured only below its knee would be mis-classified, which is why the gate's ladders end at 4,096 and its width ladders at 65,536.
+
+### 7.2 Measurement environment
+
+* ⚠★ **The measured tree is HEAD *plus uncommitted concurrent work*, not clean HEAD.** `rholang/tests/stack_depth_gate.rs` — the instrument behind every `B/level` figure in [§5](#5-results) — carried **uncommitted modifications by a concurrent agent** at measurement time ($`+76`$ inserted, $`14`$ deleted; file mtime 11:47, i.e. before this session began; **this report modified no source file**). The binaries measured were built from that working tree. Three things bound the risk, and they are stated rather than assumed: the diff touches **zero** lines of `CONVERTED_DEPTH`, `TRIPWIRE_DEPTH` or any `assert_slope_below` call (checked by `git diff | grep -c`); it is predominantly `rustfmt`-shaped reflow plus an S0 doc block; and **the S0 run reproduced the independently recorded baseline table byte-exactly in all ten rows** ([§5.3.1](#531-the-baseline-what-had-never-been-measured)), which a perturbed instrument would be unlikely to do. $`\Rightarrow`$ The figures are treated as sound, and **a re-run at clean HEAD is the honest way to confirm it** — named here rather than glossed.
+* **One machine, one microarchitecture.** All figures are Zen 3, `target-cpu=native`. Frame layouts are compiler- and target-specific; §5.5.2's finding that the *same* function is emitted at 48 B in one binary and 64 B in another (a $`1.5\times`$ spread **from register allocation alone**) is direct evidence that these constants do not transfer between builds, let alone between targets.
+* ⚠ **Not at maximum frequency, and not on a quiet machine.** §4.2: core 8 at **77.2 %** of maximum boost, load average ~13 on 32 cores, concurrent agent workloads throughout. The **relative** timings of §5.4.1 are protected by within-repetition interleaving and by the non-overlap check; the **absolute** nanosecond figures are not, and should not be quoted as throughput characteristics of the hardware.
+* **The settle was 302 s of *quieter*, not of *quiet*.** The $`\geq 300`$ s discipline was met arithmetically; the machine was never idle.
+* ⚠ **`perf` used a software event.** See §4.4. Symbol attribution is unaffected; sampling fidelity is.
+* **Heap figures are architecture-independent but allocator-dependent.** massif and DHAT observe the actual allocator; a different global allocator would move the block counts of §5.3.4 (though not the op-stack arithmetic, which is $`16{,}384 \times 32`$ regardless).
+
+### 7.3 Workload representativeness
+
+The throughput verdict of §5.4.1 is weighted by a **measured** distribution — 1,773 datums from five interpreter suites, 95.43 % at depth 2 — and that is far better than a uniform sample. But it is five *test* suites, not a production node, and it measures only `ListParWithRandom::stable_hash_bytes`'s datum leg. ⚠ A production workload with a different depth profile would move the verdict; the per-depth table of §5.4.1 is provided so a reader with a different distribution can re-weight it.
+
+The deploy ceilings of §5.5 are measured on **synthetic maximally-nested** source. That is the right shape for a *ceiling*, and the wrong shape for an average.
+
+### 7.4 Enumeration completeness
+
+The traversal inventory is **derived by three methods** — Tarjan over the schema, a call-graph search over 4,503 functions with an explicit trait-dispatch pass, and measurement as the discriminator of last resort — and each has a blind spot that was hit at least once:
+
+* Tarjan over `RhoTypes.proto` **cannot see a recursive Rust type that is not a proto message**; it missed `score_tree::Tree<T>` and its five traversals (§5.1.4).
+* A `#[derive]` scan **cannot see hand-written impls**; `PartialEq` and `Hash` are stripped from prost's output and written by hand, and a hand-picked list of four **already missed `Hash` once** (§5.3.1). The generated registry therefore declares itself a **lower bound**.
+* A call-graph search cannot see rustc's **implicit `Drop` glue**, which has no `impl` anywhere.
+
+$`\Rightarrow`$ **The list of $`\Theta(d)`$ traversals in this system should be read as a lower bound, not a census.** The read-ceiling registry (§5.7.8) exists for exactly this reason: it is a **scan**, so a fifth site cannot be added without someone deciding what it is.
+
+### 7.5 DERIVED-but-not-MEASURED claims
+
+Named, as required:
+
+1. **Consensus neutrality of the ingress repair** (§5.5.3(a)) rests on three *read* arguments — signature over source, storage of source, re-normalisation by the proposer. Individually sufficient, jointly strong, **not executed** as an end-to-end differential.
+2. **`prost_encode`'s dormancy** (§5.3.5) is a mechanical `grep` over `src/` trees at one commit; it is DERIVED, and a future wiring would silently invalidate the "no stack-safety regression" reading.
+3. **`RECURSION_LIMIT = 100`** is read from `prost-0.13.5/src/lib.rs:30`. The workspace `Cargo.lock` lists prost 0.12.6, 0.13.5 **and** 0.14.3; the *effective* version for `models` was not separately confirmed for this report, though the derived $`D_{\max}`$ values (33/32/31) **were** measured end-to-end by the gate and agree with the formula.
+4. **The 87-member lowering component** (§5.6.1) is a Tarjan result from a script, not re-run for this report.
+5. **The claim that no `codegen-backend = "cranelift"` is configured** is a grep over three file classes; a workspace-external `~/.cargo/config.toml` override was **not** checked.
+6. **The attribution of the `env_get_deploy` drift** to the four intervening commits is explicitly *not* asserted (§5.9, #6).
+
+### 7.5a ⚠★ A measurement's provenance includes its BUILD OVERLAY — and this repo's overlay is deliberately untracked
+
+**DERIVED**, `Cargo.toml:59-69`. This repository carries a `[patch]` block marked **`HELD LOCAL — DO NOT COMMIT`** pointing the `rholang-rs` parser crates at an **unpublished** local worktree commit — the one carrying `Proc::SignedTerm` / `TokenStack` / `Bind::Signed` that the `cost_accounting` normalizers require — and `Cargo.lock` is held out of git with `git update-index --skip-worktree`.
+
+$`\Rightarrow`$ ★★ **An archived HEAD does not compile, by design.** `git archive` strips the overlay, and a sibling agent concluded *"HEAD is broken"* from exactly that. Anyone pinning a baseline for comparison must:
+
+1. copy the held-local `Cargo.toml` into the export;
+2. ⚠ note that its `path =` dependencies are **relative**, so the export must sit as a **sibling** of the target worktree or the paths must be rewritten absolute; and
+3. **verify the baseline builds before attributing any figure to it.**
+
+⚠ In `mettail-rust` the mirror hazard is worse in one respect: the build pin lives in a **harness-wipeable scratchpad** and can vanish on its own, intermittently breaking every build with no local change to explain it.
+
+$`\Rightarrow`$ **A B/level figure is a property of (source, toolchain, profile, *overlay*).** This report's figures were taken with the overlay in place; a re-run that strips it will not reproduce them, and will fail to build rather than disagree.
+
+### 7.5b ★★ When a premise looks refuted, suspect the instrument ONCE before suspecting the claim
+
+Three of this session's apparent refutations turned out to be instrument problems, not findings:
+
+| apparent refutation | what it actually was |
+|---|---|
+| *"the subjects do not exist"* — the probe rejected all eleven names | **zsh did not word-split `$ SUBJ`**; every name arrived as one argument. The exact hazard `e72dcae8` records ("a zsh `set --` that does not word-split"), reproduced by me one session after reading it. |
+| *"the generated tree is missing `ast_enums.rs`"* — the build failed outright | a **concurrent agent was regenerating** `target/generated/` at that moment. One retry, one minute later, succeeded unchanged. |
+| *"`models` does not compile"* — E0425 in `sorter/sort_drive.rs` | a **concurrent agent's mid-edit** in the sibling worktree. Also fixed by retrying. |
+
+★ And the general form of the lesson is already in the report twice — [§5.6.3](#563--a-retracted-claim--the-parser-is-not-depth-independent-1339c1e2-then-6275b0e2)'s parser read *"0 B/level"* because the ladder never cleared its own intercept, and [§5.7.3](#573-the-harness-prerequisite-that-was-totally-vacuous)'s generator quantified over **two values** for every input. Both looked like results.
+
+$`\Rightarrow`$ **The rule adopted: a premise that looks refuted buys the instrument exactly one audit before the claim is doubted.** Cheap to apply, and it would have saved three false conclusions in this session alone. ⚠ It is *one* audit, not unlimited — the opposite failure, explaining away a real result as instrument error, is how [§5.5.2](#552--a-withdrawn-claim-reported-as-a-result)'s 84.3 B/level survived as long as it did.
+
+### 7.6 The instrument shares the codebase it measures
+
+The gate's fixtures build and tear down terms using `par_children::dismantle` — production code that the campaign itself introduced. A defect in `dismantle` would corrupt both the subject and the measurement. This is mitigated by the synthetic controls (§4.6, §5.7.4), which are self-contained and independent of `par_children`, and by the differential oracles, which are compiler-generated. It is not eliminated.
+
+---
+
+## 8. Residuals and future work
+
+### 8.1 The prost network format — the largest residual
+
+**MEASURED (f)**: the prost **encoder** is `TRIPWIRE_DEPTH` member `encode` at **302 B/level** release (**1,937 debug**), giving $`D_{\max} \approx 6{,}900`$ on a 2 MiB worker. **MEASURED (f)**: the prost **decoder** is **4,096 B/level** release — the most expensive traversal in the family — but is *capped first* by `RECURSION_LIMIT`, at term depth **33 / 32 / 31** per envelope.
+
+⚠ **The commissioning brief's figure of "28 `merge_field` call sites" could not be reproduced.** `merge_field` is generated by `#[derive(::prost::Message)]` at compile time and appears **zero** times in the generated `rhoapi.rs` text; what *is* countable there is **57 `::prost::Message` derives and 5 `::prost::Oneof` derives**, of which the recursive SCC has **37** members. The residual is therefore stated as *57 generated message codecs, 37 of them in the recursive component, all recursive on both sides* — see Appendix D.
+
+Neither side of prost is converted, and §6.5 records why the choice is not this campaign's to make.
+
+### 8.2 The derived `Drop` — REFUTED by measurement, and it stays a residual
+
+`drop_in_place::<Par>` is **144 B/level** release / **464 debug** (**MEASURED (f)**), and it is the residual ceiling behind several other results — the evaluator's ~75k–100k limit (§5.2.1), the mettail binary's unexplained ~5,100 B/level (§5.6.4), the `normalize_drop` composition (§5.5.6).
+
+★★ **The obvious repair — `impl Drop for Par` with an iterative body — is REFUTED, and the refutation is a measurement rather than a preference.** `Drop` therefore stays on `par_children::dismantle_all` at the call sites, and `par_drop` stays in `TRIPWIRE_DEPTH`. ⚠ This is the one place where the Stage F-4 programme of [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de) does **not** reach: a generated `Clone` is a *method* the generator can emit, whereas `Drop` would have to be an `impl` on a type whose fields are moved out by 61 existing call sites. **MEASURED (q)**, `44535d75`: adding the impl and compiling produced **353 diagnostics across 61 unique source lines in `models` alone** — 38 struct-literal / functional-record-update, 23 partial move, **0 destructure**. ★ The design's premise was **wrong about the syntax**: it counted `let Par { … }` destructuring, of which there are **zero**; E0509 here is driven by `Par { …, ..Default::default() }` and by partial field moves. ⚠ **And the count is a floor** — cargo aborted at `models`, so `rholang`, `rspace++`, `casper` and `node` were never checked, *including the very files the design named*. The impl was reverted and verified reverted.
+
+Call-site interception is measurably incomplete as an alternative: `Compiler::normalize_term` dismantles its intermediate and **returns the sorted term to a caller that does not**.
+
+### 8.3 ★★ `<Par as Clone>::clone` — the largest unconverted traversal after `prost_de`
+
+**It was never converted, no commit anywhere converts it, and the task tracker reads as though one did.** The full evidence is [§5.10](#510--the-generated-trait-implementations-and-the-clone-question); the residual is stated here so it sits beside the prost paths where it belongs.
+
+**MEASURED (f)**, 2026-07-29, twice in one release binary: **3,254 B/level** — the **second-worst row of the eight-traversal S0 baseline**, behind only `prost_de` at 4,096, and above `debug` (1,243), `ord` (438), `prost_ser` (302), `eq` (221), `par_drop` (144) and `hash` (136). **DERIVED** extrapolation: $`D_{\max} \approx 640`$ levels on a 2 MiB worker (⚠ unbisected — [§5.9](#59-measurements-that-could-not-be-obtained) #9).
+
+★★ **STATUS CHANGED: it is now SCHEDULED, not declined.** The ruling since this section was first written is that **all modelled types get derived impl methods through the SAME stack-safe driver as the derived ser/de**. `<Par as Clone>::clone` **is being converted** — **Stage F-4** of an approved eight-stage programme, filling the deliberately-empty `emit_term_ops_source()` slot in `models/build/wire_schema.rs` (the slot [§5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) records was emitted, included as a module and left empty precisely so the pipeline a later stage fills was exercised from the stage that built it). $`\Rightarrow`$ The generator that already emits the bincode and prost tables from one schema walk will emit the term-op drivers too, so the 57-hand-written-impls objection below is answered by **generating** them rather than writing them.
+
+**Why it was not converted EARLIER** — the reasons were real, and they are what the programme now routes around:
+
+* Its standing disposition from the first audit is *"derived impl — **Leg-1 only: remove the call sites, not the impl**"*, and that programme was executed: [§5.5.3(c)](#553-the-three-repairs) removed **15** call sites, which is what moved `plain_deploy` by $`23.9\times`$, and [§5.5.3(b)](#553-the-three-repairs) removed the `inj_attempt` one, which is what `9082d12c` did.
+* Converting the impl itself means **replacing rustc's derive with a hand-written iterative `Clone`** on a prost-generated type — the same E0509-adjacent surgery [§8.2](#82-the-derived-drop--refuted-by-measurement-and-it-stays-a-residual) documents for `Drop`, on 57 message types, against a derive that regenerates from the schema on every build.
+* ★★ **The strategy actually in force is CALL-SITE ELIMINATION, not conversion** ([§5.10.5a](#5105a--the-strategy-is-call-site-elimination-not-impl-conversion--and-it-should-be-argued-not-inferred)). Deleting a call saves the traversal **and** the allocation, where a converted clone would still copy the term. Two sites are gone and measured; the residual is **which callers remain**, and that set is ⚠ **unenumerated on purpose** — hand-enumeration is this campaign's most-repeated failure class ([§7.4](#74-enumeration-completeness)). **Named work:** derive it with a call-graph *scan* in the idiom of the read-ceiling registry ([§5.7.8](#578-the-read-ceiling-registry-and-a-fifth-site-it-can-detect)), never a hand-written list.
+* ★ **The conversion technique is already in this repository and in the converted register**: `tree_clone`, a hand-written iterative `Clone` for `score_tree::Tree<T>`, **1,578 / 485 $`\rightarrow`$ 0** ([§5.10.5b](#5105b--the-conversion-technique-is-in-tree-and-proven--it-was-simply-never-applied-to-par)). What blocks the same shape on `Par` is that `Tree<T>` is hand-written source while `Par`'s `Clone` is rustc's derive over prost output — it would mean hand-writing and schema-tracking `Clone` for **57** message types.
+* ⚠★ **The representation route — `mettail`'s Arc fix (`SS-G1`) — is CLOSED for `Par`, for three independent and individually sufficient reasons** ([§5.11.6](#5116--why-it-does-not-transfer-to-f1r3nodes-par--three-independent-reasons)): `Par`'s recursion runs through **`Vec<T>`**, so element copies survive any wrapper change; `Par` is **mutated in place**, with **38** functional-record-update sites in `models` alone; and `prost-build`'s `Config` has **`boxed(path)` and no `arc` equivalent**, with the generated `Message` impl written against concrete field types. **$`\Rightarrow`$ The traversal route is the one being taken.**
+
+**The other tripwire members**, release B/level: `substitute_deep_binding` **7,460** — `Env::get`'s copy is *semantically required*, because the copy **is** substitution ([§5.1.5](#515-the-named-residual-of-family-a)); `sort_nested_map` **7,509**; `sort_nested_set` **4,778**; `clone_nested_set` **4,096**, the derived floor the two sorter arms are measured against.
+
+### 8.4 Not measured, and worth measuring
+
+The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(d)`$ state from stack to heap and **none has a heap profile**. Given that the codec conversions turned out to need 5–42 $`\times`$ *fewer* bytes per level in heap than they had used in stack, the analogous figures for substitution — whose frames were **195 kB per level** in debug — would be the most interesting number in the campaign, and it does not exist.
+
+### 8.5 The `mettail-rust` residue
+
+`render` 3,665 / 911 and `lower_formula` 4,094 / 978 B/level (debug / release), each with its own gate subject and named owner; `ast_drop` at 270 / 96, blocked on the cross-type hop (§5.6.1).
+
+---
+
+## 9. Conclusions
+
+1. **The class change is real and is mechanically enforced.** Nineteen traversals — 13 depth, 6 width — hold their minimum surviving stack *identical* across a 1,024-fold change in nesting depth and a 16,384-fold change in sibling width, in both build profiles, checked by a gate whose registers are the single source of truth and whose checkers are shown in-suite to reject a $`\Theta(d)`$ control.
+
+2. **The two headline availability defects are closed.** A term that could be *built* and not *destroyed* (8.8 kB of source aborting a node) and a pre-consensus ingress teardown reachable from unauthenticated gRPC (43.5 kB of source aborting a node) are both $`0`$ B/level with no ceiling below the search bound.
+
+3. **The trampolined codecs are faster, not slower** — $`1.194 \pm 0.005\times`$ on the exact production-weighted distribution, ranges non-overlapping, $`\alpha = 0.01`$ — because the transformation deletes bincode's *sizing* traversal, which the CPU profile shows to be the more expensive of its two. **And they allocate $`770\times`$ fewer blocks** in the reused-buffer form. The cost is $`3.25\times`$ more heap **writes** and $`2\times`$ peak heap on the shallow shape, both of which are relocations of previously-uncounted native-stack traffic.
+
+4. **The `tokio` work is two fixes, not one**, and the report says which is which: inline `.await` nesting was a **native-stack** $`\Theta(d)`$ chain that had been *fed* by `stacker` rather than removed, and the awaited-parent chain was a **heap** $`\Theta(N)`$ chain of parked futures. Detaching both removed the `stacker` dependency entirely and cut the reference contract's work by $`\approx 3.2\times`$ in the one clock that is invariant to machine contention.
+
+5. **The residual is larger than the fixed part on the network path.** The protobuf codec is recursive on both sides, capped on one, and is the standing home of the write/read asymmetry. Three routes exist to close it; **all three are consensus decisions and none was taken here.**
+
+6. **The instrument produced more findings than the fixes did.** A totally vacuous generator quantifying over two values; four false zeros from probes that measured nothing; a headline test whose result came from one call in a fixture; a control calibrated in the wrong profile; a slope estimate biased to zero by its own intercept; a check that counted lines instead of testing its claim. ★ **Every number in §5 is worth exactly as much as the anti-vacuity leg standing behind it**, and where such a leg does not exist — §5.9's seven entries — the report says *not measured* rather than guessing.
+
+---
+
+## References
+
+Abbreviations used in the entries below:
+
+| abbreviation | expansion |
+|---|---|
+| ACM | Association for Computing Machinery |
+| SIGPLAN | ACM Special Interest Group on Programming Languages |
+| SIGACT | ACM Special Interest Group on Algorithms and Computation Theory |
+| PPDP | Principles and Practice of Declarative Programming |
+| POPL | Principles of Programming Languages |
+| PLDI | Programming Language Design and Implementation |
+| ICFP | International Conference on Functional Programming |
+
+
+###### ref-ager2003
+
+**[Ager et al. 2003]** Ager, M. S., Biernacki, D., Danvy, O., & Midtgaard, J. (2003). *A functional correspondence between evaluators and abstract machines.* In Proceedings of the 5th ACM SIGPLAN International Conference on Principles and Practice of Declarative Programming (PPDP '03), 8–19. [doi:10.1145/888251.888254](https://doi.org/10.1145/888251.888254)
+
+###### ref-cheney1970
+
+**[Cheney 1970]** Cheney, C. J. (1970). *A nonrecursive list compacting algorithm.* Communications of the ACM, 13(11), 677–678. [doi:10.1145/362790.362798](https://doi.org/10.1145/362790.362798)
+
+###### ref-danvy2001
+
+**[Danvy & Nielsen 2001]** Danvy, O., & Nielsen, L. R. (2001). *Defunctionalization at work.* In Proceedings of the 3rd ACM SIGPLAN International Conference on Principles and Practice of Declarative Programming (PPDP '01), 162–174. [doi:10.1145/773184.773202](https://doi.org/10.1145/773184.773202)
+
+###### ref-debruijn1972
+
+**[de Bruijn 1972]** de Bruijn, N. G. (1972). *Lambda calculus notation with nameless dummies, a tool for automatic formula manipulation, with application to the Church–Rosser theorem.* Indagationes Mathematicae, 75(5), 381–392. [doi:10.1016/1385-7258(72)90034-0](https://doi.org/10.1016/1385-7258(72)90034-0)
+
+###### ref-felleisen1987
+
+**[Felleisen & Friedman 1987]** Felleisen, M., & Friedman, D. P. (1987). *A calculus for assignments in higher-order languages.* In Proceedings of the 14th ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages (POPL '87), 314–325. [doi:10.1145/41625.41654](https://doi.org/10.1145/41625.41654)
+
+###### ref-ganz1999
+
+**[Ganz et al. 1999]** Ganz, S. E., Friedman, D. P., & Wand, M. (1999). *Trampolined style.* In Proceedings of the Fourth ACM SIGPLAN International Conference on Functional Programming (ICFP '99), 18–27. [doi:10.1145/317636.317779](https://doi.org/10.1145/317636.317779)
+
+###### ref-knuth1984
+
+**[Knuth 1984]** Knuth, D. E. (1984). *Literate Programming.* The Computer Journal, 27(2), 97–111. [doi:10.1093/comjnl/27.2.97](https://doi.org/10.1093/comjnl/27.2.97)
+
+###### ref-landin1964
+
+**[Landin 1964]** Landin, P. J. (1964). *The mechanical evaluation of expressions.* The Computer Journal, 6(4), 308–320. [doi:10.1093/comjnl/6.4.308](https://doi.org/10.1093/comjnl/6.4.308)
+
+###### ref-meredith2005
+
+**[Meredith & Radestock 2005]** Meredith, L. G., & Radestock, M. (2005). *A reflective higher-order calculus.* Electronic Notes in Theoretical Computer Science, 141(5), 49–67. [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
+
+###### ref-milner1992
+
+**[Milner, Parrow & Walker 1992]** Milner, R., Parrow, J., & Walker, D. (1992). *A calculus of mobile processes, I.* Information and Computation, 100(1), 1–40. [doi:10.1016/0890-5401(92)90008-4](https://doi.org/10.1016/0890-5401%2892%2990008-4)
+
+###### ref-nethercote2007
+
+**[Nethercote & Seward 2007]** Nethercote, N., & Seward, J. (2007). *Valgrind: a framework for heavyweight dynamic binary instrumentation.* In Proceedings of the 28th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI '07), 89–100. [doi:10.1145/1250734.1250746](https://doi.org/10.1145/1250734.1250746)
+
+###### ref-reynolds1972
+
+**[Reynolds 1972]** Reynolds, J. C. (1972). *Definitional interpreters for higher-order programming languages.* In Proceedings of the ACM Annual Conference, 717–740. Reprinted in Higher-Order and Symbolic Computation, 11(4), 363–397 (1998). [doi:10.1023/A:1010027404223](https://doi.org/10.1023/A:1010027404223)
+
+###### ref-schorr1967
+
+**[Schorr & Waite 1967]** Schorr, H., & Waite, W. M. (1967). *An efficient machine-independent procedure for garbage collection in various list structures.* Communications of the ACM, 10(8), 501–506. [doi:10.1145/363534.363554](https://doi.org/10.1145/363534.363554)
+
+###### ref-tarjan1972
+
+**[Tarjan 1972]** Tarjan, R. (1972). *Depth-first search and linear graph algorithms.* SIAM Journal on Computing, 1(2), 146–160. [doi:10.1137/0201010](https://doi.org/10.1137/0201010)
+
+###### ref-welch1947
+
+**[Welch 1947]** Welch, B. L. (1947). *The generalization of "Student's" problem when several different population variances are involved.* Biometrika, 34(1–2), 28–35. [doi:10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28)
+
+★ **Every DOI above was resolved against the Crossref API on 2026-07-29** and its title, container and year confirmed to match the citation as written. Command in Appendix A.8.
+
+---
+
+## Appendix A — reproduction commands
+
+All commands are run from the repository root, `/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail`.
+
+**A.0 — build (⚠ *without* `-D warnings`; see §4.3).**
+
+```bash
+systemd-run --user --scope -p MemoryMax=28G --quiet \
+  cargo build --release -p models --benches --tests
+systemd-run --user --scope -p MemoryMax=28G --quiet \
+  cargo build --release -p rholang --test stack_depth_gate --test deploy_depth_ceiling
+```
+
+**A.1 — the whole gate, release.**
+
+```bash
+GATE=$(find target/release/deps -maxdepth 1 -name 'stack_depth_gate-*' \
+        -type f -executable -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)
+systemd-run --user --scope -p MemoryMax=28G --quiet \
+  taskset -c 16-23 env RUST_MIN_STACK=8388608 "$GATE" \
+  --test-threads=4 --nocapture 2>&1 | tee /tmp/sd_gate_release.log
+```
+
+**A.2 — the S0 four-quadrant baseline** (an `#[ignore]`d test in the same binary).
+
+```bash
+taskset -c 16-23 env RUST_MIN_STACK=8388608 "$GATE" \
+  four_quadrant_s0_baseline --ignored --nocapture --test-threads=1 \
+  2>&1 | tee /tmp/sd_s0_release.log
+```
+
+**A.3 — the end-to-end deploy ceiling.**
+
+```bash
+DDC=$(find target/release/deps -maxdepth 1 -name 'deploy_depth_ceiling-*' \
+       -type f -executable -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)
+systemd-run --user --scope -p MemoryMax=28G --quiet taskset -c 24-27 "$DDC" \
+  the_deploy_depth_ceiling_at_a_production_worker_stack \
+  --nocapture --test-threads=1 2>&1 | tee /tmp/sd_deploy_ceiling.log
+```
+
+**A.4 — massif heap profiles**, one arm per process, in parallel on distinct cores.
+
+```bash
+BIN=target/release/deps/wire_encode_massif-*        # the built bench binary
+for i in 0 1 2 3 4; do
+  arm=$(echo "derived machine reused deep decode" | cut -d' ' -f$((i+1)))
+  MASSIF_ARM=$arm taskset -c $((4+i)) valgrind --tool=massif --time-unit=B \
+    --detailed-freq=1 --max-snapshots=200 \
+    --massif-out-file=/tmp/sd_massif/massif.$arm.out $BIN &
+done; wait
+for a in derived machine reused deep decode; do
+  ms_print /tmp/sd_massif/massif.$a.out > /tmp/sd_massif/ms.$a.txt
+done
+```
+
+**A.5 — DHAT allocation counts**, same arms.
+
+```bash
+for i in 0 1 2 3 4; do
+  arm=$(echo "derived machine reused deep decode" | cut -d' ' -f$((i+1)))
+  MASSIF_ARM=$arm taskset -c $((10+i)) valgrind --tool=dhat \
+    --dhat-out-file=/tmp/sd_dhat/dhat.$arm.json $BIN \
+    2>/tmp/sd_dhat/summary.$arm.txt &
+done; wait
+grep -E 'Total:|At t-gmax:|At t-end:|Reads:|Writes:' /tmp/sd_dhat/summary.*.txt
+```
+
+**A.6 — the throughput bench**, three whole-bench runs pinned to one core.
+
+```bash
+BENCH=target/release/deps/wire_encode_bench-*
+for run in 1 2 3; do
+  echo "### RUN $run ($(date -Is), load $(cut -d' ' -f1 /proc/loadavg))"
+  systemd-run --user --scope -p MemoryMax=28G --quiet taskset -c 8 "$BENCH"
+done 2>&1 | tee /tmp/sd_wire_bench.log
+```
+
+**A.7 — the CPU profile** (⚠ software event; see §4.4).
+
+```bash
+taskset -c 12 perf record -e cpu-clock -F 9999 --call-graph dwarf,16384 \
+  -o /tmp/sd_perf/perf.bench.data -- "$BENCH" > /tmp/sd_perf/bench_under_perf.txt 2>&1
+perf report -i /tmp/sd_perf/perf.bench.data --no-children \
+  --percent-limit 0.8 --stdio > /tmp/sd_perf/report.flat.txt
+```
+
+**A.8 — DOI verification.**
+
+```bash
+for d in 10.1093/comjnl/6.4.308 10.1023/A:1010027404223 10.1145/888251.888254 \
+         10.1145/363534.363554 10.1145/362790.362798 10.1145/317636.317779 \
+         10.1137/0201010 10.1093/biomet/34.1-2.28 10.1093/comjnl/27.2.97 \
+         10.1145/1250734.1250746 10.1145/773184.773202 \
+         "10.1016/0890-5401(92)90008-4" 10.1016/j.entcs.2005.05.016 \
+         "10.1016/1385-7258(72)90034-0" 10.1145/41625.41654; do
+  curl -s -A 'doi-check/1.0' "https://api.crossref.org/works/$d" \
+    | python3 -c "import sys,json; m=json.load(sys.stdin)['message']; \
+        print(m['title'][0], '|', m['container-title'][0])"
+done
+```
+
+**A.9 — rendering the figures**, and checking that they are not empty.
+
+```bash
+cd docs/design/stack-safety/figures
+for f in *.puml; do plantuml -tsvg "$f"; done
+for f in *.svg; do
+  printf "%-40s bytes=%-8s latexImgs=%-3s leaked=%s\n" "$f" "$(stat -c%s "$f")" \
+    "$(grep -o 'data:image/svg+xml;base64' "$f" | wc -l)" "$(grep -c 'latex&gt;' "$f")"
+done
+```
+
+---
+
+## Appendix B — raw data locations
+
+| file | contents |
+|---|---|
+| `/tmp/sd_gate_release.log` | the full release gate run of 2026-07-29 — every converted subject's two ladder ends, every tripwire slope, the read-ceiling envelopes, the synthetic controls |
+| `/tmp/sd_s0_release.log` | the S0 four-quadrant baseline CSV, release |
+| `/tmp/sd_deploy_ceiling.log` | the end-to-end deploy bisection (`plain_deploy` 6,831; `env_get_deploy` 274) |
+| `/tmp/sd_massif/massif.{derived,machine,reused,deep,decode}.out` | raw massif output, `--time-unit=B` |
+| `/tmp/sd_massif/ms.*.txt` | `ms_print` renderings, including the peak snapshot allocation trees |
+| `/tmp/sd_dhat/summary.*.txt` | DHAT totals: bytes, blocks, `t-gmax`, `t-end`, reads, writes |
+| `/tmp/sd_dhat/dhat.*.json` | full DHAT program-point data |
+| `/tmp/sd_wire_bench.log` | three whole-bench runs, all cells, with per-run load and environment blocks |
+| `/tmp/sd_perf/perf.bench.data` | the perf recording (466 MB, 29,436 samples) |
+| `/tmp/sd_perf/report.flat.txt` | the flat profile at `--percent-limit 0.8` |
+| `/tmp/sd_perf/all_symbols.txt` | the full 204-symbol profile used for the bucket aggregation of §5.4.2 |
+
+⚠ **These are `/tmp` paths and will not survive a reboot.** The *derivable* figures — everything in §5 tagged **(f)** — are reproducible from Appendix A in minutes; the perf recording is the only artefact that is expensive to regenerate.
+
+---
+
+## Appendix C — the complete fix inventory
+
+**20 code fixes**, **18 instrument commits**, **1 rejected candidate**.
+
+### C.1 Code fixes
+
+| # | commit | repo | what it converted / removed | key figure |
+|---|---|---|---|---|
+| A1 | `f0894109` | f1r3node | leg-1 de-clone of the substitution SCC | release $`-`$ 25.4 %; **class unchanged** |
+| A2 | `f11ffb54` | f1r3node | substitution SCC $`\rightarrow`$ explicit worklist, `EnvView` delta | 195,728 $`\rightarrow`$ **0** (debug) |
+| A3 | `6ce7c5b9` | f1r3node | score tree: comparator, sibling walk, `Clone`, `Drop`, `PartialEq` | 1,329 / 201 / 1,578 / 370 / 719 $`\rightarrow`$ **0** |
+| A4 | (in `6ce7c5b9`/`f11ffb54`) | f1r3node | `ParSortMatcher` — `sort`, `sort_wide` | 78,592 $`\rightarrow`$ **0** (debug) |
+| A5 | `a3fd6fe4` | f1r3node | `rho-pure-eval`'s `eval_with` SCC $`\rightarrow`$ worklist | 21,584 / 3,359 $`\rightarrow`$ **0 / 0** |
+| A6 | (staged with the above) | f1r3node | `PrettyPrinter` $`\rightarrow`$ explicit pushdown driver | flat both axes |
+| A7 | (Stage G) | f1r3node | `normalize_ann_proc`'s 26-function SCC $`\rightarrow`$ `norm_drive` | 43,542 / 7,261 $`\rightarrow`$ **0 / 0** |
+| B1 | `a929a2d6` | f1r3node | 6-member expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ **OK at 50,000** |
+| B2 | `29856679`, `55b97f84`, `a0a50473` | f1r3node | `DriveState`/`LiveGuard`/`spawn_detached`; 5 join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** |
+| B3 | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | dependency removed |
+| C1 | `9a5521a2` | f1r3node | cold-store **decoder** (`par_codec`) | 28,362 / 12,894 $`\rightarrow`$ **0 / 0** |
+| C2 | `c28f4cf6` + `a169cc61` | f1r3node | cold-store **encoder** (`wire_encode`), single walk | ~224 $`\rightarrow`$ **0** (release control) |
+| C3 | `7c74260d` | f1r3node | the wire-schema generator: one walk, four outputs | enabling infrastructure |
+| C4 | `56fb1fd0` | f1r3node | prost encoder: $`\Theta(d^2) \rightarrow \Theta(n)`$ work | ⚠ stack unchanged; **dormant** |
+| D1 | `d2591fa1` | f1r3node | per-branch `Par` deep clone at the task-spawn boundary | the binding worker-side member |
+| D2 | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies, incl. an $`O(n^2)`$ | — |
+| D3 | `9082d12c` | f1r3node | `inj_attempt`'s read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0**; 729 $`\rightarrow`$ **$`\geq 1{,}048{,}576`$** |
+| D4 | `a09f1de2` + `3b265eb7` | f1r3node | ingress `validate_deploy_term` | 96.0 $`\rightarrow`$ **0**; 21,781 $`\rightarrow`$ **none** |
+| D5 | `64a5d2bc` (subject) | f1r3node | metered wrappers take term by value | 2,852 $`\rightarrow`$ **146**; 286 $`\rightarrow`$ **6,831** |
+| F1 | `3c0c3585` | mettail-rust | the 87-member lowering component $`\rightarrow`$ one worklist | 15,132 / 2,157 $`\rightarrow`$ **1 / 0** |
+
+### C.2 Instrument commits
+
+`f0894109` (the gate) · `550b967a` (harness prerequisites, child-slot table, iterative dismantle) · `9ab6b0eb` (release-profile run, child no-op) · `4822520c` (clone-free probe builders) · `e72dcae8` (end-to-end deploy bisection harnesses) · `291bc217` (`drop` $`\rightarrow`$ `par_drop`, reachability, register becomes derived) · `dd0ba13f` (checkers get subjects they must reject) · `0a7be7f4` (destructor-control span recalibration) · `857c62fe` (wall clock $`\rightarrow`$ CPU time) · `ee1dfdad` (ingress becomes a converted claim; 84.3 withdrawn) · `6a1d7c62` (read ceiling joins the gate) · `44535d75` (S0 baseline) · `5dc1aad7` (trampoline-twin structural check) · `80f5e5d3` (#129 measured $`\rightarrow`$ latent; the site registry) · `0e0f9719` (the absent-child axis) · `53b8a85f` (architecture repro) · and in mettail-rust: `1339c1e2`/`6275b0e2`/`d72740e6`/`21c51d10`/`73c774a3`.
+
+### C.3 Rejected
+
+`cf35ab53` — exhaustive `PartialEq`/`Hash`. See §5.8.
+
+---
+
+## Appendix D — corrections to the commissioning brief
+
+Recorded because a report that silently absorbs its brief's errors is less useful than one that names them.
+
+| # | the brief said | the record says |
+|---|---|---|
+| 1 | *"`cf35ab53` — exhaustive `PartialEq`/`Hash` (⚠ verify whether this is stack-safety at all)"* | **Correctly flagged, and it is not.** Reflexivity/hashing correctness, no depth axis. **Rejected** (§5.8). |
+| 2 | *"Verify [the S0] table against `rholang/tests/stack_depth_gate.rs` (`CONVERTED_DEPTH`, `TRIPWIRE_DEPTH`, `assert_slope_below`)"* | The S0 table is **not** in those three constants. Its harness is `four_quadrant_s0_baseline`, an `#[ignore]`d test in the same file, and the table itself lives in `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`. **Run for this report; it reproduces to the byte in all ten rows** (§5.3.1). |
+| 3 | *"`prost_de` 4096 · `clone` 3254 · … · `prost_ser` 302 · `eq` 221 · `par_drop` 144 · `hash` 136"* | **All eight confirmed** — but the list **mixes two ladders**. `prost_ser 302` and `par_drop 144` are the *`@gate`* rows (64 $`\rightarrow`$ 1024 and 256 $`\rightarrow`$ 4096); on the 16 $`\rightarrow`$ N ladder used for the other six they are **292** and **136**. |
+| 4 | *"`9082d12c` — `<Par as Clone>::clone`; claimed 2,852 B/level"* | ★★ **Confirmed from the diffs, and the same error is in the task tracker.** `9082d12c` changed **thirteen lines of `interpreter.rs`** and left `models/` untouched: it deleted a *call to* the clone (`.source_process().cloned()` $`\rightarrow`$ `.into_source_process()`), not the impl. 2,852 is the **composition**'s slope at that call site. **`<Par as Clone>::clone` itself is untouched** — `git log -S` over five spellings returns **0** commits — remains in `TRIPWIRE_DEPTH`, and measures **3,254** B/level release. #76 routed a **call site** and said so (*"distinct call site, distinct repair"*); its one-line summary compressed that to *"clone is worse"*, and #77's summary reports *"2,852 $`\rightarrow`$ 0"* without naming its subject. **Both tracker lines need the correction in [§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker).** Full settlement: [§5.10](#510--the-generated-trait-implementations-and-the-clone-question). |
+| 5 | *"`a09f1de2`, `3b265eb7`, `ee1dfdad` — claimed 96 $`\rightarrow`$ 0 B/level"* | Correct **as amended**. The originally recorded figure was **84.3** and was **withdrawn**; 96.0 is the corrected value, from four fixed-stack bisections at $`r^2 = 1.0000`$ (§5.5.2). |
+| 6 | *"claimed plain_deploy 286 $`\rightarrow`$ 6,831 levels (23.9 $`\times`$), with `env_get_deploy` unmoved at 283 as the control"* | `plain_deploy` **reproduces exactly** at HEAD. **`env_get_deploy` now measures 274, not 283** — a 9-level drift the gate's transcribed inventory has not caught (§5.5.4). |
+| 7 | *"the still-recursive prost paths (`merge_field` across 28 call sites)"* | **Not reproducible.** `merge_field` is derive-generated and appears **zero** times in the generated source text. The countable residual is **57 `::prost::Message` derives, 5 `::prost::Oneof`, 37 members in the recursive SCC** (§8.1). |
+| 8 | *"the `tokio::async` fire-and-forget work — I do not have reliable knowledge of this one"* | Found in git and documented at full rigour. ★ It is **two** defects in **two** resources, not one (§5.2.2). |
+| 9 | *"★ `#103`, where the predicted 55–60 ms came in at 103.57 ms"* | **Not found in this worktree** (§5.9 #7). Three other falsified predictions were found and are reported. |
+| 10 | *"Include a cross-cutting section on the ASYMMETRY"* — initially framed as the centre of gravity | Included as **one** section (§6.4), per the later correction. The per-fix measurements are the report's centre. |
+
+---
+
+## Appendix E — documentation-guideline conformance
+
+This report is held to the same evidentiary standard as its subject matter: conformance to the pgmcp documentation guidelines is **executed**, not asserted. *A guideline nobody checks is a guideline that silently rots* — and this project has already shipped that failure mode once, with four `.svg` files sitting on disk at **zero bytes** beside `.puml` sources that had real content, because the check that would have caught it existed and had never been run.
+
+### E.1 The mechanised gate
+
+`mettail-rust`'s `docs/languages/validate.sh` carries **17 mechanised checks** and accepts Markdown files from outside its own suite as positional arguments, held to the document-level checks. It was pointed at this report.
+
+```bash
+cd /home/dylon/Workspace/f1r3fly.io/mettail-rust
+DOCLINT_DOI=on ./docs/languages/validate.sh \
+  /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
+```
+
+**Result: 17 / 17 PASS, exit status 0, zero diagnostics naming this file.** Log at `/tmp/sd_validate3.log`.
+
+| # | check | guideline slug(s) | verdict |
+|---:|---|---|---|
+| 1 | `fences-balanced` | structural precondition | **PASS** |
+| 2 | `math-symbol-literals` | `math-mathjax` | **PASS** |
+| 3 | `math-delimiters` | `math-delimiters` | **PASS** |
+| 4 | `math-github-renderable` | `math-delimiters` | **PASS** |
+| 5 | `math-backticks` | `math-backticks` | **PASS** |
+| 6 | `diagrams-plantuml-assets` | `diagrams-prefer-plantuml`, `diagrams-complete` | **PASS** |
+| 7 | `diagrams-plenty` | `diagrams-plenty` | **PASS** |
+| 8 | `diagrams-fully-colored` | `diagrams-fully-colored` | **PASS** |
+| 9 | `links-relative` | `doc-placement`, `pedagogy-logical-flow` | **PASS** |
+| 10 | `anchors-in-document` | `pedagogy-logical-flow` | **PASS** |
+| 11 | `citations-exist+doi-links` | `citations-exist`, `citations-doi-links` | **PASS** |
+| 12 | `citations-doi-valid` | `citations-doi-valid` | **PASS** (with `DOCLINT_DOI=on`) |
+| 13 | `pedagogy-define-terms` | `pedagogy-define-terms` | **PASS** |
+| 14 | `algorithms-literate-pseudocode` | `algorithms-literate-pseudocode` | **PASS** |
+| 15 | `code-snippets-valid` | `code-snippets-valid` | **PASS** |
+| 16 | `roster-coverage` | `doc-naming-structure` | **PASS** (suite-scoped; vacuous for this file) |
+| 17 | `live-spec-source` | `coverage-semantics` | **PASS** (suite-scoped; vacuous for this file) |
+
+⚠ **Five checks failed on the first run and were repaired rather than waived**: `math-symbol-literals` and `math-backticks` (bare unicode `$`\rightarrow`$`, `$`\Rightarrow`$`, `$`\approx`$` in prose and in six inert code spans — 103 occurrences wrapped in math spans, six code spans rewritten); `anchors-in-document` (15 `<a id="…">` HTML anchors are honoured by GitHub but are **not** headings, so the checker could not resolve them — converted to level-6 headings whose slugs are the link targets); `pedagogy-define-terms` (21 unexpanded acronyms — 17 expanded at first prose use, `CEK` given a notation-table row, and `ACM`/`SIGPLAN`/`SIGACT` plus four conference abbreviations given a table at the head of the References); `algorithms-literate-pseudocode` (the three algorithm fences were tagged `text` and had to be tagged `pseudocode`).
+
+★ **The first draft also used the *inert* inline-math form.** 180 spans were written as a code span containing dollar signs; the correct form is a **backtick span wrapped in dollar signs**, and the backtick-first spelling renders as literal text on GitHub. All 180 were converted before the gate was run. This is the single highest-risk guideline for a document making `$`\Theta(d)`$`-style complexity claims on every page, and it failed silently — no renderer errors, just inert text.
+
+### E.2 What each mechanised check actually proves
+
+Stated precisely, so no check is read as proving more than it does.
+
+* **`code-snippets-valid`** verifies that every fence tagged `rust` **parses** under `rustfmt --edition 2021`, either as a whole file or wrapped in a function body, and that every fence tagged `sh`/`bash` passes `bash -n`. This report contains **5 `rust` fences and 11 `bash` fences**, all of which pass. ⚠ Two further blocks were **retagged because the check refused them** — one to `diff` (it *is* a diff) and one to `text` (a slice element that is not standalone Rust). That is the check working, and it is recorded rather than quietly accommodated. ⚠ **That is parse validity, not compilation and not semantics.** Three `rust` fences are marked **VERBATIM** and are quoted from the tree, where they do compile as part of their crate; two are marked **ELIDED** and are explicitly not compilable in isolation. No snippet in this report is presented as compilable without being one of those two labels.
+* **`citations-doi-valid`** resolves every DOI. All **15** resolve, and each was separately confirmed against the Crossref API on 2026-07-29 with its title, container title and year matching the entry as written (Appendix A.8).
+* **`diagrams-fully-colored`** checks that the `.puml` sources carry explicit colours; the **intuitive mapping** is a judgement and is stated in §E.3 so a reader can check it rather than take it on trust.
+* **`pedagogy-define-terms`** checks acronym *expansion*, not conceptual definition. The conceptual definitions live in the glossary at §2.4, which defines *stack-safe*, *B/level*, *guard page*, *trampoline*, *explicit continuation*, *defunctionalisation*, *CEK machine*, *worklist*, *value stack*, *fire-and-forget*, *SCC*, *converted*/*tripwire*, *anti-vacuity* and $`D_{\max}`$ — every one before its first use outside the glossary.
+
+### E.3 The colour mapping, so it can be checked
+
+One colour per concept, used identically in all six figures:
+
+| colour | hex | concept |
+|---|---|---|
+| red | `#C62828` / `#FFCDD2` / `#EF9A9A` | **native stack** — fixed size, guard-page terminated, exhaustion is a signal |
+| blue | `#1565C0` / `#BBDEFB` / `#64B5F6` | **heap** — growable, allocator-backed, exhaustion is an `Err` |
+| green | `#2E7D32` / `#A5D6A7` / `#66BB6A` | **converted** — measured depth-independent |
+| amber | `#EF6C00` / `#FFCC80` / `#FFE082` | **tripwire** — still $`\Theta(d)`$, held under a ceiling |
+| purple | `#6A1B9A` / `#E1BEE7` | **wire bytes** |
+| teal | `#00695C` / `#80CBC4` | **the gate / the measuring instrument** |
+| slate | `#455A64` / `#ECEFF1` | structural relations and the term itself |
+
+The mapping is intended to be read as *red is the resource you cannot grow, blue is the one you can* — which is the report's whole thesis in two colours.
+
+### E.4 The rendered assets
+
+Every `.puml` was rendered and every `.svg` checked for non-emptiness and for typeset LaTeX, because a `.puml` with real content beside a zero-byte `.svg` is the exact failure this project has already shipped.
+
+| figure | `.svg` bytes | typeset LaTeX images | leaked `<latex>` text |
+|---|---:|---:|---:|
+| `recursive-vs-trampolined.svg` | 73,054 | 9 | 0 |
+| `two-wire-formats.svg` | 45,397 | 5 | 0 |
+| `depth-vs-stack-ladder.svg` | 125,558 | 11 | 0 |
+| `async-detached-driver.svg` | 54,604 | 6 | 0 |
+| `deploy-path-ceilings.svg` | 59,049 | 5 | 0 |
+| `heap-where-allocations-moved.svg` | 99,669 | 17 | 0 |
+| `generated-drivers-two-ladders.svg` | 63,463 | 5 | 0 |
+
+Command in Appendix A.9. ⚠ **The first render of five of the six emitted `InvocationTargetException` from JLaTeXMath** because the LaTeX carried doubled backslashes; the diagrams still produced non-empty SVGs, so a byte-size check alone would have passed them with their formulae missing. The **typeset-image count** column is what catches that, and it is why it is in the table.
+
+### E.5 The four editorially-judged guidelines
+
+`validate.sh` states that four guidelines are editorial and are *"reviewed by hand; they are not silently assumed to hold."* Their disposition here:
+
+* **`coverage-doc-types`** — the report carries theoretical (§2, §3), design and architectural (§5's *architecture* subsections, §6.1–6.2), engineering (§4, Appendix A), security (§1.1, §5.5.3, §6.4) and usage (Appendix A, Appendix B) material. **PASS.**
+* **`diagrams-best-types`** — a paired before/after structure diagram for the central transformation, a component diagram for the two wire formats, a categorised inventory for the ladder, a before/after architecture diagram for the async driver, an **activity diagram with swimlanes** for the deploy path (because it is a flow with hand-offs between trust domains), and a layered quantity diagram for the heap result. **PASS.**
+* **`diagrams-best-actors`** — the actors are the two *resources* (native stack, heap), the two *codecs*, the five *deploy-path stages* and the *gate*, rather than files or functions, because the report's claims are about resources and boundaries. **PASS.**
+* **`pedagogy-intuition-rationale`** — every conversion carries a *why this shape rather than the alternatives* passage (§5.1.2, §5.2.1, §5.2.2, §5.3.2, §5.3.3), and §6.1 tabulates the choice rule across all of them. **PASS.**
+
+---
+
+## Appendix F — the per-fix template (fill this in; do not invent a shape)
+
+★ **Copy this block verbatim** when a stack-safety fix lands. Every heading is mandatory; a heading with nothing under it is answered with **`NOT MEASURED — <reason>`** or **`n/a — <reason>`**, never deleted. A section that disappears is indistinguishable from a section nobody thought about, which is the failure mode [§5.3.1](#531-the-baseline-what-had-never-been-measured) is about.
+
+Add the row to [§0](#0-the-fix-register--the-scannable-index) **in the same commit**. Allocate the next free identifier in the family (`SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected). **Identifiers are never reused, even after a fix is superseded.**
+
+```text
+### 5.N  <FAMILY> — <one-line name of the traversal>            [SS-??]
+
+#### 5.N.1 The defect
+  what recursed  ·  why it was unbounded  ·  file:line
+  what a user input that reached it looked like (bytes of source, a term shape)
+  DERIVED / MEASURED tag on every clause
+
+#### 5.N.2 The architecture of the repair, and why THIS shape
+  which shape:  explicit-continuation driver | trampoline | worklist | arena |
+                representation change | call-site deletion
+  ★ the alternatives, and why each was rejected      <- the part a maintainer needs
+  what the work item carries, and why not more
+  invariant that keeps the stacks in step
+
+#### 5.N.3 How the fix was made
+  the transformation, before/after, each snippet marked VERBATIM or ELIDED
+
+#### 5.N.4 Results
+  | metric                  | before | after | provenance |
+  | B/level, release        |        |       | (q)/(f) + log path |
+  | B/level, debug          |        |       |                    |
+  | max depth, 2 MiB worker |        |       |                    |
+  | wall clock              |        |       | n>=3, sd, overlap  |
+  | heap: peak / blocks     |        |       | massif + DHAT      |   <- ser/de only
+  | where the allocations moved                                   |
+
+#### 5.N.5 What it cost
+  throughput  ·  allocation  ·  complexity  ·  intercept
+  ★ a stack-safety fix that is SLOWER is still correct — state the number
+
+#### 5.N.6 What is still recursive
+  the honest residual, with its own B/level and its owner
+
+#### 5.N.7 Anti-vacuity
+  which control the checker must REJECT, and the log line showing it did
+```
+
+**Two rules that are not negotiable, because both have already been broken in this campaign:**
+
+1. **A number without a subject is not a number.** Every figure names *which traversal, which ladder, which profile*. [§5.10](#510--the-generated-trait-implementations-and-the-clone-question) exists because two task summaries reported `2,852` and `clone` without saying which was which.
+2. **A traversal enters [§0](#0-the-fix-register--the-scannable-index) as a class change only by being converted**, never by having a ceiling lowered — the same admission rule the gate enforces on `CONVERTED_DEPTH`. `SS-D5` is the worked example: a $`19.5\times`$ improvement that is still, correctly, *not* a class change.
+
+---
+
+## Appendix G — keeping this document current
+
+★ **The problem, stated as this document's own evidence rather than as a worry.** [§5.7.1](#571-the-register-became-derived-because-every-transcription-drifted) records that the converted-subject list existed in four places and **every copy drifted**, twice within an hour of being reconciled. [§5.5.4](#554-results-and-a-control-that-behaved-exactly-as-predicted) records that the gate's own `BUILD_DEPTH_INVENTORY` carries **283** where the tree now measures **274**. [§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker) records a third instance in the task tracker. $`\Rightarrow`$ **A results document maintained by remembering will rot exactly the way those three did.** What follows is a *design*, not an implementation.
+
+### G.1 The precedent, and whether it transfers
+
+`docs/design/audits/theta-depth-traversals-2026-07-26.md` is **mechanically bound to the gate**: it carries one fenced `GATE-SUBJECTS` block, `rholang/tests/stack_depth_gate.rs::the_audit_agrees_with_the_gate` parses that block, and the test **fails at the commit that separates them**. That is a working example of a document a test reads, and it works because the audit's block is *generated output* with exactly one upstream source of truth.
+
+★ **The same shape transfers to this report only in part, and the boundary is worth stating precisely.**
+
+| this document's content | bindable? | why |
+|---|---|---|
+| [§0](#0-the-fix-register--the-scannable-index)'s $`B_1`$ column for **converted** rows | ✅ **yes** | the gate already publishes `CONVERTED_DEPTH` / `CONVERTED_WIDTH`; membership is a set comparison, identical to the audit's block |
+| §0's $`B_1`$ column for **tripwire** rows | ✅ **yes** | `theta_depth_tripwire` *prints* each subject's measured slope; the numbers here are transcriptions of that output |
+| the deploy-ceiling numbers in [§5.5](#55-family-d--the-deploy-path) | ✅ **yes** | `deploy_depth_ceiling.rs` prints them; **this is the drift already observed** |
+| the S0 baseline table in [§5.3.1](#531-the-baseline-what-had-never-been-measured) | ✅ **yes** | `four_quadrant_s0_baseline` emits a **CSV** between `S0-BEGIN` / `S0-END` markers — the easiest binding in the document |
+| the massif/DHAT figures in [§5.3.4](#534--the-malloc-profile--where-the-allocations-moved) | ⚠ **partly** | reproducible on demand, but Valgrind runs are minutes-long; bind the *invariants* (blocks/call, op entries/level), not the byte totals |
+| the throughput figures in [§5.4](#54-throughput-and-cpu-profile-of-the-codec-conversion) | ❌ **no** | machine-dependent; §7.2 already says so. Bind the **direction and significance**, never the nanoseconds |
+| the architecture prose in every §5.N.2 | ❌ **no** | editorial by nature; covered by the template, not by a test |
+
+### G.2 The proposed check — `the_stack_safety_report_agrees_with_the_gate`
+
+The design, in the idiom the audit's check already establishes:
+
+1. **This document grows one fenced block**, `<!-- SS-REGISTER:BEGIN -->` … `<!-- SS-REGISTER:END -->`, holding §0's table in a machine-readable form: `ID | commit | subject | B_before | B_after | class_change`.
+2. **A new test in `rholang/tests/stack_depth_gate.rs`** parses that block and asserts, in ascending order of cost:
+   * every subject marked `class_change = yes` and living in this repository is in `CONVERTED_DEPTH` or `CONVERTED_WIDTH` — a **set comparison, no measurement**;
+   * every subject marked `no` with a numeric $`B_1`$ is in `TRIPWIRE_DEPTH`, and its $`B_1`$ **matches the slope the tripwire printed on this run**, to the bisection resolution;
+   * every `⌀` corresponds to a row in [§5.9](#59-measurements-that-could-not-be-obtained), so an unmeasured figure cannot be quietly dropped rather than reported.
+3. **Both failure directions are named in the message**, as `ee1dfdad` requires: a subject in the gate but not the report means *the report is stale*; a subject in the report but not the gate means *a claim has lost its evidence*.
+4. ⚠ **It must be able to go red, and be shown red.** Perturb one $`B_1`$ in the block and require the assertion to fail naming that row — the discipline of [§5.7.4](#574-the-checkers-were-given-subjects-they-must-reject-dd0ba13f). Without that leg this check is [§5.7.4](#574-the-checkers-were-given-subjects-they-must-reject-dd0ba13f)'s `println!` again.
+
+### G.3 What the check deliberately does **not** cover, and the residual risk
+
+* It cannot verify a **cross-repository** row. `SS-F1` and `SS-G1`/`SS-G2` are `mettail-rust` work with their own gate, and a test in `f1r3node` cannot read that tree. The honest mitigation is that those rows carry their source gate's name, and that [§5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) states plainly which of them are unmeasured.
+* It cannot verify **prose**. The architecture sections, the rejected alternatives and the discussion are editorial and stay editorial.
+* It cannot verify a **tracker** ([§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker)). Nothing in this repository reads the task tracker, which is precisely why the tracker is the copy that drifted furthest.
+
+⚠ **Until this check exists, this report is exactly the discipline-dependent artefact [§1.2](#12-what-makes-a-fix-a-fix) argues against** — and it already carries one demonstrated drift ([§5.5.4](#554-results-and-a-control-that-behaved-exactly-as-predicted)) that a reader must not mistake for a maintained figure. The **`S0-BEGIN`/`S0-END` CSV binding is the cheapest first step** and would cover ten of the document's most-cited numbers on its own.
+
+### G.4 The maintenance contract, in four lines
+
+1. A stack-safety fix lands $`\rightarrow`$ add its [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) section **and** its [§0](#0-the-fix-register--the-scannable-index) row, in the same commit.
+2. A figure changes $`\rightarrow`$ change it **with its log path**, and move the superseded value into the prose that names it superseded. This campaign's convention is to **annotate, never overwrite** (`E73`, `E86`, `E89` are all superseded in place).
+3. A measurement cannot be obtained $`\rightarrow`$ it goes in [§5.9](#59-measurements-that-could-not-be-obtained) with its reason. **⌀ is a valid entry; a blank is not.**
+4. A claim loses its evidence $`\rightarrow`$ the claim comes out, not the caveat.
+
+---
+
+*This report documents work in `f1r3node-rust-mettail@feature/mettail` and `mettail-rust@feature/rho-native-set-automata`. No source file was modified in its preparation; the document and its seven figures are the only artefacts created.*
+
+*★ It is a **living document**. Adding a fix is [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape); keeping it honest is [Appendix G](#appendix-g--keeping-this-document-current).*

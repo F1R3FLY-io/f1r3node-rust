@@ -1,0 +1,80 @@
+@startuml deploy-path-ceilings
+' ============================================================================
+' The deploy path end-to-end, with each Theta(depth) traversal's MEASURED
+' maximum source-nesting depth on the 2 MiB stack a tokio worker gets.
+'   RED   #C62828 aborts the node (SIGSEGV on the guard page -> abort)
+'   AMBER #EF6C00 still bounded
+'   GREEN #2E7D32 no ceiling below the search bound
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.5
+skinparam roundcorner 8
+
+title <b>The deploy path, and where each ceiling sits</b>\nmaximum source nesting depth on a **2 MiB** tokio worker
+
+|#ECEFF1|network|
+start
+:gRPC `DeployService/doDeploy`\n`deploy_grpc_service_v1.rs:256`\ninbound cap **16 MiB**;
+
+|#FFF3E0|ingress (pre-consensus, pre-storage, NO budget in scope)|
+:`block_api.rs:477  deploy_cosigned`\n**synchronous, inline on the tokio worker**\n(no `spawn_blocking`);
+:`dispatch.rs:66` → `block_admission.rs:105`\n`admit_deploy` / `admit_deploy_cosigned`;
+note right #FFEBEE
+  **BEFORE** — `Ok(_parsed_term)`, bound with a
+  leading underscore, never read, released at the
+  closing brace by the derived recursive
+  `drop_in_place::<Par>` at **96.0 B/level**.
+  ⇒ ceiling **21,781**; depth **21,782** = exit 134.
+  43,565 bytes of source abort the node.
+end note
+:**AFTER** — `validate_deploy_term`\nparses, then hands the term to\n`par_children::dismantle`\n(an explicit `Vec<Par>` worklist);
+note right #E8F5E9
+  **0.0 B/level**, no ceiling below **262,144**.
+  Control (the pre-repair shape, same binary,
+  same signed deploy) still caps at 21,782.
+end note
+
+|#E3F2FD|storage + consensus|
+:admission stores `Signed<DeployData>`\n— the **source string**, never a `Par`;
+:proposer **re-normalizes** from source\n`acceptance.rs:321`;
+
+|#FFF3E0|evaluation|
+:`InterpreterImpl::inj_attempt`\n build-normalized-term  →  set-initial-cost  →  reduce;
+note right #FFF3E0
+  **`normalize`** (source → `Par`): CONVERTED,
+  0 B/level, survives depth <latex>\geq</latex> 39,960.
+  **`inj_attempt` set-initial-cost**: was a
+  write-then-read-back `source_process().cloned()`
+  at **2,852 B/level** ⇒ ceiling **729**;
+  now `into_source_process()` (by move),
+  0 B/level, <latex>\geq 1{,}048{,}576</latex>.
+end note
+:reduction — `substitute_and_charge` on the send path;
+note right #E8F5E9
+  **`plain_deploy`**  286  →  **6,831**  (**23.9<latex>\times</latex>**)
+  MEASURED again 2026-07-29: **6,831**, 6,832 exits 134.
+end note
+:reduction — a deep value arriving over a COMM binder;
+note right #FFEBEE
+  **`env_get_deploy`** — the CONTROL.
+  Recorded 283 before and after the send-path repair.
+  ⚠ MEASURED at HEAD 2026-07-29: **274**
+  (275 exits 134) — see §7.4, the control has
+  drifted 9 levels since it was recorded.
+  `Env::get` returns its value **cloned**, and the
+  copy **is** the meaning of substitution.
+end note
+stop
+
+legend bottom
+  |= ceiling |= subject |= status |
+  |<#FFCDD2> 274 |`env_get_deploy` — `Env::get`'s un-removable clone | **binding constraint** |
+  |<#FFE0B2> 6,831 |`plain_deploy` — `substitute_and_charge`, now by value | 23.9<latex>\times</latex> better, still sloped |
+  |<#C8E6C9> none < 262,144 |ingress `validate_deploy_term` | CONVERTED |
+  |<#C8E6C9> <latex>\geq</latex> 1,048,576 |`inj_attempt` set-initial-cost | CONVERTED |
+  |<#FFCDD2> 33 / 32 / 31 |the **prost read ceiling** — a different axis entirely | unchanged, consensus-visible |
+endlegend
+
+@enduml

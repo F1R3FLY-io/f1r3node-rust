@@ -1,0 +1,61 @@
+@startuml depth-vs-stack-ladder
+' ============================================================================
+' MEASURED minimum surviving thread stack as a function of nesting depth,
+' release profile, this tree, 2026-07-29 (source: /tmp/sd_gate_release.log).
+' A CONVERTED traversal is a horizontal line; a TRIPWIRE traversal is a ray.
+'   GREEN #2E7D32 converted    AMBER #EF6C00 tripwire    RED #C62828 the ceiling
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam roundcorner 6
+
+title <b>Minimum surviving stack vs. nesting depth</b>  (release, MEASURED 2026-07-29)\n<latex>S(d) = c + B\,d</latex>  —  a conversion drives the slope <latex>B</latex> to <b>zero</b>, not the intercept <latex>c</latex>
+
+rectangle "**THE OBSERVABLE**\n<latex>B \;=\; \dfrac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}</latex>  bytes of native stack per nesting level\nobtained by bisecting the smallest `stack_size` on which the subject survives,\nat each end of a ladder, to a 4,096 B resolution" as OBS #E0F2F1
+
+rectangle "**CONVERTED — <latex>B = 0</latex>**  (13 depth subjects, 6 width subjects)" as C #E8F5E9 {
+  card "`substitute_no_sort`   28 KiB @ 4  →  28 KiB @ 4,096" as c1 #A5D6A7
+  card "`substitute_binders`   28 KiB @ 4  →  28 KiB @ 4,096" as c2 #A5D6A7
+  card "`substitute`           32 KiB @ 4  →  32 KiB @ 4,096" as c3 #A5D6A7
+  card "`sort` `score_cmp` `tree_drop` `tree_clone`   12 KiB @ 4  →  12 KiB @ 4,096" as c4 #A5D6A7
+  card "`eval_with_nots`       12 KiB @ 4  →  12 KiB @ 4,096" as c5 #A5D6A7
+  card "**`bincode_de`**  (cold-store READ)   12 KiB @ 4  →  12 KiB @ 4,096" as c6 #66BB6A
+  card "**`bincode_ser`** (cold-store WRITE)  12 KiB @ 4  →  12 KiB @ 4,096" as c7 #66BB6A
+  card "`pretty`               12 KiB @ 4  →  12 KiB @ 4,096" as c8 #A5D6A7
+  card "`normalize`            32 KiB @ 4  →  32 KiB @ 4,096" as c9 #A5D6A7
+  card "`inj_attempt_clone`    32 KiB @ 4  →  32 KiB @ 4,096" as c10 #A5D6A7
+}
+
+rectangle "**TRIPWIRE — <latex>B > 0</latex>**, held under a ceiling that certifies only *not worse*" as T #FFF3E0 {
+  card "`substitute_deep_binding`  **7,460** B/level   (ceiling 12,000)\n<i>the bound VALUE's depth; the copy IS substitution</i>" as t1 #FFCC80
+  card "`sort_nested_map`          **7,509** B/level   (ceiling 10,394)" as t2 #FFCC80
+  card "`sort_nested_set`          **4,778** B/level   (ceiling  7,680)" as t3 #FFCC80
+  card "`clone_nested_set`         **4,096** B/level   (ceiling  9,000)" as t4 #FFCC80
+  card "`clone`  = <latex>\langle</latex>`Par as Clone`<latex>\rangle</latex>::clone   **3,254** B/level (ceiling 5,000)" as t5 #FFCC80
+  card "**`encode`** = prost writer  **302** B/level   (ceiling 1,500)" as t6 #FF8A65
+  card "`subst_and_charge`         **146** B/level   (ceiling 700)\n<i>was 2,852 — 19.5<latex>\times</latex> better, still sloped: `encoded_len` IS the charge</i>" as t7 #FFCC80
+  card "`par_drop`, `normalize_drop`  **144** B/level  (ceiling 800)\n<i>rustc's implicit `drop_in_place` glue — no text to rewrite</i>" as t8 #FFCC80
+}
+
+rectangle "**CONTROLS** — the checkers are shown to separate the two classes" as K #E0F2F1 {
+  card "`synthetic_recurse` (a function)   **111** B/level  — must be REJECTED" as k1 #80CBC4
+  card "`synthetic_drop`   (a destructor)   **31** B/level  — must be REJECTED" as k2 #80CBC4
+  card "their iterative twins                **0** B/level  — must be ACCEPTED" as k3 #80CBC4
+}
+
+OBS -[#00695C,thickness=2]-> C
+OBS -[#00695C,thickness=2]-> T
+OBS -[#00695C,thickness=2]-> K
+
+note bottom of T #FFEBEE
+  ⚠ **A ceiling is not a pass.** Membership of the tripwire list means
+  <i>measured, bounded, and still <latex>\Theta(d)</latex></i>.
+  A subject leaves it only by being **converted** — never by having
+  its ceiling raised.  Max depth on a 2 MiB worker is
+  <latex>D_{\max} \approx \lfloor (2\,097\,152 - c)/B \rfloor</latex>:
+  at 302 B/level that is ≈ 6,900 levels; at 7,509 it is ≈ 279.
+end note
+
+@enduml

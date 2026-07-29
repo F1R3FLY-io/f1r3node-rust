@@ -1,0 +1,72 @@
+@startuml recursive-vs-trampolined
+' ============================================================================
+' THE CENTRAL PICTURE: why one call shape grows the native stack and the other
+' does not.  Colour legend (used consistently across every figure in this set):
+'   RED    #C62828  native stack — fixed size, guard page, SIGSEGV on overrun
+'   BLUE   #1565C0  heap        — growable, allocator-backed, returns Err
+'   GREEN  #2E7D32  converted   — depth-independent, measured flat
+'   AMBER  #EF6C00  tripwire    — still Theta(depth), held under a ceiling
+'   PURPLE #6A1B9A  wire bytes
+'   TEAL   #00695C  the gate / measurement instrument
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+
+title <b>Recursive descent vs. the trampolined driver</b>\nwhy <latex>\Theta(d)</latex> native stack becomes <latex>O(1)</latex> native stack + <latex>\Theta(d)</latex> heap
+
+rectangle "**(a) RECURSIVE DESCENT** — the defect" as A #FFEBEE {
+
+  rectangle "NATIVE STACK\n(2 MiB on a tokio worker, fixed,\nterminated by a **guard page**)" as AS #FFCDD2 {
+    card "frame  d = 0   `substitute(Par)`" as f0 #EF9A9A
+    card "frame  d = 1   `substitute(Expr)`" as f1 #EF9A9A
+    card "frame  d = 2   `substitute(Par)`" as f2 #EF9A9A
+    card "         ⋮  (one frame group per nesting level)" as fd #EF9A9A
+    card "frame  d = D   —  **guard page**  ⇒  SIGSEGV ⇒ `abort()`" as fD #C62828
+  }
+
+  note right of AS #FFF3E0
+    Cost per nesting level is a **constant**,
+    <latex>B</latex>, set by the compiler's frame layout.
+    Ceiling <latex>D_{\max} = \lfloor (S - c)/B \rfloor</latex>
+    for stack size <latex>S</latex> and intercept <latex>c</latex>.
+    ⇒ **program-controlled input decides node liveness**
+  end note
+}
+
+rectangle "**(b) EXPLICIT-WORKLIST DRIVER** — the repair" as B #E3F2FD {
+
+  rectangle "NATIVE STACK  —  **one** frame, whatever <latex>d</latex> is" as BS #FFCDD2 {
+    card "frame  `drive(root)`   ← the only frame" as g0 #EF9A9A
+  }
+
+  rectangle "HEAP  (growable; exhaustion is an `Err`, not a signal)" as BH #BBDEFB {
+    card "**work stack** `Vec<Work>`   LIFO, children pushed reversed" as w #64B5F6
+    card "**value stack(s)** `Vec<Value>`   completed children park here" as v #64B5F6
+  }
+
+  g0 -[#1565C0,thickness=2]-> w : **push** / **pop**
+  w  -[#1565C0]->  v : each `Build` drains\nexactly what its\nown `Start` pushed
+
+  note right of BH #E8F5E9
+    Native stack is <latex>O(1)</latex>; the recursion
+    now lives in an allocator-backed
+    region that can **refuse** rather
+    than **fault**.
+    Measured: **0 B/level**, flat from
+    depth 4 to depth 4,096.
+  end note
+}
+
+A -[#455A64,thickness=3]right-> B : **defunctionalise the continuation**\n(Reynolds 1972); drive it with an\nexplicit loop (trampoline)
+
+legend bottom
+  |= colour |= meaning |
+  |<#FFCDD2>| native stack — fixed, guard-page terminated |
+  |<#BBDEFB>| heap — growable, returns `Err` |
+  |<#C62828>| the fault: SIGSEGV → `abort()`, not catchable |
+endlegend
+
+@enduml
