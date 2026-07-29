@@ -85,6 +85,10 @@ name = "cold_store_records"
 path = "tests/cold_store_records.rs"
 
 [[test]]
+name = "drive_configuration_gate"
+path = "tests/drive_configuration_gate.rs"
+
+[[test]]
 name = "epathmap_canonical_fixtures"
 path = "tests/epathmap_canonical_fixtures.rs"
 
