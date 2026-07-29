@@ -125,9 +125,7 @@ pub trait AsPpNode {
 macro_rules! as_pp_node {
     ($ty:ty, $variant:ident) => {
         impl AsPpNode for $ty {
-            fn as_pp_node(&self) -> PpNode<'_> {
-                PpNode::$variant(self)
-            }
+            fn as_pp_node(&self) -> PpNode<'_> { PpNode::$variant(self) }
         }
     };
 }
@@ -142,6 +140,47 @@ as_pp_node!(Match, Match);
 as_pp_node!(GUnforgeable, Unforgeable);
 as_pp_node!(Connective, Connective);
 as_pp_node!(Par, Par);
+
+/// The `where`-clause guard this receive renders, if it renders one.
+///
+/// # Why this predicate and not `condition.is_some()`
+///
+/// `Receive.condition` has **two** spellings of "no guard", and both of them
+/// are decided that way at every site that decides anything:
+///
+/// | site | code | treats as "commit unconditionally" |
+/// |---|---|---|
+/// | the matcher | `matcher::r#match::Matcher::check_commit` | `None`, **and** `Some(g)` with `g == Par::default()` |
+/// | the reducer | `Reduce::eval_receive` | the same pair — it collapses `Some(Par::default())` to `None` before the continuation is registered |
+///
+/// So an empty `Par` in `condition` is not a weaker guard than the author
+/// wrote; it *is* what they wrote, and it admits exactly what no guard admits.
+/// Rendering it as ` where Nil` would attach a clause to a receive whose
+/// behaviour has none.
+///
+/// ★ Reusing the decision sites' own predicate also **confines the byte
+/// movement**. These bytes are block-resident and replay-compared
+/// (`build_channel_string` -> `SystemDeployPlatformFailure::UnexpectedResult`
+/// -> `ProcessedSystemDeploy::Failed`, compared at
+/// `casper/src/rust/rholang/replay_runtime.rs`), so *which* terms move matters.
+/// Under this predicate the set that moves is exactly the set of receives whose
+/// COMM is actually gated: no term that behaves as unguarded moves a byte.
+///
+/// # Why it is SHARED between the driver and the oracle
+///
+/// It is a true leaf — a pure predicate on the term, with no printer state and
+/// no recursion — so it sits alongside `build_remainder_string`,
+/// `build_string_from_var` and `render_cursor_position` in the set
+/// `pretty_printer_oracle`'s documentation calls "the true LEAVES deliberately
+/// SHARED with production". Duplicating it would test the copy rather than the
+/// driving, and would let the two printers disagree about *whether* there is a
+/// guard while agreeing about how to print one.
+pub(crate) fn receive_guard(r: &Receive) -> Option<&Par> {
+    match &r.condition {
+        Some(condition) if condition != &Par::default() => Some(condition),
+        _ => None,
+    }
+}
 
 /// The set of shift indices ONE `New` introduces, held as its two endpoints
 /// rather than materialised element by element.
@@ -1244,6 +1283,7 @@ mod drive {
     //! | `Channel` resets `is_building_channel` after the sub-render | ✔ | `new_name_read_after_a_channel_render` |
     //! | `Par` pushes its `exprs` un-reversed | ✔ | 2 witnesses |
     //! | `RecvBindJoin` takes patterns before source | ✔ | 3 witnesses |
+    //! | `Receive`'s `where` guard renders BEFORE the interposed `AddBoundShift` | ✔ | `receive_with_a_where_guard_over_its_binder` |
     //! | `New` mutates `bound_shift` before `build_variables` | **EQUIVALENT since `a4c23a58`** | proven + executed at `the_equivalent_mutants_really_are_equivalent` |
     //! | `ParK`'s category-length array permuted | **EQUIVALENT** | proven at [`render_par_categories`], executed over all 8! permutations |
     //!
@@ -1489,6 +1529,19 @@ mod drive {
         /// `RecvBindJoin` takes its patterns off the value stack before its
         /// source.
         RecvBindJoinPatternsFirst,
+        /// ★ The `Receive`'s `where` guard is rendered BEFORE the interposed
+        /// `Mutate(AddBoundShift(totally_free))` instead of after it, so it
+        /// prints its binders at the un-shifted level while the body prints
+        /// them at the shifted one.
+        ///
+        /// This is the sequencing decision the guard's rendering rests on, and
+        /// it is not a free choice: `p_input_normalizer`'s `InputPhase::Guard`
+        /// normalizes the guard against `k.body_env` — *"guard and body see the
+        /// same de Bruijn levels"* — so a guard rendered in a different
+        /// environment from the body names the same binder two different ways
+        /// in one term. The defect is quiet: the output is still well-formed
+        /// Rholang, just about different variables.
+        ReceiveConditionBeforeBoundShift,
     }
 
     #[cfg(test)]
@@ -1534,6 +1587,7 @@ mod drive {
             DriveMutation::ChannelResetsFlag,
             DriveMutation::ParPushesExprsUnreversed,
             DriveMutation::RecvBindJoinPatternsFirst,
+            DriveMutation::ReceiveConditionBeforeBoundShift,
         ]
     }
 
@@ -1569,7 +1623,8 @@ mod drive {
                 | DriveMutation::NewIntervalReadsPostMutationShift
                 | DriveMutation::ChannelResetsFlag
                 | DriveMutation::ParPushesExprsUnreversed
-                | DriveMutation::RecvBindJoinPatternsFirst => {}
+                | DriveMutation::RecvBindJoinPatternsFirst
+                | DriveMutation::ReceiveConditionBeforeBoundShift => {}
             }
         }
         all
@@ -1604,7 +1659,10 @@ mod drive {
             indent: usize,
         },
         /// One `MatchCase`: applies its mutations around pattern and source.
-        CaseStep { case: &'a MatchCase, indent: usize },
+        CaseStep {
+            case: &'a MatchCase,
+            indent: usize,
+        },
         Combine(PpKont<'a>),
 
         /// ⚠ TEST ONLY. Opens a catching scope around
@@ -1627,7 +1685,10 @@ mod drive {
         /// produce it, so the shape is constructed directly. See
         /// [`drive_splice_probe`].
         #[cfg(test)]
-        TestFailureBetweenSiblings { before: &'a Par, after: &'a Par },
+        TestFailureBetweenSiblings {
+            before: &'a Par,
+            after: &'a Par,
+        },
         /// ⚠ TEST ONLY. [`PpWork::TestFailureBetweenSiblings`] wrapped in ONE
         /// MORE catching scope, so that **two frames are open simultaneously**
         /// when the failure happens.
@@ -1640,7 +1701,10 @@ mod drive {
         /// until this variant existed. See
         /// `differential::the_unwind_stops_at_the_innermost_open_frame`.
         #[cfg(test)]
-        TestNestedCatchingFailure { before: &'a Par, after: &'a Par },
+        TestNestedCatchingFailure {
+            before: &'a Par,
+            after: &'a Par,
+        },
     }
 
     /// Post-order continuation: the borrowed shell plus whatever was computed
@@ -1648,20 +1712,48 @@ mod drive {
     enum PpKont<'a> {
         /// Close a catching scope: cap on success, leave the fallback alone.
         EndCatch,
-        SendK { send: &'a models::rhoapi::Send },
-        RecvBindJoin { recv: &'a Receive, index: usize },
-        ReceiveK { recv: &'a Receive, indent: usize },
+        SendK {
+            send: &'a models::rhoapi::Send,
+        },
+        RecvBindJoin {
+            recv: &'a Receive,
+            index: usize,
+        },
+        ReceiveK {
+            recv: &'a Receive,
+            indent: usize,
+        },
         /// `BundleOps::show` reads only the bundle, but it is arg 1 of the
         /// recursive `format!` and therefore runs before the child.
-        BundleK { show: String, indent: usize },
+        BundleK {
+            show: String,
+            indent: usize,
+        },
         /// `variables` reads the PRE-mutation `bound_shift`.
-        NewK { variables: String, indent: usize },
-        CaseJoin { indent: usize },
-        MatchK { m: &'a Match, indent: usize },
-        ConnectiveK { conn: &'a Connective },
-        ParK { par: &'a Par, indent: usize },
-        ChannelK { par: &'a Par },
-        ExprK { expr: &'a Expr },
+        NewK {
+            variables: String,
+            indent: usize,
+        },
+        CaseJoin {
+            indent: usize,
+        },
+        MatchK {
+            m: &'a Match,
+            indent: usize,
+        },
+        ConnectiveK {
+            conn: &'a Connective,
+        },
+        ParK {
+            par: &'a Par,
+            indent: usize,
+        },
+        ChannelK {
+            par: &'a Par,
+        },
+        ExprK {
+            expr: &'a Expr,
+        },
 
         /// ⚠ TEST ONLY. Pops exactly three children and joins them with
         /// `" | "`. Exists so [`PpWork::TestFailureBetweenSiblings`] can put a
@@ -1777,10 +1869,7 @@ mod drive {
     }
 
     /// The machine form of `_build_string_from_expr`.
-    pub(super) fn drive_expr(
-        pp: &mut PrettyPrinter,
-        e: &Expr,
-    ) -> Result<String, InterpreterError> {
+    pub(super) fn drive_expr(pp: &mut PrettyPrinter, e: &Expr) -> Result<String, InterpreterError> {
         run(pp, PpWork::ExprBody(e))
     }
 
@@ -1965,7 +2054,11 @@ mod drive {
                 // Pops THIRD. Guarded, so `EndCatch` caps it on success —
                 // which is what makes this probe decide the SUCCESS side of
                 // the capping asymmetry as well as the fallback side.
-                push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(after), 0));
+                push_catch(
+                    work,
+                    CatchKind::Message,
+                    PpWork::Node(PpNode::Par(after), 0),
+                );
                 // Pops SECOND, and fails: its fallback must land in the MIDDLE
                 // of the three values, not replace them.
                 push_catch(work, CatchKind::Message, PpWork::TestSpawnThenFail(after));
@@ -2095,16 +2188,12 @@ mod drive {
                 // ⚠ `data_str` is bound BEFORE the channel is rendered, so the
                 // data elements mutate printer state first.
                 let channel = |work: &mut Vec<PpWork<'a>>| {
-                    push_catch(
-                        work,
-                        CatchKind::Message,
-                        PpWork::OptPar {
-                            field: &s.chan,
-                            message: "channel field on Send was None, should be Some",
-                            render: OptRender::Message,
-                            indent: 0,
-                        },
-                    )
+                    push_catch(work, CatchKind::Message, PpWork::OptPar {
+                        field: &s.chan,
+                        message: "channel field on Send was None, should be Some",
+                        render: OptRender::Message,
+                        indent: 0,
+                    })
                 };
                 let channel_first = mutating(DriveMutation::SendChannelBeforeData);
                 if !channel_first {
@@ -2120,16 +2209,50 @@ mod drive {
 
             PpNode::Receive(r) => {
                 work.push(PpWork::Combine(PpKont::ReceiveK { recv: r, indent }));
-                push_catch(
-                    work,
-                    CatchKind::Message,
-                    PpWork::OptPar {
-                        field: &r.body,
-                        message: "body field on receive was None, should be Some",
-                        render: OptRender::Message,
-                        indent: 0,
-                    },
-                );
+                push_catch(work, CatchKind::Message, PpWork::OptPar {
+                    field: &r.body,
+                    message: "body field on receive was None, should be Some",
+                    render: OptRender::Message,
+                    indent: 0,
+                });
+                // ★ The `where` guard, if this receive renders one. Three
+                // things about its position are decisions, not conveniences:
+                //
+                // * it renders **after** `Mutate(AddBoundShift(totally_free))`,
+                //   i.e. in the SAME de Bruijn environment as the body, because
+                //   that is the environment it was normalized in —
+                //   `p_input_normalizer`'s `InputPhase::Guard` normalizes the
+                //   guard against `k.body_env`, so "guard and body see the same
+                //   de Bruijn levels". Rendering it before the shift prints
+                //   different names for the same binder;
+                // * it renders **before** the body, which is the order the
+                //   bytes come out in (`for( binds where G ) { body }`), so a
+                //   guard that itself moves printer state — one containing a
+                //   `New`, say — moves it for the body exactly as the source
+                //   order says it should;
+                // * it is catch-wrapped at indent 0, which is what makes this
+                //   the machine form of `oracle_build_string_from_message(g)`
+                //   rather than of `_oracle_build_string_from_message(g,
+                //   indent)`: catching, capping, indent reset. The body's
+                //   `OptPar { render: Message, indent: 0 }` reduces to the same
+                //   thing; it takes the `OptPar` route only because its field is
+                //   a required `Option` whose `None` must still panic.
+                //
+                // The first of the three is policed by
+                // `DriveMutation::ReceiveConditionBeforeBoundShift`.
+                let guard_before_shift = mutating(DriveMutation::ReceiveConditionBeforeBoundShift);
+                let push_guard = |work: &mut Vec<PpWork<'a>>| {
+                    if let Some(condition) = receive_guard(r) {
+                        push_catch(
+                            work,
+                            CatchKind::Message,
+                            PpWork::Node(PpNode::Par(condition), 0),
+                        );
+                    }
+                };
+                if !guard_before_shift {
+                    push_guard(work);
+                }
                 // The fold's accumulator, as prefix sums. See the module
                 // documentation for why this is static and what it costs.
                 let mut previous_free: Vec<i32> = Vec::with_capacity(r.binds.len());
@@ -2144,6 +2267,9 @@ mod drive {
                     totally_free += bind.free_count;
                 }
                 work.push(PpWork::Mutate(PpMutation::AddBoundShift(totally_free)));
+                if guard_before_shift {
+                    push_guard(work);
+                }
                 for index in (0..r.binds.len()).rev() {
                     work.push(PpWork::RecvBindStep {
                         recv: r,
@@ -2237,16 +2363,12 @@ mod drive {
                 // pops before every `CaseStep`), so the rule costs nothing and
                 // keeps the site uniform with the other six `Option<Par>`
                 // children.
-                push_catch(
-                    work,
-                    CatchKind::Message,
-                    PpWork::OptPar {
-                        field: &m.target,
-                        message: "target field on Match was None, should be Some",
-                        render: OptRender::Message,
-                        indent: 0,
-                    },
-                );
+                push_catch(work, CatchKind::Message, PpWork::OptPar {
+                    field: &m.target,
+                    message: "target field on Match was None, should be Some",
+                    render: OptRender::Message,
+                    indent: 0,
+                });
             }
 
             PpNode::Unforgeable(u) => vals.push(pp.build_string_from_unforgeable(u)?),
@@ -2276,9 +2398,7 @@ mod drive {
                 Some(ConnectiveInstance::ConnInt(_)) => vals.push(String::from("Int")),
                 Some(ConnectiveInstance::ConnString(_)) => vals.push(String::from("String")),
                 Some(ConnectiveInstance::ConnUri(_)) => vals.push(String::from("Uri")),
-                Some(ConnectiveInstance::ConnByteArray(_)) => {
-                    vals.push(String::from("ByteArray"))
-                }
+                Some(ConnectiveInstance::ConnByteArray(_)) => vals.push(String::from("ByteArray")),
                 None => vals.push(String::new()),
             },
 
@@ -2706,16 +2826,14 @@ mod drive {
                         let mut framed = segment.clone();
                         framed.push(tag::TERM);
                         let rendered = match decode_trie_path(&framed) {
-                            Ok(par) => match par
-                                .exprs
-                                .first()
-                                .and_then(|ex| ex.expr_instance.as_ref())
-                            {
-                                Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
-                                    pp.build_channel_string(&list.ps[0])
+                            Ok(par) => {
+                                match par.exprs.first().and_then(|ex| ex.expr_instance.as_ref()) {
+                                    Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
+                                        pp.build_channel_string(&list.ps[0])
+                                    }
+                                    _ => format!("0x{}", hex::encode(segment)),
                                 }
-                                _ => format!("0x{}", hex::encode(segment)),
-                            },
+                            }
                             Err(_) => format!("0x{}", hex::encode(segment)),
                         };
                         path_segments.push(rendered);
@@ -2869,19 +2987,32 @@ mod drive {
             }
 
             PpKont::ReceiveK { recv, indent } => {
+                // Pop order is the REVERSE of the render order: body, then
+                // guard, then binds. `receive_guard` is the same predicate the
+                // descent used to decide whether to push a guard value at all,
+                // so the two cannot disagree about how many values are here.
                 let body_str = one(vals);
+                let where_clause = match receive_guard(recv) {
+                    // ⚠ The grammar attaches `where` to the RECEIPT, not to a
+                    // bind (`receipt: conc1(bind) optional('where' guard)`), so
+                    // it goes after `binds_string` — after **every** bind — and
+                    // inside the parentheses.
+                    Some(_) => format!(" where {}", one(vals)),
+                    None => String::new(),
+                };
                 let binds_string = take(vals, recv.binds.len()).concat();
                 if !body_str.is_empty() {
                     vals.push(format!(
-                        "for( {} ) {{\n{}{}{}\n{}}}",
+                        "for( {}{} ) {{\n{}{}{}\n{}}}",
                         binds_string,
+                        where_clause,
                         pp.indent_string().repeat(indent + 1),
                         body_str,
                         pp.indent_string().repeat(indent),
                         ""
                     ));
                 } else {
-                    vals.push(format!("for( {} ) {{}}", binds_string));
+                    vals.push(format!("for( {}{} ) {{}}", binds_string, where_clause));
                 }
             }
 
@@ -3059,10 +3190,7 @@ mod drive {
             ExprPlan::Matches { .. } => {
                 let pattern = one(vals);
                 let target = one(vals);
-                vals.push(wrap_with_braces(format!(
-                    "{} matches {}",
-                    target, pattern
-                )));
+                vals.push(wrap_with_braces(format!("{} matches {}", target, pattern)));
             }
 
             ExprPlan::Bracketed {
@@ -3171,6 +3299,7 @@ mod differential {
     //! | [`every_node_kind`] | all ten [`PpNode`] variants, each reached through the entry point that actually reaches it |
     //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the three re-entrant ones (`ESet`, `EMap`, `EZipper`) and both `wrap_with_braces` shapes |
     //! | [`two_binds_that_bind_different_counts`] | ★ the ONLY shape where a *sequenced* `bound_shift` differs from a precomputed one |
+    //! | [`a_receive_with_a_where_guard`] | ★ `Receive.condition` — a field NEITHER printer used to read, and which `generate_par` never generates, so no proptest corpus here reaches it |
     //! | [`a_match_nested_in_a_send`] | the `Match` target rendered MID-traversal, with siblings on both sides and printer state already moved |
     //! | [`a_failing_region_is_spliced_not_propagated`] | a catch frame firing mid-render, with the fallback spliced into the middle of a larger value — driven through `drive::drive_splice_probe`, because no `Par` can produce a failing catch any more |
     //! | [`the_capping_call_sites_are_reproduced`] | `EndCatch` caps on success and does NOT cap the fallback — run in a child process, because the cap is an environment variable |
@@ -4076,12 +4205,7 @@ mod differential {
                 connective_used: false,
                 remainder: None,
             }),
-            ExprInstance::EPathmapBody(EPathMap::new(
-                vec![gint(1), gint(2)],
-                vec![],
-                false,
-                None,
-            )),
+            ExprInstance::EPathmapBody(EPathMap::new(vec![gint(1), gint(2)], vec![], false, None)),
             ExprInstance::EPathmapBody(EPathMap::new(
                 vec![gint(1)],
                 vec![],
@@ -4238,7 +4362,9 @@ mod differential {
         );
         let rendered: Vec<String> = cursor_kind_family
             .iter()
-            .map(|instance| PrettyPrinter::new().build_string_from_message(&expr_par((*instance).clone())))
+            .map(|instance| {
+                PrettyPrinter::new().build_string_from_message(&expr_par((*instance).clone()))
+            })
             .collect();
         for (i, left) in rendered.iter().enumerate() {
             for right in rendered.iter().skip(i + 1) {
@@ -4274,15 +4400,12 @@ mod differential {
         }
 
         // The absent instance, which is its own arm.
-        agree(
-            "expr arm: absent instance",
-            &Par {
-                exprs: vec![Expr {
-                    expr_instance: None,
-                }],
-                ..Default::default()
-            },
-        );
+        agree("expr arm: absent instance", &Par {
+            exprs: vec![Expr {
+                expr_instance: None,
+            }],
+            ..Default::default()
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -4416,6 +4539,179 @@ mod differential {
              distinguishes a sequenced `bound_shift` from a precomputed one. Rendered: \
              {printed}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ★ the `where` guard — a field neither printer used to read
+    // -----------------------------------------------------------------------
+
+    /// `Receive.condition` reaches the page, in the body's environment, after
+    /// every bind.
+    ///
+    /// ## Why this fixture is constructed rather than generated
+    ///
+    /// `generate_par` sets `condition: None` unconditionally
+    /// (`models/src/rust/test_utils/test_utils.rs`), so **no** proptest corpus
+    /// in this module reaches a guard. That is not a reason to trust the
+    /// property; it is the reason this test exists. Every structural assertion
+    /// below is checked against the rendered string before `agree` runs, so the
+    /// fixture cannot pass by failing to reach the feature.
+    ///
+    /// ## The three properties, and what each would look like if it broke
+    ///
+    /// | property | how it breaks | what the reader sees |
+    /// |---|---|---|
+    /// | the guard is rendered at all | `receive_guard` returns `None`, or the clause is dropped from the `format!` | a guarded receive printed as an unguarded one — plausible, and admitting strictly more |
+    /// | it renders in the **body's** de Bruijn environment | the render is sequenced before `Mutate(AddBoundShift)` | the same binder named two ways in one term |
+    /// | it renders after **every** bind | the clause is emitted per bind, or before the last | `where` attached to a bind, which the grammar has no production for |
+    ///
+    /// The second is also a [`super::drive::DriveMutation`]
+    /// (`ReceiveConditionBeforeBoundShift`) and is separated by the executed
+    /// mutation table; asserting it here as well is what names the *rendered
+    /// consequence* rather than only the disagreement.
+    #[test]
+    fn a_receive_with_a_where_guard() {
+        // Two binds, so "after every bind" is distinguishable from "after the
+        // first". The guard names a variable BOTH binds contribute to, which is
+        // what makes the environment observable.
+        let term = Par {
+            receives: vec![Receive {
+                binds: vec![
+                    ReceiveBind {
+                        patterns: vec![free_var(0)],
+                        source: Some(gstring("left")),
+                        remainder: None,
+                        free_count: 1,
+                    },
+                    ReceiveBind {
+                        patterns: vec![free_var(0)],
+                        source: Some(gstring("right")),
+                        remainder: None,
+                        free_count: 1,
+                    },
+                ],
+                body: Some(bound_var(0)),
+                persistent: false,
+                peek: false,
+                bind_count: 2,
+                locally_free: vec![],
+                connective_used: false,
+                condition: Some(expr_par(ExprInstance::EGtBody(EGt {
+                    p1: Some(bound_var(1)),
+                    p2: Some(gint(5)),
+                }))),
+            }],
+            ..Default::default()
+        };
+
+        agree("a_receive_with_a_where_guard", &term);
+
+        let printed = PrettyPrinter::new().build_string_from_message(&term);
+
+        // ANTI-VACUITY 1: the feature is reached at all.
+        assert!(
+            printed.contains(" where "),
+            "the fixture rendered no `where` clause, so every assertion below is about a \
+             term that does not exercise the guard. Rendered: {printed}"
+        );
+
+        // ANTI-VACUITY 2 + the ENVIRONMENT property, derived rather than
+        // blessed:
+        //
+        // | slot | shift | rendered |
+        // |---|---|---|
+        // | bind 0's `FreeVar(0)` | `free_shift = 0 + 0` | `x0` |
+        // | bind 1's `FreeVar(0)` | `free_shift = 0 + 1` (bind 0's `free_count`) | `y1` |
+        // | the guard's `BoundVar(1)` | `bound_shift = 2`, so `2 - 1 - 1` | `z0` |
+        // | the body's `BoundVar(0)` | `bound_shift = 2`, so `2 - 0 - 1` | `z1` |
+        //
+        // ★ `z0` and `z1` are the discriminating characters, and BOTH are
+        // asserted. `z0` alone cannot tell "the guard renders in the body's
+        // environment" from "the guard renders in *some* environment"; the pair
+        // pins that the two share one `bound_shift` of 2. Rendering the guard
+        // before the interposed `AddBoundShift` gives `bound_shift = 0` and
+        // prints `z-2` there instead — which is what
+        // `DriveMutation::ReceiveConditionBeforeBoundShift` does.
+        assert_eq!(
+            printed,
+            concat!(
+                "for( @{x0} <- @{\"left\"}  & @{y1} <- @{\"right\"} where z0 > 5 ) {\n",
+                "  z1\n",
+                "}"
+            ),
+            "the guarded rendering moved. These bytes are block-resident and \
+             replay-compared."
+        );
+
+        // ANTI-VACUITY 3 + the PLACEMENT property: the clause follows the LAST
+        // bind, which is where the grammar puts it
+        // (`receipt: conc1(bind) optional('where' guard)`).
+        let where_at = printed.find(" where ").expect("asserted above");
+        let last_bind_at = printed
+            .find("@{\"right\"}")
+            .expect("the second bind's source must be rendered");
+        assert!(
+            where_at > last_bind_at,
+            "the `where` clause precedes the last bind, which is not a receipt-level \
+             placement. Rendered: {printed}"
+        );
+        assert_eq!(
+            printed.matches(" where ").count(),
+            1,
+            "the clause is emitted more than once — it belongs to the receipt, not to a \
+             bind. Rendered: {printed}"
+        );
+
+        // ★ The EMPTY guard is not a guard, and that is a decision both
+        // decision sites already make (`Matcher::check_commit` and
+        // `Reduce::eval_receive` both treat `Some(Par::default())` as "commit").
+        // Without this the printer could agree with itself while disagreeing
+        // with the reducer about what the term means — and every unguarded
+        // receive's bytes would move, which is the opposite of confining them.
+        let mut empty_guard = term.clone();
+        empty_guard.receives[0].condition = Some(Par::default());
+        let printed_empty = PrettyPrinter::new().build_string_from_message(&empty_guard);
+        let mut no_guard = term.clone();
+        no_guard.receives[0].condition = None;
+        assert_eq!(
+            printed_empty,
+            PrettyPrinter::new().build_string_from_message(&no_guard),
+            "`condition: Some(Par::default())` rendered differently from `condition: None`, \
+             but both decision sites commit unconditionally on either. Rendered: \
+             {printed_empty}"
+        );
+        assert!(
+            !printed_empty.contains("where"),
+            "an empty guard grew a `where` clause: {printed_empty}"
+        );
+        agree("a_receive_with_an_empty_where_guard", &empty_guard);
+        agree("a_receive_with_no_where_guard", &no_guard);
+
+        // ★ The OTHER `format!` arm. `ReceiveK` renders `for( … ) {}` when the
+        // body renders to the EMPTY STRING — which is not the same thing as an
+        // empty `Par`: `Par::default()` renders `"Nil"`, three bytes, and takes
+        // the arm above. The only leaf that renders to nothing is a
+        // `Connective` with no instance (`descend_connective`'s `None` arm
+        // pushes `String::new()`), so that is what reaches it. It is a separate
+        // line of code and was separately capable of dropping the clause.
+        let mut empty_body = term.clone();
+        empty_body.receives[0].body = Some(Par {
+            connectives: vec![Connective {
+                connective_instance: None,
+            }],
+            ..Default::default()
+        });
+        let printed_empty_body = PrettyPrinter::new().build_string_from_message(&empty_body);
+        assert!(
+            printed_empty_body.ends_with(" ) {}"),
+            "this fixture does not reach the empty-body arm, so it is not testing it: \
+             {printed_empty_body}"
+        );
+        assert!(
+            printed_empty_body.contains(" where "),
+            "the empty-body arm dropped the guard: {printed_empty_body}"
+        );
+        agree("a_guarded_receive_with_an_empty_body", &empty_body);
     }
 
     // -----------------------------------------------------------------------
@@ -5096,7 +5392,9 @@ mod differential {
         );
         assert_eq!(
             driven,
-            Err(String::from("target field on Match was None, should be Some")),
+            Err(String::from(
+                "target field on Match was None, should be Some"
+            )),
             "an absent `Match::target` no longer panics with the file's standard message"
         );
 
@@ -5505,27 +5803,23 @@ mod differential {
             // that panics for every `trim > 1` — which is why it still earns
             // its place in the straddle. The fallback side moved to the splice
             // probe below.
-            (
-                "a match beside a long sibling",
-                Par {
-                    exprs: long.exprs.clone(),
-                    matches: vec![Match {
-                        target: Some(gint(1)),
-                        cases: vec![],
-                        locally_free: vec![],
-                        connective_used: false,
-                    }],
-                    ..Default::default()
-                },
-            ),
+            ("a match beside a long sibling", Par {
+                exprs: long.exprs.clone(),
+                matches: vec![Match {
+                    target: Some(gint(1)),
+                    cases: vec![],
+                    locally_free: vec![],
+                    connective_used: false,
+                }],
+                ..Default::default()
+            }),
         ];
 
         let mut ok = 0usize;
         let mut panics = 0usize;
         for (what, term) in &probes {
             let driven = quietly(|| PrettyPrinter::new().build_string_from_message(term));
-            let recursive =
-                quietly(|| PrettyPrinter::new().oracle_build_string_from_message(term));
+            let recursive = quietly(|| PrettyPrinter::new().oracle_build_string_from_message(term));
             match &driven {
                 Ok(_) => ok += 1,
                 Err(_) => panics += 1,
@@ -5707,7 +6001,11 @@ mod differential {
         // Iterative teardown: `<Par as Drop>` is still recursive.
         let mut peel = term;
         loop {
-            let next = match peel.exprs.first_mut().and_then(|e| e.expr_instance.as_mut()) {
+            let next = match peel
+                .exprs
+                .first_mut()
+                .and_then(|e| e.expr_instance.as_mut())
+            {
                 Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => list.ps.remove(0),
                 _ => break,
             };
@@ -6356,6 +6654,25 @@ mod drive_mutations {
                     uri: vec![],
                     injections: std::collections::BTreeMap::new(),
                     locally_free: vec![],
+                }],
+                ..Default::default()
+            }),
+            // ★ A receive whose `where` guard NAMES the variable its bind
+            // introduces. The guard is normalized in the body's environment
+            // (`p_input_normalizer`'s `InputPhase::Guard`), so it must render
+            // after the interposed `AddBoundShift`; rendering it before prints
+            // the same binder at a different level. The guard has to mention a
+            // bound variable or the two orderings are indistinguishable.
+            ("receive_with_a_where_guard_over_its_binder", Par {
+                receives: vec![Receive {
+                    binds: vec![bind(gstring("chan"), vec![free_var(0)], 1)],
+                    body: Some(bound_var(0)),
+                    persistent: false,
+                    peek: false,
+                    bind_count: 1,
+                    locally_free: vec![],
+                    connective_used: false,
+                    condition: Some(bound_var(0)),
                 }],
                 ..Default::default()
             }),

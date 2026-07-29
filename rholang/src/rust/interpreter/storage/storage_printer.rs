@@ -87,6 +87,25 @@ fn to_sends(data: &Vec<Datum<ListParWithRandom>>, channels: &Vec<Par>) -> Par {
         .fold(Par::default(), |mut acc, send| acc.prepend_send(send))
 }
 
+/// A resting continuation, back in the language it was written in.
+///
+/// ⚠ **Every field of the resting record that the language can express has to
+/// be read here.** This function used to read `wk.continuation.tagged_cont` and
+/// nothing else, while `wk.continuation.guard` — the `where` clause, on the
+/// *same struct* — was left behind. `RhoTypes.proto` says what that field is:
+/// *"Optional `where`-clause guard, lifted from `Receive.condition` when the
+/// continuation is registered with rspace."* Dropping it did not produce an
+/// obviously-internal artefact; it produced a **plausible and wrong** term.
+/// `for (@x <- c where x > 5) { … }` came back as `for (@x <- c) { … }`: a
+/// receive the author never wrote, carrying a strictly weaker guard, with
+/// nothing in the output to signal the loss. An operator reading the report to
+/// find out why a message was still resting was shown a receive that would have
+/// consumed it.
+///
+/// The guard travels back the way it came: `Receive.condition` ->
+/// (`Reduce::consume_inner`) -> `TaggedContinuation.guard` -> here ->
+/// `Receive.condition`. See `pretty_printer::receive_guard` for the other half
+/// — the printer had no `where` token at all until this was repaired.
 fn to_receives(
     wks: &Vec<WaitingContinuation<BindPattern, TaggedContinuation>>,
     channels: &Vec<Par>,
@@ -98,6 +117,12 @@ fn to_receives(
         let continuation = &wk.continuation;
         let persist = wk.persist;
         let peeks: &BTreeSet<i32> = &wk.peeks;
+        // The `where` clause, read back off the record it was lifted onto. Both
+        // arms below take it: a guard is a property of the *consume*, not of
+        // which flavour of continuation the consume installed, so a
+        // `ScalaBodyRef` continuation carrying one would be losing it here for
+        // exactly the same reason a `ParBody` one was.
+        let guard = continuation.guard.clone();
 
         let mut receive_binds: Vec<ReceiveBind> = Vec::new();
         for (i, pattern) in patterns.iter().enumerate() {
@@ -124,7 +149,7 @@ fn to_receives(
                     bind_count: free_count_sum,
                     locally_free: Vec::new(),
                     connective_used: false,
-                    condition: None,
+                    condition: guard,
                 });
             }
             _ => {
@@ -136,7 +161,7 @@ fn to_receives(
                     bind_count: 0,
                     locally_free: Vec::new(),
                     connective_used: false,
-                    condition: None,
+                    condition: guard,
                 });
             }
         }

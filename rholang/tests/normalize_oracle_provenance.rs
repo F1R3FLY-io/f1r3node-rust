@@ -563,10 +563,22 @@ const PP_NAMES: &[&str] = &[
 /// ★ Every difference between a cited block and its source, beyond
 /// [`pp_rename`], as DATA.
 ///
-/// Sixteen hunks across six functions. They fall into three groups, and keeping
-/// them in a table rather than as prose is what stops a seventh from appearing
-/// unannounced: [`no_undeclared_pretty_printer_deviations`] fails when an entry
-/// stops being needed, so the list cannot rot into a licence for drift either.
+/// **Twenty entries** across six functions. They fall into three groups, and
+/// keeping them in a table rather than as prose is what stops a seventh from
+/// appearing unannounced: [`no_undeclared_pretty_printer_deviations`] fails when
+/// an entry stops being needed, so the list cannot rot into a licence for drift
+/// either.
+///
+/// ⚠ The unit is an **entry**, not a textual hunk, and the two differ: the
+/// `EPathMap.ps` entry is applied at two sites (`EPathmapBody` and
+/// `EZipperBody`) by the one `str::replace`. The header said "sixteen hunks"
+/// while the table held seventeen entries — a hand-maintained count that
+/// nothing checked, drifting exactly as §1.2 of the consensus register says
+/// such counts do. `every_pretty_printer_oracle_citation_matches_its_source`
+/// prints the live figure on every run, and
+/// [`no_undeclared_pretty_printer_deviations`] is what actually holds the table
+/// honest; this number is descriptive, and is now unambiguous about what it
+/// counts.
 const PP_DEVIATIONS: &[Deviation] = &[
     // ── GROUP 1: comments the extraction DROPPED ──────────────────────────
     // The banner promised "not a comment". These are the counterexamples, and
@@ -786,6 +798,82 @@ const PP_DEVIATIONS: &[Deviation] = &[
                  through the entry point the copied line named. The oracle takes \
                  the identical edit or the differential compares a fixed driver \
                  against an unfixed twin.",
+    },
+    // ── GROUP 3, continued: THE `where` GUARD ─────────────────────────────
+    //
+    // ★ The same shape as the `Match` target and the `cursor_kind` pair: a
+    // field of the term the copied body did not read at all. `Receive.condition`
+    // is the `where` clause; the printer emitted no `where` token anywhere, so
+    // a GUARDED receive printed as an UNGUARDED one — well-formed Rholang,
+    // plausible, and admitting strictly more than the term it claims to be.
+    //
+    // The twin takes the identical edit for `76de7d44`'s reason: the two
+    // printers must stay INDEPENDENT implementations of *how* to print, but a
+    // differential between a repaired driver and an unrepaired twin is not
+    // evidence about anything. What is shared is the true LEAF
+    // `pretty_printer::receive_guard` — the predicate "is there a guard?", not
+    // the rendering — exactly as `render_cursor_position` is shared.
+    //
+    // Three hunks, because the render is spliced in at three points: the guard
+    // is computed after `bound_shift += totally_free` (so it renders in the
+    // body's de Bruijn environment, which is the environment
+    // `p_input_normalizer` normalized it in) and before the body (the order the
+    // bytes come out in), and both `format!` arms grow the clause.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "            self.bound_shift += totally_free;\n            let body_str =",
+        to: "            self.bound_shift += totally_free;\n            \
+             // \u{26a0} NOT verbatim, and deliberately so \u{2014} declared in\n            \
+             // `PP_DEVIATIONS`. The copied body rendered no `where` clause,\n            \
+             // because the printer had no `where` token at all: a guarded\n            \
+             // receive printed as an UNGUARDED one, which is a different term\n            \
+             // with weaker admission. The twin takes the identical edit for the\n            \
+             // reason `76de7d44` gave for `cursor_kind` \u{2014} otherwise the\n            \
+             // differential compares a repaired driver against an unrepaired\n            \
+             // twin, which is the failure mode the oracle exists to prevent.\n            \
+             //\n            \
+             // Position is load-bearing and is asserted, not asserted-about:\n            \
+             // AFTER `self.bound_shift += totally_free` (the guard is normalized\n            \
+             // in the body's environment) and BEFORE the body (the order the\n            \
+             // bytes come out in). `DriveMutation::ReceiveConditionBeforeBoundShift`\n            \
+             // separates the first.\n            \
+             let where_clause = match receive_guard(r) {\n                \
+             Some(condition) => {\n                    \
+             format!(\" where {}\", self.oracle_build_string_from_message(condition))\n                \
+             }\n                \
+             None => String::new(),\n            \
+             };\n            \
+             let body_str =",
+        reason: "THE `where`-guard repair itself, first hunk. `Receive.condition` \
+                 was never read, so `for (@x <- c where x > 5) { … }` printed as \
+                 `for (@x <- c) { … }`. Computed AFTER the `bound_shift` mutation \
+                 because the guard is normalized in the body's environment \
+                 (`p_input_normalizer`'s `InputPhase::Guard`: \"guard and body see \
+                 the same de Bruijn levels\"), and BEFORE the body because that is \
+                 the order the bytes come out in. \
+                 `DriveMutation::ReceiveConditionBeforeBoundShift` separates the \
+                 first of those from its negation.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                    \"for( {} ) {{\\n{}{}{}\\n{}}}\",\n                    binds_string,",
+        to: "                    \"for( {}{} ) {{\\n{}{}{}\\n{}}}\",\n                    \
+             binds_string,\n                    where_clause,",
+        reason: "Second hunk: the non-empty-body arm's format string and its \
+                 argument. The clause goes after `binds_string` and inside the \
+                 parentheses because the grammar attaches `where` to the RECEIPT — \
+                 `receipt: conc1(bind) optional('where' guard)` — not to a bind, so \
+                 it follows EVERY bind. `{}{}` with an empty second argument is \
+                 byte-identical to `{}` for every unguarded receive, which is what \
+                 keeps the movement confined.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                Ok(format!(\"for( {} ) {{}}\", binds_string))",
+        to: "                Ok(format!(\"for( {}{} ) {{}}\", binds_string, where_clause))",
+        reason: "Third hunk: the empty-body arm. A guarded receive with an empty \
+                 body is representable (`for (@x <- c where x > 5) { Nil }`) and \
+                 would otherwise be the one shape that still dropped its guard.",
     },
 ];
 

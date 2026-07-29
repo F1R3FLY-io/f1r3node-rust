@@ -72,6 +72,16 @@
 //! `twos_complement_to_decimal`. The conversion did not touch them, so
 //! duplicating them would test the copy rather than the driving.
 //!
+//! `receive_guard` joins that set for a slightly different reason. It is not
+//! pre-conversion code — it did not exist, because neither printer rendered a
+//! `where` clause — but it is a *pure predicate on the term* with no printer
+//! state and no recursion, and it answers the question **"is there a guard?"**
+//! rather than **"how is one printed?"**. Duplicating it would let the two
+//! printers disagree about whether a receive has a guard while agreeing about
+//! how to render one, which is a divergence with no diagnostic value. How the
+//! guard is rendered, and where in the traversal, remains independent on both
+//! sides; that is what the differential compares.
+//!
 //! `build_pattern` and `build_match_case` exist ONLY here now: their machine
 //! forms are `PpWork::RecvBindStep` + `PpKont::RecvBindJoin` and
 //! `PpWork::CaseStep` + `PpKont::CaseJoin`. They are not commented out — they
@@ -92,7 +102,7 @@ use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
 use super::pretty_printer::{
-    twos_complement_to_decimal, AsPpNode, NewBindRange, PpNode, PrettyPrinter,
+    receive_guard, twos_complement_to_decimal, AsPpNode, NewBindRange, PpNode, PrettyPrinter,
 };
 
 impl PrettyPrinter {
@@ -733,6 +743,26 @@ impl PrettyPrinter {
             )?;
 
             self.bound_shift += totally_free;
+            // ⚠ NOT verbatim, and deliberately so — declared in
+            // `PP_DEVIATIONS`. The copied body rendered no `where` clause,
+            // because the printer had no `where` token at all: a guarded
+            // receive printed as an UNGUARDED one, which is a different term
+            // with weaker admission. The twin takes the identical edit for the
+            // reason `76de7d44` gave for `cursor_kind` — otherwise the
+            // differential compares a repaired driver against an unrepaired
+            // twin, which is the failure mode the oracle exists to prevent.
+            //
+            // Position is load-bearing and is asserted, not asserted-about:
+            // AFTER `self.bound_shift += totally_free` (the guard is normalized
+            // in the body's environment) and BEFORE the body (the order the
+            // bytes come out in). `DriveMutation::ReceiveConditionBeforeBoundShift`
+            // separates the first.
+            let where_clause = match receive_guard(r) {
+                Some(condition) => {
+                    format!(" where {}", self.oracle_build_string_from_message(condition))
+                }
+                None => String::new(),
+            };
             let body_str = self.oracle_build_string_from_message(
                 r.body
                     .as_ref()
@@ -741,15 +771,16 @@ impl PrettyPrinter {
 
             if !body_str.is_empty() {
                 Ok(format!(
-                    "for( {} ) {{\n{}{}{}\n{}}}",
+                    "for( {}{} ) {{\n{}{}{}\n{}}}",
                     binds_string,
+                    where_clause,
                     self.indent_string().repeat(indent + 1),
                     body_str,
                     self.indent_string().repeat(indent),
                     ""
                 ))
             } else {
-                Ok(format!("for( {} ) {{}}", binds_string))
+                Ok(format!("for( {}{} ) {{}}", binds_string, where_clause))
             }
         }
         PpNode::Bundle(b) => {
