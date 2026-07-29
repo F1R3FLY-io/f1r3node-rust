@@ -155,20 +155,35 @@ jobs:
           permission-contents: write
 
       - name: Push commit
+        env:
+          RELEASE_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BRANCH: ${{ steps.version.outputs.BRANCH }}
         run: |
           # master's rulesets require a pull request for normal actors. The
           # repository-scoped GitHub App is an explicit ruleset bypass actor.
           # The chore(release) commit message trips ci.yml's build_base skip-guard,
           # so this push does not kick off a redundant pipeline.
-          git remote set-url origin https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git
-          git push origin ${{ steps.version.outputs.BRANCH }}
+          askpass="$RUNNER_TEMP/git-askpass.sh"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$RELEASE_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git push "https://github.com/${GITHUB_REPOSITORY}.git" "$RELEASE_BRANCH"
 
       - name: Create tag via API
         uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ steps.version.outputs.TAG_NAME }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const tagName = '${{ steps.version.outputs.TAG_NAME }}';
+            const tagName = process.env.TAG_NAME;
 
             // Get the SHA of the release commit (HEAD after our commits)
             const { execSync } = require('child_process');
