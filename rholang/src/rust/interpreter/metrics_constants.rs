@@ -41,6 +41,37 @@ pub const RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC: &str =
 pub const RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC: &str =
     "rholang.matcher.fold_match.tail_clone_ns";
 
+// Spatial-matcher state-isolation diagnostics — task #144.
+//
+// ★ ALL THREE ARE OBSERVABILITY, NOT CONSENSUS. There is no cost accounting
+// anywhere inside `rholang/src/rust/interpreter/matcher/`, so these counters
+// cannot move metering; they are read by dashboards, never by the reducer.
+// Same convention as the "Display-only (NOT consensus)" note in `dispatch.rs`.
+//
+// `aggregate_updates` REFUSES — returns `None`, which `list_match` propagates
+// as "this list match does not happen" — when two matches claimed by the
+// maximum-bipartite matcher bind the SAME free-variable level. Pattern
+// free-variable linearity is enforced upstream at normalization (`FreeMap::merge`
+// → "Free variable X is used twice as a binder"), so a linearly-normalised
+// pattern can never trip it and this counter is expected to read ZERO forever.
+// A non-zero reading means a non-linear `BindPattern` reached the matcher —
+// either a normalizer defect or hostile tuplespace state served by a peer —
+// and is worth an alert.
+pub const RHOLANG_MATCHER_AGGREGATE_UPDATES_REFUSALS_METRIC: &str =
+    "rholang.matcher.aggregate_updates.refusals";
+
+// `match_function`'s per-attempt state isolation (Scala `isolateState`,
+// SpatialMatcher.scala:279-287). The connective arm snapshots `free_map` on
+// entry so a FAILED attempt cannot leave its bindings behind for the next one.
+// `..._ENTRIES` accumulates the number of `FreeMap` entries snapshotted and
+// `..._NS` the wall-clock nanoseconds spent snapshotting, so the price of the
+// restore is measured rather than argued. Only the connective arm is counted,
+// because only the connective arm snapshots.
+pub const RHOLANG_MATCHER_ISOLATE_STATE_CLONE_NS_METRIC: &str =
+    "rholang.matcher.isolate_state.clone_ns";
+pub const RHOLANG_MATCHER_ISOLATE_STATE_CLONE_ENTRIES_METRIC: &str =
+    "rholang.matcher.isolate_state.clone_entries";
+
 // Reducer per-op-type counters — split reduce_term cost by the Rholang
 // AST node kind dispatched in DebruijnInterpreter::generated_message_eval.
 // Calls counter increments once per dispatch; time_ns accumulates wall-clock

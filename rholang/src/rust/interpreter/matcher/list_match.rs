@@ -130,7 +130,20 @@ macro_rules! list_match {
 
                 let mut cloned_self = self.clone();
                 let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
-                // NOTE: Bypassing 'memoizeInHashMap' here
+                // NOTE: 'memoizeInHashMap' (SpatialMatcher.scala:289-292) is bypassed here.
+                //
+                // That bypass used to be FORCED: before task #144 restored per-attempt
+                // state isolation, `match_function` was an impure function of
+                // `(pattern, target)` — its answer depended on whatever the previous
+                // attempts had left in `cloned_self.free_map` — and memoizing an impure
+                // function is unsound. With the isolation restored, `match_function` IS
+                // a pure function of `(pattern, target)` and the cache is sound.
+                //
+                // It is now OPTIONAL rather than forced, and deliberately not adopted:
+                // it needs `Pattern<$type>: Hash + Eq` and holds up to |P|·|T| FreeMaps,
+                // which is a real concern for wide targets. Adopt it on measurement, not
+                // on principle — it changes call counts only (observability), never a
+                // verdict.
                 let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function);
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
@@ -209,34 +222,80 @@ macro_rules! list_match {
                 Some(())
               }
 
-              /*
-                  'The Box is used here to store the function on the heap rather than the stack. This is because the size of the function is not known at
-                compile time (it's a closure that captures its environment), so it cannot be stored directly on the stack. The Box provides a fixed-size
-                pointer to the function on the heap, which can be stored on the stack.' - GPT-4
-              */
+              // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - matchFunction
+              //
+              // ★★ STATE ISOLATION — task #144. Scala wraps every attempt in
+              // `isolateState` (`SpatialMatcher.scala:241`, `:279-287`):
+              //
+              //     initState   <- get            // snapshot
+              //     _           <- f              // run the attempt
+              //     resultState <- get            // the post-attempt map IS the value
+              //     _           <- set(initState) // the caller's map is put back
+              //     yield resultState
+              //
+              // In `StateT`/`StreamT` a failed attempt is an EMPTY STREAM, so its
+              // state never reaches the caller at all and the explicit
+              // `set(initState)` is only needed on the success path. Rust mutates a
+              // plain field, so failure is DESTRUCTIVE and both paths must restore.
+              //
+              // Without the restore, `list_match` builds `cloned_self` once, moves it
+              // into the closure, and every attempt in the whole bipartite search
+              // mutates that one map. Each claimed match's snapshot is then CUMULATIVE
+              // — it carries the bindings written by every FAILED attempt that ran
+              // before it — and `aggregate_updates` folds those snapshots in `matches`
+              // BTreeMap order, which is structural `Par` order, i.e. prost's
+              // field-declaration derive. Which of two conflicting values survived was
+              // decided by a `.proto` field number rather than by the semantics.
+              //
+              // ★ THE SNAPSHOT IS TAKEN ON EXACTLY ONE ARM, and that is a proof
+              // rather than a heuristic. `guard(t == p)` is a pure comparison and
+              // `guard(self.locally_free(t, 0).is_empty())` is a pure query — neither
+              // can reach `self.free_map` — and `connective_used(p)` is the predicate
+              // this function ALREADY branches on. The failure-heavy non-connective
+              // path pays nothing.
+              //
+              // 'The Box is used here to store the function on the heap rather than the stack. This is because the size of the function is not known at
+              // compile time (it's a closure that captures its environment), so it cannot be stored directly on the stack. The Box provides a fixed-size
+              // pointer to the function on the heap, which can be stored on the stack.' - GPT-4
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
-                // println!("\nCalling match_function");
-                // println!("matchFunction pattern: {:#?}", pattern);
-
-                let match_effect: Option<()> = match pattern {
+                match pattern {
                   Pattern::Term(p) => {
                      if !self.connective_used(p.clone()) {
-                         guard(t == p)
+                         // Pure arm: no write to `free_map` is reachable from here, so
+                         // the pre-attempt and post-attempt maps are the same map and
+                         // no snapshot is needed.
+                         guard(t == p).map(|_| self.free_map.clone())
                       } else {
-                        // println!("\ncalling spatial_match in match_function");
-                        // println!("\nt in match_function: {:#?}", t);
-                        // println!("\np in match_function: {:#?}", p);
-                         self.spatial_match(t, p)
+                         // `initState <- get` — the ONLY new clone this fix introduces.
+                         let __isolate_start = std::time::Instant::now();
+                         let init_state = self.free_map.clone();
+                         ::metrics::counter!(
+                             $crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_ISOLATE_STATE_CLONE_ENTRIES_METRIC,
+                             "source" => $crate::rust::interpreter::metrics_constants::RHOLANG_METRICS_SOURCE
+                         )
+                         .increment(init_state.len() as u64);
+                         ::metrics::counter!(
+                             $crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_ISOLATE_STATE_CLONE_NS_METRIC,
+                             "source" => $crate::rust::interpreter::metrics_constants::RHOLANG_METRICS_SOURCE
+                         )
+                         .increment(__isolate_start.elapsed().as_nanos() as u64);
+
+                         let effect = self.spatial_match(t, p);
+
+                         // `resultState <- get; set(initState); yield resultState` as
+                         // ONE move. `std::mem::replace` — not clone-then-assign: the
+                         // restore itself is free, only the entry snapshot costs.
+                         // Unconditional, so the failure path restores too.
+                         let result_state = std::mem::replace(&mut self.free_map, init_state);
+                         effect.map(|_| result_state)
                       }
                   }
-                  Pattern::Remainder(_) => guard(self.locally_free(t, 0).is_empty()),
-                };
-
-                match match_effect {
-                  Some(_) => {
-                    let free_map = &self.free_map;
-                    Some(free_map.clone())},
-                  None => None,
+                  // Remainders can't match non-concrete terms, because they can't be
+                  // captured. They match everything that's concrete. Pure arm — the
+                  // remainder's own binding happens AFTER the bipartite match, on
+                  // `self`, in `handle_remainder`.
+                  Pattern::Remainder(_) =>
+                      guard(self.locally_free(t, 0).is_empty()).map(|_| self.free_map.clone()),
                 }
               }
           }
@@ -244,31 +303,120 @@ macro_rules! list_match {
   };
 }
 
-pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
-    let current_vars: HashSet<_> = current_free_map.keys().cloned().collect();
-    let added_vars: HashSet<_> = free_maps
-        .iter()
-        .flat_map(|m| m.keys())
-        .filter(|k| !current_vars.contains(*k))
-        .cloned()
-        .collect();
+/// The first free-variable level that two of `free_maps` **both** added, if any.
+///
+/// This is the predicate of Scala's `aggregateUpdates`
+/// (`SpatialMatcher.scala:294-311`), extracted so that it can be tested on its
+/// own and so that a refusal can *name* the offending level instead of
+/// answering with a bare boolean:
+///
+/// ```text
+///   addedVars = freeMaps.flatMap(_.keys.filterNot(currentVars.contains))
+///   ensure(addedVars.size == addedVars.distinct.size)
+/// ```
+///
+/// ★ **`addedVars` is a `Seq`, so multiplicity is kept**, and the size-vs-distinct
+/// comparison is a real test. The Rust port collected into a `HashSet` first and
+/// then compared that set's length against
+/// `set.iter().collect::<HashSet<_>>().len()` — identical *by construction*, so
+/// the guard was a tautology that could never fire (task #144). Iterating the
+/// keys directly, in order, and refusing on the first repeat restores the check.
+///
+/// ★ **`filterNot(currentVars.contains)` is load-bearing and is kept exactly.**
+/// Every map returned by a state-isolated `match_function` is
+/// `current_free_map + delta`, so the levels already present in
+/// `current_free_map` appear in *every* aggregated map. Without the filter the
+/// shared prefix would read as a duplicate and every ordinary aggregation would
+/// be refused.
+///
+/// Iteration is over `BTreeMap::keys`, which is ascending, and over `free_maps`
+/// in the order the caller supplied — so the level reported is deterministic.
+pub fn first_duplicate_added_var(current_free_map: &FreeMap, free_maps: &[FreeMap]) -> Option<i32> {
+    let mut seen: HashSet<i32> = HashSet::with_capacity(free_maps.iter().map(|m| m.len()).sum());
 
-    // The correctness of isolating MBM from changing FreeMap relies
-    // on our ability to aggregate the var assignments from subsequent matches.
-    // This means all the variables populated by MBM must not duplicate each other.
-    if added_vars.len() != added_vars.iter().collect::<HashSet<_>>().len() {
-        panic!(
-            "RUST ERROR: Aggregated updates conflicted with each other: {:?}",
-            free_maps
+    free_maps
+        .iter()
+        .flat_map(|free_map| free_map.keys())
+        .filter(|level| !current_free_map.contains_key(*level))
+        .find(|level| !seen.insert(**level))
+        .copied()
+}
+
+/// Fold the free maps of every match the bipartite matcher claimed into one.
+///
+/// The correctness of isolating the maximum-bipartite match from changing the
+/// `FreeMap` relies on our ability to aggregate the variable assignments from
+/// subsequent matches. That is only sound when the variables populated by the
+/// matcher do not duplicate each other, so this is where that is checked —
+/// see [`first_duplicate_added_var`] for what the check is and why the port
+/// had lost it.
+///
+/// ★ **A duplicate is a DECIDABLE NEGATIVE: it refuses.** Scala raised
+/// `BugFoundError` through an error channel this trait does not have —
+/// `ListMatch`/`SpatialMatcher` return `Option`, and widening them to `Result`
+/// would change every signature in the module. Refusing through the `Option`
+/// the function already returns is a **deliberate divergence from upstream**,
+/// and the caller's `?` reads it exactly as it should: *this list match does
+/// not happen*.
+///
+/// **Why the previous `panic!` could not stay.** `Matcher::get` receives
+/// `BindPattern`s deserialised from tuplespace history, including state served
+/// by a peer during sync. Pattern free-variable linearity is enforced at
+/// *normalization* (`FreeMap::merge` → "Free variable X is used twice as a
+/// binder"), which a deserialised pattern never went through on this node.
+/// The panic was unreachable only for as long as the guard was vacuous;
+/// restoring the guard while keeping the panic would have converted a dead
+/// check into a remotely-triggerable node crash
+/// (`shared/tests/panic_expectation_gate.rs`).
+///
+/// **Why this is expected to be silent forever.** Under state isolation each
+/// returned map is `current + δᵢ`; the added vars duplicate iff two claimed
+/// matches bind the same level; each level occupies at most one pattern
+/// position by linearity; and `Pattern::Remainder` binds nothing inside the
+/// bipartite match — the remainder is bound afterwards, on `self`, in
+/// `handle_remainder`. So this is a genuine defense-in-depth backstop, and it
+/// is *implementable* precisely because isolation makes the disjointness hold.
+/// The refusals counter reading non-zero means a non-linear `BindPattern`
+/// reached the matcher: a normalizer defect, or hostile tuplespace state.
+pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
+    if let Some(level) = first_duplicate_added_var(&current_free_map, &free_maps) {
+        // Observability, not consensus — there is no cost accounting anywhere in
+        // this module, so a counter here cannot move metering.
+        metrics::counter!(
+            crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_AGGREGATE_UPDATES_REFUSALS_METRIC,
+            "source" => crate::rust::interpreter::metrics_constants::RHOLANG_METRICS_SOURCE
         )
+        .increment(1);
+
+        // Structured, for a node with a subscriber installed.
+        tracing::error!(
+            target: "f1r3fly.rholang.matcher",
+            level,
+            free_maps = ?free_maps,
+            "aggregated updates conflicted with each other: two claimed matches added \
+             the same free-variable level, which a linearly-normalised pattern cannot \
+             do; declining to commit this list match"
+        );
+
+        // ★ And unstructured, for the audit that has no subscriber and no metrics
+        // recorder: this backstop's whole claim is that it is SILENT, and that
+        // claim has to be checkable by running the test suite and grepping. The
+        // line is on a path that never executes, so it costs nothing.
+        eprintln!(
+            "RHOLANG-MATCHER-AGGREGATE-UPDATES-REFUSAL: level {} was added by two \
+             separate matches; free_maps = {:?}",
+            level, free_maps
+        );
+
+        return None;
     }
 
-    let updated_free_map = free_maps
-        .into_iter()
-        .fold(current_free_map.clone(), |mut acc, fm| {
-            acc.extend(fm);
-            acc
-        });
+    // `updatedFreeMap = freeMaps.fold(currentFreeMap)(_ ++ _)`. The fold order is
+    // the caller's `matches` BTreeMap order and is deliberately NOT changed.
+    let updated_free_map = free_maps.into_iter().fold(current_free_map, |mut acc, fm| {
+        acc.extend(fm);
+        acc
+    });
 
     Some(updated_free_map)
 }
