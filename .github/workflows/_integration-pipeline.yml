@@ -254,16 +254,23 @@ jobs:
             --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
-      # TEMPORARY DIAGNOSTIC — remove before merging this PR.
+      # Records WHICH credential store actually supplied this run, because the
+      # answer is not observable any other way and got this pipeline wrong twice
+      # on 2026-07-29. An empty secret and a malformed one produce the identical
+      # OCI CLI error ("tenancy | malformed | this must be an OCID"), so a failure
+      # here is ambiguous between "the environment is misconfigured" and "the
+      # values never arrived" — a distinction that took three CI runs to settle
+      # without this step.
       #
-      # Determines which store actually supplies these credentials. Prints only a
-      # byte length and a truncated SHA-256 per value: GitHub masks secret values
-      # in logs but not digests, so this distinguishes "empty" (delivery failed)
-      # from "present but unexpected" (a different store won) without disclosing
-      # anything. Compare the digests against the values stored in the
-      # oci-credentials environment. Runs before the config step so it still
-      # reports when that step fails.
-      - name: Diagnose credential delivery (temporary)
+      # Discloses nothing. Only a byte length and a truncated SHA-256 are printed;
+      # GitHub masks secret values in logs but not digests, which is exactly the
+      # property that makes this useful: `len=0` means delivery failed, and a
+      # digest mismatch against the value stored in the oci-credentials
+      # environment means a different store won.
+      #
+      # Deliberately ahead of the config step below, so it still reports when that
+      # step is the thing that fails.
+      - name: Report credential delivery
         shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
