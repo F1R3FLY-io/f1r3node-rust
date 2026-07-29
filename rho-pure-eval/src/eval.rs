@@ -1589,31 +1589,43 @@ mod differential_eval_with {
         );
     }
 
-    /// The machine runs a nesting the oracle's per-level cost puts far out of
-    /// reach: 20,000 `ENot` levels is ~412 MiB at the measured 21,584 B/level.
-    ///
-    /// ⚠ This is a SMOKE TEST, not the depth guard. It runs on whatever stack
-    /// the harness gave it and it never drives the recursive arm, so on its own
-    /// it shows only that the machine got to the end — it could not distinguish
-    /// "heap-bounded" from "the harness happened to have enough stack". The
-    /// guard that *can* is [`super::depth_gate`], which fixes the stack size
-    /// explicitly and requires the recursive arm to FAIL at a depth the driver
-    /// survives.
-    #[test]
-    fn the_machine_survives_a_depth_the_oracle_could_not() {
-        let deep = deep_nots(20_000, gbool(true));
-        let env: Env<Par> = Env::new();
-        let out = eval_with(&deep, &env, &NoSpatialMatch).expect("deep ENot chain evaluates");
-        assert_eq!(
-            single_expr_instance(&out).expect("a single value"),
-            ExprInstance::GBool(true),
-            "20,000 negations of `true` is `true`"
-        );
-        // ⚠ `drop_in_place::<Par>` is itself Θ(depth) (~470 B/level, debug), so
-        // letting a 20,000-deep term fall out of scope would abort the process
-        // in the DESTRUCTOR after the subject had already succeeded.
-        models::rust::rholang::par_children::dismantle(deep);
-    }
+    // -----------------------------------------------------------------------
+    // ⚠★ DELETED HERE, ON PURPOSE: `the_machine_survives_a_depth_the_oracle_
+    // could_not`.
+    //
+    // It was a `#[test]` that built a 20,000-level `ENot` chain, ran
+    // `eval_with` on it, and asserted the boolean came back. Three things were
+    // wrong with it, and the third is the one that matters:
+    //
+    // 1. ITS NAME CLAIMED A COMPARISON IT NEVER MADE. It never called
+    //    `eval_with_recursive`. "the oracle could not" was an arithmetic
+    //    argument in a comment — 20,000 x 21,584 B/level ~ 412 MiB — derived
+    //    from a constant measured in a different harness, not an observation
+    //    made here. A test may not assert in its name what it does not execute.
+    //
+    // 2. IT RAN ON WHATEVER STACK THE HARNESS GAVE IT. No `stack_size`, so
+    //    `RUST_MIN_STACK`, `ulimit -s` and libtest's thread default silently
+    //    decided the verdict. A regression to a Theta(depth) form with a small
+    //    per-level cost would have passed it.
+    //
+    // 3. ★ AND IT ONLY PASSED BECAUSE OF ONE CALL IN THE FIXTURE. Its final
+    //    statement was `par_children::dismantle(deep)` — which NO production
+    //    caller makes. `drop_in_place::<Par>` is itself Theta(depth), so
+    //    without that call the term's DESTRUCTOR, not `eval_with`, sets the
+    //    ceiling. This is the same shape that let the big gate's own headline
+    //    subject certify source depth 100,000 while a 4,415-deep term aborted
+    //    the node: *the distance between "100,000 is fine" and "4,415 aborts
+    //    the node" is one call in a fixture.*
+    //
+    // The property it was named for is REAL and is now gated properly, by
+    // [`super::depth_gate`]: both arms, in child processes, on an explicitly
+    // sized stack, with the recursive arm REQUIRED to fail where the driver
+    // survives — and with the destructor's contribution recorded as its own
+    // measured rung (`driver_and_drop`) instead of silently excluded. Deleting
+    // this test rather than leaving it beside that gate is deliberate: two
+    // statements of one property do not stay equal, and the weaker one is the
+    // one a reader reaches first.
+    // -----------------------------------------------------------------------
 }
 
 // ===========================================================================
@@ -1643,14 +1655,43 @@ mod depth_gate {
     //!
     //! ## What makes it non-vacuous
     //!
-    //! Three assertions, not one. At [`SHALLOW`] **both** arms must survive on
-    //! the same stack — so a child that failed for a reason unrelated to depth
-    //! (a missing binary, a bad argument, a panic in the term builder) fails
-    //! the gate immediately and cannot be mistaken for the property. Only then
-    //! does the gate require the recursive arm to fail at [`DEEP`] and the
-    //! driver to survive it. The middle assertion is the RED one, and it is red
-    //! on purpose, permanently: a driver that silently reverted to recursion
-    //! would make it green and the gate would fail.
+    //! At [`SHALLOW`] **both** arms must survive on the same stack — so a child
+    //! that failed for a reason unrelated to depth (a missing binary, a bad
+    //! argument, a panic in the term builder) fails the gate immediately and
+    //! cannot be mistaken for the property. Only then does the gate require the
+    //! recursive arm to fail at [`DEEP`] and the driver to survive it. That
+    //! middle assertion is RED on purpose, permanently: a driver that silently
+    //! reverted to recursion would make it green and the gate would fail.
+    //!
+    //! ## ★★ The destructor is MEASURED here, not excluded here
+    //!
+    //! `run_arm` finishes with [`dismantle`], because the subject is
+    //! `eval_with`'s native stack and `drop_in_place::<Par>` is a **different**
+    //! Θ(depth) traversal (gated separately, as `par_drop`, in
+    //! `rholang/tests/stack_depth_gate.rs`). Without that call every reading
+    //! would be `max(eval_with, drop_in_place::<Par>)` — the destructor's
+    //! number wearing the driver's name. One traversal per number.
+    //!
+    //! ⚠ But a fixture that ends in `dismantle` is exactly how a guard comes to
+    //! certify a ceiling **no production caller has**: the deleted smoke test
+    //! this module replaces passed at 20,000 levels for that reason and for no
+    //! other, and the big gate's own headline subject once certified source
+    //! depth 100,000 while a 4,415-deep term aborted the node. So the
+    //! assumption is not left implicit. [`DEEP_DROP`] drives a third arm,
+    //! `driver_and_drop`, which lets the term fall out of scope normally, and
+    //! the gate asserts that it **fails** where `driver` succeeds. The claim
+    //! this module makes is therefore exact and bounded:
+    //!
+    //! | claim | rung | verdict |
+    //! |---|---|---|
+    //! | `eval_with`'s own native stack is O(1) in nesting depth | `driver` @ [`DEEP_DROP`] | survives 1 MiB |
+    //! | the recursive twin's is not | `recursive` @ [`DEEP`] | aborts 1 MiB |
+    //! | **the composition with the term's destructor is NOT depth-independent** | `driver_and_drop` @ [`DEEP_DROP`] | aborts 1 MiB |
+    //!
+    //! The third row is a tripwire, not a defect being ratified: it is the
+    //! statement that a caller holding a deep term still owes it an iterative
+    //! teardown, and it is written as an executed assertion so that a future
+    //! `Drop`-side conversion turns it red and gets read.
 
     use super::*;
     use models::rust::rholang::par_children::dismantle;
@@ -1682,6 +1723,22 @@ mod depth_gate {
     /// binding one: 4,096 x 3,359 B is ~13.1 MiB against a 1 MiB stack.
     const DEEP: usize = 4_096;
 
+    /// The rung at which the DESTRUCTOR's contribution becomes visible on this
+    /// stack in **both** profiles, so the composition assertion is
+    /// profile-independent by construction rather than by a lucky constant.
+    ///
+    /// `drop_in_place::<Par>` measures ~470 B/level in debug and ~32 B/level at
+    /// `-O2` (`rholang/tests/stack_depth_gate.rs`, subject `par_drop`; the
+    /// release figure is the small one because the drop glue holds a tail
+    /// pointer and the saved registers and nothing else). The RELEASE number is
+    /// the binding one: 131,072 x 32 B is ~4.0 MiB against a 1 MiB stack, a 4x
+    /// margin, and in debug it is ~59 MiB, a 59x margin.
+    ///
+    /// It is also the rung the `driver` arm is asserted to SURVIVE, which makes
+    /// it a strictly stronger statement than the 20,000-on-an-ambient-stack
+    /// claim the deleted smoke test made.
+    const DEEP_DROP: usize = 131_072;
+
     fn nots(depth: usize) -> Par {
         let mut p = par_with_bool(true);
         for _ in 0..depth {
@@ -1698,7 +1755,7 @@ mod depth_gate {
         let env: Env<Par> = Env::new();
         let out = match arm {
             "recursive" => eval_with_recursive(&deep, &env, &NoSpatialMatch),
-            "driver" => eval_with(&deep, &env, &NoSpatialMatch),
+            "driver" | "driver_and_drop" => eval_with(&deep, &env, &NoSpatialMatch),
             other => panic!("depth_gate: unknown {GATE_ARM}={other:?}"),
         }
         .expect("depth_gate: the chain evaluates");
@@ -1708,11 +1765,23 @@ mod depth_gate {
             ExprInstance::GBool(depth % 2 == 0),
             "depth_gate: {depth} negations of `true` under arm {arm:?}"
         );
-        // ⚠ Tear the term down ITERATIVELY. `drop_in_place::<Par>` is itself a
-        // Θ(depth) recursive traversal (~470 B/level, debug), so letting a
-        // `DEEP` term fall out of scope on this deliberately small stack would
-        // abort the child in the DESTRUCTOR — the driver arm would then fail
-        // for a reason that is not the driver.
+
+        if arm == "driver_and_drop" {
+            // ★ THE COMPOSITION ARM. The term falls out of scope normally, so
+            // this reading is `max(eval_with, drop_in_place::<Par>)` — which is
+            // the whole point of it. See the module docs: the gate asserts this
+            // arm FAILS at `DEEP_DROP`, so the destructor's contribution is a
+            // recorded number instead of a fixture's silent exclusion.
+            drop(deep);
+            return;
+        }
+
+        // ⚠ Tear the term down ITERATIVELY, so this reading is `eval_with`'s
+        // and nothing else. `drop_in_place::<Par>` is a SEPARATE Θ(depth)
+        // traversal (~470 B/level debug, ~32 release) with its own tripwire
+        // (`par_drop`, in `rholang/tests/stack_depth_gate.rs`); leaving it in
+        // the measurement would put the destructor's number under the driver's
+        // name. One traversal per number.
         dismantle(deep);
     }
 
@@ -1798,6 +1867,32 @@ mod depth_gate {
              re-entry: check `descend_ev_expr`'s `EVarBody` arm (the one deliberate nested \
              drive, bounded by the ENVIRONMENT rather than by the term) and any new arm \
              that calls `eval_with` directly."
+        );
+        assert!(
+            runs_within("driver", DEEP_DROP, GATE_STACK),
+            "REGRESSION: `eval_with` did not survive {DEEP_DROP} levels on a \
+             {GATE_STACK}-byte stack. This rung is {DEEP_DROP} deep specifically so the \
+             claim is not one a fixture could have manufactured — see the module docs."
+        );
+
+        // ---- the COMPOSITION, recorded rather than excluded ----
+        //
+        // ★ This is the assertion the deleted smoke test needed and did not
+        // have. Its fixture ended in `dismantle`, so it certified a ceiling no
+        // production caller has; here the arm that does NOT dismantle is driven
+        // explicitly and its failure is the record of what the destructor
+        // still costs.
+        assert!(
+            !runs_within("driver_and_drop", DEEP_DROP, GATE_STACK),
+            "THE COMPOSITION TRIPWIRE HAS FLIPPED: `eval_with` followed by letting a \
+             {DEEP_DROP}-level term fall out of scope SURVIVED a {GATE_STACK}-byte stack. \
+             That is a change worth reading, not a failure to paper over — it means \
+             `drop_in_place::<Par>` is no longer Θ(depth) on this shape (an `impl Drop for \
+             Par` landed, or the drop glue changed). Re-measure `par_drop` in \
+             `rholang/tests/stack_depth_gate.rs`, then retire this assertion DELIBERATELY \
+             rather than by loosening it: with the destructor bounded, `dismantle` in \
+             `run_arm` stops being load-bearing and every caller holding a deep term stops \
+             owing it an iterative teardown."
         );
     }
 }
