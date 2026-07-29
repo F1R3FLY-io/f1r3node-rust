@@ -1282,7 +1282,7 @@ mod drive {
     //! | `New` takes its interval AFTER the `bound_shift` mutation | ✔ | 3 witnesses |
     //! | `Channel` resets `is_building_channel` after the sub-render | ✔ | `new_name_read_after_a_channel_render` |
     //! | `Par` pushes its `exprs` un-reversed | ✔ | 2 witnesses |
-    //! | `RecvBindJoin` takes patterns before source | ✔ | 3 witnesses |
+    //! | `RecvBindJoin` takes patterns before source | ✔ | 4 witnesses |
     //! | `Receive`'s `where` guard renders BEFORE the interposed `AddBoundShift` | ✔ | `receive_with_a_where_guard_over_its_binder` |
     //! | `New` mutates `bound_shift` before `build_variables` | **EQUIVALENT since `a4c23a58`** | proven + executed at `the_equivalent_mutants_really_are_equivalent` |
     //! | `ParK`'s category-length array permuted | **EQUIVALENT** | proven at [`render_par_categories`], executed over all 8! permutations |

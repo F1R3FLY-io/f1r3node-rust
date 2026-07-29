@@ -140,6 +140,33 @@ fn variable_the_body_sends(body: &str) -> String {
     name
 }
 
+// ---------------------------------------------------------------------------
+// THE COMPARATORS — named, so the controls and [`the_controls_can_go_red`]
+// exercise the SAME function rather than two copies of it
+// ---------------------------------------------------------------------------
+
+/// The byte-exact header an **unguarded** resting receive must produce.
+///
+/// `pattern` is the rendered left-hand side (`for( @{k2}`), which carries the
+/// printer's rotating identifier and therefore cannot be a literal; every other
+/// byte here is, **including both single spaces inside the parentheses**. That
+/// is the point: a `where` clause spliced in, or a space lost, changes this
+/// string.
+fn expected_unguarded_header(pattern: &str, channel: &str) -> String {
+    format!(r#"{pattern} <- @{{"{channel}"}} ) {{"#)
+}
+
+/// Does `report` render a `where` clause anywhere?
+///
+/// The controls assert this is **false**. A negative assertion is worth only as
+/// much as the predicate's ability to fire, which is what
+/// [`the_controls_can_go_red`] establishes.
+fn renders_a_where_clause(report: &str) -> bool { report.contains("where") }
+
+/// Does `report` mention `channel` at all? The joined-consume pin asserts this
+/// is **false**, so the same non-vacuity obligation applies.
+fn mentions_channel(report: &str, channel: &str) -> bool { report.contains(channel) }
+
 // ===========================================================================
 // THE RED — a resting guarded receive renders its guard
 // ===========================================================================
@@ -233,7 +260,7 @@ async fn a_joined_consume_never_reaches_the_storage_report_and_that_is_pinned() 
         let report = rest_and_report(&mut runtime, guarded).await;
         for channel in [r#""gleft""#, r#""gright""#] {
             assert!(
-                !report.contains(channel),
+                !mentions_channel(&report, channel),
                 "a joined consume reached the storage report on {channel}. That would be an \
                  IMPROVEMENT over the pinned behaviour — `to_map` keys continuations by the \
                  single channels of the data map — but it is not what this test records, so \
@@ -250,7 +277,7 @@ async fn a_joined_consume_never_reaches_the_storage_report_and_that_is_pinned() 
         let report = rest_and_report(&mut runtime, unguarded).await;
         for channel in [r#""pleft""#, r#""pright""#] {
             assert!(
-                !report.contains(channel),
+                !mentions_channel(&report, channel),
                 "an UNGUARDED joined consume reached the report while the guarded one did \
                  not, so the two are not lost for the same reason and the attribution above \
                  is wrong.\nREPORT:\n{report}"
@@ -289,14 +316,14 @@ async fn an_unguarded_resting_receive_renders_byte_identically() {
             .unwrap_or_else(|| panic!("unexpected header shape: {header:?}"));
         assert_eq!(
             header,
-            format!(r#"{pattern} <- @{{"plain"}} ) {{"#),
+            expected_unguarded_header(&pattern, "plain"),
             "the rendering of an UNGUARDED resting receive moved. It must be byte-identical \
              before and after the guard repair.\nREPORT:\n{report}"
         );
         assert_eq!(body, format!(r#""out"!({variable})"#));
 
         assert!(
-            !report.contains("where"),
+            !renders_a_where_clause(&report),
             "an unguarded resting receive grew a `where` clause.\nREPORT:\n{report}"
         );
     })
@@ -328,13 +355,13 @@ async fn a_semantically_empty_guard_renders_as_no_guard() {
             .unwrap_or_else(|| panic!("unexpected header shape: {header:?}"));
         assert_eq!(
             header,
-            format!(r#"{pattern} <- @{{"nilguard"}} ) {{"#),
+            expected_unguarded_header(&pattern, "nilguard"),
             "a `where Nil` receive must render exactly as an unguarded one.\nREPORT:\n{report}"
         );
         assert_eq!(body, format!(r#""out"!({variable})"#));
 
         assert!(
-            !report.contains("where"),
+            !renders_a_where_clause(&report),
             "`where Nil` grew a rendered `where` clause.\nREPORT:\n{report}"
         );
     })
@@ -357,9 +384,115 @@ async fn a_resting_send_is_unaffected() {
              change here means the repair reached further than the receive.\nREPORT:\n{report}"
         );
         assert!(
-            !report.contains("where"),
+            !renders_a_where_clause(&report),
             "a resting send grew a `where` clause.\nREPORT:\n{report}"
         );
     })
     .await;
+}
+
+// ===========================================================================
+// ★ THE CONTROLS' OWN NON-VACUITY — each comparator shown able to REJECT
+// ===========================================================================
+
+/// Three of the assertions above are **negative** (`!renders_a_where_clause`,
+/// `!mentions_channel`) or **equalities against a computed expectation**. Each is
+/// worth exactly as much as its comparator's ability to fire, and none of them
+/// fired during this change — they passed before the repair and after it, which
+/// is what makes them controls and also what makes them unfalsified.
+///
+/// This test supplies the missing half: it feeds each comparator the value it
+/// exists to refuse and requires it to refuse. ⚠ It does so by evaluating the
+/// comparators as **predicates**, never by expecting a panic — a test that
+/// expects a panic is not usable here (a `panic!` does not unwind across the
+/// `proc_macro` bridge under cranelift, and the harness aborts printing
+/// nothing), and a panic-expecting test could not distinguish *which* assertion
+/// fired in any case.
+///
+/// The pattern is `normalize_oracle_provenance.rs`'s
+/// `the_provenance_check_can_go_red` and `pretty_printer`'s
+/// `representation_mutations::the_tables_own_judge_can_reject`.
+#[test]
+fn the_controls_can_go_red() {
+    // ── Control 1's comparator: the byte-exact unguarded header ─────────────
+    let pattern = "for( @{k2}";
+    let real = expected_unguarded_header(pattern, "plain");
+    assert_eq!(
+        real, r#"for( @{k2} <- @{"plain"} ) {"#,
+        "the comparator no longer produces the shape captured from the pre-repair run"
+    );
+
+    // The mutations it must separate. Each is a rendering the printer could
+    // plausibly produce if the repair had reached too far, and the FIRST is the
+    // exact defect this change risks: a `where` clause on an unguarded receive.
+    let must_be_rejected = [
+        // a guard spliced into a receive that has none
+        r#"for( @{k2} <- @{"plain"} where x0 > 5 ) {"#,
+        // the space before `)` lost — `{}{}` mis-ordered against the literal
+        r#"for( @{k2} <- @{"plain"}) {"#,
+        // the space after `(` lost
+        r#"for(@{k2} <- @{"plain"} ) {"#,
+        // an empty guard rendered as ` where Nil` (the alternative this change
+        // deliberately rejected)
+        r#"for( @{k2} <- @{"plain"} where Nil ) {"#,
+        // the channel's quoting changed
+        r#"for( @{k2} <- @{plain} ) {"#,
+    ];
+    for mutant in must_be_rejected {
+        assert_ne!(
+            real, mutant,
+            "the unguarded-header comparator accepts {mutant:?}, so Control 1 cannot detect \
+             that the unguarded rendering moved"
+        );
+    }
+
+    // …and it must still ACCEPT the same header under a different rotating
+    // identifier, or the control would be pinned to how many system processes
+    // the runtime happens to install rather than to the rendering.
+    assert_eq!(
+        expected_unguarded_header("for( @{d7}", "plain"),
+        r#"for( @{d7} <- @{"plain"} ) {"#,
+        "the comparator must vary ONLY with the rotating identifier"
+    );
+
+    // ── Controls 1-3's comparator: `renders_a_where_clause` ─────────────────
+    // It must fire on every shape the printer can now emit …
+    for positive in [
+        "for( @{c2} <- @{\"guarded\"} where d0 > 5 ) {\n  \"out\"!(d0)\n}",
+        "for( @{a0} <- @{\"c\"} where Nil ) {}",
+        "where",
+    ] {
+        assert!(
+            renders_a_where_clause(positive),
+            "`renders_a_where_clause` cannot see a guard in {positive:?}, so every \
+             `!renders_a_where_clause(..)` control above is vacuous"
+        );
+    }
+    // … and must not fire on the pre-repair rendering, which is the string the
+    // controls actually receive.
+    for negative in [
+        "for( @{k2} <- @{\"plain\"} ) {\n  \"out\"!(l0)\n}",
+        "\"payload\"!(1, \"two\", true)",
+        "The space is empty.",
+    ] {
+        assert!(
+            !renders_a_where_clause(negative),
+            "`renders_a_where_clause` fires on {negative:?}, which contains no guard — the \
+             controls would then fail for the wrong reason"
+        );
+    }
+
+    // ── The joined-consume pin's comparator: `mentions_channel` ─────────────
+    // The pin asserts a channel is ABSENT. That is vacuous unless the predicate
+    // can see a channel that is present, so both directions are required.
+    let single_channel_report = "for( @{k2} <- @{\"plain\"} ) {\n  \"out\"!(l0)\n}";
+    assert!(
+        mentions_channel(single_channel_report, r#""plain""#),
+        "`mentions_channel` cannot find a channel that IS rendered, so the joined-consume \
+         pin asserts nothing"
+    );
+    assert!(
+        !mentions_channel(single_channel_report, r#""gleft""#),
+        "`mentions_channel` finds a channel that is not there"
+    );
 }
