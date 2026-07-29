@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
+use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -545,15 +546,24 @@ async fn int_addition_and_subtraction_refuse_an_unrepresentable_result() {
 ///
 /// which only reaches its `else` branch **because `v + x` wrapped to a smaller number**. Under
 /// checked addition the condition itself refuses, so the deploy aborts and `success` never
-/// receives. `MakeMint.rho`'s `deposit` calls that same `add`, and both idioms are exercised by
-/// `casper/tests/genesis/contracts/{non_negative_number_spec,make_mint_spec}.rs`
-/// (`test_fail_on_overflow`, `test_overflow_deposit`).
+/// receives. `MakeMint.rho`'s `deposit` calls that same `add`.
 ///
-/// ⚠ **The remedy is to test BEFORE adding, not after**: `if (x <= 9223372036854775807 - v)`,
-/// which is total for every non-negative `v`, `x`. Changing those files edits GENESIS contracts
-/// and therefore moves their registry URIs and the genesis block hash, so it is a protocol-level
-/// decision and is deliberately not made here. This cell exists so the consequence is measured
-/// and named rather than discovered by a failing genesis suite.
+/// ★ **RULED and APPLIED 2026-07-29.** The remedy is to test BEFORE adding, not after:
+/// `if (x <= 9223372036854775807 - v)`, which is total for every non-negative `v`, `x`. It is now
+/// what `NonNegativeNumber.rho` says. Contrary to what this comment previously claimed, the edit
+/// does **not** move the contract's registry URI — `Registry.rho:592` derives it as
+/// `build_uri(blake2b256(pubKeyBytes))` and signs only `(timestamp, deployerPubKey, version)`, so
+/// neither the URI nor the insertion signature depends on the contract body. It does move the
+/// genesis block hash and post-state hash, which was measured before the edit was made.
+///
+/// ⚠ **And contrary to what this comment previously claimed, the genesis suites do NOT exercise
+/// either idiom.** Measured 2026-07-29 with `--no-capture`: of the 22 `RhoSpec`-driven genesis
+/// specs, only `failing_result_collector_spec` collects any assertion at all — it is the only
+/// test resource that performs no registry lookup. `non_negative_number_spec` and
+/// `make_mint_spec` collect ZERO assertions and never report `has_finished`, and
+/// `RhoSpec::run_tests` iterates only the assertions it received, so an empty collection is a
+/// PASS. `test_fail_on_overflow` and `test_overflow_deposit` are written, and they never run.
+/// That is why the behavioural pin lives here, in a test that drives the reducer directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_wrap_detect_overflow_idiom_now_raises_and_its_total_replacement_does_not() {
     with_runtime("wrap-detect-idiom-", |mut runtime| async move {
@@ -611,6 +621,206 @@ async fn the_wrap_detect_overflow_idiom_now_raises_and_its_total_replacement_doe
                 .any(|p| p.exprs.iter().any(|e| e.expr_instance == Some(ExprInstance::GInt(42)))),
             "★ THE CONTROL: the total guard must not reject a sum that fits",
         );
+    })
+    .await
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE MECHANISM, and the genesis contract's guard shape
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Everything above this line runs through `evaluate_with_term`, which takes a soft checkpoint and
+// **reverts it whenever the evaluation reports an error** (`rho_runtime.rs:112-129`). That makes
+// "the channel is empty after the failure" an assertion about the ROLLBACK, not about the failing
+// reduction — it would hold whether or not the `else` branch had fired, so it is vacuous as a
+// fails-open probe. The two cells below therefore inject the term with `RhoRuntime::inj`, which
+// takes no checkpoint and reverts nothing, so what the store holds afterwards is what the
+// reduction actually left there.
+
+/// Normalize `term` and inject it with no soft checkpoint, so a failure leaves the tuplespace in
+/// whatever state the failing reduction produced.
+async fn inject(runtime: &RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
+    let par = rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(term)?;
+    runtime
+        .cost()
+        .set(rholang::rust::interpreter::accounting::costs::Cost::unsafe_max());
+    runtime
+        .inj(
+            par,
+            rholang::rust::interpreter::env::Env::new(),
+            crypto::rust::hash::blake2b512_random::Blake2b512Random::create_from_length(128),
+        )
+        .await
+}
+
+fn string_channel(name: &str) -> ExprInstance { ExprInstance::GString(name.to_string()) }
+
+async fn int_on(runtime: &RhoRuntimeImpl, channel: &str) -> Vec<i64> {
+    let mut found: Vec<i64> = channel_data(runtime, string_channel(channel))
+        .await
+        .iter()
+        .flat_map(|p| p.exprs.iter())
+        .filter_map(|e| match e.expr_instance {
+            Some(ExprInstance::GInt(n)) => Some(n),
+            _ => None,
+        })
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+async fn bools_on(runtime: &RhoRuntimeImpl, channel: &str) -> Vec<bool> {
+    let mut found: Vec<bool> = channel_data(runtime, string_channel(channel))
+        .await
+        .iter()
+        .flat_map(|p| p.exprs.iter())
+        .filter_map(|e| match e.expr_instance {
+            Some(ExprInstance::GBool(b)) => Some(b),
+            _ => None,
+        })
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+/// ★★ **THE MECHANISM.** An arithmetic raise inside an `if` CONDITION is LOUD. It does **not**
+/// silently select the `else` branch.
+///
+/// This is the cell that decides whether Rholang's `if` is fails-open or fails-closed on an
+/// undecidable condition, and it is the reason `NonNegativeNumber.rho`'s old `if (v + x >= v)`
+/// could not be left alone "because the genesis suite still passes".
+///
+/// The code path, named: `reduce.rs`'s [`eval_if`] evaluates the condition with
+/// `self.eval_expr(&condition, env)?` — the `?` PROPAGATES a `combine_plus` refusal straight out
+/// of `eval_if`, so no branch is ever selected. Only if the condition evaluates *successfully* to
+/// a non-boolean does control reach the `match extract_bool(..)` arms, and even there the `None`
+/// arm is `Err(InterpreterError::IfConditionTypeError { .. })` rather than a default branch. There
+/// is no arm of `eval_if` that treats a failure as `false`.
+///
+/// ⚠ Watched RED three ways: if `combine_plus` returns to `wrapping_add` there is no error and
+/// `expect_err` fails; if `eval_if` ever grows a fails-open arm, `@"wrapdetect"` holds `false` and
+/// the emptiness assertion fails; if the refusal comes from somewhere other than the addition,
+/// the message assertion fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_arithmetic_raise_in_an_if_condition_is_loud_and_selects_no_branch() {
+    with_runtime("if-condition-raise-", |runtime| async move {
+        // ★ THE NON-VACUITY FLOOR for the emptiness assertion at the end of this cell. An
+        // `else`-branch write IS observable by `bools_on` — demonstrated on a condition that is
+        // decidable and false — so "nothing arrived on `@\"wrapdetect\"`" below means the branch
+        // did not run, not that the probe cannot see branches running.
+        inject(
+            &runtime,
+            r#"if (1 > 2) { @"decidable"!(true) } else { @"decidable"!(false) }"#,
+        )
+        .await
+        .expect("a decidable condition reduces");
+        assert_eq!(
+            bools_on(&runtime, "decidable").await,
+            vec![false],
+            "★ FLOOR: a taken `else` branch must be visible to this probe, or the emptiness \
+             assertion below proves nothing",
+        );
+
+        let err = inject(
+            &runtime,
+            r#"
+            @"v"!(9223372036854775757) | @"x"!(9223372036854775757) |
+            for (@vv <- @"v"; @xx <- @"x") {
+                if (vv + xx >= vv) { @"wrapdetect"!(true) } else { @"wrapdetect"!(false) }
+            }
+            "#,
+        )
+        .await
+        .expect_err("★ checked `+` must refuse the overflowing sum in an `if` condition");
+
+        let text = format!("{err}");
+        assert!(
+            text.contains("Arithmetic overflow in addition"),
+            "★ the refusal must come from the ADDITION, naming its operands; got {text:?}",
+        );
+        assert!(
+            text.contains("9223372036854775757"),
+            "★ the refusal must pin the operands; got {text:?}",
+        );
+
+        // ★ THE FAILS-OPEN DISCRIMINATOR. If an unevaluable `if` condition selected the `else`
+        // branch, `false` would be sitting on `@"wrapdetect"` right now.
+        assert!(
+            bools_on(&runtime, "wrapdetect").await.is_empty(),
+            "★★ an error in an `if` CONDITION must select NO branch — Rholang's `if` is not \
+             allowed to read an arithmetic failure as `false`",
+        );
+    })
+    .await
+}
+
+/// ★★ **THE GENESIS CONTRACT'S GUARD, at the two values it exists to refuse.**
+///
+/// This reproduces the exact shape of `casper/src/main/resources/NonNegativeNumber.rho`'s `add` —
+/// a `for` that CONSUMES the stored balance, a guard, and two branches of which the `else` one
+/// must put the balance back — with the ruled total guard
+/// `if (x <= 9223372036854775807 - v)` substituted for the old wrap detect. The store is a quoted
+/// name rather than `@(*MergeableTag, *valueStore)` because the unforgeable pair is not reachable
+/// from a test term; the guard, the consume and the restore are the contract's, verbatim.
+///
+/// The two refused values are the ones the (vacuous) genesis suites nominate:
+///
+/// | source | `v` | `x` | verdict |
+/// |---|---|---|---|
+/// | `NonNegativeNumberTest.rho:115` `test_fail_on_overflow` | `9223372036854775757` | same | refuse |
+/// | `MakeMintTest.rho:190` `test_overflow_deposit` | `9223372036854775807` | `1` | refuse |
+///
+/// ⚠ Watched RED at the BOUNDARY, which is where an off-by-one in the rearrangement would hide:
+/// `v = i64::MAX - 1, x = 1` must be ACCEPTED (the sum is exactly `i64::MAX`) and `x = 2` must be
+/// refused. A guard written `x < MAX - v` passes every refusal case above and fails that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nonnegativenumber_add_refuses_and_restores_the_balance_and_is_exact_at_the_boundary() {
+    with_runtime("nnn-add-guard-", |runtime| async move {
+        // (store, v, x, expected_success, expected_balance_after)
+        let cases: [(&str, i64, i64, bool, i64); 5] = [
+            // `test_fail_on_overflow`: v = x = i64::MAX - 50.
+            ("a", 9223372036854775757, 9223372036854775757, false, 9223372036854775757),
+            // `test_overflow_deposit`: a full purse takes a deposit of 1.
+            ("b", 9223372036854775807, 1, false, 9223372036854775807),
+            // ★ THE BOUNDARY, accepted: the sum is exactly i64::MAX.
+            ("c", 9223372036854775806, 1, true, 9223372036854775807),
+            // ★ THE BOUNDARY, refused: one past.
+            ("d", 9223372036854775806, 2, false, 9223372036854775806),
+            // THE CONTROL: an ordinary sum still goes through.
+            ("e", 10, 32, true, 42),
+        ];
+
+        for (tag, v, x, expect_success, expect_balance) in cases {
+            let store = format!("store{tag}");
+            let success = format!("success{tag}");
+            let term = format!(
+                r#"
+                @"{store}"!({v}) |
+                for (@v <- @"{store}") {{
+                    if ({x} <= 9223372036854775807 - v) {{
+                        @"{store}"!(v + {x}) | @"{success}"!(true)
+                    }} else {{
+                        @"{store}"!(v) | @"{success}"!(false)
+                    }}
+                }}
+                "#
+            );
+            inject(&runtime, &term).await.unwrap_or_else(|err| {
+                panic!("★ the total guard must never raise — v={v}, x={x}: {err}")
+            });
+
+            assert_eq!(
+                bools_on(&runtime, &success).await,
+                vec![expect_success],
+                "★ v={v}, x={x}: `add` must report {expect_success}",
+            );
+            assert_eq!(
+                int_on(&runtime, &store).await,
+                vec![expect_balance],
+                "★ v={v}, x={x}: the balance must be {expect_balance} — the `else` arm's job is \
+                 to put the consumed balance BACK, and the `then` arm's is to store the sum",
+            );
+        }
     })
     .await
 }
