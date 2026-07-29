@@ -87,6 +87,21 @@ jobs:
               echo '[]' > "site/data/${f}"
             fi
           done
+          # Same rule as the soak publisher: once a series' history has
+          # entries, its summary and verdict were written alongside, so a 404
+          # on those is a lying fetch rather than genuine absence. Publishing
+          # anyway would empty that tab. This job only ever carries data
+          # forward, so it has nothing to gain by proceeding on doubt.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
+          done
           test -s site/data/latest-report.md \
             || echo 'No soak report yet — the first successful weekend soak publishes one.' \
               > site/data/latest-report.md
