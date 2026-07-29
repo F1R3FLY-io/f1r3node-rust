@@ -4,6 +4,18 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.26] - 2026-07-29
+
+### Bug Fixes
+
+- pin just installer release
+- clear inherited git env before cargo in pre-commit
+
+### Documentation
+
+- add per-branch CI and soak status badges
+
+
 ## [0.4.25] - 2026-07-29
 
 ### Bug Fixes
@@ -134,7 +146,11 @@ This changelog is automatically generated from conventional commits.
 
 ### Bug Fixes
 
-- pin just installer release
+- harden soak checkpoint publishing
+
+### Features
+
+- publish mid-run soak checkpoints
 
 
 ## [0.4.21] - 2026-07-16
