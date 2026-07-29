@@ -50,6 +50,13 @@ jobs:
       # the two are kept in separate files so the week-over-week regression
       # gate never compares a 22h daily against a 60h weekend baseline.
       kind: ${{ steps.resolve.outputs.kind }}
+      # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
+      # slots are skipped; see the resolve step for why there are five.
+      checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
+      checkpoint_2: ${{ steps.resolve.outputs.checkpoint_2 }}
+      checkpoint_3: ${{ steps.resolve.outputs.checkpoint_3 }}
+      checkpoint_4: ${{ steps.resolve.outputs.checkpoint_4 }}
+      checkpoint_5: ${{ steps.resolve.outputs.checkpoint_5 }}
     steps:
       - name: Resolve schedule
         id: resolve
@@ -70,6 +77,11 @@ jobs:
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            # A manual run has no cron slot, so it starts now. The checkpoint
+            # computation below needs a start instant either way, and without
+            # this the step dies on an unbound variable under `set -u` — a
+            # manual dispatch would fail the gate outright.
+            slot_epoch="$(date -u +%s)"
           else
             # GitHub delivers cron triggers minutes-to-hours late, so gate on
             # the cron's intended slot (most recent occurrence at or before
@@ -150,6 +162,59 @@ jobs:
             run_benchmarks=true
             kind=weekend
           fi
+
+          # Checkpoints: every 07:30 and 13:00 Pacific strictly inside the run.
+          # A soak publishes only when it ends, so without these a 22h nightly
+          # is invisible until the following afternoon and a 60h weekend is dark
+          # for two and a half days. The soak is run as consecutive segments
+          # ending on these instants, with a publish after each.
+          #
+          # Enumerated by Pacific calendar date rather than by adding 86400 to
+          # an epoch: a DST day is 23 or 25 hours long, so epoch arithmetic
+          # would drift the wall-clock time and, on the short day, could skip a
+          # date entirely. Interpreting "<date> 07:30" in the Pacific zone keeps
+          # each checkpoint at the intended local time year round.
+          #
+          # Five slots. A 60h Friday-evening weekend normally needs four (Sat
+          # and Sun, two each), but on the spring-forward weekend the clocks
+          # jump and 60h from Friday 19:30 lands at Monday 08:30 rather than
+          # 07:30 — putting a fifth checkpoint, the Monday-morning one this
+          # schedule exists for, strictly inside the run. A daily uses the
+          # first two and never crosses a transition, since those fall on
+          # Sundays and dailies run Mon–Thu. GitHub cannot generate a variable
+          # number of steps, so unused slots are emitted empty and skip.
+          end_epoch=$((slot_epoch + duration_seconds))
+          base_day="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%F)"
+          checkpoints=()
+          for d in 0 1 2 3; do
+            day="$(date -u -d "${base_day} +${d} days" +%F)"
+            for hm in 07:30 13:00; do
+              cp="$(TZ=America/Los_Angeles date -d "${day} ${hm}" +%s)"
+              # Strictly inside: a checkpoint on the final instant would leave a
+              # zero-length last segment that publishes the same data twice.
+              if [ "$cp" -gt "$slot_epoch" ] && [ "$cp" -lt "$end_epoch" ]; then
+                checkpoints+=("$cp")
+              fi
+            done
+          done
+          cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
+          [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
+          [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
+          [ "${#checkpoints[@]}" -ge 3 ] && cp3="${checkpoints[2]}"
+          [ "${#checkpoints[@]}" -ge 4 ] && cp4="${checkpoints[3]}"
+          [ "${#checkpoints[@]}" -ge 5 ] && cp5="${checkpoints[4]}"
+          # Never drop a checkpoint silently. If the schedule ever grows past
+          # five, the run still works — it just publishes less often than
+          # intended — and this says so instead of leaving it to be noticed.
+          if [ "${#checkpoints[@]}" -gt 5 ]; then
+            echo "::warning::${#checkpoints[@]} checkpoints computed but only 5 slots exist; the last $(( ${#checkpoints[@]} - 5 )) will not publish. Add slots in schedule_gate and matching soak segments."
+          fi
+          if [ "$should_run" = "true" ]; then
+            printf 'checkpoints (%s):\n' "${#checkpoints[@]}"
+            for cp in "${checkpoints[@]}"; do
+              printf '  %s Pacific\n' "$(TZ=America/Los_Angeles date -d "@${cp}" '+%a %F %H:%M')"
+            done
+          fi
           if [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
             echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
             {
@@ -174,6 +239,11 @@ jobs:
             echo "target_ref=$target_ref"
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
+            echo "checkpoint_1=$cp1"
+            echo "checkpoint_2=$cp2"
+            echo "checkpoint_3=$cp3"
+            echo "checkpoint_4=$cp4"
+            echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
 
   launch_runner:
