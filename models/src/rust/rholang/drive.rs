@@ -203,6 +203,113 @@
 //! | instance | `Node` | `Val` | `State` | stage |
 //! |---|---|---|---|---|
 //! | `rho_pure_eval::eval::EvalTraversal` | `EvNode<'t>` | `EvVal` | `()` | F-1 |
+//! | `sorter::sort_drive::SortTraversal` (crate-private) | `SortNode<'t>` | `ValItem` | `()` | F-2 |
+//!
+//! ## ★★ SER/DE: what this trait cannot host yet, and exactly what it needs
+//!
+//! [`crate::rust::rholang::wire_encode`] (the bincode encoder) and
+//! [`crate::rust::rholang::par_codec`] (the decoder) are the remaining members,
+//! and they are **not** hosted here. This section exists so that the next
+//! attempt starts from the measurements rather than rediscovering them; every
+//! number below was taken from the code or from a gate, not estimated.
+//!
+//! ### The structural difference: interleaved I/O
+//!
+//! A post-order fold's parent knows its children *before* any of them runs, so
+//! `descend` can push the whole region at once. A codec's parent does **not**:
+//! bytes sit *between* the children, so the next obligation is discovered only
+//! after the previous child's subtree is complete. Both machines are therefore
+//! **resumable coroutines**, and the phenomenon is visible as a count —
+//! `par_codec`'s `Machine::step` has **50** `self.ops.push` sites and **14**
+//! `self.repeat(` sites; `wire_encode`'s loop re-pushes whenever
+//! `resume != NO_RESUME`.
+//!
+//! ⚠ [`Traversal::combine`] is deliberately **not** handed the work stack —
+//! that is the type-level guarantee stage F-2 gained, replacing the sorter's
+//! `debug_assert_eq!(before, work.len(), "a Combine must not push work")`. So
+//! as specified, `combine` cannot express a resume at all.
+//!
+//! ### The extension that works, and why it costs nothing
+//!
+//! Add a third [`Outcome`] arm, `Tail(Node<'t>)`: *"I consumed my children;
+//! this descent produces my value in my place."* A resumable node then becomes
+//!
+//! ```text
+//!   Descend(node @ cursor c):  run bounded fields from c
+//!       program spent      ⇒  push one value                  (a leaf)
+//!       child at cursor c' ⇒  push [Combine(Resume{node, c'}), Descend(child)]
+//!   Combine(Resume{node, c'}): pop the child's value
+//!       program spent      ⇒  Outcome::Value(v)
+//!       more to come       ⇒  Outcome::Tail(node @ c')        (re-enter descend)
+//! ```
+//!
+//! Both invariants survive **unweakened**, which is the whole point — Invariant
+//! 2 is what makes the consensus-critical sorter's conversion trustworthy, and
+//! it may not be relaxed to admit a new member:
+//!
+//! * the suspension region `[Combine(Resume), Descend(child)]` scans (pop
+//!   order) `Descend` ⇒ `avail = 1`, `Resume` of arity 1 ⇒ `avail = 1`.
+//!   **Invariant 1 satisfied.**
+//! * a `Tail` consumes `arity` values, produces none, and pushes one `Descend`:
+//!   `Δ(V + D + C − A) = (−1) + (+1) + (−1) − (−1) = 0`.
+//!   **Invariant 2 preserved.**
+//!
+//! The counted repeat is the same shape: `Rep{kind, n}` descends as
+//! `[Combine(RepResume{kind, n−1}), Descend(kind.start())]` and the resume
+//! tails back into `Rep{kind, n−1}` — which is why `remaining` never has to be
+//! materialised as `n` separate ops.
+//!
+//! ### The four blockers, measured
+//!
+//! **1. The encoder's op is at its pinned ceiling with ZERO headroom.**
+//! `models/tests/wire_encode_space.rs` asserts `size_of::<Op>() <= 4 *
+//! size_of::<usize>()` and the measured value is **exactly 32 B**. The op stack
+//! grows at a measured **2.000 entries per level** (8,193 entries = 262,176 B at
+//! depth 4,096), so one extra word is +65 KB there. Splitting one four-arm enum
+//! into `Node` + `Kont` behind an outer [`Step`] discriminant cannot be *assumed*
+//! to re-pack into 32 B. ⇒ the conversion must be measured against that gate,
+//! and the gate must be watched RED on a deliberately widened op first.
+//!
+//! **2. `drive` owns its stacks, so the encoder's zero-allocation steady state
+//! is unreachable through it.** `wire_encode`'s `take_ops`/`give_ops` carry a
+//! **thread-local pooled allocation** across calls; the measured steady state is
+//! `0 allocations / 0 B` per encode for all five shapes in
+//! `the_steady_state_allocation_table` (the derived path costs 1 allocation
+//! each), and it holds even after an 18,800,104 B encode. Routing through
+//! [`drive`] as written re-introduces one malloc/free pair per `hash_produce`,
+//! turning a **stated acceptance criterion** into a regression. ⇒ `drive` needs
+//! a bring-your-own-stacks entry point (`drive_with(&mut work, &mut vals, …)`),
+//! with `drive` as the owning convenience wrapper over it. That is a genuine
+//! API addition and not a workaround.
+//!
+//! **3. The decoder has 18 per-type value stacks, not one.** `Machine` carries
+//! 23 `Vec` fields: one op stack, **18 typed value stacks**, and four
+//! side-frame stacks. Sibling order is preserved by `take_n` = `Vec::split_off`
+//! on the *typed* stack at **22** sites. Those stacks belong in
+//! [`Traversal::State`] and `Val` becomes `()`.
+//!
+//! **4. …and that makes Invariant 2 weaker for the decoder, which the docs must
+//! not hide.** With `Val = ()` the value stack degenerates to a ledger of child
+//! completions, so Invariant 2 asserts only that the suspension structure is a
+//! *chain* — a true statement, but it no longer cross-checks any arity against
+//! any pop, because a `*Build`'s child counts are read from the stream mid-node
+//! and parked in `ParFrame` / `ReceiveTail` / `NewFrame` rather than being a
+//! function of the `Kont`. The decoder's arity guard is and remains
+//! `take_n`'s length check returning `MachineInvariant`, plus
+//! `models/tests/par_codec_differential.rs` and the malformed-input corpus.
+//! ⇒ a decoder instance must not be described as getting the sorter's
+//! cross-check. It does not.
+//!
+//! ### Status
+//!
+//! Blockers 3 and 4 are *design consequences*, already resolved above. Blockers
+//! 1 and 2 are **measurements that gate the work**: each needs its own commit
+//! and its own RED-watched gate, and blocker 1 may not survive its measurement
+//! at all. Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
+//! by `par_codec_differential` (13/13), `wire_encode_differential` (13/13),
+//! `serializer_par_byte_goldens` (7/7), `wire_encode_space` (8/8) and the
+//! `bincode_ser` / `bincode_de` depth subjects in
+//! `rholang/tests/stack_depth_gate.rs`.
 //!
 //! ★ There is a structurally identical driver in the `mettail-rust` workspace
 //! (`rholang-runtime`). Two drivers, deliberately: `mettail-rust` depends
