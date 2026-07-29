@@ -10,7 +10,7 @@
 #     GITHUB_TOKEN is never written to .git/config where fork code could read it.
 #   - The ONLY secret-bearing job (launch_ephemeral_runners) checks out solely
 #     F1R3FLY-io/system-integration (trusted) and runs only its scripts. Fork
-#     code never executes in a job that has OCI_* / RELEASE_PAT in scope.
+#     code never executes in a job that has OCI or GitHub App credentials in scope.
 #   - Fork code runs only in build_docker_image / integration_tests / smoke_*,
 #     none of which reference secrets.
 name: Integration Pipeline (reusable)
@@ -33,14 +33,6 @@ on:
         type: boolean
         required: false
         default: false
-    secrets:
-      OCI_TENANCY_OCID: { required: true }
-      OCI_USER_OCID: { required: true }
-      OCI_REGION: { required: true }
-      OCI_FINGERPRINT: { required: true }
-      OCI_PRIVATE_KEY: { required: true }
-      RELEASE_PAT: { required: true }
-
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
@@ -213,6 +205,7 @@ jobs:
     name: Launch Ephemeral Runners
     needs: await_approval
     runs-on: ubuntu-latest
+    environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
     # the tenancy's daily instance-creation quota is shared, so two pipelines
     # launching at once both risk LimitExceeded. cancel-in-progress: false makes
@@ -229,8 +222,8 @@ jobs:
     concurrency:
       group: oci-ephemeral-launch
       cancel-in-progress: false
-    # Runner registration uses RELEASE_PAT (admin scope); the default GITHUB_TOKEN
-    # mints nothing here, so this job needs only read access for the checkout.
+    # Runner registration uses a short-lived GitHub App token; the default
+    # GITHUB_TOKEN cannot mint repository runner registration tokens.
     permissions:
       contents: read
     timeout-minutes: 10
@@ -284,14 +277,18 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch 2 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
-          # The default GITHUB_TOKEN can't mint runner registration tokens even
-          # with permissions: actions: write — that endpoint requires admin-on-
-          # repo scope. RELEASE_PAT is already provisioned with the repo scope
-          # (used by release.yml for tag creation) so reuse it here.
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Register ephemeral runners on the base repo (where the run executes).
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"

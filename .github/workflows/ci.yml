@@ -307,8 +307,8 @@ jobs:
   # cannot get secrets on a `pull_request` event, so they skip this job and are
   # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
   #
-  # Promotion PRs (head is a push-covered branch: dev/staging/master/trying)
-  # also skip: the push run on the identical commit already runs the identical
+  # Promotion PRs whose head is dev or master also skip: the push run on the
+  # identical commit already runs the identical
   # pipeline, so the PR-event copy would only double OCI VM creations against
   # the tenancy's daily limit. Required checks are commit-scoped — the push
   # run's aggregator results land on the same SHA and gate the PR; the
@@ -319,13 +319,17 @@ jobs:
     name: Heavy Pipeline
     needs: lint
     if: >-
-      github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref))
+      (github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref))
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
-    secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
@@ -334,15 +338,20 @@ jobs:
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
-  # Promotion PRs skip too, mirroring the pipeline job's dedupe condition.
+  # PRs from dev/master skip too, mirroring the pipeline job's dedupe condition.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
     if: >-
       always()
-      && (github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
+      && ((github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -373,9 +382,14 @@ jobs:
     needs: pipeline
     if: >-
       always()
-      && (github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
+      && ((github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -402,7 +416,7 @@ jobs:
           echo "All arm64 integration test slots succeeded"
 
   # Publish Docker image to Docker Hub + OCIR.
-  # Runs on tag pushes and on push to dev/master/staging/trying (with suffix).
+  # Runs on release tag pushes and on push to dev/master (with suffix).
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
@@ -415,11 +429,9 @@ jobs:
       - pipeline
     if: >-
       github.event_name == 'push' && (
-        startsWith(github.ref, 'refs/tags/') ||
+        startsWith(github.ref, 'refs/tags/v') ||
         github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/dev' ||
-        github.ref == 'refs/heads/staging' ||
-        github.ref == 'refs/heads/trying'
+        github.ref == 'refs/heads/dev'
       )
     runs-on: ubuntu-latest
     environment: ephemeral-launch
