@@ -1488,14 +1488,26 @@ enum AbsentChildOutcome {
     Matched,
 }
 
-/// Replace child slot 0 of a probe's target with **nothing**, the way the wire
-/// delivers it, and report what the production matcher does.
+/// The env var that puts a re-executed test binary into absent-child child mode.
+/// Its VALUE is the variant name whose disposition the child is to exercise.
+const ABSENT_CHILD_VARIANT: &str = "RHOLANG_ABSENT_CHILD_VARIANT";
+
+/// The name `libtest` knows the shape gate by, spelled once.
+const SHAPE_GATE_TEST: &str = "every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_match";
+
+/// The marker the child prints BEFORE touching the subject.
+const REACHED: &str = "ABSENT-CHILD reached_subject=true";
+
+/// Run one probe's absent-child descent IN THIS PROCESS.
 ///
 /// ⚠ The target is round-tripped through `prost` first, so what the matcher
 /// receives is a value that CAME OFF THE WIRE rather than one built in Rust.
-/// A hand-constructed `None` would prove the panic exists without proving
+/// A hand-constructed `None` would prove the fault exists without proving
 /// anything about what a decoder can hand over.
-fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
+///
+/// This is what the CHILD runs. It does not return when the matcher asserts —
+/// it dies, which is the whole point, and is why the caller is a separate process.
+fn run_absent_child_probe_in_process(probe: &Probe) -> Option<()> {
     let target_instance = strip_first_optional_child(probe.target.clone())
         .expect("the caller checked that slot 0 is a nested prost sub-message");
     let bytes = par_of_raw(target_instance).encode_to_vec();
@@ -1509,21 +1521,83 @@ fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
     });
     let pattern = par_of(probe.pattern.clone());
 
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut context = SpatialMatcherContext::new();
-        context.spatial_match(target, pattern)
-    }));
-    match outcome {
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "<non-string panic>".to_string());
+    println!("{REACHED} variant={}", probe.name());
+    let mut context = SpatialMatcherContext::new();
+    context.spatial_match(target, pattern)
+}
+
+/// Replace child slot 0 of a probe's target with **nothing**, the way the wire
+/// delivers it, and report what the production matcher does — measured in a CHILD
+/// PROCESS.
+///
+/// ⚠ This used to be `std::panic::catch_unwind` around the descent, classifying
+/// `Err` as [`AbsentChildOutcome::Asserted`]. That is a test expecting a panic, and it
+/// is unsound in this tree twice over: `rholang` is compiled as a path dependency of
+/// the mettail workspace, whose `dev`/`test` profile uses the CRANELIFT backend, where
+/// `catch_unwind` installs no catch pads and the process aborts instead; and the
+/// sibling FFI measurement next door
+/// (`rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs`) already showed
+/// that the same fault at an `extern "C"` frame is a SIGABRT `catch_unwind` cannot see
+/// at all. One mechanism now covers both: observe the process.
+///
+/// What it distinguishes, before and after: STRICTLY MORE. `Asserted` used to mean
+/// "something unwound"; it now additionally requires the child to have REACHED the
+/// descent (so a probe that died while building its own fixture can no longer be
+/// counted as a variant that asserts — a false positive this gate's `asserted.len()
+/// >= 16` floor would have absorbed silently), and it captures the fault text from the
+/// child's real stderr rather than from a downcast payload.
+fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let output = std::process::Command::new(exe)
+        .env(ABSENT_CHILD_VARIANT, probe.name())
+        .args([
+            SHAPE_GATE_TEST,
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("the child test process spawns");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+
+    // ★ ANTI-VACUITY, per probe: the child must have got as far as the descent.
+    assert!(
+        text.contains(&format!("{REACHED} variant={}", probe.name())),
+        "★ the child for `{}` never reached the descent, so its disposition is not \
+         attributable to the absent child at all (a fixture fault, a filter that matched \
+         nothing, or a decode refusal).\n--- child output ---\n{text}",
+        probe.name()
+    );
+
+    match text
+        .lines()
+        .find_map(|l| l.strip_prefix("ABSENT-CHILD answered="))
+    {
+        Some("none") => (AbsentChildOutcome::NoMatch, String::new()),
+        Some("some") => (AbsentChildOutcome::Matched, String::new()),
+        Some(other) => panic!("the child for `{}` printed an unknown answer `{other}`", probe.name()),
+        // No answer line ⇒ the child did not return from the descent.
+        None => {
+            assert!(
+                !output.status.success(),
+                "★ the child for `{}` exited cleanly WITHOUT printing an answer. It neither \
+                 asserted nor answered, so this gate cannot classify it.\n\
+                 --- child output ---\n{text}",
+                probe.name()
+            );
+            // The panic hook writes `thread '…' panicked at <file>:<line>:\n<message>`;
+            // take the line after the `panicked at` line, which is the message.
+            let message = text
+                .lines()
+                .skip_while(|l| !l.contains("panicked at"))
+                .nth(1)
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .unwrap_or("<no panic message on the child's stderr>")
+                .to_string();
             (AbsentChildOutcome::Asserted, message)
         }
-        Ok(None) => (AbsentChildOutcome::NoMatch, String::new()),
-        Ok(Some(())) => (AbsentChildOutcome::Matched, String::new()),
     }
 }
 
@@ -1537,6 +1611,23 @@ fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
 /// variant the generated program says has an `Option<Message>` slot.
 #[test]
 fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_match() {
+    // ── child mode: run ONE probe's descent and report, or die trying ────────
+    if let Ok(variant) = std::env::var(ABSENT_CHILD_VARIANT) {
+        let probe = child_bearing_probes()
+            .into_iter()
+            .find(|p| p.name() == variant)
+            .unwrap_or_else(|| {
+                panic!("no child-bearing probe named `{variant}` — the parent and the child \
+                        disagree about the variant table")
+            });
+        match run_absent_child_probe_in_process(&probe) {
+            None => println!("ABSENT-CHILD answered=none"),
+            Some(()) => println!("ABSENT-CHILD answered=some"),
+        }
+        return;
+    }
+
+    // ── parent mode ──────────────────────────────────────────────────────────
     let mut with_optional_slots: Vec<&'static str> = Vec::new();
     let mut asserted: Vec<(&'static str, String)> = Vec::new();
     let mut silent: Vec<(&'static str, AbsentChildOutcome)> = Vec::new();

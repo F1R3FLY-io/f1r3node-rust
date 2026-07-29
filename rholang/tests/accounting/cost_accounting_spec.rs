@@ -7,15 +7,17 @@ use std::thread;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::signatures::signed::{Cosigned, CosignedError};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::casper::protocol::casper_message::DeployData;
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 use rand::Rng;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
-    BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, Sig,
-    SignatureChannel, SignedProcess, SourcePath, Token, MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES,
-    MAX_COST_TRACE_SOURCE_PATH_COMPONENTS,
+    BillableKind, BillableTokenEvent, CostReservationBatch, EmptySignatureList, RedexId,
+    RuntimeBudget, Sig, SignatureChannel, SignedProcess, SourcePath, Token,
+    MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES, MAX_COST_TRACE_SOURCE_PATH_COMPONENTS,
 };
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -1370,12 +1372,80 @@ fn set_deploy_signatures_deploy_id_depends_on_order() {
     assert_eq!(channel_ab, channel_ba);
 }
 
+/// A compound install with NO signatures is refused, and the refusal is unreachable
+/// from production input.
+///
+/// ⚠ Formerly `#[should_panic(expected = "set_deploy_signatures requires at least one
+/// signature")]`. The refusal is now a value ([`RuntimeBudget::try_set_deploy_signatures`])
+/// and the panicking installer is a thin wrapper over it, so nothing has to panic to
+/// observe it — `rholang` is compiled as a path dependency of the mettail workspace,
+/// whose `dev`/`test` profile uses cranelift, under which a deliberate panic does not
+/// unwind reliably and aborts the process instead of being caught.
+///
+/// What it distinguishes, before and after: STRICTLY MORE.
+///
+/// | claim | before | after |
+/// |---|---|---|
+/// | the empty list is refused | substring of a panic message | the exact `EmptySignatureList` value, from BOTH installers |
+/// | a ONE-element list is accepted | not checked — the test ended at the panic | checked; the domain boundary is now pinned on both sides |
+/// | the refusal is unreachable in production | not stated | asserted at the upstream that makes it so |
 #[test]
-#[should_panic(expected = "set_deploy_signatures requires at least one signature")]
-fn set_deploy_signatures_empty_panics() {
-    let budget = RuntimeBudget::new(Cost::create(10, "empty"));
+fn set_deploy_signatures_refuses_an_empty_signature_list() {
     let empty: &[&[u8]] = &[];
-    budget.set_deploy_signatures(empty);
+
+    // Both installers refuse — `set_deploy_signatures_funded` is the one production
+    // calls, so checking only the legacy wrapper would leave the live path unguarded.
+    let budget = RuntimeBudget::new(Cost::create(10, "empty"));
+    assert_eq!(
+        budget.try_set_deploy_signatures(empty),
+        Err(EmptySignatureList)
+    );
+    assert_eq!(
+        budget.try_set_deploy_signatures_funded(empty, Sig::Ground(vec![0xaa])),
+        Err(EmptySignatureList)
+    );
+    assert_eq!(
+        EmptySignatureList.to_string(),
+        "set_deploy_signatures requires at least one signature",
+        "the diagnostic the panicking wrapper raises must not drift"
+    );
+
+    // ★ ANTI-VACUITY / the other side of the boundary: ONE signature is accepted, and
+    // it really installs (a deploy_id is derived, a signature is reflected). Without
+    // this cell an installer that refused everything would satisfy the assertions
+    // above.
+    let installed = RuntimeBudget::new(Cost::create(10, "one"));
+    let one: &[&[u8]] = &[b"cosigner-a"];
+    installed
+        .try_set_deploy_signatures(one)
+        .expect("one signature is a well-formed compound install");
+    assert_ne!(
+        installed.deploy_id(),
+        [0u8; 32],
+        "the accepted install must actually derive a deploy_id"
+    );
+
+    // ★ THE UNREACHABILITY PROOF. Production reaches
+    // `set_deploy_signatures_funded` only from `RhoRuntime::evaluate_cosigned`, whose
+    // `signatures` are `Cosigned::signers()`. `Cosigned`'s `signers` field is private
+    // and BOTH constructors refuse an empty list, so no `Cosigned` with zero signers
+    // can be built and the empty slice cannot arrive. Asserted here rather than
+    // asserted in prose, so a constructor that stopped refusing would fail THIS test
+    // — the one that depends on the guarantee — and not only a test in `crypto`.
+    let deploy = DeployData {
+        term: "Nil".to_string(),
+        time_stamp: 0,
+        valid_after_block_number: 0,
+        shard_id: "root".to_string(),
+        expiration_timestamp: None,
+    };
+    let empty_envelope = Cosigned::from_signed_data(deploy, Vec::new());
+    assert!(
+        matches!(empty_envelope, Err(CosignedError::EmptySignerList)),
+        "a Cosigned envelope with no signers must be unconstructible, or an empty \
+         signature slice becomes reachable at set_deploy_signatures_funded: \
+         {empty_envelope:?}"
+    );
 }
 
 // ─── Phase 2: Sig::Threshold M-of-N quorum primitive ───

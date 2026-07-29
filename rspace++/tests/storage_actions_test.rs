@@ -1848,30 +1848,138 @@ async fn an_install_should_not_allow_installing_after_a_produce_operation() {
     assert!(install_attempt.is_err())
 }
 
-#[tokio::test]
-#[should_panic(expected = "RUST ERROR: channels.length must equal patterns.length")]
-async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
-    let rspace = create_rspace().await;
-    let r1 = rspace
-        .consume(
-            vec!["ch1".to_string(), "ch2".to_string()],
-            vec![Pattern::Wildcard],
-            StringsCaptor::new(),
-            false,
-            BTreeSet::default(),
-        )
-        .await;
-    assert!(r1.unwrap().is_none());
+/// The env var that puts a re-executed test binary into arity-mismatch child mode.
+const CONSUME_ARITY_CHILD: &str = "RSPACE_CONSUME_ARITY_MISMATCH_CHILD";
 
-    let insert_actions: Vec<InsertAction<_, _, _, _>> =
-        filter_enum_variants(rspace.get_store().changes(), |e| {
-            if let HotStoreAction::Insert(i) = e {
-                Some(i)
-            } else {
-                None
-            }
-        });
-    assert!(insert_actions.is_empty());
+/// The name `libtest` knows this test by, spelled once.
+const CONSUME_ARITY_TEST: &str = "consuming_with_different_pattern_and_channel_lengths_should_error";
+
+/// ★ `consume` with `|channels| != |patterns|` KILLS THE PROCESS, and the store is
+/// left untouched.
+///
+/// ⚠ Formerly `#[should_panic(expected = "RUST ERROR: channels.length must equal
+/// patterns.length")]`. Two things are wrong with that form here:
+///
+/// 1. **It expects a panic.** `rspace_plus_plus` is compiled as a path dependency of
+///    the mettail workspace, whose `dev`/`test` profile uses the cranelift backend;
+///    a deliberate panic there does not unwind reliably.
+/// 2. **It hid the rest of its own body.** Everything after the `consume` call — the
+///    `is_none()` check and the "no insert actions were recorded" check, which is what
+///    the test's NAME claims — was dead. The panic fired first, `#[should_panic]`
+///    accepted it, and those assertions never ran. The test proved strictly less than
+///    it appeared to.
+///
+/// Measured out-of-process instead, on the pattern the sibling FFI probe established
+/// (`rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs`). What it
+/// distinguishes, before and after: STRICTLY MORE — the death is still required and
+/// its message still pinned, AND the store-effect assertions that were dead code are
+/// now live, in a child that runs the SAME call the parent describes.
+///
+/// ⚠ NOT FIXED HERE, deliberately: `consume` already returns
+/// `Result<_, RSpaceError>`, so the principled repair is for the arity mismatch to be
+/// an `Err` rather than a process abort — and the same `panic!` has three siblings
+/// (`RSpace::locked_install_internal`, and two in `ReplaySpace`). Making that change
+/// converts "every node dies" into "this deploy fails", which is consensus-visible
+/// behaviour and not a test author's call. Recorded here so the disposition is not
+/// re-lost.
+#[tokio::test]
+async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
+    if std::env::var(CONSUME_ARITY_CHILD).is_ok() {
+        // ── child ────────────────────────────────────────────────────────────
+        let rspace = create_rspace().await;
+
+        // The CONTROL runs first, in the same process: a well-formed consume on the
+        // same rspace must return. If the child dies here instead, the parent's
+        // assertion below says so rather than reporting a bare "wrong exit status".
+        let control = rspace
+            .consume(
+                vec!["ch0".to_string()],
+                vec![Pattern::Wildcard],
+                StringsCaptor::new(),
+                false,
+                BTreeSet::default(),
+            )
+            .await;
+        println!(
+            "CHILD_CONTROL_RETURNED={} matched={}",
+            control.is_ok(),
+            control.map(|r| r.is_some()).unwrap_or(false)
+        );
+
+        // ★ THE SUBJECT: two channels, one pattern.
+        let mismatched = rspace
+            .consume(
+                vec!["ch1".to_string(), "ch2".to_string()],
+                vec![Pattern::Wildcard],
+                StringsCaptor::new(),
+                false,
+                BTreeSet::default(),
+            )
+            .await;
+
+        // Only reachable if the arity guard stopped being fatal. Report what it
+        // answered AND what it did to the store, which is what the parent needs in
+        // order to re-derive.
+        let insert_actions: Vec<InsertAction<_, _, _, _>> =
+            filter_enum_variants(rspace.get_store().changes(), |e| {
+                if let HotStoreAction::Insert(i) = e {
+                    Some(i)
+                } else {
+                    None
+                }
+            });
+        println!(
+            "CHILD_SURVIVED_MISMATCH=true ok={} none={} inserts={}",
+            mismatched.is_ok(),
+            mismatched.map(|r| r.is_none()).unwrap_or(false),
+            insert_actions.len()
+        );
+        return;
+    }
+
+    // ── parent ───────────────────────────────────────────────────────────────
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let output = std::process::Command::new(exe)
+        .env(CONSUME_ARITY_CHILD, "1")
+        .args([
+            CONSUME_ARITY_TEST,
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("the child test process spawns");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // ★ ANTI-VACUITY: the child's own control must have returned, or the child died
+    // for an unrelated reason and this measures nothing.
+    assert!(
+        stdout.contains("CHILD_CONTROL_RETURNED=true"),
+        "the child never got past its own well-formed consume, so the arity mismatch \
+         is not what killed it.\n--- child stdout ---\n{stdout}\n--- child stderr \
+         ---\n{stderr}"
+    );
+
+    assert!(
+        !stdout.contains("CHILD_SURVIVED_MISMATCH=true"),
+        "★ `consume` RETURNED on |channels| != |patterns|. That is the better \
+         behaviour, but it means this guard no longer measures what it claims and the \
+         `panic!` in `RSpace::consume` (plus its three siblings in \
+         `locked_install_internal` and `ReplaySpace`) must be re-derived along with \
+         the store-effect expectations.\n--- child stdout ---\n{stdout}"
+    );
+
+    assert!(
+        !output.status.success(),
+        "the child exited cleanly; the arity guard is no longer fatal.\n\
+         --- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}"
+    );
+
+    assert!(
+        stderr.contains("RUST ERROR: channels.length must equal patterns.length"),
+        "the child died, but not at the arity guard.\n--- child stderr ---\n{stderr}"
+    );
 }
 
 #[tokio::test]

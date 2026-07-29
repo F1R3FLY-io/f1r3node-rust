@@ -49,11 +49,32 @@ pub struct FlumeLimitedBuffer<T> {
 
 impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
     /// Create a new FlumeLimitedBuffer with the specified buffer size
+    ///
+    /// # Panics
+    ///
+    /// If `buffer_size` is zero. [`try_drop_new`] is the same constructor reporting
+    /// that as a value.
+    ///
+    /// [`try_drop_new`]: FlumeLimitedBuffer::try_drop_new
     pub fn drop_new(buffer_size: usize) -> Self {
-        assert!(
-            buffer_size > 0,
-            "bufferSize must be a strictly positive number"
-        );
+        match Self::try_drop_new(buffer_size) {
+            Some(buffer) => buffer,
+            None => panic!("bufferSize must be a strictly positive number"),
+        }
+    }
+
+    /// [`drop_new`](FlumeLimitedBuffer::drop_new), returning `None` for a
+    /// non-positive buffer size rather than panicking.
+    ///
+    /// A zero-capacity buffer is not a degenerate buffer, it is a different object:
+    /// `flume::bounded(0)` is a RENDEZVOUS channel, on which `try_send` never
+    /// succeeds without a waiting receiver, and `broadcast::channel(0)` panics inside
+    /// tokio. A drop-on-overflow buffer that can never accept a message would silently
+    /// discard everything the transport receives, so zero is refused at construction.
+    pub fn try_drop_new(buffer_size: usize) -> Option<Self> {
+        if buffer_size == 0 {
+            return None;
+        }
 
         let (flume_tx, flume_rx) = flume::bounded(buffer_size);
 
@@ -101,13 +122,13 @@ impl<T: Clone + Send + 'static> FlumeLimitedBuffer<T> {
             })
         };
 
-        Self {
+        Some(Self {
             sender: flume_tx,
             broadcast_tx,
             buffer_size,
             complete,
             _pump_handle: Arc::new(pump_handle),
-        }
+        })
     }
 
     /// Get the buffer size
@@ -304,13 +325,29 @@ mod tests {
         assert_eq!(subscription.next().await, None);
     }
 
-    #[test]
-    fn test_buffer_size_validation() {
-        // Should panic with zero buffer size
-        std::panic::catch_unwind(|| {
-            FlumeLimitedBuffer::<i32>::drop_new(0);
-        })
-        .expect_err("Should panic with zero buffer size");
+    /// A zero buffer size is refused; every positive one is accepted.
+    ///
+    /// ⚠ Formerly `catch_unwind(|| drop_new(0)).expect_err(…)`. That asserted a panic,
+    /// which this workspace must not do — `comm` is reachable as a path dependency of
+    /// the mettail workspace, whose `dev`/`test` profile uses the cranelift backend,
+    /// where `catch_unwind` intercepts nothing and the process aborts instead.
+    ///
+    /// What it distinguishes, before and after: STRICTLY MORE. Before: "constructing
+    /// with 0 panics". Now: 0 is refused, 1 — the smallest legal size, where an
+    /// off-by-one in the guard would show — is accepted and reports its own size back,
+    /// so a guard rewritten as `buffer_size > 1` fails here instead of passing.
+    #[tokio::test]
+    async fn test_buffer_size_validation() {
+        assert!(
+            FlumeLimitedBuffer::<i32>::try_drop_new(0).is_none(),
+            "a zero-capacity drop buffer would discard every message and must be refused"
+        );
+
+        // ★ ANTI-VACUITY: the boundary is at 0, not somewhere above it.
+        let smallest = FlumeLimitedBuffer::<i32>::try_drop_new(1)
+            .expect("1 is the smallest legal buffer size and must be accepted");
+        assert_eq!(smallest.buffer_size(), 1);
+        assert!(smallest.is_active(), "the accepted buffer must be usable");
     }
 
     #[tokio::test]

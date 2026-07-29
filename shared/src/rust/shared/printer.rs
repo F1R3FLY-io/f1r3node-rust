@@ -227,9 +227,17 @@ mod tests {
                 "flooring {index} into {PRECOMPOSED:?}"
             );
         }
+        // ⚠ Formerly `catch_unwind(|| PRECOMPOSED[..4].to_string()).is_err()`. The
+        // property is `4` not being a scalar boundary — which is EXACTLY what makes
+        // `&PRECOMPOSED[..4]` panic, and is decidable without provoking one.
+        // Strictly MORE discriminating: `.is_err()` was also satisfied by a panic
+        // from anywhere else inside the closure (an allocation failure in
+        // `to_string`, say), whereas `is_char_boundary` answers the question the row
+        // is about and nothing else.
         assert!(
-            std::panic::catch_unwind(|| PRECOMPOSED[..4].to_string()).is_err(),
-            "`&\"abcé\"[..4]` did not panic, so this table is not exercising the defect"
+            !PRECOMPOSED.is_char_boundary(4),
+            "byte 4 of `\"abcé\"` IS a scalar boundary, so `&…[..4]` would not have \
+             panicked and this table is not exercising the defect"
         );
 
         // ── decomposed: `e` + U+0301, three bytes for the pair, gap at 5 ──
@@ -252,9 +260,13 @@ mod tests {
             );
         }
         assert!(
-            std::panic::catch_unwind(|| DECOMPOSED[..5].to_string()).is_err(),
-            "`&\"abce\\u{{301}}\"[..5]` did not panic, so this table is not exercising the defect"
+            !DECOMPOSED.is_char_boundary(5),
+            "byte 5 of `\"abce\\u{{301}}\"` IS a scalar boundary, so `&…[..5]` would not \
+             have panicked and this table is not exercising the defect"
         );
+        // …and the neighbours ARE boundaries, so the check above is discriminating
+        // rather than a predicate that answers `false` everywhere.
+        assert!(DECOMPOSED.is_char_boundary(4) && DECOMPOSED.is_char_boundary(6));
 
         // Out of range is NOT flooring's business and must stay a panic.
         assert_eq!(
@@ -268,6 +280,14 @@ mod tests {
     /// process-global operator budget and would otherwise race every other test
     /// in this binary; [`the_split_holds_across_operator_budgets`] re-execs it
     /// once per budget with the variable set.
+    ///
+    /// ⚠ This child runs only the probes that must **survive**. The short probe —
+    /// the one whose panic is load-bearing — moved to [`short_probe_child`], because
+    /// observing it here required `catch_unwind`, i.e. expecting a panic. Every
+    /// `catch_unwind` below was replaced by a direct call: if one of these DOES panic
+    /// the child dies, and the parent's `status.success()` + `1 passed` assertions
+    /// report it with the child's own stderr attached — a louder and more specific
+    /// signal than the boolean it used to fold the panic into.
     #[test]
     #[ignore = "driven by the_split_holds_across_operator_budgets in a child process"]
     fn audience_probe_child() {
@@ -275,15 +295,6 @@ mod tests {
             .expect("the child is run with the budget set")
             .parse()
             .expect("the budget is an integer");
-
-        // Shorter than every swept budget → the operator cap must still panic.
-        let short = "ab";
-        assert!(
-            short.len() < budget,
-            "the short probe must be under the budget"
-        );
-        let short_panicked =
-            std::panic::catch_unwind(|| Printer::cap(Audience::Operator, short)).is_err();
 
         // Longer than the budget AND multi-byte AT THE CUT → must NOT panic.
         //
@@ -303,23 +314,66 @@ mod tests {
             "ANTI-VACUITY: byte {budget} of the multi-byte probe IS a char boundary, so this \
              probe cannot decide whether the char-boundary panic was removed"
         );
-        let long_panicked =
-            std::panic::catch_unwind(|| Printer::cap(Audience::Operator, &multibyte)).is_err();
+        // Reaching the next line at all IS `long_panicked=false`.
+        let _long = Printer::cap(Audience::Operator, &multibyte);
+        let long_panicked = false;
 
         // THE SUBJECT OF THE SPLIT: one fixed probe, rendered for each audience.
         // The parent compares these across budgets.
         let subject = "0123456789".repeat(8); // 80 bytes: over every budget, under 1 KiB
-        let operator = std::panic::catch_unwind(|| Printer::cap(Audience::Operator, &subject))
-            .expect("the subject is longer than every swept budget, so the operator cap is total");
-        let consensus = std::panic::catch_unwind(|| Printer::cap(Audience::Consensus, &subject))
-            .expect("the consensus cap is total");
+        // The subject is longer than every swept budget, so the operator cap is
+        // total on it; the consensus cap is total on everything.
+        let operator = Printer::cap(Audience::Operator, &subject);
+        let consensus = Printer::cap(Audience::Consensus, &subject);
 
         println!(
-            "CAP-AUDIENCE budget={budget} short_panicked={short_panicked} \
-             long_panicked={long_panicked} operator_hex={} consensus_hex={}",
+            "CAP-AUDIENCE budget={budget} long_panicked={long_panicked} \
+             operator_hex={} consensus_hex={}",
             hex::encode(operator.as_bytes()),
             hex::encode(consensus.as_bytes())
         );
+    }
+
+    /// The half of the sweep that must **die**: the operator cap on a string
+    /// SHORTER than the budget.
+    ///
+    /// That panic is load-bearing — `pretty_printer::the_capping_call_sites_are_reproduced`
+    /// locates the printer's capping call sites by panic disposition, and a `min`-shaped
+    /// repair would make every probe succeed and the differential locate nothing. See
+    /// [`Printer::cap`]'s documentation.
+    ///
+    /// ⚠ It used to be observed by `catch_unwind` inside [`audience_probe_child`],
+    /// folded into a `short_panicked=` boolean. That is a test expecting a panic, and
+    /// `catch_unwind` is not a reliable way to intercept one — this crate is reachable
+    /// as a path dependency of the mettail workspace, whose `dev`/`test` profile uses
+    /// the cranelift backend, which emits no catch pads. The panic is now observed the
+    /// only way an abort can be: from OUTSIDE the process.
+    ///
+    /// This child is expected to FAIL. Its parent, [`the_split_holds_across_operator_budgets`],
+    /// asserts it did — and that it got far enough to be failing for the right reason.
+    #[test]
+    #[ignore = "driven by the_split_holds_across_operator_budgets in a child process"]
+    fn short_probe_child() {
+        let budget: usize = std::env::var(VAR)
+            .expect("the child is run with the budget set")
+            .parse()
+            .expect("the budget is an integer");
+
+        // Shorter than every swept budget → the operator cap must still panic.
+        let short = "ab";
+        assert!(
+            short.len() < budget,
+            "the short probe must be under the budget"
+        );
+        // ★ ANTI-VACUITY, printed BEFORE the subject: the parent requires this line,
+        // so a child that died on startup or on the assertion above cannot be
+        // mistaken for one that died at the cap.
+        println!("SHORT-PROBE budget={budget} reached_subject=true");
+
+        let rendered = Printer::cap(Audience::Operator, short);
+
+        // Only reachable if the length panic is gone.
+        println!("SHORT-PROBE survived=true rendered={rendered:?}");
     }
 
     /// ★ THE UNIT-SCALE STATEMENT OF THE SPLIT, swept over three operator
@@ -356,6 +410,7 @@ mod tests {
             .map(|(_, rest)| rest)
             .expect("module_path! is crate-qualified");
         let name = format!("{module}::audience_probe_child");
+        let short_name = format!("{module}::short_probe_child");
         let exe = std::env::current_exe().expect("current_exe");
 
         let mut consensus_renders: Vec<(usize, String)> = Vec::with_capacity(BUDGETS.len());
@@ -383,14 +438,41 @@ mod tests {
                 .find(|l| l.starts_with("CAP-AUDIENCE"))
                 .unwrap_or_else(|| panic!("the child printed no CAP-AUDIENCE line:\n{text}"));
 
-            // ── claim 2 ──
+            // ── claim 2, measured OUT OF PROCESS ──
+            // The short probe's panic cannot be folded into a boolean without
+            // expecting a panic, so it runs in its own child, which is required to
+            // FAIL — and to have got as far as the subject before doing so.
+            let short = std::process::Command::new(&exe)
+                .args(["--exact", &short_name, "--nocapture", "--ignored"])
+                .env(VAR, budget.to_string())
+                .output()
+                .expect("failed to re-exec the short probe child");
+            let short_text = String::from_utf8_lossy(&short.stdout).into_owned()
+                + &String::from_utf8_lossy(&short.stderr);
             assert!(
-                line.contains("short_panicked=true"),
+                short_text.contains(&format!("SHORT-PROBE budget={budget} reached_subject=true")),
+                "the short probe child never reached the cap at {VAR}={budget} — the filter \
+                 `{short_name}` matched nothing, or it died earlier, so claim 2 measured \
+                 NOTHING:\n{short_text}"
+            );
+            assert!(
+                !short_text.contains("SHORT-PROBE survived=true"),
                 "★ THE LOAD-BEARING PANIC IS GONE at {VAR}={budget}. The operator cap no longer \
                  panics when the budget exceeds the string, so \
                  `the_capping_call_sites_are_reproduced` can no longer locate the printer's \
                  capping call sites by panic disposition, and a `min`-shaped repair would pass \
-                 unnoticed:\n{line}"
+                 unnoticed:\n{short_text}"
+            );
+            assert!(
+                !short.status.success(),
+                "the short probe child exited cleanly at {VAR}={budget}; the operator cap's \
+                 length panic is gone:\n{short_text}"
+            );
+            assert!(
+                short_text.contains("byte index") || short_text.contains("out of range"),
+                "the short probe child failed at {VAR}={budget}, but not at a string-slice \
+                 range panic — so claim 2 is attributing an unrelated failure to the operator \
+                 cap:\n{short_text}"
             );
             // ── claim 3 ──
             assert!(

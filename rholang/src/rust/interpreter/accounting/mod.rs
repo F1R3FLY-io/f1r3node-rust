@@ -59,6 +59,33 @@ pub const MAX_COST_TRACE_EVENTS: u64 = 1_048_576;
 pub const MAX_COST_TRACE_PRIMITIVE_DESCRIPTOR_BYTES: usize = 512;
 pub const MAX_COST_TRACE_SOURCE_PATH_COMPONENTS: usize = 1024;
 
+/// A compound deploy was installed with NO signatures.
+///
+/// A compound envelope's `deploy_id` is `Blake2b256` over the concatenation of the
+/// per-signature hashes, and its funding signature is an `And`-fold over the same
+/// list. With an empty list the `deploy_id` degenerates to the hash of the bare
+/// domain separator — one fixed value shared by every signature-less deploy — and the
+/// `And`-fold has no leaves, so there is no supply pool `Σ⟦s⟧` to draw fuel from.
+/// Neither has a defensible meaning, so the install is refused rather than performed.
+///
+/// ★ Not reachable from any production input; see
+/// [`RuntimeBudget::set_deploy_signatures_funded`] for the upstream that makes it so.
+/// It is a value rather than a bare panic so that fact can be *tested* — this crate is
+/// also compiled as a path dependency of the mettail workspace, whose `dev`/`test`
+/// profile uses the cranelift backend, under which a deliberate panic does not unwind
+/// reliably and aborts the process instead of being observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptySignatureList;
+
+impl std::fmt::Display for EmptySignatureList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // ⚠ Byte-identical to the message the `assert!` this replaced carried.
+        f.write_str("set_deploy_signatures requires at least one signature")
+    }
+}
+
+impl std::error::Error for EmptySignatureList {}
+
 #[derive(Clone)]
 pub struct RuntimeBudget {
     initial_tokens: Arc<AtomicI64>,
@@ -1056,7 +1083,30 @@ impl RuntimeBudget {
     /// [`set_deploy_signature`] (different `deploy_id` due to different domain
     /// separator), but operationally equivalent in terms of the resulting
     /// `Sig::Quote` value and `SignatureChannel` reflection.
+    /// # Panics
+    ///
+    /// If `signatures` is empty. [`try_set_deploy_signatures`] is the same install
+    /// reporting that as a value.
+    ///
+    /// [`try_set_deploy_signatures`]: RuntimeBudget::try_set_deploy_signatures
     pub fn set_deploy_signatures(&self, signatures: &[&[u8]]) {
+        if let Err(refusal) = self.try_set_deploy_signatures(signatures) {
+            panic!("{}", refusal);
+        }
+    }
+
+    /// [`set_deploy_signatures`](RuntimeBudget::set_deploy_signatures), returning the
+    /// empty-list refusal rather than raising it.
+    ///
+    /// # Errors
+    ///
+    /// [`EmptySignatureList`] iff `signatures` is empty. Guarded HERE, before the
+    /// `envelope_sig_compound` argument is evaluated, so the diagnostic is this one
+    /// and not the inner `fold_compound_sig` expect.
+    pub fn try_set_deploy_signatures(
+        &self,
+        signatures: &[&[u8]],
+    ) -> Result<(), EmptySignatureList> {
         // Legacy compound install. The FUNDING signature is the wire-sig
         // `Sig::And` fold of `Sig::Quote` leaves (`envelope_sig_compound`),
         // preserving the pre-`funding_sig` behavior bit-for-bit (every
@@ -1064,15 +1114,10 @@ impl RuntimeBudget {
         // through `set_deploy_signatures_funded` with the cosigners' GROUND
         // public keys so each component pool is the genesis-seeded wallet
         // `Σ⟦Ground(pkᵢ)⟧` (P8-balanced over cosigners).
-        //
-        // Guard the empty case HERE (before the `envelope_sig_compound` argument
-        // is evaluated) so the panic message is the legacy one, not the inner
-        // `fold_compound_sig` expect.
-        assert!(
-            !signatures.is_empty(),
-            "set_deploy_signatures requires at least one signature"
-        );
-        self.set_deploy_signatures_funded(signatures, envelope_sig_compound(signatures));
+        if signatures.is_empty() {
+            return Err(EmptySignatureList);
+        }
+        self.try_set_deploy_signatures_funded(signatures, envelope_sig_compound(signatures))
     }
 
     /// Install a compound (multi-signer) deploy with a DECOUPLED funding
@@ -1085,11 +1130,38 @@ impl RuntimeBudget {
     /// while `funding_sig` keys the supply pools `Σ⟦sᵢ⟧`. Production passes the
     /// `And`-fold of `Sig::Ground(pkᵢ)` (via [`funding_sig`]) so each component
     /// pool is the genesis-seeded wallet `Σ⟦Ground(pkᵢ)⟧`.
+    ///
+    /// # Panics
+    ///
+    /// If `signatures` is empty. ★ MEASURED UNREACHABLE in production: the sole
+    /// non-test caller is `RhoRuntime::evaluate_cosigned`, which builds `signatures`
+    /// from `Cosigned::signers()`; `Cosigned`'s `signers` field is private and both
+    /// of its constructors (`Cosigned::from_signed_data`,
+    /// `Cosigned::from_signed_data_threshold`) refuse an empty list with
+    /// `CosignedError::EmptySignerList` before a `Cosigned` value can exist. See
+    /// [`try_set_deploy_signatures_funded`] to observe the refusal as a value.
+    ///
+    /// [`try_set_deploy_signatures_funded`]: RuntimeBudget::try_set_deploy_signatures_funded
     pub fn set_deploy_signatures_funded(&self, signatures: &[&[u8]], funding_sig: Sig) {
-        assert!(
-            !signatures.is_empty(),
-            "set_deploy_signatures requires at least one signature"
-        );
+        if let Err(refusal) = self.try_set_deploy_signatures_funded(signatures, funding_sig) {
+            panic!("{}", refusal);
+        }
+    }
+
+    /// [`set_deploy_signatures_funded`](RuntimeBudget::set_deploy_signatures_funded),
+    /// returning the empty-list refusal rather than raising it.
+    ///
+    /// # Errors
+    ///
+    /// [`EmptySignatureList`] iff `signatures` is empty.
+    pub fn try_set_deploy_signatures_funded(
+        &self,
+        signatures: &[&[u8]],
+        funding_sig: Sig,
+    ) -> Result<(), EmptySignatureList> {
+        if signatures.is_empty() {
+            return Err(EmptySignatureList);
+        }
 
         // deploy_id derives from the full ordered concatenation of per-sig WIRE
         // hashes under the COMPOUND domain (UNCHANGED — the funded pool moves to
@@ -1113,6 +1185,7 @@ impl RuntimeBudget {
         // more than one funding component).
         self.install_signer_channels(&funding_sig);
         *self.signature.lock().expect("signature lock") = funding_sig;
+        Ok(())
     }
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
@@ -1145,9 +1218,7 @@ impl RuntimeBudget {
     /// Cheap per-COMM gate: is per-redex channel-match attribution active (i.e. is
     /// this a multi-signer deploy with >1 signer lane)? A single-signer deploy
     /// returns `false` and the reducer does ZERO channel-match work.
-    pub fn any_signed_regions(&self) -> bool {
-        self.any_signed_regions.load(Ordering::Acquire)
-    }
+    pub fn any_signed_regions(&self) -> bool { self.any_signed_regions.load(Ordering::Acquire) }
 
     /// Snapshot the installed signer channels for a channel match (cloned; only
     /// taken on the multi-signer path, gated by [`any_signed_regions`]).
@@ -1546,9 +1617,7 @@ where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::
 /// so `Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ ==` the genesis-seeded wallet `Σ⟦wallet⟧`
 /// (cost-accounting WD-D2 §D2.9). DR-1 (ground/quote channel collapse) means
 /// this reflects to the SAME channel as the genesis seed's `Sig::Ground(pk)`.
-pub fn funding_sig_single(pubkey: &[u8]) -> Sig {
-    Sig::Ground(pubkey.to_vec())
-}
+pub fn funding_sig_single(pubkey: &[u8]) -> Sig { Sig::Ground(pubkey.to_vec()) }
 
 /// The FUNDING signature of a multi-signer deploy: the left-associated
 /// `Sig::And` fold of each cosigner's ground identity atom `Sig::Ground(pkᵢ)`

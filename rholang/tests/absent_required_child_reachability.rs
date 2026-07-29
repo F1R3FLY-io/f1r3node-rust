@@ -80,12 +80,60 @@
 //! #136's read *in the same function*. Its red — SIGABRT, non-unwinding, on ten
 //! bytes — lives next to it, in that crate's own test directory.
 
+//! ## ⚠ How the faults are OBSERVED (changed 2026-07-28)
+//!
+//! M0 and M2 used to wrap their subject in `std::panic::catch_unwind` and
+//! `expect_err` the payload. They no longer do, and must not: a test that expects a
+//! panic is a liability in this tree — `rholang` is compiled as a path dependency of
+//! the mettail workspace, whose `dev`/`test` profile uses the CRANELIFT backend,
+//! under which a panic does not unwind reliably, `catch_unwind` intercepts nothing,
+//! and the process aborts with no diagnostic.
+//!
+//! Both faults are now measured the way the FFI red next door measures its abort:
+//! **from outside the process**. The subject runs in a re-executed child, and the
+//! parent decides on the child's exit status and stderr. Each child prints an
+//! anti-vacuity line BEFORE touching the subject, so a child that died on startup —
+//! or on an unrelated earlier fault — is a loud failure rather than a false green.
+//!
+//! What that changed about their discriminating power: it GREW. `expect_err` accepted
+//! any unwinding panic from anywhere inside the closure; the parent now additionally
+//! requires the child to have reached the subject, requires the process not to have
+//! survived, and still requires the message to name the site.
+
+use std::process::Command;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EMinus, Expr, Par};
 use models::rust::utils::{new_freevar_par, new_gint_par};
 use prost::Message;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::prepend_expr;
+
+/// The env var that puts a re-executed test binary into child mode. Its VALUE names
+/// which subject the child is to run, so one variable serves every probe here.
+const CHILD: &str = "RHOLANG_ABSENT_CHILD_SUBJECT";
+
+/// Re-exec this test binary with `CHILD` set to `subject`, running only `test_name`.
+///
+/// Returns `(status_success, combined_output)`. The child's stdout and stderr are
+/// concatenated because the anti-vacuity marker is on one and the fault message on
+/// the other, and every caller wants both.
+fn run_child(subject: &str, test_name: &str) -> (bool, String) {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let output = Command::new(exe)
+        .env(CHILD, subject)
+        .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+        .output()
+        .expect("the child test process spawns");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    (output.status.success(), text)
+}
+
+/// Is this process the child for `subject`?
+fn is_child_for(subject: &str) -> bool {
+    std::env::var(CHILD).is_ok_and(|s| s == subject)
+}
 
 /// The NORMALIZER's construction: recomputes `locally_free`/`connective_used`.
 /// ⚠ Panics on a malformed child — see `m0`.
@@ -121,26 +169,54 @@ fn wire_par(instance: ExprInstance, connective_used: bool) -> Par {
 /// untouched. This test exists to keep that fact from being re-lost.
 #[test]
 fn m0_has_locally_free_panics_before_the_matcher_is_reached() {
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        par_of(ExprInstance::EMinusBody(EMinus {
+    const SUBJECT: &str = "m0";
+    if is_child_for(SUBJECT) {
+        // ── child ────────────────────────────────────────────────────────────
+        // The CONTROL runs first, in this same process: the well-formed pair goes
+        // through `prepend_expr` and returns. If the child dies here, the parent
+        // says so instead of attributing an unrelated fault to the absent child.
+        let control = par_of(ExprInstance::EMinusBody(EMinus {
+            p1: Some(new_gint_par(1, Vec::new(), false)),
+            p2: Some(new_gint_par(2, Vec::new(), false)),
+        }));
+        println!("M0_CHILD_CONTROL_BUILT=true exprs={}", control.exprs.len());
+
+        // ★ THE SUBJECT.
+        let built = par_of(ExprInstance::EMinusBody(EMinus {
             p1: None,
             p2: Some(new_gint_par(2, Vec::new(), false)),
-        }))
-    }));
-    let payload = outcome.expect_err(
-        "M0: `prepend_expr` did NOT panic on an absent child. If that is now true, \
-         re-derive: the sibling surface this test records has changed.",
+        }));
+        println!("M0_CHILD_SURVIVED=true exprs={}", built.exprs.len());
+        return;
+    }
+
+    // ── parent ───────────────────────────────────────────────────────────────
+    let (succeeded, text) = run_child(
+        SUBJECT,
+        "m0_has_locally_free_panics_before_the_matcher_is_reached",
     );
-    let message = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap_or_else(|| "<non-string panic>".to_string());
-    println!("  ⇒ M0: has_locally_free panics first: {message:?}");
     assert!(
-        message.contains("binary operand p1"),
-        "M0: panicked elsewhere: {message:?}"
+        text.contains("M0_CHILD_CONTROL_BUILT=true"),
+        "M0: the child never built the WELL-FORMED pair, so whatever killed it was not \
+         the absent child.\n--- child output ---\n{text}"
     );
+    assert!(
+        !text.contains("M0_CHILD_SURVIVED=true"),
+        "M0: `prepend_expr` did NOT fault on an absent child. If that is now true, \
+         re-derive: the sibling surface this test records has changed.\n\
+         --- child output ---\n{text}"
+    );
+    assert!(
+        !succeeded,
+        "M0: the child exited cleanly; the normalizer-side recomputation no longer \
+         faults.\n--- child output ---\n{text}"
+    );
+    assert!(
+        text.contains("binary operand p1"),
+        "M0: the child died, but not at `has_locally_free`'s absent-operand site.\n\
+         --- child output ---\n{text}"
+    );
+    println!("  ⇒ M0: has_locally_free faults first, before the matcher is reached");
 }
 
 /// M1 — does prost accept an absent required child, on REAL BYTES?
@@ -196,52 +272,74 @@ fn m1_prost_accepts_an_absent_required_child() {
     println!("  ⇒ M1: prost ACCEPTS an absent required child. Not a DecodeError.");
 }
 
-/// M2 — does the matcher panic on the DECODED value (not the constructed one)?
+/// M2 — does the matcher fault on the DECODED value (not the constructed one)?
 #[test]
 fn m2_the_matcher_panics_on_a_decoded_absent_child() {
-    let absent = wire_par(
-        ExprInstance::EMinusBody(EMinus {
-            p1: None,
+    const SUBJECT: &str = "m2";
+    if is_child_for(SUBJECT) {
+        // ── child ────────────────────────────────────────────────────────────
+        let pattern = par_of(ExprInstance::EMinusBody(EMinus {
+            p1: Some(new_freevar_par(0, Vec::new())),
             p2: Some(new_gint_par(2, Vec::new(), false)),
-        }),
-        false,
-    );
-    let bytes = absent.encode_to_vec();
-    // ★ The value under test is the one that came BACK OFF THE WIRE.
-    let target = Par::decode(&bytes[..]).expect("the wire value decodes");
+        }));
+        assert!(
+            pattern.connective_used,
+            "M2: the pattern must be connective_used or the matcher never descends"
+        );
 
-    let pattern = par_of(ExprInstance::EMinusBody(EMinus {
-        p1: Some(new_freevar_par(0, Vec::new())),
-        p2: Some(new_gint_par(2, Vec::new(), false)),
-    }));
-    assert!(
-        pattern.connective_used,
-        "M2: the pattern must be connective_used or the matcher never descends"
-    );
+        // The CONTROL, in the same process and through the same call shape: a
+        // WELL-FORMED target off the wire must match. Without it, a child that died
+        // for any reason at all would look like evidence about the absent child.
+        let control_bytes = wire_par(
+            ExprInstance::EMinusBody(EMinus {
+                p1: Some(new_gint_par(7, Vec::new(), false)),
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            }),
+            false,
+        )
+        .encode_to_vec();
+        let control_target = Par::decode(&control_bytes[..]).expect("the control decodes");
+        let control = SpatialMatcherContext::new().spatial_match(control_target, pattern.clone());
+        println!("M2_CHILD_CONTROL_MATCHED={}", control.is_some());
 
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut context = SpatialMatcherContext::new();
-        context.spatial_match(target, pattern)
-    }));
-
-    match outcome {
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "<non-string panic>".to_string());
-            println!("  ⇒ M2: PANIC reached from a decoded value: {message:?}");
-            assert!(
-                message.contains("EMinus.p1"),
-                "M2: it panicked, but not at the site under test: {message:?}"
-            );
-        }
-        Ok(result) => panic!(
-            "M2: the matcher did NOT panic; it answered {result:?}. \
-             The premise of #127 is refuted and the disposition must be re-derived."
-        ),
+        // ★ THE SUBJECT: the value that came BACK OFF THE WIRE with `p1` absent.
+        let bytes = wire_par(
+            ExprInstance::EMinusBody(EMinus {
+                p1: None,
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            }),
+            false,
+        )
+        .encode_to_vec();
+        let target = Par::decode(&bytes[..]).expect("the wire value decodes");
+        let result = SpatialMatcherContext::new().spatial_match(target, pattern);
+        println!("M2_CHILD_SURVIVED=true result={result:?}");
+        return;
     }
+
+    // ── parent ───────────────────────────────────────────────────────────────
+    let (succeeded, text) = run_child(SUBJECT, "m2_the_matcher_panics_on_a_decoded_absent_child");
+    assert!(
+        text.contains("M2_CHILD_CONTROL_MATCHED=true"),
+        "M2: the child's WELL-FORMED control did not match, so it never exercised the \
+         `EMinus` arm and whatever killed it is not the absent child.\n\
+         --- child output ---\n{text}"
+    );
+    assert!(
+        !text.contains("M2_CHILD_SURVIVED=true"),
+        "M2: the matcher did NOT fault; it answered. The premise of #127 is refuted and \
+         the disposition must be re-derived.\n--- child output ---\n{text}"
+    );
+    assert!(
+        !succeeded,
+        "M2: the child exited cleanly on a target with an absent required child.\n\
+         --- child output ---\n{text}"
+    );
+    assert!(
+        text.contains("EMinus.p1"),
+        "M2: the child died, but not at the site under test.\n--- child output ---\n{text}"
+    );
+    println!("  ⇒ M2: the fault is reached from a decoded value, at `EMinus.p1`");
 }
 
 /// M2b — the CONTROL: the same shapes, well formed, must not panic.
