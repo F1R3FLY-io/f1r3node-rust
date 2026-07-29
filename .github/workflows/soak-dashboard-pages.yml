@@ -69,11 +69,15 @@ jobs:
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too. Republishing one would corrupt the data.
-          for f in history.json latest-summary.json latest-verdict.json \
-                   history-daily.json latest-summary-daily.json latest-verdict-daily.json; do
+          # Shapes, not just parseability — kept identical to the soak
+          # publisher. `jq -e .` accepts a bare string or number, so an error
+          # body that happens to be valid JSON would pass here and be rejected
+          # there, which is how the two drift apart.
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json; do
             [ -e "site/data/${f}" ] || continue
-            jq -e . "site/data/${f}" >/dev/null 2>&1 || {
-              echo "::error::published ${f} is not valid JSON; refusing to republish it"
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
               exit 1
             }
           done
@@ -86,6 +90,21 @@ jobs:
             else
               echo '[]' > "site/data/${f}"
             fi
+          done
+          # Same rule as the soak publisher: once a series' history has
+          # entries, its summary and verdict were written alongside, so a 404
+          # on those is a lying fetch rather than genuine absence. Publishing
+          # anyway would empty that tab. This job only ever carries data
+          # forward, so it has nothing to gain by proceeding on doubt.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
           done
           test -s site/data/latest-report.md \
             || echo 'No soak report yet — the first successful weekend soak publishes one.' \

@@ -487,7 +487,11 @@ jobs:
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too, and republishing one would corrupt the
-          # series just as thoroughly as dropping it.
+          # series just as thoroughly as dropping it. Every carried-forward
+          # JSON file is checked, not just the histories: a summary or verdict
+          # replaced by an error page breaks the dashboard tab that reads it
+          # and, for a summary, becomes the baseline the next run compares
+          # against.
           for f in history.json history-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
@@ -495,12 +499,47 @@ jobs:
               exit 1
             }
           done
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
+              exit 1
+            }
+          done
+
+          # A 404 is only trustworthy when a series has genuinely never
+          # published. Once its history has entries, every run wrote a summary
+          # and a verdict alongside, so a 404 on those means the fetch lied
+          # rather than that they are absent — and accepting it would publish a
+          # site with that series' tab silently emptied. An empty history is
+          # the legitimate bootstrap case and stays permitted.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
+          done
 
           # Append this run to its own series, leaving the other untouched.
+          # Replace rather than append when an entry for this run already
+          # exists: a re-run reuses github.run_id, so a plain append would add
+          # a second entry for the same night, double-counting it on the chart
+          # and burning a slot of the daily retention cap. Runs whose id is
+          # missing or "unknown" are always appended — they cannot be told
+          # apart, so collapsing them would merge genuinely distinct runs.
           hist="site/data/history${SERIES_SUFFIX}.json"
           [ -e "$hist" ] || echo '[]' > "$hist"
           jq -s --argjson max "$MAX_HISTORY" \
-            '(.[0] + [.[1]] | sort_by(.run.date)) as $all
+            '.[0] as $hist | .[1] as $new
+             | ($new.run.run_id // "") as $rid
+             | (if $rid == "" or $rid == "unknown" then $hist
+                else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+             | ($kept + [$new] | sort_by(.run.date)) as $all
              | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
             "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
           mv /tmp/history-merged.json "$hist"
