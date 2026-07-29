@@ -189,6 +189,14 @@
 
   const g = (h, path) => path.reduce((o, k) => (o == null ? null : o[k]), h);
 
+  // Every value that comes out of the fetched JSON goes through this before it
+  // reaches innerHTML, including SVG text. The data is CI-written today, so
+  // this is defence in depth — but the page is served from the repo's Pages
+  // origin, so anything that could rewrite the published JSON would otherwise
+  // get script execution there.
+  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ESCAPES[c]);
+
   async function loadJSON(url) {
     try {
       const r = await fetch(url);
@@ -221,12 +229,11 @@
     const f = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
     if (f.length === 0) { el.innerHTML = ""; return; }
     el.innerHTML = '<div class="failures"><strong>Latest run regressed</strong><ul>' +
-      f.map(s => "<li>" + String(s).replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;") + "</li>").join("") +
-      "</ul></div>";
+      f.map(s => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
   }
 
   function renderCharts(container, history) {
-    const dates = history.map(h => (h.run.date || "").slice(0, 10));
+    const dates = history.map(h => ((h.run || {}).date || "").slice(0, 10));
     const W = 360, H = 180, PX = 44, PY = 18;
 
     for (const def of CHARTS) {
@@ -266,7 +273,7 @@
       dates.forEach((d, i) => {
         if (history.length <= 6 || i % Math.ceil(history.length / 6) === 0 || i === history.length - 1) {
           const anchor = i === 0 ? "start" : (i === history.length - 1 ? "end" : "middle");
-          svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="${anchor}">${d.slice(5)}</text>`;
+          svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="${anchor}">${esc(d.slice(5))}</text>`;
         }
       });
 
@@ -290,7 +297,7 @@
         }
         const rows = seriesData.map(s => s.values[best] === null ? "" :
           `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
-        tooltip.innerHTML = `<b>${dates[best]}</b>${rows}`;
+        tooltip.innerHTML = `<b>${esc(dates[best])}</b>${rows}`;
         tooltip.style.display = "block";
         tooltip.style.left = (ev.clientX + 14) + "px";
         tooltip.style.top = (ev.clientY + 14) + "px";
@@ -302,11 +309,14 @@
 
   function renderTable(el, history) {
     const rows = history.slice().reverse().map(h => {
-      const p = h.passive || {}, a = h.active || {};
-      const runLink = h.run.run_id && h.run.run_id !== "unknown"
-        ? `<a href="${RUNS_URL}${h.run.run_id}">log</a>` : "-";
-      const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : v);
-      return `<tr><td>${(h.run.date || "").slice(0, 10)}</td><td><code>${(h.run.target_sha || "").slice(0, 8)}</code></td>` +
+      const p = h.passive || {}, a = h.active || {}, r = h.run || {};
+      // Only a bare run of digits can become a URL. Anything else is not a
+      // GitHub run id, and concatenating it would let a crafted value steer
+      // the href somewhere other than this repo's Actions.
+      const runLink = /^[0-9]+$/.test(String(r.run_id || ""))
+        ? `<a href="${RUNS_URL}${r.run_id}">log</a>` : "-";
+      const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : esc(v));
+      return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td><code>${esc((r.target_sha || "").slice(0, 8))}</code></td>` +
         `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
         `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
         `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +

@@ -101,7 +101,29 @@ jobs:
               # Fails OPEN: any API error, empty response or unparseable count
               # runs the soak. A silently skipped soak is the exact failure this
               # workflow exists to avoid, so "unsure" must mean "soak".
-              since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+              #
+              # The window is anchored to the previous eligible slot, not to a
+              # fixed 24h, because daily windows are not 24h apart: dailies run
+              # Mon-Thu, so Monday's window is four days after Thursday's. A 24h
+              # lookback on a Monday cannot see anything that landed over the
+              # weekend, and would skip the soak on code that has never been
+              # soaked at all — `dev` gets no weekend coverage either, since the
+              # 60h weekend soak targets `master`.
+              if [ "$pacific_weekday" -eq 1 ]; then
+                prev_slot_epoch=$((slot_epoch - 4 * 86400))
+              else
+                prev_slot_epoch=$((slot_epoch - 86400))
+              fi
+              # Two hours of overlap, for two reasons. Slot-aligned windows tile
+              # exactly, so a commit landing on a boundary could fall between
+              # two of them and never be seen. And the arithmetic above is in
+              # epoch seconds, so a window spanning a Pacific DST change lands
+              # an hour off — on the November change, Monday's window would
+              # otherwise start at Thursday 20:30 PT and miss the hour before
+              # it. The margin absorbs both without needing DST-aware date
+              # maths. Erring wide costs at most one redundant soak; erring
+              # narrow is the bug this whole check is meant to avoid.
+              since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
               new_commits="$(gh api \
                 "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
                 --jq 'length' 2>/dev/null || echo "")"
