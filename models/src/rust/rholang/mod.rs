@@ -2,6 +2,7 @@ pub mod grpc_client;
 pub mod implicits;
 pub mod par_children;
 pub mod par_codec;
+pub mod prost_encode;
 pub mod prost_wire;
 pub mod schema_meta;
 pub mod sorter;

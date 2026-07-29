@@ -1885,6 +1885,44 @@ fn prost_scalar_variant(ty: Type) -> &'static str {
     }
 }
 
+/// The `prost::encoding` module that writes one protobuf scalar type, and the
+/// literal `prost-derive` compares against for skip-at-default.
+///
+/// ★ Both halves are read off `prost-derive`'s own expansion rather than
+/// restated: the module comes from `Ty::module()` and the default literal from
+/// `DefaultValue::typed()` (`prost-derive-0.14.3/src/field/scalar.rs`). The
+/// generated code CALLS `prost::encoding::<module>::{encode, encoded_len}`; it
+/// never reimplements varint, zigzag or length delimiting.
+///
+/// ⚠ `String` and `Bytes` compare against `""` and `b"" as &[u8]` — the exact
+/// forms `prost-derive` emits — because `String != ""` and `Vec<u8> != b""`
+/// resolve through `PartialEq<str>` / `PartialEq<[u8]>` impls that
+/// `String::new() != String::default()` would not exercise identically.
+fn prost_scalar_module_and_default(ty: Type) -> (&'static str, &'static str) {
+    match ty {
+        Type::Bool => ("bool", "false"),
+        Type::String => ("string", "\"\""),
+        Type::Bytes => ("bytes", "b\"\" as &[u8]"),
+        Type::Int32 => ("int32", "0i32"),
+        Type::Sint32 => ("sint32", "0i32"),
+        Type::Sfixed32 => ("sfixed32", "0i32"),
+        Type::Uint32 => ("uint32", "0u32"),
+        Type::Fixed32 => ("fixed32", "0u32"),
+        Type::Int64 => ("int64", "0i64"),
+        Type::Sint64 => ("sint64", "0i64"),
+        Type::Sfixed64 => ("sfixed64", "0i64"),
+        Type::Uint64 => ("uint64", "0u64"),
+        Type::Fixed64 => ("fixed64", "0u64"),
+        Type::Float => ("float", "0f32"),
+        Type::Double => ("double", "0f64"),
+        other => panic!(
+            "wire_schema: protobuf type {other:?} has no `prost::encoding` module. Add one \
+             deliberately — the emitted code CALLS prost's encoders, so an unmapped type has \
+             no bytes rather than the wrong ones, and this refusal is what keeps it that way."
+        ),
+    }
+}
+
 /// The prost program of one message: the same resolved fields, ASCENDING
 /// MINIMUM TAG.
 ///
@@ -1925,8 +1963,18 @@ fn emit_prost_source(
          // SERDE order already cost this campaign a 95-byte encoding with its halves\n\
          // exchanged — and here the correct order is the OPPOSITE of that fix.\n\
          \n\
+         use prost::encoding;\n\
+         \n\
          use crate::rhoapi::*;\n\
-         use crate::rust::rholang::prost_wire::{ProstField, ProstKind};\n\
+         use crate::rhoapi::connective::ConnectiveInstance;\n\
+         use crate::rhoapi::expr::ExprInstance;\n\
+         use crate::rhoapi::g_unforgeable::UnfInstance;\n\
+         use crate::rhoapi::tagged_continuation::TaggedCont;\n\
+         use crate::rhoapi::var::VarInstance;\n\
+         use crate::rust::rhoapi_ext::EPathMap;\n\
+         use crate::rust::rholang::prost_wire::{\n\
+         \x20   ProstDescent, ProstField, ProstKind, ProstNode, ProstOneof, NO_RESUME,\n\
+         };\n\
          \n",
     );
 
@@ -2021,6 +2069,201 @@ fn emit_prost_message(
         .expect("write");
     }
     src.push_str("];\n\n");
+
+    // ── the two passes, generated from ONE field list by ONE renderer ──
+    //
+    // ⚠★ That is the whole guarantee that they agree about skip-at-default.
+    // `prost-derive` applies `if #ident != #default` in both `encode` and
+    // `encoded_len`; two hand-written bodies would be two places for that rule
+    // to live, and a driver whose passes disagreed about one `bool` writes a
+    // length prefix that does not match the bytes after it.
+    let (len_arms, emit_arms) = prost_bodies(leaf_name, &sorted);
+
+    writeln!(src, "impl ProstNode for {rust_ty} {{").expect("write");
+    writeln!(
+        src,
+        "    #[inline]\n\
+         \x20   fn prost_program(&self) -> &'static [ProstField] {{ {program_ident} }}"
+    )
+    .expect("write");
+
+    // ⚠ Whether ANY field of this message writes bytes in place, as opposed to
+    // only descending. `Par`, `Expr` and `Var` are all-descent, so a
+    // `let mut n` / a used `out` would be dead in exactly those bodies — and the
+    // workspace builds with `-D warnings`, so "harmless dead binding" is a build
+    // failure. The predicate is the SAME for both passes because it is the same
+    // question, which is why it is computed once here.
+    let writes_bounded = sorted.iter().any(|f| {
+        matches!(
+            f.shape,
+            Shape::Scalar(_)
+                | Shape::EmptyBytes
+                | Shape::RepeatedString
+                | Shape::RepeatedBytes
+                | Shape::Oneof
+        )
+    });
+
+    src.push_str("    fn prost_len_step(&self, from: usize) -> (u64, ProstDescent<'_>) {\n");
+    if sorted.is_empty() {
+        // An empty protobuf message (`WildcardMsg`, `GSysAuthToken`) encodes to
+        // ZERO bytes — no key, no length, nothing.
+        src.push_str("        let _ = from;\n        (0, ProstDescent::Done)\n");
+    } else {
+        if writes_bounded {
+            src.push_str("        let mut n = 0u64;\n");
+        } else {
+            src.push_str("        // Every field of this message DESCENDS; nothing is written\n\
+                          \x20       // in place, so the whole of its length comes from its\n\
+                          \x20       // children's `Op::Close` contributions.\n\
+                          \x20       let n = 0u64;\n");
+        }
+        for (i, (f, arm)) in sorted.iter().zip(&len_arms).enumerate() {
+            writeln!(src, "        if from < {} {{ {} }} // {}", i + 1, arm, f.rust_name)
+                .expect("write");
+        }
+        src.push_str("        (n, ProstDescent::Done)\n");
+    }
+    src.push_str("    }\n\n");
+
+    src.push_str("    fn prost_emit(&self, from: usize, out: &mut Vec<u8>) -> ProstDescent<'_> {\n");
+    if sorted.is_empty() {
+        src.push_str("        let _ = (from, out);\n        ProstDescent::Done\n");
+    } else {
+        if !writes_bounded {
+            src.push_str("        // Every field DESCENDS; the driver writes each child's key\n\
+                          \x20       // and length prefix, so this body emits nothing itself.\n\
+                          \x20       let _ = out;\n");
+        }
+        for (i, (f, arm)) in sorted.iter().zip(&emit_arms).enumerate() {
+            writeln!(src, "        if from < {} {{ {} }} // {}", i + 1, arm, f.rust_name)
+                .expect("write");
+        }
+        src.push_str("        ProstDescent::Done\n");
+    }
+    src.push_str("    }\n}\n\n");
+}
+
+/// Render a message's two protobuf pass bodies, with the tail-call patch
+/// applied — `(len arms, emit arms)`, parallel to `sorted`.
+///
+/// ★ ONE renderer, TWO outputs. Every rule that must hold in both passes —
+/// skip-at-default above all — is written once here, so the passes cannot
+/// disagree. `prost-derive` has the same property for the same reason
+/// (`src/lib.rs:103-109` maps one sorted field list through `field.encode` and
+/// `field.encoded_len`).
+///
+/// The tail-call patch is applied to the SORTED length, which is a different
+/// field from the bincode table's last: see [`bincode_program`].
+fn prost_bodies(msg_name: &str, sorted: &[&Field]) -> (Vec<String>, Vec<String>) {
+    assert!(
+        sorted.len() < u16::MAX as usize,
+        "wire_schema: `{msg_name}` has {} fields; `ProstDescent::resume` is a u16 and \
+         `NO_RESUME` is its maximum.",
+        sorted.len()
+    );
+    let spent = format!("resume: {}", sorted.len());
+    let mut lens = Vec::with_capacity(sorted.len());
+    let mut emits = Vec::with_capacity(sorted.len());
+    for (i, f) in sorted.iter().enumerate() {
+        let (len, emit) = prost_arms(f, i);
+        lens.push(len.replace(&spent, "resume: NO_RESUME"));
+        emits.push(emit.replace(&spent, "resume: NO_RESUME"));
+    }
+    (lens, emits)
+}
+
+/// The `(measure, emit)` pair for ONE protobuf field at position `index` of the
+/// sorted program.
+///
+/// `n` (a `u64` accumulator) and `out` are in scope in the respective bodies; a
+/// descending arm `return`s.
+fn prost_arms(field: &Field, index: usize) -> (String, String) {
+    let name = &field.rust_name;
+    let resume = index + 1;
+    let tag = field.min_tag();
+    match &field.shape {
+        // ⚠ `locally_free` is ORDINARY BYTES here. The eight-zero-bytes rule is
+        // serde-only; prost retains the field.
+        Shape::EmptyBytes => prost_scalar_arms(name, Type::Bytes, tag),
+        Shape::Scalar(ty) => prost_scalar_arms(name, *ty, tag),
+        Shape::RepeatedString => (
+            format!("n += encoding::string::encoded_len_repeated({tag}u32, &self.{name}) as u64;"),
+            format!("encoding::string::encode_repeated({tag}u32, &self.{name}, out);"),
+        ),
+        Shape::RepeatedBytes => (
+            format!("n += encoding::bytes::encoded_len_repeated({tag}u32, &self.{name}) as u64;"),
+            format!("encoding::bytes::encode_repeated({tag}u32, &self.{name}, out);"),
+        ),
+        // A singular message is OMITTED entirely when `None`
+        // (`prost-derive-0.14.3/src/field/message.rs`, the `Optional` arm), so
+        // there is no tag and no zero-length body to write.
+        Shape::Message { .. } => {
+            let descent =
+                format!("ProstDescent::Node {{ resume: {resume}, tag: {tag}u32, node: v }}");
+            (
+                format!("if let Some(v) = &self.{name} {{ return (n, {descent}); }}"),
+                format!("if let Some(v) = &self.{name} {{ return {descent}; }}"),
+            )
+        }
+        // Each element carries its OWN key and length prefix, all under `tag`.
+        Shape::RepeatedMessage { .. } => {
+            let descent = format!(
+                "ProstDescent::Seq {{ resume: {resume}, tag: {tag}u32, len: k, seq: s }}"
+            );
+            (
+                format!(
+                    "{{ let s = &self.{name}; let k = s.len(); if k != 0 {{ return (n, {descent}); }} }}"
+                ),
+                format!(
+                    "{{ let s = &self.{name}; let k = s.len(); if k != 0 {{ return {descent}; }} }}"
+                ),
+            )
+        }
+        Shape::Map { .. } => {
+            let descent =
+                format!("ProstDescent::Map {{ resume: {resume}, tag: {tag}u32, map: m }}");
+            (
+                format!(
+                    "{{ let m = &self.{name}; if !m.is_empty() {{ return (n, {descent}); }} }}"
+                ),
+                format!("{{ let m = &self.{name}; if !m.is_empty() {{ return {descent}; }} }}"),
+            )
+        }
+        // ⚠★ The ARM supplies its own tag — prost places the oneof FIELD at its
+        // lowest tag but each variant encodes under the tag it declares
+        // (`prost-derive-0.14.3/src/lib.rs:462-471`). `{tag}` above is the SORT
+        // KEY and is deliberately not used here.
+        Shape::Oneof => (
+            format!(
+                "if let Some(v) = &self.{name} {{ \
+                 let (b, child) = ProstOneof::prost_len_step(v); n += b; \
+                 if let Some((t, node)) = child {{ \
+                 return (n, ProstDescent::Node {{ resume: {resume}, tag: t, node }}); }} }}"
+            ),
+            format!(
+                "if let Some(v) = &self.{name} {{ \
+                 if let Some((t, node)) = ProstOneof::prost_emit(v, out) {{ \
+                 return ProstDescent::Node {{ resume: {resume}, tag: t, node }}; }} }}"
+            ),
+        ),
+    }
+}
+
+/// The `(measure, emit)` pair for one singular protobuf scalar.
+///
+/// ⚠★ **Skip-at-default, in both, from one place.** `prost-derive`'s
+/// `Kind::Plain` arm wraps both the encode and the length in
+/// `if #ident != #default` (`src/field/scalar.rs:116-125, 172-189`). The guard
+/// is rendered here once and interpolated into both bodies, so no edit can
+/// apply it to one pass and not the other.
+fn prost_scalar_arms(name: &str, ty: Type, tag: u32) -> (String, String) {
+    let (module, default) = prost_scalar_module_and_default(ty);
+    let guard = format!("if self.{name} != {default}");
+    (
+        format!("{guard} {{ n += encoding::{module}::encoded_len({tag}u32, &self.{name}) as u64; }}"),
+        format!("{guard} {{ encoding::{module}::encode({tag}u32, &self.{name}, out); }}"),
+    )
 }
 
 fn emit_prost_oneof(src: &mut String, oneof: &Oneof) {
@@ -2057,6 +2300,75 @@ fn emit_prost_oneof(src: &mut String, oneof: &Oneof) {
         .expect("write");
     }
     src.push_str("];\n\n");
+
+    // ── the exhaustive impl: no wildcard arm, so a new variant fails to compile ──
+    writeln!(
+        src,
+        "impl ProstOneof for {rust_ident} {{\n\
+         \x20   /// ★ EXHAUSTIVE — no wildcard arm. A variant added to the `.proto` cannot\n\
+         \x20   /// reach production untested: the table regenerates and this match with it.\n\
+         \x20   ///\n\
+         \x20   /// ⚠★ NO SKIP-AT-DEFAULT. `prost-derive`'s `scalar::Field::new_oneof`\n\
+         \x20   /// rewrites `Kind::Plain` into `Kind::Required` (`src/field/scalar.rs:92-106`)\n\
+         \x20   /// and the `Required` arm carries no `if #ident != #default` guard, because a\n\
+         \x20   /// set-but-default oneof member must stay distinguishable from an absent one.\n\
+         \x20   /// Inheriting the plain-field rule here would erase `GBool(false)`, `GInt(0)`\n\
+         \x20   /// and `GString(\"\")` from the wire.\n\
+         \x20   #[inline]\n\
+         \x20   fn prost_len_step(&self) -> (u64, Option<(u32, &dyn ProstNode)>) {{\n\
+         \x20       match self {{"
+    )
+    .expect("write");
+    for v in variants {
+        let arm = match &v.message_leaf {
+            // The DRIVER writes a message arm's key and length prefix; it is the
+            // only place that knows the child's length.
+            Some(_) => format!("(0, Some(({}u32, v)))", v.tag),
+            None => {
+                let (module, _) = prost_scalar_module_and_default(v.ty);
+                format!(
+                    "(encoding::{module}::encoded_len({}u32, v) as u64, None)",
+                    v.tag
+                )
+            }
+        };
+        writeln!(src, "            {rust_ident}::{}(v) => {arm},", v.rust_ident).expect("write");
+    }
+    src.push_str("        }\n    }\n\n");
+
+    // ⚠ A oneof whose every arm is a MESSAGE writes nothing itself — the driver
+    // writes each arm's key and length prefix. `UnfInstance` is exactly that, so
+    // an unconditional `out` binding would be dead in its body, and the
+    // workspace builds with `-D warnings`.
+    let has_scalar_arm = variants.iter().any(|v| v.message_leaf.is_none());
+    writeln!(
+        src,
+        "\x20   /// Writes the bounded arm and reports a message arm. See\n\
+         \x20   /// [`Self::prost_len_step`] for why no arm is skipped at its default.\n\
+         \x20   #[inline]\n\
+         \x20   fn prost_emit(&self, out: &mut Vec<u8>) -> Option<(u32, &dyn ProstNode)> {{{}\n\
+         \x20       match self {{",
+        if has_scalar_arm {
+            String::new()
+        } else {
+            "\n        // Every arm of this oneof is a MESSAGE, so the driver writes\n\
+             \x20       // each one's key and length prefix and this body emits nothing.\n\
+             \x20       let _ = out;"
+                .to_string()
+        }
+    )
+    .expect("write");
+    for v in variants {
+        let arm = match &v.message_leaf {
+            Some(_) => format!("Some(({}u32, v))", v.tag),
+            None => {
+                let (module, _) = prost_scalar_module_and_default(v.ty);
+                format!("{{ encoding::{module}::encode({}u32, v, out); None }}", v.tag)
+            }
+        };
+        writeln!(src, "            {rust_ident}::{}(v) => {arm},", v.rust_ident).expect("write");
+    }
+    src.push_str("        }\n    }\n}\n\n");
 }
 
 fn emit_prost_conformance_registry(

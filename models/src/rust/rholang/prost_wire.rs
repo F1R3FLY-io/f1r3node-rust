@@ -199,3 +199,224 @@ pub struct ProstField {
     /// diagnostics and for the conformance probe.
     pub name: &'static str,
 }
+
+// ===========================================================================
+// §2  The object-safe traits the generated table implements
+// ===========================================================================
+
+use std::collections::BTreeMap;
+
+use crate::rhoapi::Par;
+use crate::rust::rhoapi_ext::EPathMap;
+
+/// The `resume` value meaning **there is nothing to come back for**.
+///
+/// The generator knows each program's length statically, so it emits this
+/// sentinel whenever the descending field was the node's LAST. It is the exact
+/// counterpart of [`crate::rust::rholang::wire::NO_RESUME`], and it is a
+/// SEPARATE constant with a separate derivation: the two emitters sort the same
+/// fields differently, so a patch computed once — before the sort — would name
+/// the wrong field for one of them.
+pub const NO_RESUME: u16 = u16::MAX;
+
+/// What a node's field walk ran into: nothing, or one arbitrarily deep child.
+///
+/// ⚠ Every descending variant carries its **`tag`**, which the bincode
+/// [`crate::rust::rholang::wire::Descent`] has no need of. On the protobuf wire
+/// a child is preceded by `key(tag, LengthDelimited)` and a varint length, and
+/// for a oneof the tag is the ARM's, not the field's.
+pub enum ProstDescent<'a> {
+    /// The program is spent. ★ No resume point is pushed for this — a node's
+    /// last field is a tail call, and so is a sequence's last element.
+    Done,
+    /// One child message: an `Option<Message>` field, or a oneof's message arm.
+    ///
+    /// For a oneof arm, `tag` is the **arm's own** declared tag.
+    Node {
+        resume: u16,
+        tag: u32,
+        node: &'a dyn ProstNode,
+    },
+    /// A non-empty repeated message field. Every element is written under the
+    /// same `tag`, each with its own key and length prefix
+    /// (`prost-0.14.3/src/encoding.rs:820-827`).
+    Seq {
+        resume: u16,
+        tag: u32,
+        len: usize,
+        seq: &'a dyn ProstSeq,
+    },
+    /// The single `map<string, Par>` in the schema (`New.injections`).
+    Map {
+        resume: u16,
+        tag: u32,
+        map: &'a BTreeMap<String, Par>,
+    },
+}
+
+/// A schema node on the protobuf wire.
+///
+/// Object-safe by construction — no associated constants, no generic methods —
+/// because the driver's op stack holds `&dyn ProstNode`.
+pub trait ProstNode {
+    /// This node's fields, in ASCENDING MINIMUM TAG order.
+    fn prost_program(&self) -> &'static [ProstField];
+
+    /// **Measure** fields `[from..]` until the first descent.
+    ///
+    /// Returns `(bounded length contributed, the descent)`. The length is
+    /// returned rather than accumulated through an `&mut` so that the caller can
+    /// hold its frame stack borrowed across the call without aliasing.
+    ///
+    /// ⚠★ **Skip-at-default must be applied here exactly as in
+    /// [`Self::prost_emit`].** `prost-derive` emits `if #ident != #default` in
+    /// BOTH `encode` and `encoded_len` (`src/field/scalar.rs:116-125, 172-189`),
+    /// and the two passes of the driver disagreeing about one `bool` would write
+    /// a length prefix that does not match the bytes after it — a corrupt
+    /// encoding, not a slow one. Both bodies are generated from the same field
+    /// list by the same renderer, so the two cannot drift.
+    fn prost_len_step(&self, from: usize) -> (u64, ProstDescent<'_>);
+
+    /// **Emit** fields `[from..]` until the first descent.
+    ///
+    /// ★ ONE virtual call per node per suspension, not one per field — the same
+    /// shape, and for the same measured reason, as
+    /// [`crate::rust::rholang::wire::WireNode::wire_emit`] (see `wire.rs` §A2:
+    /// the per-field factoring was 1.7× slower than the derive).
+    fn prost_emit(&self, from: usize, out: &mut Vec<u8>) -> ProstDescent<'_>;
+
+    /// ⚠ **The one node whose protobuf bytes are NOT a field walk.**
+    ///
+    /// `EPathMap` overrides this; every generated impl inherits `None`. See §D.
+    ///
+    /// ★ It is a *trait method* and not a pointer comparison against a program
+    /// address, for the reason that cost a `SIGSEGV` on the bincode side:
+    /// `&'static` slices with identical contents are **merged by the linker**,
+    /// so program addresses do not identify a type.
+    /// `wire_encode_space::program_addresses_do_not_identify_a_type` keeps that
+    /// fact executable.
+    #[inline]
+    fn prost_opaque(&self) -> Option<&dyn ProstOpaque> {
+        None
+    }
+}
+
+/// A node whose protobuf encoding is **not** a field walk, and which is
+/// therefore atomic to any driver.
+///
+/// ⚠ The two methods are a PAIR and must describe the same bytes: the driver
+/// writes `opaque_encoded_len()` as a length prefix and then
+/// `opaque_encode_raw()` as the body. That is the same obligation
+/// `prost::Message` itself carries between `encoded_len` and `encode_raw`, and
+/// the implementations here forward to exactly those, so it is parity rather
+/// than a second opinion.
+pub trait ProstOpaque {
+    fn opaque_encoded_len(&self) -> usize;
+    fn opaque_encode_raw(&self, out: &mut Vec<u8>);
+}
+
+/// A oneof on the protobuf wire.
+///
+/// ⚠★ **A oneof arm is ALWAYS written, even at its default.**
+/// `prost-derive`'s `scalar::Field::new_oneof` rewrites `Kind::Plain` into
+/// `Kind::Required` (`src/field/scalar.rs:92-106`), and the `Required` arm of
+/// `encode`/`encoded_len` carries no `if #ident != #default` guard. That is
+/// protobuf's presence semantics: a set-but-default oneof member must be
+/// distinguishable from an absent one. A driver that inherited the plain-field
+/// skip rule here would silently erase `GBool(false)`, `GInt(0)` and
+/// `GString("")`.
+pub trait ProstOneof {
+    /// The bounded length this arm contributes, and — for a message arm — the
+    /// child together with the tag THE ARM declares.
+    fn prost_len_step(&self) -> (u64, Option<(u32, &dyn ProstNode)>);
+
+    /// Write the bounded arm; report a message arm for the driver to descend
+    /// into. ⚠ The key and length prefix of a message arm are written by the
+    /// DRIVER, which is the only place that knows the child's length.
+    fn prost_emit(&self, out: &mut Vec<u8>) -> Option<(u32, &dyn ProstNode)>;
+}
+
+/// A homogeneous sequence of nodes, erased.
+///
+/// One blanket impl covers every `Vec<T>` in the schema, so a new repeated field
+/// needs no new code here at all.
+pub trait ProstSeq {
+    fn prost_len(&self) -> usize;
+    fn prost_get(&self, i: usize) -> &dyn ProstNode;
+}
+
+impl<T: ProstNode> ProstSeq for Vec<T> {
+    #[inline]
+    fn prost_len(&self) -> usize {
+        self.len()
+    }
+    #[inline]
+    fn prost_get(&self, i: usize) -> &dyn ProstNode {
+        &self[i]
+    }
+}
+
+// ===========================================================================
+// §3  ⚠ `EPathMap` — the OPAQUE leaf
+// ===========================================================================
+
+/// `EPathMap`'s protobuf program: **empty**, because it has none.
+///
+/// This is not "a message with no fields" — `WildcardMsg` is that, and encodes
+/// to zero bytes by walking zero fields. `EPathMap` has four proto fields and
+/// **three encodings**, and which one it uses is not a property of its fields.
+/// See §D of this module's header. The empty program is what makes
+/// [`ProstNode::prost_len_step`] and [`ProstNode::prost_emit`] unreachable for
+/// it, and they say so rather than returning a plausible answer.
+pub static EPATHMAP_PROST_PROGRAM: &[ProstField] = &[];
+
+impl ProstOpaque for EPathMap {
+    /// ⚠ `prost::Message::encoded_len`, verbatim — including its three arms.
+    #[inline]
+    fn opaque_encoded_len(&self) -> usize {
+        prost::Message::encoded_len(self)
+    }
+
+    /// ⚠ `prost::Message::encode_raw`, verbatim — including its three arms.
+    ///
+    /// ★ Reading the cell TWICE (once for the length, once for the body) is the
+    /// same exposure the derived path has: `prost::Message::encode_to_vec` calls
+    /// `encoded_len()` and then `encode_raw()`, and another thread can fill the
+    /// intern cell between them. All three arms are gated to produce the same
+    /// bytes for a given value (the P0 prost goldens), so this is parity, not a
+    /// new hazard — but it is why `EPathMap` may not be decomposed into field
+    /// descents by a driver: a driver that measured under one arm and emitted
+    /// under another would write a length prefix that does not match its body.
+    #[inline]
+    fn opaque_encode_raw(&self, out: &mut Vec<u8>) {
+        prost::Message::encode_raw(self, out)
+    }
+}
+
+impl ProstNode for EPathMap {
+    #[inline]
+    fn prost_program(&self) -> &'static [ProstField] {
+        EPATHMAP_PROST_PROGRAM
+    }
+
+    #[inline]
+    fn prost_opaque(&self) -> Option<&dyn ProstOpaque> {
+        Some(self)
+    }
+
+    fn prost_len_step(&self, _from: usize) -> (u64, ProstDescent<'_>) {
+        unreachable!(
+            "EPathMap has no protobuf field program — its `encode_raw` has three arms, of \
+             which only one is a field walk. A driver must intercept it through \
+             `ProstNode::prost_opaque` and treat it as ONE node. Decomposing it here would \
+             silently drop the interned-bytes and ground-`U(m)` arms, which changes the \
+             event-hash preimage."
+        )
+    }
+
+    fn prost_emit(&self, _from: usize, _out: &mut Vec<u8>) -> ProstDescent<'_> {
+        unreachable!(
+            "EPathMap has no protobuf field program — see `prost_len_step`."
+        )
+    }
+}
