@@ -657,6 +657,44 @@ const PP_DEVIATIONS: &[Deviation] = &[
                  twice — the `EPathmapBody` arm and the `EZipperBody` arm.",
     },
     // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
+    //
+    // ★ The `EZipper` cursor-kind pair. `EZipper.cursor_kind` participates in
+    // the type's `PartialEq`/`Hash` and reaches the event hash, so two zippers
+    // agreeing on `current_path` but differing on the arm are `!=`, hash
+    // differently, and address DIFFERENT entries (`5` vs `[5]`, keys `03 0a` and
+    // `03 0a 00`). The copied body rendered only the segments, so it printed ONE
+    // string for that pair. The driver now spends the discriminator through
+    // `models::rust::pathmap_integration::render_cursor_position`, and the twin
+    // takes the identical edit — otherwise the differential compares a fixed
+    // driver against an unfixed twin, which is the failure mode this whole
+    // section exists to prevent.
+    //
+    // The two printers stay INDEPENDENT implementations (that is the oracle's
+    // whole evidential value); what is shared is a true LEAF, exactly as
+    // `build_remainder_string` and `build_string_from_var` are shared. That they
+    // agree is asserted by `pretty_printer::differential::every_expr_arm`, which
+    // now drives both arms of the discriminator.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                        \"[]\".to_string()",
+        to: "                        render_cursor_position(zipper.cursor_kind, &[])",
+        reason: "The EMPTY-cursor row of the same defect: at the root, `Split`, \
+                 `Bare` and `Prefix` all rendered `[]`. `render_cursor_position` \
+                 returns exactly `[]` for `Split` — proto value 0, so no \
+                 previously-representable zipper's bytes move — and marks the \
+                 other two.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                        format!(\"[{}]\", path_segments.join(\", \"))",
+        to: "                        render_cursor_position(zipper.cursor_kind, &path_segments)",
+        reason: "The NON-EMPTY-cursor row. `format!(\"[{}]\", …)` is the split-arm \
+                 rendering spelled unconditionally — the display-side twin of the \
+                 unconditional split-arm KEY that #108 removed from the readers. \
+                 The `Split` row is byte-identical to the copied expression, so \
+                 the replay-compared bytes of every zipper that could exist \
+                 before `cursor_kind` did are unchanged.",
+    },
     Deviation {
         path: "rholang/src/rust/interpreter/pretty_printer.rs",
         from: "            let introduced_news_shift_idx: Vec<i32> =\n                \

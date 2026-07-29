@@ -12,6 +12,7 @@ use models::rhoapi::{
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::pathmap_integration::render_cursor_position;
 use shared::rust::shared::printer::{Audience, Printer};
 use shared::rust::shared::string_ops::wrap_with_braces;
 
@@ -2685,8 +2686,17 @@ mod drive {
                 // the element Par faithfully (ANY eval_stable element, vs
                 // the former lossy GString-only SExpr decode) and render
                 // it. Zipper display strings move accordingly (re-pinned).
+                //
+                // ⚠ The segments are only HALF the cursor. `cursor_kind` is the
+                // other half — it participates in `EZipper`'s `PartialEq`/`Hash`
+                // and reaches the event hash — so rendering the segments alone
+                // printed ONE string for two zippers that are `!=`, hash
+                // differently, and address different entries. The arm is spent
+                // by `render_cursor_position`, whose `Split` row (proto value 0,
+                // hence every zipper representable before the discriminator
+                // existed) is byte-identical to what this printed before.
                 let current_path_repr = if zipper.current_path.is_empty() {
-                    "[]".to_string()
+                    render_cursor_position(zipper.cursor_kind, &[])
                 } else {
                     use models::rust::canonical_path::{decode_trie_path, tag};
 
@@ -2710,7 +2720,7 @@ mod drive {
                         };
                         path_segments.push(rendered);
                     }
-                    format!("[{}]", path_segments.join(", "))
+                    render_cursor_position(zipper.cursor_kind, &path_segments)
                 };
 
                 // Format: ReadZipper(at: ["books", "fiction"], {| ... |})
@@ -4099,6 +4109,57 @@ mod differential {
                 connective_used: false,
                 cursor_kind: 1,
             }),
+            // ★ The DISCRIMINATOR, driven on all five rendering rows over ONE
+            // fixed `current_path`, so the twin has to agree about the arm and
+            // not merely about the segments. `03 0a` is `encode_trie_segment(5)`
+            // — the segment shared by the bare entry `5` (key `03 0a`) and the
+            // singleton list `[5]` (key `03 0a 00`), which is exactly the pair
+            // `cursor_kind` exists to tell apart.
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
+                current_path: vec![vec![0x03, 0x0a]],
+                is_write_zipper: false,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 0, // Split  -> [5]
+            }),
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
+                current_path: vec![vec![0x03, 0x0a]],
+                is_write_zipper: false,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 1, // Bare   -> 5
+            }),
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
+                current_path: vec![vec![0x03, 0x0a]],
+                is_write_zipper: false,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 2, // Prefix -> [5]?
+            }),
+            // A wire value no `CursorKind` decodes. `cursor_kind` is a peer
+            // -controlled field, so the printer is handed these; it must render
+            // them rather than assert, because it IS the error path.
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
+                current_path: vec![vec![0x03, 0x0a]],
+                is_write_zipper: false,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 99,
+            }),
+            // A `Bare` cursor at a depth no bare entry inhabits (a bare key is
+            // exactly ONE segment), which is representable on the wire.
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
+                current_path: vec![vec![0x03, 0x0a], vec![0x03, 0x0c]],
+                is_write_zipper: false,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 1,
+            }),
             ExprInstance::EMethodBody(EMethod {
                 method_name: "nth".to_string(),
                 target: Some(expr_par(ExprInstance::EListBody(EList {
@@ -4154,6 +4215,43 @@ mod differential {
             "the every_expr_arm fixture covers only {} constructions",
             arms.len()
         );
+
+        // ★ ANTI-VACUITY for the `cursor_kind` family specifically. `agree`
+        // proves the two printers say the SAME thing; it says nothing about
+        // whether that thing is discriminating. Two printers that both dropped
+        // the arm would agree perfectly. So: the fixture must contain zippers
+        // that differ ONLY in `cursor_kind`, and the printer must give them
+        // DIFFERENT strings.
+        let cursor_kind_family: Vec<&ExprInstance> = arms
+            .iter()
+            .filter(|instance| match instance {
+                ExprInstance::EZipperBody(z) => z.current_path == vec![vec![0x03, 0x0au8]],
+                _ => false,
+            })
+            .collect();
+        assert_eq!(
+            cursor_kind_family.len(),
+            4,
+            "the fixture must hold four zippers agreeing on `current_path` and \
+             differing only on `cursor_kind`; it holds {}",
+            cursor_kind_family.len()
+        );
+        let rendered: Vec<String> = cursor_kind_family
+            .iter()
+            .map(|instance| PrettyPrinter::new().build_string_from_message(&expr_par((*instance).clone())))
+            .collect();
+        for (i, left) in rendered.iter().enumerate() {
+            for right in rendered.iter().skip(i + 1) {
+                assert_ne!(
+                    left, right,
+                    "★ two zippers that are `!=` and hash differently print \
+                     identically. `cursor_kind` is half the cursor: it decides \
+                     whether the segments name the bare entry `5` (key `03 0a`) \
+                     or the singleton list `[5]` (key `03 0a 00`), which one map \
+                     may hold at the same time."
+                );
+            }
+        }
 
         for (i, instance) in arms.into_iter().enumerate() {
             let bare = expr_par(instance.clone());

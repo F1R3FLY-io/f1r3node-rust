@@ -87,6 +87,7 @@ use models::rhoapi::{
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::pathmap_integration::render_cursor_position;
 use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
@@ -478,7 +479,7 @@ impl PrettyPrinter {
                     // the former lossy GString-only SExpr decode) and render
                     // it. Zipper display strings move accordingly (re-pinned).
                     let current_path_repr = if zipper.current_path.is_empty() {
-                        "[]".to_string()
+                        render_cursor_position(zipper.cursor_kind, &[])
                     } else {
                         use models::rust::canonical_path::{decode_trie_path, tag};
 
@@ -504,7 +505,7 @@ impl PrettyPrinter {
                             };
                             path_segments.push(rendered);
                         }
-                        format!("[{}]", path_segments.join(", "))
+                        render_cursor_position(zipper.cursor_kind, &path_segments)
                     };
 
                     // Format: ReadZipper(at: ["books", "fiction"], {| ... |})

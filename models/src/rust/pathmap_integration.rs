@@ -116,6 +116,58 @@ impl CursorKind {
     }
 }
 
+/// Render the ENTRY a cursor addresses, from its already-rendered path
+/// elements and its raw `EZipper.cursor_kind` wire value.
+///
+/// # ⚠ Why the printer may not drop the discriminator
+///
+/// `cursor_kind` participates in `EZipper`'s `PartialEq` and `Hash`
+/// (`models/src/lib.rs`) and is emitted into the event hash
+/// (`spliced_event_bytes.rs`), because — as that impl's own comment puts it —
+/// *two zippers agreeing on the segments but differing on the arm are focused
+/// on DIFFERENT entries and must not compare equal*. A printer that renders
+/// only the segments therefore prints ONE string for two values that are `!=`,
+/// hash differently, and address different entries. `readZipper().atPath(5)`
+/// and `readZipper().atPath([5])` on `{| 5, [5] |}` are exactly that pair.
+///
+/// # The rendering
+///
+/// | `cursor_kind` | segments | rendered |
+/// |---|---|---|
+/// | `0` `Split` | `k ≥ 0` | <code>[e₁, …, e_k]</code> — the list entry |
+/// | `1` `Bare` | `k = 1` | `e₁` — the bare entry, no brackets |
+/// | `1` `Bare` | `k ≠ 1` | `bare([e₁, …, e_k])` — see below |
+/// | `2` `Prefix` | `k ≥ 0` | <code>[e₁, …, e_k]?</code> — arm not yet chosen |
+/// | anything else | `k ≥ 0` | <code>[e₁, …, e_k]&lt;unknown cursor kind n&gt;</code> |
+///
+/// ★ **The `Split` row is byte-identical to what this code printed before the
+/// discriminator was read at all**, and `Split` is proto value 0 — the value
+/// every `EZipper` serialized before `cursor_kind` existed decodes to. So no
+/// previously-representable zipper's rendering moves, which matters because
+/// these bytes reach a block through `build_channel_string` -> `cap` ->
+/// `error_message` and are replay-compared.
+///
+/// # Why the degenerate rows render rather than panic
+///
+/// A `Bare` cursor is inhabited at exactly one depth — 1 — because a bare
+/// entry's key is exactly one segment ([`entry_key_is_in_codec_image`]). At any
+/// other depth the cursor names no entry. `cursor_kind` is nevertheless a wire
+/// field a peer controls, so the printer is handed values no local construction
+/// produces. It renders them in a shape no valid cursor can produce, marked and
+/// greppable, rather than asserting: a pretty printer that can fail is a
+/// printer that cannot be used in an error path, and this one is *in* the error
+/// path.
+pub fn render_cursor_position(cursor_kind: u32, elements: &[String]) -> String {
+    let list = || format!("[{}]", elements.join(", "));
+    match (CursorKind::from_wire(cursor_kind), elements) {
+        (Some(CursorKind::Split), _) => list(),
+        (Some(CursorKind::Bare), [only]) => only.clone(),
+        (Some(CursorKind::Bare), _) => format!("bare({})", list()),
+        (Some(CursorKind::Prefix), _) => format!("{}?", list()),
+        (None, _) => format!("{}<unknown cursor kind {cursor_kind}>", list()),
+    }
+}
+
 /// The per-element codec SEGMENTS of a path Par (W2b-1).
 ///
 /// - A split-arm entry (a ground `EList` carrier, [`takes_split_arm`]) yields
