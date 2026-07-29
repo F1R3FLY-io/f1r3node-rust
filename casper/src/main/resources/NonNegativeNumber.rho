@@ -19,10 +19,20 @@ new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`),
       contract this(@"add", @x, success) = {
         if (x >= 0) {
           for(@v <- @(*MergeableTag, *valueStore)){
-            if (v + x >= v) {
+            // Guard the way "sub" does below: decide the predicate BEFORE the arithmetic,
+            // never by observing a wrap. Int `+` is checked, so an overflowing `v + x` raises
+            // instead of wrapping round to a smaller number -- a guard that must evaluate
+            // `v + x` in order to learn whether `v + x` is representable cannot work. Do NOT
+            // "simplify" this back to a form that evaluates the sum, i.e. `if (v + x >= v)`.
+            // 9223372036854775807 is Int's maximum (2^63 - 1); it is a bare literal because
+            // Rholang has no named constant for it (it is also the lastNonce on lines 8, 64).
+            // The form is total: v is an Int >= 0 (see `match init` below, which stores an Int
+            // or else 0) and x >= 0 by the guard above, so 9223372036854775807 - v cannot
+            // underflow and the comparison always decides.
+            if (x <= 9223372036854775807 - v) {
               @(*MergeableTag, *valueStore)!(v + x) | success!(true)
             } else {
-              //overflow
+              //would overflow: leave the balance as it was and report failure
               @(*MergeableTag, *valueStore)!(v) | success!(false)
             }
           }
