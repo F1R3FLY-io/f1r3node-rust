@@ -22,11 +22,13 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 40 consensus-visible changes** — 29 on the F1r3node node itself, 11 on MeTTaIL's Rholang.
-Of these, **36 are landed, 3 are in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. **Nineteen** move bytes on the bincode lane and **eighteen** on the protobuf lane; **twenty** move
-a *verdict*; **twenty-eight** move the *post-state hash*; **twelve** move *acceptance*; **two** move
-*metering*. One (**CBR-L09**) is a deliberate, owner-ruled divergence from the reference implementation
+**Result: 41 consensus-visible changes** — 30 on the F1r3node node itself, 11 on MeTTaIL's Rholang.
+Of these, **39 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. **Twenty** move bytes on the bincode lane and **nineteen** on the protobuf lane; **twenty** move
+a *verdict*; **twenty-nine** move the *post-state hash*; **twelve** move *acceptance*; **two** move
+*metering*. ⚠ Every figure in this paragraph is **recounted from the §4.1 rows**, never adjusted; the
+counts moved between drafts because entries went stale about which commit they described, and
+decrementing would have hidden that (see the note under §4.1). One (**CBR-L09**) is a deliberate, owner-ruled divergence from the reference implementation
 and is marked as such. A further **21 commits touching consensus-critical paths were examined and
 rejected** as not consensus-visible; each is listed with its typed reason in
 [Appendix B](#appendix-b--the-exemption-table), so that a reviewer can judge whether the sweep applied a
@@ -99,7 +101,7 @@ and argues it against the alternatives.
    phrase like "consensus-breaking" conflates, with the propagation between axes made explicit.
 2. An explicit account of the **two wire formats** a `Par` crosses, and of the field-order asymmetry
    between them that has already produced one measured, round-trip-invisible defect (§2.5).
-3. A **derived** change set (§3, §4): 40 entries, each with all six axes answered, a stated blast
+3. A **derived** change set (§3, §4): 41 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised it,
    quoted verbatim with its date.
 4. The **negative result**: 21 examined-and-rejected commits with typed reasons (Appendix B), which is
@@ -503,8 +505,9 @@ is a *future* fork, not a present one).
 | [CBR-024](#cbr-024) | N | `last` joins the method table | `2fee67fa` | · | · | · | · | · | ● | ● | PERMISSIVE | **W** |
 | [CBR-025](#cbr-025) | N | Trie enumeration: `getPath` / `toNextLeaf` / `leafCount` | `98d2422d` | · | · | · | · | · | ● | ● | PERMISSIVE | **W** |
 | [CBR-026](#cbr-026) | N | `E(S)` — the enabled-rendezvous query and firing a **named** selection | `2087c043` | · | · | · | · | · | ● | · | PERMISSIVE | **D** |
-| [CBR-027](#cbr-027) | N | GInt `+` and `-` stop wrapping on overflow | *in flight* | ● | ● | ● | ● | ● | ○ | ○ | REGRESSIVE | **W** |
+| [CBR-027](#cbr-027) | N | GInt `+` and `-` stop wrapping on overflow | `6ff46f8a` ⚠ | ● | ● | ● | ● | ● | ○ | ? | REGRESSIVE | **W** |
 | [CBR-028](#cbr-028) | N | **OPEN, UNREPAIRED** — write-unbounded / read-bounded on a consensus wire | *not repaired* | · | · | · | ● | ● | ● | · | — | **W** |
+| [CBR-029](#cbr-029) | N | The pretty printer renders a receive's `where` guard | `d8e95fb0` | · | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -517,10 +520,28 @@ is a *future* fork, not a present one).
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L11](#cbr-l11) | L | The literal-domain and canonical-surface repairs | six commits, see body | ● | ○ | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 
-**Totals — 40 entries**: 29 on Surface N, 11 on Surface L; **36 landed, 3 in flight**, 1 open and
-unrepaired. By evidence grade: **32 WITNESSED**, 3 MECHANISM-ONLY, 2 LATENT, 2 DORMANT,
-1 NEUTRALITY-MEASURED. Exactly **one** axis cell is `UNVERIFIED` (**CBR-L07**, metering). Aggregated in
-[§5](#5-risk-analysis).
+**Totals — 41 entries**, recounted from the rows above rather than adjusted: 30 on Surface N, 11 on
+Surface L; **39 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **32 WITNESSED**, 3 MECHANISM-ONLY, **3 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction:
+24 CORRECTIVE, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, 1 DIVERGENT, 1 not applicable (the open hazard).
+**Two** axis cells are `UNVERIFIED`: **CBR-L07** metering, and **CBR-027** metering — the latter newly,
+because its landing commit does not compile and the ordering the cell asserts cannot be read from it.
+
+⚠ **The landed count moved by three, and only one of the three is this document's own new entry.**
+**CBR-007** (`b219e199`, `dc383ed1`) and **CBR-027** (`6ff46f8a`) landed after the first draft and their
+entries did not move with them; **CBR-029** is new. Recounting is what surfaced that, which is the
+argument for [§7](#7-maintenance--how-an-omission-fails-loudly)'s clause 3 (*exactness*) as a **machine**
+check: decrementing "3 in flight" to "2" would have preserved a wrong total and hidden two stale rows.
+
+⚠ **CBR-029 is outside the anchored range** `7293d57c..dc383ed1`, as is **CBR-027**'s landing commit.
+Both are recorded here because the register is **LIVING** ([§7](#7-maintenance--how-an-omission-fails-loudly)):
+the alternative — a consensus-path change with no entry because the anchor had not moved — is exactly
+the omission the drift gate exists to make loud. Moving `REGISTER_BASE` is a separate, reviewed edit.
+
+⚠ **CBR-029 is outside the anchored range** `7293d57c..dc383ed1`. It was derived from a defect found
+after this document's first draft and is recorded here because the register is **LIVING** ([§7](#7-maintenance--how-an-omission-fails-loudly)):
+the alternative — a consensus-path change with no entry because the anchor had not moved — is exactly
+the omission the drift gate exists to make loud. Moving `REGISTER_BASE` is a separate, reviewed edit.
 
 ### 4.2 Entry template
 
@@ -3036,11 +3057,11 @@ within a group by `order_candidates_with_index`, then selections by the descent.
 
 | | |
 |---|---|
-| Commit(s) | **IN FLIGHT** — designed and ruled; **not present in the tree at the time of writing.** |
-| Status | IN FLIGHT (describes *intended* behaviour) |
+| Commit(s) | `6ff46f8a` — *fix(reduce)!: Int `+` and `-` are CHECKED — the reducer no longer wraps* |
+| Status | LANDED ⚠ **and the landed commit does not compile** — see [the drift check](#drift-check-at-the-landing-commit-2026-07-29) |
 | Direction | REGRESSIVE |
 | Evidence grade | WITNESSED |
-| Files | `rholang/src/rust/interpreter/reduce.rs` — working tree lines **3503** (`wrapping_add`) and **3597** (`wrapping_sub`); at commit `8853f839` the same expressions are at **3397** and **3489**. **MEASURED** (`grep -n`, both revisions). |
+| Files | `rholang/src/rust/interpreter/reduce.rs` at `6ff46f8a` — `checked_add` at **3504**, `checked_sub` at **3626**, the rationale comment at **3604**. The `wrapping_add` / `wrapping_sub` calls this entry was written about are **gone** at that commit; the pre-repair coordinates were working-tree **3503** / **3597** and `8853f839` **3397** / **3489**. **MEASURED** (`git show 6ff46f8a:… \| grep -n`, and the file read directly at that ref). |
 
 #### (a) The issue
 
@@ -3122,12 +3143,71 @@ The governing general rule, **2026-07-29T16:55:56Z**:
 - The inconsistency is **DERIVED** and re-verified for this report: `wrapping_add` at working-tree
   `reduce.rs:3503`, `wrapping_sub` at `:3597`, against checked division-by-zero and
   $`\mathrm{i64::MIN}/-1`$ guards in the same `match` family.
-- ⚠ **What would change if the implementation diverges from this design**: if the error is raised
-  *before* the cost reservation rather than after, the metering cell becomes **MOVES**; if the error
-  message includes the operands (as the ruling's option text says it should), that message becomes a
-  candidate for the block-resident `error_message` path and the entry acquires **CBR-016**'s
-  determinism obligation — the message must be a pure function of the term. **This must be re-checked
-  when the commit lands.**
+- ⚠ The prediction this entry made — *"if the error message includes the operands … the entry acquires
+  **CBR-016**'s determinism obligation"* — **came true**, and is discharged below.
+
+#### Drift check at the landing commit (2026-07-29)
+
+This entry said **IN FLIGHT — not present in the tree at the time of writing** for less than a day.
+`6ff46f8a` landed it, and the entry did not move with it. What follows is the re-derivation, and the
+first two rows are the ones the entry's own closing paragraph asked for.
+
+| re-check item the entry named | disposition at `6ff46f8a` |
+|---|---|
+| Is the error raised **before** the cost reservation (⇒ metering cell becomes MOVES)? | ★ **NOT DISCHARGEABLE at this commit** — see the compile finding below. The `GInt` arm of `combine_plus` at `6ff46f8a:3394-3398` still reserves `sum_cost()` and contains **no** checked call at all, so there is no ordering to read. The metering cell stays `NO` on the strength of the *design*, and is **UNVERIFIED against code** until the repair lands. |
+| Does the message include the operands (⇒ **CBR-016** determinism obligation)? | **YES — and the obligation is discharged.** The committed strings are `"Arithmetic overflow in addition: {lhs} + {rhs} is not representable as an Int (64-bit signed)"` and the subtraction twin. `lhs` and `rhs` are the `i64` payloads of the two `ExprInstance::GInt`s in the term, so the message is a **pure function of the term** — no environment read, no `PRETTY_PRINTER_OUTPUT_TRIM_AFTER`, no host-local ordering. It reaches a block only through `SystemDeployPlatformFailure::UnexpectedSystemErrors`, whose `Display` is `"Caught errors in Rholang interpreter {:?}"`, i.e. `Debug` on `Vec<InterpreterError>`; that is environment-independent for the same reason. **DERIVED**. |
+
+⚠⚠ **And a finding the entry could not have predicted: `6ff46f8a` as committed does not compile.**
+
+Both hunks landed in the **wrong `match` arm**. At `6ff46f8a:3503-3513` the `checked_add` block — whose
+body names `lhs` and `rhs` — sits inside
+
+```rust
+(ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+    let result = lhs.checked_add(rhs).ok_or_else(|| { … })?;
+    self.metering
+        .reserve_primitive(bigint_subtraction_cost(b1.len(), b2.len()))?;
+    make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
+}
+```
+
+where the bindings are `b1` and `b2`. `checked_sub` at `:3626` landed inside the `==` operator's body
+the same way. The result is **ten `E0425 cannot find value` errors** and
+`error: could not compile 'rholang' (lib)` — a **hard** compile error, not a lint, so
+`-D warnings` is irrelevant to it. **MEASURED**:
+`RUSTFLAGS="-C target-feature=+aes,+sse2 -D warnings" cargo check --release -p rholang --all-targets`
+against an export of the ref, and confirmed by reading the file at the ref directly. A repair is in the
+working tree at the time of writing — it *moves* both hunks into the `GInt` arms of `combine_plus` /
+`combine_minus` — but it is **uncommitted**, so it is not citable and this row must be re-derived when
+it lands.
+
+★ **The methodological lesson, recorded because this campaign has now paid for it twice in one day.**
+The first attempt to establish the compile state used `git archive <ref>` into a scratch directory —
+correct in refusing to mutate the working tree, and **insufficient**: the root `Cargo.toml` carries a
+`[patch]` section marked `HELD LOCAL — DO NOT COMMIT` pointing at an unpublished parser worktree that the
+`cost_accounting` normalizers require, so an archived ref **cannot** compile until the overlay is copied
+in **and** its three relative `path =` deps are made absolute or the export is re-parented. A baseline
+that does not build measures nothing. *When a premise looks refuted, suspect the instrument once before
+suspecting the claim* — and say which instrument was cleared. Here both were: dependency resolution
+succeeded (so the overlay was in force) and the failure was in `rholang`'s own source (so the archive was
+faithful), which is what promotes this from a suspected instrument fault to a measured defect.
+
+#### ★ This entry is the gate's first witness
+
+[§7.2](#72-the-design-and-why-this-one) specifies a drift gate and records it as **DESIGNED, NOT BUILT**;
+[§7.4](#74-anti-vacuity--the-gate-must-be-shown-red) requires it to be shown RED before it is trusted.
+**This entry is a real member of the class it is meant to catch**, and it is worth more than a synthetic
+cell:
+
+| gate clause | would it have fired? |
+|---|---|
+| 2 · **coverage** ($`\mathcal{O} \subseteq \mathcal{E} \uplus \mathcal{X}`$) | **YES.** `6ff46f8a` touches `rholang/src/rust/interpreter/reduce.rs`, a consensus-critical path, and appeared in no `[[entry]]` and no `[[exempt]]` row. It would have failed *naming the SHA*, which is exactly the requirement of [§7.1](#71-the-problem-stated-as-an-engineering-requirement). |
+| 5 · **complete axis answers** | No — all seven cells were present. The staleness was in `Commit(s)`, `Status` and `Files`, which no specified clause reads. ⚠ **A gap in the design**, recorded here: an entry can be *stale about which commit it describes* and pass every clause of §7.2. |
+| 6 · **UNVERIFIED budget** | Not at the time; it would now, since the metering cell has become `UNVERIFIED against code`. That is the budget doing its job — a visible diff rather than a silent slide. |
+
+**Time to drift: under one day**, in a document whose §7 is titled *"how an omission fails loudly"*. It
+did not fail loudly; it was found by a reader who happened to be measuring something else. That is the
+argument for building the gate, restated as an incident rather than as a principle.
 
 ---
 
@@ -3244,6 +3324,156 @@ ruling**.
   reachability probe a measurement rather than a false zero: splicing this depth-34 payload through the
   **identical harness** turns the replay red with `recursion limit reached`. *"The harness is provably
   delivering the bytes."* **CITED**.
+
+---
+
+### CBR-029
+
+**The pretty printer renders a receive's `where` guard, and the storage printer reads it back off the resting continuation.**
+
+| | |
+|---|---|
+| Commit(s) | `d8e95fb0` — *fix(rholang)!: a guarded receive stops printing as an unguarded one* |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | LATENT |
+| Files | `rholang/src/rust/interpreter/pretty_printer.rs`, `rholang/src/rust/interpreter/pretty_printer_oracle.rs`, `rholang/src/rust/interpreter/storage/storage_printer.rs` |
+
+#### (a) The issue
+
+A guarded receive resting in the tuplespace printed as an **unguarded** one. `Receive.condition` — the
+`where` clause — was dropped twice on the way to the page, at two independent sites:
+
+| # | site | what it did |
+|---|---|---|
+| 1 | `storage/storage_printer.rs`, `to_receives` | read `wk.continuation.tagged_cont` and built `Receive { …, condition: None }`. `wk.continuation.guard` is on the **same struct** and was never read. |
+| 2 | `pretty_printer.rs`, `PpNode::Receive` / `PpKont::ReceiveK` | walked `r.body` and `r.binds` and never touched `r.condition`. The printer emitted **no `where` token anywhere**: a grep for `"where"` in the file returned nothing. |
+
+The guard itself was never lost. `Reduce::consume_inner` registers
+`TaggedContinuation { tagged_cont: …, guard }`, and `RhoTypes.proto` documents the field as *"Optional
+`where`-clause guard, lifted from `Receive.condition` when the continuation is registered with rspace."*
+`Matcher::check_commit` reads it and refuses the COMM. Only the **rendering** was wrong.
+
+Measured, before the repair, for
+`@"guarded"!(1) | for (@x <- @"guarded" where x > 5) { @"out"!(x) }`:
+
+```text
+  "guarded"!(1) |
+  …
+  for( @{c2} <- @{"guarded"} ) {
+    "out"!(d0)
+  }
+```
+
+★ **This is worse than an obviously-internal artefact.** `<unprintable>` (CBR-018) announces itself. This
+did not: it is well-formed Rholang, it is plausible, and it describes a receive that *would have
+consumed the resting message* — the exact opposite of what the space is doing. The reader's question
+("why is my message still there?") is answered with a term that says it should not be.
+
+★ **It also falsified the premise the storage printer rests on.** That component translates internal
+state back into the language (`Datum → Send`, `WaitingContinuation → Receive`, `concatenate_pars`) and
+renders it with the language's own printer. That is sound only if the printer can render what the
+translation produces. For a guard it could not.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | N/A — nothing about reduction changes; only a rendering. |
+| 2 · verdict | NO — `check_commit` and `eval_receive` are untouched, and the display predicate is *theirs* (see below). |
+| 3 · bytes (Lane B, bincode) | **MOVES** — the rendered string is part of `error_msg`, which is length-prefixed into `RuntimeManager::replay_payload_hash`'s Blake2b256 preimage (`casper/src/rust/util/rholang/runtime_manager.rs`). |
+| 3 · bytes (Lane P, prost) | **MOVES** — `ProcessedSystemDeployProto` / `ProcessedDeployProto.systemDeployError` is a `string` **in the block body** (`models/src/main/protobuf/CasperMessage.proto`). |
+| 4 · post-state hash | **MOVES** — by the Lane-B cell: the same bytes feed the replay payload hash. |
+| 5 · accepted programs | NO — no deploy is admitted or refused differently. |
+| 6 · metering | NO — no `reserve_*` site moves; the printer is not metered. |
+
+**The disagreement.** Two validators on different software versions render the *same* failing system
+deploy into different `error_msg` bytes, and
+`ReplayRuntimeOps::replay_system_deploy_internal` compares them for **byte equality**
+(`casper/src/rust/rholang/replay_runtime.rs`). A mismatch is
+`ReplayFailure::system_deploy_error_mismatch` — a rejected block. Fault class: **safety fork** on the
+post-state hash, since the same bytes are hashed.
+
+**Blast radius, and the two surfaces separated.** The two repairs are **not** equally exposed, and
+conflating them would overstate the risk:
+
+| repair | reaches a block? | why |
+|---|---|---|
+| `to_receives` reads `guard` (leak 1) | **NO** | `storage_printer::pretty_print` has exactly two callers — `rholang/src/rholang_cli.rs` (the CLI) and `node/src/rust/api/repl_grpc_service.rs` (the REPL). Neither is on a deploy path. This half is a REPL/CLI surface, as expected. |
+| `PrettyPrinter` renders `where` (leak 2) | **YES, mechanically** | `SystemDeployPlatformFailure::UnexpectedResult` → `show_seq_par` → `PrettyPrinter::for_consensus().build_channel_string` → `error_msg` (`casper/src/rust/util/rholang/system_deploy_user_error.rs`). |
+
+**Is it reachable by an ordinary deploy? No — and that is why the grade is LATENT.** The only `Par` that
+reaches `show_seq_par` is a **system deploy's** return value, consumed off a channel built by
+`SystemDeployTrait::mk_return_channel` as a `GPrivate` drawn from the system deploy's own
+`Blake2b512Random`. A user deploy cannot produce on an unforgeable name it was never given, so it cannot
+place a term there. Reaching the moved bytes therefore requires a **node-supplied** system contract to
+return a term containing a `Receive` with a live `condition`, and no bundled `.rho` contains a receive
+guard — a repository-wide grep for a `where` clause in receive position matches exactly one file,
+`examples/where_receive_guard.rho`, which is documentation.
+
+★ **The moved set is confined by construction.** `pretty_printer::receive_guard` renders a clause only
+when `condition` is `Some(g)` with `g != Par::default()` — which is *precisely* the predicate
+`Matcher::check_commit` and `Reduce::eval_receive` already use to decide whether a guard exists at all
+(both commit unconditionally on `None` and on `Some(Par::default())`; `eval_receive` collapses the
+second to the first before registration). So **no receive whose behaviour is unguarded moves a byte**,
+and the display predicate cannot drift away from the decision predicate — it *is* the decision
+predicate.
+
+**Could live chain state have been produced under the old behaviour?** ⚠ Not settleable from inside the
+repository, and the query is unusually cheap. Settling query: scan historical
+`ProcessedSystemDeploy::Failed { error_msg }` values for the substring `for(`. A block whose
+`error_msg` renders a receive is a *necessary* condition for these bytes to have moved; if none exists,
+the entry is discharged outright. **UNVERIFIED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** A REPL/CLI surface that answers a question about the tuplespace
+with a term whose semantics differ from the one resting in it — and, by construction, a printer that
+cannot render the language it is the printer for. The second is the more serious: it means the storage
+printer's translate-then-print design is unsound for at least one construct, and nothing said so.
+
+**Why this repair rather than the alternatives.**
+
+| Alternative | Verdict |
+|---|---|
+| Fix only `to_receives`. | **REJECTED — it fixes nothing.** The printer emits no `where` token, so a `Receive` carrying a `condition` still prints without it. The two leaks are in series. |
+| Fix only the printer. | **REJECTED** for the mirror reason: the storage path never puts a `condition` on the `Receive` it builds, so the resting form is unaffected. |
+| Render `Some(Par::default())` as ` where Nil`. | **REJECTED.** Syntactically faithful, semantically misleading — an empty guard admits exactly what no guard admits — and it would move the bytes of every receive written with a vacuous guard while claiming to be about guarded ones. Using the decision sites' own predicate confines the movement to receives that are actually gated. |
+| Attach the clause to a bind rather than to the receipt. | **REJECTED** — the grammar is `receipt: conc1(bind) optional('where' guard)` (`rholang-tree-sitter/grammar.js`); `where` follows **every** bind. Pinned by `a_receive_with_a_where_guard`'s placement assertions. |
+| Let the oracle twin keep the old rendering. | **REJECTED.** The differential would then compare a repaired driver against an unrepaired twin, which is the exact failure mode `pretty_printer_oracle.rs` exists to prevent. The twin takes the identical edit, declared in `PP_DEVIATIONS` as three hunks — the discipline `76de7d44` used for `cursor_kind`. |
+
+**Authority.** No owner ruling.
+
+#### Evidence
+
+- **The RED, through RSpace.** `rholang/tests/storage_printer_renders_receive_guards.rs`. Before the
+  repair: 2 of 5 failed, 3 controls passed. After: 5 of 5 pass. The guarded test asserts the resting
+  continuation carries a **live** guard (`Some(g)`, `g != Par::default()`) *before* asserting on the
+  rendering, so a fixture that failed to register one cannot pass vacuously. **MEASURED**.
+- **The assertion is pinned to the guard's own tokens, and calibrates itself.** The test reads the
+  variable name out of the rendered **body** and then requires ` where {that name} > 5 ` in the header,
+  so it asserts the guard renders *in the body's de Bruijn environment* rather than merely that some
+  `where` appeared. **MEASURED**.
+- **Controls that must not discriminate.** An unguarded resting receive is compared byte-for-byte
+  against its pre-repair line; a `where Nil` receive must render identically to it; a resting send
+  (`to_sends`) is unchanged. All three passed before and after. **MEASURED**.
+- **The two printers still agree.** `pretty_printer::differential::a_receive_with_a_where_guard` runs
+  `agree` on five shapes (guarded, empty-guard, no-guard, empty-body-guarded, and the
+  `build_channel_string` leg of each) and pins the rendered bytes with a derived, not blessed,
+  variable-name table. `generate_par` sets `condition: None` unconditionally, so **no proptest corpus in
+  that module reaches a guard** — this fixture is the only coverage, and it says so. **MEASURED**.
+- **The sequencing has teeth.** `DriveMutation::ReceiveConditionBeforeBoundShift` renders the guard
+  before the interposed `AddBoundShift`; `the_recorded_mutation_table_is_executable` asserts the
+  unmutated drive agrees with the twin on the witness and the mutated drive does not.
+  8/8 mutations separated. **MEASURED**.
+- **The twin's provenance still checks.** `cargo test -p rholang --test normalize_oracle_provenance`:
+  8/8, including `no_undeclared_pretty_printer_deviations`, which fails when a declared deviation stops
+  being **required** — so the three new entries are load-bearing, not decoration. **MEASURED**.
+- **The consensus reach was traced, not assumed.** `show_seq_par` → `for_consensus()` →
+  `build_channel_string`; `error_msg` → `ProcessedSystemDeployProto` (block field) **and**
+  `replay_payload_hash` (Blake2b256 preimage) **and** the byte comparison in
+  `replay_system_deploy_internal`. The *unreachability* by an ordinary deploy was traced to
+  `mk_return_channel`'s `GPrivate`. **DERIVED**.
 
 ---
 
@@ -4014,7 +4244,7 @@ F1r3node's.
 |---|---|---|
 | 1 | **CBR-019** | The **largest blast radius in the register: total.** If the byte-identity claim is false, every produce and every consume in the system hashes differently. There is no partial failure mode. The claim is extensively measured — but it is a claim of *neutrality*, and neutrality claims are the ones that fail silently. |
 | 2 | **CBR-001** | The only entry that changes **when a COMM fires** for guard-free programs as well as guarded ones, and whose failure mode is a **silent post-state divergence with no detectable event** (permuted selections build the same COMM event and slip past the trace assertion). Its determinism argument is the load-bearing part and should be reviewed on its own. |
-| 3 | **CBR-027** | The only change that alters **computed values by design** rather than by correcting an outright defect, and the only **REGRESSIVE** entry on Surface N whose old behaviour produced a committed *value* rather than an error. Its chain-history query should be run **before** it ships. |
+| 3 | **CBR-027** | The only change that alters **computed values by design** rather than by correcting an outright defect, and the only **REGRESSIVE** entry on Surface N whose old behaviour produced a committed *value* rather than an error. ⚠ Its chain-history query was to be run **before** it shipped. **It has shipped** (`6ff46f8a`) and the query has not been run — an obligation now **overdue**, not pending. |
 
 ### 5.3 Direction profile
 
@@ -4056,7 +4286,7 @@ commission the queries as one piece of work rather than eleven.
 | **CBR-011**, **CBR-012**, **CBR-013** | Scan event-hash preimages for an `EPathMap` with `connective_used = true` or a non-empty `remainder`. | Moderate. |
 | **CBR-005** | Replay history under an instrumented build; count matcher attempts whose winning snapshot exceeds its own writes. | ★ **Expensive** — needs a full instrumented replay. |
 | **CBR-007** | Scan chain history **and the deploy corpus** for `MatchCase` patterns and `EMatches` right-hand sides whose `connectives` contain a `ConnNotBody` or `ConnOrBody` **whose body carries a `FreeVar` or has `connective_used == true`**. | Moderate — a static scan, no replay needed. ★ Sharper than a replay because the predicate is syntactic. |
-| **CBR-027** | Replay under an instrumented build counting `GInt` `+`/`-` where `checked_*` would return `None`. | Expensive, but ★ **should be run before this change ships.** |
+| **CBR-027** | Replay under an instrumented build counting `GInt` `+`/`-` where `checked_*` would return `None`. | Expensive, and ★ **OVERDUE**: it was to be run before the change shipped, and the change shipped at `6ff46f8a`. |
 | **CBR-016** | Audit node deployment configurations for `PRETTY_PRINTER_OUTPUT_TRIM_AFTER`; separately count historical `ProcessedSystemDeploy::Failed`. | ⚠ **Operational, not a repository question.** |
 | **CBR-022** | Search node crash logs for SIGABRT with a stack-overflow signature during `doDeploy` / `deploy_cosigned`. | ⚠ Operational. |
 
@@ -4149,10 +4379,19 @@ who observed it.
 
 ### 6.4 UNVERIFIED budget
 
-**One** axis cell in the summary table is `UNVERIFIED` (**CBR-L07**, metering). Every other cell is
-answered. Eleven entries carry an **UNVERIFIED** chain-history answer, consolidated in §5.4 — these are
-questions about *history*, not about the code, and are unanswerable from inside the repository by
-construction.
+**Two** axis cells in the summary table are `UNVERIFIED`: **CBR-L07** metering, and **CBR-027** metering.
+Every other cell is answered. Twelve entries carry an **UNVERIFIED** chain-history answer, consolidated in
+§5.4 — these are questions about *history*, not about the code, and are unanswerable from inside the
+repository by construction.
+
+★ **The budget moved from one to two, and the increment is the mechanism working.** **CBR-027**'s
+metering cell asserted `NO` on the strength of *"the charge is reserved before the arithmetic"*. When
+`6ff46f8a` landed, that ordering could no longer be read from the code — both checked-arithmetic hunks
+landed in the wrong `match` arm and the commit does not compile — so the cell is now honest about being
+a design claim rather than a measurement. Clause 6 of [§7.2](#72-the-design-and-why-this-one) asserts this
+count **exactly** for precisely this reason: raising it is a visible diff, and a cell quietly retaining
+`NO` after its evidence evaporated is the failure that clause exists to prevent. It must return to `NO`
+— by measurement — when the repair lands.
 
 ### 6.5 Coverage asymmetry between the two surfaces
 
@@ -4162,9 +4401,16 @@ construction.
 |---|---|---|
 | Commits in the campaign window | 111 | 236 |
 | Commits touching the path set | **78** | 149 |
-| Covered by register entries | **57 SHAs / 29 entries** | 16 SHAs / 11 entries |
+| Covered by register entries | **57 SHAs / 30 entries** | 16 SHAs / 11 entries |
 | Explicitly exempted with a reason | **21** | **0** |
 | Partition exact? | **Yes** — 57 + 21 = 78 | **No** — 133 commits are neither an entry nor an exemption |
+
+⚠ The Surface-N entry count is **30**, but the in-range SHA count is still **57**: **CBR-029**
+(`d8e95fb0`) and **CBR-027**'s landing commit (`6ff46f8a`) are both **after** `dc383ed1` and therefore
+outside the anchored range, so they add entries without adding in-range SHAs. The partition claim
+`57 + 21 = 78` is a statement about `7293d57c..dc383ed1` and is unaffected. This is the shape of drift
+the anchor is supposed to make legible rather than hide, and it is why moving `REGISTER_BASE` is
+specified as an explicit, reviewed edit.
 
 The Surface-L entries are a **targeted selection** of semantics-moving changes found by keyword and by
 reading the campaign ledger, not an exhaustive partition. A Surface-L change that moves an axis and does
@@ -4241,7 +4487,8 @@ where it was wrong:
 **CBR-001**, **CBR-002**, **CBR-003**, **CBR-004**, **CBR-008**, **CBR-009**, **CBR-010**, **CBR-014**,
 **CBR-015**, **CBR-016**, **CBR-017**, **CBR-018**, **CBR-020**, **CBR-021**, **CBR-022**, **CBR-023**,
 **CBR-024**, **CBR-025**, **CBR-026**, **CBR-L01** .. **CBR-L07**, **CBR-L10** and **CBR-L11** —
-**28 of the 40 entries**. (The candidate list is traceable to the other 12: **CBR-005**, **CBR-006**,
+**28 of the first 40 entries** (**CBR-029** joined later and was not on the list either).
+(The candidate list is traceable to the other 12: **CBR-005**, **CBR-006**,
 **CBR-007**, **CBR-011**, **CBR-012**, **CBR-013**, **CBR-019**, **CBR-019b**, **CBR-027**, **CBR-028**,
 **CBR-L08**, **CBR-L09**.)
 
@@ -4376,6 +4623,30 @@ The gate is subject to the same standard it enforces. Before it is trusted, thre
 
 A control run with none of the three mutations must pass.
 
+#### ★ A REAL witness now exists — the gate need not rely only on synthetic cells
+
+The three cells above are *constructed* members of the failure class. One **naturally occurring** member
+is now on file, and it is stronger evidence than any of them because nobody arranged it:
+**[CBR-027's drift check](#drift-check-at-the-landing-commit-2026-07-29)**. The entry read
+*"**IN FLIGHT** — not present in the tree at the time of writing"* for **under one day**; `6ff46f8a`
+landed it, touching `rholang/src/rust/interpreter/reduce.rs`, and appeared in no entry row and no
+exemption row. Clause 2 (**coverage**) would have failed naming that SHA. **CBR-007** drifted the same way
+in the same window.
+
+⚠ **The witness also exposes a gap in the design above, which is why recording it matters more than
+counting it.** Clause 5 checks that all seven axis cells are *present*; nothing checks that
+`Commit(s)`, `Status` or `Files` still describe reality. A stale entry can therefore be **wrong about
+which commit it is about** and pass every specified clause. Two candidate additions:
+
+| candidate clause | what it would catch |
+|---|---|
+| **8 · status agreement** — no entry may say `IN FLIGHT` while any SHA in its `commits` list is an ancestor of `HEAD`. | Exactly this instance, from the index alone, with no prose parsing. |
+| **9 · citation freshness** — every `file:line` in a `Files` cell must resolve, at the entry's own newest SHA, to a line whose text still contains the token the cell names. | CBR-027's `Files` cell, which cited `wrapping_add` / `wrapping_sub` coordinates after `6ff46f8a` deleted both calls. It is the same mechanism `rholang/tests/normalize_oracle_provenance.rs` already runs against the two oracle twins, pointed at this document instead. |
+
+Both are cheap, both are `git`-only, and both are decidable — which distinguishes them from
+*"does this commit move an axis?"*, which [§7.3](#73-why-this-design-and-not-the-alternatives) correctly
+says is not.
+
 ### 7.5 First extensions
 
 1. **Close the Surface-L gap** (§6.5): give `mettail-rust` its own anchor, path set and exemption table
@@ -4390,12 +4661,13 @@ A control run with none of the three mutations must pass.
 
 ## 8. Conclusions
 
-1. **40 consensus-visible changes** were derived from the campaign record: 29 on the F1r3node node, 11
-   on MeTTaIL's Rholang. **Thirty-six are landed, three are in flight**, one is an open unrepaired
+1. **41 consensus-visible changes** were derived from the campaign record: 30 on the F1r3node node, 11
+   on MeTTaIL's Rholang. **Thirty-nine are landed, one is in flight**, one is an open unrepaired
    hazard.
-   **Twenty-eight of the 40 were not on the coordinator's candidate list**, including the two the
+   **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register
-   rather than assembling one.
+   rather than assembling one. ★ The 41st (**CBR-029**) was not on it either, and was found the same
+   way: by reading a component against what it claims to do rather than against a list.
 2. **The axes are genuinely independent and must be reviewed separately.** `7dcff96f` moves four bytes on
    the bincode lane and **zero** on the protobuf lane, for the same field addition. `f5fd6c34` moves
    bound values and provably not verdicts; `#148` moves verdicts and not the values it then binds. A
