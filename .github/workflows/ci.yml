@@ -327,10 +327,15 @@ jobs:
       && contains(fromJSON('["dev", "master"]'), github.base_ref)
       && github.event.pull_request.head.repo.fork == false
       && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref))
+    # No `secrets: inherit`. The called workflow's only secret-bearing job names
+    # `environment: oci-credentials` and resolves the OCI/App credentials from
+    # there, so nothing needs to be passed down. Re-adding inherit would hand the
+    # whole repository secret set to every job in the pipeline and let stale
+    # repository-level copies shadow the environment — if the launch job fails on
+    # malformed OCI config, fix the environment secrets, do not inherit.
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
-    secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
