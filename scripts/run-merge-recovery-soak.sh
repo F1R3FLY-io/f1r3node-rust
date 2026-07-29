@@ -10,11 +10,47 @@ if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   printf 'SOAK_DURATION_SECONDS must be a positive integer\n' >&2
   exit 2
 fi
-STARTED_AT="$(date +%s)"
-DEADLINE="$((STARTED_AT + DURATION_SECONDS))"
-FAILURES=0
-ITERATIONS=0
 PROVIDERS=(docker subprocess)
+
+# A soak is run as one or more segments so results can be published part-way
+# through: a single 22h invocation cannot be interrupted to publish, but three
+# consecutive invocations sharing one output directory can be. Every segment
+# after the first resumes from this state file, so counters, the original start
+# time and iteration numbering continue rather than restarting — restarting
+# them would make each segment overwrite the previous one's iteration
+# directories and silently discard its metrics.
+mkdir -p "$OUTPUT_DIR"
+STATE_FILE="$OUTPUT_DIR/.soak-state"
+if [ -f "$STATE_FILE" ]; then
+  # shellcheck source=/dev/null
+  . "$STATE_FILE"
+  SEGMENT="$((SEGMENT + 1))"
+  printf 'resuming soak: segment %s, %s iterations so far, started %s\n' \
+    "$SEGMENT" "$ITERATIONS" "$(date -d "@$STARTED_AT" '+%F %T %Z' 2>/dev/null || date -r "$STARTED_AT")"
+else
+  STARTED_AT="$(date +%s)"
+  ITERATIONS=0
+  FAILURES=0
+  SEGMENT=1
+fi
+
+# An absolute deadline lets the caller end a segment on a wall-clock boundary
+# (a Pacific checkpoint) rather than after a fixed span. Without one, the
+# deadline is the full requested duration measured from the original start, so
+# a final segment needs no deadline of its own.
+if [ -n "${SOAK_DEADLINE_EPOCH:-}" ]; then
+  if ! [[ "$SOAK_DEADLINE_EPOCH" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'SOAK_DEADLINE_EPOCH must be a positive integer\n' >&2
+    exit 2
+  fi
+  DEADLINE="$SOAK_DEADLINE_EPOCH"
+  # Never run past the overall budget, whatever the caller asked for.
+  if [ "$DEADLINE" -gt "$((STARTED_AT + DURATION_SECONDS))" ]; then
+    DEADLINE="$((STARTED_AT + DURATION_SECONDS))"
+  fi
+else
+  DEADLINE="$((STARTED_AT + DURATION_SECONDS))"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
@@ -22,8 +58,9 @@ BENCH_EVERY="${SOAK_BENCH_EVERY:-4}"
 BENCH_DURATION="${SOAK_BENCH_DURATION:-300}"
 BENCH_RATE="${SOAK_BENCH_RATE:-2}"
 NODE_REPO_DIR="${SOAK_NODE_REPO_DIR:-}"
-BENCH_SEGMENTS=0
-BENCH_FAILURES=0
+# Carried over by the state file when resuming a later segment.
+BENCH_SEGMENTS="${BENCH_SEGMENTS:-0}"
+BENCH_FAILURES="${BENCH_FAILURES:-0}"
 # Minimum seconds before a move of the branch under test may end the soak.
 # 0 disables merge-triggered exit entirely (the weekend soak sets this).
 MERGE_EXIT_MIN_SECONDS="${SOAK_MERGE_EXIT_MIN_SECONDS:-0}"
@@ -159,7 +196,10 @@ run_bench_segment() {
 
 mkdir -p "$OUTPUT_DIR"
 
-if [ "$RUN_BENCHMARKS" = "true" ]; then
+# Only on the first segment: this is the run's opening baseline measurement,
+# and repeating it at every resume would add segments the cadence never asked
+# for and skew the run's active-benchmark averages.
+if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
   run_bench_segment
 fi
 
@@ -220,8 +260,21 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 done
 
 FINISHED_AT="$(date +%s)"
+
+# Written before the rollup so a later segment resumes from accurate counters
+# even if the rollup below fails.
+{
+  printf 'STARTED_AT=%s\n' "$STARTED_AT"
+  printf 'ITERATIONS=%s\n' "$ITERATIONS"
+  printf 'FAILURES=%s\n' "$FAILURES"
+  printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
+  printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
+  printf 'SEGMENT=%s\n' "$SEGMENT"
+} > "$STATE_FILE"
+
 {
   printf 'started_at=%s\n' "$STARTED_AT"
+  printf 'segments=%s\n' "$SEGMENT"
   printf 'finished_at=%s\n' "$FINISHED_AT"
   printf 'target_ref=%s\n' "$TARGET_REF"
   printf 'target_sha=%s\n' "$TARGET_SHA"
