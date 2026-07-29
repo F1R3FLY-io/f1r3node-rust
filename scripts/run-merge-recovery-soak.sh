@@ -52,6 +52,18 @@ else
   DEADLINE="$((STARTED_AT + DURATION_SECONDS))"
 fi
 
+# An earlier segment may have ended the soak deliberately — the branch under
+# test advanced, so the pinned image is now testing history. Later segments
+# must not restart it: without this each remaining segment would soak on to its
+# own deadline, undoing the early exit and burning the runner time it was meant
+# to save. The rollup below still runs, so the final segment produces a summary
+# to publish.
+if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
+  printf 'soak already ended (%s); this segment does no work\n' \
+    "$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null || echo 'reason unrecorded')"
+  DEADLINE=0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
 BENCH_EVERY="${SOAK_BENCH_EVERY:-4}"

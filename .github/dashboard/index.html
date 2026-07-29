@@ -56,6 +56,10 @@
   .tab-status { font-size: .82rem; font-weight: 600; margin-top: .2rem; color: var(--text-muted); }
   .tab-status.pass { color: var(--good); }
   .tab-status.regress { color: var(--serious); }
+  .tab-status.running { color: var(--series-1); }
+  .running-note { background: var(--surface-2); border-left: 3px solid var(--series-1);
+                  border-radius: 4px; padding: .6rem .9rem; margin-bottom: 1.25rem;
+                  color: var(--text-secondary); }
   /* The selected tab is raised and accented; without this the group reads as
      four equal cards rather than a choice with one active member. */
   #tab-weekend:checked ~ .tabbar label[for="tab-weekend"],
@@ -130,6 +134,7 @@
     <span class="meta">Friday 19:30 → Monday 07:30 Pacific. Fixed span every week, so the
       numbers are the week-over-week baseline and gate releases.</span>
   </div>
+  <div id="progress-weekend"></div>
   <div id="failures-weekend"></div>
   <div class="grid" id="charts-weekend"></div>
   <div class="table-wrap" id="table-weekend"></div>
@@ -142,6 +147,7 @@
       and stops early once <code>dev</code> advances — so spans vary and these
       numbers are signal, not a release gate.</span>
   </div>
+  <div id="progress-daily"></div>
   <div id="failures-daily"></div>
   <div class="grid" id="charts-daily"></div>
   <div class="table-wrap" id="table-daily"></div>
@@ -209,11 +215,21 @@
   // health is legible without clicking through — the whole point of the split.
   function renderStatus(el, verdict, runs) {
     let cls = "", text;
-    if (runs === 0) {
+    const v = verdict && typeof verdict.verdict === "string" ? verdict.verdict : null;
+    // in_progress is a mid-run checkpoint, not a result. It has to be matched
+    // before the pass/regress split, or "not pass" would read as a regression
+    // and show a red tab for a soak that is running perfectly well.
+    if (v === "in_progress") {
+      cls = "running";
+      const r = verdict.run || {};
+      const h = s => (typeof s === "number" && s > 0) ? Math.floor(s / 3600) : null;
+      const done = h(r.elapsed_seconds), total = h(r.duration_seconds);
+      text = "running" + (done !== null && total !== null ? ` · ${done}h of ${total}h` : "");
+    } else if (runs === 0) {
       text = "no runs yet";
-    } else if (!verdict || typeof verdict.verdict !== "string") {
+    } else if (v === null) {
       text = "no verdict yet";
-    } else if (verdict.verdict === "pass") {
+    } else if (v === "pass") {
       cls = "pass"; text = "✓ pass";
     } else {
       cls = "regress";
@@ -222,6 +238,17 @@
     }
     el.className = "tab-status" + (cls ? " " + cls : "");
     el.textContent = text;
+  }
+
+  // Says plainly that the charts below are older than the status above. A
+  // checkpoint updates only the latest-* files: history holds one entry per
+  // completed run, so a partial one would double-count the night once the run
+  // finishes and publishes for real.
+  function renderProgress(el, verdict) {
+    if (!verdict || verdict.verdict !== "in_progress") { el.innerHTML = ""; return; }
+    el.innerHTML = '<div class="running-note">A soak is in progress. The report below is a ' +
+      'mid-run checkpoint; the charts and table show completed runs only, and this one ' +
+      'joins them when it finishes.</div>';
   }
 
   // Rendered only when non-empty, so the strip's presence is itself the signal.
@@ -336,6 +363,7 @@
     const history = Array.isArray(historyRaw) ? historyRaw : [];
 
     renderStatus(document.getElementById("status-" + def.key), verdict, history.length);
+    renderProgress(document.getElementById("progress-" + def.key), verdict);
     renderFailures(document.getElementById("failures-" + def.key), verdict);
     document.getElementById("links-" + def.key).innerHTML =
       `<a href="${def.report}">latest report</a> · <a href="${def.history}">raw data</a>`;
