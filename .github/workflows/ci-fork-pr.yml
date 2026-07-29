@@ -74,11 +74,12 @@ jobs:
       checkout_repository: ${{ github.event.pull_request.head.repo.full_name }}
       checkout_ref: ${{ github.event.pull_request.head.sha }}
       gated: true
-    # No `secrets: inherit` — deliberately, and it matters more here than on the
-    # internal path. This call runs FORK code, so inheriting would place the whole
-    # repository secret set in the context of jobs that build and test untrusted
-    # commits. The credentials the pipeline actually needs come from
-    # `environment: oci-credentials`, named on the single trusted launch job.
+    # Required — see the note on the same line in ci.yml. Fork safety does not
+    # come from withholding secrets here; without this line the callee cannot see
+    # them at all, including the ones the launch job legitimately needs. It comes
+    # from _integration-pipeline.yml referencing credentials in exactly one job,
+    # which checks out only the pinned system-integration SHA and never fork code.
+    secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable

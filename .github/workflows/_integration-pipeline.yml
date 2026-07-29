@@ -254,6 +254,30 @@ jobs:
             --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
+      # TEMPORARY DIAGNOSTIC — remove before merging this PR.
+      #
+      # Determines which store actually supplies these credentials. Prints only a
+      # byte length and a truncated SHA-256 per value: GitHub masks secret values
+      # in logs but not digests, so this distinguishes "empty" (delivery failed)
+      # from "present but unexpected" (a different store won) without disclosing
+      # anything. Compare the digests against the values stored in the
+      # oci-credentials environment. Runs before the config step so it still
+      # reports when that step fails.
+      - name: Diagnose credential delivery (temporary)
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          for name in OCI_TENANCY_OCID OCI_USER_OCID OCI_REGION OCI_FINGERPRINT OCI_PRIVATE_KEY; do
+            value="${!name}"
+            printf '%-18s len=%-5s sha256=%s\n' "$name" "${#value}" \
+              "$(printf '%s' "$value" | sha256sum | cut -c1-16)"
+          done
+
       - name: Configure OCI auth from secrets
         shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
