@@ -46,6 +46,10 @@ jobs:
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # weekend | daily. Selects which published series this run appends to;
+      # the two are kept in separate files so the week-over-week regression
+      # gate never compares a 22h daily against a 60h weekend baseline.
+      kind: ${{ steps.resolve.outputs.kind }}
     steps:
       - name: Resolve schedule
         id: resolve
@@ -141,8 +145,10 @@ jobs:
             fi
           fi
           run_benchmarks=false
+          kind=daily
           if [ "$duration_seconds" = "216000" ]; then
             run_benchmarks=true
+            kind=weekend
           fi
           if [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
             echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
@@ -167,6 +173,7 @@ jobs:
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
             echo "run_benchmarks=$run_benchmarks"
+            echo "kind=$kind"
           } >> "$GITHUB_OUTPUT"
 
   launch_runner:
@@ -332,8 +339,12 @@ jobs:
         shell: bash -e {0}
         run: ci-control/scripts/run-merge-recovery-soak.sh
 
-      - name: Aggregate weekly report + verdict
-        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+      # Runs for dailies too. The aggregator needs no benchmark segments — it
+      # emits the passive rollup with a null `active` block — and without this
+      # a daily soak produces no summary at all, so there is nothing to publish
+      # and its numbers die with the 14-day artifact.
+      - name: Aggregate soak report + verdict
+        if: always() && needs.schedule_gate.outputs.should_run == 'true'
         shell: bash -euo pipefail {0}
         env:
           SOAK_DIR: /tmp/merge-recovery-soak
@@ -341,6 +352,10 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # Non-empty value must be the truthy branch: GitHub treats '' as
+          # false, so `kind == 'weekend' && '' || '-daily'` would yield
+          # '-daily' for BOTH series.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
         run: |
           # Cache-busted so the week-over-week deltas are not computed against
           # a stale CDN copy. Unlike the history fetch this stays soft: a 60h
@@ -349,9 +364,12 @@ jobs:
           # but a non-404 miss is warned about, since a silently absent
           # baseline makes the verdict look clean.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Compared against the same series only. A daily measured against a
+          # 60h weekend baseline would flag a regression purely because the
+          # spans differ.
           base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
             -o /tmp/soak-baseline.json \
-            "${DASHBOARD_URL}data/latest-summary.json?cb=${cb}")" || base_code=000
+            "${DASHBOARD_URL}data/latest-summary${SERIES_SUFFIX}.json?cb=${cb}")" || base_code=000
           case "$base_code" in
             200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
             404) echo "no published baseline yet (bootstrap run)" ;;
@@ -395,7 +413,10 @@ jobs:
   perf_report:
     name: Publish Soak Dashboard
     needs: [schedule_gate, soak]
-    if: needs.schedule_gate.outputs.run_benchmarks == 'true' && !cancelled()
+    # Both series publish. Gating this on run_benchmarks made it weekend-only,
+    # so the dashboard's Daily tab had no producer and nightly results expired
+    # with the artifact.
+    if: needs.schedule_gate.outputs.should_run == 'true' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -425,40 +446,67 @@ jobs:
         shell: bash -euo pipefail {0}
         env:
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # See the note on the aggregate step: the non-empty value has to be
+          # the truthy branch, because GitHub treats '' as false.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
+          # Weekend runs once a week, so its series stays small on its own.
+          # Dailies land up to four a week and would grow without bound, so the
+          # series is trimmed to roughly half a year of runs.
+          MAX_HISTORY: ${{ needs.schedule_gate.outputs.kind == 'daily' && '120' || '0' }}
         run: |
           test -s soak-results/report/weekly-summary.json || {
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
           cp -r ci-control/.github/dashboard/. site/
-          # Pages is the only durable store for the history series — soak
-          # artifacts expire after 14 days — and this is the job that appends
-          # to it. Treating a transient fetch failure as "nothing published"
-          # would permanently reset the series to this run alone, so only a
-          # 404 may start an empty history and anything else aborts. The
-          # cache-busting query string stops the CDN serving a copy older
-          # than the last publish, which would drop intervening weeks.
+          # Pages is the only durable store for these series — soak artifacts
+          # expire after 14 days — and a Pages deploy replaces the whole site.
+          # So this job must republish BOTH series, not just its own: a daily
+          # run that uploaded only daily files would delete the weekend series
+          # outright. Every published file is therefore fetched and carried
+          # forward, and only this run's own series is overwritten below.
+          #
+          # Treating a transient fetch failure as "nothing published" would
+          # permanently reset a series, so only a 404 may yield an absent file
+          # and anything else aborts. The cache-busting query string stops the
+          # CDN serving a copy older than the last publish, which would drop
+          # intervening runs.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/history.json "${DASHBOARD_URL}data/history.json?cb=${cb}")" || code=000
-          case "$code" in
-            200)
-              jq -e 'type == "array"' /tmp/history.json >/dev/null 2>&1 || {
-                echo "::error::published history.json is not a JSON array; refusing to reset the series"
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
                 exit 1
-              }
-              ;;
-            404) echo '[]' > /tmp/history.json ;;
-            *)
-              echo "::error::could not read published history.json (HTTP ${code}); aborting so the series is not reset to this run alone"
+                ;;
+            esac
+          done
+          # HTTP 200 is not proof of valid content — a CDN or proxy error page
+          # is served with 200 too, and republishing one would corrupt the
+          # series just as thoroughly as dropping it.
+          for f in history.json history-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON array; refusing to replace it"
               exit 1
-              ;;
-          esac
-          jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
-            /tmp/history.json soak-results/report/weekly-summary.json \
-            > site/data/history.json
-          cp soak-results/report/weekly-summary.json site/data/latest-summary.json
-          cp soak-results/report/verdict.json site/data/latest-verdict.json
-          cp soak-results/report/perf-report.md site/data/latest-report.md
+            }
+          done
+
+          # Append this run to its own series, leaving the other untouched.
+          hist="site/data/history${SERIES_SUFFIX}.json"
+          [ -e "$hist" ] || echo '[]' > "$hist"
+          jq -s --argjson max "$MAX_HISTORY" \
+            '(.[0] + [.[1]] | sort_by(.run.date)) as $all
+             | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
+            "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
+          mv /tmp/history-merged.json "$hist"
+          cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
+          cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
+          cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -471,13 +519,24 @@ jobs:
 
       - name: Gate on regression verdict
         shell: bash -euo pipefail {0}
+        env:
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
         run: |
           verdict="$(jq -r '.verdict' soak-results/report/verdict.json)"
-          echo "Weekly soak verdict: $verdict"
-          if [ "$verdict" != "pass" ]; then
-            jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
-            exit 1
+          echo "${KIND} soak verdict: $verdict"
+          [ "$verdict" = "pass" ] && exit 0
+          jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
+          # Only the weekend series gates. Dailies vary in span — they stop
+          # early when dev advances — so a run-over-run delta can reflect a
+          # shorter run rather than a real regression. Failing on that would
+          # train people to ignore a red soak, which costs more than the
+          # signal is worth. The verdict is still published, and the dashboard
+          # shows it on the Daily tab.
+          if [ "$KIND" != "weekend" ]; then
+            echo "::warning::Daily soak regressed against the previous daily run — see the dashboard's Daily tab. Not failing the run: only the weekend series gates releases."
+            exit 0
           fi
+          exit 1
 
   notify_failure:
     name: Email Soak Failure Alert

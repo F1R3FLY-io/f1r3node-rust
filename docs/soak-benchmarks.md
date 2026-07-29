@@ -19,10 +19,13 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
   (iteration metrics, benchmark segments, logs, `report/` with
   `weekly-summary.json`, `verdict.json`, `perf-report.md`).
 
-> **The Daily tab has no data source yet.** Only the weekend soak reaches the
-> `perf_report` job that publishes to Pages, so the Daily tab reads "no runs
-> yet" and daily results live only in the run artifact, which expires after 14
-> days. Wiring the daily publish path is tracked separately.
+Both series publish to Pages, into separate files — `history.json` and
+`history-daily.json`, each with its own `latest-summary`, `latest-verdict` and
+`latest-report`. They are kept apart so the week-over-week regression gate never
+compares a variable-length daily against the fixed 60h weekend baseline. A Pages
+deploy replaces the whole site, so whichever soak publishes carries the other
+series forward untouched; a transient fetch failure aborts the deploy rather
+than publishing a site with a series missing.
 
 ## Weekend vs daily
 
@@ -35,6 +38,12 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
 | Early exit | never | when the target branch advances, after an 8h floor |
 | Benchmark segments | yes | no |
 | Gates releases | yes | no |
+| Regression verdict | fails the run | published, warns only |
+
+A daily regression is published and shown on the dashboard's Daily tab but does
+not fail the workflow. Daily spans vary — they stop early once `dev` advances —
+so a run-over-run delta can reflect a shorter run rather than a real regression,
+and failing on that would train people to ignore a red soak.
 
 The weekend soak is exempt from the skip and the early exit because its numbers
 are the week-over-week baseline, and those are only comparable if every run
@@ -124,5 +133,5 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   workflow, `soak-dashboard-pages.yml`, redeploys the page shell when
   `.github/dashboard/` changes, preserving any already-published data.
 - Metric emission is fail-soft end-to-end: a broken segment or missing
-  sample never fails the soak; only the verdict comparison can.
+  sample never fails the soak; only the weekend verdict comparison can.
 - First run bootstraps: no baseline → verdict passes and seeds the history.
