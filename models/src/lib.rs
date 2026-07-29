@@ -120,6 +120,51 @@ use crate::var::VarInstance;
 
 // See models/src/main/scala/coop/rchain/models/AlwaysEqual.scala
 
+// ===========================================================================
+// ★ WHY THE oneof `PartialEq` IMPLS BELOW CARRY NO `_ => false` ARM
+// ===========================================================================
+//
+// Five of these impls used to end in `_ => false`. That arm makes the match
+// exhaustive TO THE COMPILER, which is precisely the wrong thing to be: the
+// five types are prost `oneof`s generated from `src/main/protobuf/`, so a new
+// arm appears in them whenever the schema grows. With a catch-all, the new
+// variant compiles, falls into `_ => false`, and compares **unequal to
+// itself** — `x == x` is `false`. That is a broken `Eq` (reflexivity is part
+// of the contract, not a nicety), and every `HashMap`, `HashSet`, `dedup` and
+// `sort` holding one silently produces wrong answers: a lookup misses a key
+// that is present, a dedup keeps duplicates, a sort is free to do anything.
+//
+// The arm is therefore replaced by an explicit **residue** arm that names
+// every variant in the scrutinee's first position:
+//
+//     (Self::A(_), _) | (Self::B(_), _) | … => false,
+//
+// Two things to see about that shape.
+//
+//   1. `(Self::A(_), _)` is NOT a hiding place. It sits BELOW the
+//      same-variant arm `(Self::A(a), Self::A(b)) => a == b`, so it reads
+//      "self is `A` and other is not `A`" — a statement whose truth does not
+//      depend on how many variants the enum has. The catch-all it replaces
+//      said "any pair I did not think about", which does.
+//
+//   2. It restores the exhaustiveness check, and that is the whole point. A
+//      37th variant `Z` leaves the pair `(Z(_), _)` uncovered, so the build
+//      stops with E0004 and names the impl. The compiler, not a reviewer's
+//      memory, is what carries the obligation forward.
+//
+// `models/tests/variant_exhaustiveness_gate.rs` closes the one gap the
+// compiler cannot: a maintainer who answers E0004 by extending the residue
+// list ALONE would compile a variant that is still unequal to itself. That
+// gate reads the authoritative variant names out of the generated
+// `wire_schema::*_VARIANTS` tables and requires a same-variant `eq` arm and a
+// `hash` arm for each, so the wrong completion is red rather than silent.
+//
+// ⚠ The `Hash` impls below already enumerate; none of them ever carried a
+// catch-all, and they must not acquire one. `Eq` and `Hash` have to agree
+// (equal values hash equally), so a `_ => ()` in `hash` would be this same
+// defect a second time and in a form `HashMap` corrupts even faster.
+// ===========================================================================
+
 impl PartialEq for Par {
     fn eq(&self, other: &Self) -> bool {
         self.sends == other.sends
@@ -175,7 +220,8 @@ impl PartialEq for TaggedCont {
                 TaggedCont::ScalaBodyRef(other_scala_body_ref),
             ) => scala_body_ref == other_scala_body_ref,
 
-            _ => false,
+            // The residue: self is one variant and other is a different one.
+            (TaggedCont::ParBody(_), _) | (TaggedCont::ScalaBodyRef(_), _) => false,
         }
     }
 }
@@ -237,7 +283,11 @@ impl PartialEq for VarInstance {
             (VarInstance::BoundVar(a), VarInstance::BoundVar(b)) => a == b,
             (VarInstance::FreeVar(a), VarInstance::FreeVar(b)) => a == b,
             (VarInstance::Wildcard(a), VarInstance::Wildcard(b)) => a == b,
-            _ => false,
+
+            // The residue: self is one variant and other is a different one.
+            (VarInstance::BoundVar(_), _)
+            | (VarInstance::FreeVar(_), _)
+            | (VarInstance::Wildcard(_), _) => false,
         }
     }
 }
@@ -479,7 +529,44 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GBigInt(a), ExprInstance::GBigInt(b)) => a == b,
             (ExprInstance::GBigRat(a), ExprInstance::GBigRat(b)) => a == b,
             (ExprInstance::GFixedPoint(a), ExprInstance::GFixedPoint(b)) => a == b,
-            _ => false,
+
+            // The residue: self is one variant and other is a different one.
+            (ExprInstance::GBool(_), _)
+            | (ExprInstance::GInt(_), _)
+            | (ExprInstance::GString(_), _)
+            | (ExprInstance::GUri(_), _)
+            | (ExprInstance::GByteArray(_), _)
+            | (ExprInstance::ENotBody(_), _)
+            | (ExprInstance::ENegBody(_), _)
+            | (ExprInstance::EMultBody(_), _)
+            | (ExprInstance::EDivBody(_), _)
+            | (ExprInstance::EPlusBody(_), _)
+            | (ExprInstance::EMinusBody(_), _)
+            | (ExprInstance::ELtBody(_), _)
+            | (ExprInstance::ELteBody(_), _)
+            | (ExprInstance::EGtBody(_), _)
+            | (ExprInstance::EGteBody(_), _)
+            | (ExprInstance::EEqBody(_), _)
+            | (ExprInstance::ENeqBody(_), _)
+            | (ExprInstance::EAndBody(_), _)
+            | (ExprInstance::EOrBody(_), _)
+            | (ExprInstance::EVarBody(_), _)
+            | (ExprInstance::EListBody(_), _)
+            | (ExprInstance::ETupleBody(_), _)
+            | (ExprInstance::ESetBody(_), _)
+            | (ExprInstance::EMapBody(_), _)
+            | (ExprInstance::EPathmapBody(_), _)
+            | (ExprInstance::EZipperBody(_), _)
+            | (ExprInstance::EMethodBody(_), _)
+            | (ExprInstance::EMatchesBody(_), _)
+            | (ExprInstance::EPercentPercentBody(_), _)
+            | (ExprInstance::EPlusPlusBody(_), _)
+            | (ExprInstance::EMinusMinusBody(_), _)
+            | (ExprInstance::EModBody(_), _)
+            | (ExprInstance::GDouble(_), _)
+            | (ExprInstance::GBigInt(_), _)
+            | (ExprInstance::GBigRat(_), _)
+            | (ExprInstance::GFixedPoint(_), _) => false,
         }
     }
 }
@@ -910,7 +997,17 @@ impl PartialEq for ConnectiveInstance {
             (ConnectiveInstance::ConnString(a), ConnectiveInstance::ConnString(b)) => a == b,
             (ConnectiveInstance::ConnUri(a), ConnectiveInstance::ConnUri(b)) => a == b,
             (ConnectiveInstance::ConnByteArray(a), ConnectiveInstance::ConnByteArray(b)) => a == b,
-            _ => false,
+
+            // The residue: self is one variant and other is a different one.
+            (ConnectiveInstance::ConnAndBody(_), _)
+            | (ConnectiveInstance::ConnOrBody(_), _)
+            | (ConnectiveInstance::ConnNotBody(_), _)
+            | (ConnectiveInstance::VarRefBody(_), _)
+            | (ConnectiveInstance::ConnBool(_), _)
+            | (ConnectiveInstance::ConnInt(_), _)
+            | (ConnectiveInstance::ConnString(_), _)
+            | (ConnectiveInstance::ConnUri(_), _)
+            | (ConnectiveInstance::ConnByteArray(_), _) => false,
         }
     }
 }
@@ -981,7 +1078,12 @@ impl PartialEq for UnfInstance {
             (UnfInstance::GDeployIdBody(a), UnfInstance::GDeployIdBody(b)) => a == b,
             (UnfInstance::GDeployerIdBody(a), UnfInstance::GDeployerIdBody(b)) => a == b,
             (UnfInstance::GSysAuthTokenBody(a), UnfInstance::GSysAuthTokenBody(b)) => a == b,
-            _ => false,
+
+            // The residue: self is one variant and other is a different one.
+            (UnfInstance::GPrivateBody(_), _)
+            | (UnfInstance::GDeployIdBody(_), _)
+            | (UnfInstance::GDeployerIdBody(_), _)
+            | (UnfInstance::GSysAuthTokenBody(_), _) => false,
         }
     }
 }

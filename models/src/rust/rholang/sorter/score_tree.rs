@@ -94,6 +94,17 @@ impl<T: PartialEq> PartialEq for Tree<T> {
     /// Structural equality on an explicit stack. Short-circuits on the first
     /// mismatch in the same left-to-right, depth-first order the derived
     /// implementation used.
+    ///
+    /// ⚠ **No catch-all arm, deliberately.** This match used to end in
+    /// `_ => return false`, which made it exhaustive to the compiler and so
+    /// disabled the only check that a third `Tree` variant would need. Such a
+    /// variant would have compiled, fallen into the catch-all, and compared
+    /// **unequal to itself** — and `Tree` is the sorter's score carrier, so a
+    /// broken reflexivity here reaches canonical ordering. `Tree` has two
+    /// variants, so the four cross-pairs are written out in full: a third
+    /// variant leaves pairs uncovered and the build stops with E0004. See the
+    /// banner in `models/src/lib.rs` for the five sibling instances of this
+    /// shape and `models/tests/variant_exhaustiveness_gate.rs` for the gate.
     fn eq(&self, other: &Self) -> bool {
         let mut work: Vec<(&Tree<T>, &Tree<T>)> = vec![(self, other)];
         while let Some((a, b)) = work.pop() {
@@ -112,7 +123,7 @@ impl<T: PartialEq> PartialEq for Tree<T> {
                         work.push(pair);
                     }
                 }
-                _ => return false,
+                (Tree::Leaf(_), Tree::Node(_)) | (Tree::Node(_), Tree::Leaf(_)) => return false,
             }
         }
         true
