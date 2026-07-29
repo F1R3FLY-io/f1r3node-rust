@@ -171,7 +171,7 @@ impl fmt::Display for ProposeStatus {
                 ProposeFailure::BugError => write!(f, "Proposal failed: BugError"),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {
-                        write!(f, "Proposal failed: ReadOnlyMode")
+                        write!(f, "Proposal failed: validator is not bonded")
                     }
                     CheckProposeConstraintsFailure::NotEnoughNewBlocks => {
                         write!(
