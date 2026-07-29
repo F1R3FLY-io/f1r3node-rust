@@ -2,12 +2,56 @@
 //!
 //! This module provides wrapper types that bridge PathMap's zipper API with Rholang's process-oriented
 //! data model. Operations work on Par values as the unit of operation rather than raw bytes.
+//!
+//! # ★ WHAT IS DELIBERATELY ABSENT, AND WHY IT CANNOT BE WRITTEN HERE
+//!
+//! This module used to export a `descend_to(&Par)` on both the read and the
+//! write wrapper, and a `flatten_segments` helper they shared. All three
+//! encoded **one retired rule**:
+//!
+//! > a descended path's entry key is the SPLIT arm — `concat(segments)`
+//! > followed by the `0x00` terminator — *unconditionally*.
+//!
+//! That rule is FALSE, and not merely imprecise. The canonical path codec has
+//! two top-level arms, so appending the terminator to a bare (non-list) `p`
+//! yields the key of the SINGLETON LIST `[p]` — a well-formed canonical key
+//! naming a DIFFERENT element, which one map may hold at the same time. The
+//! read is not a miss; it is a wrong answer. Measured on `{| 5, [5] |}`:
+//! `descend_to(5)` built `03 0a 00`, the key of `[5]`, and returned `[5]`,
+//! where the entry `5` lives at `03 0a`.
+//!
+//! ⚠ The read-side image invariant in
+//! [`cursor_entry_key`](super::pathmap_integration::cursor_entry_key) would
+//! NOT have caught it either: a terminated concatenation is always in the
+//! codec's image, so the assertion is vacuous on exactly this rule's output.
+//! The defect is in the LAW, not in the well-formedness of the bytes, which is
+//! why the fix is a deletion and not a guard.
+//!
+//! The law that replaces it is
+//! [`entry_key_at`](super::pathmap_integration::entry_key_at) /
+//! [`composed_cursor_kind`](super::pathmap_integration::composed_cursor_kind) /
+//! [`cursor_entry_key`](super::pathmap_integration::cursor_entry_key), spelled
+//! once. `flatten_segments` was deleted along with its two callers **so that
+//! the retired rule is unspellable in this module**: repairing the callers
+//! would have left the expression alive for the next author to reach for.
+//! `models/tests/pathmap_integration_tests.rs`'s
+//! `the_retired_unconditional_terminate_rule_is_unspellable` pins that.
+//!
+//! ★ A replacement cursor move is not forbidden — it is *re-typed*. It must
+//! take `(cursor_segments, path_par, map)` and call `entry_key_at`, which is a
+//! DIFFERENT signature from the deleted `(&mut self, path: &Par)`. The
+//! deletion therefore corrects the capability rather than removing it: a
+//! caller cannot re-acquire the old answer by re-adding the old name.
+//!
+//! `RholangWriteZipper` and `RholangZipperHead` went with them. Both had
+//! zero users of any method, and both existed only to host the deleted move;
+//! keeping constructors that no code calls, for a type whose only positioning
+//! API was the retired rule, is how the rule survived its own refutation the
+//! first time.
 
-use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, ZipperHead};
+use pathmap::zipper::ReadZipperUntracked;
 
-use super::pathmap_integration::{
-    entry_key_at, par_to_path, segments_to_key, CursorKind, RholangPathMap,
-};
+use super::pathmap_integration::{entry_key_at, CursorKind, RholangPathMap};
 use crate::rhoapi::{EPathMap, Par};
 
 /// Wrapper for PathMap ReadZipper that maintains Rholang context
@@ -32,9 +76,17 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
     /// `path` is the WHOLE path, so its key is the codec's own
     /// [`entry_key_at`] at the root — bit for bit the key
     /// `create_pathmap_from_elements` inserted the entry under, whichever arm
-    /// it took. Rebuilding it from `par_to_path` + [`flatten_segments`] would
-    /// append the split terminator unconditionally and, for a bare (non-list)
-    /// path, address the SINGLETON LIST instead.
+    /// it took. Reconstructing it from the path's per-element segments and
+    /// appending the split terminator unconditionally is the retired rule this
+    /// module's documentation names; for a bare (non-list) path it addresses
+    /// the SINGLETON LIST instead.
+    ///
+    /// ★ **Retained deliberately with no caller.** It is this module's only
+    /// exemplar of the corrected law, and it is the sanctioned replacement for
+    /// the deleted `descend_to` at the root. Deleting it would leave the module
+    /// with no positioning API at all — which is the state in which the retired
+    /// rule was written the first time. Being `pub` in a library crate, it
+    /// costs no `dead_code` diagnostic to keep.
     pub fn new_at_path(
         map: &'a RholangPathMap,
         path: &Par,
@@ -48,16 +100,6 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
             connective_used,
             locally_free,
         })
-    }
-
-    /// Descend to a path specified as a Par (list of segments)
-    pub fn descend_to(&mut self, path: &Par) -> Result<(), String> {
-        use pathmap::zipper::ZipperMoving;
-
-        let segments = par_to_path(path);
-        let key = flatten_segments(&segments);
-        self.zipper.descend_to(&key);
-        Ok(())
     }
 
     /// Get the value at the current position
@@ -104,155 +146,22 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
     }
 }
 
-/// Wrapper for PathMap WriteZipper that maintains Rholang context
-pub struct RholangWriteZipper<'a, 'path> {
-    pub(crate) zipper: WriteZipperUntracked<'a, 'path, Par>,
-    #[allow(dead_code)]
-    pub(crate) connective_used: bool,
-    #[allow(dead_code)]
-    pub(crate) locally_free: Vec<u8>,
-}
-
-impl<'a, 'path> RholangWriteZipper<'a, 'path> {
-    /// Create a new write zipper from a PathMap at root
-    pub fn new(map: &'a mut RholangPathMap, connective_used: bool, locally_free: Vec<u8>) -> Self {
-        RholangWriteZipper {
-            zipper: map.write_zipper(),
-            connective_used,
-            locally_free,
-        }
-    }
-
-    /// Create a new write zipper at a specific path
-    ///
-    /// As with [`RholangReadZipper::new_at_path`], `path` is the WHOLE path,
-    /// so the key comes from the codec rather than from a reconstruction that
-    /// would append the split terminator to a bare path.
-    pub fn new_at_path(
-        map: &'a mut RholangPathMap,
-        path: &Par,
-        connective_used: bool,
-        locally_free: Vec<u8>,
-    ) -> Result<Self, String> {
-        use pathmap::zipper::ZipperMoving;
-
-        let key = entry_key_at(&[], path, map);
-        // Create a write zipper at the constructed path
-        let mut zipper = map.write_zipper();
-        zipper.descend_to(&key);
-        Ok(RholangWriteZipper {
-            zipper,
-            connective_used,
-            locally_free,
-        })
-    }
-
-    /// Descend to a path specified as a Par (list of segments)
-    pub fn descend_to(&mut self, path: &Par) -> Result<(), String> {
-        use pathmap::zipper::ZipperMoving;
-
-        let segments = par_to_path(path);
-        let key = flatten_segments(&segments);
-        self.zipper.descend_to(&key);
-        Ok(())
-    }
-
-    /// Set the value at the current position
-    pub fn set_val(&mut self, value: Par) -> Option<Par> {
-        use pathmap::zipper::ZipperWriting;
-        self.zipper.set_val(value)
-    }
-
-    /// Get the value at the current position
-    pub fn get_val(&self) -> Option<&Par> {
-        use pathmap::zipper::ZipperValues;
-        self.zipper.val()
-    }
-
-    /// Remove the value at the current position
-    pub fn remove_val(&mut self) -> Option<Par> {
-        use pathmap::zipper::ZipperWriting;
-        self.zipper.remove_val(true)
-    }
-
-    /// Remove all branches below the current position
-    pub fn remove_branches(&mut self) {
-        use pathmap::zipper::ZipperWriting;
-        self.zipper.remove_branches(true);
-    }
-
-    /// Check if there's a value at current position
-    pub fn has_val(&self) -> bool {
-        use pathmap::zipper::Zipper;
-        self.zipper.is_val()
-    }
-
-    /// Check if the current path exists
-    pub fn path_exists(&self) -> bool {
-        use pathmap::zipper::Zipper;
-        self.zipper.path_exists()
-    }
-
-    /// Graft a subtrie from a read zipper
-    pub fn graft<'b, 'bpath>(&mut self, read_zipper: &RholangReadZipper<'b, 'bpath>) {
-        use pathmap::zipper::ZipperWriting;
-        self.zipper.graft(&read_zipper.zipper);
-    }
-
-    /// Join (union) a subtrie from a read zipper
-    pub fn join_into<'b, 'bpath>(&mut self, read_zipper: &RholangReadZipper<'b, 'bpath>) {
-        use pathmap::zipper::ZipperWriting;
-        self.zipper.join_into(&read_zipper.zipper);
-    }
-
-    /// Reset zipper to root
-    pub fn reset(&mut self) {
-        use pathmap::zipper::ZipperMoving;
-        self.zipper.reset();
-    }
-}
-
-/// Wrapper for PathMap ZipperHead that maintains Rholang context
-pub struct RholangZipperHead<'a> {
-    #[allow(dead_code)]
-    pub(crate) zipper_head: ZipperHead<'a, 'a, Par>,
-    #[allow(dead_code)]
-    pub(crate) connective_used: bool,
-    #[allow(dead_code)]
-    pub(crate) locally_free: Vec<u8>,
-}
-
-impl<'a> RholangZipperHead<'a> {
-    /// Create a new zipper head from a PathMap
-    pub fn new(map: &'a mut RholangPathMap, connective_used: bool, locally_free: Vec<u8>) -> Self {
-        RholangZipperHead {
-            zipper_head: map.zipper_head(),
-            connective_used,
-            locally_free,
-        }
-    }
-}
-
-/// Build a FULL trie key from per-element codec segments (W2b-1): the
-/// concatenation of the prefix-free `encode_trie_segment` bytes plus the
-/// split-list `0x00` terminator — identical to
-/// `create_pathmap_from_elements`' `encode_trie_path`, so a zipper positioned
-/// here lands on the leaf. Supersedes the retired `0xFF`-per-segment join.
-pub(crate) fn flatten_segments(segments: &[Vec<u8>]) -> Vec<u8> {
-    segments_to_key(segments, true)
-}
-
 /// Split a codec trie key back into its per-element segments (W2b-1): the
 /// parser-state successor to the retired `split(0xFF)`. Segment boundaries
 /// are the codec grammar's `segment_extent`, and the trailing split-list
 /// `0x00` terminator is not a segment.
 ///
-/// LIVE since the trie-enumeration surface landed: this is the inverse half of
-/// [`flatten_segments`] that
+/// LIVE since the trie-enumeration surface landed: this is the segments-only
+/// half of [`decode_cursor`], which
 /// [`pathmap_native_query::next_value_path`](super::pathmap_native_query::next_value_path)
 /// needs to hand a walked absolute path back to `EZipper.current_path`, which
 /// stores segments. (It carried `#[allow(dead_code)]` until then — the decoder
 /// existed but nothing had yet needed to read a path OUT of the trie.)
+///
+/// ⚠ Its former forward half, `flatten_segments`, is DELETED: it was the
+/// retired unconditional-terminate rule, verbatim. The forward direction is
+/// [`cursor_entry_key`](super::pathmap_integration::cursor_entry_key), which
+/// spends the split/bare discriminator this function recovers.
 pub(crate) fn unflatten_segments(flattened: &[u8]) -> Vec<Vec<u8>> {
     decode_cursor(flattened).0
 }

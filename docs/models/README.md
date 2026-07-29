@@ -109,7 +109,15 @@ Supports indexed Rholang structures:
 - `RholangPathMap = PathMap<Par>` type alias
 - `par_to_path()` -- Converts Par to byte segment path via S-expression encoding
 - `SExpr` encoding with compact byte tags (NewVar, Symbol, VarRef, Arity)
-- `RholangReadZipper` / `RholangWriteZipper` -- Navigation cursors
+- `RholangReadZipper` -- the read cursor. `new` opens it at the root;
+  `new_at_path` opens it at an entry, keyed by `entry_key_at`.
+- ⚠ There is no `descend_to` and no `RholangWriteZipper`. Both encoded the
+  retired rule *"a descended path's entry key is the split arm,
+  unconditionally"*, which for a bare (non-list) path names the SINGLETON LIST
+  — a different entry the same map may hold. A cursor move must take
+  `(cursor_segments, path_par, map)` and call
+  `pathmap_integration::entry_key_at`; see the module documentation of
+  `models/src/rust/pathmap_zipper.rs`.
 
 ## Utility Types
 

@@ -570,6 +570,151 @@ fn the_composition_law_takes_the_argument_arm_only_at_the_root() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ THE RETIRED RULE IS UNSPELLABLE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `models/src/rust/pathmap_zipper.rs`, relative to this package.
+const ZIPPER_MODULE: &str = "src/rust/pathmap_zipper.rs";
+
+/// The retired rule, as the exact expression that encoded it: append the
+/// split-list terminator to the concatenated segments **unconditionally**.
+const RETIRED_RULE: &str = "segments_to_key(segments, true)";
+
+/// The two methods that spelled it. Nothing named `descend_to` may be defined
+/// in that module: a cursor move there can only be re-derived from the path's
+/// segments, which is the derivation the rule got wrong.
+const RETIRED_MOVE: &str = "fn descend_to";
+
+/// A token that must be PRESENT, so the gate cannot be satisfied by the file
+/// having been renamed, emptied, or deleted.
+const MODULE_ANCHOR: &str = "pub fn decode_cursor";
+
+fn zipper_module_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ZIPPER_MODULE);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// ★ **THE GATE.** The retired unconditional-terminate rule cannot be written
+/// in `pathmap_zipper.rs`, because the helper that *was* that rule
+/// (`flatten_segments`) and both methods that called it are deleted.
+///
+/// # Why a source-level assertion, and why pinned to these two tokens
+///
+/// The defect was not a wrong value produced by live code — it was a **retired
+/// law kept in executable form, with no caller**, waiting for the next author
+/// to reach for it. There is no input that makes dead code wrong, so no
+/// behavioural test can hold it down; the property to preserve is *absence*.
+///
+/// The tokens are pinned rather than the whole file compared, because a
+/// whole-file `assert_ne!` against a snapshot would survive any incidental edit
+/// — every comment fix would have to be re-blessed, so it would be turned off
+/// within a month. These two tokens are the rule itself and the only shape that
+/// has ever carried it.
+///
+/// # What the rule got wrong, measured
+///
+/// On `{| 5, [5] |}` the codec files `5` under `03 0a` and `[5]` under
+/// `03 0a 00`. The retired rule built `03 0a 00` for BOTH, so
+/// `readZipper().descendTo(5)` answered `[5]` — a valid canonical key naming a
+/// DIFFERENT element the same map holds. The corrected law is
+/// [`entry_key_at`](models::rust::pathmap_integration::entry_key_at), whose
+/// answers on those two rows are asserted below.
+#[test]
+fn the_retired_unconditional_terminate_rule_is_unspellable() {
+    let source = zipper_module_source();
+
+    // ── the gate is not vacuous: the file is there and is the right file ──
+    assert!(
+        source.contains(MODULE_ANCHOR),
+        "{ZIPPER_MODULE} does not contain {MODULE_ANCHOR:?}, so this gate is \
+         asserting the absence of tokens from a file it did not find. Fix the \
+         anchor before trusting the two assertions below."
+    );
+
+    // ── the mutation, asserted to have applied ──
+    assert!(
+        !source.contains(RETIRED_RULE),
+        "★ {ZIPPER_MODULE} spells the RETIRED rule {RETIRED_RULE:?}. It appends \
+         the split-list terminator unconditionally, so for a bare (non-list) \
+         path it builds the key of the SINGLETON LIST — a well-formed canonical \
+         key naming a DIFFERENT element. Use \
+         `pathmap_integration::entry_key_at` / `cursor_entry_key`, which spend \
+         the split/bare discriminator instead of guessing it."
+    );
+    assert!(
+        !source.contains(RETIRED_MOVE),
+        "★ {ZIPPER_MODULE} defines {RETIRED_MOVE:?}. A cursor move on a zipper \
+         wrapper cannot be derived from the path's segments alone; it must take \
+         `(cursor_segments, path_par, map)` and call \
+         `pathmap_integration::entry_key_at`, which is a DIFFERENT signature \
+         from the deleted `(&mut self, path: &Par)`."
+    );
+
+    // ── ★ THE GATE CAN GO RED. A checker nobody has watched fail is not
+    //    evidence: the same predicate, applied to the deleted text, rejects it.
+    let as_it_was = "pub(crate) fn flatten_segments(segments: &[Vec<u8>]) -> Vec<u8> {\n    \
+                     segments_to_key(segments, true)\n}\n\
+                     pub fn descend_to(&mut self, path: &Par) -> Result<(), String> {}\n\
+                     pub fn decode_cursor() {}";
+    assert!(
+        as_it_was.contains(RETIRED_RULE) && as_it_was.contains(RETIRED_MOVE),
+        "the gate's own tokens no longer match the text they were written to \
+         reject, so the two assertions above are passing vacuously"
+    );
+}
+
+/// The behavioural half the gate replaces, kept for the arm it can still make:
+/// on `{| 5, [5] |}` the corrected law separates the two entries, and the
+/// SPLIT row — where the retired rule and the corrected law agree — is the
+/// CONTROL that must not move.
+///
+/// ⚠ ANTI-VACUITY. Both entries are present, so `map.get(k).is_some()` holds
+/// for either key and proves nothing. Every assertion here is on the decoded
+/// `Par`. (This is the vacuity mode `entry_key_below_the_root_still_rebuilds`
+/// fell into: it drove only the row where the two laws agree.)
+#[test]
+fn the_corrected_law_separates_the_bare_element_from_the_singleton_list() {
+    use models::rust::pathmap_integration::entry_key_at;
+
+    let five = make_int_par(5);
+    let list_five = make_list_of(vec![make_int_par(5)]);
+    let map = &create_pathmap_from_elements(&[five.clone(), list_five.clone()], None).map;
+
+    let key_of_five = entry_key_at(&[], &five, map);
+    let key_of_list_five = entry_key_at(&[], &list_five, map);
+
+    // The measured keys, pinned: the rows differ by exactly the terminator the
+    // retired rule appended unconditionally.
+    assert_eq!(key_of_five, vec![0x03, 0x0a], "the BARE entry `5`");
+    assert_eq!(
+        key_of_list_five,
+        vec![0x03, 0x0a, 0x00],
+        "the SPLIT entry `[5]` — one terminator longer, and a different entry"
+    );
+    assert_ne!(
+        key_of_five, key_of_list_five,
+        "the fixture is vacuous unless `5` and `[5]` are two DIFFERENT entries"
+    );
+
+    // ── the DISCRIMINATING row: a bare argument names the bare entry ──
+    assert_eq!(
+        map.get(&key_of_five),
+        Some(&five),
+        "★ the bare argument must reach `5`, not the singleton list `[5]` that \
+         the same map also holds"
+    );
+
+    // ── the CONTROL: the split row, where the two laws agree, is unmoved ──
+    assert_eq!(
+        map.get(&key_of_list_five),
+        Some(&list_five),
+        "CONTROL: the split arm answers `[5]` under the corrected law exactly as \
+         it did under the retired one; a fix that moves this row is over-reaching"
+    );
+}
+
 /// The FIRST consequence: the bulk converter (`rholang_pathmap_to_e_pathmap`)
 /// and a hand-rolled `to_next_val` walk that decodes keys report the same
 /// entries, in the same order, on every one of the 512 maps.
