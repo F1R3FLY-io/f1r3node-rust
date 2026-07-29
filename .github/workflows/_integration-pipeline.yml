@@ -181,7 +181,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
     permissions: {}
-    timeout-minutes: 5
+    # No timeout-minutes. This job's entire purpose is to wait, and the wait is
+    # human-paced: GitHub lets a pending environment approval sit for up to 30
+    # days. A tight timeout here would cancel the whole pipeline whenever a
+    # maintainer did not click Approve promptly — a worse failure than the lane
+    # blockage this split was introduced to fix, and one that would only surface
+    # the first time someone stepped away. The single step below is an echo, so
+    # there is no runaway-execution risk to bound; do not add one.
     steps:
       - name: Approval recorded
         shell: bash -e {0}
