@@ -27,19 +27,25 @@ permissions:
   contents: read
   actions: read
 
-# One group across all FORK PRs: fork heavy runs (real OCI VMs) never run in
-# parallel — a second fork run queues rather than cancelling the in-flight one.
+# Per-PR groups, never a shared one. GitHub keeps only ONE pending run per
+# concurrency group, so any group spanning multiple PRs silently cancels queued
+# runs: each new arrival evicts the previously pending one, and the evicted PR
+# shows no failed check — its heavy pipeline simply never happened.
 #
-# Internal PRs must not share that group. pull_request_target also fires for
-# same-repo PRs (their jobs skip via the `fork == true` guards below), but the
-# run itself still joins whatever group is named here. GitHub keeps only ONE
-# pending run per concurrency group, so each new arrival cancels the previously
-# pending one: a burst of internal pushes evicts a fork run that is queued
-# behind an in-flight or awaiting-approval fork run, and that fork PR silently
-# loses its heavy pipeline with no failed check to show for it. Internal PRs
-# therefore get their own per-PR groups, where their skipped jobs are harmless.
+# This bit repeatedly on 2026-07-29. A fork run parked awaiting environment
+# approval since 04:21 held the single shared lane all day; internal PRs (which
+# also fire pull_request_target and then skip via the `fork == true` guards
+# below) kept joining that same lane and evicting whatever was queued. PR #143
+# lost its integration tests to an internal push at 14:02 with nothing on the
+# PR to show for it.
+#
+# Serializing real OCI VM creation — the reason a shared group existed — is now
+# enforced where it belongs: a job-level `oci-ephemeral-launch` group on
+# _integration-pipeline.yml's launch job, held only for the ~1 minute of actual
+# launching rather than across an unbounded approval wait. See that file for the
+# residual-contention note and its manual-re-run recovery.
 concurrency:
-  group: ${{ github.event.pull_request.head.repo.fork == true && 'ci-fork-pr' || format('ci-fork-pr-internal-{0}', github.event.pull_request.number) }}
+  group: ci-fork-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
