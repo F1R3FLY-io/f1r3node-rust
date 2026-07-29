@@ -206,12 +206,24 @@ jobs:
           # accepted because it is transient by definition (seen from
           # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
           # dead link returns 404/410, not 503.
+          # --timeout 45 (lychee defaults to 20). The slashing references carry
+          # ~73 doi.org citations, and doi.org resolution is slow and variable:
+          # it redirects to publisher portals that can take tens of seconds to
+          # answer, and lychee fires the whole corpus concurrently. Runs
+          # therefore flip between zero timeouts and a handful, on unchanged
+          # content — run 30482440004 reported 3 TIMEOUT and 0 errors, which is
+          # "valid but slow", not "broken". Raising the ceiling keeps every DOI
+          # actually verified; excluding them instead would leave 73 citations
+          # unchecked and would need extending every time a different one is
+          # unlucky. The whole 1744-link sweep runs in ~65s against a
+          # timeout-minutes: 10 job, so the extra tail costs nothing.
           args: >-
             --no-progress
             --exclude-loopback
             --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
+            --timeout 45
             --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
