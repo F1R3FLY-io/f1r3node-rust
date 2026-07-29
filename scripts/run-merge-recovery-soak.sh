@@ -81,7 +81,17 @@ emit_iteration_metrics() {
   lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
   lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
   lat_n="$(printf '%s' "$latency" | awk '{print $3}')"
+  # Registry-driven metrics (see scripts/bench/soak-metrics.json). Unlike the
+  # bespoke extractors above, adding a metric here needs no code change: the
+  # harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
+  # by the same contract — the collector yields {} rather than erroring.
+  local registry_metrics
+  registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
+    "$iteration_dir/.started" \
+    "$SYSTEM_INTEGRATION_DIR/integration-tests/data" 2>/dev/null || printf '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
   jq -n \
+    --argjson metrics "$registry_metrics" \
     --argjson iteration "$iteration" \
     --arg provider "$provider" \
     --argjson started "$iter_started" \
@@ -101,6 +111,7 @@ emit_iteration_metrics() {
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, samples: ($lat_n // 0)},
+      metrics: $metrics,
       ok: ($exit_code == 0)}' > "$iteration_dir/metrics.json" 2>/dev/null || true
 }
 
