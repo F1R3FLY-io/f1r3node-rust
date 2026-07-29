@@ -45,7 +45,8 @@
 //!    fixture captured from the **pre-conversion** implementation.
 //! 2. [`super::sort_recursive`] — the recursive oracle twin and its
 //!    differential, over the same corpus plus multi-sibling terms.
-//! 3. [`SortKont::arity`] plus the **deficit invariant** in [`sort_drive`] — a
+//! 3. [`SortKont::arity`] plus the **deficit invariant** in
+//!    [`crate::rust::rholang::drive`] — a
 //!    structural cross-check that fires on the first malformed configuration on
 //!    *any* term, where a differential fires only if the corpus happens to
 //!    contain the witness.
@@ -59,6 +60,16 @@
 //! (the golden corpus and `order_preserving_slots_keep_their_input_order`), and
 //! the **source-index check** below, which turns "push in reverse" from a
 //! convention into a failing assertion on every term any test sorts.
+//!
+//! ⚠★ That last sentence was FALSE until 2026-07-29 and is now true. The check
+//! tagged each child with its *push position* rather than its *source
+//! position*, under which every push order yields the contiguous ascending run
+//! the assertion looks for — so it passed on a deliberately reversed run while
+//! the other three gates all caught it. `push_reversed` now tags by source
+//! position (byte-neutral on correct code, since reverse iteration assigns the
+//! same numbers the old descending counter did), and the reversed-run probe
+//! makes it fire. See [`assert_children_are_in_source_order`] for the
+//! per-guard before/after table.
 //!
 //! ⚠ It would have been tempting to make the order robust instead, by sorting
 //! on `(score, sibling_index)`. That is **rejected as an ordering change**:
@@ -76,13 +87,15 @@
 //!   produced it. It travels on the value stack inside a [`ValItem`], which
 //!   also carries the value's **source index**: its position in its parent's
 //!   slot list.
-//! * [`SortWork`] — a pending unit of work: sort one **borrowed** node, or run
-//!   a post-order [`SortKont`]. Travels inside a [`WorkItem`], which carries
-//!   the index the produced value must end up with.
+//! * [`NodeKind`] — one **borrowed** input node. Travels inside a
+//!   [`SortNode`], which carries the source index the produced value must end
+//!   up with; a [`SortKont`] travels inside an [`IxKont`] for the same reason.
 //! * [`SortKont`] — the post-order continuation: the borrowed *shell* (flags,
 //!   cached bitsets, counts, remainders — everything that is not a child) plus
 //!   the child counts needed to slice the value stack.
-//! * [`sort_drive`] — the single LIFO loop.
+//! * [`SortTraversal`] — the [`Traversal`] impl. The LIFO loop itself is
+//!   [`crate::rust::rholang::drive::drive`], shared with the family's other
+//!   converted members; [`sort_drive`] is the typed entry into it.
 //!
 //! ```text
 //!   work (LIFO)                          vals (LIFO)
@@ -135,6 +148,7 @@ use crate::rhoapi::{
     Bundle, Connective, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind,
     Send,
 };
+use crate::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
 // ===========================================================================
 // values, work, continuations
@@ -167,8 +181,13 @@ pub(crate) struct ValItem {
     pub val: SortVal,
 }
 
-/// A pending unit of work. Every AST reference borrows the input term (`'t`).
-pub(crate) enum SortWork<'t> {
+/// An input node. Every AST reference borrows the input term (`'t`).
+///
+/// `Copy`, as [`Traversal::Node`] requires: pushing a child is a reference move
+/// and never a `<Par as Clone>::clone` (itself Θ(depth) at 15,914 B/level,
+/// debug, which would have re-introduced the class this conversion removes).
+#[derive(Clone, Copy)]
+pub(crate) enum NodeKind<'t> {
     Par(&'t Par),
     Expr(&'t Expr),
     Send(&'t Send),
@@ -183,15 +202,27 @@ pub(crate) enum SortWork<'t> {
     /// A leaf: no sub-`Par`, scored in place. (`Var` is a leaf too, but it is
     /// never a *child slot* of anything this machine descends into — the only
     /// `Var` positions are `EVar::v` and the two remainders, all scored in
-    /// place inside `sort_combine` — so it has no work variant.)
+    /// place inside `sort_combine` — so it has no node variant.)
     Unforgeable(&'t GUnforgeable),
-    Combine(SortKont<'t>),
 }
 
-/// A work item plus the **source index** the value it produces must carry.
-pub(crate) struct WorkItem<'t> {
+/// A node plus the **source index** the value it produces must carry.
+///
+/// ★ This wrapper is why [`Traversal::Node`] is an *associated type* and not a
+/// fixed shape: the sorter needs one `u32` of per-item metadata that no other
+/// instance does, and it rides inside the node rather than widening the
+/// driver's [`Step`] for everybody.
+#[derive(Clone, Copy)]
+pub(crate) struct SortNode<'t> {
     pub idx: u32,
-    pub work: SortWork<'t>,
+    pub kind: NodeKind<'t>,
+}
+
+/// A continuation plus the source index its produced value must carry — the
+/// [`SortNode`] wrapper's counterpart on the `Combine` side.
+pub(crate) struct IxKont<'t> {
+    pub idx: u32,
+    pub kont: SortKont<'t>,
 }
 
 /// Post-order continuation: the borrowed shell plus the child counts needed to
@@ -310,7 +341,7 @@ impl SortKont<'_> {
 // ---------------------------------------------------------------------------
 // value-stack pop helpers
 //
-// Type discipline: the producing `SortWork` guarantees the variant, so a
+// Type discipline: the producing `NodeKind` guarantees the variant, so a
 // mismatch is a driver bug and never an input error. That already catches
 // popping the wrong CATEGORY; the source-index checks below catch popping the
 // right category in the wrong ORDER.
@@ -408,9 +439,33 @@ sort_pop_n!(pop_n_unforgeable, pop_unforgeable_ix, GUnforgeable);
 /// The children a `Combine` is about to consume must sit on the value stack as
 /// a contiguous ascending run `0, 1, …, arity-1`.
 ///
-/// ★ This is the assertion that makes "push in reverse" checkable. It also
-/// cross-checks [`SortKont::arity`] against the layout the `descend_*` handler
-/// actually produced: a miscounted slot list shifts the run and trips here.
+/// ★ This is the assertion that makes "push in reverse" checkable, and it earns
+/// that description only because [`push_reversed`] tags each child with its
+/// **position in the source slice**.
+///
+/// ⚠★ CORRECTED 2026-07-29, and the correction was MEASURED. `push_reversed`
+/// previously derived `idx` from a **descending push counter**, so the index
+/// recorded *where the child was pushed*, not *where it came from*. Under that
+/// scheme every push order produces a contiguous ascending run on the value
+/// stack, and the assertion below is satisfied by all of them — so it did NOT
+/// make "push in reverse" checkable, in spite of saying so. The probe:
+/// `push_reversed` was changed to iterate forward and the suite re-run.
+///
+/// | guard | reversed-run defect, push-counter `idx` | reversed-run defect, source-position `idx` |
+/// |---|---|---|
+/// | this assertion | **PASSED** (vacuous) | fires |
+/// | `order_preserving_slots_keep_their_input_order` | fires | fires |
+/// | `the_worklist_driver_agrees_with_the_recursive_oracle_*` | fires | fires |
+/// | `sorter_canonical_golden` | fires | fires |
+///
+/// The canonical form was never unguarded — three independent gates caught the
+/// defect. But this one was carrying a claim it could not support, which is the
+/// thing that makes a guard rot: the next person reads the claim, not the
+/// arithmetic. `idx` is now the source position, and the row above is why.
+///
+/// It also cross-checks [`SortKont::arity`] against the layout the `descend_*`
+/// handler actually produced: a miscounted slot list shifts the run and trips
+/// here. That half was always real.
 #[inline]
 fn assert_children_are_in_source_order(vals: &[ValItem], arity: usize) {
     debug_assert!(
@@ -438,37 +493,42 @@ fn assert_children_are_in_source_order(vals: &[ValItem], arity: usize) {
 /// first (and popped last) carries the highest index.
 #[inline]
 fn push_reversed<'t, T, F>(
-    work: &mut Vec<WorkItem<'t>>,
+    work: &mut Vec<Step<'t, SortTraversal>>,
     next: &mut u32,
     items: &'t [T],
     mut f: F,
 ) where
-    F: FnMut(&'t T) -> SortWork<'t>,
+    F: FnMut(&'t T) -> NodeKind<'t>,
 {
-    for item in items.iter().rev() {
-        *next -= 1;
-        work.push(WorkItem {
-            idx: *next,
-            work: f(item),
-        });
+    // ★ `idx` is the item's position in `items`, NOT the order it was pushed
+    // in. On correct code the two coincide exactly — reverse iteration assigns
+    // `base + len - 1` down to `base`, which is what the old descending counter
+    // produced — so this is byte-neutral. On a REVERSED run they differ, and
+    // that difference is the whole point: see
+    // [`assert_children_are_in_source_order`] for the measurement showing that
+    // a push-position `idx` made that assertion vacuous.
+    let base = *next - items.len() as u32;
+    for (offset, item) in items.iter().enumerate().rev() {
+        work.push(Step::Descend(SortNode {
+            idx: base + offset as u32,
+            kind: f(item),
+        }));
     }
+    *next = base;
 }
 
 /// Push one child, tagging it with the next (descending) source index.
 #[inline]
-fn push_one<'t>(work: &mut Vec<WorkItem<'t>>, next: &mut u32, w: SortWork<'t>) {
+fn push_one<'t>(work: &mut Vec<Step<'t, SortTraversal>>, next: &mut u32, kind: NodeKind<'t>) {
     *next -= 1;
-    work.push(WorkItem {
-        idx: *next,
-        work: w,
-    });
+    work.push(Step::Descend(SortNode { idx: *next, kind }));
 }
 
 // ===========================================================================
 // descent — pushes `Combine` first, then children in REVERSE
 // ===========================================================================
 
-fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let kont = SortKont::ParK {
         par,
         n_sends: par.sends.len(),
@@ -482,26 +542,23 @@ fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         n_conditionals: par.conditionals.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
+    work.push(Step::Combine(IxKont { idx, kont }));
     // Visit order is the pre-conversion matcher's: sends, receives, exprs,
     // news, matches, bundles, connectives, unforgeables, conditionals. Pushed
     // in reverse so LIFO pops them in that order.
-    push_reversed(work, &mut next, &par.conditionals, SortWork::If);
-    push_reversed(work, &mut next, &par.unforgeables, SortWork::Unforgeable);
-    push_reversed(work, &mut next, &par.connectives, SortWork::Connective);
-    push_reversed(work, &mut next, &par.bundles, SortWork::Bundle);
-    push_reversed(work, &mut next, &par.matches, SortWork::Match);
-    push_reversed(work, &mut next, &par.news, SortWork::New);
-    push_reversed(work, &mut next, &par.exprs, SortWork::Expr);
-    push_reversed(work, &mut next, &par.receives, SortWork::Receive);
-    push_reversed(work, &mut next, &par.sends, SortWork::Send);
+    push_reversed(work, &mut next, &par.conditionals, NodeKind::If);
+    push_reversed(work, &mut next, &par.unforgeables, NodeKind::Unforgeable);
+    push_reversed(work, &mut next, &par.connectives, NodeKind::Connective);
+    push_reversed(work, &mut next, &par.bundles, NodeKind::Bundle);
+    push_reversed(work, &mut next, &par.matches, NodeKind::Match);
+    push_reversed(work, &mut next, &par.news, NodeKind::New);
+    push_reversed(work, &mut next, &par.exprs, NodeKind::Expr);
+    push_reversed(work, &mut next, &par.receives, NodeKind::Receive);
+    push_reversed(work, &mut next, &par.sends, NodeKind::Send);
     debug_assert_eq!(next, 0, "descend_par: slot list and arity disagree");
 }
 
-fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let chan = send
         .chan
         .as_ref()
@@ -511,16 +568,13 @@ fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         n_data: send.data.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_reversed(work, &mut next, &send.data, SortWork::Par);
-    push_one(work, &mut next, SortWork::Par(chan));
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_reversed(work, &mut next, &send.data, NodeKind::Par);
+    push_one(work, &mut next, NodeKind::Par(chan));
     debug_assert_eq!(next, 0, "descend_send: slot list and arity disagree");
 }
 
-fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     // ⚠ The pre-conversion `sort_bind` evaluates this `expect` BEFORE it sorts
     // any pattern, so a bind with a missing source panics with this message
     // rather than with anything a pattern might raise. Evaluating it here
@@ -534,16 +588,13 @@ fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<WorkItem<'t>
         n_patterns: bind.patterns.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_one(work, &mut next, SortWork::Par(source));
-    push_reversed(work, &mut next, &bind.patterns, SortWork::Par);
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_one(work, &mut next, NodeKind::Par(source));
+    push_reversed(work, &mut next, &bind.patterns, NodeKind::Par);
     debug_assert_eq!(next, 0, "descend_bind: slot list and arity disagree");
 }
 
-fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let body = recv
         .body
         .as_ref()
@@ -564,17 +615,14 @@ fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<WorkItem<'t>>
         n_binds: recv.binds.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_one(work, &mut next, SortWork::Par(condition));
-    push_one(work, &mut next, SortWork::Par(body));
-    push_reversed(work, &mut next, &recv.binds, SortWork::Bind);
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_one(work, &mut next, NodeKind::Par(condition));
+    push_one(work, &mut next, NodeKind::Par(body));
+    push_reversed(work, &mut next, &recv.binds, NodeKind::Bind);
     debug_assert_eq!(next, 0, "descend_receive: slot list and arity disagree");
 }
 
-fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let p = new
         .p
         .as_ref()
@@ -584,21 +632,18 @@ fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         n_injections: new.injections.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
+    work.push(Step::Combine(IxKont { idx, kont }));
     // `injections` is a `BTreeMap`, so `values()` is key order — the same order
     // the pre-conversion matcher's `into_iter()` produced, and the order
     // `combine_new` re-zips against `keys()`.
     for v in new.injections.values().rev() {
-        push_one(work, &mut next, SortWork::Par(v));
+        push_one(work, &mut next, NodeKind::Par(v));
     }
-    push_one(work, &mut next, SortWork::Par(p));
+    push_one(work, &mut next, NodeKind::Par(p));
     debug_assert_eq!(next, 0, "descend_new: slot list and arity disagree");
 }
 
-fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let pattern = case
         .pattern
         .as_ref()
@@ -613,17 +658,14 @@ fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<WorkItem<'t>>)
     };
     let kont = SortKont::CaseK { case };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_one(work, &mut next, SortWork::Par(guard));
-    push_one(work, &mut next, SortWork::Par(source));
-    push_one(work, &mut next, SortWork::Par(pattern));
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_one(work, &mut next, NodeKind::Par(guard));
+    push_one(work, &mut next, NodeKind::Par(source));
+    push_one(work, &mut next, NodeKind::Par(pattern));
     debug_assert_eq!(next, 0, "descend_case: slot list and arity disagree");
 }
 
-fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let target = m
         .target
         .as_ref()
@@ -633,16 +675,13 @@ fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         n_cases: m.cases.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_reversed(work, &mut next, &m.cases, SortWork::Case);
-    push_one(work, &mut next, SortWork::Par(target));
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_reversed(work, &mut next, &m.cases, NodeKind::Case);
+    push_one(work, &mut next, NodeKind::Par(target));
     debug_assert_eq!(next, 0, "descend_match: slot list and arity disagree");
 }
 
-fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let condition = cond
         .condition
         .as_ref()
@@ -657,32 +696,26 @@ fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         .expect("if_false field on If was None, should be Some");
     let kont = SortKont::IfK { cond };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_one(work, &mut next, SortWork::Par(if_false));
-    push_one(work, &mut next, SortWork::Par(if_true));
-    push_one(work, &mut next, SortWork::Par(condition));
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_one(work, &mut next, NodeKind::Par(if_false));
+    push_one(work, &mut next, NodeKind::Par(if_true));
+    push_one(work, &mut next, NodeKind::Par(condition));
     debug_assert_eq!(next, 0, "descend_if: slot list and arity disagree");
 }
 
-fn descend_bundle<'t>(bundle: &'t Bundle, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_bundle<'t>(bundle: &'t Bundle, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let body = bundle
         .body
         .as_ref()
         .expect("body was None, should be Some(Par)");
     let kont = SortKont::BundleK { bundle };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
-    push_one(work, &mut next, SortWork::Par(body));
+    work.push(Step::Combine(IxKont { idx, kont }));
+    push_one(work, &mut next, NodeKind::Par(body));
     debug_assert_eq!(next, 0, "descend_bundle: slot list and arity disagree");
 }
 
-fn descend_connective<'t>(conn: &'t Connective, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_connective<'t>(conn: &'t Connective, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let mut kids: Vec<&'t Par> = Vec::new();
     connective_child_pars(conn, &mut kids);
     let kont = SortKont::ConnK {
@@ -690,17 +723,14 @@ fn descend_connective<'t>(conn: &'t Connective, idx: u32, work: &mut Vec<WorkIte
         n: kids.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
+    work.push(Step::Combine(IxKont { idx, kont }));
     for p in kids.into_iter().rev() {
-        push_one(work, &mut next, SortWork::Par(p));
+        push_one(work, &mut next, NodeKind::Par(p));
     }
     debug_assert_eq!(next, 0, "descend_connective: slot list and arity disagree");
 }
 
-fn descend_expr<'t>(expr: &'t Expr, idx: u32, work: &mut Vec<WorkItem<'t>>) {
+fn descend_expr<'t>(expr: &'t Expr, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
     let mut kids: Vec<&'t Par> = Vec::new();
     expr_child_pars(expr, &mut kids);
     let kont = SortKont::ExprK {
@@ -708,151 +738,131 @@ fn descend_expr<'t>(expr: &'t Expr, idx: u32, work: &mut Vec<WorkItem<'t>>) {
         n: kids.len(),
     };
     let mut next = kont.arity() as u32;
-    work.push(WorkItem {
-        idx,
-        work: SortWork::Combine(kont),
-    });
+    work.push(Step::Combine(IxKont { idx, kont }));
     for p in kids.into_iter().rev() {
-        push_one(work, &mut next, SortWork::Par(p));
+        push_one(work, &mut next, NodeKind::Par(p));
     }
     debug_assert_eq!(next, 0, "descend_expr: slot list and arity disagree");
 }
 
 // ===========================================================================
-// the driver
+// the driver — an instance of `models::rust::rholang::drive`
 // ===========================================================================
+//
+// ★ STAGE F-2. The LIFO loop that used to live here is now
+// `crate::rust::rholang::drive::drive`, shared with `rho-pure-eval`'s
+// `eval_with` (stage F-1) and, from stage F-3, with the codec. What moved is
+// only the loop, the two stacks and the invariants; every `descend_*` above and
+// every `combine_*_k` below is byte-for-byte the code that produced the
+// canonical form before the move.
+//
+// Three of the old loop's own checks are worth accounting for individually,
+// because "it moved" is not the same claim for each:
+//
+// | old check | now |
+// |---|---|
+// | the deficit invariant `V + D + C - A == 1` | `drive.rs` Invariant 2, verbatim — the derivation moved with it |
+// | "a `descend_*` must push its `Combine` first" + `pushed - 1 == arity` | `drive.rs` Invariant 1, GENERALIZED to a right-to-left availability scan. The sorter's regions are all `[Combine, children…]`, so it accepts exactly what the old rule accepted |
+// | `debug_assert_eq!(before, work.len(), "a Combine must not push work")` | ★ ENFORCED BY THE TYPE SYSTEM. `Traversal::combine` is not given the work stack, so a combine that pushed work no longer compiles |
+//
+// ⚠ `assert_children_are_in_source_order` did NOT move into the driver, and
+// must not: it is a statement about the *sorter's* value layout (a contiguous
+// ascending source-index run), not about any traversal's. It runs at the head of
+// `combine`, which is the same point in the same order as the bespoke loop ran
+// it — before any pop.
 
-/// The single LIFO loop. Native stack is `O(1)`; the recursion lives in `work`.
-///
-/// Sorting is a pure function of its argument — it reads no ambient state,
-/// takes no metering handle, and cannot fail — so there is nothing to unwind
-/// and no cost trace to preserve. The whole neutrality obligation is therefore
-/// *result* equality.
-///
-/// ## ★ The deficit invariant
-///
-/// Let `V = |vals|`, `D` = the number of non-`Combine` items on `work`, `C` =
-/// the number of `Combine` items, and `A = Σ arity(k)` over those `Combine`s.
-/// Then
-///
-/// ```text
-///     V + D + C − A  ==  1
-/// ```
-///
-/// holds at the head of **every** iteration:
-///
-/// | step | effect on `V + D + C − A` |
-/// |---|---|
-/// | leaf descend (`D−1`, `V+1`) | `−1 + 1 = 0` |
-/// | node descend, `k` children (`D−1+k`, `C+1`, `A+k`) | `(k−1) + 1 − k = 0` |
-/// | combine of arity `a` (`V−a+1`, `C−1`, `A−a`) | `(1−a) − 1 + a = 0` |
-///
-/// and it starts at `0 + 1 + 0 − 0 = 1`.
-///
-/// ⚠ The design note stated this as `V + D == 1 + A`. That form is off by `C`
-/// and fires immediately — right after the root's descent it reads `k` against
-/// `k + 1`. The correction is recorded here rather than silently applied,
-/// because an invariant that fires spuriously is worse than no invariant at
-/// all. The two forms coincide exactly when no `Combine` is pending, i.e. at
-/// the first and last iteration.
-///
-/// **Why it is worth its keep.** It cross-checks [`SortKont::arity`] — an
-/// independently written exhaustive `match` — against what the `descend_*`
-/// handlers push and what the per-arm combines pop. It therefore fires on the
-/// **first malformed configuration on any term**, whereas a differential fires
-/// only if the corpus happens to contain the witness. That kills the
-/// arity/pop-count bug class, which is precisely the class that silently forks
-/// the canonical form.
-pub(crate) fn sort_drive(root: SortWork<'_>) -> SortVal {
-    let mut work: Vec<WorkItem<'_>> = Vec::with_capacity(32);
-    let mut vals: Vec<ValItem> = Vec::with_capacity(32);
-    work.push(WorkItem { idx: 0, work: root });
+/// The sorter as a [`Traversal`]. Zero-sized: sorting reads no ambient state.
+pub(crate) struct SortTraversal;
 
-    // Maintained incrementally so the check is `O(1)` per step rather than a
-    // rescan of `work`; a rescan would be `O(n²)` and the gate sorts terms
-    // 4,096 levels deep.
-    let mut descends: usize = 1;
-    let mut combines: usize = 0;
-    let mut sum_arity: usize = 0;
+/// Sorting cannot fail. `Infallible` states that in the type system rather than
+/// in a comment, and it is what lets [`sort_drive`] have no panic path at all.
+type Never = std::convert::Infallible;
 
-    loop {
-        debug_assert_eq!(
-            vals.len() + descends + combines,
-            1 + sum_arity,
-            "sort_drive: DEFICIT INVARIANT VIOLATED (|vals|={}, descends={}, combines={}, \
-             Σarity={}). `SortKont::arity` disagrees with what a `descend_*` pushed or a \
-             `Combine` popped — the bug class that silently forks the canonical form.",
-            vals.len(),
-            descends,
-            combines,
-            sum_arity
-        );
+impl Traversal for SortTraversal {
+    type Node<'t> = SortNode<'t>;
+    type Val = ValItem;
+    type Kont<'t> = IxKont<'t>;
+    /// Nothing is threaded: the score and the term are both built on the value
+    /// stack, and the input is only read.
+    type State = ();
+    type Err = Never;
 
-        let Some(WorkItem { idx, work: w }) = work.pop() else {
-            break;
-        };
-
-        match w {
-            SortWork::Combine(k) => {
-                combines -= 1;
-                let arity = k.arity();
-                sum_arity -= arity;
-                assert_children_are_in_source_order(&vals, arity);
-                let before = work.len();
-                let val = run_combine(k, &mut vals);
-                debug_assert_eq!(before, work.len(), "a Combine must not push work");
-                vals.push(ValItem { idx, val });
-            }
-            descend => {
-                descends -= 1;
-                let before_len = work.len();
-                match descend {
-                    SortWork::Par(p) => descend_par(p, idx, &mut work),
-                    SortWork::Expr(e) => descend_expr(e, idx, &mut work),
-                    SortWork::Send(s) => descend_send(s, idx, &mut work),
-                    SortWork::Receive(r) => descend_receive(r, idx, &mut work),
-                    SortWork::Bind(b) => descend_bind(b, idx, &mut work),
-                    SortWork::New(n) => descend_new(n, idx, &mut work),
-                    SortWork::Match(m) => descend_match(m, idx, &mut work),
-                    SortWork::Case(c) => descend_case(c, idx, &mut work),
-                    SortWork::If(i) => descend_if(i, idx, &mut work),
-                    SortWork::Bundle(b) => descend_bundle(b, idx, &mut work),
-                    SortWork::Connective(c) => descend_connective(c, idx, &mut work),
-                    SortWork::Unforgeable(u) => vals.push(ValItem {
-                        idx,
-                        val: SortVal::Unforgeable(sort_unforgeable(u)),
-                    }),
-                    SortWork::Combine(_) => unreachable!("handled by the arm above"),
-                }
-                // Every non-leaf `descend_*` pushes exactly one `Combine`
-                // followed by its children; a leaf pushes nothing and produces
-                // a value directly.
-                let pushed = work.len() - before_len;
-                if pushed > 0 {
-                    let kont_arity = match &work[before_len].work {
-                        SortWork::Combine(k) => k.arity(),
-                        _ => unreachable!("a `descend_*` must push its Combine first"),
-                    };
-                    debug_assert_eq!(
-                        pushed - 1,
-                        kont_arity,
-                        "sort_drive: a `descend_*` pushed {} children but its continuation \
-                         declares arity {}",
-                        pushed - 1,
-                        kont_arity
-                    );
-                    combines += 1;
-                    sum_arity += kont_arity;
-                    descends += pushed - 1;
-                }
-            }
+    fn descend<'t>(
+        &mut self,
+        _state: &mut (),
+        node: SortNode<'t>,
+        work: &mut Vec<Step<'t, Self>>,
+        vals: &mut Vec<ValItem>,
+    ) -> Result<(), Never> {
+        let SortNode { idx, kind } = node;
+        match kind {
+            NodeKind::Par(p) => descend_par(p, idx, work),
+            NodeKind::Expr(e) => descend_expr(e, idx, work),
+            NodeKind::Send(s) => descend_send(s, idx, work),
+            NodeKind::Receive(r) => descend_receive(r, idx, work),
+            NodeKind::Bind(b) => descend_bind(b, idx, work),
+            NodeKind::New(n) => descend_new(n, idx, work),
+            NodeKind::Match(m) => descend_match(m, idx, work),
+            NodeKind::Case(c) => descend_case(c, idx, work),
+            NodeKind::If(i) => descend_if(i, idx, work),
+            NodeKind::Bundle(b) => descend_bundle(b, idx, work),
+            NodeKind::Connective(c) => descend_connective(c, idx, work),
+            // The one leaf: no sub-`Par`, scored in place.
+            NodeKind::Unforgeable(u) => vals.push(ValItem {
+                idx,
+                val: SortVal::Unforgeable(sort_unforgeable(u)),
+            }),
         }
+        Ok(())
     }
 
-    debug_assert_eq!(vals.len(), 1, "sort_drive: exactly one value must remain");
-    vals.pop()
-        .expect("sort_drive: exactly one value must remain")
-        .val
+    fn combine<'t>(
+        &mut self,
+        _state: &mut (),
+        kont: IxKont<'t>,
+        vals: &mut Vec<ValItem>,
+    ) -> Result<Outcome<ValItem>, Never> {
+        let IxKont { idx, kont } = kont;
+        // ⚠ BEFORE any pop, exactly where the bespoke loop ran it. This is the
+        // assertion that turns "push in reverse" from a convention into a
+        // failure on every term any test sorts.
+        assert_children_are_in_source_order(vals, kont.arity());
+        let val = run_combine(kont, vals);
+        // ⚠ NO EARLY EXIT, and here that is a CONSENSUS statement rather than a
+        // performance one. The sorter is a normalizer: every continuation's
+        // result is a child of the next, so no combine can already hold the
+        // answer — and a `Done` that returned early would emit a term that is
+        // not the canonical form, which is a fork rather than a slow path.
+        // `Outcome::Done` belongs to the comparison traversals.
+        Ok(Outcome::Value(ValItem { idx, val }))
+    }
+
+    /// ★ Delegates to [`SortKont::arity`], which deliberately duplicates the
+    /// pop counts in the per-arm combines so the driver's invariants can
+    /// cross-check them. Exhaustive there, with no `_` arm.
+    fn arity(kont: &IxKont<'_>) -> usize {
+        kont.kont.arity()
+    }
+}
+
+/// Sort one node, starting a fresh bounded drive.
+///
+/// Native stack is `O(1)` in both nesting depth and sibling width; the
+/// recursion lives in the driver's heap work stack.
+pub(crate) fn sort_drive(root: NodeKind<'_>) -> SortVal {
+    let mut visitor = SortTraversal;
+    let mut state = ();
+    match drive(
+        &mut visitor,
+        &mut state,
+        Step::Descend(SortNode { idx: 0, kind: root }),
+    ) {
+        Ok(item) => item.val,
+        // `Never` is uninhabited, so this arm is unreachable BY TYPE. Matching
+        // on it is how that is said to the compiler; an `.expect(…)` would say
+        // it only to a reader and would leave a panic path in the binary.
+        Err(never) => match never {},
+    }
 }
 
 // ===========================================================================
@@ -1031,7 +1041,7 @@ macro_rules! sort_entry {
     ($name:ident, $work:ident, $variant:ident, $ty:ty) => {
         /// Sort one node, starting a fresh bounded drive.
         pub(crate) fn $name(term: &$ty) -> ScoredTerm<$ty> {
-            match sort_drive(SortWork::$work(term)) {
+            match sort_drive(NodeKind::$work(term)) {
                 SortVal::$variant(v) => v,
                 _ => unreachable!(concat!(
                     "sort_drive: ",
