@@ -2924,51 +2924,128 @@ fn a_surface_l_row_may_not_name_a_local_commit() {
     assert_eq!(check_foreign_rows(&f.index), Ok(()));
 }
 
-/// ★ RED on the frontier fuse: with the fuse set so that nothing is forgiven, an unregistered
-/// frontier commit fails — and with the real fuse and its exemption present, it passes.
+/// ★ RED on the frontier fuse: an unregistered frontier commit is REFUSED once it is older
+/// than `frontier_grace_days`, and ADMITTED while it is younger — probed at the exact
+/// boundary the configured value names.
+///
+/// ⚠ **Three defects this guard used to carry, all of one shape: the guard asserted things
+/// about the LIVE frontier that only held by luck.**
+///
+/// 1. **The un-fused floor.** It asserted `unregistered.is_empty()` over the live frontier
+///    before probing anything — an assertion with **no grace window at all**.
+///    [`check_frontier_fuse`] deliberately tolerates a *young* unregistered commit, and this
+///    line re-imposed the very obligation the fuse exists to relax. ⇒ the fuse was *a fuse in
+///    the function and a tripwire in its own guard*: it fired on whoever committed next
+///    rather than on drift, which is the exact failure mode [`check_frontier_fuse`]'s own
+///    doc-comment argues against ("a gate that fires on the wrong thing gets disabled").
+///
+/// 2. **★ The sibling — deleting that line is NOT the repair.** `commits.len() == 1` below
+///    carried the *same* coupling: at a fuse of `-1` **every** unregistered frontier commit
+///    blows, so the count equalled one only while the live frontier happened to be otherwise
+///    fully registered. A concurrent agent landing one consensus-path commit turned a
+///    `len() == 1` into `len() == 2`. Both cells had to move onto a CONTROLLED frontier;
+///    fixing only the first would have left the tripwire in place one line down.
+///
+/// 3. **A dated time bomb.** The admit cell read the exemplar's age off the live `HEAD`, so it
+///    held only while `HEAD` stayed within `frontier_grace_days` of `53e78427` (committed
+///    2026-07-29). It would have gone red on **2026-08-01** for a reason wholly unconnected
+///    to drift. `head_time` is a *parameter* of the fuse, so both ages are now synthesised
+///    from the exemplar's own commit date and the verdict is invariant under the passage of
+///    time — the same "pure function of the checkout" property the fuse's doc-comment claims.
+///
+/// **A floor may assert NON-VACUITY; it may never assert the obligation under test.** That is
+/// the rule the three defects above each broke, and the floors below are written to it: they
+/// establish that the probe is *about* something, and nothing more.
+///
+/// **Where the live-frontier obligation lives.** Unchanged, and asserted with the fuse
+/// HONOURED, in [`the_register_as_committed_passes_every_clause`]. No coverage is lost here;
+/// what is removed is a *duplicate* of that obligation with the fuse stripped off.
 #[test]
 fn the_frontier_fuse_admits_a_fresh_commit_and_refuses_a_stale_one() {
+    const DAY: i64 = 86_400;
+    // An unregistered-but-EXEMPTED commit on the living frontier. Removing its exemption is
+    // what makes it the single unregistered member of the controlled frontier below.
+    const EXEMPLAR: &str = "53e78427";
+
     let f = fixture();
+    let grace = f.index.int("frontier_grace_days");
+
+    // ── FLOORS. Non-vacuity only: each says the probe is ABOUT something. ──
     assert!(
         !f.frontier.is_empty(),
         "★ FLOOR for this guard: the frontier must be non-empty, or the cells below compare \
          two empty sets"
     );
-    let unregistered: Vec<String> = f
-        .frontier
-        .iter()
-        .filter(|c| !f.entries_n.contains(*c) && !f.exempt_all.contains(*c))
-        .cloned()
-        .collect();
     assert!(
-        unregistered.is_empty(),
-        "every frontier commit must be registered or exempted; unregistered: {unregistered:?}"
+        f.frontier.iter().any(|c| c.as_str() == EXEMPLAR),
+        "★ FLOOR: the exemplar {EXEMPLAR} must be ON the living frontier, or the probe below \
+         is about a commit this clause never examines. If `partition_head` has moved past it, \
+         choose a new exemplar from the frontier — do NOT relax the probe."
+    );
+    assert!(
+        f.exempt_all.contains(EXEMPLAR),
+        "★ FLOOR: the exemplar must be EXEMPTED in the committed register, so that removing \
+         its exemption below is what makes it unregistered"
+    );
+    assert!(
+        grace >= 0,
+        "★ FLOOR: `frontier_grace_days` must be non-negative, or the fuse forgives nothing and \
+         the admit cell below is vacuous"
     );
 
-    // Drop one frontier exemption and set the fuse so nothing is forgiven.
+    // ── A CONTROLLED frontier: every member registered or exempted, EXCEPT the exemplar. ──
+    // The live frontier's incidental registration state cannot reach the cells below, so a
+    // concurrent agent's fresh commit can no longer redden this guard.
     let mut exempt = f.exempt_all.clone();
-    assert!(exempt.remove("53e78427"), "the sorter conversion must be exempted");
-    let breach = check_frontier_fuse(&f.frontier, &f.entries_n, &exempt, f.head_time, -1)
-        .expect_err("★ an unregistered frontier commit past its fuse must be REFUSED");
+    assert!(exempt.remove(EXEMPLAR), "the sorter conversion must be exempted");
+    let frontier: Vec<String> = f
+        .frontier
+        .iter()
+        .filter(|c| {
+            c.as_str() == EXEMPLAR
+                || f.entries_n.contains(c.as_str())
+                || exempt.contains(c.as_str())
+        })
+        .cloned()
+        .collect();
+    let unregistered: Vec<&str> = frontier
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !f.entries_n.contains(*c) && !exempt.contains(*c))
+        .collect();
+    assert_eq!(
+        unregistered,
+        vec![EXEMPLAR],
+        "★ FLOOR: the controlled frontier must leave EXACTLY the exemplar unregistered, or the \
+         two cells below are not measuring the fuse"
+    );
+
+    let born = commit_time(EXEMPLAR);
+
+    // ── REFUSE: one day PAST the configured fuse. ──
+    let breach =
+        check_frontier_fuse(&frontier, &f.entries_n, &exempt, born + (grace + 1) * DAY, grace)
+            .expect_err("★ an unregistered frontier commit past its fuse must be REFUSED");
     let DriftBreach::FrontierFuseBlown { commits, grace_days } = &breach else {
         panic!("must fail on the frontier clause; got {breach:?}");
     };
-    assert_eq!(*grace_days, -1);
+    assert_eq!(*grace_days, grace);
     assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].0, "53e78427");
-
-    // ★ And the fuse is what admits it: the same missing row, inside the real grace window,
-    // is tolerated — which is the difference between a ratchet with a fuse and a tripwire
-    // that fires on whoever commits next.
+    assert_eq!(commits[0].0, EXEMPLAR);
     assert_eq!(
-        check_frontier_fuse(
-            &f.frontier,
-            &f.entries_n,
-            &exempt,
-            f.head_time,
-            f.index.int("frontier_grace_days")
-        ),
-        Ok(())
+        commits[0].2,
+        grace + 1,
+        "the refusal must report the age that blew the fuse, not merely that one blew"
+    );
+
+    // ── ADMIT: exactly AT the fuse — the boundary the configured value actually names, which
+    // the old `-1` probe never reached. ★ This is what makes the fuse a fuse: the same missing
+    // row, inside the real grace window, is tolerated — the difference between a ratchet with
+    // a fuse and a tripwire that fires on whoever commits next.
+    assert_eq!(
+        check_frontier_fuse(&frontier, &f.entries_n, &exempt, born + grace * DAY, grace),
+        Ok(()),
+        "★ an unregistered frontier commit AT its fuse must be ADMITTED"
     );
 }
 
