@@ -115,44 +115,10 @@ RUN git clone "${PETTA_REPO}" /build/PeTTa && \
 FROM swipl:stable AS swipl-extract
 
 # ============================================================================
-# Optional stage: petta-test - Run the PeTTa/MeTTa test suite in-container
+# Stage: sandbox-builder - Build Cloudflare libsandbox.so (seccomp)
 # ============================================================================
-# NOT part of the default build (the runtime stage below stays the default
-# target). It reuses the Rust toolchain, the workspace source, and the pinned
-# PeTTa already present in the builder; only `swipl` is added on top. Build and
-# run it explicitly:
-#   docker build --target petta-test -t f1r3fly-petta-test -f node/Dockerfile .
-#   docker run --rm f1r3fly-petta-test
-# Add `-v petta-cargo:/usr/local/cargo/registry -v petta-target:/build/target`
-# to the run to cache crates and compiled artifacts across repeated runs.
-FROM builder AS petta-test
-
-# The Debian swi-prolog package pulls in the shared libraries the interpreter
-# needs; python3/libpython3.11 back the janus bridge. The interpreter itself is
-# then overlaid with the janus-capable build below.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    swi-prolog \
-    python3 \
-    libpython3.11 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Overlay the packaged 9.0.4 with the upstream janus-capable SWI-Prolog so the
-# tests exercise the same interpreter the runtime image ships.
-COPY --from=swipl-extract /usr/lib/swipl /usr/lib/swipl
-COPY --from=swipl-extract /usr/bin/swipl /usr/bin/swipl
-
-# The test script defaults PETTA_PATH to <repo-root>/PeTTa (i.e. /build/PeTTa),
-# which is exactly where the builder cloned it; set it explicitly anyway.
-ENV PETTA_PATH=/build/PeTTa
-WORKDIR /build
-
-# gxhash (via the PathMap crate) needs AES CPU features to compile, matching the
-# release build above. +sse2 is x86-only; on aarch64 only +aes is valid.
-ENTRYPOINT ["bash", "-c", "case \"$(uname -m)\" in aarch64) export RUSTFLAGS='-C target-feature=+aes' ;; *) export RUSTFLAGS='-C target-feature=+aes,+sse2' ;; esac; exec rholang/tests/RUN_PETTA_TESTS.sh"]
-
-# ============================================================================
-# Stage 2: Sandbox library builder - Build Cloudflare libsandbox.so (seccomp)
-# ============================================================================
+# Defined before petta-test (and the runtime stages) so both can COPY the built
+# libsandbox.so: a COPY --from must reference an earlier stage.
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS sandbox-builder
 
 RUN apt-get update && apt-get install -y \
@@ -181,6 +147,105 @@ RUN ./configure --enable-shared=no && make
 WORKDIR /tmp/sandbox
 RUN make && \
     cp libsandbox.so /libsandbox.so
+
+# ============================================================================
+# Optional stage: petta-test - Run the de-pythonified MeTTa suites in-container
+# ============================================================================
+# NOT part of the default build (the runtime stage below stays the default
+# target). It reuses the Rust toolchain and the workspace source from the
+# builder, and runs the sandboxed-PeTTa test harness against three de-pythonified
+# MeTTa suites: PLN (swipl_petta_ecan_spec) and metta-moses + metta-attention
+# (swipl_petta_workspace_spec). Build and run it explicitly:
+#   docker build --target petta-test -t f1r3fly-petta-test -f node/Dockerfile .
+#   docker run --rm --privileged f1r3fly-petta-test
+# `--privileged` (or `--security-opt seccomp=unconfined --security-opt
+# apparmor=unconfined`) is required because petta.sh runs each test inside a
+# bubblewrap user namespace, which the default Docker sandbox blocks.
+# Add `-v petta-cargo:/usr/local/cargo/registry -v petta-target:/build/target`
+# to the run to cache crates and compiled artifacts across repeated runs.
+FROM builder AS petta-test
+
+# The MeTTa libraries are de-pythonified: random/time/math come from PeTTa
+# builtins (lib/pyrand.pl), so no py-call is ever invoked. We therefore do NOT
+# install the python3 interpreter (the old petta-test did). It is still present
+# in the image, but only as a transitive dependency of the rust:bookworm base
+# toolchain (clang/llvm), never as something this stage adds or the sandbox
+# binds — petta.sh does not bind python3 into the bubblewrap sandbox.
+# libpython3.11 is kept only because SWI-Prolog's janus.so is dynamically linked
+# against it (library(janus) fails to load without it); it is never exercised.
+# bubblewrap + patchelf drive petta.sh's seccomp sandbox; swi-prolog supplies
+# the interpreter's shared libraries (the binary itself is overlaid below);
+# ncurses-term provides the terminfo tree petta.sh binds into the sandbox.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    swi-prolog \
+    libpython3.11 \
+    bubblewrap \
+    patchelf \
+    ncurses-term \
+    && rm -rf /var/lib/apt/lists/*
+
+# Overlay the packaged 9.0.4 with the upstream janus-capable SWI-Prolog so the
+# tests exercise the same interpreter the runtime image ships.
+COPY --from=swipl-extract /usr/lib/swipl /usr/lib/swipl
+COPY --from=swipl-extract /usr/bin/swipl /usr/bin/swipl
+
+# Cloudflare libsandbox.so (seccomp) and the sandbox driver scripts petta.sh
+# invokes at runtime.
+COPY --from=sandbox-builder /libsandbox.so /usr/lib/libsandbox.so
+COPY petta.sh functions.sh /build/
+
+# De-pythonified PeTTa fork + the three MeTTa suites, pinned to the same revs the
+# devshell (f1r3fly-rust-devshell flake.lock) locks. Full clones so the pinned
+# commit (on a non-default branch) is reachable. Bump the *_REF args to upgrade.
+ARG PETTA_NOPYTHON_REPO=https://github.com/mlabs-haskell/PeTTa.git
+ARG PETTA_NOPYTHON_REF=fcc22e8a2e5623870c87b6033ecb3f33d72a7338
+ARG PLN_REPO=https://github.com/dylon/PLN.git
+ARG PLN_REF=fbb2ae0f43824106102cb7de4085699dedab0db7
+ARG METTA_MOSES_REPO=https://github.com/mlabs-haskell/metta-moses.git
+ARG METTA_MOSES_REF=47a3c740f8006d66880d578811bd84896a47e3f8
+ARG METTA_ATTENTION_REPO=https://github.com/mlabs-haskell/metta-attention.git
+ARG METTA_ATTENTION_REF=1b61232cecdb4d71c02969e229a20124a6716a62
+RUN git clone "${PETTA_NOPYTHON_REPO}" /build/PeTTa-nopython && \
+    git -C /build/PeTTa-nopython checkout --detach "${PETTA_NOPYTHON_REF}" && \
+    rm -rf /build/PeTTa-nopython/.git && \
+    git clone "${PLN_REPO}" /build/PLN && \
+    git -C /build/PLN checkout --detach "${PLN_REF}" && \
+    rm -rf /build/PLN/.git && \
+    git clone "${METTA_MOSES_REPO}" /build/metta-moses && \
+    git -C /build/metta-moses checkout --detach "${METTA_MOSES_REF}" && \
+    rm -rf /build/metta-moses/.git && \
+    git clone "${METTA_ATTENTION_REPO}" /build/metta-attention && \
+    git -C /build/metta-attention checkout --detach "${METTA_ATTENTION_REF}" && \
+    rm -rf /build/metta-attention/.git
+
+# Point the harness at the fork + the suite sources. REQUIRE_PETTA_TESTS=1 makes
+# a missing prerequisite fail the run loudly instead of silently skipping.
+ENV PETTA_PATH=/build/PeTTa-nopython \
+    PETTA_DIR=/build/PeTTa-nopython \
+    PETTA_SCRIPT_PATH=/build/petta.sh \
+    PLN_DIR=/build/PLN \
+    METTA_MOSES_DIR=/build/metta-moses \
+    METTA_ATTENTION_DIR=/build/metta-attention \
+    CACHE_DIR=/build/.petta-cache \
+    SANDBOX_LIB_PATH=/usr/lib/libsandbox.so \
+    PETTA_BLOCKED_PREDS=readln! \
+    REQUIRE_PETTA_TESTS=1 \
+    TERMINFO=/usr/share/terminfo \
+    TERMINFO_DIRS=/usr/share/terminfo
+
+WORKDIR /build
+
+# Create SWI-Prolog paths petta.sh expects but the Debian package omits (mirror
+# the runtime stage), and the writable cache dir petta.sh patches libraries into.
+RUN SWI_HOME=$(swipl --home 2>/dev/null || echo "/usr/lib/swi-prolog") && \
+    { [ -f "$SWI_HOME/ABI" ] || echo "9.0.4" > "$SWI_HOME/ABI"; } && \
+    mkdir -p "$SWI_HOME/app" "$SWI_HOME/doc" /build/.petta-cache
+
+# gxhash (via the PathMap crate) needs AES CPU features to compile, matching the
+# release build above. +sse2 is x86-only; on aarch64 only +aes is valid. Runs
+# the PLN suite (swipl_petta_ecan_spec) and the metta-moses + metta-attention
+# suites (swipl_petta_workspace_spec); exits non-zero if either suite fails.
+ENTRYPOINT ["bash", "-c", "case \"$(uname -m)\" in aarch64) export RUSTFLAGS='-C target-feature=+aes' ;; *) export RUSTFLAGS='-C target-feature=+aes,+sse2' ;; esac; rc=0; for spec in swipl_petta_ecan_spec swipl_petta_workspace_spec; do echo \"=== running $spec ===\"; cargo test --test \"$spec\" -p rholang -- --nocapture --test-threads=1 || rc=1; done; exit $rc"]
 
 # ============================================================================
 # Stage 4: Runtime base - Install runtime dependencies (cached independently)

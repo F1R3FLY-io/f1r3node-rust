@@ -56,6 +56,50 @@ pub fn should_skip_petta_test() -> bool {
     }
 }
 
+// Helper for skipping ECAN/PLN tests. These need everything `should_skip_petta_test`
+// requires, plus `PLN_DIR` pointing at the PLN library source (petta.sh exposes it
+// inside the sandbox as a MeTTaTron library_path).
+pub fn should_skip_ecan_test() -> bool {
+    if should_skip_petta_test() {
+        return true;
+    }
+
+    if env::var_os("PLN_DIR").is_none() {
+        let error_message = "ECAN test prerequisite unmet: PLN_DIR environment variable not set";
+        if env::var_os("REQUIRE_PETTA_TESTS").is_some() {
+            panic!("{error_message}");
+        } else {
+            eprintln!("Skipping test: {error_message}");
+            return true;
+        }
+    }
+
+    false
+}
+
+// Helper for skipping sandboxed-PeTTa workspace suites (metta-moses,
+// metta-attention). These need everything `should_skip_petta_test` requires,
+// plus `dir_env` pointing at the repo root that petta.sh binds into the sandbox
+// as the workspace (PETTA_WORKSPACE_DIR).
+pub fn should_skip_petta_workspace_test(dir_env: &str, label: &str) -> bool {
+    if should_skip_petta_test() {
+        return true;
+    }
+
+    if env::var_os(dir_env).is_none() {
+        let error_message =
+            format!("{label} test prerequisite unmet: {dir_env} environment variable not set");
+        if env::var_os("REQUIRE_PETTA_TESTS").is_some() {
+            panic!("{error_message}");
+        } else {
+            eprintln!("Skipping test: {error_message}");
+            return true;
+        }
+    }
+
+    false
+}
+
 pub fn name_visit_inputs_and_env() -> (NameVisitInputs, HashMap<String, Par>) {
     let input: NameVisitInputs = NameVisitInputs {
         bound_map_chain: BoundMapChain::default(),
