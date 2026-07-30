@@ -79,22 +79,33 @@
 //! `e3a4494b` published a before/after table of `post_state_hash`; `719f2432` retracted it as
 //! run-varying. This file adds a sharper measurement of the same defect:
 //!
-//! | scope | result | source |
-//! |---|---|---|
-//! | six independent builds, ONE process | **agree** (1 distinct value) | `genesis_vaults_order_determinism::genesis_post_state_hash_is_identical_across_independent_builds`, PASS in 88 s |
-//! | four independent nextest PROCESSES | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
+//! | process | RSpace scope | result | source |
+//! |---|---|---|---|
+//! | one | ONE, shared | **agree** (1 distinct value) | `genesis_vaults_order_determinism::genesis_post_state_hash_is_identical_across_independent_builds`, PASS in 88 s |
+//! | one | SIX, one per build | **agree** (1 distinct value) | `…::genesis_post_state_hash_is_identical_across_independent_rspace_scopes`, PASS in 76.63 s |
+//! | FOUR | four | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
 //!
 //! Each of those four processes built from `build_genesis_parameters_with_defaults(None, None)`, whose
 //! every component is a static key pair or a sorted derivation of one
 //! (`casper/tests/util/genesis_builder.rs:166-211`), and `do_build_genesis` consumes nothing but
 //! `parameters.clone()`. So the inputs were identical and the outputs were not.
 //!
-//! ⚠ **"Reproducible within a process, not across processes" is a much narrower target than the
-//! earlier finding suggested**, and it rules things out: a `HashMap` iteration order would vary
-//! *within* a process too (Rust's `RandomState` re-seeds per map instance), so the surviving suspect
-//! is state that is randomised **once per process** and then reused. Root-causing it needs a clean
-//! tree and files this work item does not own; it is reported, not fixed. **No genesis post-state
-//! hash may be blessed until it is.**
+//! ★★ **The first two rows are the ATTRIBUTION, and the middle one had to be added to get it.** The
+//! original pair of rows differed in **two** variables at once — process *and* scope — so it could
+//! not say which mattered. Rows 1 and 2 now differ in the scope alone and agree; rows 2 and 3 differ
+//! in the process alone and disagree. ⇒ **the varying state is randomised ONCE PER PROCESS and then
+//! reused; it is not derived from the RSpace scope, the store manager, or the `RuntimeManager`.**
+//!
+//! That also rules two things out on the record. `evaluate_with_term` seeds from
+//! `create_from_length(128)` = `rand::thread_rng().fill(…)` (`blake2b512_random.rs:91`), i.e. fresh
+//! entropy per call, which would have made the same-process builds disagree — they agree, so
+//! **per-call randomness is refuted**, and #171's S3 (per-deploy RSpace event-log order) is refuted
+//! with it, now including the case of a fresh store per build. A `HashMap` iteration order is
+//! likewise excluded: Rust's `RandomState` re-keys per map instance, so it would vary *within* a
+//! process too.
+//!
+//! ⚠ **Naming the specific per-process value is a separate work item and is deliberately NOT guessed
+//! here.** It is reported, not fixed. **No genesis post-state hash may be blessed until it is.**
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -263,6 +263,179 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
     let _ = std::fs::remove_dir_all(&scope_id);
 }
 
+/// ★★ **THE DISCRIMINATING EXPERIMENT: does the surviving genesis instability follow the PROCESS
+/// or the RSPACE SCOPE?**
+///
+/// # The two rows that could not answer it, and why
+///
+/// The genesis `post_state_hash` had been measured twice, with opposite results:
+///
+/// | measurement | result |
+/// |---|---|
+/// | 6 independent builds in ONE process | **agree** — 1 distinct value ([`genesis_post_state_hash_is_identical_across_independent_builds`]) |
+/// | 4 independent nextest PROCESSES | **DISAGREE** — 4 distinct values |
+///
+/// ⚠ Those two rows differ in **two** variables at once, so neither can attribute anything. Each
+/// nextest process got a fresh process *and* a fresh `generate_scope_id()`, while the six in-process
+/// builds shared the process, the scope, the store manager, **and one `RuntimeManager` instance**.
+/// A design that varies two things and observes one difference has measured their conjunction.
+///
+/// # What the existing data DOES settle, which is the useful part
+///
+/// `evaluate_with_term` seeds its RNG with `Blake2b512Random::create_from_length(128)`, which is
+/// `rand::thread_rng().fill(…)` (`blake2b512_random.rs:91`) and therefore draws FRESH entropy on
+/// every call. If that were the explanation, the six same-process builds would have DISAGREED. They
+/// agreed. ⇒ **per-call randomness is refuted**, and so is per-deploy RSpace event-log ordering
+/// (#171 S3) for exactly the same reason. The surviving signature is *state that is constant across
+/// builds sharing a process **or** a scope, and varies otherwise* — which points at store/history
+/// state rather than at any RNG.
+///
+/// # This cell, which varies EXACTLY ONE of them
+///
+/// Six builds in **one** process, each with a **fresh** `generate_scope_id()` — and therefore a
+/// fresh store manager, fresh RSpace stores, and a fresh `RuntimeManager`. The process is held
+/// constant; the scope is not. So the outcome reads directly:
+///
+/// ```text
+///        ┌──────────────── one process ────────────────┐
+///        │  scope₁   scope₂   scope₃  …  scope₆        │      AGREE  ⇒ the varying thing is
+///        │    │        │        │          │           │             PROCESS-scoped state, and
+///        │  store₁   store₂   store₃  …  store₆        │             the 4-process disagreement
+///        │    ▼        ▼        ▼          ▼           │             is a HARNESS fact
+///        │   hash₁    hash₂    hash₃  …  hash₆         │
+///        └─────────────────────────────────────────────┘      DIFFER ⇒ the varying thing is
+///                                                                    SCOPE/STORE-derived, and
+///                                                                    #171 S3 is LIVE again
+/// ```
+///
+/// # ★★★ THE RESULT — MEASURED: **AGREE**, so the RSPACE SCOPE is EXCLUDED
+///
+/// Six builds, six distinct `generate_scope_id()`s, one process: **1 distinct `post_state_hash`**.
+/// PASS in **76.63 s**.
+///
+/// | rows, now three, and only two variables between them | result |
+/// |---|---|
+/// | 6 builds, ONE process, ONE scope | agree — 1 distinct |
+/// | 6 builds, ONE process, SIX scopes ← **this cell** | **agree — 1 distinct** |
+/// | 4 builds, FOUR processes, four scopes | DISAGREE — 4 distinct |
+///
+/// Rows 1 and 2 differ in the scope alone and agree; rows 2 and 3 differ in the process alone and
+/// disagree. ⇒ **the varying state is PROCESS-scoped — randomised once per process and then reused
+/// — and it is NOT derived from the RSpace scope, the store manager, or the `RuntimeManager`.**
+/// #171's S3 (per-deploy RSpace event-log order) stays refuted: a fresh store per build did not move
+/// the hash.
+///
+/// ⚠ **Why that agreement is real work and not a cache serving five clones — MEASURED, because the
+/// obvious objection to any "N builds agreed" claim is that N−1 of them never ran.** This cell
+/// bypasses `GENESIS_CACHE` the same way its sibling does, by calling `Genesis::create_genesis_block`
+/// directly, and the **wall time proves the bypass**: 76.63 s for six builds is 12.8 s per build,
+/// against the sibling's 88 s / 6 = 14.7 s per build. Five cache hits would have returned in
+/// microseconds and the total would sit near one build's cost, not six. So six genesis computations
+/// were actually performed.
+///
+/// ⚠ **What this cell does NOT identify** is *which* per-process value it is. Naming it needs a
+/// probe that enumerates the process-scoped statics genesis reads, and that is a separate work item;
+/// attributing it from this evidence alone would be a guess dressed as a result.
+///
+/// # ⚠ Why asserting agreement is the CORRECT gate and not merely the convenient one
+///
+/// Two validators computing genesis for the same shard have different store paths, different LMDB
+/// files, and no shared process. If a fresh RSpace scope can move `post_state_hash`, they cannot
+/// agree on genesis — so "a fresh scope must not move the hash" is a real consensus requirement, and
+/// a RED here is a genuine defect statement rather than an artifact of the instrument.
+///
+/// # ⚠ What this cell deliberately does NOT do
+///
+/// It reads nothing but `block.body.state.post_state_hash`. Inspecting the tuplespace per channel
+/// would be self-defeating: `HotStore::get_data` (`hot_store.rs:354`) takes a **write** lock and
+/// history-fills, and `changes()` then emits that fill as a store action — so the obvious
+/// "read-only" inspection API MUTATES the state that becomes the checkpoint. *"It only reads" is a
+/// property of the API, not of reading.*
+#[tokio::test]
+async fn genesis_post_state_hash_is_identical_across_independent_rspace_scopes() {
+    // (scope_id, post_state_hash, vault order) per build, so a failure names WHICH scope diverged.
+    let mut observed: Vec<(String, String, Vec<(String, u64)>)> = Vec::with_capacity(N_BUILDS);
+
+    for i in 0..N_BUILDS {
+        // ★ THE ONE VARIED VARIABLE. A fresh scope per build ⇒ fresh scoped LMDB database names,
+        // hence a fresh store manager, fresh RSpace stores and a fresh `RuntimeManager`. The
+        // existing cell hoists all four out of the loop; that is the entire difference.
+        let scope_id = generate_scope_id();
+        let mut kvs_manager = resources::mk_test_rnode_store_manager_shared(scope_id.clone());
+
+        let m_store = RuntimeManager::mergeable_store(&mut *kvs_manager)
+            .await
+            .expect("mergeable store");
+        let r_store = kvs_manager.r_space_stores().await.expect("rspace stores");
+
+        let runtime_manager = RuntimeManager::create_with_store(
+            r_store,
+            m_store,
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        );
+
+        // Fresh parameters too, matching the sibling cell exactly so the two differ in ONE thing.
+        let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        let vault_order = vault_order_fingerprint(&genesis.vaults);
+
+        let block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+            .await
+            .unwrap_or_else(|e| panic!("genesis build {i} must succeed: {e:?}"));
+
+        observed.push((
+            scope_id,
+            hex::encode(&block.body.state.post_state_hash),
+            vault_order,
+        ));
+    }
+
+    let distinct_scopes: BTreeSet<&String> = observed.iter().map(|(s, _, _)| s).collect();
+    let distinct_hashes: BTreeSet<&String> = observed.iter().map(|(_, h, _)| h).collect();
+    let distinct_orders: BTreeSet<&Vec<(String, u64)>> =
+        observed.iter().map(|(_, _, o)| o).collect();
+
+    // ★ NON-VACUITY FLOOR, asserted FIRST: if the scopes were not actually distinct this cell has
+    // silently degenerated into a duplicate of the sibling and discriminates nothing.
+    assert_eq!(
+        distinct_scopes.len(),
+        N_BUILDS,
+        "★ FLOOR: {N_BUILDS} builds produced only {} distinct scope ids, so the ONE variable this \
+         cell exists to vary did not vary and its result cannot attribute anything.",
+        distinct_scopes.len(),
+    );
+
+    // ★ The attribution rung, same as the sibling: agreement must be BECAUSE the inputs agreed.
+    assert_eq!(
+        distinct_orders.len(),
+        1,
+        "★★ the vault ORDERS differ across builds ({} distinct), so any hash result here is \
+         confounded by input variation and this cell cannot discriminate scope from process. \
+         Observations: {:#?}",
+        distinct_orders.len(),
+        observed,
+    );
+
+    assert_eq!(
+        distinct_hashes.len(),
+        1,
+        "★★★ {N_BUILDS} genesis computations in ONE process with {N_BUILDS} DISTINCT RSpace scopes \
+         produced {} DISTINCT `post_state_hash` values from identical parameters and identical \
+         vault order.\n\
+         ⇒ ATTRIBUTION: the surviving genesis instability is SCOPE/STORE-derived, not merely \
+         process-scoped. Two validators with different store paths cannot agree on genesis, and \
+         #171's S3 (per-deploy RSpace event-log order) is LIVE again — the six-builds-agree row \
+         refuted it only under a SHARED scope.\n\
+         Observations (scope, hash, vault order): {:#?}",
+        distinct_hashes.len(),
+        observed,
+    );
+
+    for (scope_id, _, _) in &observed {
+        let _ = std::fs::remove_dir_all(scope_id);
+    }
+}
+
 /// ★ **Independent evidence, from a mechanism that was never designed as a determinism check:
 /// `GENESIS_CACHE` now HITS.**
 ///
