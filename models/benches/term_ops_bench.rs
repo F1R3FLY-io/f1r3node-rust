@@ -792,9 +792,9 @@ fn widths() {
         std::mem::size_of::<Step<'_, CloneTraversal>>()
     );
     println!(
-        "  size_of::<Outcome<CloneVal, …>>()   {}   ◀── a RETURN VALUE, \
+        "  size_of::<Outcome<CloneVal, CloneNode>>() {}  ◀── a RETURN VALUE, \
          NOT on the Θ(depth) stack (Stage 1f)",
-        std::mem::size_of::<Outcome<CloneVal>>()
+        std::mem::size_of::<Outcome<CloneVal, CloneNode<'_>>>()
     );
     println!();
 }

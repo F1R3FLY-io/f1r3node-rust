@@ -3297,17 +3297,106 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 ///
 /// A post-order fold whose `Val` is the OWNED node moves each node's 248 bytes
 /// three extra times; the derive constructs it once, directly into the parent's
-/// `Vec` slot via `SpecFromIterNested`. The arithmetic is *consistent with* the gap
-/// to within the precision of the estimate — it is not proof, and the decisive
-/// experiment would be a PEBS-precise `mem-stores` profile attributing bytes to the
-/// `vals` round-trip.
+/// `Vec` slot via `SpecFromIterNested`.
 ///
-/// ⇒ **No amount of walk-elimination fixes this.** Closing it requires the children
-/// to be written directly into their final destination, i.e. TOP-DOWN allocation
+/// ## ★★ MEASURED 2026-07-29 — the moves are CONFIRMED, and every instrument
+/// ## named above was wrong about how to see them
+///
+/// ⚠ The paragraph that used to stand here called a **PEBS-precise `mem-stores`
+/// profile** "the decisive experiment". **PEBS is an Intel mechanism and does not
+/// exist on this ISA** — this host is a Threadripper PRO 5975WX (Zen 3, family
+/// 0x19 model 0x8), and `perf` answers `mem-stores` with *"Unable to find event on
+/// a PMU"*. What actually works, characterised rather than assumed (at
+/// `kernel.perf_event_paranoid = 0`):
+///
+/// ```text
+///   valgrind --tool=cachegrind --cache-sim=yes    works, DETERMINISTIC, no skid
+///   perf stat -e ls_dispatch.store_dispatch       works  <-- the AMD store counter
+///   perf stat -e cycles / cycles:P                both work
+///   perf record --call-graph dwarf -e cycles:P    works
+///   perf stat -e mem-stores                       DOES NOT EXIST (Intel PEBS)
+///   perf ... -e ibs_op/swfilt=1/ (per-thread)     REFUSES: "enable system wide with '-a'"
+///   perf record --call-graph lbr                  REFUSES on this part
+/// ```
+///
+/// `models/benches/term_ops_bench.rs`'s `TERM_OPS_ARM` mode runs one arm over the
+/// weighted mix and exits, with a `fixture` arm that does everything except the
+/// clone, so `arm − fixture` isolates the mechanism. Per `Par` node, over 245,720
+/// nodes:
+///
+/// ```text
+///                 Ir        Dr        Dw    D1 miss   LLd miss
+///   derived    2456.1     662.8     555.6      33.92    0.7521
+///   driven     2883.4     835.4     698.4      33.88    0.7548
+///   ratio      1.1740    1.2604    1.2571     0.9988    1.0035
+/// ```
+///
+/// ★ **Cache behaviour is at PARITY** — the driven arm misses very slightly less.
+/// The gap is +427 instructions and +143 write references per node: **retired
+/// work, not stalls.** And `cg_annotate` attributes it:
+///
+/// ```text
+///   ΔDw/node   ΔIr/node   function
+///     +93.6      +365.8   drive::drive_with::<CloneTraversal>
+///     +68.3      +179.8   Map<Iter<Expr>, clone_rebuild_par::{closure#3}>::fold
+///     −37.0      −112.0   term_ops::oracle_clone_par        (absent in driven)
+///     −30.7      −160.9   __memcpy_avx_unaligned_erms       (driven does LESS)
+/// ```
+///
+/// ★★ `drive_with` **itself** — the trampoline, not the visitor — costs **+93.6
+/// write references per node**, and `93.6 × 8 B = 749 B` against
+/// `3 × size_of::<Par>() = 744 B`: **agreement to 0.7%.** The three moves are
+/// exactly where this comment said they were. The prediction of ~288,000 extra
+/// `Dw` per pass came in **6.09× low** for one reason: it priced the moves at
+/// 32-byte vector stores, and `objdump` on `drive_with` finds 280 `mov` and 30
+/// `movq` and **zero** `vmov*`/`movdq*` — the compiler emits **scalar 8-byte
+/// stores.**
+///
+/// Hardware corroborates and cross-validates: `ls_dispatch.store_dispatch` gives
+/// 606.7 → 902.5 store µops per node (**1.487×**), and `instructions` gives
+/// **1.1742×** against cachegrind's **1.1740×** — two instruments, four
+/// significant figures. IPC is *higher* on the driven arm (1.278 vs 1.148), so
+/// `1.1742 / (1.278/1.148) = 1.055` = the measured cycles ratio. **The gap is an
+/// instruction-count gap with no stall term.**
+///
+/// ⚠ And the gap is footprint-dependent, which is why the two ratios in this file
+/// disagree: 1.055× cycles on the **weighted mix** is 0.948× throughput, matching
+/// the paired wall-clock reading exactly, while the uniform depth-2 leg reads
+/// ~0.64×. Production's 3 MB mix makes both arms memory-bound and the driven arm's
+/// instruction surplus overlaps shared stalls.
+///
+/// ## ⚠⚠ CORRECTED: `Outcome::Tail` IS NOT THIS GAP'S FIX
+///
+/// This comment used to say that closing the gap "requires … TOP-DOWN allocation
 /// with a resumable continuation — `drive.rs`'s documented but unimplemented
-/// `Outcome::Tail` extension. That is a separate stage with its own measurement,
-/// and it is what a reviewer should be shown before a depth-`k` hybrid is
-/// considered.
+/// `Outcome::Tail` extension." **Those are two different mechanisms and only one
+/// of them is `Tail`.**
+///
+/// `Outcome::Tail` (now LANDED, `drive.rs` §A) is a **control-flow** primitive:
+/// *"this `Combine` produces no value; re-enter `descend` on this node instead."*
+/// It exists because a **codec's** parent discovers its next obligation only after
+/// the previous child completes — bytes sit *between* the children — and `combine`
+/// is deliberately not handed the work stack, so it cannot express a resume any
+/// other way. **`Tail` moves no data.** Worse for this gap: under `Tail` each
+/// resumption *pops* the child value and must park it somewhere until the node
+/// completes — either back on `vals` (a **fourth** 248-byte move) or in `State`.
+/// A tail call changes *when* a value is produced; this gap is about *where* it
+/// lands.
+///
+/// ★ The correct name for what this gap needs is **destination-passing descent**
+/// (out-parameter / `sret`-threading), and the reason is that **Rust's `sret` ABI
+/// already is destination-passing**: `<Vec<Par> as Clone>::clone` hands
+/// `Par::clone` the final slot address as its return pointer, so the derive
+/// constructs each node exactly once. The driven form breaks that chain by routing
+/// through `Vec<CloneVal>` — `size_of::<CloneVal>() == 248` — which LLVM cannot
+/// see through. Restoring it means giving `descend` a destination, i.e. widening
+/// `Step::Descend`. It requires **nothing** from `Outcome`.
+///
+/// ⇒ That is a separate stage with its own measurement, and it is what a reviewer
+/// should be shown before a depth-`k` hybrid is considered. ⚠ The depth-`k` hybrid
+/// remains the cheaper candidate — it amortizes the whole per-node tax with no
+/// `unsafe`, no change to `Node<'t>: Copy` and nothing at all from `drive.rs` — and
+/// the deferral of that choice to reviewer judgement stands.
 ///
 /// ⚠ **The conversion is correct and the trade is stated rather than hidden**: the
 /// derived form aborts a release node at depth ~640 on a 2 MiB tokio worker
@@ -3953,7 +4042,10 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
          \x20       _state: &mut (),\n\
          \x20       kont: CloneKont<'t>,\n\
          \x20       vals: &mut Vec<CloneVal>,\n\
-         \x20   ) -> Result<Outcome<CloneVal>, Infallible> {\n\
+         \x20   ) -> Result<Outcome<CloneVal, CloneNode<'t>>, Infallible>\n\
+         \x20   where\n\
+         \x20       Self: 't,\n\
+         \x20   {\n\
          \x20       match kont {\n",
     );
     for name in &plan.cut {

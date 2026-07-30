@@ -92,6 +92,14 @@ path = "tests/cold_store_records.rs"
 name = "drive_configuration_gate"
 path = "tests/drive_configuration_gate.rs"
 
+# The driver's per-level WIDTH pin. `size_of::<Step<'_, CloneTraversal>>()` is the
+# one type in `drive.rs` that multiplies by depth, and `size_of::<Par>()` is the
+# denominator of every byte argument about the clone conversion — neither was
+# asserted anywhere before this target existed.
+[[test]]
+name = "drive_step_width_gate"
+path = "tests/drive_step_width_gate.rs"
+
 [[test]]
 name = "epathmap_canonical_fixtures"
 path = "tests/epathmap_canonical_fixtures.rs"

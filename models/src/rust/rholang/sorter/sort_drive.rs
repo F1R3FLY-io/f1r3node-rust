@@ -821,7 +821,10 @@ impl Traversal for SortTraversal {
         _state: &mut (),
         kont: IxKont<'t>,
         vals: &mut Vec<ValItem>,
-    ) -> Result<Outcome<ValItem>, Never> {
+    ) -> Result<Outcome<ValItem, SortNode<'t>>, Never>
+    where
+        Self: 't,
+    {
         let IxKont { idx, kont } = kont;
         // ⚠ BEFORE any pop, exactly where the bespoke loop ran it. This is the
         // assertion that turns "push in reverse" from a convention into a

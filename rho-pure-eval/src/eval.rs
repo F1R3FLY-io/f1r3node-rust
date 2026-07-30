@@ -672,9 +672,22 @@ struct EvalTraversal<'e> {
 }
 
 impl<'e> Traversal for EvalTraversal<'e> {
-    type Node<'t> = EvNode<'t>;
+    // ⚠ `where Self: 't` is restated here because this is the ONE visitor in the
+    // workspace that is not zero-sized: it borrows its `Env` and its
+    // `SpatialMatch` for `'e`. The bound reads `'e: 't` — the environment must
+    // outlive the term being evaluated, which it does, since the term is
+    // evaluated *in* that environment. ★ It is also why `drive.rs` states the
+    // precise bound `Self: 't` rather than `Self: 'static`: `'static` would make
+    // this impl illegal outright.
+    type Node<'t>
+        = EvNode<'t>
+    where
+        Self: 't;
     type Val = EvVal;
-    type Kont<'t> = EvKont<'t>;
+    type Kont<'t>
+        = EvKont<'t>
+    where
+        Self: 't;
     type State = ();
     type Err = EvalError;
 
@@ -724,7 +737,10 @@ impl<'e> Traversal for EvalTraversal<'e> {
         _state: &mut (),
         kont: EvKont<'t>,
         vals: &mut Vec<EvVal>,
-    ) -> Result<Outcome<EvVal>, EvalError> {
+    ) -> Result<Outcome<EvVal, EvNode<'t>>, EvalError>
+    where
+        Self: 't,
+    {
         // ⚠ NO EARLY EXIT. `eval_with` computes a value rather than deciding a
         // predicate: every continuation's result is a child of the next one, so
         // there is no configuration in which a combine already holds the

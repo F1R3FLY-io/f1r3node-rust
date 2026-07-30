@@ -261,10 +261,10 @@
 //! `debug_assert_eq!(before, work.len(), "a Combine must not push work")`. So
 //! as specified, `combine` cannot express a resume at all.
 //!
-//! ### The extension that works, and why it costs nothing
+//! ### The extension — [`Outcome::Tail`], LANDED
 //!
-//! Add a third [`Outcome`] arm, `Tail(Node<'t>)`: *"I consumed my children;
-//! this descent produces my value in my place."* A resumable node then becomes
+//! [`Outcome`]'s third arm, [`Outcome::Tail`]`(Node<'t>)`: *"I consumed my
+//! children; this descent produces my value in my place."* A resumable node is
 //!
 //! ```text
 //!   Descend(node @ cursor c):  run bounded fields from c
@@ -281,15 +281,47 @@
 //!
 //! * the suspension region `[Combine(Resume), Descend(child)]` scans (pop
 //!   order) `Descend` ⇒ `avail = 1`, `Resume` of arity 1 ⇒ `avail = 1`.
-//!   **Invariant 1 satisfied.**
-//! * a `Tail` consumes `arity` values, produces none, and pushes one `Descend`:
-//!   `Δ(V + D + C − A) = (−1) + (+1) + (−1) − (−1) = 0`.
-//!   **Invariant 2 preserved.**
+//!   **Invariant 1 satisfied**, and `Tail` pushes nothing during `descend`, so
+//!   Invariant 1 is not even reached on the tail step.
+//! * **Invariant 2 preserved, FOR EVERY ARITY.** ⚠ This bullet used to read
+//!   `Δ(V + D + C − A) = (−1) + (+1) + (−1) − (−1) = 0`, which is the
+//!   **arity-1 special case stated as if it were general** — the four terms
+//!   happen to be ±1 only when the continuation consumes exactly one value, and
+//!   the sorter and `rho-pure-eval` both have higher-arity continuations. The
+//!   general statement, over a `Combine(k)` with `a = arity(k)`:
+//!
+//! ```text
+//!     popping the Combine        C − 1        and        A − a
+//!     combine pops its values    V − a
+//!     the Tail pushes a Descend  D + 1
+//!
+//!     Δ(V + D + C − A)  =  (−a) + (+1) + (−1) − (−a)
+//!                        =  −a + 1 − 1 + a
+//!                        =  0        for every a ∈ ℕ.    ∎
+//! ```
+//!
+//!   The `−a` from the value pops and the `+a` from removing the promise cancel
+//!   *identically*, so the arity never appears in the result. That is why the
+//!   arithmetic is sound for a `Kont` of any width, and why it is worth writing
+//!   with the symbol rather than with the instance.
+//!
+//! * ★★ **And a THIRD obligation, which neither invariant can express:
+//!   TERMINATION.** A `Tail` is the only step in the machine that does not
+//!   strictly reduce the pending obligations — it may re-enter a node already
+//!   visited. A `Combine` that tails to a `Descend` that suspends and tails
+//!   again with an *unadvanced* cursor runs forever, and `Δ = 0` holds at every
+//!   single loop head throughout. Invariant 2 is a conservation law; it is
+//!   blind to progress by construction. The disposition is a contract plus
+//!   [`Traversal::MAX_TAILS_PER_DESCENT`], a `debug_assertions`-only bound in
+//!   the [`Traversal::arity`] idiom — see [`Outcome::Tail`] for both halves and
+//!   `models/tests/drive_configuration_gate.rs` for the executed RED.
 //!
 //! The counted repeat is the same shape: `Rep{kind, n}` descends as
 //! `[Combine(RepResume{kind, n−1}), Descend(kind.start())]` and the resume
 //! tails back into `Rep{kind, n−1}` — which is why `remaining` never has to be
-//! materialised as `n` separate ops.
+//! materialised as `n` separate ops. ★ Its termination witness is the *decreasing
+//! `n`*, which is exactly the "strictly advanced" contract instantiated for a
+//! counted repeat.
 //!
 //! ### The four blockers, measured
 //!
@@ -334,10 +366,59 @@
 //!
 //! ### Status
 //!
-//! Blockers 3 and 4 are *design consequences*, already resolved above. Blockers
-//! 1 and 2 are **measurements that gate the work**: each needs its own commit
-//! and its own RED-watched gate, and blocker 1 may not survive its measurement
-//! at all. Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
+//! Blockers 3 and 4 are *design consequences*, already resolved above. Blocker 2
+//! is solved: [`drive_with`] exists and takes both stacks by `&mut`. Blocker 1 is
+//! **answered by measurement, and the answer is that it never applied to
+//! [`Outcome::Tail`] at all** — see the next section.
+//!
+//! ### ⚠⚠ CORRECTED 2026-07-29 — what `Tail` is, and what it is NOT
+//!
+//! `Tail` is **resumption for interleaved-I/O traversals**, and that is the whole
+//! of it. It has been described elsewhere in this repository as the fix for the
+//! generated `Clone`'s throughput gap against its own derived oracle. **It is
+//! not**, and the two mechanisms are worth separating precisely:
+//!
+//! | | `Outcome::Tail` | what the clone gap needs |
+//! |---|---|---|
+//! | kind | **control flow** — "produce my value by re-entering `descend`" | **storage** — "construct the child in its final slot" |
+//! | moves data | **no** | that is its entire purpose |
+//! | changes | `Outcome` only; [`Step`] is untouched | widens `Step::Descend` with a destination |
+//! | name | resumption | **destination-passing descent** (out-parameter / `sret`-threading) |
+//!
+//! ★ Worse than merely not helping: under `Tail` each resumption *pops* the
+//! child's value and has to park it until the node completes — either back on
+//! `vals` (a **fourth** 248-byte move for the clone instance) or in
+//! [`Traversal::State`]. A tail call changes *when* a value is produced; that gap
+//! is about *where* it lands. The derive is fast because **Rust's `sret` ABI
+//! already is destination-passing**, and the driven form breaks that chain by
+//! routing through `Vec<Val>`.
+//!
+//! ⇒ Anyone reaching for `Tail` to close a byte-movement gap should read
+//! `models/build/wire_schema.rs`'s clone-throughput section, which now carries the
+//! deterministic instruction- and store-level accounting.
+//!
+//! ### ★ And blocker 1 does not bind `Tail`, for a structural reason
+//!
+//! `Outcome` is a **return value**: it lives in a register pair or an `sret` slot
+//! for the length of the `match` that consumes it. The 32-byte ceiling
+//! `models/tests/wire_encode_space.rs` pins is a ceiling on a **per-level stack
+//! cell**, because the op stack grows at a measured 2.000 entries per level and
+//! one extra word there is +65 kB at depth 4,096. `Tail` adds an arm to `Outcome`
+//! and **does not touch [`Step`]**, so it multiplies by nothing. Measured on the
+//! generated clone instance: `size_of::<Step<'_, CloneTraversal>>() == 16` —
+//! unchanged by this stage and now pinned by
+//! `models/tests/drive_step_width_gate.rs` — against
+//! `size_of::<Outcome<CloneVal, CloneNode<'_>>>() == 256`, of which not one byte
+//! is per-level.
+//!
+//! ⚠ What blocker 1 *does* still bind is any design that widens `Step` — which is
+//! the encoder's `Op` split, and the destination-passing descent above. Those must
+//! be measured against that gate, and the gate must be watched RED on a
+//! deliberately widened node first. ★ One datum for whoever does: widening
+//! `CloneKont` from 8 B to 16 B **does not widen `Step` at all** (it stays 16 B —
+//! rustc packs the discriminant into the non-null `&Par` niche), which was measured
+//! on 2026-07-29 and refutes half of an earlier attribution that charged a
+//! regression to "`Step` 16 → 24 B". Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
 //! by `par_codec_differential` (13/13), `wire_encode_differential` (13/13),
 //! `serializer_par_byte_goldens` (7/7), `wire_encode_space` (8/8) and the
 //! `bincode_ser` / `bincode_de` depth subjects in
@@ -379,7 +460,12 @@ use std::fmt::Write as _;
 /// `Step` is the *only* thing that ever occupies the work stack, which is what
 /// makes the two invariants checkable: the driver can read back exactly what a
 /// `descend` pushed and score it.
-pub enum Step<'t, T: Traversal> {
+/// ⚠ `T: 't` — the visitor must outlive the term its work items borrow. The bound
+/// is not new policy; it is [`Traversal::Node`]'s `where Self: 't` propagated to
+/// every use, which became required once [`Outcome::Tail`] put that GAT in
+/// [`Traversal::combine`]'s return type. Every instance is zero-sized and
+/// satisfies it trivially.
+pub enum Step<'t, T: Traversal + 't> {
     /// Visit `node`. Produces exactly one value, possibly by pushing a region
     /// of further work (Invariant 1).
     Descend(T::Node<'t>),
@@ -391,17 +477,84 @@ pub enum Step<'t, T: Traversal> {
 /// What one [`Traversal::combine`] produced, and what the driver should do with
 /// it.
 ///
-/// ★ Spelled as a named enum rather than `ControlFlow<Val, Val>` because both
-/// arms carry a value, so `Break` / `Continue` would say nothing about which is
-/// which. [`Outcome::Value`] *is* the `Continue` arm and [`Outcome::Done`] *is*
-/// the `Break` arm of that formulation.
-pub enum Outcome<V> {
+/// ★ Spelled as a named enum rather than `ControlFlow<Val, Val>` because the
+/// arms do not all carry a value, so `Break` / `Continue` would say nothing
+/// about which is which. [`Outcome::Value`] *is* the `Continue` arm and
+/// [`Outcome::Done`] *is* the `Break` arm of that formulation;
+/// [`Outcome::Tail`] has no counterpart there at all.
+///
+/// ## ★ Width: this is a RETURN VALUE, not a stack cell
+///
+/// `Outcome` is returned from [`Traversal::combine`] into a register pair or an
+/// `sret` slot and dies at the end of the `match` that consumes it. It is **not**
+/// on the Θ(depth) work stack — only [`Step`] is, and [`Step`] does not mention
+/// `Outcome`. So the `size_of::<Op>() <= 32` style ceiling that governs a
+/// per-level stack cell does not govern this type, and adding [`Outcome::Tail`]
+/// costs **zero** bytes per level. For the generated clone instance the measured
+/// widths are `size_of::<Step<'_, CloneTraversal>>() == 16` (pinned by
+/// `models/tests/drive_step_width_gate.rs`) against
+/// `size_of::<Outcome<CloneVal, CloneNode<'_>>>() == 256`, and the second number
+/// multiplies by nothing.
+pub enum Outcome<V, N> {
     /// An ordinary child value. The driver pushes it and carries on.
     Value(V),
     /// **This is the answer.** The driver abandons every pending obligation and
     /// returns it. See the module docs on what abandoning the value stack costs
     /// when `Val` owns a term.
     Done(V),
+    /// ★★ **RESUMPTION.** *"I consumed my children and produced no value; this
+    /// descent produces my value in my place."* The driver pushes
+    /// `Step::Descend(node)` and carries on.
+    ///
+    /// This is the arm an **interleaved-I/O** traversal needs. A post-order
+    /// fold's parent knows all its children before any of them runs, so its
+    /// `descend` can push the whole region at once. A codec's parent does not:
+    /// bytes sit *between* the children, so the next obligation is discovered
+    /// only after the previous child's subtree is complete. Both such machines
+    /// are resumable coroutines, and [`Traversal::combine`] is deliberately
+    /// **not** handed the work stack — so without this arm `combine` cannot
+    /// express a resume at all.
+    ///
+    /// ## ★ Why it carries a `Node` and not the work stack
+    ///
+    /// Handing `combine` a `&mut Vec<Step>` would have expressed resumption too,
+    /// and would have thrown away the type-level property stage F-2 gained when
+    /// it replaced the sorter's `debug_assert_eq!(before, work.len(), "a Combine
+    /// must not push work")`. A `Tail` can schedule **exactly one descent**, not
+    /// an arbitrary region: the guarantee survives verbatim, and it is the
+    /// property that makes a `combine` reviewable in isolation.
+    ///
+    /// ## ⚠⚠ THE OBLIGATION THIS ARM INTRODUCES: TERMINATION
+    ///
+    /// Without `Tail`, the machine terminates for a structural reason: every
+    /// step strictly reduces the pending obligations, because `descend` may only
+    /// push work for children of the node it was given and the input is finite.
+    /// **A `Tail` can push an obligation for a node the machine has already
+    /// visited**, and a `Combine` that tails to a `Descend` that suspends and
+    /// tails again *with an unadvanced cursor* loops forever — while **both
+    /// invariants hold at every single loop head.** Invariant 2 is a
+    /// conservation law, not a progress measure; it cannot see this.
+    ///
+    /// So the obligation is stated as a **contract** and backed by a **measured
+    /// bound**:
+    ///
+    /// > **Contract.** The node a `Tail` carries must be strictly *advanced*
+    /// > with respect to the `Kont` that produced it — its cursor must name a
+    /// > position later in that node's own finite field program. A traversal
+    /// > whose `Kont` records a cursor `c` and whose `Tail` carries `c' > c`
+    /// > satisfies this by construction, and the field program's length is the
+    /// > number of resumptions the node can possibly need.
+    ///
+    /// > **Backstop.** [`Traversal::MAX_TAILS_PER_DESCENT`], checked by the
+    /// > `debug_assertions`-only [`Ledger`]. Its default is **0** — a traversal
+    /// > that does not tail declares nothing and any `Tail` from it is rejected
+    /// > on the spot — so the constant is opt-in and fails closed.
+    ///
+    /// ★ The backstop is a *second, independent statement* of a bound the
+    /// instance already knows (for a codec: its field count), in exactly the
+    /// discipline [`Traversal::arity`] already establishes for the pop counts —
+    /// and like `arity` it costs nothing in release.
+    Tail(N),
 }
 
 // ===========================================================================
@@ -417,7 +570,19 @@ pub enum Outcome<V> {
 pub trait Traversal: Sized {
     /// A **borrowed** input node. `Copy` because pushing a child must be a
     /// reference move, never a deep clone.
-    type Node<'t>: Copy;
+    ///
+    /// ⚠ **`where Self: 't` is REQUIRED, and it is a real statement.** Once
+    /// [`Outcome::Tail`] made this GAT appear in [`Traversal::combine`]'s RETURN
+    /// type, rustc requires the bound (E0195, and rustc names it: *"missing
+    /// required bound on `Node`"*, rust-lang/rust#87479). It reads: **the visitor
+    /// must outlive the term it borrows.** Every instance satisfies it trivially —
+    /// all of them are zero-sized — and it is deliberately the precise bound
+    /// rather than `Self: 'static`, which would forbid a visitor that borrows its
+    /// own configuration (an environment, an oracle) even when that borrow
+    /// outlives the traversal.
+    type Node<'t>: Copy
+    where
+        Self: 't;
 
     /// The value one `Step` produces.
     type Val;
@@ -426,7 +591,11 @@ pub trait Traversal: Sized {
     /// *shell* of the node being rebuilt (flags, cached bitsets, remainders —
     /// everything that is not a child), and the child counts needed to slice
     /// the value stack.
-    type Kont<'t>;
+    ///
+    /// ⚠ `where Self: 't` for the same reason as [`Traversal::Node`] — see there.
+    type Kont<'t>
+    where
+        Self: 't;
 
     /// Mutable state threaded through the whole traversal and owned by the
     /// caller — `()` when there is none, `&mut Vec<u8>` for an emitter, a
@@ -449,6 +618,52 @@ pub trait Traversal: Sized {
 
     /// Value-stack preallocation.
     const VAL_CAPACITY: usize = 32;
+
+    /// ★★ **The termination bound for [`Outcome::Tail`]** — how many times ONE
+    /// descent may be resumed.
+    ///
+    /// The driver keeps a `debug_assertions`-only tally and requires
+    ///
+    /// ```text
+    ///   tails  <=  MAX_TAILS_PER_DESCENT  ×  original_descents
+    /// ```
+    ///
+    /// where `original_descents` is the root plus every `Descend` pushed by a
+    /// `descend` that was **not itself tail-generated**. An unadvancing tail
+    /// chain therefore grows `tails` against a base that stands still, and trips
+    /// the bound instead of running forever.
+    ///
+    /// ## ⚠ It is a BUDGET, not an exact progress measure — and why it cannot be
+    ///
+    /// An exact measure would need to say *"this node has been resumed `k`
+    /// times"*, which requires **node identity**, and the driver has none: a
+    /// [`Traversal::Node`] is an opaque `Copy` value with no equality, no hash
+    /// and no address it is willing to expose. (Requiring `Eq + Hash` on `Node`
+    /// and keeping a visited map would cost a hash per node on the hot path, to
+    /// catch a defect that is a programming error rather than a data-dependent
+    /// one. That trade is not worth making, and stating the alternative is part
+    /// of stating the choice.)
+    ///
+    /// So the bound is deliberately loose in the legitimate direction and finite
+    /// in the pathological one. For a sequence of eight items with
+    /// `MAX_TAILS_PER_DESCENT = 8`, a correct traversal takes 7 tails against a
+    /// budget of 16 — 2.3× of slack — while an unadvancing one is stopped at 17.
+    /// ★ What it guarantees is exactly what is needed: **the machine cannot spin
+    /// forever without saying so.**
+    ///
+    /// ⚠ **The default is 0, and that is deliberate: this constant fails
+    /// closed.** A traversal that does not resume declares nothing, and the first
+    /// `Tail` it ever emits — a refactor's accident, say — is rejected
+    /// immediately rather than accepted because the bound was permissive. A
+    /// resumable instance must state its own bound, and it always knows one: for
+    /// a codec it is the length of the longest field program, i.e. the most
+    /// resumptions any single node can need.
+    ///
+    /// ★ Like [`Traversal::arity`], this is a **second, independent statement**
+    /// of a number the instance already knows, so the driver can cross-check the
+    /// instance against itself. Also like `arity`, it is read only under
+    /// `debug_assertions` and costs nothing in release.
+    const MAX_TAILS_PER_DESCENT: usize = 0;
 
     /// Visit one node.
     ///
@@ -477,12 +692,21 @@ pub trait Traversal: Sized {
     /// reverse of push order, so the last child comes off first;
     /// `Vec::split_off(len − n)` takes them all at once and preserves sibling
     /// order without a reversal.
+    ///
+    /// Then report one of three things: [`Outcome::Value`] (the ordinary case),
+    /// [`Outcome::Done`] (early exit), or [`Outcome::Tail`] (this node is not
+    /// finished; re-enter `descend` on the given node in my place). ⚠ `Tail`
+    /// carries an obligation — see its documentation — and it does **not** hand
+    /// `combine` the work stack, so a `combine` still cannot push an arbitrary
+    /// region.
     fn combine<'t>(
         &mut self,
         state: &mut Self::State,
         kont: Self::Kont<'t>,
         vals: &mut Vec<Self::Val>,
-    ) -> Result<Outcome<Self::Val>, Self::Err>;
+    ) -> Result<Outcome<Self::Val, Self::Node<'t>>, Self::Err>
+    where
+        Self: 't;
 
     /// How many values this continuation pops.
     ///
@@ -512,6 +736,36 @@ struct Ledger {
     combines: usize,
     /// `A` — Σ `arity` over the pending `Combine`s.
     sum_arity: usize,
+    /// How many [`Outcome::Tail`]s have been taken.
+    ///
+    /// ★ Not part of either invariant — a `Tail` is `Δ = 0` and both invariants
+    /// are blind to it. This counter and [`Ledger::original_descents`] exist for
+    /// the one property `Tail` can break that the invariants cannot see:
+    /// **termination**.
+    tails: usize,
+    /// The **budget base**: descents the machine was given along a path that has
+    /// not yet tailed — the root, plus every `Descend` in the region of a
+    /// `descend` that was itself *not* tail-generated.
+    ///
+    /// ⚠ Both exclusions are load-bearing, and the second one is subtle enough
+    /// that getting it wrong makes the whole check vacuous. A `Tail`'s own
+    /// `Descend` obviously must not be credited. But the node it re-enters then
+    /// runs `descend` and pushes *its next child*, and crediting THAT would make
+    /// the budget grow once per tail — so `tails <= MAX × original_descents`
+    /// would hold forever and the backstop would catch nothing. Excluding the
+    /// regions pushed *under* a tail-generated descend is what keeps the base
+    /// constant while a tail chain spins.
+    original_descents: usize,
+    /// `true` between [`Ledger::pushed_tail`] and the [`Ledger::popped_descend`]
+    /// that takes the `Descend` it pushed.
+    ///
+    /// ★ Exact, not approximate: [`Ledger::pushed_tail`] pushes onto a LIFO and
+    /// the driver's very next action is `work.pop()`, so the flag is consumed by
+    /// the descend it was set for and by no other.
+    next_descend_is_tail: bool,
+    /// `true` while running the `descend` of a tail-generated `Descend`, so
+    /// [`Ledger::pushed_region`] can decline to credit its region.
+    in_tail_descend: bool,
 }
 
 #[cfg(not(debug_assertions))]
@@ -519,17 +773,25 @@ struct Ledger;
 
 #[cfg(debug_assertions)]
 impl Ledger {
-    fn new<T: Traversal>(root: &Step<'_, T>) -> Self {
+    fn new<'t, T: Traversal + 't>(root: &Step<'t, T>) -> Self {
         let led = match root {
             Step::Descend(_) => Ledger {
                 descends: 1,
                 combines: 0,
                 sum_arity: 0,
+                tails: 0,
+                original_descents: 1,
+                next_descend_is_tail: false,
+                in_tail_descend: false,
             },
             Step::Combine(k) => Ledger {
                 descends: 0,
                 combines: 1,
                 sum_arity: T::arity(k),
+                tails: 0,
+                original_descents: 0,
+                next_descend_is_tail: false,
+                in_tail_descend: false,
             },
         };
         assert_eq!(
@@ -564,15 +826,50 @@ impl Ledger {
 
     fn popped_descend(&mut self) {
         self.descends -= 1;
+        // Consume the flag `pushed_tail` set, so the region this descend is about
+        // to push is attributed to a tail rather than to the original term.
+        self.in_tail_descend = std::mem::take(&mut self.next_descend_is_tail);
     }
 
-    fn popped_combine<T: Traversal>(&mut self, kont: &T::Kont<'_>) {
+    fn popped_combine<'t, T: Traversal + 't>(&mut self, kont: &T::Kont<'t>) {
         self.combines -= 1;
         self.sum_arity -= T::arity(kont);
     }
 
+    /// ★★ [`Outcome::Tail`] — the `Δ = 0` bookkeeping, and the **termination**
+    /// backstop that neither invariant can supply.
+    ///
+    /// The conservation side is a one-liner: the `Combine` that produced this
+    /// `Tail` was already removed by [`Ledger::popped_combine`] (`C − 1`,
+    /// `A − a`) and `combine` popped its `a` values (`V − a`), so pushing one
+    /// `Descend` (`D + 1`) closes the books — see the module docs' generalized
+    /// arithmetic. **Invariant 2 is preserved for every arity, not just 1.**
+    ///
+    /// The termination side is the real work. `original_descents` does not move
+    /// here, deliberately: an unadvancing tail chain therefore drives `tails`
+    /// up against a constant and is caught, where a counter that credited each
+    /// tail's own `Descend` would make the bound vacuously true forever.
+    fn pushed_tail<T: Traversal>(&mut self) {
+        self.descends += 1;
+        self.tails += 1;
+        self.next_descend_is_tail = true;
+        assert!(
+            self.tails <= T::MAX_TAILS_PER_DESCENT * self.original_descents,
+            "{}",
+            tail_bound_message(
+                self.tails,
+                T::MAX_TAILS_PER_DESCENT,
+                self.original_descents
+            )
+        );
+    }
+
     /// Invariant 1, over everything one `descend` call pushed.
-    fn pushed_region<T: Traversal>(&mut self, region: &[Step<'_, T>], values_pushed: usize) {
+    fn pushed_region<'t, T: Traversal + 't>(
+        &mut self,
+        region: &[Step<'t, T>],
+        values_pushed: usize,
+    ) {
         if region.is_empty() {
             assert_eq!(
                 values_pushed, 1,
@@ -596,6 +893,14 @@ impl Ledger {
             match step {
                 Step::Descend(_) => {
                     self.descends += 1;
+                    // ★ Credited to the tail budget's base only when this region
+                    // came from a descend the machine was GIVEN. A region pushed
+                    // under a tail-generated descend is the tail's own doing, and
+                    // crediting it would make the budget grow once per tail —
+                    // i.e. vacuous. See `Ledger::original_descents`.
+                    if !self.in_tail_descend {
+                        self.original_descents += 1;
+                    }
                     avail += 1;
                 }
                 Step::Combine(k) => {
@@ -631,7 +936,7 @@ impl Ledger {
 #[cfg(not(debug_assertions))]
 impl Ledger {
     #[inline(always)]
-    fn new<T: Traversal>(_root: &Step<'_, T>) -> Self {
+    fn new<'t, T: Traversal + 't>(_root: &Step<'t, T>) -> Self {
         Ledger
     }
     #[inline(always)]
@@ -639,9 +944,16 @@ impl Ledger {
     #[inline(always)]
     fn popped_descend(&mut self) {}
     #[inline(always)]
-    fn popped_combine<T: Traversal>(&mut self, _kont: &T::Kont<'_>) {}
+    fn popped_combine<'t, T: Traversal + 't>(&mut self, _kont: &T::Kont<'t>) {}
     #[inline(always)]
-    fn pushed_region<T: Traversal>(&mut self, _region: &[Step<'_, T>], _values_pushed: usize) {}
+    fn pushed_tail<T: Traversal>(&mut self) {}
+    #[inline(always)]
+    fn pushed_region<'t, T: Traversal + 't>(
+        &mut self,
+        _region: &[Step<'t, T>],
+        _values_pushed: usize,
+    ) {
+    }
 }
 
 // ===========================================================================
@@ -663,7 +975,7 @@ impl Ledger {
 /// On a malformed machine configuration: see the module docs. The **final**
 /// configuration is checked unconditionally; the running invariants are checked
 /// under `debug_assertions`.
-pub fn drive<'t, T: Traversal>(
+pub fn drive<'t, T: Traversal + 't>(
     visitor: &mut T,
     state: &mut T::State,
     root: Step<'t, T>,
@@ -715,7 +1027,7 @@ pub fn drive<'t, T: Traversal>(
 /// On a malformed machine configuration: see the module docs. The **final**
 /// configuration is checked unconditionally; the running invariants are checked
 /// under `debug_assertions`.
-pub fn drive_with<'t, T: Traversal>(
+pub fn drive_with<'t, T: Traversal + 't>(
     visitor: &mut T,
     state: &mut T::State,
     root: Step<'t, T>,
@@ -753,6 +1065,15 @@ pub fn drive_with<'t, T: Traversal>(
                 ledger.popped_combine::<T>(&kont);
                 match visitor.combine(state, kont, vals) {
                     Ok(Outcome::Value(v)) => vals.push(v),
+                    // ★★ RESUMPTION. Exactly one descent, scheduled in the
+                    // place of the value this `Combine` did not produce. The
+                    // ledger's `pushed_tail` carries both the `Δ = 0`
+                    // bookkeeping and the TERMINATION backstop that neither
+                    // invariant can express — see `Outcome::Tail`.
+                    Ok(Outcome::Tail(node)) => {
+                        work.push(Step::Descend(node));
+                        ledger.pushed_tail::<T>();
+                    }
                     Ok(Outcome::Done(v)) => {
                         // ★ Abandon the pending obligations. The stacks belong
                         // to the CALLER now, so this clear is observable and
@@ -807,6 +1128,37 @@ fn nonempty_entry_message(work_len: usize, vals_len: usize) -> String {
          if this call had asked for it. `drive_with` leaves both empty on every return path, so \
          a caller that pools them and never mutates them in between cannot reach this; a caller \
          that reached it is sharing one buffer across two live traversals."
+    );
+    m
+}
+
+/// The [`Outcome::Tail`] termination backstop's diagnostic.
+///
+/// Cold and non-generic for the same reason as [`final_configuration_message`]:
+/// the check itself is a multiply and a comparison, and it is compiled only under
+/// `debug_assertions` in the first place.
+#[cold]
+#[inline(never)]
+fn tail_bound_message(tails: usize, max_per_descent: usize, original_descents: usize) -> String {
+    let mut m = String::with_capacity(1024);
+    let _ = write!(
+        m,
+        "drive: MALFORMED CONFIGURATION — the TAIL BOUND is exceeded. This traversal has taken \
+         {tails} `Outcome::Tail`(s) against {original_descents} descent(s) it was actually given, \
+         and its `MAX_TAILS_PER_DESCENT` is {max_per_descent}, which permits at most {}. \
+         \n\nA `Tail` re-enters `descend` on a node the machine has ALREADY visited, so it is \
+         the one step that does not reduce the pending obligations. The contract is that a \
+         `Tail`'s node must be strictly ADVANCED with respect to the `Kont` that produced it — \
+         its cursor must name a later position in that node's own finite field program. A \
+         `combine` that tails with an UNADVANCED cursor loops forever, and it does so while both \
+         Invariant 1 and Invariant 2 hold at every loop head: they are conservation laws, not \
+         progress measures, and they cannot see this. This assertion is the progress measure. \
+         \n\nIf the traversal is correct and simply resumes more often than declared, raise \
+         `MAX_TAILS_PER_DESCENT` to the length of the longest field program — the most \
+         resumptions any single node can need. If it is 0, this traversal never declared itself \
+         resumable at all (0 is the deliberate fail-closed default) and the `Tail` is the defect. \
+         See `drive.rs`'s `Outcome::Tail`.",
+        max_per_descent.saturating_mul(original_descents)
     );
     m
 }
