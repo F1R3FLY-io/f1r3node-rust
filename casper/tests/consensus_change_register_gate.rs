@@ -1,5 +1,26 @@
 //! ★★ **The consensus-change register's DRIFT GATE.**
 //!
+//! @watches: docs/consensus/ casper/src/ models/src/ models/build.rs rholang/src/ rspace++/src/ node/src/ crypto/src/ .github/workflows/
+//!
+//! ★ **The `@watches:` line above is a ROUTING declaration, not documentation.** This gate
+//! went red *correctly and immediately* three times and nobody was told, because no delivery
+//! channel existed: no git hook had ever run in either repo, and neither working branch had
+//! an upstream, so CI had observed none of the work. The post-commit gate router
+//! (`scripts/gate-router-post-commit`) derives its gate → domain map by grepping for this
+//! line, and a hook's stdout reaches the COMMITTER by construction — which is the whole
+//! mechanism, because every concurrent agent commits under the same git identity, so
+//! `%an`/`%cn` carries no routing information at all.
+//!
+//! ⚠ **The path set is DERIVED, not chosen.** It is the union of (a) `docs/consensus/`, the
+//! prose and index this gate parses, and (b) the top-level prefixes of every `path =` in
+//! [`register.toml`]'s citation rows — i.e. exactly the files the citation clause opens at
+//! `HEAD`. Re-derive it, do not extend it by hand:
+//!
+//! ```text
+//! grep -oE '^path = "[^"]+"' docs/consensus/register.toml \
+//!   | sed 's/path = "//;s/"//' | cut -d/ -f1-2 | sort -u
+//! ```
+//!
 //! `docs/consensus/consensus-change-register.md` §7.1 states the requirement this file
 //! discharges:
 //!
