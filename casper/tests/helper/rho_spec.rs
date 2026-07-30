@@ -28,6 +28,9 @@ use crate::helper::{
     block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
     secp256k1_sign_contract, sys_auth_token_contract,
 };
+use crate::helper::rho_spec_suite_manifest::{
+    check_registration, check_report, registered_test_names,
+};
 use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
 use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
@@ -137,13 +140,38 @@ impl RhoSpec {
         assertions.iter().any(|a| !a.is_success())
     }
 
-    /// Runs the tests by executing get_results and iterating through assertions
-    /// Original Scala:
-    /// ```scala
-    /// val result = getResults(testObject, extraNonGenesisDeploys, executionTimeout).runSyncUnsafe(Duration.Inf)
-    /// result.assertions.foreach(mkTest)
-    /// ```
+    /// Runs the suite and checks every assertion it reported **against the floor of what it
+    /// claimed to test**.
+    ///
+    /// ★★ **THE NON-VACUITY FLOOR.** This method used to be `result.assertions.foreach(mkTest)`
+    /// and nothing else — so a suite that reported an empty map ran zero checks and raised zero
+    /// complaints. That is how sixteen suites came to pass while verifying nothing (measured
+    /// 2026-07-29; see [`crate::helper::rho_spec_suite_manifest`] for the numbers). Iterating a
+    /// collection is not a test of the collection, and the repair to `get_results` alone would
+    /// leave the next harness edit free to re-open the hole exactly as this one arrived.
+    ///
+    /// Three gates, in the order a failure is most useful to read:
+    ///
+    /// 1. **The fixture registers tests at all.** Derived from the fixture's own normalized term,
+    ///    so it is a property of the subject rather than a number maintained beside it.
+    /// 2. **`has_finished`.** `RhoSpecContract.rho` sends `testSuiteCompleted!(true)` only after
+    ///    `ListOps.foreach` has walked its whole registered list, so this bit is the suite's own
+    ///    statement that it ran to the end. It was recorded by
+    ///    [`TestResultCollector`] and read by nothing on this path.
+    /// 3. **Registered names ═ reporting names.** Set *equality*: `⊇` catches a test that
+    ///    silently stopped asserting, `⊆` catches an extractor that under-reports. See the module
+    ///    documentation of [`crate::helper::rho_spec_suite_manifest`] for why both directions are
+    ///    needed for the floor to be worth anything.
+    ///
+    /// Only then are the assertions themselves checked, which is what `mk_test` always did.
     pub async fn run_tests(&self) -> Result<TestResult, InterpreterError> {
+        let path = self.test_object.path.clone();
+        let registered = registered_test_names(&self.test_object.code)?;
+
+        if let Err(breach) = check_registration(&registered) {
+            panic!("★★ NON-VACUITY FLOOR — {path} {breach}");
+        }
+
         let test_result_collector = Arc::new(TestResultCollector::new());
 
         let result = get_results(
@@ -154,6 +182,13 @@ impl RhoSpec {
             test_result_collector,
         )
         .await?;
+
+        if let Err(breach) = check_report(&registered, &result) {
+            panic!(
+                "★★ NON-VACUITY FLOOR — {path} {breach}\n(execution timeout was {:?})",
+                self.execution_timeout
+            );
+        }
 
         // Run mkTest for each assertion
         for (test_name, test_attempts) in &result.assertions {

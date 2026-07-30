@@ -9,6 +9,7 @@ pub mod no_ops_casper_effect;
 pub mod process_context_ext;
 pub mod rho_logger_contract;
 pub mod rho_spec;
+pub mod rho_spec_suite_manifest;
 pub mod secp256k1_sign_contract;
 pub mod sys_auth_token_contract;
 pub mod test_node;
