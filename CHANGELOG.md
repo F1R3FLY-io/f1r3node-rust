@@ -4,6 +4,24 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.31] - 2026-07-30
+
+### Bug Fixes
+
+- restore secret inheritance and probe credential delivery
+- stop inheriting repository secrets into the heavy pipeline
+- harden token and tag handling
+- isolate GitHub App credentials
+- pass environment secrets to reusable pipeline
+- scope privileged credentials to trusted workflows
+- raise the link-checker request timeout to 45s
+
+### Miscellaneous
+
+- match any App private key in the invariant check
+- enforce workflow credential invariants and add code owners
+
+
 ## [0.4.30] - 2026-07-30
 
 ### Bug Fixes
