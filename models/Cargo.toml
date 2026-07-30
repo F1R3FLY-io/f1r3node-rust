@@ -132,6 +132,14 @@ path = "tests/epathmap_intern_store.rs"
 name = "epathmap_spliced_event_bytes"
 path = "tests/epathmap_spliced_event_bytes.rs"
 
+# ★ The tag-8 total-write / bounded-read asymmetry, and the measurement that
+# separates it from the prost recursion ceiling: a `bytes` field costs ZERO
+# nested-message levels, so `COLLECTION_DEPTH_LIMIT` is the ONLY constraint on
+# this path and lifting it buys the whole depth range.
+[[test]]
+name = "epathmap_tag8_read_totality"
+path = "tests/epathmap_tag8_read_totality.rs"
+
 [[test]]
 name = "epathmap_wire_serialized_paths"
 path = "tests/epathmap_wire_serialized_paths.rs"

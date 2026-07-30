@@ -69,18 +69,67 @@
 //! strict-ascending order CHECK inline in the ONE parse pass at every nesting
 //! level — STRICT-REJECT, never re-canonicalized on ingest.
 //!
-//! # Depth (§1.6 / R3F-7)
+//! # Depth (§1.6) — ★★ BOTH DIRECTIONS ARE TOTAL, and the cap that used to
+//! stand here is GONE
 //!
-//! The decode/validate depth limit counts COLLECTION levels (`0x0B`/`0x0C`/
-//! `0x0D` nesting; the top-level split form is level 0) and is
-//! [`COLLECTION_DEPTH_LIMIT`] = 32 — today's effective prost envelope
-//! (prost `RECURSION_LIMIT` = 100 message levels ≈ 25-33 collection levels).
-//! The TRIE encoder is TOTAL (R3F-2 — trie keys must build for every legal
-//! runtime value) and therefore unlimited on encode; the DECODER enforces the
-//! limit, with the documented consequence that a deeper-than-32 trie key
-//! encodes but decode-rejects (such values are unrepresentable on today's wire
-//! either way). Encode and decode are both ITERATIVE (explicit stacks — no
-//! recursion anywhere).
+//! Encode and decode are both ITERATIVE (explicit stacks — no recursion
+//! anywhere) and **neither is depth-capped**. Nesting costs heap, proportional
+//! to the input, and nothing else.
+//!
+//! ## What was here, and why it was a defect rather than a specification
+//!
+//! This module used to carry `COLLECTION_DEPTH_LIMIT = 32`, a *decode-only* cap
+//! on `0x0B`/`0x0C`/`0x0D` nesting, justified as *"today's effective prost
+//! envelope"* (prost `RECURSION_LIMIT` = 100 message levels ≈ 33 collection
+//! levels). The trie **encoder** was, and remains, total: R3F-2 requires that
+//! trie keys build for every legal runtime value. So the module shipped a
+//! **writer that emitted what its own reader refused**, and the consequence was
+//! recorded as acceptable on the grounds that *"such values are unrepresentable
+//! on today's wire either way."*
+//!
+//! ⚠★ **That premise was measured and is false.** A ground `EPathMap` is written
+//! as proto field 8, `serialized_paths`, of type `bytes` — and a `bytes` field is
+//! **opaque to protobuf**: `prost::encoding::bytes::merge` reads a varint length
+//! and copies that many bytes, spending **zero** nested-message levels on the
+//! trie-key stream inside. `models/tests/epathmap_tag8_read_totality.rs`
+//! exhibits a depth-400 key whose envelope is refused by *this* codec's depth
+//! limit and **not** by prost's recursion limit. So on the tag-8 path there was
+//! no second constraint behind the cap; it was the *only* thing between a total
+//! writer and a partial reader.
+//!
+//! It is the same shape as the sibling `0x0F` escape arm, whose payload is
+//! canonical prost bytes — also opaque — and the same shape as
+//! `ProduceEventProto.outputValue` (`repeated bytes`), which is why a block body
+//! can carry `Par`s of any depth without the block failing to decode.
+//!
+//! ## The standing decision this implements
+//!
+//! Owner ruling, 2026-07-29: **there is no artificial depth cap for consensus.**
+//! A writer that can emit a value its reader refuses is the defect; the repair is
+//! therefore an **unbounded reader**, never a bounded writer. Capping the encoder
+//! would have been a new protocol-level nesting cap, which R3F-2 forbids
+//! outright.
+//!
+//! ## What bounds the decoder now
+//!
+//! Its own input. Opening one collection level costs at least two input bytes
+//! (the tag byte and a non-zero count varint), and opening a nested-map region
+//! costs at least two more, so
+//!
+//! ```math
+//! |\mathrm{frames}| \;\le\; \tfrac{1}{2}\,|\mathrm{input}| ,
+//! ```
+//!
+//! and each frame is a `DecFrame`, holding a `Vec` whose capacity is itself
+//! floored by the same argument (`count > remaining ⇒ Truncated`, the
+//! bomb-safe preallocation guard, which is retained and is what makes a hostile
+//! `count = u64::MAX` cost `O(1)`). Memory is therefore `O(|input|)` with no
+//! artificial ceiling — exactly the bound every other parser in this tree has.
+//!
+//! ⚠ The change is **purely subtractive**, and the counter it removed was a
+//! DUPLICATE: `DecMachine::depth` was incremented and decremented at precisely
+//! the sites `col_or_region_frames` was, so the two were the same quantity under
+//! two names, and only one of them was read for anything other than the cap.
 //!
 //! # The escape arm (R3F-2)
 //!
@@ -143,17 +192,21 @@ pub mod tag {
     pub const RESERVED_FLOOR: u8 = 0x10;
 }
 
-/// R3F-7: the decode/validate depth limit in COLLECTION levels
-/// (`0x0B`/`0x0C`/`0x0D` nesting; the top-level split form is level 0).
-/// Accept at exactly 32 open levels; reject the 33rd. The wire ENCODER
-/// enforces the same bound (image = accepted set); the trie encoder is
-/// total and unlimited (module doc).
-pub const COLLECTION_DEPTH_LIMIT: u32 = 32;
-
-/// Defensive ceiling on the segment-scanner op stack (the DFS extent
-/// parser): 32 collection levels never need more than 2 frames per level
-/// plus slack, so a deeper stack only ever means adversarial bytes.
-const SCANNER_STACK_CEILING: usize = 128;
+// ★★ `COLLECTION_DEPTH_LIMIT` and `SCANNER_STACK_CEILING` USED TO LIVE HERE, and
+// they are deleted rather than raised. See this module's "Depth" section: the
+// first was a decode-only cap on a codec whose encoder is total by requirement
+// (R3F-2), justified by a prost envelope that a `bytes` field does not impose;
+// the second was a defensive ceiling on the incremental scanner's frame stack
+// whose stated derivation was "32 collection levels never need more than 2 frames
+// per level plus slack" — i.e. it was a *function of the cap*, not an independent
+// bound, so it could not survive the cap's removal with its justification intact.
+//
+// What replaces them is the input itself. Opening a level costs input bytes, so
+// both stacks are O(|input|); and the bomb-safe preallocation guard
+// (`count > remaining ⇒ Truncated`) is retained, which is what keeps a hostile
+// count from allocating. A *number* here would be a new artificial ceiling, which
+// the standing owner ruling forbids; a derived bound would be a restatement of
+// the guard that already holds.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Errors
@@ -189,8 +242,12 @@ pub enum CodecError {
     InvalidUtf8,
     /// A `GFixedPoint` scale exceeded `u32` (unrepresentable in the Par).
     ScaleOutOfRange,
-    /// Collection nesting exceeded [`COLLECTION_DEPTH_LIMIT`].
-    DepthLimitExceeded,
+    // ★★ `DepthLimitExceeded` USED TO BE HERE. It is deleted with the cap that
+    // raised it, and deliberately not retained as an unreachable variant: a
+    // rejection reason that nothing can produce is a claim about the grammar that
+    // the grammar no longer makes, and every reader of this enum would keep
+    // handling a case that cannot occur. The reader is TOTAL in depth; there is no
+    // depth for it to refuse.
     /// The trie-only escape tag `0x0F` appeared on the wire grammar.
     EscapeOnWire,
     /// The escape tag appeared below the top-level segment position (inside
@@ -738,9 +795,17 @@ enum DecOutcome {
 struct DecMachine<'b> {
     bytes: &'b [u8],
     cursor: usize,
-    depth: u32,
     /// Open Col/Region frame count — the trie escape is legal only at
     /// top-level segment positions, i.e. while this is 0.
+    ///
+    /// ★ This field used to have a TWIN, `depth`, incremented by
+    /// `enter_collection` and decremented at exactly the sites this one is
+    /// decremented at. The two were the same quantity under two names; `depth`
+    /// existed only to be compared against the retired `COLLECTION_DEPTH_LIMIT`,
+    /// so removing the cap removed the field with it. (They differed in one
+    /// respect, and it was a latent off-by-one: `enter_collection` incremented
+    /// `depth` *before* the empty-collection early return, so an EMPTY list at
+    /// the boundary was refused although it opened no frame at all.)
     col_or_region_frames: u32,
     frames: Vec<DecFrame>,
     /// Innermost byte boundary stack: input length at the bottom, then one
@@ -753,7 +818,6 @@ impl<'b> DecMachine<'b> {
         DecMachine {
             bytes,
             cursor: 0,
-            depth: 0,
             col_or_region_frames: 0,
             frames: Vec::new(),
             limits: vec![bytes.len()],
@@ -785,13 +849,10 @@ impl<'b> DecMachine<'b> {
         Ok(slice)
     }
 
-    fn enter_collection(&mut self) -> Result<(), CodecError> {
-        if self.depth >= COLLECTION_DEPTH_LIMIT {
-            return Err(CodecError::DepthLimitExceeded);
-        }
-        self.depth += 1;
-        Ok(())
-    }
+    // ★★ `enter_collection` USED TO BE HERE. Its whole body was the depth check
+    // and the `depth` increment that fed it; with the cap retired there is
+    // nothing for it to do, and a `fn` that only bumps a duplicate counter would
+    // be a place for the cap to grow back.
 
     /// Decode one whole top-level path (the `decode_trie_path` driver).
     fn run_path(mut self) -> Result<Par, CodecError> {
@@ -946,10 +1007,8 @@ impl<'b> DecMachine<'b> {
             }
             tag::ELIST | tag::ETUPLE => {
                 let count = self.read_uv()?;
-                self.enter_collection()?;
                 let is_tuple = tag_byte == tag::ETUPLE;
                 if count == 0 {
-                    self.depth -= 1;
                     let par = if is_tuple {
                         ground_etuple_carrier(Vec::new())
                     } else {
@@ -973,11 +1032,9 @@ impl<'b> DecMachine<'b> {
             }
             tag::EPATHMAP => {
                 let region_len = self.read_uv()?;
-                self.enter_collection()?;
                 if region_len == 0 {
                     // R3F-1: the 0x0D arm admits R = ε — the canonical empty
                     // map. Top-level region non-emptiness does NOT recurse.
-                    self.depth -= 1;
                     return self.deliver(epathmap_carrier(Vec::new()));
                 }
                 let region_len = usize::try_from(region_len).map_err(|_| CodecError::Truncated)?;
@@ -1054,7 +1111,6 @@ impl<'b> DecMachine<'b> {
                         unreachable!("collection frame vanished")
                     };
                     self.col_or_region_frames -= 1;
-                    self.depth -= 1;
                     par = if is_tuple {
                         ground_etuple_carrier(elems)
                     } else {
@@ -1142,7 +1198,6 @@ impl<'b> DecMachine<'b> {
                     };
                     self.col_or_region_frames -= 1;
                     self.limits.pop();
-                    self.depth -= 1;
                     let map_par = epathmap_carrier(entries);
                     self.deliver(map_par)?;
                     return Ok(None);
@@ -1215,12 +1270,23 @@ enum ScanFrame {
 /// parser state carried by [`collect_child_segments_codec`] in place of the
 /// retired separator logic. Mirrors the codec grammar's EXTENT rules
 /// exactly (`0x0D`/`0x0F` payloads are length-delimited and opaque for
-/// extent purposes; minimal varints enforced; collection nesting capped at
-/// [`COLLECTION_DEPTH_LIMIT`]).
+/// extent purposes; minimal varints enforced; nesting **uncapped**).
+///
+/// ★★ It used to carry a second field, `kids_frames`, and a `stack.len()` ceiling
+/// of 128. Both were derived from the retired `COLLECTION_DEPTH_LIMIT` — the
+/// counter existed to be compared against it, and the ceiling's stated
+/// derivation was *"32 collection levels never need more than 2 frames per level
+/// plus slack."* Neither could outlive the cap with its justification intact, and
+/// keeping either as a bare number would have been a new artificial ceiling.
+///
+/// What bounds `stack` is the input: a `Kids` frame is pushed only by a
+/// **non-zero** count varint, which costs at least one byte on top of the tag
+/// byte that opened it, so `stack.len()` grows by at most one per byte fed. The
+/// caller owns a finite byte run, so the stack is `O(|run|)` — the same bound the
+/// decoder itself has, and the same bound this scanner had *inside* the cap.
 #[derive(Clone)]
 pub struct SegmentScanner {
     stack: Vec<ScanFrame>,
-    kids_frames: u32,
 }
 
 impl Default for SegmentScanner {
@@ -1233,16 +1299,12 @@ impl SegmentScanner {
     pub fn new() -> Self {
         SegmentScanner {
             stack: vec![ScanFrame::Tag],
-            kids_frames: 0,
         }
     }
 
     /// Feed one byte. After [`ScanStep::Complete`] or [`ScanStep::Invalid`]
     /// the scanner must not be fed again.
     pub fn feed(&mut self, byte: u8) -> ScanStep {
-        if self.stack.len() > SCANNER_STACK_CEILING {
-            return ScanStep::Invalid;
-        }
         match self.stack.last_mut() {
             Some(ScanFrame::Tag) => {
                 self.stack.pop();
@@ -1279,9 +1341,6 @@ impl SegmentScanner {
                         ScanStep::NeedMore
                     }
                     tag::ELIST | tag::ETUPLE => {
-                        if self.kids_frames >= COLLECTION_DEPTH_LIMIT {
-                            return ScanStep::Invalid;
-                        }
                         self.push_varint(VarintRole::Count);
                         ScanStep::NeedMore
                     }
@@ -1325,7 +1384,6 @@ impl SegmentScanner {
                     }
                     VarintRole::Count => {
                         if value > 0 {
-                            self.kids_frames += 1;
                             self.stack.push(ScanFrame::Kids { remaining: value });
                             self.stack.push(ScanFrame::Tag);
                             ScanStep::NeedMore
@@ -1370,7 +1428,6 @@ impl SegmentScanner {
                     *remaining -= 1;
                     if *remaining == 0 {
                         self.stack.pop();
-                        self.kids_frames -= 1;
                         continue;
                     }
                     self.stack.push(ScanFrame::Tag);
@@ -1917,41 +1974,140 @@ mod tests {
         assert_eq!(encode_trie_path(&decoded), bytes);
     }
 
-    // ── depth: the total-encode / bounded-decode asymmetry ────────────────────
+    // ── depth: ★★ BOTH DIRECTIONS ARE TOTAL ───────────────────────────────────
+    //
+    // This block used to be `depth_limit_decode_rejects_beyond_32`, and it
+    // asserted the asymmetry as a specification: *"The trie encoder is TOTAL
+    // beyond the limit (documented asymmetry): encoding succeeds, decode
+    // rejects."* The asymmetry is the defect, so the test that pinned it is
+    // replaced by the one that pins its absence. The retired boundary — 32
+    // counted collection levels, i.e. 33 list wrappers — is retained *inside*
+    // the corpus below rather than deleted, so a regression that reinstated the
+    // cap fails at the first depth past it and says which depth.
 
+    /// The last-accepting depth, SEARCHED. A transcribed constant cannot tell
+    /// "total" from "capped very high"; a search can.
     #[test]
-    fn depth_limit_decode_rejects_beyond_32() {
-        // At the limit: encodes and decodes and round-trips.
-        let at_limit = deep_tuple(COLLECTION_DEPTH_LIMIT);
-        let bytes = encode_trie_path(&at_limit);
-        let decoded = decode_trie_path(&bytes).expect("depth-32 decodes");
-        assert_eq!(encode_trie_path(&decoded), bytes);
-        // Lists: the OUTER list is the split form (level 0), so 33 wrappers
-        // carry exactly 32 counted levels and still decode.
-        let list_at_limit = deep_list(COLLECTION_DEPTH_LIMIT + 1);
-        assert!(decode_trie_path(&encode_trie_path(&list_at_limit)).is_ok());
-        // Mixed tuple/map chain at the boundary round-trips.
-        let mixed = deep_mixed(COLLECTION_DEPTH_LIMIT);
-        let mixed_bytes = encode_trie_path(&mixed);
-        assert_eq!(
-            encode_trie_path(&decode_trie_path(&mixed_bytes).expect("mixed depth-32 decodes")),
-            mixed_bytes
-        );
-        // The trie encoder is TOTAL beyond the limit (documented asymmetry):
-        // encoding succeeds, decode rejects.
-        let deep = deep_tuple(COLLECTION_DEPTH_LIMIT + 8);
-        assert_eq!(
-            decode_trie_path(&encode_trie_path(&deep)),
-            Err(CodecError::DepthLimitExceeded)
-        );
-        // A hand-built depth bomb REJECTS on decode before materializing.
+    fn the_trie_reader_is_total_in_depth() {
+        /// Twelve times the retired cap. Finding this as the answer means no
+        /// limit was reached inside the probe range.
+        const PROBE_CEILING: u32 = 384;
+
+        let mut last_accepting = 0u32;
+        for wrappers in 1..=PROBE_CEILING {
+            let bytes = encode_trie_path(&deep_tuple(wrappers));
+            assert!(
+                !bytes.is_empty(),
+                "non-vacuity: the trie ENCODER is documented total (R3F-2) and produced nothing \
+                 at depth {wrappers}"
+            );
+            match decode_trie_path(&bytes) {
+                Ok(decoded) => {
+                    assert_eq!(
+                        encode_trie_path(&decoded),
+                        bytes,
+                        "depth {wrappers} decoded but is not a byte-level fixed point — a level \
+                         was lost, which is worse than a refusal"
+                    );
+                    last_accepting = wrappers;
+                }
+                Err(error) => panic!(
+                    "★ the trie reader refused depth {wrappers} with {error:?}. It accepts \
+                     {last_accepting}. The WRITER is total at this depth (it produced {} bytes), \
+                     so a bound here means this node emits trie keys — and, through proto field \
+                     8 `serialized_paths`, byte strings on a consensus wire — that it will not \
+                     read back. The retired cap was `COLLECTION_DEPTH_LIMIT = 32`; if this \
+                     stopped at 32 the cap is back.",
+                    bytes.len()
+                ),
+            }
+        }
+        assert_eq!(last_accepting, PROBE_CEILING);
+    }
+
+    /// The two other deep shapes, at and well past the retired boundary. Lists
+    /// count one level fewer than their wrapper count (the outer list is the
+    /// split form, level 0) and the mixed chain alternates tuple / nested-map
+    /// regions, so all three of the grammar's nesting arms — `0x0B`, `0x0C`,
+    /// `0x0D` — are exercised past the retired cap rather than only the tuple.
+    #[test]
+    fn every_nesting_arm_round_trips_past_the_retired_boundary() {
+        for wrappers in [32u32, 33, 34, 64, 200] {
+            let list_bytes = encode_trie_path(&deep_list(wrappers));
+            assert_eq!(
+                encode_trie_path(
+                    &decode_trie_path(&list_bytes)
+                        .unwrap_or_else(|e| panic!("depth-{wrappers} LIST: {e:?}"))
+                ),
+                list_bytes,
+                "depth-{wrappers} list is not a fixed point"
+            );
+
+            let mixed_bytes = encode_trie_path(&deep_mixed(wrappers));
+            assert_eq!(
+                encode_trie_path(
+                    &decode_trie_path(&mixed_bytes)
+                        .unwrap_or_else(|e| panic!("depth-{wrappers} MIXED: {e:?}"))
+                ),
+                mixed_bytes,
+                "depth-{wrappers} mixed tuple/map chain is not a fixed point"
+            );
+        }
+    }
+
+    /// ⚠ A hand-built deep run is still parsed by the GRAMMAR, and the grammar
+    /// did not change. This is the half of a totality repair that is easy to get
+    /// wrong: making a reader total by making it permissive widens the accept
+    /// set, which is a fork.
+    #[test]
+    fn a_hand_built_deep_run_is_accepted_only_when_it_is_well_formed() {
+        // WELL FORMED: 33 list levels — one past the retired boundary — each
+        // holding one child, innermost a `GPrivate`, with the outermost list in
+        // split form.
         let mut bomb = Vec::new();
-        for _ in 0..(COLLECTION_DEPTH_LIMIT + 1) {
+        for _ in 0..33 {
             bomb.extend_from_slice(&[0x0B, 0x01]);
         }
         bomb.extend_from_slice(&[0x03, 0x0E]);
         bomb.push(0x00); // split-form terminator (outermost list splits)
-        assert_eq!(decode_trie_path(&bomb), Err(CodecError::DepthLimitExceeded));
+        let decoded = decode_trie_path(&bomb)
+            .expect("a well-formed 33-level run must decode now that the cap is gone");
+        assert_eq!(
+            encode_trie_path(&decoded),
+            bomb,
+            "the hand-built run decoded to something that re-encodes differently"
+        );
+
+        // ILL FORMED, at the same depth, three ways — each refused for its own
+        // structural reason and none of them a depth.
+        let mut truncated = bomb.clone();
+        truncated.pop();
+        assert!(
+            decode_trie_path(&truncated).is_err(),
+            "a truncated 33-level run must still be refused"
+        );
+
+        let mut reserved = Vec::new();
+        for _ in 0..33 {
+            reserved.extend_from_slice(&[0x0C, 0x01]); // tuples: legal bare
+        }
+        reserved.push(tag::RESERVED_FLOOR);
+        assert_eq!(
+            decode_trie_path(&reserved),
+            Err(CodecError::ReservedTag(tag::RESERVED_FLOOR)),
+            "a reserved tag at depth 33 must still be a ReservedTag refusal"
+        );
+
+        let mut nested_escape = Vec::new();
+        for _ in 0..33 {
+            nested_escape.extend_from_slice(&[0x0C, 0x01]);
+        }
+        nested_escape.extend_from_slice(&[tag::ESCAPE, 0x01, 0x00]);
+        assert_eq!(
+            decode_trie_path(&nested_escape),
+            Err(CodecError::EscapeNested),
+            "the hereditary escape rule must still hold at depth 33"
+        );
     }
 
     // ── adversarial corpus (decode strict-reject) ─────────────────────────────

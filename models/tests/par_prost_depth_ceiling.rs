@@ -65,15 +65,38 @@
 //! It lives there and not here because `models` is *below* `rholang` in the
 //! dependency order — a `rholang` dev-dependency here would be a cycle.
 //!
-//! ## The sibling ceiling, and why the two move together
+//! ## ★★ The sibling ceiling is GONE, and the "they move together" claim was
+//! ## TOO STRONG — measured, not reasoned
 //!
-//! `models/src/rust/canonical_path.rs` sets `COLLECTION_DEPTH_LIMIT = 32` on
-//! the EPathMap trie-key decoder, and its module documentation
-//! (`canonical_path.rs:72-83`) anchors that choice explicitly to *"today's
-//! effective prost envelope"*. The two limits are therefore not independent:
-//! raising one and leaving the other moves the binding constraint by one level
-//! and fixes nothing. [`the_two_read_ceilings_are_anchored_together`] holds
-//! that anchoring by execution.
+//! `models/src/rust/canonical_path.rs` used to set `COLLECTION_DEPTH_LIMIT = 32`
+//! on the EPathMap trie-key decoder, anchored in its own module documentation to
+//! *"today's effective prost envelope"*. This file used to conclude from that
+//! anchoring: *"raising one and leaving the other moves the binding constraint by
+//! one level and fixes nothing — they move together or not at all."*
+//!
+//! ⚠ **That conclusion holds on one transport path and is false on the other**,
+//! and the difference is which protobuf field carries the value:
+//!
+//! | how a deep `Par` reaches a reader | prost message levels spent | binding constraint |
+//! |---|---|---|
+//! | nested `Par` / `EPathMap` tag 1 (`ps`, `repeated Par`) | 3 per bracket | **prost**, at 33 |
+//! | ★ `EPathMap` tag 8 (`serialized_paths`, `bytes`) | **0** — opaque payload | `COLLECTION_DEPTH_LIMIT` **alone** |
+//! | `ProduceEventProto.outputValue` (`repeated bytes`) | **0** — opaque payload | the fresh `Par::decode`, at 33 |
+//!
+//! A `bytes` field is not descended into: `prost::encoding::bytes::merge` reads a
+//! varint length and copies that many bytes. `models/tests/
+//! epathmap_tag8_read_totality.rs` exhibits a **depth-400** trie key whose
+//! envelope was refused by the *trie codec's* limit and **not** by prost's — so
+//! on that path there was no second constraint behind the cap, and lifting it
+//! alone bought the whole depth range rather than nothing.
+//!
+//! ⇒ `COLLECTION_DEPTH_LIMIT`, `SCANNER_STACK_CEILING`, `enter_collection` and
+//! `CodecError::DepthLimitExceeded` are **deleted**, not raised, per the standing
+//! owner ruling (2026-07-29) that there is no artificial depth cap for consensus.
+//! [`the_trie_reader_is_total_and_prost_is_the_only_remaining_ceiling`] replaces
+//! the anchoring test and holds the *corrected* relationship by execution: the
+//! trie reader is total, prost's ceiling is unchanged, and the two are therefore
+//! now **independent** — which is a statement that can go red in either direction.
 //!
 //! ## Shape
 //!
@@ -103,9 +126,7 @@ use models::casper::{
 };
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
-use models::rust::canonical_path::{
-    decode_trie_path, encode_trie_path, CodecError, COLLECTION_DEPTH_LIMIT,
-};
+use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::utils::new_gint_par;
 use prost::Message;
 
@@ -502,124 +523,154 @@ fn the_read_ceiling_follows_the_envelope_arithmetic() {
 }
 
 // ---------------------------------------------------------------------------
-// ★ the sibling ceiling — anchored, and they move together
+// ★★ the sibling ceiling is GONE — and the two are now INDEPENDENT
 // ---------------------------------------------------------------------------
 
-/// ★★ **`COLLECTION_DEPTH_LIMIT` is anchored to the prost envelope, and this
-/// holds the anchoring by execution.**
+/// ★★ **The trie-key reader is TOTAL in depth; `prost` is the only read ceiling
+/// left — and the two are now independent, which is a claim that can go red in
+/// either direction.**
 ///
-/// `canonical_path.rs:72-83` states the anchoring in prose: the EPathMap
-/// trie-key decoder's limit is *"today's effective prost envelope"*. Prose
-/// drifts; this does not. The consequence, and the reason both are named
-/// together everywhere they are named at all: **lift one and leave the other and
-/// you have moved the binding constraint by one level and fixed nothing.**
+/// # What this replaces, and why the replacement is a correction
 ///
-/// The two limits count different things — `prost` counts *message* levels,
-/// `COLLECTION_DEPTH_LIMIT` counts *collection* levels — and the anchoring is
-/// visible precisely because, on the nested-list shape both readers accept, the
-/// two counts land on **the same boundary**:
+/// The retired `the_two_read_ceilings_are_anchored_together` asserted that
+/// `COLLECTION_DEPTH_LIMIT = 32` and prost's `RECURSION_LIMIT = 100` coincide on
+/// the nested-list shape, and concluded: *"Raise the prost ceiling alone and the
+/// trie decoder becomes the binding constraint one level lower; raise
+/// `COLLECTION_DEPTH_LIMIT` alone and prost becomes it. Either move buys nothing.
+/// They move together or not at all."*
 ///
-/// | wrappers `n` in `[[…[0]…]]` | prost `Par::decode` | trie `decode_trie_path` |
+/// The **coincidence** was real and is re-measured below. The **conclusion** was
+/// too strong, and the counter-example is a transport path the test never drove:
+/// a ground `EPathMap` writes its entries as proto field 8,
+/// `serialized_paths`, of type `bytes`. A `bytes` field is opaque to protobuf —
+/// `prost::encoding::bytes::merge` reads a varint length and copies that many
+/// bytes — so the trie-key stream inside costs **zero** nested-message levels and
+/// prost's ceiling never engages. On that path `COLLECTION_DEPTH_LIMIT` was the
+/// only constraint standing between a writer that is total by requirement (R3F-2)
+/// and a reader that refused at 33. `models/tests/epathmap_tag8_read_totality.rs`
+/// carries the depth-400 measurement.
+///
+/// It is the same structure as `ProduceEventProto.outputValue`
+/// (`repeated bytes`), which this file's own header already relies on to explain
+/// why the *highest* ceiling is the consensus-class one.
+///
+/// # The three things asserted here, and what each failure direction means
+///
+/// | # | assertion | a failure means |
 /// |---|---|---|
-/// | 33 | ✅ accepts (`W = 0` ceiling) | ✅ accepts (32 counted levels — the outer list is the split form at level 0) |
-/// | 34 | ❌ `RecursionLimitReached` | ❌ `DepthLimitExceeded` |
+/// | 1 | the trie reader accepts every depth in a probe range 12× the retired cap, and each is a byte-level fixed point | the cap is back, or a level is being dropped |
+/// | 2 | prost still refuses one past its own ceiling, on the recursion limit | prost's ceiling moved without this file noticing |
+/// | 3 | at the *retired* boundary the two used to coincide — re-measured, so the historical claim stays checkable | the coincidence was misremembered |
 ///
-/// The off-by-one in the second column is the trie codec's own convention, and
-/// it is stated by `canonical_path.rs`'s own
-/// `depth_limit_decode_rejects_beyond_32`: *"the OUTER list is the split form
-/// (level 0), so 33 wrappers carry exactly 32 counted levels and still
-/// decode."* Net of that convention the boundaries coincide — which is the
-/// anchoring doing its job, not a coincidence: 32 was chosen to sit inside
-/// *"today's effective prost envelope"*.
-///
-/// ⚠ **The consequence, and the reason the two are always named together.**
-/// Raise the prost ceiling alone and the trie decoder becomes the binding
-/// constraint one level lower; raise `COLLECTION_DEPTH_LIMIT` alone and prost
-/// becomes it. Either move buys nothing. **They move together or not at all.**
+/// ⚠ Assertion 2 is the standing residual: **the prost read ceiling is NOT lifted
+/// by this change.** Lifting it needs an unbounded protobuf reader for the whole
+/// `Par` family, which is a separate deliverable; what is lifted here is the
+/// ceiling that had no second constraint behind it.
 #[test]
-fn the_two_read_ceilings_are_anchored_together() {
+fn the_trie_reader_is_total_and_prost_is_the_only_remaining_ceiling() {
+    /// The retired cap, kept as a NUMBER in exactly one place so the historical
+    /// coincidence stays measurable after the constant it came from is gone.
+    const RETIRED_COLLECTION_DEPTH_LIMIT: usize = 32;
+    /// Twelve times the retired cap: reaching it means no limit was hit.
+    const PROBE_CEILING: usize = 384;
+
     let bare_ceiling = READ_CEILING_ENVELOPES
         .iter()
         .find(|(_, w, _)| *w == 0)
         .expect("the register must carry the bare `Par` case")
         .2;
 
-    // The trie codec's split-form convention, restated as arithmetic: `n`
-    // wrappers of `[..]` carry `n - 1` counted collection levels, so the last
-    // accepting wrapper count is COLLECTION_DEPTH_LIMIT + 1.
-    let trie_ceiling_in_wrappers = COLLECTION_DEPTH_LIMIT as usize + 1;
-
+    // ── 1. THE TRIE READER IS TOTAL ───────────────────────────────────────────
+    //
+    // Searched, not transcribed: a constant cannot distinguish "total" from
+    // "capped very high", and the whole point of the change is which of those
+    // this is.
+    let mut last_accepting = 0usize;
+    for wrappers in 1..=PROBE_CEILING {
+        let bytes = encode_trie_path(&nested_list(wrappers));
+        assert!(
+            !bytes.is_empty(),
+            "non-vacuity: the trie ENCODER is documented TOTAL (R3F-2) and produced \
+             nothing at {wrappers} wrappers"
+        );
+        match decode_trie_path(&bytes) {
+            Ok(back) => {
+                assert_eq!(
+                    encode_trie_path(&back),
+                    bytes,
+                    "{wrappers} wrappers decoded but is not a byte-level fixed point — a \
+                     level was dropped, which is worse than a refusal"
+                );
+                last_accepting = wrappers;
+            }
+            Err(e) => panic!(
+                "★ the trie reader refused {wrappers} wrappers with {e:?}; it accepts \
+                 {last_accepting}. The writer produced {} bytes at that depth, so a bound \
+                 here means this node emits proto field-8 `serialized_paths` byte strings \
+                 it will not read back. The retired cap was \
+                 {RETIRED_COLLECTION_DEPTH_LIMIT} counted levels \
+                 (= {} wrappers); if this stopped there, the cap is back.",
+                bytes.len(),
+                RETIRED_COLLECTION_DEPTH_LIMIT + 1
+            ),
+        }
+    }
     assert_eq!(
-        trie_ceiling_in_wrappers, bare_ceiling,
-        "the two read ceilings have SEPARATED: the trie decoder now stops at {} \
-         nested-list wrappers while the prost decoder stops at {bare_ceiling}. \
-         `canonical_path.rs:72-83` anchors COLLECTION_DEPTH_LIMIT to 'today's \
-         effective prost envelope', so a gap here means one of the two was moved \
-         without the other — which shifts the binding constraint by a level and \
-         fixes nothing. They move together or not at all.",
-        trie_ceiling_in_wrappers
+        last_accepting, PROBE_CEILING,
+        "the trie reader must be total across the whole probe range"
     );
 
-    // ── AT the shared boundary: BOTH readers accept, and both round-trip. ──
-    let at_limit = nested_list(trie_ceiling_in_wrappers);
-    let trie_bytes = encode_trie_path(&at_limit);
-    let trie_back = decode_trie_path(&trie_bytes).unwrap_or_else(|e| {
-        panic!(
-            "{trie_ceiling_in_wrappers} wrappers must decode through the TRIE codec \
-             (COLLECTION_DEPTH_LIMIT = {COLLECTION_DEPTH_LIMIT} counted levels); it \
-             failed with {e:?}"
-        )
-    });
-    assert_eq!(
-        encode_trie_path(&trie_back),
-        trie_bytes,
-        "the trie round trip at the shared boundary is not a byte-level fixed point"
-    );
-
-    let prost_bytes = at_limit.encode_to_vec();
+    // ── 2. PROST'S CEILING IS UNCHANGED — the standing residual ───────────────
+    let at_prost_limit = nested_list(bare_ceiling);
+    let prost_bytes = at_prost_limit.encode_to_vec();
     let prost_back = Par::decode(&prost_bytes[..]).unwrap_or_else(|e| {
         panic!(
-            "{trie_ceiling_in_wrappers} wrappers must decode through PROST too — \
-             that is the anchoring. It failed with {e:?}, which means the trie \
-             decoder accepts a depth the wire cannot carry."
+            "{bare_ceiling} wrappers must still decode through prost — that is the \
+             register's own bare-`Par` ceiling. It failed with {e:?}."
         )
     });
     assert_eq!(
         par_depth(&prost_back),
-        trie_ceiling_in_wrappers,
-        "the prost round trip at the shared boundary lost nesting"
+        bare_ceiling,
+        "the prost round trip at its own ceiling lost nesting"
     );
 
-    // ── ONE PAST the shared boundary: BOTH readers refuse, each in its own
-    //    vocabulary. The trie ENCODER, like prost's, stays total. ──
-    let past_limit = nested_list(trie_ceiling_in_wrappers + 1);
-    let past_trie_bytes = encode_trie_path(&past_limit);
-    assert!(
-        !past_trie_bytes.is_empty(),
-        "the trie ENCODER refused a term one past the boundary. The trie encoder is \
-         documented TOTAL (R3F-2); bounding it is the write-side cap this work is \
-         forbidden to add."
+    let past_prost = nested_list(bare_ceiling + 1);
+    let past_prost_err = Par::decode(&past_prost.encode_to_vec()[..]).expect_err(
+        "★ prost ACCEPTED one past its recorded ceiling. Either the ceiling moved (which \
+         is the deliverable this change does NOT contain) or the register row is wrong.",
     );
-    assert_eq!(
-        decode_trie_path(&past_trie_bytes),
-        Err(CodecError::DepthLimitExceeded),
-        "the trie codec's total-encode / bounded-decode asymmetry no longer holds \
-         one wrapper past the shared boundary"
-    );
-    let past_prost_err = Par::decode(&past_limit.encode_to_vec()[..])
-        .expect_err("prost must refuse one past the shared boundary");
     assert!(
         is_recursion_limit(&past_prost_err),
-        "prost refused one past the shared boundary, but not on the recursion \
-         limit: {past_prost_err:?}"
+        "prost refused one past its ceiling, but not on the recursion limit: \
+         {past_prost_err:?}"
+    );
+
+    // ── 3. AND THE TRIE READER NOW ACCEPTS WHAT PROST STILL REFUSES ───────────
+    //
+    // This is the independence, stated as the one observation that used to be
+    // impossible: the same term, accepted by one reader and refused by the other.
+    let trie_bytes_past_prost = encode_trie_path(&past_prost);
+    assert!(
+        decode_trie_path(&trie_bytes_past_prost).is_ok(),
+        "★ the trie reader must now accept a term prost refuses — that IS the \
+         independence. If it refuses too, the two ceilings are still coupled."
+    );
+
+    // ── the historical coincidence, re-measured so it stays checkable ─────────
+    assert_eq!(
+        RETIRED_COLLECTION_DEPTH_LIMIT + 1,
+        bare_ceiling,
+        "the historical claim was that the retired trie cap and the bare prost ceiling \
+         coincided at {} nested-list wrappers. They no longer constrain each other, but \
+         the coincidence is a matter of record and this is where it is checked.",
+        bare_ceiling
     );
 
     println!(
-        "  the two read ceilings coincide at {trie_ceiling_in_wrappers} nested-list \
-         wrappers: prost accepts {trie_ceiling_in_wrappers} / rejects {} with \
-         RecursionLimitReached, and the trie codec (COLLECTION_DEPTH_LIMIT = \
-         {COLLECTION_DEPTH_LIMIT} counted levels) does the same with \
-         DepthLimitExceeded",
-        trie_ceiling_in_wrappers + 1
+        "  trie reader: TOTAL (accepted every depth up to {PROBE_CEILING}); prost: \
+         unchanged at {bare_ceiling} wrappers, RecursionLimitReached at {}. The two \
+         coincided at {bare_ceiling} before the cap was retired and are now independent.",
+        bare_ceiling + 1
     );
 }

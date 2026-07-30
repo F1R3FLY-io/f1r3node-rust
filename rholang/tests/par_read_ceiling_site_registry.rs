@@ -28,9 +28,17 @@
 //! ★ That is why the cold store never appears below: the codec campaign
 //! (#46/#119/#121) already closed it, on both sides, from one generated table.
 //! What remains open is **prost**, whose `RECURSION_LIMIT = 100` is private and
-//! unconfigurable, and the **trie** codec, whose encoder is *documented total*
-//! (R3F-2 — "trie keys must build for every legal runtime value") while its
-//! decoder enforces `COLLECTION_DEPTH_LIMIT = 32`.
+//! unconfigurable.
+//!
+//! ★★ The **trie** codec is CLOSED. Its encoder is *documented total* (R3F-2 —
+//! "trie keys must build for every legal runtime value") and its decoder used to
+//! enforce `COLLECTION_DEPTH_LIMIT = 32`; that cap, its
+//! `CodecError::DepthLimitExceeded`, the `SCANNER_STACK_CEILING` derived from it
+//! and the `enter_collection` that raised it are **deleted**, so both directions
+//! are now total in depth. See [`Class::Total`] and
+//! [`the_fourth_site_is_closed_the_epathmap_wire_reader_is_total`]. The residual
+//! inside the trie codec is its `0x0F` escape arm's `Par::decode`, registered
+//! below as #130 — a *different* site with a *different* reader.
 //!
 //! ## What the scan does, and the trap it walks around
 //!
@@ -165,9 +173,12 @@ const READERS: &[Reader] = &[
     },
     Reader {
         spelling: "decode_trie_path(",
-        bound: "COLLECTION_DEPTH_LIMIT = 32 counted levels (⇒ 33 wrappers accepted); \
-                past it, CodecError::DepthLimitExceeded — and its escape arm calls \
-                Par::decode, so prost's limit applies inside it too",
+        bound: "★ TOTAL IN DEPTH. `COLLECTION_DEPTH_LIMIT = 32` and \
+                `CodecError::DepthLimitExceeded` are DELETED (not raised) — see \
+                `models/tests/epathmap_tag8_read_totality.rs`. The residual bound is \
+                its ESCAPE arm (`0x0F`), which calls `Par::decode`, so prost's limit \
+                still applies to a ¬eval_stable payload INSIDE a key — a different \
+                site, registered separately below as #130",
     },
 ];
 
@@ -186,6 +197,17 @@ enum Class {
     /// a definition, a debug assertion, a display path, or a reader whose
     /// refusal is absorbed rather than propagated.
     Bounded,
+    /// ★★ **Out of the class because the READER WAS MADE TOTAL.** Not "no
+    /// unbounded writer reaches it" ([`Class::Bounded`]) and not "it refuses
+    /// something its writer produced" ([`Class::Asymmetric`]) — there is no depth
+    /// it refuses at all, so the set of bytes-it-refuses-and-its-writer-produced
+    /// is empty *by construction* rather than by an argument about reachability.
+    ///
+    /// This is the disposition the standing owner ruling asks for: an UNBOUNDED
+    /// READER, never a capped writer. A row here is a **closed** site, and it
+    /// keeps its evidence so that a regression reinstating a cap has somewhere to
+    /// fail.
+    Total,
 }
 
 struct Site {
@@ -219,23 +241,34 @@ const REGISTRY: &[Site] = &[
              ⚠ This ONE site is the whole class inside the interpreter: it used to be \
              four copies (twice in `reduce.rs`, twice in `contract_call.rs`).",
     },
-    // ── ★ THE FOURTH SITE: EPathMap's own prost wire ────────────────────────
+    // ── ★★ THE FOURTH SITE: CLOSED — the reader was made TOTAL ──────────────
     Site {
         path: "models/src/rust/rhoapi_ext.rs",
         spelling: "decode_trie_path(",
         count: 1,
-        class: Class::Asymmetric,
-        disposition: "★★★ THE FOURTH SITE, and the only one on a consensus WIRE FORMAT. \
-             `impl prost::Message for EPathMap`'s `merge_field`, tag 8 \
+        class: Class::Total,
+        disposition: "★★★ THE FOURTH SITE — the only one on a consensus WIRE FORMAT, and \
+             now CLOSED. `impl prost::Message for EPathMap`'s `merge_field`, tag 8 \
              (`serialized_paths`) — the trie key stream a ground map encodes to. \
-             WRITER: `encode_trie_path`, DOCUMENTED TOTAL and unlimited (R3F-2). \
-             MEASURED by `the_epathmap_wire_is_the_fourth_site`: a map with a ground \
-             entry of term depth 33 round-trips; at 34 `encode` emits 75 bytes and \
-             `decode` answers `DepthLimitExceeded`. Same boundary as the bare `Par`, \
-             a DIFFERENT reader and a DIFFERENT error. \
-             ⚠ Which production path performs an EPathMap prost encode→decode across \
-             a boundary is NOT established here; that is this site's open reachability \
-             question, and it is the question #129's severity turned on.",
+             WRITER: `encode_trie_path`, DOCUMENTED TOTAL and unlimited (R3F-2); it was \
+             never the thing to change. READER: `decode_trie_path`, which enforced \
+             `COLLECTION_DEPTH_LIMIT = 32` and is now TOTAL — the constant, its \
+             `CodecError::DepthLimitExceeded`, the `SCANNER_STACK_CEILING` derived from \
+             it and the `enter_collection` that raised it are all DELETED. \
+             ★ WHY IT COULD BE CLOSED ALONE, when the audit said the trie cap and \
+             prost's `RECURSION_LIMIT` 'move together or not at all': tag 8 is `bytes`, \
+             and a `bytes` field is OPAQUE to protobuf — `prost::encoding::bytes::merge` \
+             reads a varint length and copies. MEASURED: a depth-400 key's envelope was \
+             refused by the TRIE codec's limit and NOT by prost's \
+             (`models/tests/epathmap_tag8_read_totality.rs`). So there was no second \
+             constraint behind the cap on this path, and the 'either move buys nothing' \
+             conclusion was true of the tag-1 path only. \
+             EVIDENCE, still executed here: a ground entry at term depth 34 — which used \
+             to encode to 75 bytes and answer `DepthLimitExceeded` — now round-trips, \
+             and so does depth 400. \
+             ⚠ The reachability question this row used to carry is MOOT rather than \
+             answered: a total reader cannot refuse, so no production path needs to be \
+             shown to reach it.",
     },
     // ── #130: the trie codec itself ─────────────────────────────────────────
     Site {
@@ -701,94 +734,156 @@ fn nested_list(depth: usize) -> Par {
     par
 }
 
-/// The last ground-entry term depth `EPathMap`'s prost decode accepts.
-const EPATHMAP_LAST_DECODING_DEPTH: usize = 33;
+/// The term depth `EPathMap`'s prost decode used to stop at. ⚠ RETIRED as a
+/// bound and retained as a **witness**: it is the depth at which the old reader
+/// refused, so it is the depth a regression would refuse at again.
+const RETIRED_EPATHMAP_READ_CEILING: usize = 33;
 
-/// ★★★ **The fourth independent site of the write/read asymmetry, and the only
-/// one on a consensus WIRE FORMAT.**
+/// ★★★ **The fourth site is CLOSED: the `EPathMap` tag-8 reader is TOTAL.**
 ///
 /// `EPathMap` is a first-class Rholang value (`ExprInstance::EPathmapBody`). A
 /// *ground* map encodes to proto field 8, `serialized_paths` — the stream of
-/// `encode_trie_path` keys, an encoder that is **documented total and
-/// unlimited** because "trie keys must build for every legal runtime value"
-/// (R3F-2). `merge_field`'s tag-8 arm reads them back with `decode_trie_path`,
-/// which enforces `COLLECTION_DEPTH_LIMIT`.
+/// `encode_trie_path` keys, an encoder that is **documented total and unlimited**
+/// because "trie keys must build for every legal runtime value" (R3F-2).
+/// `merge_field`'s tag-8 arm reads them back with `decode_trie_path`, which
+/// enforced `COLLECTION_DEPTH_LIMIT = 32`.
 ///
-/// ⇒ The map encodes at every depth and stops decoding at one. That is #120's
-/// sentence — *"built, reduced and serialised, but not read back"* — arriving at
-/// a fourth place, by a **different reader** and with a **different error**
-/// (`DepthLimitExceeded`, not `RecursionLimitReached`) than the three known
-/// ones.
+/// ⇒ The map encoded at every depth and stopped decoding at one. That was #120's
+/// sentence — *"built, reduced and serialised, but not read back"* — arriving at a
+/// fourth place, by a **different reader** and with a **different error**
+/// (`DepthLimitExceeded`, not `RecursionLimitReached`) than the three known ones.
 ///
-/// ⚠ **Honest status.** What is measured here is the CODEC asymmetry. Which
-/// production path performs an `EPathMap` prost encode→decode *across a
-/// boundary* is **not** established — and that is precisely the reachability
-/// question that decided #129's severity, so it must not be assumed here by
-/// analogy. The registry row records it as this site's open question.
+/// # ★★ Why it could be closed on its own, when the audit said otherwise
+///
+/// `docs/design/audits/theta-depth-traversals-2026-07-26.md` §7.3.5 and the
+/// retired `models/tests/par_prost_depth_ceiling.rs::
+/// the_two_read_ceilings_are_anchored_together` both held that
+/// `COLLECTION_DEPTH_LIMIT` and prost's `RECURSION_LIMIT` *"move together or not
+/// at all"*, because lifting either alone leaves the other binding one level away.
+///
+/// **That is true of the tag-1 path and false of the tag-8 path**, and the reason
+/// is the field's protobuf type. Tag 8 is `bytes`, and a `bytes` field is *opaque*:
+/// `prost::encoding::bytes::merge` reads a varint length and copies that many
+/// bytes, spending **zero** nested-message levels on the trie-key stream inside.
+/// `models/tests/epathmap_tag8_read_totality.rs` drives a **depth-400** key and
+/// measures the refusal coming from the *trie* codec, not from prost. So on this
+/// path the cap had nothing behind it.
+///
+/// It is the identical structure this file's own #129 row relies on:
+/// `ProduceEventProto.outputValue` is `repeated bytes`, which is why a block body
+/// carries arbitrarily deep `Par`s without the block failing to decode.
+///
+/// # ⚠ What is NOT closed
+///
+/// The **prost** read ceiling (33 / 32 / 31 per envelope) is untouched; so is the
+/// `0x0F` escape arm's inner `Par::decode`, which is registered separately as
+/// #130. Lifting those needs an unbounded protobuf reader for the whole `Par`
+/// family. This row is one site, closed, and says so.
 #[test]
-fn the_epathmap_wire_is_the_fourth_site() {
-    // The accepting side, and its neighbours — so the boundary is exhibited
-    // rather than asserted.
-    for depth in [0usize, 1, 16, 32, EPATHMAP_LAST_DECODING_DEPTH] {
+fn the_fourth_site_is_closed_the_epathmap_wire_reader_is_total() {
+    // ── the depths that used to bracket the boundary, now all accepting ───────
+    //
+    // The old test asserted `Ok` below the ceiling and `Err(DepthLimitExceeded)`
+    // above it. The ceiling is gone, so the range is continuous — and the depth
+    // that used to refuse is checked EXPLICITLY rather than folded into a loop,
+    // because it is the one a regression would refuse at again.
+    for depth in [
+        0usize,
+        1,
+        16,
+        32,
+        RETIRED_EPATHMAP_READ_CEILING,
+        RETIRED_EPATHMAP_READ_CEILING + 1,
+        64,
+        128,
+    ] {
         let map = EPathMap::new(vec![nested_list(depth)], vec![], false, None);
         let bytes = map.encode_to_vec();
-        let decoded = EPathMap::decode(&bytes[..]);
+
+        // ★ Encode must SUCCEED at every depth — that was always the asymmetry's
+        // write end, and a test that only showed "decode now works" could be
+        // satisfied by a builder that stopped producing deep terms.
         assert!(
-            decoded.is_ok(),
-            "★ an EPathMap with a ground entry of term depth {depth} encoded to {} \
-             bytes and did NOT decode: {:?}. The accepting side of this boundary is \
-             supposed to reach {EPATHMAP_LAST_DECODING_DEPTH}; if the read ceiling \
-             moved DOWN, values that round-tripped yesterday do not today.",
-            bytes.len(),
-            decoded.err()
+            !bytes.is_empty(),
+            "★ the depth-{depth} EPathMap encoded to nothing. The encoder is documented \
+             TOTAL (R3F-2); without that this file measures a builder failure."
+        );
+
+        let decoded = EPathMap::decode(&bytes[..]).unwrap_or_else(|e| {
+            panic!(
+                "★★ an EPathMap with a ground entry of term depth {depth} encoded to {} \
+                 bytes and did NOT decode: {e:?}.\n\n\
+                 If this is `DepthLimitExceeded` then `COLLECTION_DEPTH_LIMIT` (or an \
+                 equivalent cap) is BACK in `models/src/rust/canonical_path.rs`, and this \
+                 node again emits proto field-8 byte strings it will not read back. The \
+                 standing owner ruling (2026-07-29) is that there is NO artificial depth \
+                 cap for consensus: the repair is an unbounded reader, never a capped \
+                 writer.\n\n\
+                 If it is `RecursionLimitReached` then something now descends into the \
+                 tag-8 `bytes` payload, which would make prost's ceiling apply where it \
+                 did not — a different and larger change.",
+                bytes.len()
+            )
+        });
+
+        // ★ and it must be a ROUND TRIP, not merely an acceptance: a reader that
+        // silently dropped levels would accept and answer wrongly, which is worse
+        // than refusing.
+        assert_eq!(
+            decoded.encode_to_vec(),
+            bytes,
+            "★ the depth-{depth} EPathMap decoded but is not a byte-level fixed point — \
+             levels were lost on the way in"
+        );
+        assert_eq!(
+            decoded.ps().len(),
+            1,
+            "★ the depth-{depth} entry set is not a singleton after the round trip"
         );
     }
 
-    // ★ The refusing side. Encode must SUCCEED — that is the asymmetry; a test
-    // that only showed "decode fails" could be satisfied by a failed build.
-    let refused_depth = EPATHMAP_LAST_DECODING_DEPTH + 1;
-    let map = EPathMap::new(vec![nested_list(refused_depth)], vec![], false, None);
-    let bytes = map.encode_to_vec();
-    assert!(
-        !bytes.is_empty(),
-        "★ the depth-{refused_depth} EPathMap encoded to nothing. The whole finding is \
-         that the WRITE succeeds; without that this is not an asymmetry, it is a \
-         builder failure."
+    // ── the residual, exhibited so it is not mistaken for closed too ──────────
+    //
+    // The tag-8 stream is total in depth. A deep `Par` arriving through tag 1
+    // (`ps`, `repeated Par`) still meets prost's ladder, and that is untouched.
+    let via_tag1 = EPathMap::new(
+        vec![nested_list(RETIRED_EPATHMAP_READ_CEILING + 1)],
+        vec![],
+        false,
+        Some(models::rhoapi::Var {
+            var_instance: Some(models::rhoapi::var::VarInstance::Wildcard(
+                models::rhoapi::var::WildcardMsg {},
+            )),
+        }),
     );
-
-    let error = EPathMap::decode(&bytes[..]).expect_err(
-        "★★ the depth-{refused_depth} EPathMap DECODED. The read ceiling moved UP: \
-         this node now accepts EPathMap byte strings it refused before, which \
-         changes the set a validator admits. That is a consensus-visible widening \
-         and is F1r3node's coordinated decision, not an incidental one.",
-    );
-
-    // ★ The error KIND, not merely "something failed". A truncated buffer, a
-    // wrong tag or a reserved byte would all satisfy a bare `is_err()` while
-    // meaning something entirely different.
-    let rendered = error.to_string();
+    // A `remainder` makes the map ¬ground, which is what moves it OFF field 8 and
+    // onto the tag-1 field walk — the same value, the other transport.
+    let tag1_bytes = via_tag1.encode_to_vec();
+    let tag1_result = EPathMap::decode(&tag1_bytes[..]);
     assert!(
-        rendered.contains("DepthLimitExceeded"),
-        "★ the depth-{refused_depth} EPathMap failed to decode, but not with the \
-         depth limit: {rendered:?}. This test claims a DEPTH ceiling; any other \
+        tag1_result.is_err(),
+        "★ the tag-1 field walk decoded a depth-{} entry. prost's RECURSION_LIMIT is NOT \
+         lifted by this change; if it now accepts this, the residual has moved and this \
+         file's #129/#130 rows need re-measuring.",
+        RETIRED_EPATHMAP_READ_CEILING + 1
+    );
+    let tag1_rendered = tag1_result
+        .expect_err("checked immediately above")
+        .to_string();
+    assert!(
+        tag1_rendered.contains("recursion limit"),
+        "★ the tag-1 path refused, but not on prost's recursion limit: {tag1_rendered:?}. \
+         The residual this file still carries is specifically prost's ladder; any other \
          refusal is a different defect wearing its clothes."
     );
-    assert!(
-        rendered.contains("serialized_paths"),
-        "★ the refusal did not come from the tag-8 `serialized_paths` arm: \
-         {rendered:?}. The finding is specifically about the trie key stream a \
-         GROUND map encodes to; a refusal from the tag-1 field walk would mean the \
-         map was not taking the field-8 arm and this measurement is of something else."
-    );
 
     println!(
-        "  EPathMap prost wire: ground entry depth {EPATHMAP_LAST_DECODING_DEPTH} \
-         round-trips; depth {refused_depth} encodes to {} bytes and decodes to \
-         {rendered}",
-        bytes.len()
+        "  EPathMap tag 8 (`serialized_paths`, bytes): reader TOTAL — depths 0..=128 \
+         round-trip, including {} which used to answer DepthLimitExceeded",
+        RETIRED_EPATHMAP_READ_CEILING + 1
     );
     println!(
-        "  ⇒ encode is TOTAL (R3F-2), decode is bounded — the same shape as #120, \
-         #129 and #130, at a fourth site"
+        "  ⇒ the FOURTH site is CLOSED by an unbounded reader. Residual: the tag-1 field \
+         walk still meets prost's ladder ({tag1_rendered})"
     );
 }

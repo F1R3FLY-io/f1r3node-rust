@@ -626,8 +626,9 @@ proptest! {
 
 /// The write side must not be capped, so the depth sweep goes past every
 /// ceiling the read side ever had: the derived prost decode `Err` at 34, the
-/// `COLLECTION_DEPTH_LIMIT` of 32, and the bincode ENCODE overflow bisected at
-/// 9,335.
+/// **retired** `COLLECTION_DEPTH_LIMIT` of 32 (deleted — the trie reader is now
+/// total in depth; `models/tests/epathmap_tag8_read_totality.rs`), and the
+/// bincode ENCODE overflow bisected at 9,335.
 ///
 /// ⚠ The ORACLE is the constraint above ~60 in debug (`bincode::serialize` is
 /// Θ(depth)), so the oracle leg runs on a large stack while the machine leg
