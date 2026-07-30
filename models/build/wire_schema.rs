@@ -3249,6 +3249,74 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// §D obeys it: one straight-line function per type, no per-field indirection, no
 /// `&dyn` anything.
 ///
+/// ## ⚠★★ THROUGHPUT: the shallow case is 0.674×, and the reason is STRUCTURAL
+///
+/// `models/benches/term_ops_bench.rs` measures this emission against the retained
+/// derive oracle on the production-weighted mix (2,001 datums, 95.43% at depth 2,
+/// nothing deeper than 6). The driven form is **0.674× the derived form's
+/// throughput** — a 48% slowdown — against a stated acceptance threshold of 0.98×,
+/// Welch t = −307, intervals disjoint at α = 0.01. Per depth: 0.648× at 1, 0.665×
+/// at 2, 0.639× at 3, 0.685× at 6, 0.750× at 16, and **1.003×
+/// (indistinguishable)** at 64.
+///
+/// ### The optimization that was tried, and REFUTED
+///
+/// `perf` put **41.77%** of `drive_with`'s samples on one instruction —
+/// `cmp $0x24, %eax`, the 36-arm `ExprInstance` jump-table bounds check — and
+/// 23.61% on a single stack spill. The obvious reading is that the *three*
+/// structural walks per node (`clone_push_children_*`, `clone_child_count_*`,
+/// `clone_rebuild_*`) cost three dispatches where the derive costs one, so the
+/// count walk was removed: `descend` recorded `base = vals.len()` in the `Kont`,
+/// the recount became a `debug_assertions`-only cross-check, and a LEAF FAST PATH
+/// skipped the `Combine` round-trip for the ~4-of-6 `Par` nodes in a depth-2 datum
+/// that have no cut-set child.
+///
+/// **It measured 0.650× — WORSE than the 0.674× it was meant to improve** (both
+/// arms re-measured in the same run; the derived arm moved +0.8% while the driven
+/// arm moved −2.8%, against a 0.5–0.9% standard deviation). The experiment is not
+/// in the tree.
+///
+/// ⇒ The 41.77% was a **mis-read**: without a precise (PEBS) event, samples land on
+/// the instruction after the retiring one, and `cmp $0x24` immediately precedes an
+/// indirect jump. The cost is the branch MISPREDICTION at the jump table, which
+/// removing one of three dispatch *sites* does not remove — while the wider `Kont`
+/// (8 B → 16 B, so `Step` 16 B → 24 B) and the extra leaf branch cost more than the
+/// walk saved.
+///
+/// ### What the gap actually is, quantified
+///
+/// ```text
+///   measured gap, weighted pass        0.713 ms
+///   `Par` nodes per pass              12,006   (~6 per depth-2 datum)
+///   size_of::<Par>()                     248 B (11 fields, `#[repr(C)]`)
+///   extra 248-B moves per node             3   stack slot -> CloneVal -> vals
+///                                              -> drain -> parent's slot
+///   implied bandwidth              12.53 GB/s  <-- plausible L1/L2 memcpy
+///   gap per node                       59.4 ns
+/// ```
+///
+/// A post-order fold whose `Val` is the OWNED node moves each node's 248 bytes
+/// three extra times; the derive constructs it once, directly into the parent's
+/// `Vec` slot via `SpecFromIterNested`. The arithmetic is *consistent with* the gap
+/// to within the precision of the estimate — it is not proof, and the decisive
+/// experiment would be a PEBS-precise `mem-stores` profile attributing bytes to the
+/// `vals` round-trip.
+///
+/// ⇒ **No amount of walk-elimination fixes this.** Closing it requires the children
+/// to be written directly into their final destination, i.e. TOP-DOWN allocation
+/// with a resumable continuation — `drive.rs`'s documented but unimplemented
+/// `Outcome::Tail` extension. That is a separate stage with its own measurement,
+/// and it is what a reviewer should be shown before a depth-`k` hybrid is
+/// considered.
+///
+/// ⚠ **The conversion is correct and the trade is stated rather than hidden**: the
+/// derived form aborts a release node at depth ~640 on a 2 MiB tokio worker
+/// (3,254 B/level), on a term a deploy controls, before any budget exists to bound
+/// it. This form is flat to depth 4,096 and beyond. A 48% throughput cost on a
+/// clone is a different KIND of quantity from an uncatchable `SIGSEGV` on the
+/// validator path, and choosing between them is the reviewer's call, not this
+/// file's.
+///
 /// ## ⚠⚠ Why collection ELEMENTS are pushed one at a time
 ///
 /// The sibling `mettail-rust` generator emits nine "iterative" drivers and
