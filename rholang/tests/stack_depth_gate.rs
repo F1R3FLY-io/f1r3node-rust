@@ -856,13 +856,23 @@ const CONVERTED_DEPTH: &[&str] = &[
     // also invokes and which stage F-4 did NOT convert; naming a control for
     // that is open work, recorded on the sorters' own assertions below.
     //
-    // ⚠ Admitted only on the 4 -> 4,096 span. On the 2 -> 8 tripwire ladder this
+    // ⚠★ Admitted only on the 4 -> 4,096 span. On the 2 -> 8 tripwire ladder this
     // subject read 3,413 B/level in DEBUG — a FALSE SLOPE, and the mirror of the
-    // false ZERO that hid `substitute_deep_binding`. Six steps at 4 KiB
-    // bisection resolution divide a ~20 KiB difference in INTERCEPT by 6 and
-    // report the quotient as a per-level cost. Both artefacts come from the same
-    // instrument, and the two sorter arms below are still measured on that
-    // very ladder.
+    // false ZERO that hid `substitute_deep_binding`.
+    //
+    // ★ The mechanism is a PLATEAU, and it is worth naming precisely because
+    // "short ladder, bad resolution" is the wrong diagnosis. Minimum stack,
+    // debug: 64 KiB at depth 2, 84 KiB at depth 12, 84 KiB at depth 4,096. The
+    // growth is a ONE-TIME 20 KiB step — the driven clone reaching its working
+    // set — after which the ladder is flat forever. Divide that step by six
+    // steps and it reads 3,413 B/level; by ten, 2,048. **A quotient that moves
+    // with where the ladder is cut is the signature of a plateau**, and no
+    // choice of resolution fixes it: only a span long enough for a real slope to
+    // dominate does, which is what `assert_no_slope`'s ~1,000x ladder is for.
+    //
+    // ⚠ The same suspicion was raised against the two sorter arms below and was
+    // REFUTED by measurement — their slopes reproduce to the byte in debug from
+    // 2 -> 8 to 2 -> 11. The table is on their assertions.
     "clone_nested_set",
 ];
 
@@ -3309,15 +3319,37 @@ fn theta_depth_tripwire() {
     // Eq`, which `HashSet<Par>` invokes and which stage F-4 did not touch; a
     // `hash_nested_set` control is the honest replacement and is not built here.
     //
-    // ⚠★★ AND THE LADDER ITSELF IS UNDER SUSPICION. Both are probed on 2 -> 8,
-    // six steps at 4 KiB bisection resolution, which is the same instrument that
-    // reported a FALSE SLOPE of 3,413 B/level for `clone_nested_set` — a subject
-    // since shown flat across 4 -> 4,096. A six-step ladder divides a difference
-    // in INTERCEPT by six and reports the quotient as a per-level cost, so these
-    // two numbers bound the sorters only as loosely as that. They cannot simply
-    // be widened: `nested_sets` documents the 3^n sort blow-up (depth 20 is
-    // 3.5e9 sorts and did not terminate in either profile), so a longer ladder
-    // has to stop around depth 14 and the resolution problem is only halved.
+    // ★★ THE LADDER WAS PUT UNDER SUSPICION AND THE SUSPICION IS REFUTED — for
+    // THESE two subjects, and the refutation is a measurement.
+    //
+    // Both are probed on 2 -> 8, six steps at 4 KiB bisection resolution, which
+    // is the same instrument that reported a FALSE SLOPE of 3,413 B/level for
+    // `clone_nested_set`. The hypothesis was that these two figures are
+    // intercept artefacts of the same kind. They are NOT. Re-measured on longer
+    // ladders through the gate's own `gate_child` protocol:
+    //
+    //   subject            profile   2 -> 8    2 -> 11/12   8 -> 14
+    //   sort_nested_set    debug     19,114      19,114        —
+    //   sort_nested_map    debug     21,845      21,845        —
+    //   sort_nested_set    release    6,826       6,963      7,509
+    //   sort_nested_map    release   10,240       9,830      9,557
+    //
+    // The debug columns agree TO THE BYTE across ladder lengths and the release
+    // columns to within 10 %. These arms are linear in nesting depth and the
+    // gate's short ladder reports that slope correctly.
+    //
+    // ★ What separates them from `clone_nested_set` is not ladder length but
+    // SHAPE. That subject's minimum stack went 64 KiB at depth 2 -> 84 KiB at
+    // depth 12 -> 84 KiB at depth 4,096 (debug): a one-time 20 KiB PLATEAU STEP,
+    // not a slope. Dividing a plateau by the ladder length yields 3,413 at six
+    // steps and 2,048 at ten — a quotient that moves with where the ladder is
+    // cut is the signature, and it is why `assert_no_slope`'s ~1,000x span is
+    // the discriminating instrument and a short ladder is not.
+    //
+    // ⚠ So the short ladder is retained here deliberately, not tolerated: these
+    // two cannot be widened far anyway — `nested_sets` documents the 3^n sort
+    // blow-up (depth 20 is 3.5e9 sorts and did not terminate in either profile)
+    // — and it has now been SHOWN that they do not need to be.
     //
     // ⚠ The measured values have MOVED since the report of 2026-07-29 recorded
     // them, in the direction that matters: release 4,778 -> 6,826 (set) and
@@ -3333,6 +3365,20 @@ fn theta_depth_tripwire() {
     // asserts it is what actually ran. Adding an `assert_slope_below` above
     // without listing the subject — or listing one without asserting it — fails
     // HERE, at the commit that does it, instead of drifting until the next audit.
+    //
+    // ★ **SHOWN RED, not merely asserted.** Adding `"eq"` to [`TRIPWIRE_DEPTH`]
+    // with no matching `assert_slope_below` — `eq` is a real subject in
+    // [`subject`], so the failure is the register's and not an unknown name —
+    // fails this assertion with:
+    //
+    //     THE SUBJECT REGISTER IS OUT OF DATE. `theta_depth_tripwire` drove
+    //     [.., "sort_nested_map"] but `TRIPWIRE_DEPTH` lists [.., "eq"].
+    //
+    // ⚠ Note the direction, because it is the opposite of the one usually
+    // quoted: a name in a CONVERTED list must have NO `assert_slope_below` — one
+    // would put the name in the driven set while `TRIPWIRE_DEPTH` omits it, and
+    // this same assertion would reject it. Membership in exactly one register,
+    // enforced from both sides.
     let driven = SLOPE_SUBJECTS_DRIVEN.with(|s| s.borrow().clone());
     let mut driven_sorted = driven.clone();
     driven_sorted.sort();
