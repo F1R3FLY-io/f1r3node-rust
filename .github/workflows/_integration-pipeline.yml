@@ -67,8 +67,22 @@ env:
 
 jobs:
   # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
+  #
+  # Gated on await_approval so that NOTHING in this pipeline runs for an
+  # unapproved fork PR. This job compiles fork-authored code on the permanent
+  # self-hosted runners, and the smoke_* jobs that depend on it burn
+  # GitHub-hosted minutes; without the gate an untrusted contributor could spend
+  # both simply by pushing, which is the abuse the ephemeral-launch approval
+  # exists to prevent. Approval — not the concurrency group — is what holds
+  # untrusted work back, so this must stay even if the grouping changes again.
+  #
+  # Internal runs are unaffected in substance: ephemeral-launch-internal has no
+  # protection rules, so the gate resolves in seconds. The build still overlaps
+  # the ~1-minute runner launch, since build and launch gate on the same node
+  # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
+    needs: await_approval
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -141,6 +155,44 @@ jobs:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
 
+  # Approval gate, deliberately separated from the launch job below.
+  #
+  # This job exists solely to hold the environment's required-reviewer wait. It
+  # runs no steps, touches no secrets, and carries NO concurrency group — so a
+  # fork run parked here awaiting a maintainer costs nothing but a queue slot.
+  #
+  # Why the split: a job sitting in `waiting` holds any concurrency group it
+  # names, for as long as the approval takes (GitHub expires pending approvals
+  # after 30 days). When the OCI serialization group lived on the same job as
+  # the environment, one unapproved fork PR blocked every other heavy run
+  # indefinitely — observed 2026-07-29, where a run waiting since 04:21 held the
+  # lane for twelve hours. Keeping the wait outside the serialized section
+  # bounds the lock to actual VM creation.
+  #
+  # gated=true (fork path) uses ephemeral-launch, whose required_reviewers rule
+  # is what a maintainer clears after reviewing the fork diff. gated=false
+  # (internal path) uses ephemeral-launch-internal, which has NO protection
+  # rules, so internal events pass straight through unattended. Both branches
+  # must name a real environment: an empty-string environment name fails
+  # workflow startup (the value is validated when the run graph is built), so
+  # the ungated path cannot fall back to ''.
+  await_approval:
+    name: Await Launch Approval
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
+    permissions: {}
+    # No timeout-minutes. This job's entire purpose is to wait, and the wait is
+    # human-paced: GitHub lets a pending environment approval sit for up to 30
+    # days. A tight timeout here would cancel the whole pipeline whenever a
+    # maintainer did not click Approve promptly — a worse failure than the lane
+    # blockage this split was introduced to fix, and one that would only surface
+    # the first time someone stepped away. The single step below is an echo, so
+    # there is no runaway-execution risk to bound; do not add one.
+    steps:
+      - name: Approval recorded
+        shell: bash -e {0}
+        run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
+
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
   # jobs. Runs in parallel with build_docker_image so the ~1-minute launch
   # overhead overlaps with the ~7-minute Docker build. Each VM boots from a
@@ -150,17 +202,33 @@ jobs:
   #
   # This is the only job that handles secrets. It checks out ONLY the trusted
   # system-integration repo and runs only its scripts — never the code-under-test.
+  #
+  # `needs: await_approval` is the gate: this job cannot start until the
+  # environment's reviewers have cleared the run, exactly as before. The
+  # difference is that the waiting happens in a job that holds no lock.
+  # SECURITY: do not remove that `needs:` — it is the only thing sequencing the
+  # OCI credentials behind maintainer approval now that the environment is
+  # declared one job upstream.
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
+    needs: await_approval
     runs-on: ubuntu-latest
-    # gated=true (fork path) routes through the ephemeral-launch environment so
-    # the required-reviewer approval releases OCI_* + RELEASE_PAT to the job.
-    # gated=false (internal path) uses ephemeral-launch-internal, an environment
-    # with NO protection rules, so internal events get secrets and run unattended.
-    # Both branches must name a real environment: an empty-string environment
-    # name fails workflow startup (the value is validated when the run graph is
-    # built), so the ungated path cannot fall back to ''.
-    environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
+    # Serializes real OCI VM creation across every heavy run in the repository:
+    # the tenancy's daily instance-creation quota is shared, so two pipelines
+    # launching at once both risk LimitExceeded. cancel-in-progress: false makes
+    # a second launcher queue rather than cancel the in-flight one. The lock is
+    # now held only for the ~1 minute of actual launching, not across an
+    # unbounded approval wait.
+    #
+    # Residual risk, accepted: GitHub keeps only ONE pending entry per group, so
+    # if three launchers contend within that ~1-minute window, the middle one is
+    # cancelled. Recovery is a manual re-run of the affected job — there is no
+    # silent data loss, but the PR shows a cancelled Heavy Pipeline rather than
+    # a failure, so check for cancelled runs before assuming a pipeline was
+    # never triggered.
+    concurrency:
+      group: oci-ephemeral-launch
+      cancel-in-progress: false
     # Runner registration uses RELEASE_PAT (admin scope); the default GITHUB_TOKEN
     # mints nothing here, so this job needs only read access for the checkout.
     permissions:

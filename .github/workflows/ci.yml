@@ -20,12 +20,26 @@ on:
 
 # Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
 # (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 4-VM OCI matrices. Nothing is
-# cancelled mid-flight — a re-push queues behind its own in-flight run, so release
+# serialize rather than piling up independent 4-VM OCI matrices.
+#
+# Pushes never cancel: a re-push queues behind its own in-flight run, so release
 # jobs and long integration runs always reach completion.
+#
+# PRs DO cancel their own older runs, and must. GitHub keeps only one *pending*
+# run per group, so queueing instead of superseding means a third event evicts
+# the queued one — and an evicted run reports nothing, leaving every required
+# check on the current head permanently "Expected — waiting for status to be
+# reported". PR #158 hit exactly that on 2026-07-29: the run for head 1d3d79b1
+# was cancelled while queued behind a 14-hour predecessor, all 12 required
+# checks never reported, and the PR sat BLOCKED with no failure to point at.
+#
+# Superseding is also what you actually want per PR: once a newer head exists,
+# the older head's results cannot satisfy branch protection anyway, because
+# required checks are commit-scoped. Cancelling them deliberately frees the lane
+# for the head that matters instead of starving it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
