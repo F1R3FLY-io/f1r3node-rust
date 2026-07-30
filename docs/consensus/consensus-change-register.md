@@ -86,13 +86,15 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 44 consensus-visible changes** — 31 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
-Of these, **42 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. **Twenty-three** move bytes on the bincode lane and **twenty-two** on the protobuf lane;
-**twenty-three** move a *verdict*; **thirty-two** move the *post-state hash*; **thirteen** move
-*acceptance*; **two** move *metering*. ⚠ Every figure in this paragraph is **recounted from the §4.1
-rows**, never adjusted; the counts moved between drafts because entries went stale about which commit they
-described, and decrementing would have hidden that (see the note under §4.1). ★ **No entry is now a live
+**Result: 45 consensus-visible changes** — 32 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
+Of these, **43 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **23** entries move bytes; on the protobuf lane **23**; **23** move a
+*verdict*; **32** move the *post-state hash*; **13** move *acceptance*; **2** move *metering*.
+⚠ Every figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no
+longer recounted by hand: `casper/tests/consensus_change_register_gate.rs` fails naming any figure that
+disagrees. ★ They are written as **digits** for that reason — this paragraph previously spelled them
+(*"Twenty-three move bytes"*), and an English numeral is structurally uncheckable however careful the
+author. ★ **No entry is now a live
 divergence.** The one that was (**CBR-L09** — float division by zero answering `error` rather than
 $`\pm\infty`$) was ruled kept and then, the same day, **reversed and widened to every float arithmetic
 operator**, because IEEE 754 §7.3 *defines* the result and the bug-fix carve-out that licenses divergence
@@ -409,6 +411,10 @@ Every factual claim in this report carries one of:
 | **CITED** | Quoted from a commit message or an owner ruling. The underlying work was performed by the cited author; this report reproduces rather than re-derives it. |
 | **UNVERIFIED** | Named, not established. |
 
+| Acronym | Expansion |
+|---|---|
+| **TOML** | Tom's Obvious, Minimal Language — the configuration syntax of [`register.toml`](#appendix-c--registertoml-the-machine-index), of which the drift gate parses a deliberately tiny subset. |
+
 ⚠ The distinction between **MEASURED** and **CITED** matters for this report specifically: the campaign's
 commit messages carry unusually detailed measurements, and this register did **not** re-run them. Where a
 number appears, its tag says whether this author observed it or is quoting the commit that did.
@@ -493,6 +499,8 @@ observably differ on some axis — the definition of §2.4. This admits:
 | `HYGIENE` | Imports, formatting, lints, clippy, `-D warnings`, dead-code deletion with no live caller. |
 | `BYTE_NEUTRAL_MEASURED` | Restructures a consensus path with byte identity asserted by a named golden or differential. |
 | `CHARGE_NEUTRAL_MEASURED` | Moves work on a metered path with charge count, order and value asserted unchanged. |
+| `VERDICT_NEUTRAL_MEASURED` | ★ Restructures a **verdict-deciding** path with the verdict relation asserted unchanged by a named differential. Added 2026-07-29 for `383a8b56`, which moves `rho-pure-eval`'s evaluator — the component that decides `where` verdicts — onto a shared trampoline. *Byte* identity is not the claim that matters there; *verdict* identity is, and collapsing the two would have made the exemption say something it could not support. ⚠ Adding a variant is a code change in the gate's `CLOSED_REASONS` and is therefore reviewed, which is the property [§7.2](#72-the-design-and-why-this-one) clause 4 exists to have. |
+| `DEP_BUMP_BYTE_NEUTRAL` | ★ A dependency-version change with a named differential showing published bytes unmoved. Reserved by [§7.5](#75-first-extensions) extension 2 and now spellable, because `Cargo.lock` is inside the derived path set; **CBR-L06** proves a `prost` or `thiserror` bump alone can move published bytes. No commit carries it yet. |
 | `DORMANT` | Adds code with no caller, established mechanically. |
 | `INFRA` | Build, CI, or tooling. |
 | `SUPERSEDED` | Wholly subsumed by a later commit that is itself an entry. |
@@ -587,6 +595,7 @@ is a *future* fork, not a present one).
 | [CBR-028](#cbr-028) | N | **OPEN, UNREPAIRED** — write-unbounded / read-bounded on a consensus wire | *not repaired* | · | · | · | ● | ● | ● | · | — | **W** |
 | [CBR-029](#cbr-029) | N | The pretty printer renders a receive's `where` guard | `d8e95fb0` | · | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-030](#cbr-030) | N | `NonNegativeNumber.rho`'s overflow guard becomes **total** — the genesis term moves | `e3a4494b`, `719f2432` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ? | ○ | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -601,11 +610,19 @@ is a *future* fork, not a present one).
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 
-**Totals — 44 entries**, recounted from the rows above rather than adjusted: **31 on Surface N, 13 on
-Surface L**; **42 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **34 WITNESSED**, 3 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction:
-**27 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
-hazard). **★ Zero DIVERGENT** — see below. **One** axis cell is `UNVERIFIED`: **CBR-L07** metering.
+**Totals — 45 entries**, recounted from the rows above rather than adjusted: **32 on Surface N, 13 on
+Surface L**; **43 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **35 WITNESSED**, 3 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction: **28 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **2** — **CBR-L07** metering
+and **CBR-031** verdict.
+
+★★ **Every figure in the paragraph above is now COMPUTED, not written.**
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 45 rows of this table and
+fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
+edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
+structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
+literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
+rewording around a number is a build failure rather than a silent unpinning.
 
 ★ **The derivation, so the count is checkable rather than asserted.** Read the 44 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
@@ -1268,18 +1285,51 @@ contains a `VarRefBody`. **UNVERIFIED**.
 same value as the outer binder", and it did not work. The failure is silent: the pattern is well-formed,
 the term normalizes, and the comparison simply asks the wrong question.
 
-**Why `has_locally_free` needed no change, and why that is correct rather than a shortcut.** It computes
-this node's `locally_free` and `connective_used` from the **target alone**. Because a plain `x` in the
-pattern is a *fresh binder* (the `get` lookup above), the pattern contributes nothing to the enclosing
-scope's free variables. `matcher::spatial_matcher`'s `EMatchesBody` arm and
-`par_children::substitute_descends_into` already say so; this commit adds the third leg — the **per-slot
-depth** — that those two were describing. **DERIVED**.
+**⚠⚠ RETRACTED — *"why `has_locally_free` needed no change"* was FALSE WHEN WRITTEN, and its own
+commit message contains the refutation.** The paragraph this replaces read:
 
-**★ Sibling enumeration, because this campaign's most-repeated failure is the sibling-blind patch.**
+> ★ `has_locally_free` NEEDED NO CHANGE, and the asymmetry it has always had is correct rather than a
+> shortcut… Because a plain `x` in the pattern is a fresh binder (the `get` lookup above), the pattern
+> contributes nothing to the enclosing scope's free variables.
+
+**What is true.** The justification is sound for **one** of the two lookups a `matches` pattern performs
+and silently omits the other. `8853f839`'s own message, two paragraphs above the sentence this entry
+paraphrased, states both:
+
+> * a plain `x` goes through `get`, which reads the CURRENT scope only, so it is a fresh binding
+>   occurrence and can never be a `BoundVar` pointing outside;
+> * `=x` goes through `find`, which walks the whole chain, and is emitted as `VarRef { depth }` carrying
+>   the chain distance.
+
+$`\Rightarrow`$ **`=x` names an outer binder from inside the pattern.** Its index therefore *does* belong to the
+enclosing scope's `locally_free`, and `has_locally_free`'s `EMatchesBody` arm — which reads the target
+alone — dropped it. The pre-fix inner `for` of
+`for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }` claimed to be **closed** while naming an
+index it does not bind. **The `=x` leg is the case `8853f839` existed to fix on the substitution side,
+and the same commit argued it away on the `locally_free` side.** Repaired by
+[`0b270eca`](#cbr-031); the axes are in **[CBR-031](#cbr-031)**, which supersedes this paragraph.
+
+**★★ And the sibling enumeration below was taken on the WRONG AXIS — which is why a count of 1 did not
+protect anything.**
+
+**★ Sibling enumeration, on axis `ExprInstance` arm — Count: 1 on that axis.**
 `EMatches` is the **only** `ExprInstance` arm whose `has_locally_free` reads a *proper subset* of the
 slots substitution descends into. The other 18 multi-slot arms either OR/union every operand (16 binary,
 2 unary) or read a cached summary field computed over all of them (`EList`, `ETuple`, `ESet`, `EMap`,
-`EMethod`, `EPathmap`, `EZipper`). **Count: 1.** **DERIVED**.
+`EMethod`, `EPathmap`, `EZipper`). **Count: 1 on axis `ExprInstance` arm.** **DERIVED.** ✅ *That count
+was and remains correct.*
+
+**⚠ Sibling enumeration, on axis PATTERN POSITION — Count: 1 on that axis, and a DIFFERENT 1.**
+Rholang has **three** positions in which a pattern's bitset meets an enclosing scope:
+`p_match_normalizer` and `p_input_normalizer` both union the pattern's bitset into `locally_free`;
+`p_matches_normalizer` **did not**. Sole dissenter, **Count: 1 on axis pattern position** — the same
+number, a different member, and the member that mattered. **DERIVED** (`0b270eca`).
+
+★ **The methodological finding, stated so the next enumeration cannot repeat it.** *A sibling count is
+only as good as the axis it was taken on.* A count with no axis recorded is the same defect as a number
+with no subject, which this campaign has already paid for four times — so
+[Appendix A](#appendix-a--the-entry-template) now requires the axis to be named in the count itself, and
+[§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5 records the class.
 
 **Why the fix is single-sourced.** A per-slot depth is exactly the kind of fact a worklist driver and a
 recursive oracle can drift apart on. `expr_arm_pattern_slots` names the pattern slots once;
@@ -3926,6 +3976,108 @@ register's subject matter — see [§7.5](#75-first-extensions) extension 5.
 
 ---
 
+### CBR-031
+
+**A `matches` pattern's `=x` now reaches the enclosing `locally_free`, so a term stops claiming to be closed while naming an index it does not bind.**
+
+| | |
+|---|---|
+| Commit(s) | `0b270eca` |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `rholang/src/rust/interpreter/matcher/has_locally_free.rs`, `rholang/src/rust/interpreter/substitute_combine.rs`, `rholang/tests/matches_pattern_locally_free.rs` (new) |
+
+#### (a) The issue
+
+`has_locally_free`'s `EMatchesBody` arm computed the node's bitset from the **target alone**. A `matches`
+**pattern** reaches the enclosing scope through exactly one construct, and the construct is not the plain
+variable: `=x` is resolved by `BoundMapChain::find`, which walks the whole chain, and is emitted as
+`VarRef { depth }` carrying the chain distance. That index belongs to the enclosing scope's free set and
+was dropped.
+
+⚠ **This defect was argued to be absent, in this register, by [CBR-006](#cbr-006) §(c)** — and the
+argument's own commit message states the two-lookup split that refutes it. The retraction is recorded in
+CBR-006 rather than quietly replaced, because *a written justification inoculates the next reader against
+looking*, and that is the finding
+([§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5).
+
+#### (b) How it (potentially) breaks consensus
+
+The differential term throughout is
+`for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }`. Every figure below is **MEASURED** on it.
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — the bit escapes the inner binder. Pre-fix the inner `for` claimed to be *closed* while naming an index it does not bind. |
+| 2 · verdict | ⚠ **UNVERIFIED**, and deliberately not rounded to `NO`. `list_match` / `fold_match` gate a remainder on `locally_free(t, 0).is_empty()` over **targets**; a `matches` expression evaluates to a `GBool` before it can become a target, so **no reaching term was constructible** — but that argument is *not exhaustive*, and the register's "potentially" discipline ([§2.7](#27-evidence-grade--and-the-word-potentially)) exists for exactly this cell. |
+| 3 · bytes (Lane B, bincode) | NO — **782 B = 782 B, byte-equal.** `serialize_as_empty_bytes` blanks `locally_free` on this lane, so the moved bits are not on it. |
+| 3 · bytes (Lane P, prost) | **MOVES — 63 B $`\rightarrow`$ 72 B.** `locally_free` is real `bytes` on the wire. |
+| 4 · post-state hash | NO — the event-hash preimage is **byte-equal at 830 B**. The preimage does not carry this field. |
+| 5 · accepted programs | NO — `connective_used`, which gates sendability, is untouched **and guarded**. |
+| 6 · metering | NO — no charge site changed. |
+
+**The disagreement.** Two nodes disagree on the **protobuf serialization** of a term containing
+`matches =x`: 63 bytes against 72. Every artefact carrying a `Par` on Lane P differs — so a block whose
+deploy log or whose `ProcessedDeploy` carries such a term is not byte-comparable across the upgrade. The
+fault class is a **safety fork** on the protobuf lane, not a slashable fault, because both encodings
+decode to well-formed terms.
+
+⚠ **And a movement with no consumer, enumerated rather than assumed.** The derived `Ord` on `Par`
+**MOVES**, because `locally_free` is a compared field. It reaches nothing: `ESet` / `EMap` order through
+`Ordering::sort_pars`, whose score tree never reads `locally_free`; there is no `BTreeMap<Par, _>`, no
+`BTreeSet<Par>`, and no bare `.sort()` over a `Vec<Par>`. `PartialEq` / `Hash` are **STABLE** because
+`AlwaysEqual` ignores the field. **MEASURED** — this is an enumeration of consumers, not an argument from
+absence.
+
+**Blast radius.** Any term whose `matches` pattern contains `=x` naming a binder outside the pattern —
+ordinary Rholang, reachable by an ordinary deploy. Narrower than [CBR-006](#cbr-006)'s, which is the same
+syntactic class on the substitution side.
+
+**Could live chain state have been produced under the old behaviour?** ⚠ Not settleable from inside the
+repository. Settling query: the same walk [CBR-006](#cbr-006) names — scan historical deploy terms for an
+`EMatches` whose `pattern` subtree contains a `VarRefBody` — and additionally compare the recorded
+`locally_free` of the enclosing `Par` against a recomputation. **UNVERIFIED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** A `Par` that under-reports `locally_free` is a term that lies
+about its own scope, and the field is on the consensus wire. Every consumer that trusts it — today only
+the derived `Ord`, tomorrow anything — inherits the lie.
+
+**Why this repair rather than the alternatives.**
+
+| alternative | why rejected |
+|---|---|
+| **Leave it: no consumer reads the field.** | The field is **published**. "No consumer today" is a fact about today, and the wire is the contract. |
+| **Blank `locally_free` on Lane P too.** | It would make the two lanes agree by discarding information the `.proto` declares, and would be a far larger wire change than the one it avoids. |
+| **Fix only `p_matches_normalizer`.** | The normalizer's union is one of the two halves; `has_locally_free` is the other, and it is what the matcher and the substituter read. Fixing one leaves the two disagreeing. |
+
+**Authority.** No owner ruling. ⚠ The entry does **not** bump a consensus version; that call is
+F1r3node's.
+
+#### Evidence
+
+- The differential term is exhibited and every number above is taken on it. **MEASURED** (`0b270eca`).
+- Lane P **63 B $`\rightarrow`$ 72 B**; Lane B **782 B = 782 B**; event-hash preimage **830 B**,
+  byte-equal. **MEASURED**.
+- The `Ord`-consumer enumeration is a search, not an assertion: no `BTreeMap<Par, _>`, no
+  `BTreeSet<Par>`, no bare `.sort()` over `Vec<Par>`, and `Ordering::sort_pars`'s score tree does not
+  read the field. **MEASURED**.
+- ★ **The guard CBR-006 lacked.** `rholang/tests/matches_pattern_locally_free.rs` is a 13-row table over
+  the pattern positions and carriers, so the next author who believes *"this position needs no change"*
+  has a test to disagree with. This is the concrete form of
+  [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5's remedy (b).
+
+⚠ **A SECOND `locally_free` change is pending, and this entry does not close the topic.**
+`filter_and_adjust_bitset` (`rholang/src/rust/interpreter/util/mod.rs:132`) emits the shifted **position**
+as the **value**, discarding the bit — a porting error, because the Scala original maps `BitSet`
+*members* while the Rust port models one byte per index. It is **identical across all three pattern
+positions**, so nothing internal disagrees and no verdict moves today; but `locally_free` is on the prost
+wire, so correcting it **would move bytes**. Filed separately. **DERIVED**.
+
+---
+
 ## 4.4 Surface L — MeTTaIL's Rholang
 
 ⚠ **Read this section against a different clock.** MeTTaIL's Rholang does not run consensus today. A
@@ -4859,7 +5011,7 @@ both correctly answer `error`, so the casts opened no hole. **CITED** (`ab885336
 ★★ **This amendment is itself a drift datum, and the register should own it rather than absorb it.** The
 row above was written as *"FILED, NOT FIXED"* against `ab885336` (20:27) and was falsified by `19510082`
 (21:13) — **46 minutes later**, and before this document was first saved with the row in it. It is the
-third staleness incident in two days ([§7.6](#76--four-findings-about-what-can-be-pinned-at-all) finding
+third staleness incident in two days ([§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding
 2 records the first two) and the **fastest**. ⚠ Note which proposed clause would have caught it: **neither**.
 Clause 8 reads an entry's `Status`, and this entry's status was already correct; clause 9 reads `file:line`
 coordinates, and the ones cited still resolved. What went stale was a **prose claim about the world**
@@ -5380,15 +5532,15 @@ to "design the literal", and that is a different work item with a different owne
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 44 |
+| Axis | Entries that move it | Share of the 45 |
 |---|---|---|
-| 1 · computed value | **18** | 41 % |
-| 2 · verdict | **23** | 52 % |
-| 3 · bytes — Lane B (bincode) | **23** | 52 % |
-| 3 · bytes — Lane P (prost) | **22** | 50 % |
-| 4 · post-state hash | **32** | 73 % |
-| 5 · accepted programs | **13** | 30 % |
-| 6 · metering | **2** | 5 % |
+| 1 · computed value | **19** | 42 % |
+| 2 · verdict | **23** | 51 % |
+| 3 · bytes — Lane B (bincode) | **23** | 51 % |
+| 3 · bytes — Lane P (prost) | **23** | 51 % |
+| 4 · post-state hash | **32** | 71 % |
+| 5 · accepted programs | **13** | 29 % |
+| 6 · metering | **2** | 4 % |
 
 ⚠ **Recounted 2026-07-29 from the 44 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
@@ -5430,14 +5582,14 @@ revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was adde
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **27** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| CORRECTIVE | **28** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
 | PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **2** | **CBR-019**, **CBR-019b** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **44** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **45** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -5573,8 +5725,7 @@ who observed it.
 
 ### 6.4 UNVERIFIED budget
 
-**One** axis cell in the summary table is `UNVERIFIED`: **CBR-L07** metering. Every other cell is
-answered. Twelve entries carry an **UNVERIFIED** chain-history answer, consolidated in §5.4 — these are
+The budget is **2**: **CBR-L07** metering and **CBR-031** verdict. Every other cell is answered. Twelve entries carry an **UNVERIFIED** chain-history answer, consolidated in §5.4 — these are
 questions about *history*, not about the code, and are unanswerable from inside the repository by
 construction.
 
@@ -5602,12 +5753,12 @@ falls too, and it is the reason the clause is worth building rather than merely 
 |---|---|---|
 | Commits in the campaign window | 111 | 236 |
 | Commits touching the path set | **78** | 149 |
-| Covered by register entries | **57 in-range SHAs / 31 entries** | 16 in-range SHAs / 13 entries |
+| Covered by register entries | **57 in-range SHAs / 32 entries** | 16 in-range SHAs / 13 entries |
 | Explicitly exempted with a reason | **21** | **0** |
 | Partition exact? | **Yes** — 57 + 21 = 78 | **No** — 133 commits are neither an entry nor an exemption |
 
 ⚠ **The entry counts have risen while the in-range SHA counts have not, and the gap is now six entries
-wide.** Surface N carries **31** entries against **57** in-range SHAs, and Surface L **13** against **16**,
+wide.** Surface N carries **32** entries against **57** in-range SHAs, and Surface L **13** against **16**,
 because the following entries name **only** commits *after* `dc383ed1`: **CBR-027**'s landing pair
 (`6ff46f8a`, `fd5474ab`), **CBR-029** (`d8e95fb0`), **CBR-030** (`e3a4494b`, `719f2432`), **CBR-L09**
 (`b77e657c`, `ab885336`), **CBR-L12** (`f5b2e820`) and **CBR-L13** (`ef49d8c2`). They add entries without
@@ -5747,12 +5898,14 @@ to *derive the set rather than list it*, or to *make the wrong form unspellable*
 
 ### 7.2 The design, and why this one
 
-⚠ **Status: DESIGNED, NOT BUILT.** Of the three artefacts below, only the prose register (this document)
-exists at the time of writing. `register.toml`, `REGISTER_BASE` and the gate are specified here — paths,
-data shape, checks, failure messages and anti-vacuity cells — so that building them is an implementation
-task with no remaining design decisions. Until they exist, **this register is exactly the
-discipline-dependent artefact §1.2 argues against**, and a reviewer should treat that as the report's
-largest maintenance risk.
+★★ **Status: BUILT.** All three artefacts exist. `docs/consensus/register.toml` carries every entry,
+exemption, citation and open question; the anchor and the partition bound are header fields of that file
+rather than a separate `REGISTER_BASE` file; and the gate is
+`casper/tests/consensus_change_register_gate.rs`, whose 29 cells include an accept cell and a RED for
+every clause. **The section below is retained as the SPECIFICATION, unedited**, so that
+[§7.7](#77--the-built-gate--what-was-specified-what-was-built-and-the-three-clauses-that-were-wrong) can be
+read against it: three of the seven clauses below did not survive contact with the register they were
+designed for, and the differences are results rather than adjustments.
 
 **Three artefacts:**
 
@@ -5762,7 +5915,9 @@ largest maintenance risk.
 | The machine index | `docs/consensus/register.toml` | One `[[entry]]` per register ID with its SHAs and its seven axis cells; one `[[exempt]]` per exempted SHA with a typed `reason` and a non-empty `evidence`. |
 | The anchor | `docs/consensus/REGISTER_BASE` | A single SHA. Moves only by an explicit, reviewed edit — which is what makes "the range" a decision rather than an accident. |
 
-**The gate:** `shared/tests/consensus_change_register_gate.rs`.
+**The gate, as specified:** `shared/tests/consensus_change_register_gate.rs`. ⚠ **As built it is
+`casper/tests/consensus_change_register_gate.rs`** — the reasoning for the move, and the guarantee it
+costs, are in [§7.7.1](#771-where-the-gate-lives-and-what-that-choice-costs).
 
 **Why `shared`.** It is in the CI crate matrix (`.github/workflows/ci.yml:177-188`), it is cheap to
 build, and — the load-bearing reason — **it does not depend on `models`, `rholang` or `rspace++`**, so
@@ -5848,7 +6003,7 @@ the machine-readable index and this document. ⚠ Every step is a set operation 
 file; none requires a build, a network call, or a judgement — which is the property
 [§7.3](#73-why-this-design-and-not-the-alternatives) trades everything else for.
 
-⚠ **Status: DESIGNED, NOT BUILT** — and see [§7.6](#76--four-findings-about-what-can-be-pinned-at-all)
+⚠ **Status: DESIGNED, NOT BUILT** — and see [§7.6](#76--five-findings-about-what-can-be-pinned-at-all)
 finding 2 for two clauses this algorithm is now known to be *missing*, both discovered by a
 naturally-occurring drift that all seven clauses above would have passed.
 
@@ -5976,9 +6131,10 @@ dictionary. **Status: DESIGNED, NOT BUILT.**
    `mettail-rust` that the gate reads, or a `[[pending]]` table in this file that a Surface-L commit may
    append to without holding the whole document.
 
-### 7.6 ★ Four findings about what can be pinned at all
+### 7.6 ★ Five findings about what can be pinned at all
 
-These are **findings**, not changes: nothing in the code moved because of them. They belong to the
+These are **findings**, not changes: nothing in the code moved because of them (finding 5 is the
+exception — it named a live defect, which [CBR-031](#cbr-031) then repaired). They belong to the
 maintenance story because each one constrains what a gate is *able* to check, and a gate specified against
 an unpinnable artefact fails open. ★ Findings 1–3 were derived while writing the five owed entries;
 finding 4 was forced by an event that happened **during** the writing, which is the most direct evidence
@@ -6095,12 +6251,354 @@ fail while any `[[pending]]` row is older than one working day. An append-only a
 with a concurrent writer, which is the property that makes it usable from a commit that cannot take the
 document's lock.
 
+#### Finding 5 — ★★ a JUSTIFICATION THAT WAS WRONG WHEN WRITTEN, and no freshness check of any kind can catch it
+
+⚠⚠ **[CBR-006](#cbr-006) §(c) argued that a defect was not a defect, and the argument's own commit message
+contains the refutation two paragraphs earlier.** The paragraph read:
+
+> ★ `has_locally_free` NEEDED NO CHANGE, and the asymmetry it has always had is correct rather than a
+> shortcut… Because a plain `x` in the pattern is a fresh binder (the `get` lookup above), the pattern
+> contributes nothing to the enclosing scope's free variables.
+
+`8853f839`'s message states that a `matches` pattern performs **two** lookups: a plain `x` through
+`BoundMapChain::get`, which reads the current scope only — the justification's case, and true — and `=x`
+through `BoundMapChain::find`, which *walks the whole chain* and is emitted as `VarRef { depth }`. The
+second is the case `8853f839` existed to fix on the substitution side. The justification omits it.
+Repaired by `0b270eca`; the axes are [CBR-031](#cbr-031).
+
+★ **Why this is a fifth class and not an instance of the four above.** Findings 2 and 4 and
+[§7.7](#77--the-built-gate--what-was-specified-what-was-built-and-the-three-clauses-that-were-wrong)'s
+classes 1–3 are all *"true when written, false now"*. This one was **false at authoring time**, and the
+register carried it for as long as the register existed. It is not a SHA, not a status field, not a line
+number, not an aggregate, and not a claim about project state — it is **a claim about the code that a
+reader could have falsified against the same commit that made it.**
+
+⚠⚠ **And it is worse than being silently sibling-blind, which is the part that decides the remedy.** A
+missing enumeration leaves a reader with nothing; **a written justification inoculates the next reader
+against looking.** `#126`'s agent found this only by *disbelieving the register* — which is not a process
+anyone can be asked to follow.
+
+##### The three candidate remedies, evaluated
+
+| candidate | verdict |
+|---|---|
+| **(a)** A §(c) claim of the form *"X needed no change"* must **name the enumeration axis** and its count, so the claim is falsifiable rather than rhetorical. | ★★ **ADOPTED**, and it is the cheapest of the three. See the second finding below: CBR-006's count was `1`, and *correct* — on the axis of `ExprInstance` arms. The axis that mattered was **pattern position**, where the count is also 1 and is a **different 1**. [Appendix A](#appendix-a--the-entry-template) now requires the axis in the count itself. |
+| **(b)** Every *"needed no change"* claim must carry a **guard** — a test that fails if the unchanged thing turns out to need changing. | ★★ **ADOPTED as the standard, and instantiated.** `rholang/tests/matches_pattern_locally_free.rs` is a 13-row table over the pattern positions and carriers; CBR-006 had no such test, which is precisely why its claim survived. ⚠ It is a **standard**, not a clause: nothing mechanical can decide whether a given prose sentence is a *"needed no change"* claim, so the gate cannot enforce it. |
+| **(c)** Accept that a wrong justification is uncheckable and say so in §7. | ★ **ADOPTED for the residue, and stated rather than implied.** (a) makes the claim falsifiable and (b) supplies a falsifier where an author writes one, but **neither makes the class decidable**: a justification is prose about *why*, and no set operation over `git` can evaluate a *why*. [§7.7.7](#777-what-the-gate-cannot-cover-stated-as-prominently-as-what-it-can) records it as an admitted gap alongside the other two. |
+
+★ **The generalisation, because a single instance is not a class.** *A sibling count is only as good as the
+axis it was taken on.* A count with no axis recorded is the same failure as a number with no subject — the
+one this campaign has already paid for four times. It is a template amendment, not a clause: cheap,
+reviewable, and it makes the wrong form harder to spell.
+
+---
+
+---
+
+### 7.7 ★★ The built gate — what was specified, what was built, and the three clauses that were wrong
+
+[§7.2](#72-the-design-and-why-this-one) is retained above unedited as the specification. This section is
+the **implementation report**: what exists, what the first run found, and — the part worth a reviewer's
+attention — the three specified clauses that **did not survive contact with the register they were
+designed for**.
+
+| artefact | path | status |
+|---|---|---|
+| the prose register | `docs/consensus/consensus-change-register.md` | this document |
+| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — 45 entries, 38 exemptions, 67 citations, 10 open questions |
+| the anchor | header fields of `register.toml` | ★ **BUILT** as `register_base` / `partition_head`, not as a separate `REGISTER_BASE` file |
+| the gate | `casper/tests/consensus_change_register_gate.rs` | ★ **BUILT** — 29 cells: 1 accept, 26 refusals, 2 derivation guards |
+
+#### 7.7.1 Where the gate lives, and what that choice costs
+
+§7.2 nominated `shared/tests/`, on the load-bearing ground that `shared` *"does not depend on `models`,
+`rholang` or `rspace++`, so the gate cannot be broken by the code it polices."* It is in
+`casper/tests/` instead, and the trade is stated rather than absorbed:
+
+**For.** `casper` owns the consensus decision this register is *about* —
+`casper/src/rust/validate.rs:273` is [§5.5](#55-the-conjunction-risk)'s conjunction argument, cited twice
+here, and block admission and replay comparison are in the same crate. `casper/tests/` already holds the
+repository's cross-cutting audit gates that read *artefacts* rather than exercise code
+(`system_deploy_error_message_determinism.rs`, `deploy_ingress_depth_ceiling.rs`) and the typed-decision
+idiom this gate follows (`casper/tests/genesis/contracts/rho_spec_floor_spec.rs`'s `FloorBreach`). CI
+checks out **full history for the whole `test` job**, not for `rholang` alone, so every matrix crate
+including `casper` has the history the `git` clauses need.
+
+**Against, and this is the cost.** `casper/src/` **is** in the path set, so the gate does live inside the
+code it polices. The mitigation is partial and worth naming precisely: the gate `use`s **nothing** from
+`casper`, so it has no *semantic* dependency on the policed code — what remains is a *build* dependency,
+and a `casper` that does not compile is already a hard CI failure. $`\Rightarrow`$ The gate is unavailable only in a
+state that is red for another reason. That is strictly weaker than what `shared` would have given, and it
+is written here so that a future reader can move it without rediscovering the argument.
+
+#### 7.7.2 The derived path set — and the two false negatives the hand list had
+
+§3.1's path set was hand-listed, and §3.1 itself records that the first version **omitted
+`rho-pure-eval/src/`**, the component that decides `where` verdicts. A hand-maintained mirror of a
+computable domain is repaired by computing it, so the gate derives it:
+
+```math
+\mathcal{P} \;=\; \Bigl\{\, c/ \;\Bigm|\; c \in \mathrm{clos}_{\mathsf{path\text{-}dep}}(\{\texttt{casper}\}) \,\Bigr\}
+\;\cup\; \{\,\texttt{Cargo.lock}\,\}
+\;\setminus\; \bigl\{\, c/x/ \;\bigm|\; x \in \mathcal{X} \,\bigr\}
+```
+
+where `clos` is the transitive closure over `path = "…"` dependency edges declared in the workspace
+members' manifests, and $`\mathcal{X} = \{\texttt{tests},\ \texttt{benches},\ \texttt{examples},\ \texttt{src/test}\}`$
+is a typed exclusion table in which every row carries the reason cargo does not compile it into the
+library a node runs.
+
+**Algorithm 3 (DeriveConsensusPathSet).** In literate form [Knuth1984]; each chunk is named for the
+property it establishes.
+
+```pseudocode
+ALGORITHM  DeriveConsensusPathSet
+INPUT      Cargo.toml (workspace root)   -- for `members`
+           <member>/Cargo.toml           -- for `path = "…"` edges
+           R : Set of root crates, each with a stated obligation
+           X : Set of typed subdirectory exclusions
+OUTPUT     P : a git pathspec
+
+⟨Read the members, never a list⟩ ≡
+   M ← parse-members(root Cargo.toml)
+
+⟨Close over the declared dependency edges⟩ ≡            -- recovers `rho-pure-eval`
+   C ← R
+   repeat until fixpoint:
+      C ← C ∪ { d : c ∈ C, d ∈ path-deps(c), d ∈ M }
+
+⟨Root at the CRATE, not at `src`⟩ ≡                      -- recovers `models/build.rs`
+   P ← { c ⧺ "/" : c ∈ C } ∪ { "Cargo.lock" }
+
+⟨Subtract only what a typed row justifies⟩ ≡
+   P ← P ∪ { ":(exclude)" ⧺ c ⧺ "/" ⧺ x ⧺ "/" : c ∈ C, x ∈ X }
+
+Return P
+```
+
+★ **Reading the chunks.** ⟨Read the members⟩ and ⟨Close over the declared dependency edges⟩ are what make
+`rho-pure-eval` a member of $`\mathcal{P}`$ **by derivation rather than by memory** — the gate asserts
+exactly that, and it also asserts that `node` is *absent*, because `casper` declares no edge to it. That
+second assertion matters: the derivation must be able to exclude, or it is not a derivation.
+⟨Root at the CRATE, not at `src`⟩ is the second repair. A `<crate>/src/`-rooted derivation is the obvious
+one and it **silently drops `models/build.rs` and `models/build/`** — the generator that emits the wire
+tables, which §3.4(4) names as a false-negative class of its own and which `903cefb3` already proved can
+leave a stale table in `OUT_DIR` while the build reports success. Crate-rooting is complete by
+construction; ⟨Subtract only what a typed row justifies⟩ is then the only place anything can be lost, and
+every row there must earn its place.
+
+**MEASURED.** Over `7293d57c..dc383ed1` the derived set yields **81** commits against the hand list's
+**78**, and the hand list contains nothing the derived set lacks. The three additions are
+`8fb813a7`, `09b80afe` and `decda6dd` — `models/Cargo.toml`, tracked proptest corpora and a bench
+declaration — each of which now carries an exemption row in
+[Appendix B.2](#appendix-b2--the-exemptions-the-derived-path-set-added). $`\Rightarrow`$ **The derivation is a strict
+superset of the artefact it replaces, and the surplus is exactly the class §3.4(1) named as this method's
+own false-negative risk.**
+
+⚠ **One exclusion's obligation had to be weakened, and the weakening is a result.** The natural falsifier
+for a typed exclusion row is *"removing it must add a commit to the obligation set"*. That was
+**REFUTED for `benches`**: over `7293d57c..HEAD` every bench-touching commit also touches an included
+path — typically its own `[[bench]]` declaration in `Cargo.toml` — so dropping the exclusion changes which
+*paths* are in scope while adding no *commits*. The path set is a statement about paths, so the obligation
+is now measured over **tracked files**: each row must exclude at least one file in at least one closure
+crate. ★ The `src/test` row additionally asserts that `casper/src/main/resources/` is **not** excluded,
+because [CBR-030](#cbr-030) is a genesis contract living there — a one-character difference between a
+correct exclusion and one that would hide a consensus-visible `.rho` edit.
+
+#### 7.7.3 The out-of-range rule — three regions and no fourth
+
+[§6.5](#65-coverage-asymmetry-between-the-two-surfaces) records that the anchored range has **eroded**.
+The remedy is not a `register_base` bump — [CBR-029](#cbr-029) and [CBR-030](#cbr-030) are deliberate
+precedents, because the register is **living** — it is a rule that makes each region's obligation explicit.
+
+| region | membership test | obligation |
+|---|---|---|
+| **PARTITION** | in `register_base..partition_head` | **EXACT.** Every commit is an entry SHA or an exemption; nothing is both. This is the window §4.1's `57 + 21 = 78` claim quantifies over, which is why `partition_head` is pinned instead of being `HEAD`. |
+| **LIVING FRONTIER** | ancestor of `HEAD`, not of `partition_head` | **EXACT, on a fuse.** An unregistered frontier commit is tolerated while it is younger than `frontier_grace_days` in **commit-date** terms, and fails after. |
+| **FOREIGN** | does not resolve in this repository | **Not checkable, and asserted to be foreign.** Surface-L rows live here. A Surface-L SHA that *does* resolve locally is a failure, so the classification cannot rot silently. |
+
+There is no fourth state. A SHA that resolves and is **not** an ancestor of `HEAD` — what a rebase or an
+abandoned branch produces — fails the liveness clause.
+
+★ **Why the fuse, and why commit dates.** A hard failure over `register_base..HEAD` reddens CI the moment
+any agent lands a consensus-path commit, including one landed seconds before the gate runs: that does not
+catch drift, it catches **concurrency**, and a gate that fires on the wrong thing gets disabled. The
+alternative — excluding the frontier — would make the gate's advertised coverage exceed its real coverage,
+which is the one thing this section must not do. So the frontier is held to `=` *eventually*. Both dates
+come from the objects, so the verdict is a pure function of the checkout and the gate is **not flaky**;
+re-running on the same tree gives the same answer. The window is **2 days**, and the number is bounded from
+below by measurement rather than chosen: every witnessed drift was caught inside one day (CBR-027 *"under
+one day"*; CBR-L09 **46 minutes**), so two days is longer than every drift on file and cannot be argued
+too tight.
+
+#### 7.7.4 Three specified clauses that were WRONG, found by building them
+
+★★ This is the part of the implementation worth a reviewer's time. §7.2's seven clauses were specified
+carefully enough to be built without further design decisions — and three of them were nonetheless wrong
+about *this* register.
+
+| specified | what happened | what is built |
+|---|---|---|
+| **clause 3, exactness** — $`\mathcal{E} \uplus \mathcal{X} \subseteq \mathcal{O}`$, failing on a row that names a commit outside the range | ⚠ **Built as specified, it goes RED on a CORRECT row.** `719f2432` is one of [CBR-030](#cbr-030)'s two commits and touches only `casper/tests/genesis/contracts/genesis_overflow_guard_shape.rs`. It is the entry's **evidence** commit — a legitimate thing for an entry to name, and outside $`\mathcal{O}`$ by construction. | The property clause 3 actually wanted is *"catch a rebase"*, and the direct test for that is **ancestry**: every row SHA must resolve and be an ancestor of `HEAD`. An abandoned commit fails; an evidence-only commit passes. `719f2432` is kept as a permanent **control** in the guard for that clause. |
+| **clause 7, prose ↔ index agreement** — heading-set equality | Necessary and **not sufficient**: an index row can name the right entry and get everything else wrong. | Every field the index shares with §4.1's row — surface, direction, grade and all **seven** axis cells — is compared. 45 × 7 = **315** cells of agreement, asserted rather than assumed, which is what makes the glyph table and the closed vocabulary *one* fact instead of two. |
+| **clause 2, coverage**, over `\mathcal{O}` derived from §3.1's hand-listed paths | The hand list is not derivable and had already been wrong once. | $`\mathcal{O}`$ is derived ([§7.7.2](#772-the-derived-path-set--and-the-two-false-negatives-the-hand-list-had)). Clause 2 is unchanged in *form*; its **subject** is now computed. |
+
+★ **The finding, stated generally:** a specification detailed enough to implement without design decisions
+is not the same as a specification that is *correct*, and the difference showed up in three of seven
+clauses on first contact. $`\Rightarrow`$ *A designed gate is a hypothesis; building it is the experiment.*
+
+#### 7.7.5 The five drift classes and the clause that decides each
+
+| class | witness | clause, as built | decidable? |
+|---|---|---|---|
+| **1 · in-flight staleness** | [CBR-027](#cbr-027) read *"IN FLIGHT"* while `6ff46f8a` had landed; **CBR-007** drifted the same way | no entry whose status is not `LANDED` may name a SHA that is an ancestor of `HEAD` | ✅ `git merge-base --is-ancestor`, one call per SHA |
+| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **42 of 67** coordinates checkable; the other 25 carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`) |
+| **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the 45 rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally | ✅ no `git`, no build |
+| **4 · a stale prose claim about the world** | [CBR-L09](#cbr-l09) residual 3, falsified **46 minutes** after the commit it was written against | §6.3's rows carry **typed falsifiers**; 3 of 10 decidable, 7 typed `UNDECIDABLE_HERE__*` and asserted **exactly** | ⚠ **PARTLY** — see [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) |
+| **5 · a justification wrong when written** | [CBR-006](#cbr-006) §(c), refuted by its own commit message | **none** | ❌ **NOT DECIDABLE.** [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5; remedies (a) and (b) make it *falsifiable*, not *checkable* |
+
+**Rule for clause 2, stated precisely, because a line number alone is not a claim.** A citation is
+*re-derivable* iff its `token` occurs within ±3 lines of the cited line **at the citation's own pinned
+SHA**. Three decisions inside that sentence:
+
+1. **The token, not the line number.** A bare line number cannot be *wrong*, only unhelpful; the token is
+   what makes the coordinate falsifiable. CBR-027's cell cited `wrapping_add`, and after the fix that call
+   exists at **no** line, which is the case that matters.
+2. **±3, not 0.** An exact-line rule fails on any edit *above* the citation in the same file, so every
+   entry would rot on a schedule set by unrelated work — the failure mode that produces exception lists.
+   The width is itself guarded: the clause is watched RED at ±4 and green at ±3, so the number is a
+   decision and not an accident.
+3. **At the citation's own SHA, not at `HEAD`.** A coordinate in an entry about `f5b2e820` should be
+   checkable against `f5b2e820` forever. ★ And a citation of a **pre-change** state must be pinned
+   deliberately: CBR-027's evidence cited *working-tree* coordinates, which have no object to read them
+   from, and are now pinned at `61a53157` — the commit that wrote the claim.
+
+#### 7.7.6 Drift class 4 — the answer, and why not the other two
+
+⚠ Class 4 is the one the brief asked for a real answer to rather than a shrug. The answer is
+**(b) + (c), with (a) rejected on this report's own criteria.**
+
+**(a) — *"require every such claim to name a work-item ID whose status the gate reads"* — REJECTED.** Not
+for effort. **Nothing in this repository reads the task tracker**, and that is not an oversight: a clause
+that consulted it would need a network call and would make CI's verdict a function of a mutable external
+database. That contradicts §7.2's own load-bearing property — *"none requires a build, a network call, or a
+judgement"* — and it would be **flaky**, which finding 1 already establishes is worse than absent, because
+*"it trains its readers to re-run it."*
+
+**(b) — *"confine open-question prose to one register with its own freshness check"* — ADOPTED.** §6.3
+already *is* that register; what was missing is that nothing read it. Every §6.3 row now carries a typed
+falsifier in `register.toml`:
+
+| falsifier | the claim stays live while … |
+|---|---|
+| `SYMBOL_PRESENT` | `token` occurs within ±3 lines of `line` in `path` at `HEAD` |
+| `SYMBOL_ABSENT` | `token` does **not** occur there |
+
+A row whose `state` is `OPEN` / `RULED` / `UNVERIFIED` must have its falsifier **hold**; a row whose
+`state` is `CLOSED` must have it **fail**. $`\Rightarrow`$ The clause fires in *both* directions: a question answered by
+a change that never came back to the row, and a closure that never happened.
+
+⚠ **(b) alone would NOT have caught the witness, and saying otherwise would be the failure this gate
+exists to prevent.** CBR-L09 residual 3 *was* in §6.3, as row 7, and the row went stale together with the
+entry body. What (b) buys is that the claim now has a decision procedure at all.
+
+**(c) — *"accept it as uncheckable and say so"* — ADOPTED for the residue, and stated as a number.**
+
+| falsifier class | rows | why no clause can decide it |
+|---|---|---|
+| `SYMBOL_PRESENT` | **3** (questions 1, 9, 10) | — decidable, and checked |
+| `UNDECIDABLE_HERE__FOREIGN_REPOSITORY` | **4** (5, 6, 7, 8) | the subject is `mettail-rust`. ★ Question 7 **is** the witness. |
+| `UNDECIDABLE_HERE__REQUIRES_EXPERIMENT` | **1** (2) | *"is the tag-8 read ceiling reachable by a deploy?"* needs a constructed witness, not a predicate |
+| `UNDECIDABLE_HERE__REQUIRES_OWNER_RULING` | **1** (3) | *"what is the disposition of the five FFI reads that panic?"* asks for a decision, not a fact |
+| `UNDECIDABLE_HERE__NO_CITED_SITE` | **1** (4) | ⚠ decidable **in principle**; the row cites the shape `decode_trie_path(..).unwrap_or(..)`, which matches nothing at `HEAD`. **An actionable defect, not a limit.** |
+
+★ **3 of 10 is a thin decidable fraction, and it is reported rather than rounded up.** The register's open
+questions are mostly about another repository, the block store, or a decision nobody has taken, and no set
+operation over this tree can settle any of those. The undecidable set's **size is asserted exactly**, so
+the cheapest way to make class 4 pass — retyping a decidable question as undecidable — is a failure, and
+the gate has a RED cell that does precisely that.
+
+#### 7.7.7 What the gate cannot cover, stated as prominently as what it can
+
+⚠ **A gate whose advertised coverage exceeds its real coverage is worse than no gate.** Three admitted
+gaps, and the gate itself asserts that this section still names them — if a future edit removes a
+disclosure, `the_gate_states_the_classes_it_cannot_cover` fails.
+
+1. **Cross-repository rows.** A test in f1r3node cannot read mettail's gate. All **13** Surface-L entries
+   name commits that do not resolve here; that is asserted *positively*, so a Surface-L row naming an
+   f1r3node SHA fails. What cannot be checked is whether those entries are **true**. Surface-L rows name
+   their source gate instead — and **12 of the 13 carry `NOT_NAMED`**, which is the measured size of the
+   gap and is itself asserted exactly.
+2. **The task tracker.** ★ *Nothing in this repository reads the task tracker, which is precisely why the
+   tracker is the copy that drifted furthest.* Rejected as a clause in
+   [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two), and named here so the rejection is
+   not mistaken for an omission.
+3. **A justification that was wrong when written** — drift class 5. Remedies (a) and (b) of
+   [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5 make such a claim *falsifiable*;
+   nothing makes it *checkable*, because a justification is prose about *why*.
+
+⚠ **And one constraint that bounds what any future clause may assert:
+[finding 1](#finding-1--no-artefact-of-the-genesis-build-is-currently-stable-enough-to-pin) — no artefact
+of the genesis build is stable enough to pin.** Six builds produced six distinct `post_state_hash` values
+at byte-identical source. A clause written against a genesis-derived value would be **flaky**, and a flaky
+consensus gate trains its readers to re-run it. This is why [CBR-030](#cbr-030) pins the normalized `Par`
+instead, and why no clause in this gate reads a genesis hash. ★ `80a4aff9` has since **MEASURED the cause**
+— two `HashMap`-ordered sources rendered positionally into genesis Rholang — and fixed both in the *test*
+builder; whether production genesis shares the shape is open question 10, whose falsifier the gate now
+evaluates.
+
+#### 7.7.8 ★ Nine defects the gate found on its first run
+
+Every clause below went RED on the register **as committed**, before any of them was trusted. These are
+naturally occurring members of the failure classes, not constructed cells, and they are the strongest
+available evidence that the gate discriminates.
+
+| # | clause | what it found |
+|---|---|---|
+| 1 | class 2 | `RhoTypes.proto` at **:368** in **CBR-010** — that line is `string methodName = 1;`. `current_path` is at **:352**. ⚠ Note the spelling: a *historical* coordinate is written with the line **outside** the code span, because the citation corpus is DERIVED from the `` `path:line` `` form and would otherwise try to check a coordinate this table exists to record as broken. |
+| 2 | class 2 | The same coordinate, the same defect, in **CBR-025**. |
+| 3 | class 2 | **CBR-L09** cited `reduce.rs` at **:3146-3162** for the `is_nan` guard; it had drifted **84 lines** and that line is **blank**. Two more in the same entry and one in **CBR-L13**. |
+| 4 | class 2 | ★ **CBR-027** cited *working-tree* coordinates — unverifiable **by construction**, since no object holds a working tree. Repinned at `61a53157`. |
+| 5 | class 2 | **CBR-028**'s four coordinates named the **heads of comments** rather than the calls, and `:1195` had drifted onto an unrelated `peek: bool`. A coordinate should name the construct, not its preamble. |
+| 6 | class 2 | **CBR-005** cited a type that had been renamed: `BTreeMap<Indexed<T>, _>` is `BTreeMap<Candidate<T>, _>`. |
+| 7 | class 3 | §4.1's out-of-range paragraph said *"nine SHAs"*; **CBR-L09** had gained `19510082`, making **ten** — the paragraph went stale in the same revision that added the SHA. |
+| 8 | closed vocabulary | **CBR-L09**'s `Status` read `CLOSED`, which is not in [Appendix A](#appendix-a--the-entry-template)'s `LANDED / IN FLIGHT / OPEN` — and it described the *divergence question*, not the *change*. |
+| 9 | method | §4.1's out-of-range paragraph verified its claim with `git merge-base --is-ancestor`, which exits non-zero for a **negative answer** and for an **unknown revision** alike. Four of the nine SHAs were `mettail-rust`'s, so for those the command reported `fatal: Not a valid object name` and the paragraph read it as *"out of range"*. $`\Rightarrow`$ [§7.7.3](#773-the-out-of-range-rule--three-regions-and-no-fourth)'s three regions exist to keep them apart. |
+
+★ **And one structural finding, which is why the index carries commits from the entry header rows rather
+than from §4.1.** The summary row and the entry's own `Commit(s)` row **disagree**, and the summary is the
+one that under-reports: CBR-001's header names `5d37f67e` beside `6bc58743`; CBR-028's names five
+characterising commits where the summary says only *"not repaired"*. Those four SHAs are exactly the gap
+between the 53 a summary scan yields and the **57** §4.1 claims. $`\Rightarrow`$ *The summary row is a display; the
+header row is the record.*
+
+#### 7.7.9 The anti-vacuity floor, and the cells that watch it
+
+[§7.4](#74-anti-vacuity--the-gate-must-be-shown-red)'s three cells are executed, plus the accept cell and
+four floors. ★★ **A gate run that finds nothing FAILS** — without that, a gate that stops scanning passes
+forever, which is the defect it exists to prevent applied to itself.
+
+| floor | refuses | why "non-empty" is not enough |
+|---|---|---|
+| the obligation set | fewer than **78** commits | 78 is §3.1's own **MEASURED** count for the partition window, so a pathspec typo that cut 81 obligations to 1 would pass a `> 0` test. The cell is watched RED at 0 **and at 77**. |
+| each index table | zero rows | an empty table makes every assertion over it compare two empty sets |
+| the citation corpus | zero **checkable** rows | ⚠ retyping every citation `FOREIGN_REPOSITORY` would leave class 2 passing while checking nothing |
+| the open-question set | zero **decidable** rows | the same attack on class 4, and the reason the undecidable count is exact |
+| each path-exclusion row | excluding no tracked file | a row that excludes nothing is dead weight, and the table is what stops the derived set becoming a hand list again |
+
+⚠ **Every RED cell asserts the *variant* it expects, never merely `is_err()`.** A check that goes red on
+the wrong thing has not been shown to work — so each cell also carries its **controlled comparison**: the
+same input with the one perturbed field restored, asserted `Ok(())`, which is what makes the refusal
+attributable to that field and to nothing else. And ⚠ **no test expects a panic**: every clause returns a
+typed `Result<(), DriftBreach>` and every guard asserts on the value, following
+`casper/tests/genesis/contracts/rho_spec_floor_spec.rs`.
+
 ---
 
 ## 8. Conclusions
 
-1. **44 consensus-visible changes** were derived from the campaign record: **31 on the F1r3node node, 13
-   on MeTTaIL's Rholang**. **Forty-two are landed, one is in flight**, one is an open unrepaired
+1. The register holds **45** consensus-visible changes, derived from the campaign record: **32** on the
+   F1r3node node, **13** on MeTTaIL's Rholang. **43 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register
@@ -6245,13 +6743,26 @@ inside the repository, **say so and give the query that would settle it.**
 
 **Authority.** Owner ruling quoted **verbatim with its date**, or "No owner ruling."
 
+**★ Sibling enumeration, ON A NAMED AXIS.** *"What else has this shape?"* — and the shape must be
+spelled. Write **Count: N on axis A**, never a bare **Count: N**. ⚠ A count with no axis recorded is the
+same defect as a number with no subject: [CBR-006](#cbr-006)'s count was `1` and *correct* on the axis of
+`ExprInstance` arms, while the axis that mattered was **pattern position**, where the count is also 1 and
+is a different 1. See [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5.
+
+**★ If the entry claims something *needed no change*, name the GUARD.** A test that fails if the unchanged
+thing turns out to need changing. A justification with no falsifier inoculates the next reader against
+looking, which is drift class 5.
+
 #### Evidence
 
 Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each **DERIVED** /
 **MEASURED** / **CITED** / **UNVERIFIED**.
 ````
 
-**The matching index row** in `docs/consensus/register.toml`:
+**The matching index row** in `docs/consensus/register.toml`. ⚠ The block below is Appendix A's original
+sketch; the shape the gate actually parses is **flat** (seven `axis_*` keys, no inline table) and is
+specified in [Appendix C](#appendix-c--registertoml-the-machine-index). Copy from Appendix C, not from
+here.
 
 ```toml
 [[entry]]
@@ -6313,3 +6824,156 @@ listed only its positives could not be distinguished from one that included ever
 | 21 | `caadf839` | stage 1 — close the coverage gap that let the bare-element key defect survive | `TESTS_ONLY` | Test module only. Produced the witnesses that made **CBR-010** reviewable, including *"asking for the bare `1` returns the singleton list `[1]` — a wrong ANSWER, not a miss."* **CITED**. |
 
 ⚠ **This table covers Surface N only.** Surface L is not yet an exact partition; see §6.5.
+
+---
+
+## Appendix B.2 — the exemptions the derived path set added
+
+[§7.7.2](#772-the-derived-path-set--and-the-two-false-negatives-the-hand-list-had) replaced §3.1's
+hand-listed path set with a derived one, and the derived set is a **strict superset**: 81 commits in
+`7293d57c..dc383ed1` against the hand list's 78. Appendix B's claim `57 + 21 = 78` is a statement about the
+*hand-listed* set and remains exactly true of it; this table closes the partition over the **derived** set,
+so the two can be read side by side rather than one silently replacing the other.
+
+★ These three are what a *computed* path set sees and a hand-listed one did not. None moves an axis — which
+is the point: the derivation's surplus is real, and it is small and classifiable.
+
+| # | SHA | Subject | Reason | Evidence discharging it |
+|---|---|---|---|---|
+| 22 | `8fb813a7` | every `models` test target is declared, none compiled twice | `INFRA` | `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs` or `models/build/` path is touched, so no codec, sorter or wire table can move. **DERIVED** (file list). |
+| 23 | `09b80afe` | *"safe to regenerate, not worth tracking"* was FALSE — five counterexamples were being discarded | `TESTS_ONLY` | `.gitignore` plus two corpus files. A shrunk counterexample is **not regenerable**, which is why it is tracked, and it is read only by the proptest harness. **DERIVED** (file list). |
+| 24 | `decda6dd` | the massif heap profile — 923× less allocation churn | `INFRA` | A `[[bench]]` declaration and a massif harness. Benches are outside the derived path set; the commit reaches the obligation set **only** through the `models/Cargo.toml` declaration hunk. **DERIVED** (file list). |
+
+---
+
+## Appendix B.3 — the living frontier
+
+Commits after `dc383ed1` that touch the derived path set and are **not** register entries.
+[§7.7.3](#773-the-out-of-range-rule--three-regions-and-no-fourth)'s frontier region: exact, on a
+commit-date fuse. ⚠ This table is **expected to grow**, and that is the register being living rather than
+the register decaying — an unregistered frontier commit older than the fuse is a build failure that names
+it.
+
+| # | SHA | Subject | Reason | Evidence discharging it |
+|---|---|---|---|---|
+| 25 | `383a8b56` | stage F-1 — ONE trampoline, and `eval_with` is its first instance | `VERDICT_NEUTRAL_MEASURED` | ★ Factors three hand-written LIFO trampolines into one `Traversal`, with `rho-pure-eval`'s `eval_with` as the first instance. `rho-pure-eval` **decides `where` verdicts**, so byte neutrality is not the claim that matters — verdict neutrality is, and it is asserted by `rho-pure-eval/src/eval.rs`'s `differential_eval_with` module, which compares `eval_with` against the retained recursive twin. **CITED**. |
+| 26 | `14c4bdaf` | the depth smoke test was VACUOUS three ways | `TESTS_ONLY` | All six hunks are inside `rho-pure-eval/src/eval.rs`'s `#[cfg(test)]` modules `differential_eval_with` and `depth_gate`. A test that *"never made the comparison it was named for"* is deleted and the destructor's cost becomes a measured rung. **DERIVED** (hunk headers) + **CITED**. |
+| 27 | `16090241` | the driver's three configuration checks are watched RED | `TESTS_ONLY` | Five arms over a 64-long summed chain, each in a **child process** with the parent reading exit status *and* diagnostic text — no `#[should_panic]` anywhere. `models/tests/` plus its declaration. **CITED**. |
+| 28 | `53e78427` | stage F-2 — the SORTER moves onto the shared driver | `BYTE_NEUTRAL_MEASURED` | ⚠ Self-declared **CONSENSUS-CRITICAL**: `cost_accounting/sig.rs` signs `ParSortMatcher::sort_match(&par).term.encode_to_vec()`, so *"a one-element reordering is a fork."* Every `descend_*` and `combine_*_k` is byte-for-byte the code that produced the canonical form before the move; only the loop, the two stacks and the invariants moved. Byte identity is **GATED**, not assumed — four gates green, **three of the four watched RED first**. **CITED**. |
+| 29 | `dc4e165c` | the guard controls are shown able to REJECT | `DOCS_ONLY` | The only hunk outside `rholang/tests/` is a **single doc-comment table cell** in `pretty_printer.rs` (`3 witnesses` $`\rightarrow`$ `4 witnesses`), recounted from the executed table rather than incremented. **DERIVED** (1 insertion, 1 deletion, both on a `//!` line). |
+| 30 | `3deacce0` | F-3 does NOT land — the four things ser/de needs from the driver | `DOCS_ONLY` | Records the refutation in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. **CITED**. |
+| 31 | `699ee646` | `drive_with` — bring-your-own-stacks | `DORMANT` | Adds a bring-your-own-stacks entry point to `models/src/rust/rholang/drive.rs` with **no caller in this commit** (the diff is that one file). Both stacks are asserted empty on entry and on every return path. **DERIVED** (file list) + **CITED**. |
+| 32 | `959a123a` | F-4 — `Clone` GENERATED through the shared driver | `BYTE_NEUTRAL_MEASURED` | `Clone` for the 55 non-`Copy` types is generated through the shared driver, the cut set **DERIVED** at a feedback vertex set of the child relation and cross-checked as SETS in both directions. Equivalence is asserted by `models/tests/clone_equivalence_corpus.rs` over **67 enumerated terms on eight axes**, driven-vs-oracle, where the oracle is the derive's own re-emitted body. **CITED**. |
+| 33 | `c709fbfa` | the CLONE EQUIVALENCE CORPUS — enumerated, eight axes | `TESTS_ONLY` | 67 terms enumerated from the generated `wire_schema::*_VARIANTS` tables rather than hand-listed, *"so a 37th arm fails this file instead of escaping it."* `models/tests/` plus its `[[test]]` declaration. **CITED**. |
+| 34 | `a36cb019` | the four RhoSpec suites that go red CLASSIFIED | `TESTS_ONLY` | Reaches the obligation set only through `casper/src/test/resources/*.rho` — test fixtures under the `src/test` exclusion's own subject. 49 tests, 45 pass, 4 classified; two repaired corpus-locally. **CITED**. |
+| 35 | `0eac9c3a` | `clone` leaves the tripwire by being CONVERTED | `TESTS_ONLY` | `clone` moves from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`, its ceiling assertion **deleted rather than relaxed**. Other files are `models/benches/`, `models/Cargo.toml` and an audit record. **CITED**. |
+| 36 | `b228545f` | the walk-elimination optimization is REFUTED | `DOCS_ONLY` | 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the driven clone at **0.678×** the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint at $`\alpha = 0.01`$. The emitted table is unchanged. **CITED**. |
+| 37 | `00c9ce6e` | the two pathmap ladders are capped by their FIXTURE, not by their traversal | `TESTS_ONLY` | `rholang/tests/stack_depth_gate.rs` and an audit record only. The ladders move to `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE` because building one is $`\Theta(d^2)`$ — *"a subject whose fixture costs more than its traversal cannot be put on a 1,000× ladder."* **CITED**. |
+| 38 | `80a4aff9` | the test genesis's vault order was RANDOM — and a SECOND unordered source | `TESTS_ONLY` | ★ Reaches the obligation set through `casper/src/rust/test_utils/util/genesis_builder.rs`, which is compiled only under the `test-utils` feature and invoked only by tests. **MEASURED RED**: 24 parameter builds $`\rightarrow`$ **14 distinct vault orders**; 6 genesis computations $`\rightarrow`$ **5 distinct `post_state_hash`**; `GENESIS_CACHE` 6 misses / 6 accesses. GREEN after: 1 order, 1 hash, 1 miss / 6. ⚠ **Directly relevant to open question 10** — it identifies the cause (`bonds`, a `HashMap`, rendered positionally into genesis Rholang) and fixes both copies in the *test* builder; whether production genesis shares the shape remains open. **CITED**. |
+
+⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031).
+
+---
+
+## Appendix C — `register.toml`, the machine index
+
+★ The index is a **projection** of this document, never an independent claim: the gate re-derives every
+field from the prose and fails naming the disagreement. This appendix records the schema and the recipe, so
+that the file can be regenerated from the register rather than repaired by hand.
+
+### C.1 The grammar, in full
+
+⚠ The gate parses the index with a **strict, dependency-free** parser that refuses every line it does not
+recognise. No workspace crate depends on a **TOML** (Tom's Obvious, Minimal Language) parser, so using
+one would put the gate's ability to *run*
+behind a dependency it does not need — and a parser that fails on anything unrecognised **cannot silently
+skip a row**, which is the property that matters and is the opposite of what a permissive parser gives.
+
+```text
+file    ::= line*
+line    ::= comment | blank | table | assign
+comment ::= '#' .*
+table   ::= '[[' ident ']]'
+assign  ::= ident '=' value
+value   ::= '"' .* '"' | digit+ | '[' string (',' string)* ']'
+```
+
+An `assign` before any `table` populates the header. Inline tables, nesting, dotted keys and multi-line
+values are **refused**, and the refusal names the line and says why.
+
+### C.2 Header fields
+
+| field | meaning |
+|---|---|
+| `schema_version` | bumped when a table gains or loses a required key. |
+| `register_base` | the anchor of §3.1 step 1. Moves only by an explicit, reviewed edit. |
+| `partition_head` | the upper bound of the EXACT-PARTITION window. Pinned, because §4.1's `57 + 21 = 78` claim is checkable only against a fixed bound. |
+| `unverified_budget` | §6.4's budget, asserted **exactly** in both directions. |
+| `frontier_grace_days` | the commit-date fuse of [§7.7.3](#773-the-out-of-range-rule--three-regions-and-no-fourth). |
+
+### C.3 Tables
+
+⚠ Appendix A's row shape is **extended, not replaced**. Two deviations, both forced by the grammar above:
+the seven axis cells are seven flat `axis_*` keys rather than one inline table, and Surface-L rows carry
+`foreign_repo` and `source_gate`.
+
+```toml
+[[entry]]
+id        = "CBR-031"
+surface   = "N"                     # "N" = f1r3node · "L" = mettail-rust
+commits   = ["0b270eca"]            # ★ from the ENTRY'S OWN `Commit(s)` row, not the §4.1 row
+status    = "LANDED"                # LANDED | IN_FLIGHT | OPEN
+direction = "CORRECTIVE"            # + NOT_APPLICABLE for the open hazard
+grade     = "WITNESSED"
+axis_value            = "MOVES"     # MOVES | NO | N/A | UNVERIFIED
+axis_verdict          = "UNVERIFIED"
+axis_bytes_bincode    = "NO"
+axis_bytes_prost      = "MOVES"
+axis_post_state_hash  = "NO"
+axis_acceptance       = "NO"
+axis_metering         = "NO"
+# Surface-L rows only:
+# foreign_repo = "mettail-rust"
+# source_gate  = "NOT_NAMED"        # or a named test in the other repository
+
+[[exempt]]
+commit   = "53e78427"
+window   = "FRONTIER"               # PARTITION | FRONTIER
+reason   = "BYTE_NEUTRAL_MEASURED"  # closed enum — §3.2
+evidence = "four gates green, three of the four watched RED first"
+
+[[citation]]
+owner = "CBR-027"                   # the enclosing entry, or "(doc)"
+cited = "reduce.rs"                 # exactly as the prose writes it
+line  = 3397
+at    = "61a53157"                  # ★ a SHA, or "HEAD" for a document-level citation
+path  = "rholang/src/rust/interpreter/reduce.rs"   # resolved; omitted when unchecked
+token = "wrapping_add"              # required iff `path` is present
+# unchecked = "FOREIGN_REPOSITORY"  # required iff `path` is absent; or AMBIGUOUS_PATH
+
+[[open_question]]
+number    = 10
+state     = "OPEN"                  # OPEN | RULED | CLOSED | UNVERIFIED
+falsifier = "SYMBOL_PRESENT"        # closed enum — §7.7.6
+path      = "casper/src/rust/test_utils/util/genesis_builder.rs"
+line      = 174
+token     = "HashMap<PublicKey, i64>"
+why       = "the question stays open while that type is still there"
+```
+
+### C.4 The recipe
+
+Every field is derived, and the gate asserts each derivation:
+
+1. `id`, `surface`, `direction`, `grade` and the seven `axis_*` cells — from §4.1's row, mapping the glyphs
+   `●` `○` `·` `?` to `MOVES` `NO` `N/A` `UNVERIFIED` and the grade letters to their words.
+2. `commits` and `status` — from the **entry's own** header table, deduplicated, in document order.
+   ⚠ Not from §4.1: the two disagree, and §4.1 under-reports
+   ([§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run)).
+3. `[[citation]]` rows — one per distinct `` `path:line` `` coordinate in the prose. A path that is not
+   repository-rooted is resolved by **unique basename-suffix match** against the tree at `at`; a singleton
+   match is checkable, an empty match is `FOREIGN_REPOSITORY`, and two or more is `AMBIGUOUS_PATH`.
+4. `token` — authored from the claim the prose makes about the site, **not** read off the current line. A
+   token copied from the line it is meant to pin always passes and pins nothing.
+
+
