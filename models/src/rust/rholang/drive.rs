@@ -204,6 +204,38 @@
 //! |---|---|---|---|---|
 //! | `rho_pure_eval::eval::EvalTraversal` | `EvNode<'t>` | `EvVal` | `()` | F-1 |
 //! | `sorter::sort_drive::SortTraversal` (crate-private) | `SortNode<'t>` | `ValItem` | `()` | F-2 |
+//! | `term_ops::CloneTraversal` (**generated**) | `CloneNode<'t>` | `CloneVal` | `()` | F-4 |
+//!
+//! ★ The F-4 instance is the first **generated** one, and it is the reason
+//! [`drive_with`] exists — see §D.
+//!
+//! ## ★ Bring-your-own-stacks: [`drive`] versus [`drive_with`]
+//!
+//! [`drive`] allocates a work stack and a value stack per call. For a traversal
+//! whose *input* is deep that is one malloc/free pair amortised over thousands of
+//! nodes and it does not show up. For a traversal whose input is **shallow and
+//! frequent** it is the dominant cost, and the number is measured rather than
+//! feared: the production produce-depth distribution
+//! (`models/benches/wire_encode_bench.rs`, 1,773 instrumented datums) puts
+//! **95.43% of terms at depth 2**, where a `Par` clone touches a handful of
+//! nodes and two extra allocations are a double-digit regression.
+//!
+//! So [`drive_with`] takes both stacks by `&mut` and [`drive`] is the owning
+//! convenience wrapper over it. A caller that clones on a hot path parks the two
+//! allocations in a thread-local and hands them in — the shape
+//! [`crate::rust::rholang::wire_encode`]'s `take_ops` / `give_ops` already uses,
+//! whose measured steady state is 0 allocations per encode.
+//!
+//! ⚠ **[`drive_with`] leaves both stacks EMPTY on every return path**, including
+//! the [`Outcome::Done`] early exit and the `?` abort, because a pooled buffer
+//! must be parked empty (`take_ops`'s reuse predicate is `is_empty()`). Clearing
+//! `vals` runs `Val`'s destructor, which for a `Val` that owns a deep term is
+//! itself Θ(depth) — see the warning under [`Outcome::Done`]. An instance in that
+//! position must hand its stack to
+//! [`crate::rust::rholang::par_children::dismantle_all`] instead of letting the
+//! clear run; the generated clone traversal is not in that position, because its
+//! `Err` is uninhabited and it never reports [`Outcome::Done`], so its only exit
+//! is the normal one that drains `vals` to empty anyway.
 //!
 //! ## ★★ SER/DE: what this trait cannot host yet, and exactly what it needs
 //!
@@ -311,12 +343,30 @@
 //! `bincode_ser` / `bincode_de` depth subjects in
 //! `rholang/tests/stack_depth_gate.rs`.
 //!
-//! ★ There is a structurally identical driver in the `mettail-rust` workspace
-//! (`rholang-runtime`). Two drivers, deliberately: `mettail-rust` depends
-//! one-way on this repo, so a single shared driver would make every driver
-//! change a cross-repo rebuild and couple two independently versioned
-//! repositories through a hot generic. The duplicated loop buys repository
-//! independence; each is documented as an instance of the other.
+//! ## ⚠ CORRECTED 2026-07-29 — the `mettail-rust` analogue is NOT this trait
+//!
+//! This paragraph used to claim that *"there is a structurally identical driver
+//! in the `mettail-rust` workspace (`rholang-runtime`)"* and that the two were
+//! deliberate duplicates, "each documented as an instance of the other". **The
+//! second driver does not exist in that form.** A search of that workspace for
+//! `trait Traversal` and for `fn drive<T: Traversal>` returns nothing; there is
+//! no generic trampoline there to be an instance of.
+//!
+//! What *does* exist is a **hand-written, monomorphic** machine in
+//! `mettail-rust/rholang-runtime/src/rholang_ast.rs`: its own `enum Job<'a>`,
+//! `struct Stacks<'a>` and `fn drive(seed: Seed<'_>, root_env: &BoundEnv) ->
+//! Result<Par, RholangAstLowerError>`, specialised to that crate's AST and
+//! carrying its own copies of the two invariants inline. It is the same *idea* —
+//! defunctionalized continuations on an explicit LIFO — and it is emphatically
+//! not the same *code*, so a change here neither propagates to it nor is
+//! constrained by it.
+//!
+//! The repository-independence argument the old paragraph gave is still the
+//! reason there are two machines rather than one: `mettail-rust` depends one-way
+//! on this repo, and a single shared generic trampoline would make every driver
+//! change a cross-repo rebuild. That argument is unaffected by the correction.
+//! What is affected is anybody who read "structurally identical" and expected to
+//! be able to port a fix across by copying a file.
 
 use std::fmt::Write as _;
 
@@ -620,6 +670,63 @@ pub fn drive<'t, T: Traversal>(
 ) -> Result<T::Val, T::Err> {
     let mut work: Vec<Step<'t, T>> = Vec::with_capacity(T::WORK_CAPACITY);
     let mut vals: Vec<T::Val> = Vec::with_capacity(T::VAL_CAPACITY);
+    drive_with(visitor, state, root, &mut work, &mut vals)
+}
+
+/// [`drive`], on stacks the caller owns.
+///
+/// ★ The entry point a **hot, shallow** traversal needs: [`drive`]'s two
+/// `Vec::with_capacity` calls are one malloc/free pair each, which disappears
+/// against a deep input and dominates a shallow one. 95.43% of production terms
+/// are at depth 2 (`models/benches/wire_encode_bench.rs`), so the generated
+/// `Clone` traversal parks both allocations in a thread-local and hands them in
+/// — the shape [`crate::rust::rholang::wire_encode`]'s `take_ops` / `give_ops`
+/// already uses, whose measured steady state is 0 allocations per call.
+///
+/// # Preconditions
+///
+/// Both stacks must be **empty**. They are asserted empty on entry, because a
+/// stale value on `vals` would satisfy the final-configuration check with the
+/// *previous* call's answer, and a stale obligation on `work` would run it.
+///
+/// # Postcondition
+///
+/// Both stacks are left **empty** on every return path — the normal exit, the
+/// [`Outcome::Done`] early exit, and the `?` abort — so the caller may park them
+/// in a pool whose reuse predicate is `is_empty()`. Capacity is retained; that is
+/// the whole point.
+///
+/// ⚠ Clearing `vals` runs `Val`'s destructor. For `Val = bool` / `Ordering` /
+/// `()` that is free; for a `Val` that owns a deep `Par` it is
+/// `drop_in_place::<Par>`, itself Θ(depth). An instance in that position must
+/// route through [`crate::rust::rholang::par_children::dismantle_all`] rather
+/// than rely on this clear — see the module docs under [`Outcome::Done`].
+///
+/// A panic unwinding out of `descend` / `combine` leaves the stacks populated;
+/// that is safe (they are the caller's `Vec`s and drop normally) and a pool that
+/// checks `is_empty()` before reusing simply declines the buffer.
+///
+/// # Errors
+///
+/// Whatever `descend` or `combine` returns.
+///
+/// # Panics
+///
+/// On a malformed machine configuration: see the module docs. The **final**
+/// configuration is checked unconditionally; the running invariants are checked
+/// under `debug_assertions`.
+pub fn drive_with<'t, T: Traversal>(
+    visitor: &mut T,
+    state: &mut T::State,
+    root: Step<'t, T>,
+    work: &mut Vec<Step<'t, T>>,
+    vals: &mut Vec<T::Val>,
+) -> Result<T::Val, T::Err> {
+    assert!(
+        work.is_empty() && vals.is_empty(),
+        "{}",
+        nonempty_entry_message(work.len(), vals.len())
+    );
 
     let mut ledger = Ledger::new::<T>(&root);
     work.push(root);
@@ -634,22 +741,36 @@ pub fn drive<'t, T: Traversal>(
                 ledger.popped_descend();
                 let before_work = work.len();
                 let before_vals = vals.len();
-                visitor.descend(state, node, &mut work, &mut vals)?;
+                if let Err(e) = visitor.descend(state, node, work, vals) {
+                    // Same discard as the `Combine` arm below; see its comment.
+                    work.clear();
+                    vals.clear();
+                    return Err(e);
+                }
                 ledger.pushed_region::<T>(&work[before_work..], vals.len() - before_vals);
             }
             Step::Combine(kont) => {
                 ledger.popped_combine::<T>(&kont);
-                match visitor.combine(state, kont, &mut vals)? {
-                    Outcome::Value(v) => vals.push(v),
-                    Outcome::Done(v) => {
-                        // ★ Abandon the pending obligations. `work` is dropped
-                        // immediately below, so today the clear is not
-                        // observable; it is written because ABANDONMENT is the
-                        // machine's disposition on this path and because a
-                        // pooled work stack — the shape `wire_encode`'s
-                        // `give_ops` already uses — must be parked EMPTY.
+                match visitor.combine(state, kont, vals) {
+                    Ok(Outcome::Value(v)) => vals.push(v),
+                    Ok(Outcome::Done(v)) => {
+                        // ★ Abandon the pending obligations. The stacks belong
+                        // to the CALLER now, so this clear is observable and
+                        // load-bearing rather than cosmetic: a pooled work
+                        // stack — the shape `wire_encode`'s `give_ops` already
+                        // uses — must be parked EMPTY.
                         work.clear();
+                        vals.clear();
                         return Ok(v);
+                    }
+                    // ⚠ The `?` abort discards both stacks, exactly as a
+                    // recursive form's `?` discards its pending frames — but
+                    // with caller-owned stacks the discard has to be WRITTEN,
+                    // because the buffers outlive the call.
+                    Err(e) => {
+                        work.clear();
+                        vals.clear();
+                        return Err(e);
                     }
                 }
             }
@@ -666,6 +787,28 @@ pub fn drive<'t, T: Traversal>(
     Ok(vals
         .pop()
         .expect("drive: the final-configuration assertion guarantees exactly one value"))
+}
+
+/// The [`drive_with`] entry precondition's diagnostic.
+///
+/// Cold and non-generic for the same reason as [`final_configuration_message`]:
+/// the check on the hot entry path is two comparisons and a call that never
+/// happens.
+#[cold]
+#[inline(never)]
+fn nonempty_entry_message(work_len: usize, vals_len: usize) -> String {
+    let mut m = String::with_capacity(640);
+    let _ = write!(
+        m,
+        "drive_with: NON-EMPTY STACKS ON ENTRY — {work_len} pending obligation(s) and \
+         {vals_len} value(s) were already present. Both stacks must be empty: a stale value on \
+         `vals` would satisfy the final-configuration check with the PREVIOUS call's answer \
+         (returning the wrong term, silently), and a stale obligation on `work` would be run as \
+         if this call had asked for it. `drive_with` leaves both empty on every return path, so \
+         a caller that pools them and never mutates them in between cannot reach this; a caller \
+         that reached it is sharing one buffer across two live traversals."
+    );
+    m
 }
 
 /// The unconditional final-configuration diagnostic.
