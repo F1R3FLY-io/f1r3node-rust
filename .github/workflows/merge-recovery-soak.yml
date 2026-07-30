@@ -443,6 +443,10 @@ jobs:
       - name: Exempt runner from the CI reaper until the window ends
         env:
           # Same pinned compartment as ci-runner-reaper.yml; not a secret.
+          # Must stay byte-identical to that file's copy — this job writes the
+          # exemption tag, that job reads it, and a mismatch means the tag
+          # lands where the reaper never looks. check-workflow-invariants.sh
+          # enforces the equality; see the longer note at the reaper's env.
           CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
           END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
           KIND: ${{ needs.schedule_gate.outputs.kind }}

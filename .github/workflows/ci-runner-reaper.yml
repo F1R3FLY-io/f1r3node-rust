@@ -38,6 +38,13 @@ permissions:
 env:
   # OCI compartment "ci-runner" — where the ephemeral launcher creates VMs.
   # Not a secret; pinned here so the reaper can never touch other compartments.
+  # That guarantee is why this is a literal and not an Actions variable, which
+  # anyone with repo admin could repoint. The same literal appears in
+  # merge-recovery-soak.yml, which tags the instance this job must not
+  # terminate; if the two ever name different compartments the exemption tag
+  # is written where this job never looks, and the soak dies at the 2h mark
+  # with a tag that exists but is invisible. check-workflow-invariants.sh
+  # asserts they match, so that divergence fails CI rather than a 60h soak.
   CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. Keep
   # identical to _integration-pipeline.yml and oci-validation.yml — this job
