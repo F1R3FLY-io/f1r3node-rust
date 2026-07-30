@@ -1209,6 +1209,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "08e876fd"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 44 — the O4 finding for Phase 3b, comment-only. MECHANICALLY VERIFIED: of the added lines, filtering out comment lines leaves exactly one and that one is BLANK; deletions are zero, one file. No token reaches the compiler so emitted bytes are identical by construction. Records the premise that defeats the obvious conversion route: combine_eset scores par_set.ps.sorted_pars, the elements of a container built inside the arm whose order is a permutation of eset.ps and which may deduplicate, while expr_child_pars can only borrow eset.ps in WIRE order. Same exemption basis as 5a744c66. [DERIVED]"
+
+[[exempt]]
 commit = "ad468163"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
