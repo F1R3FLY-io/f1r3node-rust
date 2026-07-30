@@ -4735,6 +4735,24 @@ relations are named:
 $`\Rightarrow`$ **IEEE equality is deliberately irreflexive on `NaN`, so it is not an equivalence relation
 and a term algebra cannot be built on it.** The two must differ.
 
+###### Figure 4 — one carrier, two relations, and the measured cost of conflating them
+
+![One carrier, two relations](figures/float-nan-two-relations.svg)
+
+*Source: [`figures/float-nan-two-relations.puml`](figures/float-nan-two-relations.puml).*
+
+★ **Read the figure as two lanes descending from one shared carrier.** The amber box is
+`CanonicalFloat64`, which **both** lanes read and which the ruling leaves **unchanged**. The blue lane
+(Lane N) is Rholang's six comparison arms: they reach *past* the carrier with `.get()` and answer IEEE 754
+§5.11, under which a `NaN` is unordered. The green lane (Lane S) is every consumer that asks whether two
+terms are *the same term* — the spatial matcher, a term-keyed `Map`, `HashSet` membership,
+`Proc::semantic_hash`, and Dovetail saturation — and it requires an **equivalence relation**, which IEEE
+equality is not. The red path on the right is the tempting *"make it consistent"* fix and its **measured**
+consequence: patching the carrier stops the rewrite engine terminating. The grey box at the bottom is the
+withdrawn arithmetic refusal, drawn with a dashed edge into the carrier because it is what made `NaN`
+reachable and therefore what made Lane N observable at all — the divergence resolved here did not exist as
+an *observable* until this same entry's earlier commits created the values it applies to.
+
 ⚠⚠ **AND THE COST OF CONFLATING THEM IS MEASURED, NOT ARGUED — this is the strongest evidence in the
 residual.** The structural cell was driven RED by patching `CanonicalFloat64::PartialEq` to
 `self.0 == other.0`, i.e. by making the *carrier* follow IEEE. The failure was **not** an assertion about
@@ -5690,7 +5708,7 @@ to *derive the set rather than list it*, or to *make the wrong form unspellable*
 > entry or a typed exemption must cause a **build failure that names the commit**, not a discrepancy
 > somebody may notice later.
 
-### Figure 4 — the drift gate
+### Figure 5 — the drift gate
 
 ![The drift gate](figures/drift-gate.svg)
 
@@ -5724,7 +5742,7 @@ for `rholang/tests/normalize_oracle_provenance.rs`, which re-derives an oracle t
 it byte-for-byte. The workflow comment says so in as many words. This gate reuses an established
 mechanism rather than introducing one.
 
-**The seven checks**, in order, each with its own failure message (Figure 4):
+**The seven checks**, in order, each with its own failure message (Figure 5):
 
 1. **Non-vacuity floor** — $`\mathcal{O} \neq \varnothing`$. A gate that finds nothing to check is a
    gate that cannot fail; an empty obligation set means the path set or the anchor is wrong.
