@@ -630,11 +630,31 @@ divergences as residuals (a third, the `NaN` **comparison** divergence, was rule
 evening by `19510082`), and they are listed in its
 body. A reviewer reading "zero DIVERGENT" as "no differences remain" would be misreading it.
 
-⚠ **Six entries are outside the anchored range** `7293d57c..dc383ed1`: **CBR-027** (`6ff46f8a`,
-`fd5474ab`), **CBR-029** (`d8e95fb0`), **CBR-030** (`e3a4494b`, `719f2432`), **CBR-L09** (`b77e657c`,
-`ab885336`), **CBR-L12** (`f5b2e820`) and **CBR-L13** (`ef49d8c2`) — verified with
-`git merge-base --is-ancestor <sha> dc383ed1`, which fails for every one of the nine SHAs. **MEASURED**.
-All are recorded anyway because the register is **LIVING**
+⚠ **Six entries are outside the anchored range** `7293d57c..dc383ed1`, and the six split into **two
+different reasons** that an earlier revision of this paragraph conflated:
+
+| entry | SHAs outside the window | why it is outside |
+|---|---|---|
+| **CBR-027** | `6ff46f8a`, `fd5474ab` | **LIVING** — landed in this repository *after* `dc383ed1`. |
+| **CBR-029** | `d8e95fb0` | **LIVING.** |
+| **CBR-030** | `e3a4494b`, `719f2432` | **LIVING.** |
+| **CBR-L09** | `b77e657c`, `ab885336`, `19510082` | **FOREIGN** — `mettail-rust` commits; no object of that name exists here. |
+| **CBR-L12** | `f5b2e820` | **FOREIGN.** |
+| **CBR-L13** | `ef49d8c2` | **FOREIGN.** |
+
+**MEASURED** — the three LIVING entries' **five** SHAs each satisfy
+`git merge-base --is-ancestor <sha> HEAD` and each fail
+`git merge-base --is-ancestor <sha> dc383ed1`, which is a *negative answer*. ⚠ The four
+`mettail-rust` SHAs make the same command exit non-zero for a categorically different reason —
+`fatal: Not a valid object name` — so reading "the command fails" as "the commit is out of range"
+mixes *out of range* with *not present*. The distinction is load-bearing for a gate, and
+[§7.7.3](#773-the-out-of-range-rule--three-regions-and-no-fourth) turns it into a rule with three
+regions. ★ The count also moved without the paragraph moving: **CBR-L09** gained `19510082` when
+`7eef14ab` recorded finding 4, so what an earlier revision called "nine SHAs" is **ten** — one more
+instance of the class [§7.5](#75-first-extensions) extension 4 exists to remove, and the reason this
+figure is now a table the gate projects rather than a number the prose stores.
+
+All six are recorded anyway because the register is **LIVING**
 ([§7](#7-maintenance--how-an-omission-fails-loudly)): the alternative — a consensus-path change with no
 entry because the anchor had not moved — is exactly the omission the drift gate exists to make loud.
 **CBR-029** is the precedent that established this rule; the five that follow it apply it. Moving
@@ -1090,7 +1110,7 @@ closure. A branch that bound a free variable and then refused left that binding 
 
 **The disagreement, concretely.** `aggregate_updates` folds the per-attempt snapshots with
 `HashMap::extend` (later wins) in the caller's `matches` order. `matches` is a
-`BTreeMap<Indexed<T>, _>` (`maximum_bipartite_match.rs:14`) whose `Ord` is derived over `value` first —
+`BTreeMap<Candidate<T>, _>` (`maximum_bipartite_match.rs:14`) whose `Ord` is derived over `value` first —
 **structural `Par` ordering, which is prost's field-declaration derive, not the canonical Rholang sort
 and not chronological**. So when a cumulative snapshot carried a stale value for a level, **which of the
 two values reached the continuation was decided by a `.proto` field number.** That is not a semantics.
@@ -1679,7 +1699,7 @@ which this campaign's own repeated failure mode makes the necessary standard. **
 
 #### (a) The issue
 
-`EZipper.current_path` (`RhoTypes.proto:368`, `repeated bytes`) stores per-element segments but **not the
+`EZipper.current_path` (`RhoTypes.proto:352`, `repeated bytes`) stores per-element segments but **not the
 split/bare discriminator**, so every reconstruction of the entry key had to *guess* — and always guessed
 "split". Readers that **hold the path `Par`** can instead ask the codec directly. Separately,
 `next_value_path` was unsound for a `from_key` dangling two or more bytes past the deepest existing node
@@ -3047,7 +3067,7 @@ count leaves. Three methods are added.
 
 ★ *"THE CONSENSUS SURFACE CHANGE IS ADDITIVE ONLY — verifiable without reading the diff twice."*
 **CITED**. `getPath` only **reads out** a field already on the message and already serialized
-(`RhoTypes.proto:368`, `repeated bytes current_path`), decoding it with the same `decode_trie_path` codec
+(`RhoTypes.proto:352`, `repeated bytes current_path`), decoding it with the same `decode_trie_path` codec
 the file already uses.
 
 **Blast radius.** Programs calling the three new methods. **Could live chain state have been produced
@@ -3239,9 +3259,15 @@ The governing general rule, **2026-07-29T16:55:56Z**:
 
 #### Evidence
 
-- The inconsistency is **DERIVED** and re-verified for this report: `wrapping_add` at working-tree
-  `reduce.rs:3503`, `wrapping_sub` at `:3597`, against checked division-by-zero and
-  $`\mathrm{i64::MIN}/-1`$ guards in the same `match` family.
+- The inconsistency is **DERIVED** and re-verified for this report: `wrapping_add` at
+  `rholang/src/rust/interpreter/reduce.rs:3397`, `wrapping_sub` at `:3489` — both **pinned at
+  `61a53157`**, the commit that first carried this entry and the last one before `6ff46f8a` replaced
+  them — against checked division-by-zero and $`\mathrm{i64::MIN}/-1`$ guards in the same `match`
+  family. ⚠ This bullet cited *working-tree* coordinates (`:3503` / `:3597`) until the drift gate was
+  built. A working-tree coordinate is unverifiable by construction: there is no object to read it from,
+  and after the repair the calls it named no longer exist anywhere. **A citation of a pre-change state
+  must be pinned at a commit**, and the natural one is the commit that wrote the claim — see
+  [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 4.
 - ⚠ The prediction this entry made — *"if the error message includes the operands … the entry acquires
   **CBR-016**'s determinism obligation"* — **came true**, and is discharged below.
 
@@ -3479,9 +3505,14 @@ ruling**.
 
 #### Evidence
 
-- The four call sites are documented in place: `reduce.rs:1065` (consensus-class), `reduce.rs:1195` (the
-  consume twin — one caller, `consume_inner`, which passes a literal `Vec::new()`, so it never runs),
-  `contract_call.rs:90` (the system-contract copy), `contract_call.rs:110` (the return leg). **CITED**.
+- The four call sites are documented in place, and each coordinate below is the `decode_non_deterministic_output`
+  **call** rather than the comment above it, pinned at `80f5e5d3`: `reduce.rs:1076` (consensus-class),
+  `reduce.rs:1213` (the consume twin — one caller, `consume_inner`, which passes a literal `Vec::new()`,
+  so it never runs), `contract_call.rs:94` (the system-contract copy), `contract_call.rs:129` (the return
+  leg). **CITED**. ⚠ These read `:1065`, `:1195`, `:90` and `:110` until the drift gate was built — the
+  heads of the explanatory comments, one of which (`:1195`) had already drifted onto an unrelated
+  `peek: bool` field. **A coordinate should name the construct, not its preamble**; see
+  [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 5.
 - ⚠ **Anti-vacuity on the negative result**, which is what makes the "five clean cells" of `0e0f9719`'s
   reachability probe a measurement rather than a false zero: splicing this depth-34 payload through the
   **identical harness** turns the replay red with `recursion limit reached`. *"The harness is provably
@@ -3771,7 +3802,7 @@ Leaving it would mean shipping **CBR-027** with a known-broken genesis contract 
 |---|---|
 | **Leave `if (v + x >= v)` and revert `+` to wrapping.** | Reverts **CBR-027**, whose ruling is on the record. It also keeps a guard whose correctness is a property of the *reducer* rather than of the *contract*. |
 | **Catch the `ReduceError` in Rholang.** | Rholang has no exception form; there is nothing to catch with. |
-| **Promote the accumulator to `BigInt`.** | A carrier change to a genesis contract, and `combine_plus` has **no coercing arm** — `(GInt(_), other)` falls to `OperatorExpectedError` (`reduce.rs:3574-3578`) — so a mixed `Int`/`BigInt` call fails identically before and after. It would change the contract's interface, not just its guard. **DERIVED**. |
+| **Promote the accumulator to `BigInt`.** | A carrier change to a genesis contract, and `combine_plus` has **no coercing arm** — `(GInt(_), other)` falls to `OperatorExpectedError` (`reduce.rs:3470-3475`, pinned at `719f2432`; the cell read `:3574-3578` until the drift gate was built, which is the `-` operator's twin arm rather than `combine_plus`'s) — so a mixed `Int`/`BigInt` call fails identically before and after. It would change the contract's interface, not just its guard. **DERIVED**. |
 | **Introduce a named `Int` maximum instead of the bare literal.** | Rholang has no named `Int` maximum — zero hits for `maxint` / `max_int` / `MAX_VALUE` / `Int.max` in any `.rho` file — so this would be a **language** change. The same literal already appears twice in this very file as the registry `lastNonce` (`:8`, `:64`). **MEASURED** (`e3a4494b`). |
 
 ★ **The primary justification is fourteen lines below the change, in the same contract.** `sub` was
@@ -4487,7 +4518,7 @@ one**, which is a fact about the *register's* maintenance model, not only about 
 | | |
 |---|---|
 | Commit(s) | `b77e657c` — *fix(rholang)!: float ÷0 answers IEEE-754 — RULING 2 REVERSED, and it took more than deleting the guard* (division only); `ab885336` — *fix(rholang,runtime)!: the ruling extended to EVERY float arm — and a FOURTH arm the list did not name* (the other four arms, the shared adapter, and the repair of an uncompilable `HEAD`); `19510082` — *fix(rholang)!: float comparison is a NUMERIC PREDICATE, not structural identity — two relations, two questions* (residual 3, resolved) ⚠ see also `2eebf722`, which broke `HEAD` |
-| Status | **CLOSED** — the divergence is withdrawn and implemented. ⚠ **Two** residuals survive, and both are properties of the float **carrier** rather than of any operator; a **third**, the `NaN` comparison divergence, was filed by `ab885336` and **resolved 46 minutes later** by `19510082`. All three are listed in [the residuals](#the-residuals--the-carriers-divergence-not-the-operators). |
+| Status | **LANDED** — the divergence is withdrawn and implemented. ⚠ **Two** residuals survive, and both are properties of the float **carrier** rather than of any operator; a **third**, the `NaN` comparison divergence, was filed by `ab885336` and **resolved 46 minutes later** by `19510082`. All three are listed in [the residuals](#the-residuals--the-carriers-divergence-not-the-operators). ★ This cell read `CLOSED` until the drift gate was built; `CLOSED` is not in [Appendix A](#appendix-a--the-entry-template)'s closed vocabulary `LANDED / IN FLIGHT / OPEN`, and it described the *divergence question* rather than the *change* — see [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 8. |
 | Direction | **CONVERGENT** ([§2.6](#26-direction-of-change)) — the vocabulary entry was added for this entry |
 | Evidence grade | WITNESSED |
 | Files | `mettail-rust` at `ab885336`: the adapter `nan_is_a_value` at `runtime/src/safe_arith.rs:633`, the `QuietNaN` trait at **:560** with its four impls at **:565** (`f64`), **:570** (`f32`), **:575** (`CanonicalFloat64`), **:580** (`CanonicalFloat32`); the export at `runtime/src/lib.rs:125`; the **five** `CastFloat` arms in `languages/src/rholang.rs` — `Add` **:1782**, `Sub` **:1845**, `Mul` **:1903**, `Div` **:2042**, unary `Neg` **:2141**. ⚠ **Cited at the SHA, not at the working tree**: that file is under concurrent edit and the same five call sites sit at **:1854**, **:1917**, **:1975**, **:2114**, **:2213** in the tree at the time of writing. F1r3node (unchanged, and the floor): `rholang/src/rust/interpreter/reduce.rs`, the `(GDouble, GDouble)` arms of `combine_plus` / `combine_minus` / `combine_mult` / `combine_div` — bare `f64::from_bits` arithmetic with **no guard** — and `combine_mod`'s refusal at **:3424**. **DERIVED** (read at both sides). |
@@ -4771,7 +4802,7 @@ fold converging at all.** **MEASURED** (`19510082`).
 
 | | upstream site | what it does |
 |---|---|---|
-| numeric | `combine_relop`'s `GDouble` arm, `reduce.rs:3146-3162` | reads `if f1.is_nan() \|\| f2.is_nan() { GBool(false) }` **before** it ever calls `partial_cmp`, so all four ordered operators are IEEE; `combine_eq` / `combine_neq` (`:3734`, `:3752`) consult `par_contains_nan_double` (`:9622`) |
+| numeric | `combine_relop`'s `GDouble` arm, `reduce.rs:3062-3078` | reads `if f1.is_nan() \|\| f2.is_nan() { GBool(false) }` **before** it ever calls `partial_cmp`, so all four ordered operators are IEEE; `combine_eq` / `combine_neq` (`:3734`, `:3752`) consult `par_contains_nan_double` (`:9622`) |
 | structural | `models/src/main/protobuf/RhoTypes.proto:269` — `fixed64 g_double = 34; // IEEE 754 f64 stored as raw bits` | `GDouble(u64)`'s prost-derived `PartialEq` / `Hash` compare **bit patterns**, so two same-bit `NaN`s are structurally equal upstream too |
 
 **DERIVED** (all four read at `HEAD`). ⓘ Worth recording because it was surprising: upstream *needs* an
@@ -4847,7 +4878,7 @@ naming the canonicalisation rather than the operator. **CITED**.
 operation, but **neither evaluator offers it on floats**: MeTTaIL's `Mod` has no float arm, so
 `float(5.0,64) % float(2.0,64)` (a *total* remainder — the control that stops the row from passing for the
 wrong reason) and `float(1.0,64) % float(0.0,64)` both answer `error`; and upstream's `combine_mod`
-**refuses** `(GDouble, GDouble)` outright at `reduce.rs:3424`. No program's acceptance or value differs, so
+**refuses** `(GDouble, GDouble)` outright at `reduce.rs:3312`. No program's acceptance or value differs, so
 there is nothing to converge. Pinned by
 `float_modulo_is_refused_by_both_evaluators_so_it_needs_no_ruling`. **CITED** (`ab885336`).
 
@@ -5223,7 +5254,7 @@ produced **identical `Par`s** — identical serialized bytes in both formats, id
 post-state contributions. The distinction the wire model makes was simply lost.
 
 ★ **This is a BUG FIX, not a divergence, and the argument is upstream's own consistency.** Upstream keeps
-the two apart *everywhere* it touches them: `hexToBytes` (`reduce.rs:4837`), `bytesToHex` (`:4886`),
+the two apart *everywhere* it touches them: `hexToBytes` (`reduce.rs:4644`), `bytesToHex` (`:4886`),
 `toByteArray` (`:4797`), `toUtf8Bytes` (`:4935`) and the three hash builtins (`system_processes.rs:737`,
 `:745`, `:753`) all produce `GByteArray`. $`\Rightarrow`$ We were not computing something upstream computes differently;
 we were **erasing a distinction upstream never erases**. **CITED** (`ef49d8c2`).
