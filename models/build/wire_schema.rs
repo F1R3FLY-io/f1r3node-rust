@@ -184,6 +184,18 @@ pub struct Generated {
     pub sources: Vec<(&'static str, String)>,
     /// Everything `models/build.rs` cross-checks or logs.
     pub counts: Counts,
+    /// ★★ The Rust item names whose `impl Clone` the term-op emitter wrote, in
+    /// descriptor order.
+    ///
+    /// This is one half of a **two-rule cross-check**. `models/build.rs`'s
+    /// textual pass strips the `Clone` token from the derive lines it decides are
+    /// non-`Copy` and records the item names; this list is computed from the
+    /// DESCRIPTOR by an independent reproduction of prost's `Copy` rule
+    /// (`prost-build-0.14.3/src/context.rs:183-233`). `build.rs` requires the two
+    /// to agree as SETS in both directions, naming the offending item — a type
+    /// stripped but not emitted has no `Clone` at all, and one emitted but not
+    /// stripped has two.
+    pub clone_impls: Vec<String>,
 }
 
 /// The tallies one run produces, kept apart from the sources so a cross-check
@@ -210,6 +222,15 @@ pub struct Counts {
     pub recursive_type_count: usize,
     /// Rows in `DERIVE_DISPOSITION_REGISTRY` (type × trait surface).
     pub derive_row_count: usize,
+    /// The CLONE CUT SET — the feedback vertex set of the child relation whose
+    /// members get a DRIVEN `Clone`. Logged, so a `.proto` change that moves the
+    /// cut is visible in the build output rather than only in a generated file.
+    pub clone_cut_set: Vec<String>,
+    /// How many items the clone driver ENTERS (messages + oneofs).
+    pub clone_descend_count: usize,
+    /// The residual (cut-removed) child relation's height — the constant that
+    /// bounds a generated field-wise `clone`'s native recursion.
+    pub clone_residual_height: usize,
 }
 
 // ===========================================================================
@@ -248,6 +269,80 @@ impl Disposition {
             Disposition::Remaining(stage) => format!("Disposition::Remaining({stage:?})"),
             Disposition::FollowsFrom(driver) => format!("Disposition::FollowsFrom({driver:?})"),
         }
+    }
+}
+
+/// The facts about ONE generated item that a per-item disposition depends on.
+///
+/// See [`refine_disposition`].
+pub struct ItemFacts<'a> {
+    /// The Rust type / enum name, as it appears in `OUT_DIR/rhoapi.rs`.
+    pub rust_name: &'a str,
+    /// Does prost derive `Copy` for this item? Reproduced from prost's own rule
+    /// and cross-checked against the generated file — see §4b.
+    pub is_copy: bool,
+    /// Is this item in the CLONE CUT SET, i.e. does it get a DRIVEN `Clone`?
+    pub in_clone_cut_set: bool,
+}
+
+/// ★★ **PER-ITEM REFINEMENT of [`DERIVE_DISPOSITIONS`].**
+///
+/// Most surfaces have the same disposition for every item that carries the
+/// derive, and the table states those once. `Clone::clone` does **not**, and the
+/// reason is a fact about the code rather than a nicety:
+///
+/// | item | after stage F-4 | disposition |
+/// |---|---|---|
+/// | a `Copy` message or oneof | keeps its derive; `Clone` is `*self` | `NotATraversal` |
+/// | a CUT-SET member | `impl Clone` over `drive_with` | `Converted` |
+/// | any other non-`Copy` item | generated FIELD-WISE `Clone`, flat because every cycle passes through the cut set | `FollowsFrom` |
+///
+/// ⚠ A uniform `Converted("term_ops::clone")` would be a false claim about 61 of
+/// the 62 generated items, and `FollowsFrom` exists precisely so that "no driver
+/// of its own" is an argument rather than an omission.
+///
+/// ⚠⚠ **This refinement is NOT forced by `check_derive_dispositions`, and that is
+/// a REFUTED PREMISE worth recording.** The plan expected stripping `Clone` to
+/// make the `Clone` row *stale* and fail the build, forcing the re-home. It does
+/// not: the seven `Copy` items keep their `Clone` derive, so the token still
+/// appears in `rhoapi.rs` and the staleness check stays green. What actually joins
+/// the strip to the registry is the per-item set cross-check in `models/build.rs`
+/// — the strip pass's names against [`Generated::clone_impls`] — which fails
+/// naming the item. The mechanism had to be BUILT, not merely triggered.
+fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>) -> Disposition {
+    match surface {
+        "Clone::clone" => {
+            assert!(
+                !(facts.is_copy && facts.in_clone_cut_set),
+                "wire_schema: `{}` is both `Copy` and a member of the CLONE CUT SET. A `Copy` \
+                 type's `Clone` must be `*self`, and prost only derives `Copy` where every \
+                 field is a non-repeated scalar — such a type contains no term and cannot be \
+                 on a cycle of the child relation. One of the two derivations is wrong: either \
+                 the `Copy` reproduction in §4b or the feedback-vertex-set search.",
+                facts.rust_name
+            );
+            match (facts.is_copy, facts.in_clone_cut_set) {
+            (true, _) => Disposition::NotATraversal(
+                "prost derives `Copy` for this item (every field is a non-repeated scalar), so \
+                 rustc's `Clone` is `*self` — a bitwise copy with no descent. `models/build.rs` \
+                 therefore LEAVES the `Clone` token on its derive line; there is no walk to \
+                 convert, and an emitted `impl Clone` would conflict with the derive",
+            ),
+            (false, true) => Disposition::Converted(
+                "term_ops::clone — `impl Clone` over `drive_with` on pooled stacks. This item is \
+                 in the CLONE CUT SET (a feedback vertex set of the child relation), so it is \
+                 where the recursion is actually broken. Gate subject `clone`, in \
+                 `CONVERTED_DEPTH`",
+            ),
+            (false, false) => Disposition::FollowsFrom(
+                "term_ops::clone — this item's `Clone` is GENERATED FIELD-WISE (byte-for-byte \
+                 what the stripped derive emitted) and is FLAT: every cycle in the child \
+                 relation passes through the cut set, so it reaches a driven clone within \
+                 CLONE_RESIDUAL_HEIGHT native frames. It needs no driver of its own",
+            ),
+            }
+        }
+        _ => uniform,
     }
 }
 
@@ -368,12 +463,21 @@ pub const DERIVE_DISPOSITIONS: &[DeriveTrait] = &[
         applies_to: Applies::Both,
         surfaces: &[(
             "Clone::clone",
-            // ⚠ LIVE at HEAD. `9082d12c` removed a CALL at `inj_attempt`'s
-            // set-initial-cost phase and entered the composition in
-            // `CONVERTED_DEPTH` as `inj_attempt_clone`; `<Par as Clone>::clone`
-            // itself is untouched and still in `TRIPWIRE_DEPTH`. Re-measured at
-            // HEAD by `four_quadrant_s0_baseline`: 16,493 / 3,254 B/level.
-            Disposition::Remaining("D-clone"),
+            // ★★ CONVERTED by stage F-4. The pre-repair readings, re-measured at
+            // HEAD by `four_quadrant_s0_baseline` before the conversion, were
+            // 16,493 B/level debug and 3,254 release. `9082d12c` had earlier
+            // removed a CALL at `inj_attempt`'s set-initial-cost phase and
+            // entered that COMPOSITION in `CONVERTED_DEPTH` as
+            // `inj_attempt_clone`; `<Par as Clone>::clone` itself is what F-4
+            // converts, and the `clone` subject moves to `CONVERTED_DEPTH` with
+            // it.
+            //
+            // ⚠ This value is the CUT-SET answer and it is REFINED PER ITEM — see
+            // `refine_disposition`. A `Copy` item keeps its derive
+            // (`NotATraversal`) and a non-cut item gets a flat field-wise
+            // `Clone` (`FollowsFrom`). Stating only this row would be a false
+            // claim about 61 of the 62 generated items.
+            Disposition::Converted("term_ops::clone"),
         )],
     },
     DeriveTrait {
@@ -831,11 +935,62 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     // ── the child relation and its SCC, computed once, read by every emitter ──
     let graph = SchemaGraph::build(&messages, &resolved, &extern_set);
 
+    // ── ★ the CLONE PLAN: Copy-ness, the cut set, and what follows (§4b) ──
+    let plan = ClonePlan::build(&messages, &resolved, &oneofs, &extern_set, &graph);
+
     let bincode = emit_bincode_source(&messages, &resolved, &oneofs, &extern_set);
     let prost = emit_prost_source(&messages, &resolved, &oneofs, &extern_set);
-    let term_ops = emit_term_ops_source();
+    let (term_ops, clone_impls) = emit_term_ops_source(
+        &messages,
+        &resolved,
+        &oneofs,
+        &extern_set,
+        &graph,
+        &plan,
+    );
     let (schema_meta, derive_row_count) =
-        emit_schema_meta_source(&messages, &oneofs, &extern_set, &graph);
+        emit_schema_meta_source(&messages, &oneofs, &extern_set, &graph, &plan);
+
+    // ★ THE NON-VACUITY FLOOR, at the generator rather than only at the consumer.
+    //
+    // An emitter that returned `String::new()` would satisfy every count in this
+    // struct and the build would pass in silence. `models/build.rs` already
+    // refuses a zero-byte output; these refuse an output that is present but
+    // says nothing. The bound is the SCHEMA's own arithmetic — every message and
+    // oneof is either `Copy` or gets an impl — so it cannot be satisfied by a
+    // placeholder and does not need updating when the `.proto` grows.
+    let copy_items = messages
+        .iter()
+        .filter(|m| !extern_set.contains(m.leaf_name()) && plan.message_is_copy[m.leaf_name()])
+        .count()
+        + oneofs
+            .iter()
+            .filter(|o| plan.oneof_is_copy[&o.rust_ident])
+            .count();
+    assert_eq!(
+        clone_impls.len(),
+        resolved.len() + oneofs.len() - copy_items,
+        "wire_schema: the term-op emitter wrote {} `impl Clone`s, but the schema has {} \
+         generated messages + {} oneofs of which {} are `Copy`, i.e. {} non-`Copy` items that \
+         MUST each get one. An item with neither a derive nor an emitted impl does not compile; \
+         an item with both does not compile either. This is the arithmetic that makes \
+         `EMITTED_TRAVERSALS` non-vacuous.",
+        clone_impls.len(),
+        resolved.len(),
+        oneofs.len(),
+        copy_items,
+        resolved.len() + oneofs.len() - copy_items
+    );
+    assert!(
+        term_ops.len() > 32 * 1024,
+        "wire_schema: the term-op source is only {} bytes. The `Clone` emission for {} items \
+         over a {}-type descend set cannot fit in that, so the emitter has silently stopped \
+         emitting bodies — the exact failure a `String::new()` return would produce, and the \
+         reason this floor is here rather than only a `!is_empty()` check in `models/build.rs`.",
+        term_ops.len(),
+        clone_impls.len(),
+        plan.entered.len() + plan.oneof_entered.len()
+    );
 
     Generated {
         counts: Counts {
@@ -846,7 +1001,11 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
             scc_count: graph.scc.len(),
             recursive_type_count: graph.recursive.len(),
             derive_row_count,
+            clone_cut_set: plan.cut.iter().map(|c| rust_type_name(c)).collect(),
+            clone_descend_count: plan.entered.len() + plan.oneof_entered.len(),
+            clone_residual_height: plan.residual_height,
         },
+        clone_impls,
         sources: vec![
             (OUTPUT_BINCODE, bincode),
             (OUTPUT_PROST, prost),
@@ -1306,6 +1465,47 @@ impl SchemaGraph {
             recursive,
         }
     }
+
+    /// The transitive closure of the child relation: `out[i]` is every index
+    /// reachable from `i` by one or more edges.
+    ///
+    /// ★ Needed by [`ClonePlan`] for two distinct questions — prost's
+    /// `is_nested(field_type, owner)` guard on `Copy`, and "can this type reach
+    /// the cut set" — so it is computed once here, over the same adjacency the
+    /// SCC was computed from, rather than twice from two readings of `children`.
+    ///
+    /// Iterative worklist rather than Warshall: the graph is 58 nodes with ~90
+    /// edges, so the sparse form is both faster and, more to the point, uses no
+    /// native stack — this is the build script of a campaign about recursive
+    /// walks (the same reasoning [`tarjan_scc`] carries).
+    fn reachability(&self) -> Vec<BTreeSet<usize>> {
+        let index_of: BTreeMap<&str, usize> = self
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i))
+            .collect();
+        let adjacency: Vec<Vec<usize>> = self
+            .children
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|c| index_of.get(c.as_str()).copied())
+                    .collect()
+            })
+            .collect();
+
+        let mut out: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); self.names.len()];
+        for root in 0..self.names.len() {
+            let mut work: Vec<usize> = adjacency[root].clone();
+            while let Some(v) = work.pop() {
+                if out[root].insert(v) {
+                    work.extend(adjacency[v].iter().copied());
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Tarjan's strongly-connected-components algorithm, ITERATIVE.
@@ -1384,6 +1584,547 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
     }
 
     components
+}
+
+// ===========================================================================
+// §4b  ★★ THE CLONE PLAN — the CUT SET, and what follows from it
+// ===========================================================================
+//
+// The term-op emitter (§7) needs three facts that §4's graph does not yet state,
+// and all three are DERIVED here rather than named by hand.
+//
+// ## 1. Which items are `Copy`
+//
+// prost derives `Copy` for a message when every field can
+// (`prost-build-0.14.3/src/context.rs:183-233`), and for a oneof enum when every
+// MEMBER field can (`code_generator.rs:636-646`). A `Copy` type's `Clone` is
+// `*self` — a bitwise copy, not a walk — so `models/build.rs` must LEAVE the
+// `Clone` token on those derive lines, and this pass must not emit an `impl
+// Clone` that would collide with it.
+//
+// ⚠ The rule is reproduced from prost's source, not guessed, and the reproduction
+// is CROSS-CHECKED: `models/build.rs` compares the type names its textual strip
+// pass actually stripped against the names this pass says are non-`Copy`, as
+// SETS, in both directions. A divergence fails the build naming the type. Two
+// independent rules, checked at the one point where both are visible — the same
+// shape as the `locally_free` cross-check.
+//
+// ## 2. The CUT SET — a feedback vertex set of the child relation
+//
+// ★★ This is the load-bearing derivation, and it is what makes ONE driver serve
+// the whole family. `<Send as Clone>::clone` is Θ(depth) only because it reaches
+// `<Par as Clone>::clone`, which is Θ(depth). Make `Par::clone` iterative and
+// `Send::clone` becomes FLAT for free: one native frame, then a driven clone.
+//
+// So the emitter does not need a driver per recursive type. It needs a driver for
+// a set of types whose removal makes the child relation ACYCLIC — a *feedback
+// vertex set* — because a field-wise `clone` over a DAG has native depth bounded
+// by the DAG's height, which is a constant of the schema and not a function of
+// the term.
+//
+// Finding a MINIMUM feedback vertex set is NP-hard (R. M. Karp, *Reducibility
+// Among Combinatorial Problems*, 1972, <https://doi.org/10.1007/978-1-4684-2001-2_9>),
+// so [`ClonePlan::build`] does not claim minimality. It takes the greedy
+// max-degree heuristic and then **verifies the result**: after the cut, every SCC
+// of the residual graph must be trivial. Correctness is proved, minimality is a
+// heuristic, and the difference is stated rather than blurred. On this schema the
+// answer is the singleton `{Par}`, which the emitted table publishes.
+//
+// ## 3. Which types the driver ENTERS
+//
+// A field whose type cannot reach the cut set is **bounded**: its whole value is
+// cloned in one call, exactly as the derive did, because that call is flat. A
+// field whose type CAN reach the cut set is **entered**: the driver walks its
+// shell inline and suspends at the cut-set nodes below it. `reaches_cut` is that
+// predicate, and `entered` is the sub-part of it the driver can actually arrive
+// at from a cut-set member — emitting families for the rest would be dead code.
+//
+// ⚠★ An EXTERN type is bounded, and for `EPathMap` that is a FACT ABOUT ITS
+// `Clone` rather than a consequence of externness: `EPathMap::clone` is O(1) AT
+// THE NODE (`models/src/rust/rhoapi_ext.rs`) — `ps` is an `EntryTrie` whose clone
+// is a refcount bump on the trie root plus an `Arc` bump on the memoized
+// projection, and the shadow cell is an `OnceLock<Arc<_>>` clone. It never
+// re-enters `Par::clone` at all. The obligation is stated in the emitted file and
+// MEASURED by `rholang/tests/stack_depth_gate.rs`'s `clone_pathmap_chain`
+// subject, which nests through `EPathmapBody` and is gated flat.
+
+/// Cut-set members for which an ITERATIVE teardown exists.
+///
+/// ★ A **typed exception table**, not a list somebody keeps in step. If a panic
+/// unwinds out of the driver, the pooled value stack still owns cloned terms, and
+/// releasing them with `Vec::clear` would run `drop_in_place::<Par>` — itself
+/// Θ(depth), the one destructor this campaign measured and deliberately did NOT
+/// convert (`rholang/tests/stack_depth_gate.rs`, subject `par_drop`; `impl Drop
+/// for Par` produces 353 diagnostics across 61 unique lines in `models` alone).
+/// So every cut-set member must name a teardown that is iterative.
+///
+/// [`ClonePlan::build`] **panics** if the derived cut set acquires a member with
+/// no entry here, naming the member and what it needs. A `_ =>` arm in the
+/// generated teardown would have been the silent alternative.
+const ITERATIVE_TEARDOWN: &[(&str, &str)] =
+    &[("Par", "crate::rust::rholang::par_children::dismantle")];
+
+/// The protobuf scalar types whose Rust rendering is `Copy`.
+///
+/// Verbatim `prost-build-0.14.3/src/context.rs:220-233`'s `matches!` arm: every
+/// numeric family, `bool` and `enum`. `String` and `Bytes` are absent because
+/// prost renders them as `String` / `Vec<u8>`, which own a heap allocation.
+fn scalar_is_copy(ty: Type) -> bool {
+    matches!(
+        ty,
+        Type::Float
+            | Type::Double
+            | Type::Int32
+            | Type::Int64
+            | Type::Uint32
+            | Type::Uint64
+            | Type::Sint32
+            | Type::Sint64
+            | Type::Fixed32
+            | Type::Fixed64
+            | Type::Sfixed32
+            | Type::Sfixed64
+            | Type::Bool
+            | Type::Enum
+    )
+}
+
+/// Everything §7 needs to know about the schema that §4's graph does not state.
+struct ClonePlan {
+    /// Leaf name → does prost derive `Copy` for this message?
+    message_is_copy: BTreeMap<String, bool>,
+    /// Oneof `rust_ident` → does prost derive `Copy` for this enum?
+    oneof_is_copy: BTreeMap<String, bool>,
+    /// The feedback vertex set, in descriptor order. Every emitted driver has one
+    /// of these as its `Node`.
+    cut: Vec<String>,
+    /// Leaf names that can reach a cut-set member (cut members themselves
+    /// included when they can reach one, which in a cyclic schema they do).
+    reaches_cut: BTreeSet<String>,
+    /// Oneof `rust_ident`s whose members can reach a cut-set member.
+    oneof_reaches_cut: BTreeSet<String>,
+    /// Leaf names the driver actually ENTERS: reachable from a cut-set member
+    /// through types that reach the cut set. The families in §7 cover exactly
+    /// this set, so nothing emitted is dead.
+    entered: BTreeSet<String>,
+    /// Oneof `rust_ident`s the driver enters.
+    oneof_entered: BTreeSet<String>,
+    /// The height of the residual (cut-removed) child relation — the constant
+    /// that bounds a field-wise `clone`'s native recursion. Published in the
+    /// emitted file so "bounded by a constant" is a number.
+    residual_height: usize,
+}
+
+impl ClonePlan {
+    fn build(
+        messages: &[Message<'_>],
+        resolved: &[(usize, Vec<Field>)],
+        oneofs: &[Oneof],
+        extern_set: &BTreeSet<&str>,
+        graph: &SchemaGraph,
+    ) -> ClonePlan {
+        // ── 1. Copy-ness, as a monotone fixed point ──
+        //
+        // prost's rule is recursive over field types and guarded by
+        // `is_nested(field_type, message)` — "would this field make the message
+        // recursive?" — which returns `false` (not Copy) and thereby cuts every
+        // cycle. So the fixed point below, started at all-true and only ever
+        // falsifying, is exact rather than optimistic: a cyclic dependency is
+        // resolved by the reachability guard before the recursion can spin.
+        let reachable = graph.reachability();
+        let index_of: BTreeMap<&str, usize> = graph
+            .names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i))
+            .collect();
+        let reaches = |from: &str, to: &str| -> bool {
+            match (index_of.get(from), index_of.get(to)) {
+                (Some(&f), Some(&t)) => reachable[f].contains(&t),
+                _ => false,
+            }
+        };
+
+        let mut message_is_copy: BTreeMap<String, bool> = BTreeMap::new();
+        for msg in messages {
+            // ⚠ An EXTERN type is NOT `Copy`: prost does not generate it, and the
+            // hand-written `EPathMap` owns an `EntryTrie` and a `Vec<u8>`.
+            // Answering `true` here would let a containing message claim `Copy`.
+            let is_extern = extern_set.contains(msg.leaf_name());
+            message_is_copy.insert(msg.leaf_name().to_string(), !is_extern);
+        }
+        // The raw descriptor fields, per message — prost's rule reads THESE
+        // (oneof members included, because `DescriptorProto::field` carries them).
+        let raw: BTreeMap<&str, &DescriptorProto> =
+            messages.iter().map(|m| (m.leaf_name(), m.desc)).collect();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for msg in messages {
+                let leaf = msg.leaf_name();
+                if extern_set.contains(leaf) {
+                    continue;
+                }
+                let all_copy = msg
+                    .desc
+                    .field
+                    .iter()
+                    .all(|f| field_is_copy(leaf, f, &message_is_copy, &reaches));
+                let slot = message_is_copy
+                    .get_mut(leaf)
+                    .expect("wire_schema: every message seeded a Copy slot");
+                if *slot != all_copy {
+                    *slot = all_copy;
+                    changed = true;
+                }
+            }
+        }
+
+        // ── the oneof enums: `Copy` iff every MEMBER field is ──
+        let mut oneof_is_copy: BTreeMap<String, bool> = BTreeMap::new();
+        for oneof in oneofs {
+            let owner = owner_of_oneof(messages, oneof);
+            let desc = raw
+                .get(owner.as_str())
+                .unwrap_or_else(|| panic!("wire_schema: oneof `{}` has no owner message", oneof.rust_ident));
+            let idx = desc
+                .oneof_decl
+                .iter()
+                .position(|d| d.name.as_deref() == Some(oneof.proto_name.as_str()))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "wire_schema: `{owner}` does not declare a oneof named `{}`",
+                        oneof.proto_name
+                    )
+                });
+            let all_copy = desc
+                .field
+                .iter()
+                .filter(|f| f.oneof_index == Some(idx as i32))
+                .all(|f| field_is_copy(&owner, f, &message_is_copy, &reaches));
+            oneof_is_copy.insert(oneof.rust_ident.clone(), all_copy);
+        }
+
+        // ── 2. the CUT SET: greedy max-degree, then VERIFIED acyclic ──
+        let adjacency: Vec<Vec<usize>> = graph
+            .children
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|c| index_of.get(c.as_str()).copied())
+                    .collect()
+            })
+            .collect();
+
+        let mut in_degree = vec![0usize; graph.names.len()];
+        for row in &adjacency {
+            for &t in row {
+                in_degree[t] += 1;
+            }
+        }
+
+        let mut cut_indices: BTreeSet<usize> = BTreeSet::new();
+        loop {
+            // The still-cyclic part of the residual graph.
+            let residual: Vec<Vec<usize>> = adjacency
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    if cut_indices.contains(&i) {
+                        Vec::new()
+                    } else {
+                        row.iter()
+                            .copied()
+                            .filter(|t| !cut_indices.contains(t))
+                            .collect()
+                    }
+                })
+                .collect();
+            let cyclic: BTreeSet<usize> = tarjan_scc(&residual)
+                .into_iter()
+                .filter(|component| {
+                    component.len() > 1
+                        || (component.len() == 1 && residual[component[0]].contains(&component[0]))
+                })
+                .flatten()
+                .collect();
+            if cyclic.is_empty() {
+                break;
+            }
+            // ★ Deterministic: highest total degree first, then DESCRIPTOR ORDER.
+            // A tie broken by hash iteration order would make the generated file
+            // depend on the allocator, and the byte-identity golden would catch
+            // it as a mystery.
+            let pick = cyclic
+                .iter()
+                .copied()
+                .max_by_key(|&i| (adjacency[i].len() + in_degree[i], usize::MAX - i))
+                .expect("wire_schema: a non-empty cyclic set has a maximum");
+            cut_indices.insert(pick);
+        }
+
+        let cut: Vec<String> = cut_indices
+            .iter()
+            .map(|&i| graph.names[i].clone())
+            .collect();
+        assert!(
+            !cut.is_empty(),
+            "wire_schema: the CLONE CUT SET is EMPTY. The `rhoapi` child relation is cyclic by \
+             construction — `Par` contains `Send` which contains `Par` — so an empty cut set \
+             means the graph this pass read is not the schema's. A vacuous cut set would emit no \
+             driver at all and every `Clone` would silently stay Θ(depth)."
+        );
+        for name in &cut {
+            let rust = rust_type_name(name);
+            assert!(
+                ITERATIVE_TEARDOWN.iter().any(|(ty, _)| *ty == rust),
+                "wire_schema: `{rust}` joined the CLONE CUT SET but has no entry in \
+                 `ITERATIVE_TEARDOWN`. A panic unwinding out of the driver leaves cloned \
+                 `{rust}`s on the pooled value stack, and releasing them with `Vec::clear` runs \
+                 the DERIVED recursive destructor, which is itself Θ(depth) (gate subject \
+                 `par_drop`). Add `(\"{rust}\", \"<path to an iterative teardown>\")` to \
+                 `ITERATIVE_TEARDOWN` — and write the teardown — rather than letting the \
+                 generated match fall through."
+            );
+        }
+
+        let cut_set: BTreeSet<&str> = cut.iter().map(|s| s.as_str()).collect();
+
+        // ── 3. `reaches_cut`, over the residual where cut members are SINKS ──
+        let mut reaches_cut: BTreeSet<String> = BTreeSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (i, name) in graph.names.iter().enumerate() {
+                if reaches_cut.contains(name) {
+                    continue;
+                }
+                let hit = adjacency[i].iter().any(|&t| {
+                    let child = &graph.names[t];
+                    cut_set.contains(child.as_str()) || reaches_cut.contains(child)
+                });
+                if hit {
+                    reaches_cut.insert(name.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        let mut oneof_reaches_cut: BTreeSet<String> = BTreeSet::new();
+        for oneof in oneofs {
+            let hit = oneof.variants.iter().any(|v| match &v.message_leaf {
+                Some(leaf) => cut_set.contains(leaf.as_str()) || reaches_cut.contains(leaf),
+                None => false,
+            });
+            if hit {
+                oneof_reaches_cut.insert(oneof.rust_ident.clone());
+            }
+        }
+
+        // ── the ENTERED sets: what the driver can actually arrive at ──
+        let fields_of: BTreeMap<&str, &[Field]> = resolved
+            .iter()
+            .map(|(i, fields)| (messages[*i].leaf_name(), fields.as_slice()))
+            .collect();
+        let oneof_by_field: BTreeMap<String, &Oneof> = oneofs
+            .iter()
+            .map(|o| (oneof_key(messages, o), o))
+            .collect();
+
+        let mut entered: BTreeSet<String> = cut.iter().cloned().collect();
+        let mut oneof_entered: BTreeSet<String> = BTreeSet::new();
+        let mut frontier: Vec<String> = cut.clone();
+        while let Some(current) = frontier.pop() {
+            let Some(fields) = fields_of.get(current.as_str()) else {
+                continue;
+            };
+            for field in fields.iter() {
+                match &field.shape {
+                    Shape::Oneof => {
+                        let key = format!("{current}::{}", field.rust_name);
+                        let Some(oneof) = oneof_by_field.get(&key) else {
+                            continue;
+                        };
+                        if !oneof_reaches_cut.contains(&oneof.rust_ident) {
+                            continue;
+                        }
+                        if oneof_entered.insert(oneof.rust_ident.clone()) {
+                            for variant in &oneof.variants {
+                                if let Some(leaf) = &variant.message_leaf {
+                                    if !cut_set.contains(leaf.as_str())
+                                        && reaches_cut.contains(leaf)
+                                        && entered.insert(leaf.clone())
+                                    {
+                                        frontier.push(leaf.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    other => {
+                        for child in shape_children(other) {
+                            if !cut_set.contains(child.as_str())
+                                && reaches_cut.contains(&child)
+                                && entered.insert(child.clone())
+                            {
+                                frontier.push(child);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── the residual height, so "a constant" is a NUMBER ──
+        let residual_height = residual_height(&graph.names, &adjacency, &cut_set);
+
+        ClonePlan {
+            message_is_copy,
+            oneof_is_copy,
+            cut,
+            reaches_cut,
+            oneof_reaches_cut,
+            entered,
+            oneof_entered,
+            residual_height,
+        }
+    }
+
+    /// Is `leaf` a cut-set member — i.e. does the driver SUSPEND at it?
+    fn in_cut(&self, leaf: &str) -> bool {
+        self.cut.iter().any(|c| c == leaf)
+    }
+
+    /// Every item whose `Clone` §7 emits: the non-`Copy` messages and oneofs, in
+    /// descriptor order. This is the join point with `models/build.rs`'s strip.
+    fn clone_items(&self, messages: &[Message<'_>], oneofs: &[Oneof], extern_set: &BTreeSet<&str>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::with_capacity(messages.len() + oneofs.len());
+        for msg in messages {
+            if extern_set.contains(msg.leaf_name()) {
+                continue;
+            }
+            if !self.message_is_copy[msg.leaf_name()] {
+                out.push(rust_type_name(msg.leaf_name()));
+            }
+        }
+        for oneof in oneofs {
+            if !self.oneof_is_copy[&oneof.rust_ident] {
+                out.push(oneof.rust_ident.clone());
+            }
+        }
+        out
+    }
+}
+
+/// prost's `can_field_derive_copy`, reproduced.
+///
+/// `prost-build-0.14.3/src/context.rs:194-233`: repeated ⇒ no; a message field
+/// ⇒ no if it would make the owner recursive (`is_nested`) or is `.boxed()`
+/// (this build sets no `boxed` paths), else the field message's own answer;
+/// otherwise a `Copy` scalar.
+fn field_is_copy(
+    owner: &str,
+    field: &FieldDescriptorProto,
+    message_is_copy: &BTreeMap<String, bool>,
+    reaches: &impl Fn(&str, &str) -> bool,
+) -> bool {
+    if field.label == Some(Label::Repeated as i32) {
+        return false;
+    }
+    let ty = match field.r#type.and_then(|t| Type::try_from(t).ok()) {
+        Some(t) => t,
+        None => return false,
+    };
+    if ty != Type::Message {
+        return scalar_is_copy(ty);
+    }
+    let leaf = type_leaf(field.type_name.as_deref().unwrap_or(""));
+    // prost's `is_nested(field_type, owner)`: would this field make the owner
+    // recursive? If so, no `Copy` — and this is also what cuts the fixed point's
+    // cycles.
+    if reaches(leaf, owner) {
+        return false;
+    }
+    message_is_copy.get(leaf).copied().unwrap_or(false)
+}
+
+/// The leaf name of the message that declares `oneof`.
+///
+/// [`Oneof::module`] is the owner's module path (`var`, `expr`, `tagged_continuation`),
+/// which is the owner's leaf name in snake case — so the owner is recovered by
+/// matching that rather than by assuming the oneof's position in a flat list.
+fn owner_of_oneof(messages: &[Message<'_>], oneof: &Oneof) -> String {
+    messages
+        .iter()
+        .find(|m| m.oneof_module() == oneof.module)
+        .map(|m| m.leaf_name().to_string())
+        .unwrap_or_else(|| {
+            panic!(
+                "wire_schema: no message has oneof module `{}`; the oneof `{}` cannot be \
+                 attributed to an owner, and Copy-ness / cut reachability are per-owner facts",
+                oneof.module, oneof.rust_ident
+            )
+        })
+}
+
+/// `"<owner leaf>::<rust field name>"` — the key that identifies WHICH oneof a
+/// `Shape::Oneof` field is, without relying on `rust_type_name` round-tripping
+/// the field name back to the enum name.
+fn oneof_key(messages: &[Message<'_>], oneof: &Oneof) -> String {
+    format!(
+        "{}::{}",
+        owner_of_oneof(messages, oneof),
+        rust_field_name(&oneof.proto_name)
+    )
+}
+
+/// The height of the child relation once the cut set is removed — the constant
+/// that bounds a generated field-wise `clone`'s native recursion.
+///
+/// The residual is acyclic (verified by [`ClonePlan::build`]'s loop), so the
+/// longest path is well defined and computed by memoized descent over an
+/// explicit stack. Iterative deliberately: this is the build script of a
+/// campaign about recursive walks.
+fn residual_height(names: &[String], adjacency: &[Vec<usize>], cut: &BTreeSet<&str>) -> usize {
+    const UNKNOWN: usize = usize::MAX;
+    let mut height = vec![UNKNOWN; names.len()];
+    for root in 0..names.len() {
+        if height[root] != UNKNOWN {
+            continue;
+        }
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        while let Some(&mut (v, ref mut slot)) = work.last_mut() {
+            // A cut member is a SINK in the residual: the driver suspends there.
+            let edges: &[usize] = if cut.contains(names[v].as_str()) {
+                &[]
+            } else {
+                &adjacency[v]
+            };
+            if *slot < edges.len() {
+                let w = edges[*slot];
+                *slot += 1;
+                if height[w] == UNKNOWN && !work.iter().any(|(u, _)| *u == w) {
+                    work.push((w, 0));
+                }
+                continue;
+            }
+            work.pop();
+            let best = edges
+                .iter()
+                .map(|&w| {
+                    if height[w] == UNKNOWN {
+                        0
+                    } else {
+                        height[w] + 1
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            height[v] = best;
+        }
+    }
+    height.iter().copied().filter(|h| *h != UNKNOWN).max().unwrap_or(0)
 }
 
 // ===========================================================================
@@ -2403,35 +3144,1513 @@ fn emit_prost_conformance_registry(
 // §7  EMITTER C — the TERM-OP slot (`rhoapi_term_ops.rs`)
 // ===========================================================================
 
-/// Emit the term-op file.
+/// How the driver treats one field.
 ///
-/// ★ It is **empty of code**, on purpose, and it is emitted and included all the
-/// same. The four-output pipeline is then exercised end-to-end from the stage
-/// that built it: `models/build.rs` writes four files and the crate includes
-/// four modules, so a later stage that fills this one changes only its
-/// contents. A file emitted but not included would be a slot nobody had proved
-/// reachable; a slot filled with a placeholder constant would be a stub.
+/// ★ Derived, never named: the three arms are a function of [`ClonePlan`]'s cut
+/// set and `reaches_cut` predicate, so a `.proto` change that puts a `Par` under
+/// a type that used to be a leaf reclassifies that field automatically.
+enum FieldDescent {
+    /// Cloned whole, in one call, because that call is FLAT — either the type
+    /// contains no cut-set member at all, or (for `EPathMap`) its hand-written
+    /// `Clone` is O(1) at the node.
+    Bounded,
+    /// **Suspend here.** The field's type is a cut-set member; the driver pushes
+    /// a `Descend` and the parent's `Combine` takes the finished value back.
+    /// Carries the member's Rust type name.
+    Cut(String),
+    /// **Enter here.** The field's type can reach the cut set, so the driver
+    /// walks its shell inline. Carries the entered item's function stem.
+    Enter(String),
+}
+
+/// How many values one field contributes.
+enum FieldArity {
+    /// `Option<T>` — a singular message, or the oneof field.
+    Optional,
+    /// `Vec<T>`.
+    Repeated,
+    /// `BTreeMap<K, T>` — the driver descends into the VALUES.
+    Map,
+}
+
+/// Classify one field for the clone driver: `(arity, descent)`.
+fn clone_field_plan(
+    owner_leaf: &str,
+    field: &Field,
+    plan: &ClonePlan,
+    oneof_by_field: &BTreeMap<String, &Oneof>,
+) -> (FieldArity, FieldDescent) {
+    match &field.shape {
+        Shape::Scalar(_) | Shape::EmptyBytes | Shape::RepeatedString | Shape::RepeatedBytes => {
+            (FieldArity::Repeated, FieldDescent::Bounded)
+        }
+        Shape::Message { leaf } => (FieldArity::Optional, message_descent(leaf, plan)),
+        Shape::RepeatedMessage { leaf } => (FieldArity::Repeated, message_descent(leaf, plan)),
+        Shape::Map { value_leaf, .. } => (FieldArity::Map, message_descent(value_leaf, plan)),
+        Shape::Oneof => {
+            let key = format!("{owner_leaf}::{}", field.rust_name);
+            let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
+                panic!(
+                    "wire_schema: `{owner_leaf}.{}` is a oneof field but no resolved oneof \
+                     answers to `{key}`. The clone emitter names a oneof's generated walk after \
+                     its OWNER and field, so an unattributable oneof would silently become a \
+                     bounded field — i.e. a whole-value clone of a type that contains `Par`s, \
+                     which is exactly the Θ(depth) delegation this stage exists to remove.",
+                    field.rust_name
+                )
+            });
+            let descent = if plan.oneof_reaches_cut.contains(&oneof.rust_ident) {
+                FieldDescent::Enter(oneof.rust_ident.to_snake_case())
+            } else {
+                FieldDescent::Bounded
+            };
+            (FieldArity::Optional, descent)
+        }
+    }
+}
+
+/// The descent for a message-typed field of leaf type `leaf`.
+fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
+    if plan.in_cut(leaf) {
+        FieldDescent::Cut(rust_type_name(leaf))
+    } else if plan.reaches_cut.contains(leaf) {
+        FieldDescent::Enter(rust_type_name(leaf).to_snake_case())
+    } else {
+        FieldDescent::Bounded
+    }
+}
+
+/// Emit the term-op file: the GENERATED `Clone` for the whole `rhoapi` surface.
 ///
-/// The emitted text is comments only, which is a valid module body.
-fn emit_term_ops_source() -> String {
-    String::from(
+/// Returns `(source, the item names whose `Clone` was emitted)`. The second value
+/// is the join point with `models/build.rs`'s textual derive-strip pass; see
+/// there for the set cross-check in both directions.
+///
+/// ## What this emits, and why each piece is generated rather than written
+///
+/// ```text
+///   §A  the alphabet     CloneNode / CloneVal / CloneKont / CloneChildren
+///   §B  the pooled stacks   thread-local, so a shallow clone allocates NOTHING
+///   §C  the traversal    one `impl Traversal`, dispatching on the CUT SET
+///   §D  the families     push-children / count-children / rebuild, per ENTERED type
+///   §E  the impls        `impl Clone` × the non-`Copy` items
+///   §F  the ORACLE       the derive's own Θ(depth) body, retained as a free fn
+///   §G  the join tables  what `models/build.rs` and the tests check against
+/// ```
+///
+/// ## ⚠★ Why the emission is MONOMORPHIC and the trampoline is not
+///
+/// [`crate::rust::rholang::wire`] §A2 records the obvious factoring — a generated
+/// table exposing `fn wire_field(i) -> FieldVal` interpreted by a hand-written
+/// driver — and what it cost: 21 indirect calls per `Par` node, 31.8% of the
+/// profile in the driver loop, **1.7× slower than the derive it replaced**. The
+/// rule that came out of it is *"bounded-field EMISSION is generated and
+/// monomorphic; the TRAMPOLINE is hand-written and generic"*, and every family in
+/// §D obeys it: one straight-line function per type, no per-field indirection, no
+/// `&dyn` anything.
+///
+/// ## ⚠⚠ Why collection ELEMENTS are pushed one at a time
+///
+/// The sibling `mettail-rust` generator emits nine "iterative" drivers and
+/// **eight of nine measured Θ(depth)**, at 254–10,592 B/level. The cause was
+/// **collection-element delegation**: a `Vec<T>` field routed to a whole-value
+/// call (`a.cmp(b)`, `Hash::hash(v, state)`) which re-entered the element type's
+/// trait method and recursed. The cross-*category* hop was fine; the escape was
+/// `Category → Vec<Elem> → Elem`.
+///
+/// `Par` has exactly that shape nine times over — `Vec<Send>`, `Vec<Receive>`,
+/// `Vec<New>`, `Vec<Expr>`, `Vec<Match>`, `Vec<Bundle>`, `Vec<Connective>`,
+/// `Vec<If>`, `Vec<GUnforgeable>` — so §D **never** emits
+/// `<Vec<T> as Clone>::clone` for an element type that reaches the cut set. It
+/// emits a `for` loop that pushes each element's cut-set children individually.
+/// `rholang/tests/stack_depth_gate.rs`'s `clone` and `clone_send_chain` subjects
+/// are the executed proof, and both ladders nest THROUGH a `Vec` field — a pure
+/// `Par → Par` chain could not exhibit the defect and would prove nothing.
+fn emit_term_ops_source(
+    messages: &[Message<'_>],
+    resolved: &[(usize, Vec<Field>)],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+    graph: &SchemaGraph,
+    plan: &ClonePlan,
+) -> (String, Vec<String>) {
+    let oneof_by_field: BTreeMap<String, &Oneof> =
+        oneofs.iter().map(|o| (oneof_key(messages, o), o)).collect();
+    let fields_of: BTreeMap<&str, &[Field]> = resolved
+        .iter()
+        .map(|(i, fields)| (messages[*i].leaf_name(), fields.as_slice()))
+        .collect();
+    let path_of: BTreeMap<&str, String> = messages
+        .iter()
+        .map(|m| (m.leaf_name(), m.rust_path()))
+        .collect();
+
+    let mut src = String::with_capacity(160 * 1024);
+    term_ops_header(&mut src, plan, graph);
+    emit_clone_alphabet(&mut src, plan);
+    emit_clone_pool(&mut src, plan);
+    emit_clone_traversal(&mut src, plan);
+
+    // ── §D  the families, over the ENTERED set, in DESCRIPTOR order ──
+    src.push_str(
+        "// ===========================================================================\n\
+         // §D  The FAMILIES — one straight-line function per ENTERED item\n\
+         // ===========================================================================\n\
+         //\n\
+         // Three mutually recursive families over the RESIDUAL child relation, which the\n\
+         // generator VERIFIED acyclic, so their native recursion is bounded by the\n\
+         // residual height (published as `CLONE_RESIDUAL_HEIGHT`) and not by the term:\n\
+         //\n\
+         //   clone_push_children_*   pushes each cut-set child, in DECLARATION order\n\
+         //   clone_child_count_*     the SECOND, INDEPENDENT statement of that count,\n\
+         //                           which `drive`'s deficit invariant cross-checks\n\
+         //   clone_rebuild_*         rebuilds the shell, pulling one child per slot in\n\
+         //                           the SAME order `push_children` pushed them\n\
+         //\n\
+         // ⚠★ THE ORDER IS THE IDENTITY (DECLARATION) ORDER, never `min_tag`. The two\n\
+         // genuinely differ for `Par` (…7, 11, 8, 12, 9, 10) and `TaggedContinuation`,\n\
+         // and the three families must agree with EACH OTHER — a `push` in declaration\n\
+         // order paired with a `rebuild` in tag order would hand `Par`'s cloned bundles\n\
+         // to its connectives, on the hottest type in the schema, with no length change\n\
+         // to give it away.\n\n",
+    );
+    let mut families = 0usize;
+    for msg in messages {
+        let leaf = msg.leaf_name();
+        if extern_set.contains(leaf) || !plan.entered.contains(leaf) {
+            continue;
+        }
+        let fields = fields_of
+            .get(leaf)
+            .unwrap_or_else(|| panic!("wire_schema: entered type `{leaf}` has no resolved fields"));
+        emit_clone_family_message(
+            &mut src,
+            &path_of[leaf],
+            leaf,
+            fields,
+            plan,
+            &oneof_by_field,
+            extern_set,
+        );
+        families += 1;
+    }
+    for oneof in oneofs {
+        if !plan.oneof_entered.contains(&oneof.rust_ident) {
+            continue;
+        }
+        emit_clone_family_oneof(&mut src, oneof, plan);
+        families += 1;
+    }
+    assert!(
+        families > 0,
+        "wire_schema: the clone emitter produced NO family. The driver would then have nothing \
+         to walk, every `Clone` would fall back to a whole-value copy, and the file would \
+         compile — which is precisely the silent-vacuity failure the non-vacuity floors in \
+         `models/build.rs` exist to refuse. Check `ClonePlan::entered`."
+    );
+
+    // ── §E  the `impl Clone`s ──
+    let clone_items = plan.clone_items(messages, oneofs, extern_set);
+    emit_clone_impls(
+        &mut src,
+        messages,
+        oneofs,
+        extern_set,
+        plan,
+        &fields_of,
+        &path_of,
+    );
+
+    // ── §F  the retained oracle ──
+    emit_clone_oracle(
+        &mut src,
+        messages,
+        oneofs,
+        extern_set,
+        plan,
+        &oneof_by_field,
+        &fields_of,
+        &path_of,
+    );
+
+    // ── §G  the join tables ──
+    emit_clone_join_tables(&mut src, messages, oneofs, extern_set, plan, &clone_items);
+
+    (src, clone_items)
+}
+
+fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
+    let cut = plan
+        .cut
+        .iter()
+        .map(|c| rust_type_name(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        src,
         "// @generated by models/build/wire_schema.rs from the protobuf FileDescriptorSet.\n\
          // DO NOT EDIT. Regenerate by touching models/src/main/protobuf/RhoTypes.proto.\n\
          //\n\
-         // ── EMPTY, DELIBERATELY ──\n\
+         // ── THE TERM-OP DRIVERS — stage F-4 fills the slot stage S2 built ──\n\
          //\n\
-         // This is the TERM-OP slot of the four-output generator pass. It carries no code\n\
-         // yet: the term-op drivers — the `Clone::clone`, `Ord::cmp`, `Debug::fmt` and\n\
-         // `Message::clear` walks that `rhoapi_schema_meta.rs`'s\n\
-         // DERIVE_DISPOSITION_REGISTRY marks `Remaining`, plus the hand-written\n\
-         // `PartialEq::eq` / `Hash::hash` that no derive scan can see — belong to a later\n\
-         // stage of the four-quadrant design and are not in scope here.\n\
+         // This file was EMITTED EMPTY by the pass that created it, deliberately, so that\n\
+         // \"four files written, four modules compiled\" was a property the build already\n\
+         // had rather than one this stage would have to establish. It now carries the\n\
+         // GENERATED `Clone` for the whole `rhoapi` surface.\n\
          //\n\
-         // It is EMITTED AND INCLUDED all the same, so the pipeline a later stage fills is\n\
-         // exercised from the stage that built it: four files written, four modules\n\
-         // included, one pass. A file emitted but not included would be a slot nobody had\n\
-         // proved reachable, and a placeholder constant would be a stub.\n",
+         // ## The CUT SET: {cut}\n\
+         //\n\
+         // `Clone` is not converted type by type. It is converted at a FEEDBACK VERTEX SET\n\
+         // of the child relation — the smallest set of types whose removal leaves the\n\
+         // relation acyclic — because a field-wise `clone` over a DAG has native depth\n\
+         // bounded by the DAG's height. So `<Send as Clone>::clone` needs no driver: it\n\
+         // costs one native frame and then reaches a DRIVEN `<Par as Clone>::clone`.\n\
+         //\n\
+         // The residual (cut-removed) child relation has height {height}, and the\n\
+         // generator VERIFIED it acyclic (every residual SCC trivial) before emitting.\n\
+         // {recursive} types in this schema can contain themselves; {cut_len} of them carry a\n\
+         // driver.\n\
+         //\n\
+         // ## What is NOT here\n\
+         //\n\
+         // `Ord::cmp` (F-5) and `Debug::fmt` (F-6) are the same three families over the\n\
+         // same cut set with a different `Val` and a different `combine`; they are not in\n\
+         // this commit. `Drop` is REFUSED, by measurement rather than by preference:\n\
+         // `impl Drop for Par` produces 353 diagnostics across 61 unique lines in `models`\n\
+         // alone (38 functional-record-update, 23 partial move) and the build aborts before\n\
+         // reaching `rholang`. The by-move teardown stays\n\
+         // `par_children::dismantle_all`.\n",
+        cut = cut,
+        height = plan.residual_height,
+        recursive = graph.recursive.len(),
+        cut_len = plan.cut.len()
     )
+    .expect("write");
+    src.push_str(
+        "\n\
+         use std::cell::RefCell;\n\
+         use std::collections::BTreeMap;\n\
+         use std::convert::Infallible;\n\
+         \n\
+         use crate::rhoapi::*;\n\
+         use crate::rhoapi::connective::ConnectiveInstance;\n\
+         use crate::rhoapi::expr::ExprInstance;\n\
+         use crate::rhoapi::g_unforgeable::UnfInstance;\n\
+         use crate::rhoapi::tagged_continuation::TaggedCont;\n\
+         use crate::rhoapi::var::VarInstance;\n\
+         use crate::rust::rhoapi_ext::EPathMap;\n\
+         use crate::rust::rholang::drive::{drive_with, Outcome, Step, Traversal};\n\
+         \n",
+    );
+}
+
+/// §A — the alphabet: one arm per cut-set member, in three enums.
+fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
+    src.push_str(
+        "// ===========================================================================\n\
+         // §A  The ALPHABET — one arm per CUT-SET member\n\
+         // ===========================================================================\n\n\
+         /// One borrowed cut-set node awaiting a clone.\n\
+         ///\n\
+         /// ★ An enum with one arm per cut-set member, even when there is exactly one.\n\
+         /// rustc lays a single-variant enum out as its payload with no discriminant, so\n\
+         /// the generality is free — and a `.proto` change that introduces a cycle not\n\
+         /// through the present cut set adds an arm here rather than needing a new shape.\n\
+         #[derive(Clone, Copy)]\n\
+         pub enum CloneNode<'t> {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        writeln!(src, "    /// A borrowed [`{ty}`] to clone.\n    {ty}(&'t {ty}),").expect("write");
+    }
+    src.push_str(
+        "}\n\n\
+         /// One completed clone.\n\
+         ///\n\
+         /// ⚠ This is the `Val` that OWNS TERMS which `drive.rs` warns about: abandoning\n\
+         /// the value stack releases these through the DERIVED recursive destructor.\n\
+         /// [`CloneVal::dismantle`] is the iterative alternative, and\n\
+         /// [`CloneStacks::drop`] is the one place it is needed (a panic unwinding out of\n\
+         /// the driver).\n\
+         pub enum CloneVal {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        writeln!(src, "    /// A finished [`{ty}`].\n    {ty}({ty}),").expect("write");
+    }
+    src.push_str("}\n\nimpl CloneVal {\n");
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let stem = ty.to_snake_case();
+        let teardown = ITERATIVE_TEARDOWN
+            .iter()
+            .find(|(t, _)| *t == ty)
+            .map(|(_, path)| *path)
+            .expect("wire_schema: ClonePlan::build proved every cut member has a teardown");
+        writeln!(
+            src,
+            "    /// Take the [`{ty}`] this value must be.\n    \
+             #[inline]\n    \
+             fn into_{stem}(self) -> {ty} {{\n        \
+             match self {{"
+        )
+        .expect("write");
+        for other in &plan.cut {
+            let other_ty = rust_type_name(other);
+            if other_ty == ty {
+                writeln!(src, "            CloneVal::{ty}(v) => v,").expect("write");
+                continue;
+            }
+            let other_teardown = ITERATIVE_TEARDOWN
+                .iter()
+                .find(|(t, _)| *t == other_ty)
+                .map(|(_, path)| *path)
+                .expect("wire_schema: every cut member has a teardown");
+            writeln!(
+                src,
+                "            CloneVal::{other_ty}(v) => {{\n                \
+                 // Released ITERATIVELY before the panic: unwinding with a deep term\n                \
+                 // still on the stack would run the Theta(depth) derived destructor.\n                \
+                 {other_teardown}(v);\n                \
+                 clone_value_type_mismatch(\"{ty}\", \"{other_ty}\")\n            \
+                 }}"
+            )
+            .expect("write");
+        }
+        src.push_str("        }\n    }\n\n");
+        let _ = teardown;
+    }
+    // ⚠ ONE `dismantle` over the whole enum, after the per-member accessors — a
+    // copy per member would be N copies of one match.
+    src.push_str(
+        "    /// Release this value with an ITERATIVE teardown, per\n\
+         \x20   /// `wire_schema.rs`'s `ITERATIVE_TEARDOWN` table.\n\
+         \x20   ///\n\
+         \x20   /// ⚠ Needed on exactly one path: a PANIC unwinding out of the driver, which\n\
+         \x20   /// leaves cloned terms on the pooled value stack. `Vec::clear` there would run\n\
+         \x20   /// the DERIVED recursive destructor — itself Theta(depth) (gate subject\n\
+         \x20   /// `par_drop`) — on a stack that is already unwinding.\n\
+         \x20   fn dismantle(self) {\n\
+         \x20       match self {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let teardown = ITERATIVE_TEARDOWN
+            .iter()
+            .find(|(t, _)| *t == ty)
+            .map(|(_, path)| *path)
+            .expect("wire_schema: every cut member has a teardown");
+        writeln!(src, "            CloneVal::{ty}(v) => {teardown}(v),").expect("write");
+    }
+    src.push_str("        }\n    }\n}\n\n");
+
+    src.push_str(
+        "/// The defunctionalized continuation: the borrowed ORIGINAL whose shell is\n\
+         /// rebuilt once its children are done.\n\
+         ///\n\
+         /// ★ It carries the node itself rather than a copy of the shell plus child\n\
+         /// COUNTS, which is what lets `arity()` be a genuinely SECOND statement of those\n\
+         /// counts: `clone_child_count_*` recounts from the original by its own walk,\n\
+         /// while `clone_rebuild_*` consumes one child per structural slot. Two walks of\n\
+         /// one structure, cross-checked by `drive`'s deficit invariant.\n\
+         #[derive(Clone, Copy)]\n\
+         pub enum CloneKont<'t> {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        writeln!(src, "    /// Rebuild this [`{ty}`]'s shell.\n    {ty}(&'t {ty}),").expect("write");
+    }
+    src.push_str(
+        "}\n\n\
+         /// The finished children of one node, in the order `clone_push_children_*`\n\
+         /// pushed them.\n\
+         ///\n\
+         /// ★ A `Drain` and not a `split_off`: `split_off` would allocate a `Vec` per\n\
+         /// node, which on the measured production distribution (95.43% of terms at depth\n\
+         /// 2) is the whole cost of the node. `Drain` removes the tail in place.\n\
+         struct CloneChildren<'d> {\n\
+         \x20   inner: std::vec::Drain<'d, CloneVal>,\n\
+         }\n\n\
+         impl<'d> CloneChildren<'d> {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let stem = ty.to_snake_case();
+        writeln!(
+            src,
+            "    /// The next child, which must be a [`{ty}`].\n    \
+             #[inline]\n    \
+             fn {stem}(&mut self) -> {ty} {{\n        \
+             match self.inner.next() {{\n            \
+             Some(v) => v.into_{stem}(),\n            \
+             None => clone_children_exhausted(\"{ty}\"),\n        \
+             }}\n    }}\n"
+        )
+        .expect("write");
+    }
+    src.push_str(
+        "    /// ★ The UNCONDITIONAL other half of the arity cross-check.\n\
+         \x20   ///\n\
+         \x20   /// `drive`'s deficit invariant is `debug_assertions`-only for the running\n\
+         \x20   /// case, and it compares `arity()` against the number of values `combine`\n\
+         \x20   /// POPPED. This compares `arity()` against the number the REBUILD asked for,\n\
+         \x20   /// in every profile: a rebuild that forgot a field consumes fewer children\n\
+         \x20   /// than were counted, and the leftovers are found here rather than being\n\
+         \x20   /// dropped silently by `Drain`.\n\
+         \x20   fn finish(mut self, ty: &'static str) {\n\
+         \x20       let leftover = self.inner.by_ref().count();\n\
+         \x20       if leftover != 0 {\n\
+         \x20           clone_children_leftover(ty, leftover);\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n\
+         #[cold]\n\
+         #[inline(never)]\n\
+         fn clone_children_exhausted(want: &'static str) -> ! {\n\
+         \x20   panic!(\n\
+         \x20       \"term_ops::clone: the value stack ran out while rebuilding a `{want}` \\\n\
+         \x20        child. `clone_child_count_*` and `clone_rebuild_*` are two independent \\\n\
+         \x20        walks of one node and they have disagreed: the rebuild asked for more \\\n\
+         \x20        children than the count reported, so the count is missing a field the \\\n\
+         \x20        rebuild has (or `clone_push_children_*` never pushed it). All three \\\n\
+         \x20        families are generated from ONE resolved-field vector in DECLARATION \\\n\
+         \x20        order, so a disagreement means the emitter's three renderers have \\\n\
+         \x20        drifted — see models/build/wire_schema.rs section 7.\"\n\
+         \x20   )\n\
+         }\n\n\
+         #[cold]\n\
+         #[inline(never)]\n\
+         fn clone_children_leftover(ty: &'static str, leftover: usize) -> ! {\n\
+         \x20   panic!(\n\
+         \x20       \"term_ops::clone: rebuilding a `{ty}` left {leftover} cloned child value(s) \\\n\
+         \x20        UNCONSUMED. `clone_child_count_{{ty}}` counted more children than \\\n\
+         \x20        `clone_rebuild_{{ty}}` placed, i.e. the rebuild is missing a field the \\\n\
+         \x20        count has. Those children were CLONED and are about to be dropped, so \\\n\
+         \x20        the result would be a term with a silently missing subtree — which no \\\n\
+         \x20        length check and no round-trip could see. This is checked in EVERY \\\n\
+         \x20        profile, unlike `drive`'s running deficit invariant.\"\n\
+         \x20   )\n\
+         }\n\n\
+         #[cold]\n\
+         #[inline(never)]\n\
+         fn clone_children_underflow(ty: &'static str, wanted: usize, have: usize) -> ! {\n\
+         \x20   panic!(\n\
+         \x20       \"term_ops::clone: rebuilding a `{ty}` needs {wanted} child value(s) but the \\\n\
+         \x20        value stack holds only {have}. The children of this node were never \\\n\
+         \x20        produced, which means `clone_push_children_{{ty}}` pushed fewer \\\n\
+         \x20        `Descend`s than `clone_child_count_{{ty}}` counted.\"\n\
+         \x20   )\n\
+         }\n\n\
+",
+    );
+    // ⚠ Emitted only when it can be CALLED. With a single-member cut set every
+    // `into_*` match is total, so this would be dead code — and `models` builds
+    // with `-D warnings`.
+    if plan.cut.len() > 1 {
+        src.push_str(
+            "#[cold]\n\
+             #[inline(never)]\n\
+             fn clone_value_type_mismatch(want: &'static str, got: &'static str) -> ! {\n\
+             \x20   panic!(\n\
+             \x20       \"term_ops::clone: the value stack yielded a `{got}` where a `{want}` was \\\n\
+             \x20        required. The cut set has more than one member and a `Kont`'s rebuild \\\n\
+             \x20        disagrees with its `push_children` about a child's TYPE.\"\n\
+             \x20   )\n\
+             }\n\n",
+        );
+    }
+}
+
+/// §B — the thread-local stack pool. The reason a shallow clone allocates nothing.
+fn emit_clone_pool(src: &mut String, plan: &ClonePlan) {
+    let teardowns: String = plan
+        .cut
+        .iter()
+        .map(|name| format!("`{}`", rust_type_name(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        src,
+        "// ===========================================================================\n\
+         // §B  The POOLED STACKS — why a shallow clone allocates NOTHING\n\
+         // ===========================================================================\n\
+         //\n\
+         // ★ `drive` allocates a work stack and a value stack per call. On the measured\n\
+         // production distribution — 1,773 instrumented datums, 95.43% at depth 2, nothing\n\
+         // deeper than 6 (`models/benches/wire_encode_bench.rs`) — a `Par` clone touches a\n\
+         // handful of nodes, and two extra mallocs against the derive's two or three is a\n\
+         // double-digit regression on the case that decides the verdict. So both stacks\n\
+         // are parked per thread and handed to `drive_with`.\n\
+         //\n\
+         // This is `wire_encode`'s `take_ops` / `give_ops`, verbatim in structure,\n\
+         // including its soundness argument and its two policies: a NESTED clone gets a\n\
+         // private buffer rather than aliasing, and a one-off DEEP clone is not parked, so\n\
+         // one pathological term cannot pin its high-water mark for the life of the\n\
+         // thread.\n\
+         //\n\
+         // ⚠ The pooled value stack owns cloned {teardowns} on a panic path, and releasing\n\
+         // those with `Vec::clear` would run the derived Theta(depth) destructor. `Drop`\n\
+         // routes them through the ITERATIVE teardown instead."
+    )
+    .expect("write");
+    src.push_str(
+        "\n\
+         /// Work-stack preallocation. One `Par` level costs one `Combine` plus one\n\
+         /// `Descend` per child, so 64 covers a 32-deep chain before the first regrowth.\n\
+         const CLONE_WORK_CAPACITY: usize = 64;\n\
+         /// Value-stack preallocation. A post-order fold holds only the current\n\
+         /// FRONTIER, which for a chain is one value; 16 covers a wide shallow node.\n\
+         const CLONE_VAL_CAPACITY: usize = 16;\n\
+         /// The largest work allocation worth keeping (entries, not bytes).\n\
+         const CLONE_MAX_POOLED_WORK: usize = 8192;\n\
+         /// The largest value allocation worth keeping.\n\
+         const CLONE_MAX_POOLED_VALS: usize = 1024;\n\
+         \n\
+         thread_local! {\n\
+         \x20   /// The pooled work-stack ALLOCATION.\n\
+         \x20   ///\n\
+         \x20   /// ⚠ The parameter is `'static` because a thread-local cannot be generic over\n\
+         \x20   /// a caller's lifetime. It is ALWAYS EMPTY while parked, so no\n\
+         \x20   /// `Step<'static, _>` value ever exists — see [`CloneStacks::take`].\n\
+         \x20   static CLONE_WORK: RefCell<Vec<Step<'static, CloneTraversal>>> =\n\
+         \x20       RefCell::new(Vec::with_capacity(CLONE_WORK_CAPACITY));\n\
+         \x20   /// The pooled value-stack allocation. `CloneVal` carries no lifetime, so this\n\
+         \x20   /// one needs no transmute.\n\
+         \x20   static CLONE_VALS: RefCell<Vec<CloneVal>> =\n\
+         \x20       RefCell::new(Vec::with_capacity(CLONE_VAL_CAPACITY));\n\
+         }\n\
+         \n\
+         /// The two stacks one driven clone runs on, borrowed with the caller's lifetime.\n\
+         struct CloneStacks<'t> {\n\
+         \x20   work: Vec<Step<'t, CloneTraversal>>,\n\
+         \x20   vals: Vec<CloneVal>,\n\
+         }\n\
+         \n\
+         impl<'t> CloneStacks<'t> {\n\
+         \x20   /// Borrow the pooled allocations.\n\
+         \x20   ///\n\
+         \x20   /// # Soundness\n\
+         \x20   ///\n\
+         \x20   /// The parked work vector is EMPTY (the match guard), so the transmute\n\
+         \x20   /// re-types ZERO live values — only the heap allocation is carried across,\n\
+         \x20   /// which is the standard buffer-recycling idiom. `Step<'t, T>` and\n\
+         \x20   /// `Step<'static, T>` are layout-identical: lifetimes are erased before\n\
+         \x20   /// codegen and appear in no discriminant, size or alignment. [`Drop`] clears\n\
+         \x20   /// before parking, so the emptiness invariant is restored on every path\n\
+         \x20   /// including a panic.\n\
+         \x20   ///\n\
+         \x20   /// If the slot is already taken — a NESTED clone — a private vector is used\n\
+         \x20   /// instead of aliasing.\n\
+         \x20   #[inline]\n\
+         \x20   fn take() -> CloneStacks<'t> {\n\
+         \x20       let work = CLONE_WORK.with(|cell| match cell.try_borrow_mut() {\n\
+         \x20           Ok(mut parked) if parked.is_empty() && parked.capacity() > 0 => {\n\
+         \x20               let recycled = std::mem::take(&mut *parked);\n\
+         \x20               debug_assert!(\n\
+         \x20                   recycled.is_empty(),\n\
+         \x20                   \"the pooled clone work stack must be parked EMPTY\"\n\
+         \x20               );\n\
+         \x20               // SAFETY: emptied above; see this function's soundness note.\n\
+         \x20               unsafe {\n\
+         \x20                   std::mem::transmute::<\n\
+         \x20                       Vec<Step<'static, CloneTraversal>>,\n\
+         \x20                       Vec<Step<'t, CloneTraversal>>,\n\
+         \x20                   >(recycled)\n\
+         \x20               }\n\
+         \x20           }\n\
+         \x20           _ => Vec::with_capacity(CLONE_WORK_CAPACITY),\n\
+         \x20       });\n\
+         \x20       let vals = CLONE_VALS.with(|cell| match cell.try_borrow_mut() {\n\
+         \x20           Ok(mut parked) if parked.is_empty() && parked.capacity() > 0 => {\n\
+         \x20               std::mem::take(&mut *parked)\n\
+         \x20           }\n\
+         \x20           _ => Vec::with_capacity(CLONE_VAL_CAPACITY),\n\
+         \x20       });\n\
+         \x20       CloneStacks { work, vals }\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         impl<'t> Drop for CloneStacks<'t> {\n\
+         \x20   fn drop(&mut self) {\n\
+         \x20       let mut work = std::mem::take(&mut self.work);\n\
+         \x20       work.clear();\n\
+         \x20       if work.capacity() > 0 && work.capacity() <= CLONE_MAX_POOLED_WORK {\n\
+         \x20           // SAFETY: emptied immediately above; see `CloneStacks::take`.\n\
+         \x20           let parked: Vec<Step<'static, CloneTraversal>> =\n\
+         \x20               unsafe { std::mem::transmute(work) };\n\
+         \x20           CLONE_WORK.with(|cell| {\n\
+         \x20               if let Ok(mut slot) = cell.try_borrow_mut() {\n\
+         \x20                   // Keep the LARGER, so the pool converges upward to the working\n\
+         \x20                   // set instead of oscillating.\n\
+         \x20                   if slot.capacity() < parked.capacity() {\n\
+         \x20                       *slot = parked;\n\
+         \x20                   }\n\
+         \x20               }\n\
+         \x20           });\n\
+         \x20       }\n\
+         \n\
+         \x20       let mut vals = std::mem::take(&mut self.vals);\n\
+         \x20       if !vals.is_empty() {\n\
+         \x20           // ⚠ A PANIC unwound out of the driver, so the value stack still owns\n\
+         \x20           // CLONED TERMS. `Vec::clear` would run `drop_in_place`, itself\n\
+         \x20           // Theta(depth) (gate subject `par_drop`) — on a stack that is already\n\
+         \x20           // unwinding. Release them iteratively instead.\n\
+         \x20           for value in vals.drain(..) {\n\
+         \x20               value.dismantle();\n\
+         \x20           }\n\
+         \x20       }\n\
+         \x20       if vals.capacity() > 0 && vals.capacity() <= CLONE_MAX_POOLED_VALS {\n\
+         \x20           CLONE_VALS.with(|cell| {\n\
+         \x20               if let Ok(mut slot) = cell.try_borrow_mut() {\n\
+         \x20                   if slot.capacity() < vals.capacity() {\n\
+         \x20                       *slot = vals;\n\
+         \x20                   }\n\
+         \x20               }\n\
+         \x20           });\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n",
+    );
+}
+
+/// §C — the one `impl Traversal`.
+fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
+    src.push_str(
+        "// ===========================================================================\n\
+         // §C  The TRAVERSAL — one `impl Traversal`, dispatching on the CUT SET\n\
+         // ===========================================================================\n\n\
+         /// The clone traversal: a borrowing, post-order fold that rebuilds each node's\n\
+         /// shell from the finished clones of its cut-set children.\n\
+         ///\n\
+         /// A unit struct because the visitor is the *configuration* and there is none:\n\
+         /// `Clone` needs no environment, no oracle and no output buffer, so `State` is\n\
+         /// `()` too. The one piece of mutable working memory a naive form would want — a\n\
+         /// scratch buffer to reverse the children through — is not needed either: the\n\
+         /// region is reversed IN PLACE on the work stack.\n\
+         pub struct CloneTraversal;\n\n\
+         impl Traversal for CloneTraversal {\n\
+         \x20   type Node<'t> = CloneNode<'t>;\n\
+         \x20   type Val = CloneVal;\n\
+         \x20   type Kont<'t> = CloneKont<'t>;\n\
+         \x20   type State = ();\n\
+         \x20   /// ★ UNINHABITED. A structural copy cannot fail, and saying so with\n\
+         \x20   /// `Infallible` rather than a placeholder error type is what makes the two\n\
+         \x20   /// abort paths in `drive_with` provably dead here — which is in turn why\n\
+         \x20   /// this instance needs no `dismantle_all` on the error path.\n\
+         \x20   type Err = Infallible;\n\
+         \x20   const WORK_CAPACITY: usize = CLONE_WORK_CAPACITY;\n\
+         \x20   const VAL_CAPACITY: usize = CLONE_VAL_CAPACITY;\n\n\
+         \x20   /// Push the continuation, then every cut-set child.\n\
+         \x20   ///\n\
+         \x20   /// ★ Bounded fields are NOT touched here — they are cloned in `combine`, by\n\
+         \x20   /// the same straight-line `clone_rebuild_*` that places the children. A\n\
+         \x20   /// two-phase form that copied the shell on the way down would have to park\n\
+         \x20   /// it somewhere, and the only place is the work stack, which is the one\n\
+         \x20   /// thing that must stay small.\n\
+         \x20   #[inline]\n\
+         \x20   fn descend<'t>(\n\
+         \x20       &mut self,\n\
+         \x20       _state: &mut (),\n\
+         \x20       node: CloneNode<'t>,\n\
+         \x20       work: &mut Vec<Step<'t, Self>>,\n\
+         \x20       _vals: &mut Vec<CloneVal>,\n\
+         \x20   ) -> Result<(), Infallible> {\n\
+         \x20       match node {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let stem = ty.to_snake_case();
+        writeln!(
+            src,
+            "            CloneNode::{ty}(src) => {{\n                \
+             work.push(Step::Combine(CloneKont::{ty}(src)));\n                \
+             let first = work.len();\n                \
+             clone_push_children_{stem}(src, work);\n                \
+             // ★ The children went on in DECLARATION order, so the region is\n                \
+             // reversed IN PLACE to make them POP in declaration order. No\n                \
+             // scratch buffer and no allocation; `Step` is two words.\n                \
+             work[first..].reverse();\n            \
+             }}"
+        )
+        .expect("write");
+    }
+    src.push_str(
+        "        }\n\
+         \x20       Ok(())\n\
+         \x20   }\n\n\
+         \x20   /// Rebuild one node's shell around its finished children.\n\
+         \x20   #[inline]\n\
+         \x20   fn combine<'t>(\n\
+         \x20       &mut self,\n\
+         \x20       _state: &mut (),\n\
+         \x20       kont: CloneKont<'t>,\n\
+         \x20       vals: &mut Vec<CloneVal>,\n\
+         \x20   ) -> Result<Outcome<CloneVal>, Infallible> {\n\
+         \x20       match kont {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let stem = ty.to_snake_case();
+        writeln!(
+            src,
+            "            CloneKont::{ty}(src) => {{\n                \
+             let wanted = clone_child_count_{stem}(src);\n                \
+             let base = match vals.len().checked_sub(wanted) {{\n                    \
+             Some(base) => base,\n                    \
+             None => clone_children_underflow(\"{ty}\", wanted, vals.len()),\n                \
+             }};\n                \
+             let mut children = CloneChildren {{ inner: vals.drain(base..) }};\n                \
+             let rebuilt = clone_rebuild_{stem}(src, &mut children);\n                \
+             children.finish(\"{ty}\");\n                \
+             Ok(Outcome::Value(CloneVal::{ty}(rebuilt)))\n            \
+             }}"
+        )
+        .expect("write");
+    }
+    src.push_str(
+        "        }\n\
+         \x20   }\n\n\
+         \x20   /// ★ The SECOND, INDEPENDENT statement of `combine`'s pop count. It recounts\n\
+         \x20   /// from the borrowed original by its own walk; `combine` consumes one child\n\
+         \x20   /// per structural slot. `drive`'s deficit invariant compares them.\n\
+         \x20   #[inline]\n\
+         \x20   fn arity(kont: &CloneKont<'_>) -> usize {\n\
+         \x20       match kont {\n",
+    );
+    for name in &plan.cut {
+        let ty = rust_type_name(name);
+        let stem = ty.to_snake_case();
+        writeln!(
+            src,
+            "            CloneKont::{ty}(src) => clone_child_count_{stem}(src),"
+        )
+        .expect("write");
+    }
+    src.push_str("        }\n    }\n}\n\n");
+}
+
+/// Why a whole-value clone of a message-shaped field is FLAT — stated per field,
+/// because this is the exact shape the sibling repo's eight Θ(depth) drivers
+/// escaped through.
+fn bounded_note(leaf: &str, plan: &ClonePlan, extern_note: bool) -> String {
+    if extern_note {
+        format!(
+            "// `{leaf}` is EXTERN: its hand-written `Clone` is O(1) AT THE NODE (`ps` is an\n    \
+             // `EntryTrie`, a refcount bump; the shadow cell is an `Arc` bump), so it never\n    \
+             // re-enters a driven clone. Measured by the gate subject `clone_pathmap_chain`."
+        )
+    } else {
+        let _ = plan;
+        format!(
+            "// BOUNDED: `{leaf}` cannot reach the clone cut set, so its `Clone` is flat and\n    \
+             // one whole-value call is correct. ⚠ This is the ONLY shape in which a\n    \
+             // `<Vec<T> as Clone>::clone` may be emitted for a message element type."
+        )
+    }
+}
+
+/// §D — the three families for one message.
+#[allow(clippy::too_many_arguments)]
+fn emit_clone_family_message(
+    src: &mut String,
+    rust_path: &str,
+    leaf: &str,
+    fields: &[Field],
+    plan: &ClonePlan,
+    oneof_by_field: &BTreeMap<String, &Oneof>,
+    extern_set: &BTreeSet<&str>,
+) {
+    let stem = rust_type_name(leaf).to_snake_case();
+    let mut push: Vec<String> = Vec::with_capacity(fields.len());
+    let mut count: Vec<String> = Vec::with_capacity(fields.len());
+    let mut binds: Vec<String> = Vec::with_capacity(fields.len());
+    let mut names: Vec<String> = Vec::with_capacity(fields.len());
+
+    for f in fields {
+        let name = f.rust_name.clone();
+        names.push(name.clone());
+        let (arity, descent) = clone_field_plan(leaf, f, plan, oneof_by_field);
+        match descent {
+            FieldDescent::Bounded => {
+                let note = match &f.shape {
+                    Shape::Message { leaf: l } | Shape::RepeatedMessage { leaf: l } => Some(
+                        bounded_note(&rust_type_name(l), plan, extern_set.contains(l.as_str())),
+                    ),
+                    Shape::Map { value_leaf, .. } => Some(bounded_note(
+                        &rust_type_name(value_leaf),
+                        plan,
+                        extern_set.contains(value_leaf.as_str()),
+                    )),
+                    Shape::Oneof => Some(format!(
+                        "// BOUNDED: no member of this oneof reaches the clone cut set."
+                    )),
+                    _ => None,
+                };
+                if let Some(note) = note {
+                    binds.push(format!("    {note}\n    let {name} = src.{name}.clone();"));
+                } else {
+                    binds.push(format!("    let {name} = src.{name}.clone();"));
+                }
+            }
+            FieldDescent::Cut(cut_ty) => {
+                let cut_stem = cut_ty.to_snake_case();
+                match arity {
+                    FieldArity::Optional => {
+                        push.push(format!(
+                            "    if let Some(v) = &src.{name} {{\n        \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                        ));
+                        count.push(format!(
+                            "    if src.{name}.is_some() {{\n        n += 1;\n    }}"
+                        ));
+                        binds.push(format!(
+                            "    let {name} = match &src.{name} {{\n        \
+                             Some(_) => Some(children.{cut_stem}()),\n        \
+                             None => None,\n    }};"
+                        ));
+                    }
+                    FieldArity::Repeated => {
+                        push.push(format!(
+                            "    // ★ ELEMENT BY ELEMENT. `self.{name}.clone()` here would be a\n    \
+                             // `<Vec<{cut_ty}> as Clone>::clone`, which re-enters the driven\n    \
+                             // `{cut_ty}::clone` and is Theta(depth) — the sibling repo's defect.\n    \
+                             for v in &src.{name} {{\n        \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                        ));
+                        count.push(format!("    n += src.{name}.len();"));
+                        binds.push(format!(
+                            "    let {name} = (0..src.{name}.len()).map(|_| children.{cut_stem}()).collect();"
+                        ));
+                    }
+                    FieldArity::Map => {
+                        push.push(format!(
+                            "    // The map's VALUES, in `BTreeMap` (sorted-key) order — the same\n    \
+                             // order the rebuild re-associates them in.\n    \
+                             for v in src.{name}.values() {{\n        \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                        ));
+                        count.push(format!("    n += src.{name}.len();"));
+                        binds.push(format!(
+                            "    let {name} = src.{name}.keys().map(|k| (k.clone(), children.{cut_stem}())).collect();"
+                        ));
+                    }
+                }
+            }
+            FieldDescent::Enter(child_stem) => match arity {
+                FieldArity::Optional => {
+                    push.push(format!(
+                        "    if let Some(v) = &src.{name} {{\n        \
+                         clone_push_children_{child_stem}(v, work);\n    }}"
+                    ));
+                    count.push(format!(
+                        "    if let Some(v) = &src.{name} {{\n        \
+                         n += clone_child_count_{child_stem}(v);\n    }}"
+                    ));
+                    binds.push(format!(
+                        "    let {name} = match &src.{name} {{\n        \
+                         Some(v) => Some(clone_rebuild_{child_stem}(v, children)),\n        \
+                         None => None,\n    }};"
+                    ));
+                }
+                FieldArity::Repeated => {
+                    push.push(format!(
+                        "    // ★ ELEMENT BY ELEMENT — see the note on the cut-set case.\n    \
+                         for v in &src.{name} {{\n        \
+                         clone_push_children_{child_stem}(v, work);\n    }}"
+                    ));
+                    count.push(format!(
+                        "    for v in &src.{name} {{\n        \
+                         n += clone_child_count_{child_stem}(v);\n    }}"
+                    ));
+                    binds.push(format!(
+                        "    let {name} = src.{name}.iter().map(|v| clone_rebuild_{child_stem}(v, children)).collect();"
+                    ));
+                }
+                FieldArity::Map => {
+                    push.push(format!(
+                        "    for v in src.{name}.values() {{\n        \
+                         clone_push_children_{child_stem}(v, work);\n    }}"
+                    ));
+                    count.push(format!(
+                        "    for v in src.{name}.values() {{\n        \
+                         n += clone_child_count_{child_stem}(v);\n    }}"
+                    ));
+                    binds.push(format!(
+                        "    let {name} = src.{name}.iter().map(|(k, v)| (k.clone(), clone_rebuild_{child_stem}(v, children))).collect();"
+                    ));
+                }
+            },
+        }
+    }
+
+    // ── clone_push_children_<stem> ──
+    writeln!(
+        src,
+        "/// The cut-set children of [`{rust_path}`], pushed in DECLARATION order.\n\
+         #[inline]\n\
+         fn clone_push_children_{stem}<'t>(src: &'t {rust_path}, work: &mut Vec<Step<'t, CloneTraversal>>) {{"
+    )
+    .expect("write");
+    if push.is_empty() {
+        src.push_str(
+            "    // No field of this type reaches the clone cut set; it is entered only\n    \
+             // because it is a cut-set member itself.\n    let _ = (src, work);\n",
+        );
+    } else {
+        for line in &push {
+            src.push_str(line);
+            src.push('\n');
+        }
+    }
+    src.push_str("}\n\n");
+
+    // ── clone_child_count_<stem> ──
+    writeln!(
+        src,
+        "/// How many cut-set children [`{rust_path}`] has.\n\
+         ///\n\
+         /// ★ A SECOND walk, written independently of the rebuild below, so\n\
+         /// `drive`'s deficit invariant and `CloneChildren::finish` have something to\n\
+         /// cross-check the rebuild AGAINST.\n\
+         #[inline]\n\
+         fn clone_child_count_{stem}(src: &{rust_path}) -> usize {{"
+    )
+    .expect("write");
+    if count.is_empty() {
+        src.push_str("    let _ = src;\n    0\n");
+    } else {
+        src.push_str("    let mut n = 0usize;\n");
+        for line in &count {
+            src.push_str(line);
+            src.push('\n');
+        }
+        src.push_str("    n\n");
+    }
+    src.push_str("}\n\n");
+
+    // ── clone_rebuild_<stem> ──
+    writeln!(
+        src,
+        "/// Rebuild a [`{rust_path}`] shell, taking one finished child per structural\n\
+         /// slot in DECLARATION order — the order `clone_push_children_{stem}` pushed them.\n\
+         ///\n\
+         /// ⚠ The fields are bound with explicit `let`s, in declaration order, rather than\n\
+         /// written straight into the struct literal. A struct literal does evaluate its\n\
+         /// fields in the order WRITTEN, but the child order is load-bearing and a `let`\n\
+         /// sequence states it instead of relying on that rule.\n\
+         #[inline]\n\
+         fn clone_rebuild_{stem}(src: &{rust_path}, children: &mut CloneChildren<'_>) -> {rust_path} {{"
+    )
+    .expect("write");
+    if binds.is_empty() {
+        src.push_str("    let _ = children;\n");
+    } else {
+        for line in &binds {
+            src.push_str(line);
+            src.push('\n');
+        }
+        if push.is_empty() {
+            src.push_str("    let _ = children;\n");
+        }
+    }
+    writeln!(src, "    {rust_path} {{ {} }}\n}}\n", names.join(", ")).expect("write");
+}
+
+/// §D — the three families for one oneof enum. Exhaustive matches, no wildcard:
+/// a new member is a compile error until this file regenerates.
+fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
+    let enum_ty = &oneof.rust_ident;
+    let stem = enum_ty.to_snake_case();
+
+    let arm_plan = |v: &Variant| -> FieldDescent {
+        match &v.message_leaf {
+            Some(leaf) => message_descent(leaf, plan),
+            None => FieldDescent::Bounded,
+        }
+    };
+
+    writeln!(
+        src,
+        "/// The cut-set children of [`{enum_ty}`].\n\
+         ///\n\
+         /// ⚠ EXHAUSTIVE, with no wildcard arm: a member added to the `.proto` is a\n\
+         /// COMPILE ERROR until this file regenerates — which it does, in the same pass.\n\
+         #[inline]\n\
+         fn clone_push_children_{stem}<'t>(src: &'t {enum_ty}, work: &mut Vec<Step<'t, CloneTraversal>>) {{\n    \
+         match src {{"
+    )
+    .expect("write");
+    for v in &oneof.variants {
+        let arm = &v.rust_ident;
+        match arm_plan(v) {
+            FieldDescent::Bounded => {
+                writeln!(src, "        {enum_ty}::{arm}(_) => {{}}").expect("write")
+            }
+            FieldDescent::Cut(cut_ty) => writeln!(
+                src,
+                "        {enum_ty}::{arm}(v) => work.push(Step::Descend(CloneNode::{cut_ty}(v))),"
+            )
+            .expect("write"),
+            FieldDescent::Enter(child) => writeln!(
+                src,
+                "        {enum_ty}::{arm}(v) => clone_push_children_{child}(v, work),"
+            )
+            .expect("write"),
+        }
+    }
+    src.push_str("    }\n}\n\n");
+
+    writeln!(
+        src,
+        "/// How many cut-set children [`{enum_ty}`]'s current arm has.\n\
+         #[inline]\n\
+         fn clone_child_count_{stem}(src: &{enum_ty}) -> usize {{\n    \
+         match src {{"
+    )
+    .expect("write");
+    for v in &oneof.variants {
+        let arm = &v.rust_ident;
+        match arm_plan(v) {
+            FieldDescent::Bounded => {
+                writeln!(src, "        {enum_ty}::{arm}(_) => 0,").expect("write")
+            }
+            FieldDescent::Cut(_) => writeln!(src, "        {enum_ty}::{arm}(_) => 1,").expect("write"),
+            FieldDescent::Enter(child) => writeln!(
+                src,
+                "        {enum_ty}::{arm}(v) => clone_child_count_{child}(v),"
+            )
+            .expect("write"),
+        }
+    }
+    src.push_str("    }\n}\n\n");
+
+    writeln!(
+        src,
+        "/// Rebuild a [`{enum_ty}`] arm around its finished children.\n\
+         #[inline]\n\
+         fn clone_rebuild_{stem}(src: &{enum_ty}, children: &mut CloneChildren<'_>) -> {enum_ty} {{\n    \
+         match src {{"
+    )
+    .expect("write");
+    for v in &oneof.variants {
+        let arm = &v.rust_ident;
+        match arm_plan(v) {
+            FieldDescent::Bounded => writeln!(
+                src,
+                "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}(v.clone()),"
+            )
+            .expect("write"),
+            FieldDescent::Cut(cut_ty) => {
+                let cut_stem = cut_ty.to_snake_case();
+                writeln!(
+                    src,
+                    "        {enum_ty}::{arm}(_) => {enum_ty}::{arm}(children.{cut_stem}()),"
+                )
+                .expect("write")
+            }
+            FieldDescent::Enter(child) => writeln!(
+                src,
+                "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}(clone_rebuild_{child}(v, children)),"
+            )
+            .expect("write"),
+        }
+    }
+    src.push_str("    }\n}\n\n");
+}
+
+/// §E — one `impl Clone` per non-`Copy` item.
+///
+/// Two body shapes, selected by a DERIVED predicate rather than by a list:
+///
+/// * a **cut-set member** delegates to `drive_with` on the pooled stacks;
+/// * everything else is **field-wise** — byte-for-byte what rustc's derive
+///   emitted, generated from the same resolved-field vector the wire tables come
+///   from, so it cannot drift from the schema. It is FLAT because every cycle in
+///   the child relation passes through the cut set, so it reaches a driven clone
+///   after at most `CLONE_RESIDUAL_HEIGHT` frames.
+#[allow(clippy::too_many_arguments)]
+fn emit_clone_impls(
+    src: &mut String,
+    messages: &[Message<'_>],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+    plan: &ClonePlan,
+    fields_of: &BTreeMap<&str, &[Field]>,
+    path_of: &BTreeMap<&str, String>,
+) {
+    src.push_str(
+        "// ===========================================================================\n\
+         // §E  The `impl Clone` FAMILY — one per non-`Copy` item\n\
+         // ===========================================================================\n\
+         //\n\
+         // ⚠ `models/build.rs` STRIPS `Clone` from exactly these items' `#[derive(...)]`\n\
+         // lines, and the two sets are cross-checked AS SETS, in both directions, naming\n\
+         // the offending type. A `Copy` item keeps its derive: `Copy`'s `Clone` must be a\n\
+         // bitwise copy, and prost only derives `Copy` where every field is a scalar.\n\n",
+    );
+    for msg in messages {
+        let leaf = msg.leaf_name();
+        if extern_set.contains(leaf) || plan.message_is_copy[leaf] {
+            continue;
+        }
+        let rust_path = &path_of[leaf];
+        let fields = fields_of
+            .get(leaf)
+            .unwrap_or_else(|| panic!("wire_schema: `{leaf}` has no resolved fields"));
+        if plan.in_cut(leaf) {
+            let stem = rust_type_name(leaf).to_snake_case();
+            writeln!(
+                src,
+                "impl Clone for {rust_path} {{\n    \
+                 /// ★ **DRIVEN.** [`{rust_path}`] is in the CLONE CUT SET, so its `Clone` is\n    \
+                 /// the explicit-worklist traversal and native stack is O(1) in both nesting\n    \
+                 /// depth and sibling width. The derived form measured 16,493 B/level debug\n    \
+                 /// and 3,254 release (`rholang/tests/stack_depth_gate.rs`,\n    \
+                 /// `four_quadrant_s0_baseline` at HEAD).\n    \
+                 #[inline]\n    \
+                 fn clone(&self) -> {rust_path} {{\n        \
+                 let mut stacks = CloneStacks::take();\n        \
+                 let value = match drive_with(\n            \
+                 &mut CloneTraversal,\n            \
+                 &mut (),\n            \
+                 Step::Descend(CloneNode::{ty}(self)),\n            \
+                 &mut stacks.work,\n            \
+                 &mut stacks.vals,\n        \
+                 ) {{\n            \
+                 Ok(value) => value,\n            \
+                 // `CloneTraversal::Err` is `Infallible` — UNINHABITED, so this arm\n            \
+                 // is unreachable by TYPE rather than by argument. `match never {{}}`\n            \
+                 // is the construct that says so.\n            \
+                 Err(never) => match never {{}},\n        \
+                 }};\n        \
+                 value.into_{stem}()\n    \
+                 }}\n}}\n",
+                ty = rust_type_name(leaf)
+            )
+            .expect("write");
+            continue;
+        }
+        let inits = fields
+            .iter()
+            .map(|f| format!("{}: self.{}.clone()", f.rust_name, f.rust_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            src,
+            "impl Clone for {rust_path} {{\n    \
+             /// FIELD-WISE, and FLAT: every cycle in the child relation passes through the\n    \
+             /// cut set, so this reaches a driven clone within `CLONE_RESIDUAL_HEIGHT`\n    \
+             /// frames. Byte-for-byte what the stripped derive emitted.\n    \
+             #[inline]\n    \
+             fn clone(&self) -> {rust_path} {{\n        \
+             {rust_path} {{ {inits} }}\n    \
+             }}\n}}\n"
+        )
+        .expect("write");
+    }
+    for oneof in oneofs {
+        if plan.oneof_is_copy[&oneof.rust_ident] {
+            continue;
+        }
+        let enum_ty = &oneof.rust_ident;
+        writeln!(
+            src,
+            "impl Clone for {enum_ty} {{\n    \
+             /// FIELD-WISE, and FLAT — see the message impls above. Exhaustive, with no\n    \
+             /// wildcard arm: a new member is a compile error until this file regenerates.\n    \
+             #[inline]\n    \
+             fn clone(&self) -> {enum_ty} {{\n        \
+             match self {{"
+        )
+        .expect("write");
+        for v in &oneof.variants {
+            writeln!(
+                src,
+                "            {enum_ty}::{arm}(v) => {enum_ty}::{arm}(v.clone()),",
+                arm = v.rust_ident
+            )
+            .expect("write");
+        }
+        src.push_str("        }\n    }\n}\n\n");
+    }
+}
+
+/// The oracle function name for a message leaf, if it has one.
+///
+/// `Copy` items have none (their `Clone` is `*self`, which the oracle can just
+/// call) and neither does an EXTERN item (its `Clone` is hand-written and O(1) at
+/// the node — the derive called it, so the oracle must too).
+fn oracle_of_message(leaf: &str, plan: &ClonePlan, extern_set: &BTreeSet<&str>) -> Option<String> {
+    if extern_set.contains(leaf) || plan.message_is_copy.get(leaf).copied().unwrap_or(false) {
+        return None;
+    }
+    Some(format!(
+        "oracle_clone_{}",
+        rust_type_name(leaf).to_snake_case()
+    ))
+}
+
+/// §F — the retained ORACLE: the derive's own Θ(depth) body, as free functions.
+///
+/// ★ **Why an oracle has to be GENERATED rather than retained in place.** Every
+/// other conversion in this campaign could keep the derive compiled beside its
+/// replacement, because the replacement was a new function (`wire_encode::encode`
+/// beside the derived `Serialize`, and the gate carries both as
+/// `bincode_ser` / `bincode_ser_derived`). `Clone` is a TRAIT IMPL: converting it
+/// means the derive is gone, and with it the differential's reference.
+///
+/// So the derive's body is re-emitted, from the same resolved fields, as a family
+/// of free functions that recurse into EACH OTHER rather than through
+/// `<Par as Clone>::clone`. That makes `oracle_clone_par` a faithful Θ(depth)
+/// reference — the `derived` arm of `models/benches/term_ops_bench.rs`, and the
+/// oracle `models/tests/clone_equivalence_corpus.rs` compares every generated
+/// clone against on seven axes.
+///
+/// ⚠ It is Θ(depth) BY DESIGN and must not be used on a deep term outside a
+/// sized thread. That is a property of the thing it reproduces.
+#[allow(clippy::too_many_arguments)]
+fn emit_clone_oracle(
+    src: &mut String,
+    messages: &[Message<'_>],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+    plan: &ClonePlan,
+    oneof_by_field: &BTreeMap<String, &Oneof>,
+    fields_of: &BTreeMap<&str, &[Field]>,
+    path_of: &BTreeMap<&str, String>,
+) {
+    src.push_str(
+        "// ===========================================================================\n\
+         // §F  The retained ORACLE — the DERIVE's own body, as free functions\n\
+         // ===========================================================================\n\
+         //\n\
+         // ★ Converting a TRAIT IMPL destroys the differential's reference: unlike\n\
+         // `wire_encode` (which sits beside a still-derived `Serialize`, and the gate\n\
+         // carries both as `bincode_ser` / `bincode_ser_derived`), a converted `Clone`\n\
+         // leaves nothing to compare against. So the derive's body is re-emitted here,\n\
+         // from the same resolved fields, as functions that recurse into EACH OTHER rather\n\
+         // than through `<Par as Clone>::clone`.\n\
+         //\n\
+         // ⚠ Theta(depth) BY DESIGN — that is what it reproduces. `models/tests/\n\
+         // clone_equivalence_corpus.rs` runs it on an exhaustive SHALLOW corpus and\n\
+         // `models/benches/term_ops_bench.rs` uses it as the `derived` arm; neither runs it\n\
+         // deep except on an explicitly sized thread.\n\n",
+    );
+    for msg in messages {
+        let leaf = msg.leaf_name();
+        let Some(fn_name) = oracle_of_message(leaf, plan, extern_set) else {
+            continue;
+        };
+        let rust_path = &path_of[leaf];
+        let fields = fields_of
+            .get(leaf)
+            .unwrap_or_else(|| panic!("wire_schema: `{leaf}` has no resolved fields"));
+        let inits = fields
+            .iter()
+            .map(|f| {
+                let name = &f.rust_name;
+                let expr = match &f.shape {
+                    Shape::Message { leaf: l } => match oracle_of_message(l, plan, extern_set) {
+                        Some(inner) => format!("src.{name}.as_ref().map({inner})"),
+                        None => format!("src.{name}.clone()"),
+                    },
+                    Shape::RepeatedMessage { leaf: l } => {
+                        match oracle_of_message(l, plan, extern_set) {
+                            Some(inner) => format!("src.{name}.iter().map({inner}).collect()"),
+                            None => format!("src.{name}.clone()"),
+                        }
+                    }
+                    Shape::Map { value_leaf, .. } => {
+                        match oracle_of_message(value_leaf, plan, extern_set) {
+                            Some(inner) => format!(
+                                "src.{name}.iter().map(|(k, v)| (k.clone(), {inner}(v))).collect()"
+                            ),
+                            None => format!("src.{name}.clone()"),
+                        }
+                    }
+                    Shape::Oneof => {
+                        let key = format!("{leaf}::{name}");
+                        let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
+                            panic!("wire_schema: no oneof answers to `{key}` for the oracle")
+                        });
+                        if plan.oneof_is_copy[&oneof.rust_ident] {
+                            format!("src.{name}.clone()")
+                        } else {
+                            format!(
+                                "src.{name}.as_ref().map(oracle_clone_{})",
+                                oneof.rust_ident.to_snake_case()
+                            )
+                        }
+                    }
+                    _ => format!("src.{name}.clone()"),
+                };
+                format!("{name}: {expr}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            src,
+            "/// The DERIVE's body for [`{rust_path}`].\n\
+             pub fn {fn_name}(src: &{rust_path}) -> {rust_path} {{\n    \
+             {rust_path} {{ {inits} }}\n}}\n"
+        )
+        .expect("write");
+    }
+    for oneof in oneofs {
+        if plan.oneof_is_copy[&oneof.rust_ident] {
+            continue;
+        }
+        let enum_ty = &oneof.rust_ident;
+        writeln!(
+            src,
+            "/// The DERIVE's body for [`{enum_ty}`].\n\
+             pub fn oracle_clone_{}(src: &{enum_ty}) -> {enum_ty} {{\n    match src {{",
+            enum_ty.to_snake_case()
+        )
+        .expect("write");
+        for v in &oneof.variants {
+            let arm = &v.rust_ident;
+            let expr = match &v.message_leaf {
+                Some(leaf) => match oracle_of_message(leaf, plan, extern_set) {
+                    Some(inner) => format!("{inner}(v)"),
+                    None => "v.clone()".to_string(),
+                },
+                None => "v.clone()".to_string(),
+            };
+            writeln!(src, "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}({expr}),").expect("write");
+        }
+        src.push_str("    }\n}\n\n");
+    }
+}
+
+/// §G — the tables `models/build.rs` and the tests are checked against.
+fn emit_clone_join_tables(
+    src: &mut String,
+    messages: &[Message<'_>],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+    plan: &ClonePlan,
+    clone_items: &[String],
+) {
+    src.push_str(
+        "// ===========================================================================\n\
+         // §G  The JOIN TABLES — what the build and the tests check against\n\
+         // ===========================================================================\n\n\
+         /// ★★ **Every item whose `Clone` this file emits**, with the BODY SHAPE chosen for\n\
+         /// it: `(type, \"driven\" | \"field-wise\")`.\n\
+         ///\n\
+         /// This is the join point with `models/build.rs`'s textual derive-strip pass. The\n\
+         /// strip records the type names it actually removed `Clone` from; this table is\n\
+         /// computed from the DESCRIPTOR by an independent reproduction of prost's `Copy`\n\
+         /// rule; and `models/build.rs` requires the two to agree AS SETS, in both\n\
+         /// directions, naming the offending type. Stripped-but-not-emitted is a missing\n\
+         /// `Clone` impl (a compile error, but one whose message names `rhoapi.rs` rather\n\
+         /// than this pass); emitted-but-not-stripped is a conflicting impl.\n\
+         pub static EMITTED_TRAVERSALS: &[(&str, &str)] = &[\n",
+    );
+    for item in clone_items {
+        let shape = if plan.in_cut(item) || plan.cut.iter().any(|c| rust_type_name(c) == *item) {
+            "driven"
+        } else {
+            "field-wise"
+        };
+        writeln!(src, "    (\"{item}\", \"{shape}\"),").expect("write");
+    }
+    src.push_str("];\n\n");
+
+    writeln!(
+        src,
+        "/// The CLONE CUT SET: a feedback vertex set of the child relation, derived by the\n\
+         /// greedy max-degree heuristic and then VERIFIED (every residual SCC trivial).\n\
+         ///\n\
+         /// ★ Every member has a DRIVEN `Clone`; no other type needs one, because a\n\
+         /// field-wise clone over the residual DAG has native depth bounded by\n\
+         /// [`CLONE_RESIDUAL_HEIGHT`].\n\
+         ///\n\
+         /// Minimality is NOT claimed — a minimum feedback vertex set is NP-hard (Karp,\n\
+         /// 1972, <https://doi.org/10.1007/978-1-4684-2001-2_9>). CORRECTNESS is: the\n\
+         /// generator refuses to emit unless the residual is acyclic.\n\
+         pub static CLONE_CUT_SET: &[&str] = &[{}];\n",
+        plan.cut
+            .iter()
+            .map(|c| format!("\"{}\"", rust_type_name(c)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+    .expect("write");
+
+    let mut entered: Vec<String> = plan
+        .entered
+        .iter()
+        .map(|e| rust_type_name(e))
+        .chain(plan.oneof_entered.iter().cloned())
+        .collect();
+    entered.sort();
+    writeln!(
+        src,
+        "\n/// The items the driver ENTERS: it walks their shells inline and suspends at the\n\
+         /// cut-set nodes below them. Every other type is BOUNDED — cloned whole, in one\n\
+         /// flat call.\n\
+         ///\n\
+         /// ★ This set is why no `<Vec<T> as Clone>::clone` is emitted for a recursive\n\
+         /// element type: a `Vec<T>` whose `T` is in this set is walked element by element.\n\
+         pub static CLONE_DESCEND_SET: &[&str] = &[\n{}\n];\n",
+        entered
+            .iter()
+            .map(|e| format!("    \"{e}\","))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+    .expect("write");
+
+    writeln!(
+        src,
+        "\n/// The height of the residual (cut-removed) child relation — the constant that\n\
+         /// bounds a generated field-wise `clone`'s native recursion. \"Bounded by a\n\
+         /// constant\" as a NUMBER rather than as a claim.\n\
+         pub const CLONE_RESIDUAL_HEIGHT: usize = {};\n",
+        plan.residual_height
+    )
+    .expect("write");
+
+    let bounded_externs: Vec<String> = messages
+        .iter()
+        .filter(|m| extern_set.contains(m.leaf_name()))
+        .map(|m| rust_type_name(m.leaf_name()))
+        .collect();
+    writeln!(
+        src,
+        "\n/// ⚠★ **The EXTERN CLONE OBLIGATION.** An extern type contributes no\n\
+         /// descriptor-derived children, so this pass treats it as BOUNDED — one\n\
+         /// whole-value `Clone` call. That is only correct if the call is FLAT, and for\n\
+         /// `EPathMap` it is a fact about its hand-written impl rather than about\n\
+         /// externness: `ps` is an `EntryTrie` whose clone is a refcount bump on the trie\n\
+         /// root plus an `Arc` bump on the memoized projection, and the shadow cell is an\n\
+         /// `OnceLock<Arc<_>>` clone. `EPathMap::clone` never re-enters a driven clone.\n\
+         ///\n\
+         /// The obligation is MEASURED, not asserted: `rholang/tests/stack_depth_gate.rs`'s\n\
+         /// `clone_pathmap_chain` subject nests through `ExprInstance::EPathmapBody` and is\n\
+         /// gated depth-independent.\n\
+         pub static CLONE_EXTERN_BOUNDED: &[&str] = &[{}];\n\
+         \n\
+         /// The bounded treatment must at least TYPE-CHECK: every extern type named above\n\
+         /// really does implement `Clone`.\n\
+         const _: fn() = || {{\n    \
+         fn assert_clone<T: Clone>() {{}}\n{}\
+         }};\n",
+        bounded_externs
+            .iter()
+            .map(|e| format!("\"{e}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        bounded_externs
+            .iter()
+            .map(|e| format!("    assert_clone::<{e}>();\n"))
+            .collect::<String>()
+    )
+    .expect("write");
+
+    let _ = oneofs;
 }
 
 // ===========================================================================
@@ -2443,6 +4662,7 @@ fn emit_schema_meta_source(
     oneofs: &[Oneof],
     extern_set: &BTreeSet<&str>,
     graph: &SchemaGraph,
+    plan: &ClonePlan,
 ) -> (String, usize) {
     let mut src = String::with_capacity(48 * 1024);
     src.push_str(
@@ -2562,6 +4782,13 @@ fn emit_schema_meta_source(
             continue;
         }
         let ty = rust_type_name(msg.leaf_name());
+        // ★ Per-item facts, so a surface whose disposition genuinely varies by
+        // item can say so. See `refine_disposition`.
+        let facts = ItemFacts {
+            rust_name: &ty,
+            is_copy: plan.message_is_copy[msg.leaf_name()],
+            in_clone_cut_set: plan.in_cut(msg.leaf_name()),
+        };
         for derive in DERIVE_DISPOSITIONS {
             if derive.applies_to == Applies::Oneofs {
                 continue;
@@ -2570,7 +4797,7 @@ fn emit_schema_meta_source(
                 writeln!(
                     src,
                     "    (\"{ty}\", \"{surface}\", {}),",
-                    disposition.as_source()
+                    refine_disposition(surface, *disposition, &facts).as_source()
                 )
                 .expect("write");
                 rows += 1;
@@ -2579,6 +4806,14 @@ fn emit_schema_meta_source(
     }
     for oneof in oneofs {
         let ty = &oneof.rust_ident;
+        let facts = ItemFacts {
+            rust_name: ty,
+            is_copy: plan.oneof_is_copy[ty],
+            // A oneof is an ENUM, never a message, so it is never a cut-set
+            // member: `CloneNode` carries borrowed MESSAGES. Its `Clone` is
+            // field-wise and flat.
+            in_clone_cut_set: false,
+        };
         for derive in DERIVE_DISPOSITIONS {
             if derive.applies_to == Applies::Messages {
                 continue;
@@ -2587,7 +4822,7 @@ fn emit_schema_meta_source(
                 writeln!(
                     src,
                     "    (\"{ty}\", \"{surface}\", {}),",
-                    disposition.as_source()
+                    refine_disposition(surface, *disposition, &facts).as_source()
                 )
                 .expect("write");
                 rows += 1;
