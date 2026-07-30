@@ -34,6 +34,8 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** `$`B_0 \rightarrow B_1`$` is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
+★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are defects that are OPEN at the pinned HEAD**, they are never "class change: yes", and a `SS-Y` row is discharged only by a commit that repairs it — never by the row being deleted. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
+
 | ID | commit | repo | traversal | $`B_0 \rightarrow B_1`$ | class change? | § |
 |---|---|---|---|---|:---:|---|
 | **SS-A1** | `f0894109` | f1r3node | substitution SCC (strongly connected component), leg-1 de-clone | 36,416 $`\rightarrow`$ 27,179 | **no** ($`-`$ 25.4 % only) | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
@@ -58,11 +60,28 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-F1** | `3c0c3585` | mettail | 87-member lowering component $`\rightarrow`$ one worklist | 2,157 $`\rightarrow`$ **1** | **yes** | [5.6.1](#561-the-lowering-component-3c0c3585) |
 | **SS-G1** | `9c55d81d`, `651499e2` | mettail | ★★ AST (abstract syntax tree) children `Box` $`\rightarrow`$ `Arc`; `Clone` becomes a refcount bump | 30 GB $`\rightarrow`$ **112 MB**; **0 B/level**; **0 bytes allocated** | **yes**, by *representation* | [5.11](#511--ss-g1--the-arc-fix-eliminating-a-traversal-instead-of-converting-it) |
 | **SS-G3** | `ecbe352c`, `f8f71f4c` | mettail | the eight UNMEASURED generated drivers get subjects | ⌀ $`\rightarrow`$ **measured: 8 of 9 SLOPED** | ⚠ **defect found** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
-| **SS-G2** | generator | mettail | nine generated `*_iterative` drivers (`Hash`, `Ord`, `Drop`, `Debug`, `Display`, …) | **flat on a pure chain; 1,215–10,592 debug on an alternating one** | ⚠ **only within one category** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
+| **SS-G2** | generator | mettail | nine generated `*_iterative` drivers (`Hash`, `Ord`, `Drop`, `Debug`, `Display`, …) | **flat on a pure chain; 1,215–10,592 debug on an alternating one** | ⚠ **only within one category** — ★ **now HISTORICAL, see SS-G4** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
+| **SS-G4** | `fab6de24`, `6e4abbd8`, `a21b0bf9`, `dc104aa3`, `4ee48db9` (#162); `844364d2` (#189) | mettail | ★★ **ALL ELEVEN generated `ast_*` drivers** — the `CollectionLiteral` arm divergence repaired at the classifier | `ast_cmp` 10,590 · `ast_debug` 10,542 · `ast_eq` 6,144 · `ast_match_pattern` 6,136 · `ast_term_depth` 3,408 · `ast_is_ground` 2,225 $`\rightarrow`$ **0, every one, both profiles** | **yes** — ⚠ **but see SS-Y1** | [8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
+| **SS-Y1** | `fab6de24` | mettail | ⚠★★ **A live, unrepaired defect INSIDE `SS-G4`'s OWN COMMIT** — the optional-collection shape: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ⛔ **blocks `--all-targets` repo-wide** | [8.6.1a](#861a--197--the-defect-inside-162s-own-commit-live-at-head) |
 
 **Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate).
 
-⚠★ **Read `SS-D3` and `SS-D5` correctly.** Both eliminate a **call to** `<Par as Clone>::clone`; **neither converts the impl**, and no commit in the history does. `<Par as Clone>::clone` remains in `TRIPWIRE_DEPTH` at **3,254 B/level** — the largest unconverted traversal in the system after `prost_de`. The campaign's strategy is **call-site elimination**, argued in [§5.10.5a](#5105a--the-strategy-is-call-site-elimination-not-impl-conversion--and-it-should-be-argued-not-inferred); the residual is [§8.3](#83--par-as-cloneclone--the-largest-unconverted-traversal-after-prost_de). Two one-line task summaries read otherwise and are corrected in [§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker).
+⚠★ **Read `SS-D3` and `SS-D5` correctly.** Both eliminate a **call to** `<Par as Clone>::clone`; **neither converts the impl**. The campaign's strategy at those two sites is **call-site elimination**, argued in [§5.10.5a](#5105a--the-strategy-is-call-site-elimination-not-impl-conversion--and-it-should-be-argued-not-inferred). Two one-line task summaries read otherwise and are corrected in [§5.10.5](#5105-the-verdict-and-the-correction-to-the-tracker).
+
+> ★★★ **SUPERSEDED, and the superseded wording is kept here verbatim so it cannot be "restored" as a bug fix.** This paragraph previously continued: *"and no commit in the history does. `<Par as Clone>::clone` remains in `TRIPWIRE_DEPTH` at **3,254 B/level** — the largest unconverted traversal in the system after `prost_de`."*
+>
+> **That is no longer true at HEAD.** `<Par as Clone>::clone` **was converted** by **stage F-4**, commit **`0eac9c3a`** (2026-07-29): `models/build.rs` strips the derive and `models/build/wire_schema.rs` generates the impl over `drive_with`. `clone` **moved from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH`**, and its `assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128)` was **deleted rather than relaxed** — it left by being **CONVERTED**, never by having its ceiling raised (**DERIVED**, `f1r3node-rust-mettail@0eac9c3a`; **read from source** at `8bf298ba`, `rholang/tests/stack_depth_gate.rs`, the `"clone"` entry inside `CONVERTED_DEPTH` and the `` ⚠★ `clone` IS GONE FROM THIS LIST `` comment inside `TRIPWIRE_DEPTH`).
+>
+> **MEASURED (q)**, `0eac9c3a`, both profiles, ladder $`16 \rightarrow 128`$, subject and derived-oracle control in the *same binary*:
+>
+> | | `clone_oracle` (the DERIVE, re-emitted) | `clone` (the DRIVER) |
+> |---|---:|---:|
+> | debug | 276 $`\rightarrow`$ 2,040 KiB = **16,128 B/level** | 48 $`\rightarrow`$ 48 KiB = **0** |
+> | release | 124 $`\rightarrow`$ 892 KiB = **7,021 B/level** | 12 $`\rightarrow`$ 12 KiB = **0** |
+>
+> ⚠ **And the 7,021-versus-3,254 gap is an ORACLE artefact, not a second measurement of the derive.** The oracle is a *semantic* reproduction of the derive's body — proven byte-identical on eight axes over 67 shapes — and **not a frame-layout one**: under `-O` a family of free functions inlines differently from one monolithic `<Par as Clone>::clone`. It reads **2.16$`\times`$ high** against the on-record 3,254. $`\Rightarrow`$ **Neither 3,254 nor 7,021 is now a live figure for this traversal**; the live figure is **0**. Anything that divided by 3,254 — a stack budget, a $`D_{\max}`$ extrapolation, a $`k \leq 12288/3254`$ constraint — was dividing an instrument floor ([§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number)) by a figure that has since gone to zero, and is void on both factors.
+>
+> **The residual that remains is `substitute_deep_binding` at 7,460 B/level**, not `clone`; the eight surviving `TRIPWIRE_DEPTH` members are enumerated in [§8.6.2](#862--43--f1r3nodes-hand-written-par-traversals-8-tripwire-members-remain).
 
 ---
 
@@ -70,7 +89,11 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 A `Par` — the term representation of the Rholang interpreter — is a mutually recursive family of 37 protobuf message types whose every cycle passes through `Par` itself (**MEASURED (q)**, `7c74260d`: 58 nodes, 95 edges, 22 strongly connected components, exactly one cyclic). Until 2026-07-26, essentially every traversal of that family was written as recursive descent, so each consumed native stack in proportion to the *nesting depth of an attacker-chosen term*. Because a native-stack overflow in Rust is a `SIGSEGV` on the guard page and not a catchable panic, program-controlled nesting depth controlled node liveness. The worst reachable instance measured **8.8 kB of source text aborting a node** through the term *destructor* alone (**MEASURED (q)**, `291bc217`), and a second, on unauthenticated pre-consensus gRPC ingress, at **43,565 bytes** (**MEASURED (q)**, `3b265eb7`).
 
-This report documents **twenty code fixes across five families**, the **eighteen instrument commits** that make their results admissible, and **one candidate rejected** from the list as not belonging to this problem at all. Nineteen traversals — thirteen on the depth axis and six on the width axis — are now **measured flat**: identical minimum surviving stack at depth 4 and depth 4,096, and at width 4 and width 65,536, in both build profiles (**MEASURED (f)**, `/tmp/sd_gate_release.log`).
+This report documents **twenty code fixes across five families**, the **eighteen instrument commits** that make their results admissible, and **one candidate rejected** from the list as not belonging to this problem at all. **Twenty-one traversals — fifteen on the depth axis and six on the width axis — are now measured flat**: identical minimum surviving stack at depth 4 and depth 4,096, and at width 4 and width 65,536, in both build profiles (**MEASURED (f)**, `/tmp/sd_gate_release.log`; **read from source** at `f1r3node-rust-mettail@8bf298ba`, `CONVERTED_DEPTH` $`=`$ 15 entries, `CONVERTED_WIDTH` $`=`$ 6).
+
+> ★ **Superseded count, kept so it is not "restored".** This sentence previously read *"Nineteen traversals — thirteen on the depth axis and six on the width axis"*. Two further depth subjects were converted after it was written — **`clone`** and **`clone_send_chain`**, both by stage F-4 (`0eac9c3a`) — moving the depth axis from 13 to **15**. See the correction in [§0](#0-the-fix-register--the-scannable-index).
+
+⚠★ **And this abstract does not describe a finished problem.** **Eight `TRIPWIRE_DEPTH` members remain**; three event-hash legs are **measured and not converted**; `try_eval` is converted in **one category of sixteen**; the prost read ceiling is **designed, not built**; and **#197 — a defect inside one of the very commits reported here as a success — is live and unrepaired, blocking `--all-targets` repo-wide**. The complete register is [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish) and its verdict is [§8.6.10](#8610-the-verdict-of-this-section). **Cite this report for a mechanically-checked class change over the traversals named in [§0](#0-the-fix-register--the-scannable-index); do not cite it for the stack-safety of the `Par` family.**
 
 Headline results, all **MEASURED**:
 
@@ -122,6 +145,18 @@ The residual is named, not implied. **The protobuf network format is still recur
 - [6. Discussion](#6-discussion)
 - [7. Threats to validity](#7-threats-to-validity)
 - [8. Residuals and future work](#8-residuals-and-future-work)
+  - [8.6 ⚠★★★ THE OPEN RESIDUAL REGISTER — what this report does NOT establish](#86--the-open-residual-register--what-this-report-does-not-establish)
+    - [8.6.1 #162/#189 — the eleven generated drivers converted, and the root cause](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)
+    - [8.6.1a ⛔ #197 — the defect inside #162's own commit, LIVE at HEAD](#861a--197--the-defect-inside-162s-own-commit-live-at-head)
+    - [8.6.2 #43 — 8 tripwire members remain, and it is NOT superseded](#862--43--f1r3nodes-hand-written-par-traversals-8-tripwire-members-remain)
+    - [8.6.3 #124 — the event-hash legs, and the $`\Theta(d^2)`$ in TIME](#863--124--the-event-hash-legs-measured-not-converted-and-quadratic-in-time)
+    - [8.6.4 #189 residual — `try_eval` partially converted](#864--189-residual--try_eval-is-partially-converted-and-the-ratchet-that-says-so)
+    - [8.6.5 #119/#120 — the prost read ceiling and the trap in removing it](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it)
+    - [8.6.6 #174 — 10,491 B/level that belongs to no measured driver](#866--174--10491-blevel-that-belongs-to-no-measured-driver)
+    - [8.6.7 #157 — a transcribed ceiling a tripwire cannot see drift](#867--157--a-transcribed-ceiling-and-a-tripwire-that-cannot-see-it-drift)
+    - [8.6.8 The instrument floor, and the wrong shape](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number)
+    - [8.6.9 #121 — the gate that overflowed, and the frame that was not the encoder](#869--121--the-gate-built-to-demonstrate-a-fix-overflowed-and-the-frame-was-not-the-encoder)
+    - [8.6.10 The verdict of this section](#8610-the-verdict-of-this-section)
 - [9. Conclusions](#9-conclusions)
 - [References](#references)
 - [Appendix A — reproduction commands](#appendix-a--reproduction-commands)
@@ -262,6 +297,11 @@ with each $`S`$ obtained by **bisecting the thread's `stack_size`** to a 4,096 B
 | **converted / tripwire** | the two registers in `rholang/tests/stack_depth_gate.rs`. *Converted* = measured $`B = 0`$ at both ladder ends in both profiles. *Tripwire* = measured $`B > 0`$, held under a ceiling. |
 | **anti-vacuity** | a check that the *checker* can fail: a control the assertion must reject, run in-suite, so that a green result cannot be produced by a probe that measures nothing. |
 | **$`D_{\max}`$** | the greatest nesting depth a traversal survives on a given stack: $`\lfloor (S_{\text{avail}} - c)/B \rfloor`$. |
+| **slope** | the *estimated* $`B`$ of a traversal, obtained by differencing two bisected endpoint measurements rather than by reading a frame size: $`\widehat{B} = \dfrac{S(d_{hi}) - S(d_{lo})}{d_{hi} - d_{lo}}`$, where $`S(d)`$ is the minimum surviving stack at depth $`d`$. **A slope is a difference, so any constant common to both endpoints cancels** — which is exactly why a slope survives the *instrument floor* below while the endpoint values do not. Quantised to `RESOLUTION` (4,096 B). |
+| **flat ladder** | a *ladder* is the ordered set of depths a subject is measured at (this report uses $`4 \rightarrow 4{,}096`$ on the depth axis and $`4 \rightarrow 65{,}536`$ on the width axis). The ladder is **flat** when $`S(d_{lo}) = S(d_{hi})`$ to bisection resolution, i.e. slope $`= 0`$ — the operational definition of *converted*. ⚠ Flatness is a claim about **two** measured rungs, not about the shape of the code between them. |
+| **instrument floor** | the smallest value a measuring procedure can *emit*, independent of the subject. Here it is **12,288 B**, forced by `min_stack_for`'s `PROBE_START = 16 KiB` and `RESOLUTION = 4096` (derived in [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number)). A reading *at* the floor carries **no subject information** and must never be divided by. Distinct from a *measurement* of 12,288 B, which is why `MinStack::BelowResolution` exists: the floor is now **unspellable as a number**. |
+| **ratchet** | a pinned integer constant asserting the *count* of some known-bad population, so the population cannot grow silently. `UNMEASURED_TRAVERSALS = 7` is a ratchet: adding an unmeasured traversal fails the gate, and *removing* one requires editing the constant down, which makes the improvement explicit. A ratchet bounds a set whose **members** are not all enumerable; it is the honest instrument when enumeration is the failure mode ([§7.4](#74-enumeration-completeness)). |
+| **`SIGSEGV` vs `SIGABRT`** | the two ways a stack-exhausted Rust process dies, and the distinction is the whole reason this report exists. A native-stack overflow touches the **guard page** and raises **`SIGSEGV`** (signal 11) — *not* a Rust panic, *not* catchable by `catch_unwind`, no unwinding, no destructors. Rust's runtime handler recognises the fault address, prints `fatal runtime error: stack overflow`, and calls `abort()`, which raises **`SIGABRT`** (signal 6, shell status **134**). $`\Rightarrow`$ The *observable* is usually 134, the *cause* is always 11, and **neither is a failed deploy** — both take the whole node process. A heap exhaustion, by contrast, is an `Err` a caller can handle. |
 
 ---
 
@@ -355,7 +395,7 @@ with `kernel.perf_event_paranoid = 2`. The profile was taken with the **software
 
 #### ⚠⚠ CORRECTED 2026-07-29 — the diagnosis above was wrong, twice
 
-This section said *"the hardware PMU refused every cycles event on this host."* It
+This section said *"the hardware PMU refused every cycles event on this host."* PMU (Performance Monitoring Unit) — the CPU's hardware counter block. It
 does not, and the correction matters because it decides which instruments the next
 measurement campaign may rely on. Two errors:
 
@@ -376,12 +416,12 @@ host, same binary, same session:
 | `perf record ... -e ibs_op/swfilt=1/` per-thread | ✗ *"Invalid event … enable system wide with `-a`"* |
 | `perf record --call-graph lbr` | ✗ still fails on this part |
 
-**2. The precise modifier is an *ISA* fact, not a permissions fact.** `:P` is
-implemented on Intel by **PEBS** (Precise Event-Based Sampling). This host is an
+**2. The precise modifier is an ISA (Instruction Set Architecture) fact, not a permissions fact.** `:P` is
+implemented on Intel by PEBS (Precise Event-Based Sampling). This host is an
 **AMD Ryzen Threadripper PRO 5975WX — Zen 3, family 0x19 model 0x8 — and PEBS does
 not exist on that ISA.** That is also why `mem-stores` cannot be found at all: it is
 an Intel PEBS event, and no amount of privilege conjures it. AMD's counterpart is
-**IBS** (Instruction-Based Sampling), which `perf` exposes as the `ibs_op` PMU —
+IBS (Instruction-Based Sampling), which `perf` exposes as the `ibs_op` PMU —
 ⚠ and which **refuses per-thread mode**, wanting `-a` (system-wide, i.e. root). A
 measurement plan that names *"a PEBS-precise `mem-stores` profile"* as its decisive
 experiment is therefore unrunnable here **by construction**, and one such plan was
@@ -404,7 +444,7 @@ where cachegrind gave **1.1740×**. Two instruments, four significant figures, o
 host whose *wall-clock* could not distinguish 1.07× from 0.95× on the same binary
 minutes apart.
 
-⇒ ★ For any future question of this shape, **make the deterministic instrument
+$`\Rightarrow`$ ★ For any future question of this shape, **make the deterministic instrument
 primary and wall-clock corroboration only** — and characterise what actually opens
 before designing a measurement around an event name. See
 `models/build/wire_schema.rs`'s clone-throughput section for the full accounting
@@ -416,7 +456,7 @@ and `models/benches/term_ops_bench.rs`'s `TERM_OPS_ARM` mode for the harness.
 * **Resource limits.** Every build and every heavy test ran under `systemd-run --user --scope -p MemoryMax=28G`.
 * **`n` and warm-up.** The timing bench performs `REPS = 60` measured repetitions after `WARMUP = 10` discarded ones, per arm, per cell; the whole bench was then run **3 times** end-to-end, so the between-run figures in §5.4.1 are $`n = 3`$ over means each of which is itself $`n = 60`$.
 * **Teeing.** Every command's output was written to a file and the file analysed; no benchmark was re-run to see a different part of its output. Locations in Appendix B.
-* **Overlap rule.** A difference is reported as a result only if the arms' $`[\text{mean} - \text{sd},\ \text{mean} + \text{sd}]`$ intervals do **not** overlap. ⚠★ **The clause *"in addition to the harness's own Welch test at $`\alpha = 0.01`$"* is RETRACTED as a sufficiency criterion**, and so is the overlap rule itself for *blocked* arms: both are computed from **within-arm** scatter, so on a blocked design both certify a quiet window rather than a real difference. Non-overlap plus $`\alpha = 0.01`$ is exactly what §5.4.1's three retracted runs reported. ⇒ For wall-clock rows the criterion is now the **paired** $`t`$ [[Student 1908](#ref-student1908)] with the median-of-repetition ratio, and where the effect is smaller than the instrument's measured run-to-run spread the row says **NOW UNKNOWN with a bracket** rather than *no measured difference* — an absence and an unknown are different dispositions. Non-timing rows (B/level, $`D_{\max}`$, DHAT block counts) are deterministic and keep the original rule.
+* **Overlap rule.** A difference is reported as a result only if the arms' $`[\text{mean} - \text{sd},\ \text{mean} + \text{sd}]`$ intervals do **not** overlap. ⚠★ **The clause *"in addition to the harness's own Welch test at $`\alpha = 0.01`$"* is RETRACTED as a sufficiency criterion**, and so is the overlap rule itself for *blocked* arms: both are computed from **within-arm** scatter, so on a blocked design both certify a quiet window rather than a real difference. Non-overlap plus $`\alpha = 0.01`$ is exactly what §5.4.1's three retracted runs reported. $`\Rightarrow`$ For wall-clock rows the criterion is now the **paired** $`t`$ [[Student 1908](#ref-student1908)] with the median-of-repetition ratio, and where the effect is smaller than the instrument's measured run-to-run spread the row says **NOW UNKNOWN with a bracket** rather than *no measured difference* — an absence and an unknown are different dispositions. Non-timing rows (B/level, $`D_{\max}`$, DHAT block counts) are deterministic and keep the original rule.
 
 ### 4.6 Anti-vacuity discipline
 
@@ -426,7 +466,7 @@ Every measurement in §5 comes from a harness that has been **shown to fail**. T
 
 ## 5. Results
 
-Nineteen traversals are converted. §5.1 – §5.6 give each family its defect, architecture, transformation and numbers; §5.7 covers the instrument; §5.8 the rejected candidate; §5.9 what could not be measured.
+**Twenty-one traversals are converted** (15 depth $`+`$ 6 width, **read from source** at `f1r3node-rust-mettail@8bf298ba`; the figure was *nineteen* before stage F-4 added `clone` and `clone_send_chain`). §5.1 – §5.6 give each family its defect, architecture, transformation and numbers; §5.7 covers the instrument; §5.8 the rejected candidate; §5.9 what could not be measured; **[§8.6](#86--the-open-residual-register--what-this-report-does-not-establish) states what remains unconverted, and it is not a short list.**
 
 ![depth vs stack ladder](figures/depth-vs-stack-ladder.svg)
 
@@ -1924,13 +1964,441 @@ The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(
 
 ### 8.5 The `mettail-rust` residue
 
-`render` 3,665 / 911 and `lower_formula` 4,094 / 978 B/level (debug / release), each with its own gate subject and named owner; `ast_drop` at 270 / 96, blocked on the cross-type hop (§5.6.1).
+`render` 3,665 / 911 and `lower_formula` 4,094 / 978 B/level (debug / release), each with its own gate subject and named owner.
+
+> ★ **SUPERSEDED in part, wording kept.** This paragraph previously ended: *"; `ast_drop` at 270 / 96, blocked on the cross-type hop (§5.6.1)."* **`ast_drop` is converted** — it is `Shape::Flat` in `EXPECTED_DRIVER_SHAPE` at `mettail-rust@7fad51db`, converted by `a21b0bf9` (#162). The *cross-type hop* was the real mechanism and it was **repaired at the classifier**, not routed around; see [§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162). `render` and `lower_formula` are unaffected and remain live.
+
+---
+
+## 8.6 ⚠★★★ THE OPEN RESIDUAL REGISTER — what this report does NOT establish
+
+**This section exists because the rest of the document reads as a completion report and the work is not complete.** Everything above is true; it is not *all* of the truth, and a results document whose advertised coverage exceeds its real coverage is worse than none — the same standing finding this campaign applied to its gates ([§5.7](#57-family-e--the-instrument-and-what-it-caught-in-itself)) now applied to itself.
+
+**Every coordinate below is pinned at a fixed commit SHA (Secure Hash Algorithm digest — a git object name), never at `HEAD`.** `at = "HEAD"` citations go stale; this campaign burned roughly twenty line-number re-pins before adopting the rule. The two pins in force are **`mettail-rust@7fad51db`** and **`f1r3node-rust-mettail@8bf298ba`**.
+
+**Provenance tags** are the document's own ([§Evidentiary convention](#evidentiary-convention)), with one addition made explicit here: **read from source** is a sub-case of **DERIVED** in which the evidence is the text of a named file at a named SHA, and it is used heavily below because most of these residuals are *absences* — a missing repair is established by reading the tree, not by running it.
+
+⚠ **No figure in this section was re-measured for this revision.** Nothing here required a build: every claim is **read from source**, **DERIVED** from a commit body, or **MEASURED (q)** — quoted from the commit or harness that recorded it, with that origin named. Where the brief commissioning this revision supplied a number, it was checked against source or a commit body before being written, and the three cases where it did not survive that check are in [Appendix D](#appendix-d--corrections-to-the-commissioning-brief).
+
+### The register
+
+| # | residual | status at the pinned SHA | evidence |
+|---|---|---|---|
+| **#162 / #189** | all eleven generated `ast_*` drivers | ✅ **CONVERTED**, 0 B/level both profiles | [§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
+| **#197** | the optional-collection shape inside #162's own commit | ⛔ **live and unrepaired** — blocks `--all-targets` repo-wide | [§8.6.1a](#861a--197--the-defect-inside-162s-own-commit-live-at-head) |
+| **#43** | f1r3node's hand-written `Par` traversals | ⚠ **21 converted, 8 tripwire members REMAIN**; **NOT** superseded by #162/#189 | [§8.6.2](#862--43--f1r3nodes-hand-written-par-traversals-8-tripwire-members-remain) |
+| **#124** | the three `spliced_event_bytes` event-hash legs | ⚠ **MEASURED, NOT CONVERTED**; repair already implemented and never called | [§8.6.3](#863--124--the-event-hash-legs-measured-not-converted-and-quadratic-in-time) |
+| **#189** residual | `try_eval` | ⚠ **PARTIAL** — `Int` has a worklist, **15 categories do not** | [§8.6.4](#864--189-residual--try_eval-is-partially-converted-and-the-ratchet-that-says-so) |
+| **#119 / #120** | the prost depth-33 read ceiling | ⚠ **DESIGNED, NOT BUILT** — and naive removal *introduces* a `SIGSEGV` | [§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it) |
+| **#174** | 10,491 B/level of parse-phase cost | ⚠ **UNATTRIBUTED** — matches no driver measured in isolation | [§8.6.6](#866--174--10491-blevel-that-belongs-to-no-measured-driver) |
+| **#157** | the ceiling inventory's transcribed value | ⚠ **STALE AND STRUCTURALLY INVISIBLE** — the tripwire cannot see the drift | [§8.6.7](#867--157--a-transcribed-ceiling-and-a-tripwire-that-cannot-see-it-drift) |
+| **instrument** | the 12,288 B floor; the 3,254 B/level shape | ⚠ **two method corrections**, one repaired in only one of the two repositories | [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number) |
+| **#121** | `eval_stable_par` ⇄ `eval_stable_expr` | ✅ converted — ★ found by **bisection**, present in **no audit and no tripwire list** | [§8.6.9](#869--121--the-gate-built-to-demonstrate-a-fix-overflowed-and-the-frame-was-not-the-encoder) |
+
+---
+
+### 8.6.1 ★★ #162/#189 — the eleven generated drivers converted, and the root cause that unifies #154 with #162
+
+**MEASURED (q)**, `mettail-rust` #162 (`fab6de24`, `6e4abbd8`, `a21b0bf9`, `dc104aa3`, `4ee48db9`) and #189 (`844364d2`). **Read from source** at `mettail-rust@7fad51db`, `rholang-runtime/tests/stack_depth_gate.rs`, `EXPECTED_DRIVER_SHAPE`: every one of the eleven carries `Shape::Flat`.
+
+| driver | $`B_0`$ (debug) | $`B_1`$ | note |
+|---|---:|---:|---|
+| `ast_cmp` | 10,590 | **0** | |
+| `ast_debug` | 10,542 | **0** | |
+| `ast_eq` | 6,144 | **0** | |
+| `ast_match_pattern` | 6,136 | **0** | free via `cmp` — one repair, two subjects |
+| `ast_term_depth` | 3,408 | **0** | |
+| `ast_is_ground` | 2,225 | **0** | see the proof below |
+| `ast_hash`, `ast_semantic_hash`, `ast_drop`, `ast_subst`, `ast_normalize` | — | **0** | |
+
+★★ **THE ROOT CAUSE, and it is the pedagogical centre of this whole report.** `VariantKind::CollectionLiteral` was introduced (`5bdd0a24`, an *identity* refactor) precisely so that consumers would **declare** whether a variant is a leaf or a container. **Every sloped driver was one that still shared `Literal`'s arm** — that is, one **treating a container OF SUB-TERMS as an OPAQUE LEAF**. The leaf arm reaches children by host recursion, which is correct for a `Literal` (it has none) and is a $`\Theta(d)`$ defect for a `Vec<Proc>`.
+
+$`\Rightarrow`$ **#154 and #162 are ONE defect seen from two angles**, and this is why neither could be fully fixed without the other:
+
+* **#154** met it as a **correctness** leak — a binder inside a collection literal leaked its run-varying `unique_id` into a *consensus-visible* fingerprint (`6e4abbd8`);
+* **#162** met it as a **stack-safety** slope — the same arm, the same containers, $`\Theta(d)`$ native stack.
+
+⚠ The interaction is recorded in the commits themselves rather than inferred: `dc104aa3`'s subject is *"the #154 fix traded a leak for a slope; both are now held"* (**DERIVED**, commit body). A repair aimed at one axis moved the other, in both directions, which is the signature of a shared cause.
+
+![The `CollectionLiteral` vs `Literal` arm divergence](figures/collection-literal-arm-divergence.svg)
+
+*Figure 8: the arm divergence that was the root. Source: [`figures/collection-literal-arm-divergence.puml`](figures/collection-literal-arm-divergence.puml). **Diagram type: a dispatch-divergence diagram (annotated decision tree)**, chosen because the defect is not a wrong computation but a wrong **arm selection** — one classifier, two consumers, and the consumers disagreed about which arm a container belongs to. A decision tree is the only shape that shows an arm being *taken* rather than a value being computed.*
+
+#### Lesson 1 — per-element pushes were NOT sufficient, and the task enum is why
+
+★★ **A work-stack driver can only replace recursion for work its task enum can represent.** `CmpTask` and `HashTask` held only *descents*: "compare these two pointers". Neither could express *"resume this comparison once the child has answered"*, which is exactly the state a container needs when its elements must be compared in order and the first inequality decides the result. So "push the elements" was **not expressible** until the enum itself grew a resumption variant.
+
+$`\Rightarrow`$ That is why those two emitters carry roughly **130** and **60** lines of the author meeting the same wall (**DERIVED**, `fab6de24` diff extent on `iterative_cmp.rs` and the hash emitter). **The task enum is the real interface of a converted driver, not the push site** — and a conversion plan that budgets only for "add a push" will under-budget by the size of the enum extension.
+
+#### Lesson 2 — `ast_is_ground`'s before-figure would have been a production `SIGSEGV`
+
+**DERIVED** from the recorded ladder: `ast_is_ground` at **2,225 B/level** reaches
+
+```math
+2{,}225 \times 4{,}096 \;=\; 9{,}113{,}600\ \text{B} \;\approx\; 8.69\ \text{MiB}
+```
+
+at depth 4,096, which **exceeds the 8 MiB default main-thread stack** (`ulimit -s` 8,192 KiB $`=`$ 8,388,608 B). $`\Rightarrow`$ It would not have degraded; it would have **`SIGSEGV`**'d — signal 11 on the guard page, surfacing as `SIGABRT`/134, uncatchable, taking the node process (see the glossary entry for **`SIGSEGV` vs `SIGABRT`**).
+
+★ **The conversion carried a proof, and the proof is why it was cheap.** Let $`\mathrm{desc}(n)`$ be the descendants of node $`n`$ and $`\mathrm{base}(m)`$ the ground-ness of $`m`$'s own payload. Then
+
+```math
+g(n) \;=\; \bigwedge_{m \,\in\, \mathrm{desc}(n)} \mathrm{base}(m)
+```
+
+This is a **conjunction over a set**, and three properties follow immediately, each of which removes a piece of machinery a general driver would need:
+
+| property of $`\bigwedge`$ over a set | machinery it removes |
+|---|---|
+| **associative** | no *result stack* — partial results need no nesting structure |
+| **commutative** $`\Rightarrow`$ order-agnostic | no `dist`, and no need to preserve child order |
+| **idempotent**, with identity $`\top`$ | no *combine* step — a single accumulator suffices |
+
+$`\Rightarrow`$ The driver is an accumulator over a flat worklist, is `OrderAgnostic`, and therefore **every container shape converts uniformly** — `Vec`, `Option<Vec>`, keyed maps alike. Contrast `cmp`, where the operation is *lexicographic* and hence **neither** commutative nor idempotent, which is precisely why `cmp` needed the resumption variant of Lesson 1 and `is_ground` did not.
+
+#### The conversion algorithm, in literate form
+
+Presented in Knuth's literate style: the prose *is* the specification, and each fragment is named and refined.
+
+**Algorithm 4 (CONVERT-TRAVERSAL).** *Turning a derived recursive traversal into a work-stack driver, with the driver's shape DERIVED from the algebra of its combining operation rather than chosen by taste.*
+
+```pseudocode
+⟨Convert one derived traversal to a work-stack driver⟩ ≡
+    ⟨Classify every variant: leaf, or container-of-sub-terms⟩
+    ⟨Choose the driver shape from the combining operation's algebra⟩
+    ⟨Extend the task enum until every unit of work is representable⟩
+    ⟨Emit the driver: one pop, one dispatch, zero self-calls⟩
+    ⟨Prove flatness against a control that is NOT flat⟩
+
+⟨Classify every variant: leaf, or container-of-sub-terms⟩ ≡
+    for each variant v of the modelled type:
+        kind(v) ← CollectionLiteral   if v holds a collection of sub-terms
+                  Literal             if v holds no sub-terms at all
+                  Structural          otherwise
+    ── THE DEFECT LIVED HERE: a CollectionLiteral falling through to
+    ── Literal's arm is the whole of #154 and #162.  The classifier must be
+    ── consulted, never re-derived at the use site.
+
+⟨Choose the driver shape from the combining operation's algebra⟩ ≡
+    let ⊕ be the operation the traversal folds with
+    if ⊕ is associative ∧ commutative ∧ idempotent then
+        shape ← ACCUMULATOR          ── is_ground: no result stack, no combine
+    else if ⊕ is associative only then
+        shape ← OBLIGATION + VALUE STACK   ── cold-store decoder: 18 value stacks
+    else
+        shape ← RESUMABLE TASKS      ── cmp/hash: lexicographic, needs Lesson 1
+    ── The algebra of ⊕ DETERMINES the machinery.  This is the step that makes
+    ── the conversion derivable rather than inventive.
+
+⟨Extend the task enum until every unit of work is representable⟩ ≡
+    repeat
+        w ← a unit of work the driver must perform
+        if w is not expressible as a task variant then
+            add the variant                ── Lesson 1: this is the real cost
+    until every w is expressible
+    ── A push site cannot be written before the enum can spell what it pushes.
+
+⟨Emit the driver: one pop, one dispatch, zero self-calls⟩ ≡
+    push(root)
+    while stack is not empty:
+        t ← pop()
+        dispatch on t:
+            leaf         ⇒ fold its payload into the accumulator
+            container    ⇒ for each element e: push(task(e))    ── NOT recurse(e)
+            resumption   ⇒ combine the child answers already available
+    ── INVARIANT: the driver contains no call to itself.  This is mechanically
+    ── checkable and is what `EXPECTED_DRIVER_SHAPE` adjudicates.
+
+⟨Prove flatness against a control that is NOT flat⟩ ≡
+    assert slope(subject) = 0                    over the ladder d_lo → d_hi
+    assert slope(control) > 0                    ── ANTI-VACUITY, and it is the
+                                                 ── only leg that makes the first
+                                                 ── assertion mean anything
+    ── §8.6.1b: with all eleven converted, the sloped set went EMPTY, and an
+    ── empty sloped set makes the classifier itself vacuous.
+```
+
+#### 8.6.1b ★ The conversion emptied the sloped set, which was itself a hazard
+
+⚠ **When #162 converted the tenth driver, the sloped set became EMPTY** — and an empty sloped set means `measured_shape` could return `Flat` for *every* subject even if the classifier were broken, so the whole partition would pass **vacuously**. The prior calibration anchors were `ast_drop` at 94 B/level and then `ast_term_depth` at 207; **both were converted, so the calibration lost its anchor** (**read from source**, `mettail-rust@7fad51db`, `rholang-runtime/tests/stack_depth_gate.rs`, the comment block above `ast_recursion_control`).
+
+★ The repair is a **deliberately unconvertible control**: `ast_recursion_control`, a host-recursive walk of the same `CastList`/`ListLit` ladder, owned by `stack_depth_probe.rs`, carrying `Shape::Sloped` and **never to be converted**. It measures nothing about the generated drivers; it proves the **classifier can still tell the two shapes apart**. $`\Rightarrow`$ *Censusing the classifier, not the artefact* — a census over generated output is blind to what the generator declined to generate.
+
+---
+
+### 8.6.1a ⛔★★ #197 — the defect inside #162's own commit, LIVE at HEAD
+
+**This is the single most important entry in this section**, because it is a defect *in the fix* that the rest of §8.6.1 reports as a success.
+
+**Read from source**, `mettail-rust@7fad51db`: **`fab6de24` is still the most recent commit to `macros/src/gen/term_ops/iterative_cmp.rs`** (`git log --oneline -- macros/src/gen/term_ops/iterative_cmp.rs` heads with it, followed by `b0027f61`, `5bdd0a24`). **No repair exists.**
+
+`fab6de24` — **#162's own commit** — mishandles the **optional-collection** shape, `Option<Vec<Proc>>`:
+
+| diagnostic | what the generated code does | why it cannot compile |
+|---|---|---|
+| **E0624** | calls `Option::len` | `len` is not a public method of `Option`; the length belongs to the *inner* `Vec`, reachable only after the `Option` is destructured |
+| **E0606** | casts `&Vec<Proc>` as `*const Proc` | a `&Vec<T>` is not a `&[T]`: casting the container reference to an element pointer is an invalid primitive cast, not a deref coercion |
+
+**Both are the same underlying slip**: the emitter reached for the *container's* accessor while holding the *`Option`'s* reference — a variant of the very confusion §8.6.1 is about, one level up. Where the root defect treated a container as a leaf, this treats an `Option`-wrapped container as a bare container.
+
+⚠ **Blast radius, DERIVED from the failing targets:** `promoted_corpus_class3opt`, `class3_opt_smoke`, `display_roundtrip_regression_tests`, and — because a proc-macro that fails to expand fails every crate that depends on it — **`--all-targets` repo-wide**.
+
+$`\Rightarrow`$ **The honest reading of §8.6.1 is therefore: the eleven conversions are real, measured, and correct in the shapes they cover, and the repository that reports them cannot currently build `--all-targets`.** Those two facts are both true and the second does not cancel the first — but a reader who is told only the first has been misled about the state of the tree. ★ This is also why lints are last in this campaign ([#86](#appendix-a--reproduction-commands)) rather than a matter of taste: with `--all-targets` blocked, a lint pass could not run even if it were wanted.
+
+---
+
+### 8.6.2 ⚠★★ #43 — f1r3node's hand-written `Par` traversals: 8 tripwire members REMAIN
+
+**Read from source**, `f1r3node-rust-mettail@8bf298ba`, `rholang/tests/stack_depth_gate.rs`: `CONVERTED_DEPTH` holds **15** entries and `CONVERTED_WIDTH` holds **6**, so **21 traversals are converted**; `TRIPWIRE_DEPTH` holds **8**, and `TRIPWIRE_WIDTH` is **empty**.
+
+The eight, with their release slopes:
+
+| member | B/level | why it is still here |
+|---|---:|---|
+| `subst_and_charge` | **146** | the metered wrapper; `encoded_len` remains. An $`19.5\times`$ improvement that is correctly **not** a class change (`SS-D5`) |
+| `substitute_deep_binding` | **7,460** | ★ **now the largest tripwire member.** `Env::get`'s copy is *semantically required* — the copy **is** substitution. Its `HashMap<i32, Par>` walk is a **different traversal** from the one stage F-4 converted |
+| `par_drop` | **144** | the derived `drop_in_place::<Par>`; the iterative-`Drop` repair is **REFUTED by measurement** ([§8.2](#82-the-derived-drop--refuted-by-measurement-and-it-stays-a-residual)) |
+| `normalize_drop` | — | the deploy composition: **flat in debug, sloped in release** |
+| `encode` | **302** | the prost encoder ([§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it)) |
+| `sort_nested_set` | **4,778** | Stage C-2 residual, self-contained set arm |
+| `sort_nested_map` | **7,509** | Stage C-2 residual, self-contained map arm |
+| `clone_nested_set` | **4,096** | the derived floor the two sorter arms are measured *against* |
+
+⚠★★ **#43 IS NOT SUPERSEDED BY #162/#189, and the conflation is easy enough that it nearly happened.** The two are disjoint on every axis that matters:
+
+| axis | #43 | #162 / #189 |
+|---|---|---|
+| repository | `f1r3node-rust-mettail` | `mettail-rust` |
+| subject family | **hand-written** `Par` traversals | **generated** `ast_*` drivers |
+| gate file | `rholang/tests/stack_depth_gate.rs` | `rholang-runtime/tests/stack_depth_gate.rs` |
+| adjudicating constants | `CONVERTED_DEPTH` / `CONVERTED_WIDTH` / `TRIPWIRE_DEPTH` | `EXPECTED_DRIVER_SHAPE` |
+| what a fix touches | a `.rs` file in `models/` or `rholang/` | an **emitter** in `macros/src/gen/` |
+
+$`\Rightarrow`$ **No commit in either repository can discharge the other's residual**, because no gate in either repository can *see* the other's subjects. ★ The mitigation already in the document is that cross-repository register rows name their source gate ([Appendix G.3](#g3-what-the-check-deliberately-does-not-cover-and-the-residual-risk)); the mitigation this section adds is that the two families are now drawn apart explicitly, so a future reader cannot merge them by resemblance.
+
+![Converted vs tripwire across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
+
+*Figure 9: the cross-repository status map. Source: [`figures/converted-vs-tripwire-cross-repo.puml`](figures/converted-vs-tripwire-cross-repo.puml). **Diagram type: a package diagram partitioned by repository and by gate constant**, chosen over a flat table because the load-bearing fact is a **containment** one — the two repositories are adjudicated by different constants in different files. Packages make the disjointness structural; a table would let a reader slide the two families together, which is exactly the error the section warns about.*
+
+---
+
+### 8.6.3 ⚠★★ #124 — the event-hash legs: MEASURED, NOT CONVERTED, and quadratic in TIME
+
+**Read from source**, `f1r3node-rust-mettail@8bf298ba`, `casper/tests/event_hash_leg_depth_probe.rs` and `models/src/rust/spliced_event_bytes.rs`.
+
+Three legs of the event hash are still $`\Theta(d)`$ in native stack. **MEASURED (q)** from that probe:
+
+| leg / path | debug | release |
+|---|---:|---:|
+| **direct** (`bincode::serialize`, the 95.43 % case) | **3,040** | **160** |
+| **spliced** (`emit_<leg>`, hand-written) | **1,008** | **208** |
+| ★ the **`*-cold` control** (`ColdStoreEncode::cold_encode`) | **0.0** | **0.0** |
+
+★ **The control reading 0.0 in both profiles is what makes the other four numbers mean anything** — the slope is the *leg's own*, not the harness's or the fixture's.
+
+**⚠ The stake is consensus liveness, not robustness.** The event hash reaches consensus twice over: it is the RSpace event identity carried into `ProcessedDeploy::deploy_log` $`\rightarrow`$ `Body.deploys` $`\rightarrow`$ the **block hash**, and it is the key the replay space rigs against (`ReplayRSpace::rig`).
+
+★★ **The repair is nearly free, and that is the finding.** `ColdStoreEncode` is **already implemented for all three legs' root types** — `Par`, `BindPattern`, `ListParWithRandom`, `TaggedContinuation`. The legs simply never started calling it: `direct()` is still `bincode::serialize`. The **channel** leg *was* routed through the new encoder (`00ff9187`); **these three were not.** $`\Rightarrow`$ This is not an unsolved problem; it is a **solved problem with three un-migrated call sites**, which is a materially different (and cheaper) residual than the prost one.
+
+#### ★ And the spliced path is $`\Theta(d^2)`$ in TIME
+
+`contains_par` is the dispatch scan that decides whether any filled `EPathMap` cell exists below a node. To answer **false** — the 95.43 % case — it **must visit every descendant**: absence admits no short circuit. And it is re-invoked at **every level**. Summing the descendants visited over all levels of a chain of depth $`d`$:
+
+```math
+\sum_{i=1}^{d} (d - i) \;=\; \frac{d\,(d-1)}{2} \;=\; \Theta(d^2)
+```
+
+$`\Rightarrow`$ **A time cost, distinct from and additional to the stack cost**, and one that no B/level figure anywhere in this report would reveal, because slope measures *stack per level* and is blind to *work per level*. ★ It is worth stating as a general caution: **a campaign that measures only stack will not notice a quadratic it introduced**, and this one did not notice this until the leg was read rather than measured.
+
+![The $`\Theta(d^2)`$-in-time spliced walk](figures/spliced-walk-quadratic-time.svg)
+
+*Figure 10: the spliced walk's quadratic time. Source: [`figures/spliced-walk-quadratic-time.puml`](figures/spliced-walk-quadratic-time.puml). **Diagram type: a sequence diagram with an explicit per-level repetition frame**, chosen because the quadratic cost is a fact about **call multiplicity over nesting levels** — `contains_par` is re-invoked once per level and each invocation descends the whole remaining subtree. A sequence diagram is the only type that makes "once per level, each descending everything" legible; a structure diagram would show the term but not the repetition.*
+
+---
+
+### 8.6.4 ⚠ #189 residual — `try_eval` is partially converted, and the ratchet that says so
+
+**Read from source**, `mettail-rust@7fad51db`, `macros/src/gen/native/eval.rs:1259` (`pub fn try_eval`). `try_eval` is **partially** converted: the **`Int` category has a worklist; fifteen categories do not.**
+
+⚠ **A partially converted traversal is the most dangerous shape in this whole report**, and it deserves saying plainly: it presents a *converted* name and a *converted* commit message, and it is flat on exactly the ladder its own subject exercises. The fifteen unconverted categories are invisible to a gate whose subject only walks `Int`.
+
+★ **The instrument that keeps this honest is a ratchet, not an enumeration**: `UNMEASURED_TRAVERSALS = 7` (**read from source**, `mettail-rust@7fad51db`, `rholang-runtime/tests/stack_depth_gate.rs:1492`). It is a **live ratchet** — a pinned count of the known-unmeasured population, so the population cannot grow silently. It does not claim to name its members; that is the point. Where enumeration is itself the failure mode ([§7.4](#74-enumeration-completeness)), a count that must be edited downward is the honest instrument.
+
+---
+
+### 8.6.5 ⚠★★ #119/#120 — the prost read ceiling, and the trap in removing it
+
+The protobuf **reader** is capped at term depth **33 / 32 / 31** per envelope by a private `prost` constant, while the **writer** has no cap at all — the *write/read asymmetry* of [§6.4](#64--the-writeread-asymmetry--one-section-because-it-is-one-class). The redesign is **designed, not built**.
+
+⚠★★★ **The trap, and it is the reason "just raise the limit" is wrong.** **Read from source**, `prost-0.14.4/src/encoding.rs:178–189`: `skip_field`'s `StartGroup` arm **recurses**.
+
+```text
+WireType::StartGroup => loop {
+    let (inner_tag, inner_wire_type) = decode_key(buf)?;
+    match inner_wire_type {
+        WireType::EndGroup => {
+            if inner_tag != tag {
+                return Err(DecodeErrorKind::UnexpectedEndGroupTag.into());
+            }
+            break 0;
+        }
+        _ => skip_field(inner_wire_type, inner_tag, buf, ctx.enter_recursion())?,
+    }
+},
+```
+
+*(**VERBATIM** from `prost-0.14.4/src/encoding.rs`, the `StartGroup` arm of `skip_field`. ⚠ Tagged `text`, not `rust`, and deliberately: a bare `match` arm is **not standalone Rust** and the `code-snippets-valid` checker correctly refuses it. This is the same disposition §E.2 records for two earlier blocks — retagged because the check refused them, recorded rather than quietly accommodated. It compiles in its own crate, where it is quoted from.)*
+
+The `loop` is iterative across *siblings*, but the `_ =>` arm calls `skip_field` **on itself** for a nested group, and the only thing bounding that recursion is `ctx.limit_reached()?` at the function's head plus `ctx.enter_recursion()` on the way down.
+
+$`\Rightarrow`$ **The recursion limit is not merely a *cap on legitimate depth*; it is also the sole guard on an attacker-controlled recursion in the SKIP path** — the path taken for *unknown* fields, which an attacker chooses freely. **Removing the recursion limit without first making group-skip iterative would not lift a restriction; it would INTRODUCE a `SIGSEGV`** on a message the node does not even understand. ★ Note the asymmetry in cost: making the *known* fields iterative is a large schema-driven change, whereas the `StartGroup` arm is one function — so the guard must be replaced *before* the cap is touched, not after.
+
+---
+
+### 8.6.6 ⚠ #174 — 10,491 B/level that belongs to no measured driver
+
+**Read from source**, `mettail-rust@7fad51db`, `rholang-runtime/src/bin/stack_depth_probe.rs:820–821`: bisected debug, ladder $`16 \rightarrow 1{,}024`$, `list_pair_lower` reads **950 B/level** while `map_pair_lower` reads **10,491** — an **11.0$`\times`$** jump from replacing a list literal with a hash-keyed one.
+
+⚠ **The figure matches no driver measured in isolation.** Every generated `ast_*` driver reads 0 ([§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)), and no single measured subject accounts for 10,491. $`\Rightarrow`$ The cost is **real, reproducible, localised to the parse/lowering phase of hash-keyed collection literals, and UNATTRIBUTED**.
+
+★ **It is recorded as unattributed rather than apportioned**, because apportioning it would mean assigning a measured total to un-measured parts — the exact move [§5.7](#57-family-e--the-instrument-and-what-it-caught-in-itself) documents as producing false zeros. The honest next step is a *composition* measurement (bisect the lowering phase with each candidate sub-traversal stubbed), not an estimate.
+
+---
+
+### 8.6.7 ⚠★ #157 — a transcribed ceiling, and a tripwire that cannot see it drift
+
+**Read from source**, `f1r3node-rust-mettail@8bf298ba`, `rholang/tests/stack_depth_gate.rs`: `BUILD_DEPTH_INVENTORY` (line 4579) carries `BuildCeiling::Bisected(283)` (line 4586) for `env_get_deploy`. **The tree measures 274** ([§5.5.4](#554-results-and-a-control-that-behaved-exactly-as-predicted)) — a **9-level drift**, in a value the inventory's own source ruled must not be pinned. There are **$`\geq`$ 6** transcribed sites.
+
+⚠★★ **The tripwire is STRUCTURALLY BLIND to this class of drift, and the arithmetic shows why.** The assertion is $`d > \texttt{widest\_read}`$, with `widest_read` derived from `READ_CEILING_ENVELOPES` (line 4629) as **33**. The guarded band is therefore $`[264,\ 297)`$ at the inventory's resolution, and
+
+```math
+264 \;\leq\; 274 \;<\; 283 \;<\; 297
+```
+
+$`\Rightarrow`$ **283 and 274 both sit inside the band**, so the assertion passes identically for the stale value and the true one. Its **resolution is 33 levels** and the **drift is 9** — the check cannot resolve a difference four times smaller than its own granularity.
+
+★ **The lesson is about instrument design, not diligence.** A check whose resolution is coarser than the drift it is meant to catch is not a weak check; it is **no check at all** for that failure mode, and it will report green forever. The repair is not "look harder" but **derive the value instead of transcribing it** — the same conclusion [§5.7.1](#571-the-register-became-derived-because-every-transcription-drifted) reached when the converted-subject list existed in four places and every copy drifted.
+
+---
+
+### 8.6.8 ⚠★★★ The instrument floor, and the wrong shape — two corrections that change the METHOD, not just a number
+
+These two are in the register because **a reader who adopts this report's method without them will produce wrong numbers with correct-looking provenance.**
+
+#### (1) 12,288 B is an INSTRUMENT FLOOR, and it is provable from the algorithm
+
+`min_stack_for` begins its exponential probe at `PROBE_START = 16 * 1024`. A subject that **survives** that first probe never enters the doubling loop, so the bisection runs on $`[8{,}192,\ 16{,}384]`$; with $`\texttt{RESOLUTION} = 4{,}096`$ and $`16{,}384 - 8{,}192 = 8{,}192 > 4{,}096`$, the loop executes and terminates on its **first** midpoint:
+
+```math
+\mathrm{mid} \;=\; \frac{8{,}192 + 16{,}384}{2} \;=\; 12{,}288
+```
+
+$`\Rightarrow`$ **12,288 is the smallest value the bisection can ever emit**, for any subject, regardless of what the subject does. **Twelve of fifteen subjects read that same floor — which is ONE artefact, not twelve agreeing measurements.**
+
+★ **The repair makes the floor unspellable.** `min_stack_for` now returns `MinStack{Bytes, BelowResolution}` and renders `<12 KiB (BELOW THE INSTRUMENT FLOOR)` — **never a number** (`mettail-rust@125065a8`, #187; **read from source** at `7fad51db`, `rholang-runtime/tests/stack_depth_gate.rs:334–343`, `371`, `483–494`).
+
+⚠ **What survives the floor and what does not**, because the distinction is the whole practical content: a **slope** is a *difference* of two endpoint readings, so a constant common to both cancels and **slope readings are unaffected** — when both ends read the floor the slope is exactly $`0`$, which is correct. **Endpoint byte values at the floor are not measurements** and must never be divided by. A row reading $`(12{,}288 - 12{,}288)/\mathrm{span} = 0.0`$ looks exactly like a result.
+
+⚠★★ **AND THIS REPAIR IS PRESENT IN ONLY ONE OF THE TWO REPOSITORIES.** **Read from source**, `f1r3node-rust-mettail@8bf298ba`, `rholang/tests/stack_depth_gate.rs`: `fn min_stack_for(name: &str, depth: usize) -> usize` — a **bare `usize`**, starting at `let mut hi = 16 * 1024`. The `MinStack` type does not exist in this repository. $`\Rightarrow`$ **Every endpoint byte figure in this report that came from f1r3node's own gate is still floor-affected**, and this document is the one that must say so, because it is the document that publishes those figures. The slopes stand; the endpoints at 12,288 do not.
+
+★ **The defect neither prior analysis named — and its status is narrower than the diagnosis.** `runs_within` mapped an `execve` refusal to `Err(_) => false`, *the same verdict it gives a genuine overflow*, so the instrument could not distinguish **"needs more stack"** from **"cannot ask"**. **Read from source**, `mettail-rust@7fad51db`, `rholang-runtime/tests/stack_depth_gate.rs:132–180`: **this is now repaired for the case that mattered** — a missing probe binary raises `ErrorKind::NotFound` and **panics** rather than being read as a fault — and the surviving `Err(_) => false` arm carries an explicit justification: at the bottom of the exponential probe the rlimit can be too small for the kernel to lay out the child's stack *at all*, and treating that as "did not survive at this bound" is what keeps the bisection **monotone**. $`\Rightarrow`$ The conflation is closed where it could produce a false measurement; the remaining arm is a **deliberate, documented** choice, not an oversight. *(This corrects the framing that reached this revision as an open, unnamed defect — see [Appendix D](#appendix-d--corrections-to-the-commissioning-brief) row 13.)*
+
+![The bisection instrument and its 12,288 B floor](figures/bisection-instrument-floor.svg)
+
+*Figure 11: the instrument floor. Source: [`figures/bisection-instrument-floor.puml`](figures/bisection-instrument-floor.puml). **Diagram type: an activity diagram over an annotated interval ladder**, chosen because the floor is a **control-flow** fact — a subject that survives the first probe never enters the doubling loop — so the claim is only visible if the branch that is **not** taken is drawn. A bar chart of the resulting numbers would hide precisely the mechanism.*
+
+#### The bisection instrument, in literate form
+
+**Algorithm 5 (MIN-STACK-BISECT).** *The instrument itself — exponential probe, bisection, and the refusal that makes the floor unspellable.*
+
+```pseudocode
+⟨Measure the minimum surviving stack of a subject at a depth⟩ ≡
+    ⟨Probe upward until the subject survives⟩
+    ⟨Bisect the bracketing interval to RESOLUTION⟩
+    ⟨Refuse to answer below the instrument floor⟩
+
+⟨Probe upward until the subject survives⟩ ≡
+    hi ← PROBE_START                        ── 16 * 1024.  THE FLOOR'S CAUSE.
+    while hi ≤ 512 MiB ∧ ¬ runs_within(hi, depth, subject):
+        hi ← 2 · hi
+    if hi > 512 MiB: fail "needed more than 512 MiB"
+    lo ← hi / 2                             ── survives at hi, unknown at lo
+
+⟨Bisect the bracketing interval to RESOLUTION⟩ ≡
+    while hi − lo > RESOLUTION:             ── RESOLUTION = 4096
+        mid ← (lo + hi) / 2
+        if runs_within(mid, depth, subject) then hi ← mid else lo ← mid
+    ── ⚠ When the FIRST probe already succeeded, lo = 8192 and hi = 16384, so
+    ── the very first mid is 12288 and the loop ends there.  NO SUBJECT
+    ── INFORMATION reaches that answer.
+
+⟨Refuse to answer below the instrument floor⟩ ≡
+    if hi ≤ SMALLEST_POSEABLE_STACK then
+        return BelowResolution              ── #187: renders "<12 KiB (BELOW
+                                            ── THE INSTRUMENT FLOOR)", never a
+                                            ── number.  Unspellable ⇒ un-divisible.
+    else
+        return Bytes(hi)
+
+⟨Decide whether the subject survived a given bound⟩ ≡        ── runs_within
+    spawn the probe binary with RLIMIT_STACK = bound, RLIMIT_CORE = 0
+    case exit:
+        clean exit                    ⇒ true
+        fault / non-zero              ⇒ false
+        ErrorKind::NotFound           ⇒ PANIC       ── a MISSING probe binary is
+                                                    ── not a measurement
+        other spawn error             ⇒ false       ── execve refused the rlimit:
+                                                    ── still "did not survive at
+                                                    ── this bound"; keeps the
+                                                    ── bisection MONOTONE
+```
+
+#### (2) 3,254 B/level was the wrong SHAPE, so the budget built on it was a ratio of two artefacts
+
+The budget constraint $`k \leq 12288/3254`$ divided **an instrument floor** (numerator, §8.6.8(1)) by **a slope of the wrong subject** (denominator). Both factors are void, so the constraint never carried information — and, per the correction in [§0](#0-the-fix-register--the-scannable-index), the traversal it described now measures **0**, which would make the quotient undefined in any case.
+
+★ **`k = 3` nevertheless survives, for entirely independent reasons**, and it is worth separating the *conclusion* from the *discarded derivation*: the modal datum is **3 cut-set levels**, `k = 3` covers **96.11 %** of observed cases, and the gate's growth is **exactly zero for $`k \leq 4`$**. $`\Rightarrow`$ A right answer that had a wrong proof. The wrong proof is recorded here rather than deleted, because a later reader who finds only the surviving justification cannot tell whether the constraint was ever checked.
+
+---
+
+### 8.6.9 ★★★ #121 — the gate built to DEMONSTRATE a fix overflowed, and the frame was not the encoder
+
+This entry is a lesson about **where a defect is**, and it is the strongest single argument in the report for measuring rather than reasoning.
+
+#121's gate existed to *demonstrate* a fixed encoder. **It still overflowed.** Bisection then showed the frame was **not the encoder at all**: it was `models/src/rust/pathmap_crate_type_mapper.rs`'s **`eval_stable_par` ⇄ `eval_stable_expr`**, mutually recursive and unbounded through `EList.ps` / `ETuple.ps` (**read from source**, `f1r3node-rust-mettail@8bf298ba`, `models/src/rust/pathmap_crate_type_mapper.rs:420`, `443`, `483`).
+
+⚠★★ **It is the GROUND-DOMAIN gate**, so it runs on **every segment of every trie key** — one of the hottest paths in the system — **and it appeared in NO depth audit and NO tripwire list.** $`\Rightarrow`$ Two independent enumeration instruments both missed a traversal on a hot, attacker-reachable path. That is not a gap in either list; it is evidence that **enumeration by inspection does not converge**, which is [§7.4](#74-enumeration-completeness)'s thesis and the reason this document prefers derived registers and ratchets to hand-maintained inventories.
+
+★ **Its honest price, reported because a stack-safety fix that is slower is still correct** (**MEASURED (q)**, `models/benches/trie_key_bench.rs:100–108`):
+
+| depth | ratio (converted ÷ recursive) | reading |
+|---:|---:|---|
+| 1 | **0.264$`\times`$** | ⚠ **3.79$`\times`$ SLOWER**, $`+278\ \%`$ — a real regression: $`\approx 96`$ ns $`\rightarrow \approx 363`$ ns per escape payload |
+| 8 | 1.071$`\times`$ | **crossover** lies between depth 1 and depth 8 |
+| 1024 | **233.874$`\times`$** | faster by more than two orders of magnitude |
+
+$`\Rightarrow`$ The trade is **a constant-factor loss on shallow terms for unbounded safety on deep ones**, on a path where the shallow case is the common one. ★ Reporting the 3.79$`\times`$ is not a caveat but the substance: it is the number a reader needs in order to disagree, and a report that published only the 233.874$`\times`$ would be advocacy rather than measurement.
+
+---
+
+### 8.6.10 The verdict of this section
+
+1. **The eleven generated drivers are converted and measured flat.** That is real and it is not the whole state of the tree.
+2. **#197 is live and unrepaired at `mettail-rust@7fad51db`**, inside #162's own commit, and it blocks `--all-targets` repo-wide.
+3. **Eight `TRIPWIRE_DEPTH` members remain in f1r3node**, and **#43 is not superseded** by any `mettail-rust` work — disjoint families, repositories, and gate constants.
+4. **Three event-hash legs are measured and not converted**, with the repair already implemented and never called, and the spliced path additionally $`\Theta(d^2)`$ **in time**.
+5. **`try_eval` is partially converted** — one category of sixteen — and `UNMEASURED_TRAVERSALS = 7` is a live ratchet, not a closed list.
+6. **The prost read ceiling is designed, not built**, and removing it naively would **introduce** a `SIGSEGV` through `skip_field`'s recursive `StartGroup` arm.
+7. **10,491 B/level is reproducible and unattributed**; **$`\geq`$ 6 transcribed ceiling sites** are stale and the tripwire's 33-level resolution cannot see a 9-level drift.
+8. **Two instrument corrections change the method**: 12,288 B is a floor whose repair exists in `mettail-rust` only, and the 3,254 B/level budget was a ratio of two artefacts.
+
+$`\Rightarrow`$ **This report establishes a large, mechanically-checked class change over the traversals it names, and it does not establish that the `Par` family is stack-safe.** The precedent it follows is the census that prints *"bundled languages measured: 51"* — **not 54** — with its reason inline: **the number that is defensible, stated with what it excludes, in the same breath.**
 
 ---
 
 ## 9. Conclusions
 
-1. **The class change is real and is mechanically enforced.** Nineteen traversals — 13 depth, 6 width — hold their minimum surviving stack *identical* across a 1,024-fold change in nesting depth and a 16,384-fold change in sibling width, in both build profiles, checked by a gate whose registers are the single source of truth and whose checkers are shown in-suite to reject a $`\Theta(d)`$ control.
+1. **The class change is real and is mechanically enforced.** **Twenty-one traversals — 15 depth, 6 width** (*nineteen* before stage F-4; **read from source** at `f1r3node-rust-mettail@8bf298ba`) — hold their minimum surviving stack *identical* across a 1,024-fold change in nesting depth and a 16,384-fold change in sibling width, in both build profiles, checked by a gate whose registers are the single source of truth and whose checkers are shown in-suite to reject a $`\Theta(d)`$ control. ⚠ **This is a claim about 21 named subjects, not about the family**; the 8 that remain are [§8.6.2](#862--43--f1r3nodes-hand-written-par-traversals-8-tripwire-members-remain).
 
 2. **The two headline availability defects are closed.** A term that could be *built* and not *destroyed* (8.8 kB of source aborting a node) and a pre-consensus ingress teardown reachable from unauthenticated gRPC (43.5 kB of source aborting a node) are both $`0`$ B/level with no ceiling below the search bound.
 
@@ -1943,6 +2411,16 @@ The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(
 5. **The residual is larger than the fixed part on the network path.** The protobuf codec is recursive on both sides, capped on one, and is the standing home of the write/read asymmetry. Three routes exist to close it; **all three are consensus decisions and none was taken here.**
 
 6. **The instrument produced more findings than the fixes did.** A totally vacuous generator quantifying over two values; four false zeros from probes that measured nothing; a headline test whose result came from one call in a fixture; a control calibrated in the wrong profile; a slope estimate biased to zero by its own intercept; a check that counted lines instead of testing its claim. ★ **Every number in §5 is worth exactly as much as the anti-vacuity leg standing behind it**, and where such a leg does not exist — §5.9's seven entries — the report says *not measured* rather than guessing.
+
+7. ⚠★★★ **THE WORK IS NOT COMPLETE, AND THIS CONCLUSION IS PART OF THE RESULT RATHER THAN A CAVEAT ON IT.** [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish) is the register; its eight-line verdict is [§8.6.10](#8610-the-verdict-of-this-section). The headline items a reader must not lose:
+
+   * **#197 is live and unrepaired** at `mettail-rust@7fad51db` — **inside `fab6de24`, one of the very commits [§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) reports as a success** — and it blocks `--all-targets` **repo-wide**. The eleven conversions are real *and* the repository that reports them cannot currently build all targets. Both halves are true and the second is the one a completion claim would suppress.
+   * **Eight `TRIPWIRE_DEPTH` members remain** in f1r3node, and **#43 is not superseded** by #162/#189 — disjoint repositories, families and gate constants, so no fix on either side discharges the other.
+   * **Three event-hash legs are measured, not converted**, on a path that reaches the block hash; the spliced walk is additionally $`\Theta(d^2)`$ **in time**, a cost no B/level figure in this report can see.
+   * **`try_eval` is one category converted of sixteen**; the prost read ceiling is **designed, not built**, and naive removal would *introduce* a `SIGSEGV`; 10,491 B/level remains **unattributed**; and the ceiling inventory is **stale in a band its own tripwire cannot resolve**.
+   * **Two instrument corrections change the method**, and one of them — the `MinStack` floor repair — **exists in `mettail-rust` only**, so this repository's endpoint byte figures at 12,288 remain floor-affected. The *slopes*, which are what conclusions 1–5 rest on, are differences and are unaffected.
+
+   $`\Rightarrow`$ **The defensible claim is the one this report should be cited for:** *a large, mechanically-checked class change over the traversals named in [§0](#0-the-fix-register--the-scannable-index)* — **not** *"the `Par` family is stack-safe"*. The standing finding of this campaign is that **a gate whose advertised coverage exceeds its real coverage is worse than none**; that applies to documents exactly as it applies to tests, and this section is where this document submits to its own rule.
 
 ---
 
@@ -2228,11 +2706,30 @@ Recorded because a report that silently absorbs its brief's errors is less usefu
 | 9 | *"★ `#103`, where the predicted 55–60 ms came in at 103.57 ms"* | **Not found in this worktree** (§5.9 #7). Three other falsified predictions were found and are reported. |
 | 10 | *"Include a cross-cutting section on the ASYMMETRY"* — initially framed as the centre of gravity | Included as **one** section (§6.4), per the later correction. The per-fix measurements are the report's centre. |
 
+### D.2 The 2026-07-30 revision brief (the guideline-alignment and residuals pass)
+
+Recorded on the same rule. Every figure in that brief was checked against source or a commit body before being written into [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish); these are the ones that did not survive the check.
+
+| # | the revision brief said | the record says |
+|---|---|---|
+| 11 | *"There are at least THREE candidate documents … establish the set and report the COUNT"* | **Withdrawn by the owner mid-task.** The set is a **singleton** — this document. The two audits named as candidates (`mettail-rust`'s `lowering-stack-depth-audit-2026-07-27.md`, this repository's `theta-depth-traversals-2026-07-26.md`) are **explicitly out of scope and were not edited**. |
+| 12 | *"`#43` … **8 tripwire members remain** — `subst_and_charge`, `substitute_deep_binding`, `par_drop`, `normalize_drop`, `encode`, `sort_nested_set`, `sort_nested_map`, `clone_nested_set`"* | ✅ **Confirmed exactly**, 8 members, **read from source** at `8bf298ba`. ⚠★ **But a naive text census of the same block returns NINE**, because `TRIPWIRE_DEPTH` carries a comment reading `` ⚠★ `clone` IS GONE FROM THIS LIST ``. A `grep` for quoted names inside the block counts the *commented* name and silently over-reports. $`\Rightarrow`$ **This is the campaign's own "census the classifier, not the artefact" hazard, reproduced against the census itself**, and it is recorded because the wrong answer here is a *plausible* one. |
+| 13 | *"the defect **neither prior analysis named**: `runs_within` mapped an `execve` refusal to `Err(_) => false` — the same verdict as a genuine overflow — so the instrument could not distinguish *needs more stack* from *cannot ask*"* | ⚠ **Stale as an OPEN defect.** The conflation was real; **it is repaired at `mettail-rust@7fad51db`** for the case that could produce a false measurement: `ErrorKind::NotFound` now **panics** (a missing probe binary is no longer readable as a fault), and the surviving `Err(_) => false` arm carries an explicit justification — an `execve` refusal at a too-small rlimit *is* "did not survive at this bound", and treating it so is what keeps the bisection **monotone**. $`\Rightarrow`$ Reported in [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number) as **a closed defect with a deliberate residual arm**, not as an open one. |
+| 14 | *"`<Par as Clone>::clone` … remains in `TRIPWIRE_DEPTH` at 3,254 B/level"* (carried forward from this document's own §0 and §8.3) | ⚠★★ **Superseded at HEAD, and the brief inherited the error from this document rather than introducing it.** `clone` was **CONVERTED** by stage F-4 (`0eac9c3a`) and sits in `CONVERTED_DEPTH`. Corrected in [§0](#0-the-fix-register--the-scannable-index) with the superseded wording quoted verbatim beside it. |
+| 15 | *"**3,254 B/level was the wrong SHAPE** — a single derived function, not the family (7,021)"* | ⚠ **Half right, and the direction matters.** `0eac9c3a` records the opposite attribution: **3,254 is the on-record figure for the derive**, and **7,021 is the ORACLE's** reading — a *semantic* reproduction by a family of free functions, which under `-O` inlines differently and reads **2.16$`\times`$ high**. So 7,021 is not "the family's true slope" that 3,254 understated; it is an instrument artefact of the control. $`\Rightarrow`$ The brief's *conclusion* stands — the budget $`k \leq 12288/3254`$ was a ratio of two artefacts — but its *reason* is corrected in [§8.6.8(2)](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number). ★ And both factors are now moot: the traversal measures **0**. |
+| 16 | *"a converted-vs-tripwire status map … the recursive-descent $`\rightarrow`$ work-stack transformation"* listed among **five** diagrams owed | **Four were owed, not five.** The recursive-descent $`\rightarrow`$ work-stack transformation **already existed** as `recursive-vs-trampolined` (9 typeset LaTeX spans, 16 colours). Four new figures were authored; the existing seven were **extended, not replaced**. |
+| 17 | *"`min_stack_for` now returns `MinStack{Bytes, BelowResolution}`"* stated without repository | ⚠★★ **True in `mettail-rust` only.** **Read from source** at `f1r3node-rust-mettail@8bf298ba`: this repository's `min_stack_for` still returns a bare `usize` and still starts at `16 * 1024`. $`\Rightarrow`$ **The floor repair has not crossed into the repository this report is about**, which is a residual the brief did not name and [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number) now does. |
+| 18 | the count *"nineteen traversals (13 depth + 6 width)"*, carried in this document's abstract, §5 preamble and conclusion 1 | ⚠ **Stale in all three places: it is 21 (15 + 6)** at `8bf298ba`. `clone` and `clone_send_chain` were converted by stage F-4 after the sentence was written. All three corrected, with the superseded figure named. |
+
 ---
 
 ## Appendix E — documentation-guideline conformance
 
 This report is held to the same evidentiary standard as its subject matter: conformance to the pgmcp documentation guidelines is **executed**, not asserted. *A guideline nobody checks is a guideline that silently rots* — and this project has already shipped that failure mode once, with four `.svg` files sitting on disk at **zero bytes** beside `.puml` sources that had real content, because the check that would have caught it existed and had never been run.
+
+★ **The complete per-slug audit — all 26 guidelines, BEFORE and AFTER the 2026-07-30 revision — is [§E.6](#e6--the-complete-per-slug-audit-all-26-guidelines-before-and-after).** §E.1–E.5 below describe the *instruments*; §E.6 is the *verdict*, and it is the table to read if only one is read.
+
+⚠★★ **Provenance of the guideline list, stated because it changes how much the table is worth.** The canonical source is pgmcp's `documentation_guidelines` tool (**26 slugs, 7 categories**). That tool — and `tool_catalog` / `enable_tools` / `call_tool`, the documented routes to it — **were not in the acting agent's tool catalog** for this revision. The list was therefore taken from the **source of record**, `/home/dylon/Workspace/f1r3fly.io/pgmcp/src/docguidelines/mod.rs`, function `guideline_seeds()`, which is the single place every other pgmcp rendering derives from and whose own doc-comment pins the count at 26. The category tally read from that source — Placement 2, Coverage 3, Pedagogy 4, Diagrams 9, MathNotation 3, Citations 3, AlgorithmsCode 2 — sums to **26** and matches the tool's advertised shape. $`\Rightarrow`$ **A fallback, and it is recorded as one**; a prior agent on this campaign had to make the same fallback, which is itself worth knowing.
 
 ### E.1 The mechanised gate
 
@@ -2244,7 +2741,19 @@ DOCLINT_DOI=on ./docs/languages/validate.sh \
   /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-**Result: 17 / 17 PASS, exit status 0, zero diagnostics naming this file.** Log at `/tmp/sd_validate3.log`.
+**Result (2026-07-30 revision, `DOCLINT_DOI=on`): 17 / 17 PASS, exit status 0, zero diagnostics naming this file.** Log at `/tmp/ss_final3.log`.
+
+> ⚠★★★ **THE PREVIOUSLY RECORDED RESULT HAD ROTTED, AND THIS IS THE MOST INSTRUCTIVE FINDING IN THIS APPENDIX.** This line read: *"**Result: 17 / 17 PASS, exit status 0, zero diagnostics naming this file.** Log at `/tmp/sd_validate3.log`."* That was true when written. **Re-running the same command against the committed document at `f1r3node-rust-mettail@8bf298ba` returns 14 / 17 — three checks FAILING** (**MEASURED (f)**, 2026-07-30, log `/tmp/ss_validate_before.log`):
+>
+> | check | slug | BEFORE (measured, `8bf298ba`) | cause |
+> |---|---|:---:|---|
+> | `math-symbol-literals` | `math-mathjax` | ❌ **FAIL** | two bare right-double-arrow operators in prose (named, not shown — see §E.6a), at what are now lines 407 and 419 |
+> | `math-backticks` | `math-backticks` | ❌ **FAIL** | same two expressions, left outside a math span |
+> | `pedagogy-define-terms` | `pedagogy-define-terms` | ❌ **FAIL** | `PMU`, `ISA`, `IBS` never expanded; `PEBS` used before its definition |
+>
+> **The rot was introduced by two later commits — `cebdedbb` and `23eff25a` — which edited §4.4 and §5.4 after this appendix recorded its green result.** Neither re-ran the gate. $`\Rightarrow`$ **A recorded PASS is a measurement with a timestamp, not a property of the document**, and this appendix asserting *"a guideline nobody checks is a guideline that silently rots"* had itself gone stale in exactly that way, in eleven days. ★ All three are repaired in this revision, along with six diagnostics introduced by the revision's own new material — which the gate caught, which is the entire argument for having it.
+
+$`\Rightarrow`$ **This is the concrete case for [Appendix G](#appendix-g--keeping-this-document-current)'s thesis**, and it strengthens it: G proposes binding the document's *numbers* to the gate, and this shows the document's *conformance result* needs the same treatment. A `validate.sh` invocation in continuous integration, on any commit touching this file, would have failed `cebdedbb` at the moment it introduced the regression.
 
 | # | check | guideline slug(s) | verdict |
 |---:|---|---|---|
@@ -2281,7 +2790,10 @@ Stated precisely, so no check is read as proving more than it does.
 
 ### E.3 The colour mapping, so it can be checked
 
-One colour per concept, used identically in all six figures:
+One colour per concept, used identically in **all eleven figures** (the four added by the 2026-07-30 revision reuse this mapping without extending it).
+
+> ⚠ **A drift this appendix caught in itself, recorded rather than quietly fixed.** This sentence read *"in all six figures"* while §E.4's own table listed **seven** and the document's closing line said *"seven figures"* — three counts, two of them wrong, inside one appendix whose subject is checking. It is the same failure mode as [§5.7.1](#571-the-register-became-derived-because-every-transcription-drifted)'s four drifting copies, and it is why [Appendix G](#appendix-g--keeping-this-document-current) argues the count should be **derived** from `figures/*.puml` rather than written in prose in three places.
+
 
 | colour | hex | concept |
 |---|---|---|
@@ -2308,6 +2820,14 @@ Every `.puml` was rendered and every `.svg` checked for non-emptiness and for ty
 | `deploy-path-ceilings.svg` | 59,049 | 5 | 0 |
 | `heap-where-allocations-moved.svg` | 99,669 | 17 | 0 |
 | `generated-drivers-two-ladders.svg` | 63,463 | 5 | 0 |
+| ★ `collection-literal-arm-divergence.svg` | 77,299 | 13 | 0 |
+| ★ `bisection-instrument-floor.svg` | 285,571 | 16 | 0 |
+| ★ `converted-vs-tripwire-cross-repo.svg` | 90,938 | 12 | 0 |
+| ★ `spliced-walk-quadratic-time.svg` | 115,365 | 13 | 0 |
+
+★ **Added by the 2026-07-30 revision.** Totals across all eleven: **112 `<latex>` spans in source, 0 leaked into any SVG**, 11–16 distinct colours per source. *(Rendered with the system `plantuml`; verified by counting `<image …>` elements — the typeset-LaTeX images — and searching every SVG for an escaped `<latex>` tag.)*
+
+⚠★ **One tooling limit was found by measurement and is recorded in the source so it is not "repaired" back.** `bisection-instrument-floor` is an **activity** diagram, and **activity-diagram `legend` blocks do not typeset LaTeX at all** in this PlantUML build: a minimal reproduction — one `<latex>` span in an activity diagram's legend — emits **zero** typeset images and leaks the literal tag. This is *not* a syntax error in the expression; the same span typesets correctly in that figure's **notes**, and in the **legend of a component diagram** (`generated-drivers-two-ladders` typesets `\mathtt{Arc::clone}` in a legend cell with zero leaks). $`\Rightarrow`$ The repair is placement, not notation: **mathematics lives in the notes, the activity legend is deliberately plain prose**, and a comment at the head of the `.puml` says so. This is the honest reading of `diagrams-plantuml-latex`: the guideline is satisfied wherever the renderer can satisfy it, and where it cannot, the limitation is named rather than papered over with a unicode literal that would silently violate `math-mathjax` instead.
 
 Command in Appendix A.9. ⚠ **The first render of five of the six emitted `InvocationTargetException` from JLaTeXMath** because the LaTeX carried doubled backslashes; the diagrams still produced non-empty SVGs, so a byte-size check alone would have passed them with their formulae missing. The **typeset-image count** column is what catches that, and it is why it is in the table.
 
@@ -2315,10 +2835,73 @@ Command in Appendix A.9. ⚠ **The first render of five of the six emitted `Invo
 
 `validate.sh` states that four guidelines are editorial and are *"reviewed by hand; they are not silently assumed to hold."* Their disposition here:
 
-* **`coverage-doc-types`** — the report carries theoretical (§2, §3), design and architectural (§5's *architecture* subsections, §6.1–6.2), engineering (§4, Appendix A), security (§1.1, §5.5.3, §6.4) and usage (Appendix A, Appendix B) material. **PASS.**
-* **`diagrams-best-types`** — a paired before/after structure diagram for the central transformation, a component diagram for the two wire formats, a categorised inventory for the ladder, a before/after architecture diagram for the async driver, an **activity diagram with swimlanes** for the deploy path (because it is a flow with hand-offs between trust domains), and a layered quantity diagram for the heap result. **PASS.**
-* **`diagrams-best-actors`** — the actors are the two *resources* (native stack, heap), the two *codecs*, the five *deploy-path stages* and the *gate*, rather than files or functions, because the report's claims are about resources and boundaries. **PASS.**
-* **`pedagogy-intuition-rationale`** — every conversion carries a *why this shape rather than the alternatives* passage (§5.1.2, §5.2.1, §5.2.2, §5.3.2, §5.3.3), and §6.1 tabulates the choice rule across all of them. **PASS.**
+* **`coverage-doc-types`** — the report carries theoretical (§2, §3), design and architectural (§5's *architecture* subsections, §6.1–6.2), engineering (§4, Appendix A), security (§1.1, §5.5.3, §6.4, §8.6.3, §8.6.5) and usage (Appendix A, Appendix B) material. **PASS.**
+* **`diagrams-best-types`** — a paired before/after structure diagram for the central transformation, a component diagram for the two wire formats, a categorised inventory for the ladder, a before/after architecture diagram for the async driver, an **activity diagram with swimlanes** for the deploy path (because it is a flow with hand-offs between trust domains), a layered quantity diagram for the heap result, and — added by this revision — a **dispatch-divergence decision tree** for the root cause, an **activity diagram over an interval ladder** for the instrument floor, a **package diagram** for the cross-repository status map, and a **sequence diagram with a per-level repetition frame** for the $`\Theta(d^2)`$ walk. Each choice is justified in its own caption. **PASS.**
+* **`diagrams-best-actors`** — the actors are the two *resources* (native stack, heap), the two *codecs*, the five *deploy-path stages*, the *gate*, and — added by this revision — the *classifier and its two arms*, the *instrument's own control flow*, the *two repositories as packages*, and the *absence proof* (`contains_par`) as a first-class participant, rather than files or functions, because the report's claims are about resources, boundaries and decisions. **PASS.**
+* **`pedagogy-intuition-rationale`** — every conversion carries a *why this shape rather than the alternatives* passage (§5.1.2, §5.2.1, §5.2.2, §5.3.2, §5.3.3), §6.1 tabulates the choice rule across all of them, and §8.6.1's literate algorithm makes the choice **derivable from the combining operation's algebra** rather than a matter of taste. **PASS.**
+
+---
+
+### E.6 ★★ The complete per-slug audit: all 26 guidelines, BEFORE and AFTER
+
+**BEFORE** = the document at `f1r3node-rust-mettail@8bf298ba`, i.e. as it stood before the 2026-07-30 revision. **AFTER** = this revision.
+
+⚠★★★ **A slug that passes VACUOUSLY is recorded as FAIL.** `math-delimiters` "passing" because a document contains no math is not a pass, and the same rule is applied to suite-scoped checks that no-op on a foreign file. Two rows below were **PASS (vacuous)** in the mechanised gate and are therefore recorded **FAIL** in the BEFORE column — a stricter reading than the gate's own exit status, and the honest one.
+
+| # | slug | category | BEFORE | AFTER | evidence / what changed |
+|---:|---|---|:---:|:---:|---|
+| 1 | `doc-placement` | Placement | ✅ PASS | ✅ PASS | `docs/design/stack-safety/` with a sibling `figures/`; subject-matter directory, not a dated dumping ground. Unchanged. |
+| 2 | `doc-naming-structure` | Placement | ⚠ **FAIL** *(vacuous)* | ✅ PASS | The gate's `roster-coverage` check is **suite-scoped and no-ops on a foreign file** — it proved nothing here. Now discharged on its merits: the file name carries subject + date, all 11 figures are `kebab-case.puml`/`.svg` pairs named for what they show, and §0/§8.6 give the document two scannable indices (fixes, residuals) with stable `SS-*` identifiers. |
+| 3 | `coverage-doc-types` | Coverage | ✅ PASS | ✅ PASS | Theory §2–3, design/architecture §5–6, engineering §4/App. A, security §1.1/§5.5.3/§6.4, usage App. A–B. This revision adds security-relevant §8.6.3 (consensus liveness) and §8.6.5 (the `SIGSEGV`-introducing trap). |
+| 4 | `coverage-semantics` | Coverage | ⚠ **FAIL** *(vacuous)* | ✅ PASS | The gate's `live-spec-source` check is likewise **suite-scoped and vacuous here**. Discharged on merits: the *intended behaviour* of a converted driver is now specified — the invariant "the driver contains no call to itself", the algebra$`\rightarrow`$shape rule, and the anti-vacuity obligation — in §8.6.1's literate algorithm, rather than only exhibited by example. |
+| 5 | `coverage-syntax` | Coverage | ⚠ **FAIL** *(unaddressed)* | ✅ PASS | **Not named anywhere in the prior Appendix E**, so it was neither checked nor waived. Now addressed where syntax is genuinely load-bearing: the E0624/E0606 diagnostics are given their *syntactic* cause (§8.6.1a — `Option::len` vs the inner `Vec`; `&Vec<T>` is not `&[T]`), and prost's `StartGroup` arm is quoted **VERBATIM** with its recursion identified (§8.6.5). |
+| 6 | `pedagogy-presentation` | Pedagogy | ⚠ **FAIL** *(unaddressed)* | ✅ PASS | Also unnamed before. The revision adds all six required modes in the new material: worked examples, 4 new diagrams, display-math derivations, 2 literate-pseudocode algorithms, a VERBATIM code snippet, and citations — rather than prose alone. |
+| 7 | `diagrams-plenty` | Diagrams | ✅ PASS | ✅ PASS | **7 $`\rightarrow`$ 11 figures.** |
+| 8 | `diagrams-best-types` | Diagrams | ✅ PASS | ✅ PASS | Each of the 4 new figures states its type **and why that type** in its caption (§E.5). |
+| 9 | `diagrams-best-actors` | Diagrams | ✅ PASS | ✅ PASS | New actors are decisions, resources, repositories and an *absence proof* — not files. |
+| 10 | `diagrams-pgmcp-catalog` | Diagrams | ⚠ **FAIL** *(unaddressed)* | ✅ PASS | Unnamed before. The catalog's guidance is now **applied and its application recorded**: PlantUML chosen for all 11 (byte-reproducible, renders LaTeX), with the one case where the tooling could **not** deliver — activity-diagram legends do not typeset LaTeX — measured on a minimal case, worked around, and **recorded in the `.puml` source** so it is not "fixed" back. |
+| 11 | `diagrams-prefer-plantuml` | Diagrams | ✅ PASS | ✅ PASS | **11/11 PlantUML; zero Mermaid** in the document and in `figures/` (verified by search). |
+| 12 | `diagrams-plantuml-latex` | Diagrams | ⚠ **FAIL** *(unaddressed as a slug)* | ✅ PASS | E.4 checked *typeset-image counts* but never named this slug, so LaTeX **usage** was never adjudicated. Now: **112 `<latex>` spans across 11 sources, 0 leaked** into any SVG — including the new figures' formulae ($`\Theta(d^2)`$, the bisection midpoint, $`\sum(d-i)`$). |
+| 13 | `diagrams-fully-colored` | Diagrams | ✅ PASS | ✅ PASS | 11–16 distinct hex colours per source; the §E.3 mapping is unchanged and the 4 new figures use it **identically**. |
+| 14 | `diagrams-complete` | Diagrams | ✅ PASS | ✅ PASS | Every new figure carries a legend mapping every cell colour, and notes stating the finding rather than only the shape. |
+| 15 | `diagrams-flows` | Diagrams | ⚠ **FAIL** *(unaddressed as a slug)* | ✅ PASS | Unnamed before, though the deploy-path swimlane figure would have satisfied it. Now explicit: the two new *flow* figures are end-to-end — the instrument diagram draws **the branch that is not taken** (without which the floor is invisible), and the sequence diagram draws the **per-level repetition frame** (without which the quadratic is invisible). |
+| 16 | `math-mathjax` | MathNotation | ⚠ **FAIL** *(measured)* | ✅ PASS | ⚠ Gate check `math-symbol-literals` **fails on the committed document** (two bare right-double-arrow operators introduced by `cebdedbb`/`23eff25a` after the prior green run — see §E.1). Repaired, together with 33 bare operators in the revision's own new material, all now inline math spans. |
+| 17 | `math-delimiters` | MathNotation | ✅ PASS | ✅ PASS | ★ The highest-risk slug here. All new inline math uses the **backtick-span-wrapped-in-dollar-signs** form; all new display math uses **fenced blocks with info-string `math`** (5 added). No `$…$` or `$$…$$` anywhere. No ASCII letter abuts an opening delimiter. ⚠ **The hazard is DESCRIBED in prose in §E.6a and never instantiated**, because an illustration of this hazard is the hazard. |
+| 18 | `math-backticks` | MathNotation | ⚠ **FAIL** *(measured)* | ✅ PASS | ⚠ Failed on the committed document for the same two expressions as row 16. Repaired; no expression in the document is now left as bare prose or as an inert code span. |
+| 19 | `citations-exist` | Citations | ✅ PASS | ✅ PASS | 15 references, each used at the point it is cited. This revision adds no new external claims requiring a citation; its claims are to **source and commits**, which are pinned at fixed SHAs instead. |
+| 20 | `citations-doi-links` | Citations | ✅ PASS | ✅ PASS | Unchanged. |
+| 21 | `citations-doi-valid` | Citations | ✅ PASS | ✅ PASS | All 15 DOIs resolved and Crossref-confirmed 2026-07-29 (App. A.8). ⚠ Not re-resolved for this revision — **no DOI was added or altered**, so the prior verification still covers the set. |
+| 22 | `pedagogy-define-terms` | Pedagogy | ⚠ **FAIL** *(incomplete for the new material)* | ✅ PASS | The §2.4 glossary was complete for the *old* material. The revision's vocabulary was undefined, so **five terms were added and defined before first use**: **slope**, **flat ladder**, **instrument floor**, **ratchet**, and **`SIGSEGV` vs `SIGABRT`**. (**B/level**, **converted/tripwire** and **work stack** were already defined.) |
+| 23 | `pedagogy-intuition-rationale` | Pedagogy | ✅ PASS | ✅ PASS | Strengthened: §8.6.1 makes the driver-shape choice **derivable** from the algebra of the combining operation, so a reader can re-derive it rather than trust it. |
+| 24 | `pedagogy-logical-flow` | Pedagogy | ✅ PASS | ✅ PASS | §8.6 is placed with the residuals it belongs to, indexed in the TOC to sub-section depth, and cross-linked from the abstract, §0, §5 preamble and conclusion 7 — so the incompleteness is reachable from every entry point, not only from §8. |
+| 25 | `algorithms-literate-pseudocode` | AlgorithmsCode | ✅ PASS | ✅ PASS | Was 3 algorithms in Knuth form. **Two added**: the conversion algorithm and the bisection instrument, both as named, refined fragments in `pseudocode` fences. |
+| 26 | `code-snippets-valid` | AlgorithmsCode | ✅ PASS | ✅ PASS | One `rust` fence added, marked **VERBATIM** — quoted from `prost-0.14.4/src/encoding.rs`, where it compiles as part of its crate. It is presented as *quoted*, not as compilable in isolation, per §E.2's two-label rule. |
+
+**Tally — BEFORE: 16 PASS / 10 FAIL. AFTER: 26 PASS / 0 FAIL.**
+
+The 10 BEFORE failures decompose into three distinct kinds, and the distinction matters because each has a different remedy:
+
+| kind | count | rows | why it failed | remedy |
+|---|---:|---|---|---|
+| **measured regression** | 3 | 16, 18, 22 | the mechanised gate **actually fails** on the committed document — the recorded 17/17 had rotted (§E.1) | re-run the gate in CI on every commit touching the file |
+| **vacuous pass** | 2 | 2, 4 | the gate's check is **suite-scoped and no-ops** on a foreign file, so it proved nothing while reporting green | judge on merits, and never count a no-op as a pass |
+| **never named** | 5 | 5, 6, 10, 12, 15 | the slug appeared **nowhere** in the prior appendix, so it was neither checked nor waived | audit against the canonical 26-slug list, not against the gate's check list |
+
+★ **The "never named" kind is the most dangerous and the least visible**: an unnamed slug produces **no diagnostic at all**, so it cannot be noticed by running anything, and a 17/17 green result sits comfortably beside it. ⚠ That is the same structural blindness [§8.6.7](#867--157--a-transcribed-ceiling-and-a-tripwire-that-cannot-see-it-drift) documents for the ceiling tripwire — **a check that cannot express a failure will report success forever** — and it is why this appendix now audits against the *guideline list* rather than against the *checker list*. The gate has 17 checks; the guidelines have 26 slugs, and the gap between those two numbers is exactly where the five hid.
+
+#### E.6a The `math-delimiters` hazard, described rather than shown
+
+★★ **This subsection deliberately contains no example of the wrong form**, because the wrong form is contagious: an illustration of it renders as literal text, and three prior attempts on this campaign instantiated the hazard *inside its own remedy*. The rule, stated in words:
+
+* **Inline math** is a **code span** whose content is the LaTeX, with a **dollar sign immediately outside each backtick** — dollar, backtick, LaTeX, backtick, dollar. The *backtick-first* spelling (backtick, dollar, LaTeX, dollar, backtick) is an **inert code span**: it renders as visible literal text with no error anywhere, which is why it survived 180 occurrences in this document's first draft undetected.
+* **Display math** is a **fenced block whose info-string is the word `math`** — not a dollar-delimited paragraph.
+* **Never** the bare dollar-delimited forms, inline or display: GitHub's CommonMark pass strips backslash escapes — underscore, brace, semicolon, comma, hash — *before* MathJax parses them, corrupting the expression either loudly or silently.
+* A **literal dollar sign** in prose goes in an ordinary code span.
+* **Never let an ASCII letter abut the opening delimiter**; separate them with a space or restructure the sentence.
+
+★★ **This subsection's first draft instantiated the hazard it describes — twice.** Naming the count of bad operators while putting the operator itself inside an ordinary code span produced an **inert code span**, which is one of the two silent failure forms described above; the gate flagged it at two lines, and two further occurrences were bare prose. ⚠ The lesson is not carelessness but **contagion**: a sentence *about* a delimiter hazard reaches for the symbol, and reaching for the symbol is the hazard. The repair is to **name the operator in words** — “right-double-arrow” — and never to typeset it outside a math span. This is the fourth occasion in this campaign on which the hazard appeared inside its own remedy, and the first on which the remedy was written to *describe* rather than to *show*.
+
+$`\Rightarrow`$ The mechanised checks `math-delimiters` and `math-github-renderable` (§E.1 rows 3–4) exist precisely because the failure is **silent**, and they are the reason this document's 180 inert spans were caught before publication rather than after.
 
 ---
 
@@ -2326,7 +2909,14 @@ Command in Appendix A.9. ⚠ **The first render of five of the six emitted `Invo
 
 ★ **Copy this block verbatim** when a stack-safety fix lands. Every heading is mandatory; a heading with nothing under it is answered with **`NOT MEASURED — <reason>`** or **`n/a — <reason>`**, never deleted. A section that disappears is indistinguishable from a section nobody thought about, which is the failure mode [§5.3.1](#531-the-baseline-what-had-never-been-measured) is about.
 
-Add the row to [§0](#0-the-fix-register--the-scannable-index) **in the same commit**. Allocate the next free identifier in the family (`SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected). **Identifiers are never reused, even after a fix is superseded.**
+Add the row to [§0](#0-the-fix-register--the-scannable-index) **in the same commit**. Allocate the next free identifier in the family (`SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected, **`SS-Y…` a live, unrepaired defect**). **Identifiers are never reused, even after a fix is superseded.**
+
+★★ **`SS-Y…` — the family for bad news, and the rules that keep it honest.** It was added by the 2026-07-30 revision because the register could record a fix, a partial fix, or a rejected candidate, but **not a live defect introduced by a fix already in the register** — so `SS-Y1` (#197, a defect inside `SS-G4`'s own commit) had nowhere to go and would have been recorded only in prose, or not at all.
+
+1. An `SS-Y` row is **never** `class change: yes`.
+2. It is discharged **only by a commit that repairs it**, never by deletion; when repaired, the row stays and gains the repairing commit, exactly as a superseded figure is annotated rather than overwritten.
+3. It **must** name the target that fails and the diagnostic code, so the claim is falsifiable by anyone with the tree.
+4. ⚠ **If a fix's own commit introduces a defect, both rows are mandatory** — the `SS-*` row for the fix *and* the `SS-Y` row for the defect — and each cross-references the other. A register that shows only the fix is the failure mode [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish) exists to prevent.
 
 ```text
 ### 5.N  <FAMILY> — <one-line name of the traversal>            [SS-??]
@@ -2422,6 +3012,6 @@ The design, in the idiom the audit's check already establishes:
 
 ---
 
-*This report documents work in `f1r3node-rust-mettail@feature/mettail` and `mettail-rust@feature/rho-native-set-automata`. No source file was modified in its preparation; the document and its seven figures are the only artefacts created.*
+*This report documents work in `f1r3node-rust-mettail@feature/mettail` and `mettail-rust@feature/rho-native-set-automata`. No source file was modified in its preparation; the document and its **eleven** figures are the only artefacts created. (The figure count read "seven" until the 2026-07-30 revision added four and reconciled the three places it was written — see [§E.3](#e3-the-colour-mapping-so-it-can-be-checked).)*
 
 *★ It is a **living document**. Adding a fix is [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape); keeping it honest is [Appendix G](#appendix-g--keeping-this-document-current).*
