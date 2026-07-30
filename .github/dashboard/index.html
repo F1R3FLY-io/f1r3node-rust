@@ -225,6 +225,10 @@
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
+    { title: "Peak node CPU", unit: "%", fmt: v => v.toFixed(1),
+      series: [
+        { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
+      ] },
     { title: "Finalization latency p95", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },

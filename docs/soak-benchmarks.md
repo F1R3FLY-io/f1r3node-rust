@@ -149,6 +149,7 @@ Passive (the soak's own load, per iteration, rolled up per run):
 | failure rate | pytest results per iteration |
 | throughput (iterations/hour) | wall-clock per iteration |
 | peak node RSS | harness `--monitor` resource timeseries |
+| peak node CPU | harness `--monitor` resource timeseries |
 | finalization latency p50 / p95 / p99 | `f1r3fly.propose.timing` node logs |
 | too-far-ahead errors | count of proposal rejections logged as too far ahead of the last finalized block, node logs |
 | LFB convergence spread (p95 / max) | `SOAK_METRIC` registry (`scripts/bench/soak-metrics.json`), track-only |
@@ -187,8 +188,16 @@ per-run → dashboard pipeline:
   median), so declaring a new metric in `soak-metrics.json` is enough for it
   to reach a run's `weekly-summary.json` and chart, no further code change.
   Charted as "LFB convergence spread".
+- **Peak node CPU** — the harness's `resource-timeseries.csv` already carried
+  a `cpu_percent` column alongside the `memory_mb` one `rss_peak_mb` reads
+  (`elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb`); only the RSS
+  column was being read. `iteration_cpu_peak_percent` in
+  `scripts/run-merge-recovery-soak.sh` sums `cpu_percent` across shard nodes
+  per poll tick and takes the peak tick for the iteration, exactly mirroring
+  `iteration_rss_peak_mb`'s treatment of `memory_mb`. Rolled up per run as the
+  max across iterations. Charted as "Peak node CPU".
 
-All three are `track`-policy metrics: recorded and charted only, they do not
+All four are `track`-policy metrics: recorded and charted only, they do not
 enter the week-over-week gate in `soak-gate-thresholds.json`.
 
 ## Regression gates

@@ -123,6 +123,18 @@ iteration_rss_peak_mb() {
                  if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null
 }
 
+# Peak total node CPU (%) for this iteration, same resource-timeseries.csv as
+# iteration_rss_peak_mb — reuses the copy that function already left in
+# iteration_dir rather than re-finding and re-copying it. Must run after
+# iteration_rss_peak_mb. Empty output when absent.
+iteration_cpu_peak_percent() {
+  local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+  [ -s "$ts_csv" ] || return 0
+  awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+           END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
+                 if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
+}
+
 # Propose-timing latency samples (total_ms) from node JSON logs written after
 # the iteration's start marker — the f1r3fly.propose.timing parse target from
 # profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
@@ -164,13 +176,14 @@ emit_iteration_metrics() {
   local iteration_dir="$1" iteration="$2" provider="$3" \
         iter_started="$4" iter_finished="$5" exit_code="$6"
   command -v jq >/dev/null || return 0
-  local summary_line passed failed skipped errors rss_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
+  local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
   summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1)"
   passed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)"
   failed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)"
   skipped="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)"
   errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
   rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
+  cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
   latency="$(iteration_finalization_latency "$iteration_dir")"
   lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
   lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
@@ -198,6 +211,7 @@ emit_iteration_metrics() {
     --argjson skipped "$skipped" \
     --argjson errors "$errors" \
     --argjson rss_peak "${rss_peak:-null}" \
+    --argjson cpu_peak "${cpu_peak:-null}" \
     --argjson lat_p50 "${lat_p50:-null}" \
     --argjson lat_p95 "${lat_p95:-null}" \
     --argjson lat_p99 "${lat_p99:-null}" \
@@ -208,6 +222,7 @@ emit_iteration_metrics() {
       duration_s: ($finished - $started), exit_code: $exit_code,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
+      cpu_peak_pct: $cpu_peak,
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
@@ -426,6 +441,7 @@ if command -v jq >/dev/null; then
         failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
         iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
         rss_peak_mb: ($iters[0] | map(.rss_peak_mb | select(. != null)) | max),
+        cpu_peak_pct: ($iters[0] | map(.cpu_peak_pct | select(. != null)) | max),
         finalization_p50_ms: ($iters[0] | map(.finalization_latency.p50_ms | select(. != null)) | median),
         finalization_p95_ms: ($iters[0] | map(.finalization_latency.p95_ms | select(. != null)) | median),
         finalization_p99_ms: ($iters[0] | map(.finalization_latency.p99_ms | select(. != null)) | median),
