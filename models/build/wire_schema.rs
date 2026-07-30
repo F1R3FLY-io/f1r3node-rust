@@ -4049,9 +4049,13 @@ fn emit_clone_family_message(
                         plan,
                         extern_set.contains(value_leaf.as_str()),
                     )),
-                    Shape::Oneof => Some(format!(
-                        "// BOUNDED: no member of this oneof reaches the clone cut set."
-                    )),
+                    // ⚠ `to_string`, NOT `format!`: a `format!` with no interpolation is
+                    // `clippy::useless_format`, and this workspace's clippy job runs
+                    // `-D warnings`, so one of them fails the lint for EVERY crate rather
+                    // than for `models` alone. The other arms interpolate; this one does not.
+                    Shape::Oneof => {
+                        Some("// BOUNDED: no member of this oneof reaches the clone cut set.".to_string())
+                    }
                     _ => None,
                 };
                 if let Some(note) = note {
