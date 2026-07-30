@@ -85,6 +85,10 @@ name = "clone_equivalence_corpus"
 path = "tests/clone_equivalence_corpus.rs"
 
 [[test]]
+name = "clone_descend_budget"
+path = "tests/clone_descend_budget.rs"
+
+[[test]]
 name = "cold_store_records"
 path = "tests/cold_store_records.rs"
 

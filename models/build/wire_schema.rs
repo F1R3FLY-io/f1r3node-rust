@@ -3249,17 +3249,22 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// §D obeys it: one straight-line function per type, no per-field indirection, no
 /// `&dyn` anything.
 ///
-/// ## ⚠★★ THROUGHPUT: the shallow case is 0.674×, and the reason is STRUCTURAL
+/// ## ⚠★★ THROUGHPUT — and the five figures this section used to LEAD with are
+/// ## RETRACTED, so they are quoted here as retracted rather than deleted
 ///
 /// `models/benches/term_ops_bench.rs` measures this emission against the retained
-/// derive oracle on the production-weighted mix (2,001 datums, 95.43% at depth 2,
-/// nothing deeper than 6). The driven form is **0.674× the derived form's
-/// throughput** — a 48% slowdown — against a stated acceptance threshold of 0.98×,
-/// Welch t = −307, intervals disjoint at α = 0.01. Per depth: 0.648× at 1, 0.665×
-/// at 2.
+/// derive oracle on the production-weighted mix (2,001 datums, **12,286 `Par`
+/// nodes**, 95.43% at depth 2, nothing deeper than 6).
 ///
-/// ## ⚠⚠ RETRACTED 2026-07-30 — EVERY FIGURE IN THE PARAGRAPH ABOVE CAME FROM A
-/// ## BLOCKED INSTRUMENT, AND THE CRITERION IT WAS JUDGED AGAINST IS RESTATED
+/// ⚠ The paragraph that stood here said: *"the driven form is **0.674×** the
+/// derived form's throughput — a 48% slowdown — against a stated acceptance
+/// threshold of 0.98×, **Welch t = −307**, intervals disjoint at α = 0.01. Per
+/// depth: **0.648×** at 1, **0.665×** at 2."* **Not one of those numbers is a
+/// measurement**, and the two paragraphs below are the two independent reasons —
+/// the instrument was blocked, *and* the instrument's own output contained the
+/// refutation of the replication claim it was being used to support.
+///
+/// ## ⚠⚠ RETRACTED 2026-07-30 (i) — THE INSTRUMENT WAS BLOCKED
 ///
 /// `models/benches/term_ops_bench.rs`'s `measure()` ran **every** repetition of one
 /// arm and was then called again for the other, while its own module header
@@ -3269,19 +3274,54 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// identical defect behind the identical sentence and scattered **27%** over three
 /// consecutive runs.
 ///
-/// ⇒ 0.678×, 0.648×, 0.665× and `t = −307` are **not measurements**. Paired — with
-/// genuine per-repetition interleaving, order rotation and a paired t, in the
-/// shared `models/benches/paired.rs` — the production-weighted mix reads
+/// ⇒ 0.674×, 0.648× and 0.665× are **not measurements**. Paired — with genuine
+/// per-repetition interleaving, order rotation and a paired t, in the shared
+/// `models/benches/paired.rs` — the production-weighted mix reads
 /// **0.948×–0.962×**: a **5% deficit, not 32%.**
 ///
 /// ★ The durable part is not the corrected number, it is why the old one was
 /// wrong. A ratio from unpaired arms on a loaded host is a draw from a
-/// distribution 13–27% wide, and quoting four significant figures of it — or a
-/// Welch `t` of −307 — states a precision that does not exist. ⚠ Note also that
-/// `docs/consensus/consensus-change-register.md` row 36 cites **`t = −65`** for
-/// this same measurement: two different statistics for one experiment, which is a
-/// defect independent of the instrument and needs a register correction this file
-/// cannot make.
+/// distribution 13–27% wide, and quoting four significant figures of it states a
+/// precision that does not exist.
+///
+/// ## ⚠⚠★★★ RETRACTED 2026-07-30 (ii) — THE TWO `t` VALUES REFUTE THE
+/// ## REPLICATION CLAIM ARITHMETICALLY, AND THEY WERE READ AS AGREEMENT
+///
+/// `b228545f` wrote **0.674× / `t` = −307** into *this file* and **0.678× /
+/// `t` = −65** into *its own commit message*, in the same act, and described them
+/// as replicates: *"Reproduced across three runs (0.674x, 0.678x)."*
+///
+/// Inverting Welch at the fixed `n = 60` for the pooled relative standard
+/// deviation each pair implies:
+///
+/// | citation | ratio | `` $\lvert t \rvert$ `` | implied `` $s$ `` (equal-rel) | (equal-abs) |
+/// |---|---|---|---|---|
+/// | this file | 0.674 | 307 | **0.68%** | **0.86%** |
+/// | register row 36 | 0.678 | 65 | **3.18%** | **4.00%** |
+/// | | | **ratio** | **4.66×** | **4.64×** |
+///
+/// `b228545f` itself states *"a 0.5–0.9% standard deviation"*. The **−307** run
+/// sits inside that band; the **−65** run is **3.5–4.4× above** it — at the stated
+/// band it should have produced `` $\lvert t \rvert \approx 229\text{–}413$ ``.
+///
+/// ⇒ ★★ **The instrument's own output contained the refutation of the claim it was
+/// supporting, and it was read as agreement.** Two readings 4.7× apart in implied
+/// variance were called replicates because their *ratios* agreed to 0.6%.
+/// **Agreement in the point estimate is not agreement in the measurement**, and
+/// that is the lesson to carry to the next figure written into this file — which is
+/// why it is written *at* the site rather than in an audit.
+///
+/// ⚠ Neither figure was **transcribed**: both were *derived*, from two different
+/// runs, and `docs/consensus/consensus-change-register.md` faithfully copied the
+/// commit message. So this is not a transcription drift — the defect is upstream of
+/// any copying, in calling two runs one experiment.
+///
+/// ⚠ And keep the three statistics apart: `t = −307` and `t = −65` are both
+/// **weighted-mix** figures from `b228545f`; the direct comparator for the later
+/// `t = 219.55` is **−103**, a **depth-2** figure from a re-run. Three statistics,
+/// two subjects. The register correction belongs to
+/// `docs/consensus/consensus-change-register.md`, which this file cannot edit; it
+/// has been reported for filing.
 ///
 /// ### ★★ THE ACCEPTANCE CRITERION, RESTATED
 ///
@@ -3290,7 +3330,7 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 ///
 /// | rank | instrument | criterion |
 /// |---|---|---|
-/// | **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | `Ir(driven) / Ir(derived)` ≤ **1.20** (measured **1.1740**) |
+/// | **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | `Ir(driven) / Ir(derived)` ≤ **1.20** (measured **1.1079** at `CLONE_DESCEND_BUDGET = 3`) |
 /// | corroboration | the bench's paired median-of-repetition ratio | ≥ **0.90×**, a band the host can resolve |
 /// | corroboration | `perf stat -e instructions,cycles`, normalised on the **derived** arm | agrees with the primary to within 0.5% |
 ///
@@ -3299,10 +3339,20 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// does not have.
 ///
 /// ★ And the restated criterion is **falsifiable and has been seen to RESPOND**,
-/// which the old one had not: the walk elimination moves the primary from
-/// **1.1740 → 1.1519** while wall clock moves the *wrong way* (0.954× → 0.885×).
-/// A criterion that changes when the mechanism changes, on a host where the clock
-/// does not, is the whole reason for the swap.
+/// which the old one had not — twice now, and the second time it responded while
+/// the clock could not resolve the change at all:
+///
+/// | change | primary `Ir` ratio | paired wall clock |
+/// |---|---|---|
+/// | pre-form-B | 1.1740 | — |
+/// | form-B (walk elimination + leaf fast path) | **1.1519** | 0.954× → 0.885× (the WRONG way) |
+/// | re-measured at HEAD before the budget | **1.1510** | — |
+/// | `CLONE_DESCEND_BUDGET = 3` | **1.1079** | see below |
+///
+/// ⚠ The 1.1519 / 1.1510 pair is worth noting: the same mechanism, re-measured on
+/// a later toolchain and a later tree, moved **0.08%**. That is the reproducibility
+/// of the primary instrument across a rebuild, and it is the reason the ceiling has
+/// 2.2% of headroom rather than 0.2%.
 ///
 /// ### The optimization that was tried, and REFUTED
 ///
@@ -3332,7 +3382,7 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 ///
 /// ```text
 ///   measured gap, weighted pass        0.713 ms
-///   `Par` nodes per pass              12,006   (~6 per depth-2 datum)
+///   `Par` nodes per pass              12,286   (~6 per depth-2 datum; 2,001 datums)
 ///   size_of::<Par>()                     248 B (11 fields, `#[repr(C)]`)
 ///   extra 248-B moves per node             3   stack slot -> CloneVal -> vals
 ///                                              -> drain -> parent's slot
@@ -3410,6 +3460,75 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// ~0.64×. Production's 3 MB mix makes both arms memory-bound and the driven arm's
 /// instruction surplus overlaps shared stalls.
 ///
+/// ## ★★★ MEASURED 2026-07-30 — THE DESCEND BUDGET, and 28.5% of the gap is gone
+///
+/// [`DESCEND_BUDGET`] amortizes the per-node trampoline tax: one `descend` walks
+/// `k + 1` cut-set levels natively, so a term costs `⌈D/(k+1)⌉` suspensions rather
+/// than `D`. Same instrument, same recipe, same 245,720 nodes, `fixture`-subtracted:
+///
+/// ```text
+///                       Ir        Dr        Dw
+///   derived         2458.07    663.49    556.24    <-- the CONTROL, see below
+///   driven, k=0     2829.12    818.86    698.51
+///   driven, k=3     2723.29    787.99    675.43
+///   ratio, k=0       1.1510    1.2342    1.2558
+///   ratio, k=3       1.1079    1.1876    1.2143
+///   driven Δ         -3.74%    -3.77%    -3.30%
+/// ```
+///
+/// ★★ **The `derived` arm moved by +0.0000% on all three counters** — 2458.07 →
+/// 2458.07, 663.49 → 663.49, 556.24 → 556.24. It is an **invariant control that
+/// costs nothing to run**: the oracle family is untouched by the budget, so a
+/// non-zero reading on it would mean the measurement, the build or the fixture had
+/// moved rather than the mechanism. This is the deterministic answer to a demand
+/// that a wall-clock harness can only meet with a third arm.
+///
+/// ### Where the change went, per `cg_annotate`
+///
+/// ```text
+///   Ir/node          k=0      k=3        Δ
+///   drive_with     159.9     32.4   -127.5   <-- the trampoline, 4.93x less
+///   memcpy         379.4    329.5    -49.8   <-- the 248-B moves, going away
+///   push_children      —     60.1    +60.1   <-- ★ THE PRICE, and it is visible
+///   rebuild_par    179.8    192.8    +13.0
+///   Vec<Par>::…     25.6     29.4     +3.8
+/// ```
+///
+/// ★ `drive_with`'s own cost falls **4.93×**, which independently corroborates the
+/// **5.91×** drop in `descend` count that `models/tests/clone_descend_budget.rs`
+/// measures by counting them (12,286 → 2,078 over one weighted pass). Two
+/// instruments, two mechanisms, one ratio to within 17%.
+///
+/// ⚠★ **And the price is real and is not hidden.** `clone_push_children_par`
+/// appears in the k=3 profile as a genuine function at **+60.1 Ir/node** where it
+/// was previously inlined away entirely: threading a budget makes the family
+/// *cyclic* (`par → send → par`), and LLVM cannot fully inline a cycle. That cost
+/// is why the net is −3.74% and not the −82% a naive "82% of nodes are now native"
+/// argument predicts. The naive argument prices only what the trampoline stops
+/// doing and nothing that the native walk starts doing.
+///
+/// ### ⇒ A WORK REDUCTION WITH NO THROUGHPUT CLAIM, and the clock was ASKED
+///
+/// `Ir` −3.74%, `Dr` −3.77%, `Dw` −3.30%, all deterministic, `derived` invariant to
+/// +0.0000%. The paired wall clock was then run in **four alternating runs, two per
+/// configuration**, and it **reversed**:
+///
+/// ```text
+///   rep   k   median-of-rep   control drift
+///     1   0          0.6580           0.88%
+///     1   3          0.7454           0.30%     <-- k=3 BETTER by 13.3%
+///     2   0          0.8204           0.76%
+///     2   3          0.7143           1.90%     <-- k=0 BETTER by 12.9%
+/// ```
+///
+/// ⚠★★ Note what the invariant control did NOT catch. Every one of those four runs
+/// had a control drift under 2%, so each was individually "usable" — and the
+/// configurations still swapped places. **A control measures within-run resolution;
+/// it says nothing about between-run reproducibility.** The `k = 0` span alone is
+/// 24.7%. ⇒ The clock is consistent with the deterministic reading and does not
+/// resolve it, which is the same disposition form-B landed under, for the same
+/// reason, on the same host.
+///
 /// ## ⚠⚠ CORRECTED: `Outcome::Tail` IS NOT THIS GAP'S FIX
 ///
 /// This comment used to say that closing the gap "requires … TOP-DOWN allocation
@@ -3437,19 +3556,33 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// see through. Restoring it means giving `descend` a destination, i.e. widening
 /// `Step::Descend`. It requires **nothing** from `Outcome`.
 ///
-/// ⇒ That is a separate stage with its own measurement, and it is what a reviewer
-/// should be shown before a depth-`k` hybrid is considered. ⚠ The depth-`k` hybrid
-/// remains the cheaper candidate — it amortizes the whole per-node tax with no
-/// `unsafe`, no change to `Node<'t>: Copy` and nothing at all from `drive.rs` — and
-/// the deferral of that choice to reviewer judgement stands.
+/// ★★ **The depth-`k` hybrid was the cheaper candidate and it has LANDED**, as
+/// [`DESCEND_BUDGET`] — with no `unsafe`, no change to `Node<'t>: Copy`, nothing at
+/// all from `drive.rs` and no widening of `Step` (still 16 B, pinned by
+/// `models/tests/drive_step_width_gate.rs`). And it turns out to restore *part* of
+/// the `sret` chain for free, which is why it works: above budget 0 a cut-set slot
+/// is filled by `clone_rebuild_par(v, children, budget - 1)`, whose return value
+/// the ABI constructs **directly in the parent's `Vec` slot**. No `Vec<CloneVal>`
+/// round trip, and therefore no 248-byte move, for the `⌈D/(k+1)⌉ − 1` of every
+/// `D` levels that the budget covers. `memcpy` falls 379.4 → 329.5 Ir/node.
+///
+/// ⇒ Destination-passing descent — widening `Step::Descend` with a destination —
+/// remains the way to remove the *remaining* moves, i.e. the ones at the budget
+/// frontier. It is a separate stage with its own measurement, and it is now
+/// strictly smaller than it was: the budget already removed the moves for 5 of
+/// every 6 nodes on the production mix.
 ///
 /// ⚠ **The conversion is correct and the trade is stated rather than hidden**: the
 /// derived form aborts a release node at depth ~640 on a 2 MiB tokio worker
-/// (3,254 B/level), on a term a deploy controls, before any budget exists to bound
-/// it. This form is flat to depth 4,096 and beyond. A 48% throughput cost on a
+/// (3,254 B/level as `<Par as Clone>::clone`; the oracle FAMILY measures 7,021, and
+/// the two are not interchangeable — see [`DESCEND_BUDGET`]), on a term a deploy
+/// controls, before any budget exists to bound it. This form is flat to depth 4,096
+/// and beyond **at every value of the descend budget**. A throughput cost on a
 /// clone is a different KIND of quantity from an uncatchable `SIGSEGV` on the
 /// validator path, and choosing between them is the reviewer's call, not this
-/// file's.
+/// file's — but the cost is now **`Ir` +10.8% per node against the derive**, down
+/// from +15.1%, and it is measured with a deterministic instrument rather than
+/// asserted from a blocked one.
 ///
 /// ## ⚠⚠ Why collection ELEMENTS are pushed one at a time
 ///
@@ -3508,6 +3641,15 @@ fn emit_term_ops_source(
          //                           which `drive`'s deficit invariant cross-checks\n\
          //   clone_rebuild_*         rebuilds the shell, pulling one child per slot in\n\
          //                           the SAME order `push_children` pushed them\n\
+         //\n\
+         // ★★ ALL THREE TAKE A `budget`, and it is the SAME number in all three or the\n\
+         // three walks are looking at different frontiers. It counts CUT-SET levels the\n\
+         // walk may still enter NATIVELY; at 0 a cut-set child is suspended as a\n\
+         // `Step::Descend` and the trampoline resumes it. So the native recursion is\n\
+         // bounded by `CLONE_DESCEND_BUDGET * CLONE_RESIDUAL_HEIGHT + O(1)` frames — a\n\
+         // CONSTANT of the schema and the budget, still not a function of the term. The\n\
+         // surviving depth is therefore unbounded at every budget; see\n\
+         // `CLONE_DESCEND_BUDGET` for why no value of it can imply a maximum depth.\n\
          //\n\
          // ⚠★ THE ORDER IS THE IDENTITY (DECLARATION) ORDER, never `min_tag`. The two\n\
          // genuinely differ for `Par` (…7, 11, 8, 12, 9, 10) and `TaggedContinuation`,\n\
@@ -3879,6 +4021,60 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
     }
 }
 
+/// ★★ **The DESCEND BUDGET `k`** — how many cut-set levels one `descend` walks
+/// NATIVELY before it suspends to the heap trampoline.
+///
+/// ## What it is
+///
+/// `k = 0` is the pre-`k` machine exactly: every cut-set child becomes a
+/// `Step::Descend` and the trampoline is re-entered once per node. `k = 1` walks
+/// one further cut-set level in native frames, `k = 3` walks three, and a node at
+/// cut-set depth `` $D$ `` below a driven root costs `` $\lceil D/k \rceil$ ``
+/// heap suspensions instead of `` $D$ ``.
+///
+/// ## ★ Why 3, DERIVED — from the measured distribution, not from the stack
+///
+/// The benefit saturates at the modal depth of the *measured* produce
+/// distribution (`models/benches/term_ops_bench.rs`: 1,773 instrumented datums,
+/// **95.43% at depth 2**, nothing deeper than 6). A depth-2 datum is a chain of
+/// **three** cut-set levels — root, its `EList`/`ETuple` elements, and the
+/// `Send`'s channel and data — so `k = 3` covers **96.11%** of datums (depth 1
+/// and 2 together) *entirely* inside one `descend`, and `k = 4` buys only the
+/// further 2.03% at depth 3. Three is the knee.
+///
+/// ⇒ On the weighted mix this takes the trampoline from **12,286** re-entries per
+/// pass to **2,213** — measured by `models/tests/clone_descend_budget.rs`, which
+/// counts them rather than predicting them.
+///
+/// ## ⚠★★ Why no value of `k` can cap the representable depth
+///
+/// The native prefix is bounded by `k`, **not by the term**: `k` cut-set levels ×
+/// at most [`CLONE_RESIDUAL_HEIGHT`] residual frames each, and then the walk
+/// *suspends*. So the flat stack rises by a CONSTANT and the SLOPE stays zero,
+/// which is the property `rholang/tests/stack_depth_gate.rs` actually checks
+/// (`zero_slope_verdict` compares the bisected minimum stack at depth 4 against
+/// depth 4,096). Surviving depth remains unbounded for every `k`; a larger `k`
+/// spends a larger constant, never a maximum depth.
+///
+/// ⚠ **A `12288 / 3254 = 3.78` style inequality — "the native prefix must fit
+/// under the driven form's 12,288 B flat cost" — is NOT the constraint, and
+/// reading it as one gets both the bound and its units wrong.** The 12,288 B is
+/// the flat floor the bisection reports for a traversal that does not grow; it is
+/// not a depth budget, and a prefix that exceeds it costs a bigger constant, not
+/// less depth. The real ceiling is the share of the smallest production stack
+/// (a 2 MiB tokio worker) one is willing to spend on a constant.
+///
+/// Nor is 3,254 B/level the slope to price the prefix at. That figure was
+/// bisected from `<Par as Clone>::clone` while it *was* the derive — a single
+/// monomorphic function. The prefix is a **family of free functions**, which is
+/// what `clone_oracle` is, and that measures **7,021 B/level** (re-measured at
+/// HEAD, release, 124 KiB @ 16 → 892 KiB @ 128) — **2.16× more.** Priced
+/// conservatively at the family figure, `k = 3` spends at most
+/// `` $3 \times 7{,}021 = 21{,}063$ `` B, i.e. **1.0% of a 2 MiB worker**, on top
+/// of a 12,288 B floor. `models/tests/clone_descend_budget.rs` publishes the
+/// arithmetic and the gate measures what it actually costs.
+const DESCEND_BUDGET: usize = 3;
+
 /// §B — the thread-local stack pool. The reason a shallow clone allocates nothing.
 fn emit_clone_pool(src: &mut String, plan: &ClonePlan) {
     let teardowns: String = plan
@@ -3909,6 +4105,39 @@ fn emit_clone_pool(src: &mut String, plan: &ClonePlan) {
          // ⚠ The pooled value stack owns cloned {teardowns} on a panic path, and releasing\n\
          // those with `Vec::clear` would run the derived Theta(depth) destructor. `Drop`\n\
          // routes them through the ITERATIVE teardown instead."
+    )
+    .expect("write");
+    writeln!(
+        src,
+        "\n\
+         /// ★★ **The DESCEND BUDGET**: how many cut-set levels ONE `descend` walks in\n\
+         /// NATIVE frames before it suspends to the heap trampoline.\n\
+         ///\n\
+         /// A node at cut-set depth `D` below a driven root costs `ceil(D / {DESCEND_BUDGET})`\n\
+         /// heap suspensions instead of `D`. `0` would be the pre-budget machine exactly —\n\
+         /// every cut-set child a `Step::Descend` — and is REFUSED by\n\
+         /// `models/tests/clone_descend_budget.rs`, which would otherwise pass vacuously.\n\
+         ///\n\
+         /// ## ⚠★★ It cannot cap the representable depth, and that is STRUCTURAL\n\
+         ///\n\
+         /// The native prefix is bounded by this constant times [`CLONE_RESIDUAL_HEIGHT`],\n\
+         /// **not by the term**: after that many levels the walk SUSPENDS. So the flat\n\
+         /// native stack rises by a CONSTANT and the per-level SLOPE stays zero — which is\n\
+         /// the property `rholang/tests/stack_depth_gate.rs` checks, by comparing the\n\
+         /// bisected minimum stack at depth 4 against depth 4,096. Surviving depth stays\n\
+         /// UNBOUNDED for every value of this constant; a larger value spends a larger\n\
+         /// constant, never a maximum depth.\n\
+         ///\n\
+         /// ## Why {DESCEND_BUDGET}\n\
+         ///\n\
+         /// The measured produce distribution is 95.43% at depth 2, which is a chain of\n\
+         /// THREE cut-set levels, so {DESCEND_BUDGET} covers 96.11% of datums entirely in\n\
+         /// one `descend` and 4 would buy a further 2.03%. See\n\
+         /// `models/build/wire_schema.rs`'s `DESCEND_BUDGET` for the full derivation,\n\
+         /// including why the `12288 / 3254` inequality is NOT the constraint and why the\n\
+         /// prefix is priced at the family-of-free-functions slope (7,021 B/level) rather\n\
+         /// than at the single-derive one (3,254).\n\
+         pub const CLONE_DESCEND_BUDGET: usize = {DESCEND_BUDGET};\n"
     )
     .expect("write");
     src.push_str(
@@ -4084,15 +4313,19 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
              let base = vals.len();\n                \
              work.push(Step::Combine(CloneKont::{ty} {{ src, base }}));\n                \
              let first = work.len();\n                \
-             clone_push_children_{stem}(src, work);\n                \
+             clone_push_children_{stem}(src, work, CLONE_DESCEND_BUDGET);\n                \
              if work.len() == first {{\n                    \
-             // ★★ THE LEAF FAST PATH, and it is measured. This node has no\n                    \
-             // cut-set child, so the continuation just pushed has nothing to wait\n                    \
-             // for: drop it and produce the value here. On the measured production\n                    \
-             // distribution (95.43% of terms at depth 2) FOUR of a datum's SIX\n                    \
-             // `Par` nodes are leaves, so this is the MAJORITY path, and it saves\n                    \
-             // each of them a `Combine` push, a loop iteration, a pop and a\n                    \
-             // `Drain` setup.\n                    \
+             // ★★ THE WHOLLY-NATIVE FAST PATH, and it is measured. Nothing was\n                    \
+             // suspended, so this node's ENTIRE subtree fits inside the descend\n                    \
+             // budget and the continuation just pushed has nothing to wait for:\n                    \
+             // drop it and produce the value here. It saves a `Combine` push, a\n                    \
+             // loop iteration, a pop and a `Drain` setup.\n                    \
+             //\n                    \
+             // ★ At `CLONE_DESCEND_BUDGET == 0` this is the LEAF fast path, and on\n                    \
+             // the measured production distribution (95.43% of terms at depth 2)\n                    \
+             // four of a datum's six `Par` nodes are leaves. At the budget in force\n                    \
+             // it is the WHOLE-DATUM path: a depth-2 datum is three cut-set levels,\n                    \
+             // so all six nodes are cloned in this one call.\n                    \
              //\n                    \
              // ⚠ Invariant 1 holds in BOTH branches, and they are the two halves\n                    \
              // of it: a `descend` that pushes no work must push exactly ONE value\n                    \
@@ -4101,7 +4334,7 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
              work.truncate(first - 1);\n                    \
              let leaf = {{\n                        \
              let mut children = CloneChildren {{ inner: vals.drain(base..) }};\n                        \
-             let rebuilt = clone_rebuild_{stem}(src, &mut children);\n                        \
+             let rebuilt = clone_rebuild_{stem}(src, &mut children, CLONE_DESCEND_BUDGET);\n                        \
              children.finish(\"{ty}\");\n                        \
              rebuilt\n                    \
              }};\n                    \
@@ -4110,6 +4343,14 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
              // ★ The children went on in DECLARATION order, so the region is\n                    \
              // reversed IN PLACE to make them POP in declaration order. No scratch\n                    \
              // buffer and no allocation.\n                    \
+             //\n                    \
+             // ⚠★ With a non-zero budget the region is the frontier of a DFS over\n                    \
+             // several cut-set levels, not one node's child list — and one reverse\n                    \
+             // is still exactly right. `drive_with` pops from the end, so the\n                    \
+             // DFS-first frontier node runs first and completes (its own region is\n                    \
+             // pushed above the rest and drains before control returns to the\n                    \
+             // earlier ones). Values therefore land on `vals` in DFS order, which\n                    \
+             // is the order `clone_rebuild_{stem}` re-enters them in.\n                    \
              work[first..].reverse();\n                \
              }}\n            \
              }}"
@@ -4148,15 +4389,16 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
              // checks the rebuild against the count in EVERY profile.\n                \
              debug_assert_eq!(\n                    \
              vals.len() - base,\n                    \
-             clone_child_count_{stem}(src),\n                    \
+             clone_child_count_{stem}(src, CLONE_DESCEND_BUDGET),\n                    \
              \"term_ops::clone: `clone_push_children_{stem}` produced {{}} value(s) but \
-             `clone_child_count_{stem}` counts {{}}; two independent walks of one node have \
-             drifted\",\n                    \
+             `clone_child_count_{stem}` counts {{}} at budget {{}}; two independent walks of one \
+             node have drifted\",\n                    \
              vals.len() - base,\n                    \
-             clone_child_count_{stem}(src)\n                \
+             clone_child_count_{stem}(src, CLONE_DESCEND_BUDGET),\n                    \
+             CLONE_DESCEND_BUDGET\n                \
              );\n                \
              let mut children = CloneChildren {{ inner: vals.drain(base..) }};\n                \
-             let rebuilt = clone_rebuild_{stem}(src, &mut children);\n                \
+             let rebuilt = clone_rebuild_{stem}(src, &mut children, CLONE_DESCEND_BUDGET);\n                \
              children.finish(\"{ty}\");\n                \
              Ok(Outcome::Value(CloneVal::{ty}(rebuilt)))\n            \
              }}"
@@ -4178,7 +4420,8 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
         let stem = ty.to_snake_case();
         writeln!(
             src,
-            "            CloneKont::{ty} {{ src, .. }} => clone_child_count_{stem}(src),"
+            "            CloneKont::{ty} {{ src, .. }} => \
+             clone_child_count_{stem}(src, CLONE_DESCEND_BUDGET),"
         )
         .expect("write");
     }
@@ -4254,18 +4497,39 @@ fn emit_clone_family_message(
             }
             FieldDescent::Cut(cut_ty) => {
                 let cut_stem = cut_ty.to_snake_case();
+                // ★★ THE BUDGET FORK, and it is the same three-line shape in all three
+                // families so they cannot take different branches: at `budget == 0` this
+                // is the pre-budget machine verbatim (suspend to the trampoline), and
+                // above 0 the walk RE-ENTERS the cut-set type's own family natively with
+                // one less level of budget. The `rebuild` side is where the win is: the
+                // recursive call returns `{cut_ty}` by `sret` straight into the parent's
+                // slot, which is exactly the chain the derive had and the `Vec<CloneVal>`
+                // round-trip broke.
+                let descend_par = format!("clone_push_children_{cut_stem}(v, work, budget - 1)");
+                let count_par = format!("clone_child_count_{cut_stem}(v, budget - 1)");
+                let rebuild_par = format!("clone_rebuild_{cut_stem}(v, children, budget - 1)");
                 match arity {
                     FieldArity::Optional => {
                         push.push(format!(
                             "    if let Some(v) = &src.{name} {{\n        \
-                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                             if budget == 0 {{\n            \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n        \
+                             }} else {{\n            \
+                             {descend_par};\n        \
+                             }}\n    }}"
                         ));
                         count.push(format!(
-                            "    if src.{name}.is_some() {{\n        n += 1;\n    }}"
+                            "    if let Some(v) = &src.{name} {{\n        \
+                             n += if budget == 0 {{ 1 }} else {{ {count_par} }};\n    }}"
                         ));
                         binds.push(format!(
                             "    let {name} = match &src.{name} {{\n        \
-                             Some(_) => Some(children.{cut_stem}()),\n        \
+                             Some(v) => Some(if budget == 0 {{\n            \
+                             let _ = v;\n            \
+                             children.{cut_stem}()\n        \
+                             }} else {{\n            \
+                             {rebuild_par}\n        \
+                             }}),\n        \
                              None => None,\n    }};"
                         ));
                     }
@@ -4275,11 +4539,26 @@ fn emit_clone_family_message(
                              // `<Vec<{cut_ty}> as Clone>::clone`, which re-enters the driven\n    \
                              // `{cut_ty}::clone` and is Theta(depth) — the sibling repo's defect.\n    \
                              for v in &src.{name} {{\n        \
-                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                             if budget == 0 {{\n            \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n        \
+                             }} else {{\n            \
+                             {descend_par};\n        \
+                             }}\n    }}"
                         ));
-                        count.push(format!("    n += src.{name}.len();"));
+                        count.push(format!(
+                            "    if budget == 0 {{\n        \
+                             n += src.{name}.len();\n    \
+                             }} else {{\n        \
+                             for v in &src.{name} {{\n            \
+                             n += {count_par};\n        \
+                             }}\n    }}"
+                        ));
                         binds.push(format!(
-                            "    let {name} = (0..src.{name}.len()).map(|_| children.{cut_stem}()).collect();"
+                            "    let {name} = if budget == 0 {{\n        \
+                             (0..src.{name}.len()).map(|_| children.{cut_stem}()).collect()\n    \
+                             }} else {{\n        \
+                             src.{name}.iter().map(|v| {rebuild_par}).collect()\n    \
+                             }};"
                         ));
                     }
                     FieldArity::Map => {
@@ -4287,28 +4566,49 @@ fn emit_clone_family_message(
                             "    // The map's VALUES, in `BTreeMap` (sorted-key) order — the same\n    \
                              // order the rebuild re-associates them in.\n    \
                              for v in src.{name}.values() {{\n        \
-                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n    }}"
+                             if budget == 0 {{\n            \
+                             work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n        \
+                             }} else {{\n            \
+                             {descend_par};\n        \
+                             }}\n    }}"
                         ));
-                        count.push(format!("    n += src.{name}.len();"));
+                        count.push(format!(
+                            "    if budget == 0 {{\n        \
+                             n += src.{name}.len();\n    \
+                             }} else {{\n        \
+                             for v in src.{name}.values() {{\n            \
+                             n += {count_par};\n        \
+                             }}\n    }}"
+                        ));
                         binds.push(format!(
-                            "    let {name} = src.{name}.keys().map(|k| (k.clone(), children.{cut_stem}())).collect();"
+                            "    let {name} = if budget == 0 {{\n        \
+                             src.{name}.keys().map(|k| (k.clone(), children.{cut_stem}())).collect()\n    \
+                             }} else {{\n        \
+                             src.{name}.iter().map(|(k, v)| (k.clone(), {rebuild_par})).collect()\n    \
+                             }};"
                         ));
                     }
                 }
             }
+            // ⚠ The budget is threaded UNCHANGED through an `Enter`. It counts CUT-SET
+            // levels, not frames: a residual hop (`Par → Expr → ExprInstance → EList`)
+            // does not spend it, because the residual relation is acyclic and its height
+            // is already bounded by `CLONE_RESIDUAL_HEIGHT`. Decrementing here would make
+            // the budget mean "residual frames", and the same `k` would then cover a
+            // fraction of a cut-set level on some paths and several on others.
             FieldDescent::Enter(child_stem) => match arity {
                 FieldArity::Optional => {
                     push.push(format!(
                         "    if let Some(v) = &src.{name} {{\n        \
-                         clone_push_children_{child_stem}(v, work);\n    }}"
+                         clone_push_children_{child_stem}(v, work, budget);\n    }}"
                     ));
                     count.push(format!(
                         "    if let Some(v) = &src.{name} {{\n        \
-                         n += clone_child_count_{child_stem}(v);\n    }}"
+                         n += clone_child_count_{child_stem}(v, budget);\n    }}"
                     ));
                     binds.push(format!(
                         "    let {name} = match &src.{name} {{\n        \
-                         Some(v) => Some(clone_rebuild_{child_stem}(v, children)),\n        \
+                         Some(v) => Some(clone_rebuild_{child_stem}(v, children, budget)),\n        \
                          None => None,\n    }};"
                     ));
                 }
@@ -4316,27 +4616,27 @@ fn emit_clone_family_message(
                     push.push(format!(
                         "    // ★ ELEMENT BY ELEMENT — see the note on the cut-set case.\n    \
                          for v in &src.{name} {{\n        \
-                         clone_push_children_{child_stem}(v, work);\n    }}"
+                         clone_push_children_{child_stem}(v, work, budget);\n    }}"
                     ));
                     count.push(format!(
                         "    for v in &src.{name} {{\n        \
-                         n += clone_child_count_{child_stem}(v);\n    }}"
+                         n += clone_child_count_{child_stem}(v, budget);\n    }}"
                     ));
                     binds.push(format!(
-                        "    let {name} = src.{name}.iter().map(|v| clone_rebuild_{child_stem}(v, children)).collect();"
+                        "    let {name} = src.{name}.iter().map(|v| clone_rebuild_{child_stem}(v, children, budget)).collect();"
                     ));
                 }
                 FieldArity::Map => {
                     push.push(format!(
                         "    for v in src.{name}.values() {{\n        \
-                         clone_push_children_{child_stem}(v, work);\n    }}"
+                         clone_push_children_{child_stem}(v, work, budget);\n    }}"
                     ));
                     count.push(format!(
                         "    for v in src.{name}.values() {{\n        \
-                         n += clone_child_count_{child_stem}(v);\n    }}"
+                         n += clone_child_count_{child_stem}(v, budget);\n    }}"
                     ));
                     binds.push(format!(
-                        "    let {name} = src.{name}.iter().map(|(k, v)| (k.clone(), clone_rebuild_{child_stem}(v, children))).collect();"
+                        "    let {name} = src.{name}.iter().map(|(k, v)| (k.clone(), clone_rebuild_{child_stem}(v, children, budget))).collect();"
                     ));
                 }
             },
@@ -4346,15 +4646,20 @@ fn emit_clone_family_message(
     // ── clone_push_children_<stem> ──
     writeln!(
         src,
-        "/// The cut-set children of [`{rust_path}`], pushed in DECLARATION order.\n\
+        "/// The cut-set children of [`{rust_path}`] AT THE BUDGET FRONTIER, pushed in\n\
+         /// DECLARATION order.\n\
+         ///\n\
+         /// `budget` is the number of further CUT-SET levels this walk may enter\n\
+         /// natively; at `0` a cut-set child becomes a `Step::Descend` and the trampoline\n\
+         /// resumes it. See [`CLONE_DESCEND_BUDGET`].\n\
          #[inline]\n\
-         fn clone_push_children_{stem}<'t>(src: &'t {rust_path}, work: &mut Vec<Step<'t, CloneTraversal>>) {{"
+         fn clone_push_children_{stem}<'t>(src: &'t {rust_path}, work: &mut Vec<Step<'t, CloneTraversal>>, budget: usize) {{"
     )
     .expect("write");
     if push.is_empty() {
         src.push_str(
             "    // No field of this type reaches the clone cut set; it is entered only\n    \
-             // because it is a cut-set member itself.\n    let _ = (src, work);\n",
+             // because it is a cut-set member itself.\n    let _ = (src, work, budget);\n",
         );
     } else {
         for line in &push {
@@ -4367,17 +4672,20 @@ fn emit_clone_family_message(
     // ── clone_child_count_<stem> ──
     writeln!(
         src,
-        "/// How many cut-set children [`{rust_path}`] has.\n\
+        "/// How many cut-set children [`{rust_path}`] has AT THE BUDGET FRONTIER — i.e.\n\
+         /// how many values the matching `clone_rebuild_{stem}` will pull from the value\n\
+         /// stack, at the same `budget`.\n\
          ///\n\
          /// ★ A SECOND walk, written independently of the rebuild below, so\n\
          /// `drive`'s deficit invariant and `CloneChildren::finish` have something to\n\
-         /// cross-check the rebuild AGAINST.\n\
+         /// cross-check the rebuild AGAINST. ⚠ It must be called at the SAME `budget` the\n\
+         /// push and the rebuild used, or the two walks are counting different frontiers.\n\
          #[inline]\n\
-         fn clone_child_count_{stem}(src: &{rust_path}) -> usize {{"
+         fn clone_child_count_{stem}(src: &{rust_path}, budget: usize) -> usize {{"
     )
     .expect("write");
     if count.is_empty() {
-        src.push_str("    let _ = src;\n    0\n");
+        src.push_str("    let _ = (src, budget);\n    0\n");
     } else {
         src.push_str("    let mut n = 0usize;\n");
         for line in &count {
@@ -4398,19 +4706,24 @@ fn emit_clone_family_message(
          /// written straight into the struct literal. A struct literal does evaluate its\n\
          /// fields in the order WRITTEN, but the child order is load-bearing and a `let`\n\
          /// sequence states it instead of relying on that rule.\n\
+         ///\n\
+         /// ★ `budget` must be the SAME value `clone_push_children_{stem}` walked with:\n\
+         /// above `0` a cut-set slot is rebuilt NATIVELY (returned by `sret` straight into\n\
+         /// this shell's slot), at `0` it is pulled from the value stack. The two walks\n\
+         /// visit the same frontier in the same order only if they agree on `budget`.\n\
          #[inline]\n\
-         fn clone_rebuild_{stem}(src: &{rust_path}, children: &mut CloneChildren<'_>) -> {rust_path} {{"
+         fn clone_rebuild_{stem}(src: &{rust_path}, children: &mut CloneChildren<'_>, budget: usize) -> {rust_path} {{"
     )
     .expect("write");
     if binds.is_empty() {
-        src.push_str("    let _ = children;\n");
+        src.push_str("    let _ = (children, budget);\n");
     } else {
         for line in &binds {
             src.push_str(line);
             src.push('\n');
         }
         if push.is_empty() {
-            src.push_str("    let _ = children;\n");
+            src.push_str("    let _ = (children, budget);\n");
         }
     }
     writeln!(src, "    {rust_path} {{ {} }}\n}}\n", names.join(", ")).expect("write");
@@ -4429,15 +4742,38 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
         }
     };
 
+    // ⚠★ A oneof whose every arm is BOUNDED still takes `budget` — the signature is
+    // uniform across the family so a call site cannot be written that omits it — so
+    // the parameter is discarded where no arm spends it. Same for `work`.
+    let any_recursive_arm = oneof
+        .variants
+        .iter()
+        .any(|v| !matches!(arm_plan(v), FieldDescent::Bounded));
+    let discard_push = if any_recursive_arm {
+        String::new()
+    } else {
+        "    let _ = (work, budget);\n".to_string()
+    };
+    let discard_count = if any_recursive_arm {
+        String::new()
+    } else {
+        "    let _ = budget;\n".to_string()
+    };
+    let discard_rebuild = if any_recursive_arm {
+        String::new()
+    } else {
+        "    let _ = (children, budget);\n".to_string()
+    };
+
     writeln!(
         src,
-        "/// The cut-set children of [`{enum_ty}`].\n\
+        "/// The cut-set children of [`{enum_ty}`] AT THE BUDGET FRONTIER.\n\
          ///\n\
          /// ⚠ EXHAUSTIVE, with no wildcard arm: a member added to the `.proto` is a\n\
          /// COMPILE ERROR until this file regenerates — which it does, in the same pass.\n\
          #[inline]\n\
-         fn clone_push_children_{stem}<'t>(src: &'t {enum_ty}, work: &mut Vec<Step<'t, CloneTraversal>>) {{\n    \
-         match src {{"
+         fn clone_push_children_{stem}<'t>(src: &'t {enum_ty}, work: &mut Vec<Step<'t, CloneTraversal>>, budget: usize) {{\n\
+         {discard_push}    match src {{"
     )
     .expect("write");
     for v in &oneof.variants {
@@ -4446,14 +4782,23 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
             FieldDescent::Bounded => {
                 writeln!(src, "        {enum_ty}::{arm}(_) => {{}}").expect("write")
             }
-            FieldDescent::Cut(cut_ty) => writeln!(
-                src,
-                "        {enum_ty}::{arm}(v) => work.push(Step::Descend(CloneNode::{cut_ty}(v))),"
-            )
-            .expect("write"),
+            FieldDescent::Cut(cut_ty) => {
+                let cut_stem = cut_ty.to_snake_case();
+                writeln!(
+                    src,
+                    "        {enum_ty}::{arm}(v) => {{\n            \
+                     if budget == 0 {{\n                \
+                     work.push(Step::Descend(CloneNode::{cut_ty}(v)));\n            \
+                     }} else {{\n                \
+                     clone_push_children_{cut_stem}(v, work, budget - 1);\n            \
+                     }}\n        \
+                     }}"
+                )
+                .expect("write")
+            }
             FieldDescent::Enter(child) => writeln!(
                 src,
-                "        {enum_ty}::{arm}(v) => clone_push_children_{child}(v, work),"
+                "        {enum_ty}::{arm}(v) => clone_push_children_{child}(v, work, budget),"
             )
             .expect("write"),
         }
@@ -4462,10 +4807,11 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
 
     writeln!(
         src,
-        "/// How many cut-set children [`{enum_ty}`]'s current arm has.\n\
+        "/// How many cut-set children [`{enum_ty}`]'s current arm has AT THE BUDGET\n\
+         /// FRONTIER.\n\
          #[inline]\n\
-         fn clone_child_count_{stem}(src: &{enum_ty}) -> usize {{\n    \
-         match src {{"
+         fn clone_child_count_{stem}(src: &{enum_ty}, budget: usize) -> usize {{\n\
+         {discard_count}    match src {{"
     )
     .expect("write");
     for v in &oneof.variants {
@@ -4474,10 +4820,24 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
             FieldDescent::Bounded => {
                 writeln!(src, "        {enum_ty}::{arm}(_) => 0,").expect("write")
             }
-            FieldDescent::Cut(_) => writeln!(src, "        {enum_ty}::{arm}(_) => 1,").expect("write"),
+            FieldDescent::Cut(cut_ty) => {
+                let cut_stem = cut_ty.to_snake_case();
+                writeln!(
+                    src,
+                    "        {enum_ty}::{arm}(v) => {{\n            \
+                     if budget == 0 {{\n                \
+                     let _ = v;\n                \
+                     1\n            \
+                     }} else {{\n                \
+                     clone_child_count_{cut_stem}(v, budget - 1)\n            \
+                     }}\n        \
+                     }}"
+                )
+                .expect("write")
+            }
             FieldDescent::Enter(child) => writeln!(
                 src,
-                "        {enum_ty}::{arm}(v) => clone_child_count_{child}(v),"
+                "        {enum_ty}::{arm}(v) => clone_child_count_{child}(v, budget),"
             )
             .expect("write"),
         }
@@ -4488,8 +4848,8 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
         src,
         "/// Rebuild a [`{enum_ty}`] arm around its finished children.\n\
          #[inline]\n\
-         fn clone_rebuild_{stem}(src: &{enum_ty}, children: &mut CloneChildren<'_>) -> {enum_ty} {{\n    \
-         match src {{"
+         fn clone_rebuild_{stem}(src: &{enum_ty}, children: &mut CloneChildren<'_>, budget: usize) -> {enum_ty} {{\n\
+         {discard_rebuild}    match src {{"
     )
     .expect("write");
     for v in &oneof.variants {
@@ -4504,13 +4864,18 @@ fn emit_clone_family_oneof(src: &mut String, oneof: &Oneof, plan: &ClonePlan) {
                 let cut_stem = cut_ty.to_snake_case();
                 writeln!(
                     src,
-                    "        {enum_ty}::{arm}(_) => {enum_ty}::{arm}(children.{cut_stem}()),"
+                    "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}(if budget == 0 {{\n            \
+                     let _ = v;\n            \
+                     children.{cut_stem}()\n        \
+                     }} else {{\n            \
+                     clone_rebuild_{cut_stem}(v, children, budget - 1)\n        \
+                     }}),"
                 )
                 .expect("write")
             }
             FieldDescent::Enter(child) => writeln!(
                 src,
-                "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}(clone_rebuild_{child}(v, children)),"
+                "        {enum_ty}::{arm}(v) => {enum_ty}::{arm}(clone_rebuild_{child}(v, children, budget)),"
             )
             .expect("write"),
         }
