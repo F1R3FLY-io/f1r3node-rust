@@ -202,10 +202,24 @@ fn nested_binders(depth: usize) -> Par {
 /// profile. Deep set nesting is infeasible in *time* long before the stack
 /// residual could bite — hence a ceiling, not a conversion.
 ///
-/// Underneath the sorter sits a floor no conversion of it can lift:
-/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each Θ(depth)
-/// in its own right. `clone_nested_set` is that control, and `sort_nested_set`
-/// now measures BELOW it.
+/// ⚠★★ **The floor argument is SUPERSEDED, and the superseded wording is kept
+/// verbatim so it cannot be restored as a bug fix.** This paragraph read:
+/// *"Underneath the sorter sits a floor no conversion of it can lift:
+/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each Θ(depth) in
+/// its own right. `clone_nested_set` is that control, and `sort_nested_set` now
+/// measures BELOW it."*
+///
+/// **Both halves are false at HEAD.** `Par: Clone` is no longer DERIVED — stage
+/// F-4 (`0eac9c3a`) strips the derive and generates the impl over `drive_with` —
+/// and `clone_nested_set` is no longer a FLOOR: it is flat across 4 → 4,096 in
+/// both profiles, while `sort_nested_set` is not, so the sorter measures ABOVE
+/// its former control rather than below it. A flat control cannot bound a sloped
+/// subject, and the two sorter arms are at HEAD **uncontrolled**.
+///
+/// What genuinely remains underneath is narrower than the superseded sentence
+/// claimed: of the three traits `HashSet<Par>` invokes, `Clone` is converted and
+/// `Hash` + `Eq` are not. A `hash_nested_set` control is the honest replacement.
+/// See the note on the sorters' `assert_slope_below` calls.
 fn nested_sets(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
@@ -824,6 +838,32 @@ const CONVERTED_DEPTH: &[&str] = &[
     // measures; it is NOT true of this subject, which never shifts. The map
     // here holds ONE binding and `Env::get` clones that one value.
     "substitute_deep_binding",
+    // ★★ Stage F-4, THIRD ORDER — `<Par as Clone>::clone` over the nested-`ESet`
+    // shape. Same conversion as `clone` and `clone_send_chain`, reached through
+    // a third container field: `Par -> Expr -> ESetBody -> ESet.ps: Vec<Par>`.
+    // The generated driver enters it (`clone_push_children_e_set`), the cut set
+    // is `["Par"]` and `CLONE_RESIDUAL_HEIGHT` is 3, so the chain reaches a
+    // driven clone after a bounded native prefix and the ladder is flat.
+    //
+    // ⚠★ IT WAS THE `sort_nested_*` CONTROL, and that role is now VOID rather
+    // than merely restated. The two sorter arms were admitted on the argument
+    // that they "measure BELOW the derived `clone_nested_set` control"; both
+    // halves of that sentence have failed. `Clone` is no longer DERIVED — stage
+    // F-4 strips the derive and `models/build/wire_schema.rs` generates the
+    // impl — and the control is no longer a FLOOR, because it is flat while the
+    // two sorters are not. A flat control cannot bound a sloped subject. What
+    // remains under the sorter arms is `Par: Hash + Eq`, which `HashSet<Par>`
+    // also invokes and which stage F-4 did NOT convert; naming a control for
+    // that is open work, recorded on the sorters' own assertions below.
+    //
+    // ⚠ Admitted only on the 4 -> 4,096 span. On the 2 -> 8 tripwire ladder this
+    // subject read 3,413 B/level in DEBUG — a FALSE SLOPE, and the mirror of the
+    // false ZERO that hid `substitute_deep_binding`. Six steps at 4 KiB
+    // bisection resolution divide a ~20 KiB difference in INTERCEPT by 6 and
+    // report the quotient as a per-level cost. Both artefacts come from the same
+    // instrument, and the two sorter arms below are still measured on that
+    // very ladder.
+    "clone_nested_set",
 ];
 
 /// ⚠★ **`clone_pathmap_chain` and `pathmap_chain_drop` are MEASURED but are NOT in
@@ -892,7 +932,6 @@ const TRIPWIRE_DEPTH: &[&str] = &[
     "encode",                  // prost encoder (capped by RECURSION_LIMIT on decode)
     "sort_nested_set",         // Stage C-2 residual, self-contained set arm
     "sort_nested_map",         // Stage C-2 residual, self-contained map arm
-    "clone_nested_set",        // the derived floor the two above are measured against
 ];
 
 /// Width-axis traversals still Θ(width). Empty, and that is an EXECUTED claim —
@@ -1435,9 +1474,23 @@ fn sort_nested_map_body(depth: usize) {
     dismantle(term);
 }
 
-/// The DERIVED control for [`sort_nested_set_body`]: `<Par as Clone>::clone`
-/// over the same shape. If the sorter subject sits at or below this, what is
-/// left in the set arm is the derived-traversal class and not the sorter.
+/// `<Par as Clone>::clone` over the nested-`ESet` shape — a third `Vec`-nested
+/// ladder for the stage F-4 driver, alongside `clone` and `clone_send_chain`.
+///
+/// ⚠★ **It is no longer the `sort_nested_set` CONTROL, and the superseded
+/// wording is kept verbatim so it cannot be restored as a bug fix.** This
+/// paragraph read: *"The DERIVED control for [`sort_nested_set_body`]:
+/// `<Par as Clone>::clone` over the same shape. If the sorter subject sits at or
+/// below this, what is left in the set arm is the derived-traversal class and
+/// not the sorter."*
+///
+/// The premise failed on both sides. `Clone` is not DERIVED at HEAD (stage F-4
+/// generates it over `drive_with`), and this subject is FLAT while the sorter is
+/// not — so "the sorter sits at or below this" is not merely unproven, it is
+/// false, and the conclusion it licensed cannot be drawn. The set arm's residual
+/// is now attributable to `Par: Hash + Eq`, the two traits `HashSet<Par>`
+/// invokes that stage F-4 did not convert, and a control for THAT does not yet
+/// exist. See the note on `theta_depth_tripwire`'s sorter assertions.
 fn clone_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
     assert_carries(
@@ -3234,13 +3287,46 @@ fn theta_depth_tripwire() {
     // BASELINES (79,053 / 82,534 B/level, debug), so this list can only ever
     // certify that the self-contained set/map arms did not get worse. Measured
     // after the per-arm frame split: 14,336 / 17,818 — 5.5x and 4.6x BELOW
-    // those baselines, and below the derived `clone_nested_set` control
-    // (16,384) as well. Probed on a SHORT ladder because of the 3^n sort
-    // blow-up documented on `nested_sets`.
+    // those baselines. Probed on a SHORT ladder because of the 3^n sort blow-up
+    // documented on `nested_sets`.
+    //
+    // ⚠★ The clause *"and below the derived `clone_nested_set` control (16,384)
+    // as well"* USED TO FOLLOW, and it is struck rather than re-stated: at HEAD
+    // that control is FLAT in both profiles and is in [`CONVERTED_DEPTH`], so
+    // these two measure ABOVE it, not below. See the note under the assertions.
     assert_slope_below("sort_nested_set", ceiling(79_053, 7_680), 2, 8);
     assert_slope_below("sort_nested_map", ceiling(82_534, 10_394), 2, 8);
-    // The derived floor the two above are measured against.
-    assert_slope_below("clone_nested_set", ceiling(25_000, 9_000), 2, 8);
+    // ⚠★ `assert_slope_below("clone_nested_set", ceiling(25_000, 9_000), 2, 8)`
+    // USED TO BE HERE, and it is deleted rather than relaxed: the subject is in
+    // [`CONVERTED_DEPTH`], flat over 4 -> 4,096 in both profiles.
+    //
+    // ⚠★★ ITS DEPARTURE LEAVES THE TWO ASSERTIONS ABOVE WITHOUT A CONTROL, and
+    // that is a MEASUREMENT DEBT this comment records rather than hides. The
+    // sentence those two were admitted on — "`sort_nested_set` now measures
+    // BELOW its derived control" — is false in both of its parts at HEAD:
+    // `Clone` is no longer derived, and the control is FLAT, so the sorters
+    // measure ABOVE it and not below. The residual under them is `Par: Hash +
+    // Eq`, which `HashSet<Par>` invokes and which stage F-4 did not touch; a
+    // `hash_nested_set` control is the honest replacement and is not built here.
+    //
+    // ⚠★★ AND THE LADDER ITSELF IS UNDER SUSPICION. Both are probed on 2 -> 8,
+    // six steps at 4 KiB bisection resolution, which is the same instrument that
+    // reported a FALSE SLOPE of 3,413 B/level for `clone_nested_set` — a subject
+    // since shown flat across 4 -> 4,096. A six-step ladder divides a difference
+    // in INTERCEPT by six and reports the quotient as a per-level cost, so these
+    // two numbers bound the sorters only as loosely as that. They cannot simply
+    // be widened: `nested_sets` documents the 3^n sort blow-up (depth 20 is
+    // 3.5e9 sorts and did not terminate in either profile), so a longer ladder
+    // has to stop around depth 14 and the resolution problem is only halved.
+    //
+    // ⚠ The measured values have MOVED since the report of 2026-07-29 recorded
+    // them, in the direction that matters: release 4,778 -> 6,826 (set) and
+    // 7,509 -> 10,240 (map), against unchanged ceilings of 7,680 and 10,394.
+    // The map arm now sits at 98.5 % of its ceiling. Leading hypothesis, NOT
+    // established here: the arms call `HashSet<Par>`, whose `Par::clone` became
+    // `drive_with` at `0eac9c3a`, and a trampoline frame is wider than the
+    // derived clone's contribution at this call site. Whatever the cause, the
+    // margin these ceilings were given is now mostly spent.
 
     // ── ★ Close the register loop. ──
     // `TRIPWIRE_DEPTH` is what `the_audit_agrees_with_the_gate` publishes; this

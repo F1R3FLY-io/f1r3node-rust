@@ -58,14 +58,13 @@ test that runs, and a test that runs is a name here.
 converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
                  tree_drop, tree_clone, eval_with_nots, bincode_de, bincode_ser, pretty,
                  normalize, inj_attempt_clone, clone, clone_send_chain,
-                 substitute_deep_binding
+                 substitute_deep_binding, clone_nested_set
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
 tripwire-depth:  subst_and_charge, par_drop,
-                 normalize_drop, encode, sort_nested_set, sort_nested_map,
-                 clone_nested_set
+                 normalize_drop, encode, sort_nested_set, sort_nested_map
 tripwire-width:
-totals:          converted=22, tripwired=7
+totals:          converted=23, tripwired=6
 ```
 <!-- GATE-SUBJECTS:END -->
 
