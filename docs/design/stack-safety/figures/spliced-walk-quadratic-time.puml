@@ -1,0 +1,106 @@
+@startuml spliced-walk-quadratic-time
+' ============================================================================
+' #124 — the three event-hash legs are MEASURED, NOT CONVERTED, and the spliced
+' path is Theta(depth^2) in TIME as well as Theta(depth) in STACK.
+'
+' Diagram type: a SEQUENCE DIAGRAM with an explicit per-level repetition frame.
+' Chosen because the quadratic cost is a fact about CALL MULTIPLICITY over
+' nesting levels — `contains_par` is re-invoked once per level and each
+' invocation descends the WHOLE remaining subtree.  A sequence diagram is the
+' only type that makes "once per level, each descending everything" legible;
+' a structure diagram would show the term but not the repetition.
+'
+' Colour convention — the report's Appendix E.3 mapping:
+'   RED    #C62828 native stack / the sloped path
+'   PURPLE #6A1B9A wire bytes
+'   GREEN  #2E7D32 the converted control
+'   AMBER  #EF6C00 the absence proof that costs a full descent
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam sequenceArrowThickness 1.4
+skinparam ParticipantBorderColor #455A64
+skinparam SequenceLifeLineBorderColor #90A4AE
+
+title <b>#124 — the spliced walk is <latex>\Theta(d^2)</latex> in TIME, not only <latex>\Theta(d)</latex> in STACK</b>\nMEASURED, NOT CONVERTED — and the repair is nearly free
+
+participant "`hash_produce` /\n`hash_consume`" as H #ECEFF1
+participant "`event_hash_bytes_<leg>`\n`models/src/rust/`\n`spliced_event_bytes.rs`" as L #FFCDD2
+participant "**`contains_par`**\n<i>the ABSENCE PROOF</i>\n`spliced_event_bytes.rs:223`" as C #FFE082
+participant "`direct` =\n`bincode::serialize`\n<i>derived, recursive</i>" as D #EF9A9A
+participant "`emit_<leg>`\n<i>hand-written, recursive</i>" as E #E1BEE7
+participant "★ `ColdStoreEncode::`\n`cold_encode`\n<i>trampolined, <latex>O(1)</latex> stack</i>" as CE #A5D6A7
+
+H -> L : one call per produce / bind / consume
+
+group#EF6C00 #FFF3E0 **for EACH of the <latex>d</latex> nesting levels** — this frame is the quadratic term
+  L -> C : `contains_par(value)` — **ALWAYS RUN**
+  activate C #FFE082
+  C -> C : mutually recursive with\n`contains_expr` over `EList.ps: Vec<Par>`
+  note right of C #FFE082
+    ★★ **Absence cannot be proved early.** To answer *"is there a
+    filled `EPathMap` cell anywhere below me?"* with **false**,
+    `contains_par` must visit **every descendant**. There is no
+    short circuit on the negative answer.
+    <latex>\Rightarrow</latex> one FULL descent, once per level:
+    <latex>\displaystyle\sum_{i=1}^{d}(d - i) = \frac{d(d-1)}{2} = \Theta(d^2)</latex>
+  end note
+  C --> L : `false` (95.43 % of terms) / `true`
+  deactivate C
+end
+
+alt#C62828 **`false`** <latex>\Rightarrow</latex> direct — the 95.43 % case
+  L -> D : `bincode::serialize(value)`
+  activate D #EF9A9A
+  D --> L : bytes
+  deactivate D
+  note right of D #FFCDD2
+    **MEASURED: 3,040 B/level debug · 160 release**
+  end note
+else **`true`** <latex>\Rightarrow</latex> spliced
+  L -> E : `emit_<leg>(value, out)`
+  activate E #E1BEE7
+  E --> L : bytes with cached `serde_bytes` spliced in
+  deactivate E
+  note right of E #FFCDD2
+    **MEASURED: 1,008 B/level debug · 208 release**
+  end note
+end
+
+L --> H : the event hash — **reaches consensus twice over**\n`deploy_log` <latex>\rightarrow</latex> `Body.deploys` <latex>\rightarrow</latex> **block hash**, and `ReplayRSpace::rig`
+
+== ★ THE CONTROL, in the same binary, on the same ladder ==
+
+H -> CE : the `*-cold` control
+activate CE #A5D6A7
+CE --> H : byte-identical bytes
+deactivate CE
+note right of CE #E8F5E9
+  ★★ **The control reads 0.0 / 0.0 B/level** — so the slope above is the
+  **leg's own**, not the harness's or the fixture's.
+  <latex>\Rightarrow</latex> **The repair is nearly free.** `ColdStoreEncode` is
+  ALREADY implemented for all three legs' root types — `Par`,
+  `BindPattern`, `ListParWithRandom`, `TaggedContinuation`. The legs
+  simply never started calling it: `direct()` is still
+  `bincode::serialize`. The **channel** leg WAS routed (`00ff9187`);
+  these three were not.
+end note
+
+note across #FFCDD2
+  ⚠ **Why a `SIGSEGV` here is a consensus-liveness exposure, not a robustness nit.**
+  A native-stack overflow in Rust faults on the guard page; the runtime prints
+  `fatal runtime error: stack overflow` and calls `abort()` — **signal 6, shell status 134**.
+  It is **not catchable**, it is **not a failed deploy**, and it takes the whole node process.
+end note
+
+legend bottom
+  |= cell |= meaning |
+  |<#FFE082>| the absence proof — a full descent per level, the <latex>\Theta(d^2)</latex> term |
+  |<#EF9A9A>| the direct leg — derived `Serialize`, recursive |
+  |<#E1BEE7>| the spliced leg — hand-written, recursive; **wire bytes** |
+  |<#A5D6A7>| the CONVERTED control, already implemented and not yet called |
+endlegend
+
+@enduml

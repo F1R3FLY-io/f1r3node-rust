@@ -1,0 +1,70 @@
+@startuml collection-literal-arm-divergence
+' ============================================================================
+' THE ROOT CAUSE of the eleven sloped generated drivers (#154 + #162).
+' Diagram type: a DISPATCH-DIVERGENCE diagram (annotated decision tree).
+' Chosen because the defect is not a wrong computation but a wrong ARM
+' SELECTION: one classifier, two consumers, and the consumers disagree about
+' which arm a container belongs to.  A decision tree is the only shape that
+' shows an arm being *taken* rather than a value being computed.
+'
+' Colour convention — identical to the report's Appendix E.3 mapping:
+'   RED    #C62828 native stack / the defect path
+'   GREEN  #2E7D32 converted, depth-independent
+'   AMBER  #EF6C00 declared intent that no consumer honoured
+'   SLATE  #455A64 structural relations and the term itself
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+
+title <b>The arm divergence that WAS the root</b>\n`VariantKind::CollectionLiteral` was introduced so consumers would DECLARE their intent —\nevery sloped driver was one still sharing `Literal`'s arm
+
+rectangle "**THE CLASSIFIER** — `macros/src/gen/`\n`VariantKind`, introduced as an IDENTITY refactor (`5bdd0a24`)" as CLS #ECEFF1 {
+  card "`VariantKind::Literal`\n<i>an OPAQUE LEAF: no sub-terms,\nnothing to descend into</i>" as KL #CFD8DC
+  card "`VariantKind::CollectionLiteral`\n<i>a CONTAINER OF SUB-TERMS:\n`Vec<Proc>`, `Option<Vec<Proc>>`, keyed maps</i>" as KC #FFCC80
+}
+
+rectangle "**ARM A — the correct treatment**\nthe container's elements are PUSHED onto the work stack" as A #E8F5E9 {
+  card "for each element <latex>e_i</latex>:\n  `stack.push(Task(e_i))`\n\n<latex>\Rightarrow</latex> native stack <latex>= O(1)</latex>\n<latex>\Rightarrow</latex> **0 B/level**" as AA #A5D6A7
+}
+
+rectangle "**ARM B — the defect**\nthe container is treated as an opaque leaf, so its elements are\nreached by HOST RECURSION instead of by the work stack" as B #FFEBEE {
+  card "`_ => self.recurse(child)`\n<i>the arm `Literal` uses, correctly, for a true leaf</i>\n\n<latex>\Rightarrow</latex> native stack <latex>= \Theta(d)</latex>\n<latex>\Rightarrow</latex> **one frame per nesting level**" as BB #EF9A9A
+}
+
+KL -[#455A64,thickness=2]-> BB : **correct** — a `Literal`\nreally has no sub-terms
+KC -[#C62828,thickness=3]-> BB : ⚠ **THE DEFECT** — a container\nfell through to the leaf arm
+KC -[#2E7D32,thickness=3]-> AA : **the repair** — honour the\ndeclared kind
+
+note right of KC #FFCC80
+  ★★ **#154 and #162 are ONE defect from TWO angles.**
+  * **#154** saw it as a *correctness* leak: a binder inside a
+    collection literal leaked its run-varying `unique_id` into a
+    consensus-visible fingerprint.
+  * **#162** saw it as a *stack-safety* slope: the same arm, the
+    same containers, <latex>\Theta(d)</latex> native stack.
+  Both have the same cause — **treating a container OF SUB-TERMS
+  as an OPAQUE LEAF** — and therefore the same repair.
+end note
+
+note bottom of B #FFEBEE
+  ⚠★ **Per-element pushes were NOT sufficient.** A work-stack driver can only
+  replace recursion for work its **task enum** can represent. `CmpTask` and
+  `HashTask` held only *descents* — no "resume this comparison after the child
+  answers" state — so pushing elements was not expressible until the enum
+  itself grew. That is why those two emitters carry <latex>\approx 130</latex> and
+  <latex>\approx 60</latex> lines of the author meeting the same wall.
+  <latex>\Rightarrow</latex> **The task enum is the real interface, not the push site.**
+end note
+
+legend bottom
+  |= cell |= meaning |
+  |<#FFCC80>| declared intent (`CollectionLiteral`) that no consumer honoured |
+  |<#EF9A9A>| the leaf arm — correct for `Literal`, a <latex>\Theta(d)</latex> defect for a container |
+  |<#A5D6A7>| converted: elements pushed, native stack <latex>O(1)</latex> |
+  |<#CFD8DC>| a true opaque leaf |
+endlegend
+
+@enduml

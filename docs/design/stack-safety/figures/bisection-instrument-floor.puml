@@ -1,0 +1,93 @@
+@startuml bisection-instrument-floor
+' ============================================================================
+' THE INSTRUMENT FLOOR (#187).  12,288 B is a property of the ALGORITHM, not of
+' any subject, and it is derivable without running anything.
+'
+' Diagram type: an ACTIVITY DIAGRAM over a annotated INTERVAL LADDER.  Chosen
+' because the floor is a control-flow fact — a subject that survives the first
+' probe never enters the doubling loop — so the claim is only visible if the
+' branch that is NOT taken is drawn.  A bar chart of results would hide it.
+'
+' NOTE — ACTIVITY-DIAGRAM LEGENDS DO NOT TYPESET LaTeX in this PlantUML build.
+' Verified on a minimal case: a <latex> span in an activity diagram's legend emits
+' ZERO typeset images and leaks the literal tag. Math therefore lives in the NOTES
+' (which do typeset), and this legend is deliberately plain prose. Do not "restore"
+' LaTeX to the legend cells.
+'
+' Colour convention — the report's Appendix E.3 mapping:
+'   TEAL   #00695C the gate / the measuring instrument
+'   RED    #C62828 the floor: an artefact reported as a measurement
+'   GREEN  #2E7D32 a genuine measurement (above the floor)
+'   AMBER  #EF6C00 the un-askable case
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBackgroundColor #E0F2F1
+skinparam ActivityBorderColor #00695C
+skinparam ActivityDiamondBackgroundColor #FFF3E0
+skinparam ActivityDiamondBorderColor #EF6C00
+
+title <b>12,288 B is an INSTRUMENT FLOOR, not a measurement</b>\nprovable from the algorithm — <i>twelve of fifteen subjects read the SAME floor,\nwhich is ONE artefact, not twelve agreeing measurements</i>
+
+|#E0F2F1|the instrument — `min_stack_for(name, depth)`|
+start
+:`hi` <latex>\leftarrow</latex> `PROBE_START` = <latex>16 \times 1024 = 16{,}384</latex> B;
+note right #E0F2F1
+  **`PROBE_START` is the whole of #187.** It fixes the smallest
+  answer the function can ever return.
+end note
+
+if (does the subject survive at <latex>hi = 16{,}384</latex>?) then (**yes** — the common case)
+  #FFCDD2:**the doubling loop is NEVER ENTERED**;
+  #FFCDD2:bisect on <latex>[\,8{,}192,\ 16{,}384\,]</latex>;
+  note right #FFCDD2
+    <latex>hi - lo = 8{,}192 > \mathtt{RESOLUTION} = 4{,}096</latex>,
+    so the loop runs, and it terminates on its FIRST midpoint:
+    <latex>mid = \frac{8{,}192 + 16{,}384}{2} = 12{,}288</latex>
+    <latex>\Rightarrow</latex> **12,288 is the smallest value the bisection can emit.**
+  end note
+  #EF9A9A:⚠ **BEFORE #187** — return `12288`\n<i>a bare `usize`, indistinguishable from a\nsubject genuinely measured at 12,288 B</i>;
+  #A5D6A7:★ **AFTER #187** (`125065a8`) — return\n`MinStack::BelowResolution`\n<i>renders `<12 KiB (BELOW THE INSTRUMENT FLOOR)`,\n**never a number**</i>;
+else (**no**)
+  :double: `hi` <latex>\leftarrow</latex> <latex>2\,hi</latex>, up to 512 MiB;
+  #A5D6A7:bisect on <latex>[\,hi/2,\ hi\,]</latex>\n<latex>\Rightarrow</latex> a GENUINE measurement,\nabove the floor;
+endif
+
+#FFE082:⚠★ **the defect neither prior analysis named**\n`runs_within` mapped an `execve` refusal to `Err(_) => false` —\n**the same verdict as a genuine overflow** — so the instrument\ncould not distinguish *"needs more stack"* from *"cannot ask"*;
+note right #FFE082
+  ★ **Status at HEAD: REPAIRED, and the repair is narrower than the
+  diagnosis.** `runs_within` now panics on
+  <latex>\mathtt{ErrorKind::NotFound}</latex> (a missing probe binary is
+  no longer readable as a fault), and the surviving
+  `Err(_) => false` arm carries an explicit justification: at the
+  bottom of the exponential probe the rlimit can be too small for the
+  kernel to lay out the child's stack at all, and treating that as
+  *"did not survive at this bound"* is what keeps the bisection
+  **monotone**.
+  <latex>\Rightarrow</latex> The conflation is closed for the case that
+  mattered; the remaining arm is a deliberate, documented choice.
+end note
+floating note left #FFCDD2
+  ★★ **Why this matters more than a rounding error.** A slope is
+  <latex>\dfrac{B(d_{hi}) - B(d_{lo})}{d_{hi} - d_{lo}}</latex>. When **both** ends read
+  the floor the slope is exactly <latex>0</latex> — which is *correct* — but the
+  two endpoint BYTE figures are not measurements and must not be divided
+  by, and a row reading
+  <latex>(12{,}288 - 12{,}288)/\mathrm{span} = 0.0</latex> looks exactly
+  like a result.
+  **Slope readings survive the floor; endpoint values do not.**
+end note
+stop
+
+legend bottom
+  |= cell |= meaning |
+  |<#E0F2F1>| the instrument's own control flow |
+  |<#FFCDD2>| the floor region — **no subject information reaches the answer** |
+  |<#EF9A9A>| the pre-#187 return: an artefact spelled as a measurement |
+  |<#A5D6A7>| a value that carries real subject information |
+  |<#FFE082>| the un-askable case — *"cannot ask"* is not *"needs more stack"* |
+endlegend
+
+@enduml
