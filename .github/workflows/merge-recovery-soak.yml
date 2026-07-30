@@ -262,7 +262,7 @@ jobs:
     needs: schedule_gate
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    environment: ephemeral-launch-internal
+    environment: oci-credentials
     timeout-minutes: 10
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
@@ -309,9 +309,17 @@ jobs:
           EOF
           oci iam region list >/dev/null
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch runner
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
         shell: bash -e {0}
@@ -821,7 +829,7 @@ jobs:
       needs.schedule_gate.outputs.should_run == 'true' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
-    environment: ephemeral-launch-internal
+    environment: oci-credentials
     timeout-minutes: 10
     # Alerting needs OCI credentials, never the GitHub API — this job has no
     # checkout and no reason to hold a token scope.

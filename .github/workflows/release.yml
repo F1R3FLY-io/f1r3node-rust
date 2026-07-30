@@ -18,8 +18,8 @@
 # CHANGELOG.md via git-cliff, commits, pushes the commit, then creates an
 # annotated tag via the GitHub API.
 #
-# Commit push uses GITHUB_TOKEN (no workflow triggers).
-# Tag creation uses RELEASE_PAT (triggers on:push:tags workflows for CI publish).
+# Commit push and tag creation use a short-lived GitHub App token so their
+# events trigger downstream workflows and the App can bypass release rulesets.
 
 name: Release
 
@@ -72,6 +72,7 @@ jobs:
     name: Bump Version & Tag
     needs: soak_gate
     runs-on: ubuntu-latest
+    environment: release-credentials
     timeout-minutes: 10
     if: >-
       !startsWith(github.event.head_commit.message, 'chore(release)')
@@ -145,22 +146,44 @@ jobs:
           git add node/Cargo.toml node/Dockerfile Cargo.lock CHANGELOG.md
           git commit -m "chore(release): ${{ steps.version.outputs.TAG_NAME }}"
 
-      - name: Push commit (RELEASE_PAT — required to push to protected master)
+      - name: Create release token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Push commit
+        env:
+          RELEASE_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BRANCH: ${{ steps.version.outputs.BRANCH }}
         run: |
-          # master's rulesets require a pull request for everyone except admins,
-          # so GITHUB_TOKEN (github-actions[bot], not a bypass actor) cannot push
-          # here. RELEASE_PAT is an org-admin token and bypasses both rulesets.
+          # master's rulesets require a pull request for normal actors. The
+          # repository-scoped GitHub App is an explicit ruleset bypass actor.
           # The chore(release) commit message trips ci.yml's build_base skip-guard,
           # so this push does not kick off a redundant pipeline.
-          git remote set-url origin https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git
-          git push origin ${{ steps.version.outputs.BRANCH }}
+          askpass="$RUNNER_TEMP/git-askpass.sh"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$RELEASE_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git push "https://github.com/${GITHUB_REPOSITORY}.git" "$RELEASE_BRANCH"
 
-      - name: Create tag via API (PAT — triggers downstream CI)
+      - name: Create tag via API
         uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ steps.version.outputs.TAG_NAME }}
         with:
-          github-token: ${{ secrets.RELEASE_PAT }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const tagName = '${{ steps.version.outputs.TAG_NAME }}';
+            const tagName = process.env.TAG_NAME;
 
             // Get the SHA of the release commit (HEAD after our commits)
             const { execSync } = require('child_process');
