@@ -711,7 +711,8 @@ jobs:
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           for f in history.json latest-summary.json latest-verdict.json latest-report.md \
                    history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-                   latest-report-daily.md; do
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -738,7 +739,8 @@ jobs:
             }
           done
           for f in latest-summary.json latest-verdict.json \
-                   latest-summary-daily.json latest-verdict-daily.json; do
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
               echo "::error::published ${f} is not a JSON object; refusing to republish it"
@@ -784,6 +786,14 @@ jobs:
           cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
           cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
           cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
+          # Cosmetic, and deliberately not part of the "history exists but
+          # latest-* is missing" abort above: a README badge must never be able
+          # to block publishing the dashboard. Guarded because a re-run against
+          # an artifact produced before badge.json existed would otherwise fail
+          # the copy and take the whole publish down with it.
+          if [ -e soak-results/report/badge.json ]; then
+            cp soak-results/report/badge.json "site/data/badge-soak${SERIES_SUFFIX}.json"
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

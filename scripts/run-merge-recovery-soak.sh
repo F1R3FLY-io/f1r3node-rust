@@ -83,6 +83,30 @@ if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   exit 2
 fi
 
+# Declared version of the code under test. The workflow passes the ref and the
+# sha but not the version, and "which version was soaked" is what a reader of
+# the dashboard actually wants — a sha answers "which commit", not "which
+# release". This is the same value the Docker LABEL and the published image tag
+# carry, so a dashboard row can be matched against a pulled image.
+#
+# Takes the first `version = "..."` line, which is the same line release.yml
+# bumps (`0,/^version = ".*"/`), so the two cannot disagree about which one is
+# the package version. Degrades to "unknown" and never fails: a missing version
+# string must not abort a soak, and every consumer downstream treats it as
+# optional.
+#
+# Deliberately NOT scripts/version.sh, which resolves the newest `v*` tag in the
+# current repo. That answers "what is the latest release", not "what is this
+# commit" — a dev soak would report a tag that postdates or has nothing to do
+# with the code under test — and it needs tags present, which a shallow
+# node-under-test checkout does not guarantee. Do not consolidate the two.
+VERSION="unknown"
+if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
+  parsed_version="$(awk -F'"' '/^version = "/ { print $2; exit }' \
+    "$NODE_REPO_DIR/node/Cargo.toml" 2>/dev/null || true)"
+  [ -n "$parsed_version" ] && VERSION="$parsed_version"
+fi
+
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
 # (columns: elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb; the
@@ -320,6 +344,7 @@ if command -v jq >/dev/null; then
     --slurpfile iters "$OUTPUT_DIR/iterations.json" \
     --arg target_ref "$TARGET_REF" \
     --arg target_sha "$TARGET_SHA" \
+    --arg version "$VERSION" \
     --argjson started "$STARTED_AT" \
     --argjson finished "$FINISHED_AT" \
     --argjson requested "$DURATION_SECONDS" \
@@ -340,6 +365,7 @@ if command -v jq >/dev/null; then
     | {
         target_ref: $target_ref,
         target_sha: $target_sha,
+        version: $version,
         started_at: $started,
         finished_at: $finished,
         requested_seconds: $requested,

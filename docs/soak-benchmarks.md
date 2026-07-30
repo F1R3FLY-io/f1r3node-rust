@@ -17,15 +17,31 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
   (iteration metrics, benchmark segments, logs, `report/` with
-  `weekly-summary.json`, `verdict.json`, `perf-report.md`).
+  `weekly-summary.json`, `verdict.json`, `badge.json`, `perf-report.md`).
+- **README badges**: `Soak · dev` and `Soak · master` are shields.io *endpoint*
+  badges reading `data/badge-soak-daily.json` and `data/badge-soak.json`, which
+  are generated from the same `verdict.json` the dashboard renders — so a badge
+  cannot disagree with the dashboard behind it.
 
 Both series publish to Pages, into separate files — `history.json` and
-`history-daily.json`, each with its own `latest-summary`, `latest-verdict` and
-`latest-report`. They are kept apart so the week-over-week regression gate never
-compares a variable-length daily against the fixed 60h weekend baseline. A Pages
-deploy replaces the whole site, so whichever soak publishes carries the other
-series forward untouched; a transient fetch failure aborts the deploy rather
-than publishing a site with a series missing.
+`history-daily.json`, each with its own `latest-summary`, `latest-verdict`,
+`latest-report` and `badge-soak`. They are kept apart so the week-over-week
+regression gate never compares a variable-length daily against the fixed 60h
+weekend baseline. A Pages deploy replaces the whole site, so whichever soak
+publishes carries the other series forward untouched; a transient fetch failure
+aborts the deploy rather than publishing a site with a series missing.
+
+Three workflows publish the site — `merge-recovery-soak.yml` (final),
+`soak-checkpoint-publish.yml` (mid-run) and `soak-dashboard-pages.yml`
+(dashboard edits) — and each carries the published data forward from its own
+file list. **A new data file must be added to all three**, or the next publisher
+to run deletes it.
+
+Each run also records what it soaked: the target ref, the commit sha (linked to
+GitHub) and the node version declared at that commit — the same value carried by
+the Docker LABEL and image tag, so a dashboard row can be matched to a pulled
+image. Runs that predate version recording show a dash; history is never
+backfilled.
 
 ## Weekend vs daily
 

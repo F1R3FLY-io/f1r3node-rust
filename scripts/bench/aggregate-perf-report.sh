@@ -9,6 +9,7 @@
 # Outputs (OUT_DIR):
 #   weekly-summary.json   the record appended to the dashboard data history
 #   verdict.json          pass/regress + per-metric deltas (release gate input)
+#   badge.json            shields.io endpoint badge, derived from verdict.json
 #   perf-report.md        human summary (step summary / artifact)
 #
 # Verdict policy (thresholds file, maintainer-approved EPOCH-010):
@@ -111,6 +112,11 @@ jq -n \
         kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        # Optional by construction: soaks that ran before the soak script began
+        # emitting it, and any run where the node checkout was unreadable, have
+        # no version. History entries are never backfilled, so the dashboard
+        # must tolerate the field being absent on older rows.
+        version: ($passive.version // "unknown"),
         started_at: ($passive.started_at // null),
         finished_at: ($passive.finished_at // null),
         duration_seconds: $duration,
@@ -196,6 +202,47 @@ jq -n \
     }
 ' >"$OUT_DIR/verdict.json"
 
+# Shields.io endpoint badge for the README, derived from verdict.json rather
+# than recomputed from the inputs: a badge that can disagree with the dashboard
+# is worse than no badge at all.
+#
+# The endpoint schema is used, not shields' dynamic/json, because dynamic/json
+# cannot vary colour by value — it would render "regress" in the same colour as
+# "pass", which is the exact failure the static badges this replaces already had.
+jq \
+	'
+  def branch_label:
+    # Prefer the branch actually soaked, so the badge self-corrects if the
+    # weekend/daily targeting ever changes. Fall back to the series name when
+    # the ref is a sha or anything else that would not read as a branch — a
+    # manual dispatch can pass either.
+    (.run.target_ref // "") as $r
+    | if ($r | test("^[A-Za-z0-9._/-]{1,24}$")) and (($r | test("^[0-9a-f]{7,40}$")) | not)
+      then $r else (.run.kind // "soak") end;
+  def hours: if . == null then null else (. / 3600 * 10 | floor / 10) end;
+  {
+    schemaVersion: 1,
+    label: "soak · \(branch_label)",
+    # A checkpoint shows progress rather than a verdict, matching the
+    # in_progress handling above; "pass · no baseline" keeps a bootstrap run
+    # from claiming a comparison it never made.
+    message:
+      (if .verdict == "in_progress"
+         then ((.run.elapsed_seconds | hours) as $e
+               | (.run.duration_seconds | hours) as $t
+               | if $e == null or $t == null then "in progress"
+                 else "\($e)h/\($t)h" end)
+       elif .verdict == "regress" then "regress"
+       elif .bootstrap then "pass · no baseline"
+       else "pass" end),
+    color:
+      (if .verdict == "in_progress" then "lightgrey"
+       elif .verdict == "regress" then "red"
+       elif .bootstrap then "yellowgreen"
+       else "brightgreen" end)
+  }
+' "$OUT_DIR/verdict.json" >"$OUT_DIR/badge.json"
+
 jq -r \
 	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
 	--argjson baseline "$BASELINE_ARG" \
@@ -247,6 +294,6 @@ jq -r \
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
 rm -f "$SEGMENTS_JSON"
-echo "wrote weekly-summary.json, verdict.json, perf-report.md to $OUT_DIR" >&2
+echo "wrote weekly-summary.json, verdict.json, badge.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
 	"$OUT_DIR/verdict.json" >&2

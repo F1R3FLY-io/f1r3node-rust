@@ -57,6 +57,26 @@
   .tab-status.pass { color: var(--good); }
   .tab-status.regress { color: var(--serious); }
   .tab-status.running { color: var(--series-1); }
+  /* What was soaked, on the button itself: which commit, version and day a
+     series last covered is the thing you want before deciding which tab to
+     open, not after. Empty until the verdict loads, so the button never shows
+     a stale or placeholder commit. */
+  .tab-provenance { font-size: .78rem; color: var(--text-muted); }
+  .tab-provenance:empty { display: none; }
+
+  /* Per-series accent: Weekend blue, Daily green. The two tabs are then
+     distinguishable at a glance, and a screenshot of the panel alone still
+     says which series it came from.
+
+     Note the overlap this creates: --good is also the `pass` status colour, so
+     a passing Daily tab is green twice over. Kept deliberately — the accent
+     rides on the border and ring while status stays in its own text, and
+     `regress` red against a green accent is still unambiguous. */
+  .tabbar label[for="tab-weekend"] { --accent: var(--series-1); }
+  .tabbar label[for="tab-daily"] { --accent: var(--good); }
+  /* Always visible, not just when selected, so the colour is a property of the
+     series rather than of the selection. */
+  .tabbar label { border-left-width: 3px; border-left-color: var(--accent); }
   .running-note { background: var(--surface-2); border-left: 3px solid var(--series-1);
                   border-radius: 4px; padding: .6rem .9rem; margin-bottom: 1.25rem;
                   color: var(--text-secondary); }
@@ -64,12 +84,12 @@
      four equal cards rather than a choice with one active member. */
   #tab-weekend:checked ~ .tabbar label[for="tab-weekend"],
   #tab-daily:checked ~ .tabbar label[for="tab-daily"] {
-    border-color: var(--series-1); background: var(--surface-1);
-    box-shadow: 0 0 0 1px var(--series-1), 0 4px 8px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12);
+    border-color: var(--accent); background: var(--surface-1);
+    box-shadow: 0 0 0 1px var(--accent), 0 4px 8px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12);
   }
   #tab-weekend:focus-visible ~ .tabbar label[for="tab-weekend"],
   #tab-daily:focus-visible ~ .tabbar label[for="tab-daily"] {
-    outline: 3px solid var(--series-1); outline-offset: 2px;
+    outline: 3px solid var(--accent); outline-offset: 2px;
   }
   @media (prefers-reduced-motion: reduce) {
     .tabbar label { transition: none; }
@@ -118,11 +138,13 @@
     <span class="tab-title">Weekend</span>
     <span class="tab-hint">60h · master</span>
     <span class="tab-status" id="status-weekend">loading…</span>
+    <span class="tab-provenance" id="provenance-weekend"></span>
   </label>
   <label for="tab-daily">
     <span class="tab-title">Daily</span>
     <span class="tab-hint">22h · dev</span>
     <span class="tab-status" id="status-daily">loading…</span>
+    <span class="tab-provenance" id="provenance-daily"></span>
   </label>
 </div>
 
@@ -158,6 +180,7 @@
 <script>
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
+  const COMMIT_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/commit/";
   const tooltip = document.getElementById("tooltip");
 
   const SERIES = [
@@ -249,6 +272,48 @@
     el.innerHTML = '<div class="running-note">A soak is in progress. The report below is a ' +
       'mid-run checkpoint; the charts and table show completed runs only, and this one ' +
       'joins them when it finishes.</div>';
+  }
+
+  // Only something shaped like a git object may become a commit URL — the same
+  // rule the run_id link follows. A crafted target_sha in published JSON would
+  // otherwise steer the href off this repository.
+  function shaCell(sha) {
+    const s = String(sha == null ? "" : sha);
+    const short = esc(s.slice(0, 8)) || "-";
+    return /^[0-9a-f]{7,40}$/.test(s)
+      ? `<a href="${COMMIT_URL}${s}"><code>${short}</code></a>`
+      : `<code>${short}</code>`;
+  }
+
+  // What was soaked, rendered onto the tab button so it is legible before
+  // choosing a tab. A sha answers "which commit"; the version answers "which
+  // release", the value that matches a pulled image tag and the Docker LABEL.
+  // Read from the verdict's run block, so a mid-run checkpoint and a completed
+  // run describe themselves identically.
+  //
+  // Written with textContent, not innerHTML: a <label> must not contain a link
+  // (clicking it would toggle the tab), and plain text needs no escaping, which
+  // removes this element from the injection surface entirely. The clickable
+  // commit lives in the panel's links line instead.
+  //
+  // Every field is optional. History is never backfilled, so runs recorded
+  // before the soak emitted a version carry "unknown" — shown as absent rather
+  // than as a version literally named unknown. The element collapses when empty
+  // (`.tab-provenance:empty`), so a button never shows a dangling separator.
+  function provenanceParts(run) {
+    const known = v => v && v !== "unknown" ? String(v) : null;
+    const ref = known(run.target_ref), sha = known(run.target_sha);
+    const ver = known(run.version), day = (run.date || "").slice(0, 10);
+    const parts = [];
+    if (ref || sha) parts.push([ref, sha ? sha.slice(0, 8) : null].filter(Boolean).join(" @ "));
+    if (ver) parts.push("version " + ver);
+    if (day) parts.push(day);
+    return parts;
+  }
+
+  function renderProvenance(el, verdict) {
+    const r = (verdict && verdict.run) || null;
+    el.textContent = r ? provenanceParts(r).join(" · ") : "";
   }
 
   // Rendered only when non-empty, so the strip's presence is itself the signal.
@@ -343,14 +408,17 @@
       const runLink = /^[0-9]+$/.test(String(r.run_id || ""))
         ? `<a href="${RUNS_URL}${r.run_id}">log</a>` : "-";
       const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : esc(v));
-      return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td><code>${esc((r.target_sha || "").slice(0, 8))}</code></td>` +
+      // "unknown" is what pre-version runs carry; show a dash so the column
+      // reads as "not recorded" rather than as a version by that name.
+      const ver = r.version && r.version !== "unknown" ? `<code>${esc(r.version)}</code>` : "-";
+      return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td>${ver}</td><td>${shaCell(r.target_sha)}</td>` +
         `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
         `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
         `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +
         `<td>${runLink}</td></tr>`;
     }).join("");
     el.innerHTML =
-      `<table><thead><tr><th>date</th><th>sha</th><th class="num">iters</th>` +
+      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th class="num">iters</th>` +
       `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
       `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;
@@ -363,10 +431,16 @@
     const history = Array.isArray(historyRaw) ? historyRaw : [];
 
     renderStatus(document.getElementById("status-" + def.key), verdict, history.length);
+    renderProvenance(document.getElementById("provenance-" + def.key), verdict);
     renderProgress(document.getElementById("progress-" + def.key), verdict);
     renderFailures(document.getElementById("failures-" + def.key), verdict);
+    // The tab button carries the commit as text; this is where it becomes
+    // clickable, since a link inside the label would fight the radio toggle.
+    const soakedSha = (verdict && verdict.run && verdict.run.target_sha) || "";
+    const commitLink = /^[0-9a-f]{7,40}$/.test(String(soakedSha))
+      ? ` · <a href="${COMMIT_URL}${soakedSha}">commit ${esc(soakedSha.slice(0, 8))}</a>` : "";
     document.getElementById("links-" + def.key).innerHTML =
-      `<a href="${def.report}">latest report</a> · <a href="${def.history}">raw data</a>`;
+      `<a href="${def.report}">latest report</a> · <a href="${def.history}">raw data</a>${commitLink}`;
 
     if (history.length === 0) {
       document.getElementById("charts-" + def.key).innerHTML =

@@ -80,6 +80,10 @@ struct Run {
     sha: String,
     kind: &'static str,
     target_ref: &'static str,
+    // "unknown" on the oldest fixtures on purpose: history is never backfilled,
+    // so real data has exactly this shape, and the dashboard's
+    // dash-instead-of-"unknown" fallback needs exercising locally.
+    version: String,
     duration: u64,
     iterations: u64,
     failure_rate: f64,
@@ -92,6 +96,20 @@ struct Run {
 }
 
 impl Run {
+    /// The `run` block, emitted by one function because production writes the
+    /// same object into both `history.json` and `verdict.json`. Two copies here
+    /// would let the preview drift out of step with the page it is previewing.
+    fn run_json(&self) -> String {
+        format!(
+            concat!(
+                r#"{{"date": "{}T07:30:00Z", "run_id": "{}", "target_sha": "{}", "#,
+                r#""target_ref": "{}", "version": "{}", "kind": "{}", "duration_seconds": {}}}"#
+            ),
+            self.date, self.run_id, self.sha, self.target_ref, self.version, self.kind,
+            self.duration
+        )
+    }
+
     fn to_json(&self) -> String {
         let active = if self.active {
             format!(
@@ -106,19 +124,13 @@ impl Run {
         };
         format!(
             concat!(
-                r#"{{"run": {{"date": "{}T07:30:00Z", "run_id": "{}", "target_sha": "{}", "#,
-                r#""target_ref": "{}", "kind": "{}", "duration_seconds": {}}}, "#,
+                r#"{{"run": {}, "#,
                 r#""passive": {{"iterations": {}, "failures": {}, "failure_rate": {}, "#,
                 r#""iterations_per_hour": {}, "rss_peak_mb": {}, "finalization_p95_ms": {}, "#,
                 r#""providers": {{"docker": {{"iterations": {}, "failures": {}}}, "#,
                 r#""subprocess": {{"iterations": {}, "failures": {}}}}}}}, "active": {}}}"#
             ),
-            self.date,
-            self.run_id,
-            self.sha,
-            self.target_ref,
-            self.kind,
-            self.duration,
+            self.run_json(),
             self.iterations,
             (self.iterations as f64 * self.failure_rate) as u64,
             r(self.failure_rate, 4),
@@ -175,6 +187,13 @@ fn series(
             sha: rng.sha(),
             kind,
             target_ref,
+            // Oldest two entries predate version emission, so the table shows
+            // the mixed reality: dashes early, versions later.
+            version: if i < 2 {
+                "unknown".to_string()
+            } else {
+                format!("0.4.{}", 18 + i)
+            },
             duration,
             iterations: it,
             failure_rate: f,
@@ -245,9 +264,15 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         data,
         "latest-verdict.json",
         &format!(
-            r#"{{"verdict": "pass", "run_id": "{}", "generated_at": "{}T07:30:00Z", "failures": [], "warnings": []}}"#,
+            concat!(
+                r#"{{"verdict": "pass", "run_id": "{}", "generated_at": "{}T07:30:00Z", "#,
+                r#""bootstrap": false, "failures": [], "warnings": [], "run": {}}}"#
+            ),
             weekend[weekend.len() - 1].run_id,
-            weekend[weekend.len() - 1].date
+            weekend[weekend.len() - 1].date,
+            // Production always writes `run` into verdict.json; without it here
+            // the preview would not render the provenance line at all.
+            weekend[weekend.len() - 1].run_json()
         ),
     )?;
     write(
@@ -256,11 +281,14 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         &format!(
             concat!(
                 r#"{{"verdict": "regress", "run_id": "{}", "generated_at": "{}T07:30:00Z", "#,
+                r#""bootstrap": false, "#,
                 r#""failures": ["failure rate 8.1% > baseline 2.0% +5pts", "#,
-                r#""finalization p95 3180ms > baseline 2310ms +20%"], "warnings": []}}"#
+                r#""finalization p95 3180ms > baseline 2310ms +20%"], "warnings": [], "#,
+                r#""run": {}}}"#
             ),
             daily[daily.len() - 1].run_id,
-            daily[daily.len() - 1].date
+            daily[daily.len() - 1].date,
+            daily[daily.len() - 1].run_json()
         ),
     )?;
     write(

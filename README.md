@@ -2,8 +2,8 @@
 
 [![CI · dev](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml?query=branch%3Adev)
 [![CI · master](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml?query=branch%3Amaster)
-[![Soak · master](https://img.shields.io/badge/soak-master%20%C2%B7%20weekend-informational)](https://f1r3fly-io.github.io/f1r3node-rust/)
-[![Soak · dev](https://img.shields.io/badge/soak-dev%20%C2%B7%20daily-informational)](https://f1r3fly-io.github.io/f1r3node-rust/)
+[![Soak · dev](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak-daily.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
+[![Soak · master](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
 
 Pure Rust implementation of the F1R3FLY blockchain node.
 
@@ -11,14 +11,30 @@ This repository tracks the Rust node implementation that lives on `rust/dev` in 
 
 ## Project Status
 
-Two independent signals, both published per branch:
+Four badges, two independent signals per branch. What each one actually reflects — and, more usefully, what it does not:
 
-| Signal | `dev` | `master` | Source |
+| Badge | Reflects | Red when | Says nothing about |
 | --- | --- | --- | --- |
-| Build and test | CI on every push and PR | CI on every push and tag | [CI workflow](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml) |
-| Merge-recovery soak | Daily run (~22h) | Weekend run (~60h) | [Status dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) |
+| `CI · dev`, `CI · master` | the latest [`ci.yml`](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml) run on that branch | **any** job in that run failed — `Lint`, `cargo-deny`, `Markdown Link Check`, a per-crate `Test (…)`, or the heavy `Integration Tests (amd64)` / `(arm64)` | sustained behaviour (that is the soak), and the [Slashing test suite](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/slashing-tests.yml), which is a separate workflow with its own runs |
+| `Soak · dev` | the latest daily soak — up to 22h against `dev` | the run regressed against the previous run's metrics, or an iteration failed | whether `dev` builds right now; the soak targets one commit and runs for hours after it |
+| `Soak · master` | the latest weekend soak — ~60h against `master`, and the release gate | as above | as above |
 
-The [status dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) carries the soak verdict, failure rate, throughput, peak RSS, and finalization latency for each branch, with week-over-week history. A green CI badge does not imply a passing soak — CI gates correctness on a single commit, while the soak gates sustained behavior against a live shard.
+### Reading a red CI badge
+
+It names a branch, not a job. A lint failure and an integration-test failure render identically, so the badge tells you *that* the branch is red and nothing about *why* — follow the link and read the job list. The heavy integration pipeline is part of the same workflow, so a red badge may mean a real shard failure or a formatting slip.
+
+### Reading a soak badge
+
+| Shows | Means |
+| --- | --- |
+| `pass` (green) | completed, and no metric regressed past its threshold |
+| `regress` (red) | completed, and at least one metric crossed its threshold — the dashboard lists which |
+| `14h/22h` (grey) | a soak is **in flight**; the number is progress, not a verdict |
+| `pass · no baseline` (yellow-green) | completed with nothing to compare against — a first run, so passing is not yet meaningful |
+
+Both soak badges are generated from the same `verdict.json` the [status dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) renders, so a badge cannot disagree with the dashboard behind it.
+
+The dashboard carries the verdict, failure rate, throughput, peak RSS, and finalization latency per branch with week-over-week history, and records which commit and which node version each run soaked. **A green CI badge does not imply a passing soak:** CI gates correctness on a single commit in minutes, while the soak gates sustained behaviour against a live shard for hours.
 
 ## Overview
 
