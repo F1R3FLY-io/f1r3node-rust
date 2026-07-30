@@ -32,7 +32,10 @@ in {
         ("fromNillable <- should return given value or default value", *test_from_nillable_arrow),
         ("fromBoolean <- should return Nil or default value", *test_from_boolean_arrow),
         ("fromSingletonList <- should return given value, default value, or error", *test_from_singleton_list_arrow),
-        ("fromNillableError <- should return Nil or given error", *test_from_nillable_arrow),
+        // ★ was `*test_from_nillable_arrow` — a copy-paste of row 1's contract, so this
+        // row ran `fromNillable <-` a SECOND time under a `fromNillableError` name and
+        // `test_from_nillable_error_arrow` (:104, declared at :11) never ran at all.
+        ("fromNillableError <- should return Nil or given error", *test_from_nillable_error_arrow),
         ("productR <- should return Nil or default value", *test_product_r_arrow),
         ("map2 <- should return Left or apply f and return Right", *test_map2_arrow),
         ("map2Clean <- should return Left or apply f and return Right", *test_map2_clean_arrow),
@@ -101,15 +104,33 @@ in {
       }
     } |
 
+    // ★★ `fromNillableError` takes NO default. Unlike `fromNillable`/`fromBoolean`/
+    // `fromSingletonList`, whose `<-` arms are (selector, ch, @default, return) because a
+    // Nil/false/empty input has to be replaced by something, `fromNillableError` USES THE
+    // INPUT ITSELF as the Left: `Either.rho:75-79` is
+    //   contract Either(@"fromNillableError", @error, return) = {
+    //     match error { Nil => return!((true, Nil))
+    //                   _   => return!((false, error)) } }
+    // so the `<-` arm is (selector, errorCh, return) — THREE patterns, `Either.rho:68`,
+    // with no remainder. The sends below used to pass a fourth datum, `"If not Nil"`, and
+    // the second assertion used to expect `(false, "If not Nil")`. Both are residue of a
+    // signature `fromNillableError` never had in this tree: `Either.rho` is single-commit
+    // (`c36613aa`) and upstream `f1r3node` carries the identical mistake, so the contract
+    // is the authority and the CALLER was wrong on both counts. A 4-datum send against a
+    // 3-pattern, remainder-less receive cannot match at all — `fold_match.rs:52` returns
+    // `None` on the length check — so it never fired, `ch1ret`/`ch2ret` never received,
+    // and the `"== <-"` assertions would have blocked forever. That block was invisible
+    // only because the registration typo above meant this contract never ran.
     contract test_from_nillable_error_arrow(rhoSpec, _, ackCh) = {
       new ch1, ch2, ch1ret, ch2ret in {
         ch1!(Nil) | ch2!("Not Nil") |
-        @Either!("fromNillableError <-", *ch1, "If not Nil", *ch1ret) |
-        @Either!("fromNillableError <-", *ch2, "If not Nil", *ch2ret) |
+        @Either!("fromNillableError <-", *ch1, *ch1ret) |
+        @Either!("fromNillableError <-", *ch2, *ch2ret) |
         rhoSpec!("assertMany",
           [
             (((true, Nil), "== <-", *ch1ret), "Uses Nil when Nil"),
-            (((false, "If not Nil"), "== <-", *ch2ret), "Uses given error when not Nil")
+            // The error IS the Left payload — `"Not Nil"` is what `ch2` carries.
+            (((false, "Not Nil"), "== <-", *ch2ret), "Uses given error when not Nil")
           ], *ackCh)
       }
     } |
