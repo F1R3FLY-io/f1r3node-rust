@@ -158,8 +158,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         with:
-          app-id: ${{ vars.CI_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.RUNNER_ADMIN_APP_ID }}
+          private-key: ${{ secrets.RUNNER_ADMIN_APP_PRIVATE_KEY }}
           permission-administration: write
 
       - name: Launch runner
@@ -421,7 +421,11 @@ jobs:
       needs.schedule_gate.outputs.should_run == 'true' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
-    environment: oci-credentials
+    # oci-maintenance: publishing to the ONS topic needs OCI credentials only.
+    # Matches the `permissions: {}` reasoning immediately below — a job that has
+    # no business holding a GitHub token has no business holding GitHub App
+    # credentials either.
+    environment: oci-maintenance
     timeout-minutes: 10
     # Alerting needs OCI credentials, never the GitHub API — this job has no
     # checkout and no reason to hold a token scope.

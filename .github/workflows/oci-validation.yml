@@ -217,8 +217,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         with:
-          app-id: ${{ vars.CI_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.RUNNER_ADMIN_APP_ID }}
+          private-key: ${{ secrets.RUNNER_ADMIN_APP_PRIVATE_KEY }}
           permission-administration: write
 
       - name: Launch 11 amd64 + 11 arm64 ephemeral runners

@@ -308,12 +308,17 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
+      # Runner registration only. This is the runner-admin App, which holds
+      # `administration` and nothing else and is NOT a ruleset bypass actor — so
+      # code execution in this job cannot reach a protected branch. The release
+      # App (CI_GITHUB_APP_*, release-credentials) is the one with `contents:
+      # write` and bypass, and it is deliberately not reachable from here.
       - name: Create runner-management token
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         with:
-          app-id: ${{ vars.CI_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.RUNNER_ADMIN_APP_ID }}
+          private-key: ${{ secrets.RUNNER_ADMIN_APP_PRIVATE_KEY }}
           permission-administration: write
 
       - name: Launch 2 amd64 + 2 arm64 ephemeral runners

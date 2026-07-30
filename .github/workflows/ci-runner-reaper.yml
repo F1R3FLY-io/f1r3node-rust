@@ -46,7 +46,12 @@ jobs:
   reap:
     name: Reap leaked ephemeral runners
     runs-on: ubuntu-latest
-    environment: oci-credentials
+    # oci-maintenance, not oci-credentials: this job terminates leaked instances
+    # via the OCI API and never registers a runner, so it has no business being
+    # able to read GitHub App credentials. It runs unattended on a 30-minute
+    # schedule with no approval gate in front of it, which makes it the widest
+    # ungated surface in the repository and the one worth narrowing most.
+    environment: oci-maintenance
     timeout-minutes: 15
     steps:
       - name: Install OCI CLI (pinned, checksum-verified)
