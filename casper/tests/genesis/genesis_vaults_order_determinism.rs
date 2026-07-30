@@ -59,7 +59,9 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use crate::util::genesis_builder::{genesis_cache_stats, GenesisBuilder};
+use crate::util::genesis_builder::{
+    genesis_cache_delta_across_foreign_thread, genesis_cache_stats_this_thread, GenesisBuilder,
+};
 use crate::util::rholang::resources;
 use crate::util::rholang::resources::generate_scope_id;
 
@@ -450,6 +452,19 @@ async fn genesis_post_state_hash_is_identical_across_independent_rspace_scopes()
 /// absolute counters are not this cell's to predict. What IS this cell's to predict is the
 /// **delta**: `N_BUILDS` calls must add at most ONE miss.
 ///
+/// ⚠⚠ **AND THE DELTA USED TO BE UNTRUSTWORTHY, INTERMITTENTLY.** The counters were a pair of
+/// process-wide `AtomicU64`s, and libtest runs one binary's tests concurrently on many threads
+/// of ONE process — so a NEIGHBOUR's `build_genesis_with_parameters` landed inside this
+/// bracket. The reported failure was *"Got 7 accesses for 6 calls"*, and it was invisible under
+/// `cargo nextest run` (one process per test) while live under `cargo test`. The counters are
+/// now `thread_local!`; see [`genesis_cache_stats_this_thread`] for the mechanism and
+/// [`a_foreign_threads_genesis_build_stays_out_of_this_threads_bracket`] for the DETERMINISTIC
+/// guard that replaces re-running the race.
+///
+/// ★ The irony is the useful part, so it is recorded rather than smoothed over: this cell
+/// arrived with `8064d4b6`, whose subject says the genesis instability *"follows the PROCESS,
+/// not the RSPACE SCOPE"* — and its own instrument was then broken by process-shared state.
+///
 /// ⚠⚠ **`None`, NOT `Some(parameters.clone())` — and this was measured, not reasoned.** The first
 /// version of this cell built the parameters once and passed `Some(parameters.clone())` to every
 /// call. That version **PASSED WITH BOTH SORTS DISABLED**: cloning one tuple makes the cache key
@@ -462,7 +477,7 @@ async fn genesis_post_state_hash_is_identical_across_independent_rspace_scopes()
 async fn genesis_cache_hits_once_the_vault_order_is_stable() {
     let mut builder = GenesisBuilder::new();
 
-    let (accesses_before, misses_before) = genesis_cache_stats();
+    let (accesses_before, misses_before) = genesis_cache_stats_this_thread();
 
     for i in 0..N_BUILDS {
         // `None` ⇒ parameters rebuilt from scratch inside the call. That is the whole point.
@@ -472,7 +487,7 @@ async fn genesis_cache_hits_once_the_vault_order_is_stable() {
             .unwrap_or_else(|e| panic!("cached genesis build {i} must succeed: {e:?}"));
     }
 
-    let (accesses_after, misses_after) = genesis_cache_stats();
+    let (accesses_after, misses_after) = genesis_cache_stats_this_thread();
     let accesses = accesses_after - accesses_before;
     let misses = misses_after - misses_before;
 
@@ -491,6 +506,87 @@ async fn genesis_cache_hits_once_the_vault_order_is_stable() {
          parameters are still hashing differently — the vault (or bonds) order is not stable. \
          This is also the performance symptom: every miss rebuilds the whole genesis block. \
          Measured at 6/6 (100%) with the two `bond_vaults.sort_by` calls disabled.",
+    );
+}
+
+/// ★★ **A FOREIGN THREAD'S GENESIS BUILD MUST STAY OUT OF THIS THREAD'S BRACKET — the
+/// deterministic replacement for re-running a scheduler race.**
+///
+/// This is the guard for the counter-scope defect, and it is written this way on purpose.
+/// `genesis_cache_hits_once_the_vault_order_is_stable` failed only when the libtest scheduler
+/// happened to place a neighbour's genesis build inside its bracket: the failure was real
+/// (*"Got 7 accesses for 6 calls"*) and reproducible in the full suite, but a filtered run of
+/// this module passes, so "re-run it and see" is not evidence about the counter. **A test that
+/// depends on an interleaving is not a test of the property.**
+///
+/// So the interleaving is *constructed*: one genesis build is performed on a freshly spawned OS
+/// thread, joined, and the calling thread's counter delta across it is asserted to be zero. That
+/// is exactly the property the bracket needs, stated without a race.
+///
+/// | counters | delta this asserts | verdict |
+/// |---|---|---|
+/// | process-wide `AtomicU64` (before) | `(1, 0)` or `(1, 1)` — the foreign build's own counts | **FAILS** |
+/// | `thread_local! { Cell<u64> }` (after) | `(0, 0)` | passes |
+///
+/// ★ It is invariant under reverting the fix: change the counters back to `static AtomicU64`
+/// and this goes RED regardless of how the scheduler behaves, because there is no scheduler
+/// involved.
+///
+/// ⚠ The build must be a REAL one, not a stub — it is asserted to have happened by reading the
+/// foreign thread's own delta through a channel. A no-op "build" would make the zero delta
+/// vacuous, which is the same shape of hole the `Some(parameters.clone())` version of the cell
+/// above fell into.
+#[test]
+fn a_foreign_threads_genesis_build_stays_out_of_this_threads_bracket() {
+    let (foreign_tx, foreign_rx) = std::sync::mpsc::channel::<(u64, u64)>();
+
+    let local_delta = genesis_cache_delta_across_foreign_thread(move || {
+        let (before_accesses, before_misses) = genesis_cache_stats_this_thread();
+        // A current-thread runtime, matching every `#[tokio::test]` caller, so the counter
+        // increments land on THIS thread.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("foreign thread runtime")
+            .block_on(async {
+                GenesisBuilder::new()
+                    .build_genesis_with_parameters(None)
+                    .await
+                    .expect("the foreign thread's genesis build must succeed");
+            });
+        let (after_accesses, after_misses) = genesis_cache_stats_this_thread();
+        foreign_tx
+            .send((
+                after_accesses - before_accesses,
+                after_misses - before_misses,
+            ))
+            .expect("the foreign thread must report its own delta");
+    });
+
+    let foreign_delta = foreign_rx
+        .recv()
+        .expect("the foreign thread must have reported before it was joined");
+
+    // ── NON-VACUITY: the foreign thread really did build ─────────────────────────────────
+    assert_eq!(
+        foreign_delta.0, 1,
+        "VACUOUS GUARD: the foreign thread recorded {} accesses, not 1, so it did not perform \
+         exactly one genesis build and a zero LOCAL delta proves nothing about scoping",
+        foreign_delta.0
+    );
+
+    // ── THE CLAIM ────────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        local_delta,
+        (0, 0),
+        "★★ THE CACHE COUNTERS ARE NOT THREAD-SCOPED. A genesis build performed entirely on a \
+         FOREIGN thread moved this thread's counters by {local_delta:?}. Every bracketed \
+         measurement in this file is then perturbable by any neighbouring test that builds \
+         genesis — which is the `c4b23376` class, and the reason \
+         `genesis_cache_hits_once_the_vault_order_is_stable` reported 'Got 7 accesses for 6 \
+         calls' in-suite while passing alone. The counters must be `thread_local!`, not \
+         `static`; serialising this file with a `Mutex` would fix only this file and would cost \
+         ~13 s per genesis build in wall clock."
     );
 }
 

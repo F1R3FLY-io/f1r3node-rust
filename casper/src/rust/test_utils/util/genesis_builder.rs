@@ -64,10 +64,56 @@ lazy_static! {
   static ref GENESIS_CACHE: DashMap<GenesisParameters, GenesisContext> = DashMap::new();
 }
 
-// Static cache counters for diagnostics
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Cache counters — the SIBLING of `casper/tests/util/genesis_builder.rs`'s pair
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// ★ THIS IS THE SECOND INSTANCE, AND IT WAS FOUND BY ASKING "WHAT ELSE HAS THIS SHAPE?"
+// RATHER THAN BY IT FAILING.
+//
+// The `tests/` copy's counters were a pair of process-wide `AtomicU64`s bracketed by
+// `genesis_cache_hits_once_the_vault_order_is_stable`, and a neighbour test's genesis build
+// landed inside the bracket — *"Got 7 accesses for 6 calls"* under `cargo test`, invisible
+// under `cargo nextest run`. That copy is now `thread_local!`.
+//
+// ⚠ **This copy is LATENT, not live**: it exports no `genesis_cache_stats`, so nothing can
+// bracket it and nothing can currently be wrong. It is thread-scoped anyway, for one reason:
+// the two builders are a known drift pair (`the_bond_derived_vault_tail_is_sorted_by_rendered_address`
+// exists because the unsorted `.chain(bonds.iter()…)` was present in BOTH and the `src/` copy
+// is the easy one to miss). Leaving the broken shape here is leaving the defect one
+// copy-paste away from being live again.
+//
+// The process-wide totals are retained for the `println!`, which asks a genuinely
+// process-wide question — [`GENESIS_CACHE`] is process-wide, so its hit rate is too.
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
-static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
-static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// PROCESS-WIDE totals, for the `println!` DIAGNOSTIC only.
+static CACHE_ACCESSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CACHE_MISSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// PER-THREAD accesses. Not exported: this copy has no bracketing caller. If one is ever
+    /// added, expose a reader whose NAME states the scope — never a bare `genesis_cache_stats`.
+    static CACHE_ACCESSES: Cell<u64> = const { Cell::new(0) };
+    /// PER-THREAD misses. Same note.
+    static CACHE_MISSES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Bump both scopes' access counters. Two call sites in this copy
+/// (`build_genesis_with_parameters` and `build_genesis_with_validators_num`), which is exactly
+/// why it is a function: the pair cannot be updated at one site and forgotten at the other.
+fn record_cache_access() {
+    CACHE_ACCESSES_TOTAL.fetch_add(1, Ordering::SeqCst);
+    CACHE_ACCESSES.with(|c| c.set(c.get() + 1));
+}
+
+/// Bump both scopes' miss counters and return the PROCESS-WIDE `(misses, accesses)`.
+fn record_cache_miss() -> (u64, u64) {
+    CACHE_MISSES.with(|c| c.set(c.get() + 1));
+    let misses = CACHE_MISSES_TOTAL.fetch_add(1, Ordering::SeqCst) + 1;
+    (misses, CACHE_ACCESSES_TOTAL.load(Ordering::SeqCst))
+}
 
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
@@ -344,7 +390,7 @@ impl GenesisBuilder {
     ) -> Result<GenesisContext, CasperError> {
         let parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
-        CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
+        record_cache_access();
 
         if GENESIS_CACHE.contains_key(&parameters) {
             Ok(GENESIS_CACHE.get(&parameters).unwrap().value().clone())
@@ -360,7 +406,7 @@ impl GenesisBuilder {
         validators_num: usize,
     ) -> Result<GenesisContext, CasperError> {
         let parameters = Self::build_genesis_parameters_with_random(None, Some(validators_num));
-        CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
+        record_cache_access();
 
         if GENESIS_CACHE.contains_key(&parameters) {
             Ok(GENESIS_CACHE.get(&parameters).unwrap().value().clone())
@@ -375,10 +421,11 @@ impl GenesisBuilder {
         &mut self,
         parameters: &GenesisParameters,
     ) -> Result<GenesisContext, CasperError> {
-        let cache_misses = CACHE_MISSES.fetch_add(1, Ordering::SeqCst) + 1;
-        let cache_accesses = CACHE_ACCESSES.load(Ordering::SeqCst);
+        // ⚠ PROCESS-WIDE figures, and they are the right ones HERE: the cache is process-wide,
+        // so its hit rate is too. The per-thread counters are for assertions, not for this line.
+        let (cache_misses, cache_accesses) = record_cache_miss();
         println!(
-            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses.",
+            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses (process-wide).",
             cache_misses,
             cache_accesses,
             (cache_misses as f64 / cache_accesses as f64) * 100.0

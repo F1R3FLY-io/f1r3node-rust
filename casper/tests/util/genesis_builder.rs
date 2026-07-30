@@ -71,23 +71,112 @@ lazy_static! {
   static ref GENESIS_CACHE: DashMap<GenesisParameters, GenesisContext> = DashMap::new();
 }
 
-// Static cache counters for diagnostics
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Cache counters — TWO SCOPES, because two different questions are being asked
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠ THE COUNTERS USED TO BE ONE PAIR OF PROCESS-WIDE `AtomicU64`s, AND THAT MADE THE ONE
+// TEST THAT BRACKETS THEM INTERMITTENTLY WRONG.
+//
+// `genesis_cache_hits_once_the_vault_order_is_stable`
+// (`casper/tests/genesis/genesis_vaults_order_determinism.rs`) snapshots the counters,
+// performs `N_BUILDS` genesis builds, snapshots again, and asserts the ACCESS DELTA is
+// exactly `N_BUILDS`. libtest runs one binary's tests concurrently on many threads of ONE
+// process, so a NEIGHBOUR's `build_genesis_with_parameters` lands INSIDE that bracket and
+// inflates the delta — the reported failure was *"Got 7 accesses for 6 calls"*.
+//
+// ★ It is verbatim the `c4b23376` class in the sibling `mettail-rust` repository, where a
+// process-global `AtomicUsize` bracketed around one exec was counting its neighbours'
+// Dovetail reports. The fix there and the fix here are the same: **isolate the COUNTER, not
+// the file.** A `Mutex` serialising the file would cost real wall-clock time on a suite whose
+// genesis builds take ~13 s each, and would fix only this file.
+//
+// ⚠ AND IT IS ALSO WHY THE TWO RUNNERS DISAGREED. `cargo nextest run` gives every test its
+// own PROCESS, so the neighbour's increment cannot reach the bracket and the test passes;
+// `cargo test` shares the process and it fails. Each runner is blind to one isolation class:
+// `cargo test` detects INTERFERENCE (fails when neighbours run), nextest detects DEPENDENCE
+// (passes only because a neighbour set something up). f1r3node CI runs only `cargo test`,
+// which is why the *interference* here was reachable at all — and why the fix is verified
+// under a deterministic guard rather than by re-running a race.
+//
+// ─── the two scopes ───────────────────────────────────────────────────────────────────────
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
-static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
-static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
-/// `(accesses, misses)` of [`GENESIS_CACHE`], for tests that need the cache's behaviour as a
-/// VALUE rather than as a `println!`.
+/// PROCESS-WIDE totals, for the `println!` DIAGNOSTIC only.
+///
+/// [`GENESIS_CACHE`] is itself process-wide, so "misses / accesses" as a *cache efficiency*
+/// figure is a process-wide question and is correctly answered here. ⚠ These are deliberately
+/// NOT exposed: a test that reads them can be perturbed by any neighbour, which is the defect
+/// above. If you want a number to assert on, use [`genesis_cache_stats_this_thread`].
+static CACHE_ACCESSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CACHE_MISSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// PER-THREAD accesses — the bracketable measurement.
+    static CACHE_ACCESSES: Cell<u64> = const { Cell::new(0) };
+    /// PER-THREAD misses — the bracketable measurement.
+    static CACHE_MISSES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// `(accesses, misses)` of [`GENESIS_CACHE`] **attributable to the calling thread**, for tests
+/// that need the cache's behaviour as a VALUE rather than as a `println!`.
 ///
 /// Exposed because the miss/access ratio is independent evidence about vault ordering: the cache
 /// is keyed on the whole [`GenesisParameters`] tuple, which embeds `Genesis.vaults` **in order**,
 /// so a repeated call with logically identical parameters can only hit if that order is stable.
 /// See `casper/tests/genesis/genesis_vaults_order_determinism.rs`.
-pub fn genesis_cache_stats() -> (u64, u64) {
+///
+/// ★ **The name states the scope, and the scope is the point.** Both counter increments happen
+/// in the *bodies* of [`GenesisBuilder::build_genesis_with_parameters`] and
+/// [`GenesisBuilder::do_build_genesis`], before any `.await`, so under a `#[tokio::test]`
+/// current-thread runtime — which every caller uses — they land on the thread that drives the
+/// future. A caller on a `flavor = "multi_thread"` runtime would see its counts split across
+/// worker threads; that is a real limitation, it is stated rather than hidden, and no current
+/// caller is in that position.
+///
+/// ⚠ Reading these is still a DELTA measurement, not an absolute one: a thread that ran an
+/// earlier genesis-building test carries that test's counts. Bracket, and subtract.
+pub fn genesis_cache_stats_this_thread() -> (u64, u64) {
     (
-        CACHE_ACCESSES.load(Ordering::SeqCst),
-        CACHE_MISSES.load(Ordering::SeqCst),
+        CACHE_ACCESSES.with(Cell::get),
+        CACHE_MISSES.with(Cell::get),
     )
+}
+
+/// Run `build` on a **fresh OS thread** and report the calling thread's counter delta across it.
+///
+/// ★ This exists so the isolation property can be asserted DIRECTLY instead of hoping the
+/// libtest scheduler reproduces the interleaving that exposed it. With process-wide counters the
+/// delta is the foreign thread's count; with per-thread counters it is zero. See
+/// `a_foreign_threads_genesis_build_stays_out_of_this_threads_bracket`.
+pub fn genesis_cache_delta_across_foreign_thread(build: impl FnOnce() + Send + 'static) -> (u64, u64) {
+    let (accesses_before, misses_before) = genesis_cache_stats_this_thread();
+    std::thread::Builder::new()
+        .name("foreign-genesis-build".to_string())
+        .spawn(build)
+        .expect("genesis_builder: failed to spawn the foreign build thread")
+        .join()
+        .expect("genesis_builder: the foreign build thread panicked");
+    let (accesses_after, misses_after) = genesis_cache_stats_this_thread();
+    (
+        accesses_after - accesses_before,
+        misses_after - misses_before,
+    )
+}
+
+/// Bump both scopes' access counters. One call site, so the two cannot drift.
+fn record_cache_access() {
+    CACHE_ACCESSES_TOTAL.fetch_add(1, Ordering::SeqCst);
+    CACHE_ACCESSES.with(|c| c.set(c.get() + 1));
+}
+
+/// Bump both scopes' miss counters and return the PROCESS-WIDE `(misses, accesses)` for the
+/// diagnostic line.
+fn record_cache_miss() -> (u64, u64) {
+    CACHE_MISSES.with(|c| c.set(c.get() + 1));
+    let misses = CACHE_MISSES_TOTAL.fetch_add(1, Ordering::SeqCst) + 1;
+    (misses, CACHE_ACCESSES_TOTAL.load(Ordering::SeqCst))
 }
 
 pub struct GenesisBuilder {
@@ -337,7 +426,7 @@ impl GenesisBuilder {
     ) -> Result<GenesisContext, CasperError> {
         let parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
-        CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
+        record_cache_access();
 
         if GENESIS_CACHE.contains_key(&parameters) {
             Ok(GENESIS_CACHE.get(&parameters).unwrap().value().clone())
@@ -352,10 +441,11 @@ impl GenesisBuilder {
         &mut self,
         parameters: &GenesisParameters,
     ) -> Result<GenesisContext, CasperError> {
-        let cache_misses = CACHE_MISSES.fetch_add(1, Ordering::SeqCst) + 1;
-        let cache_accesses = CACHE_ACCESSES.load(Ordering::SeqCst);
+        // ⚠ PROCESS-WIDE figures, and they are the right ones HERE: the cache is process-wide,
+        // so its hit rate is too. The per-thread counters are for assertions, not for this line.
+        let (cache_misses, cache_accesses) = record_cache_miss();
         println!(
-            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses.",
+            "Genesis block cache miss, building a new genesis. Cache misses: {} / {} ({:.2}%) cache accesses (process-wide).",
             cache_misses,
             cache_accesses,
             (cache_misses as f64 / cache_accesses as f64) * 100.0
