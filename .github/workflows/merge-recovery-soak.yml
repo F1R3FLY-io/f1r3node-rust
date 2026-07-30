@@ -136,7 +136,28 @@ jobs:
               case "$INPUT_WINDOW_END" in
                 *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
               esac
+              # series is genuinely required here, not merely documented as
+              # such: a remainder span no longer identifies the series by its
+              # duration, so without it the guess below would publish the run
+              # into the wrong history with the wrong benchmark, timeout and
+              # concurrency behaviour. Fail rather than guess.
+              case "$INPUT_SERIES" in
+                daily) window_nominal=79200 ;;
+                weekend) window_nominal=216000 ;;
+                *)
+                  echo "::error::series must be daily or weekend when window_end_epoch is set"
+                  exit 1
+                  ;;
+              esac
               remaining="$((INPUT_WINDOW_END - slot_epoch))"
+              # A restart can only ever shorten the window it inherits. Without
+              # this bound an epoch typo — milliseconds for seconds, say — is
+              # accepted, and the reaper exemption derived from it would keep a
+              # leaked VM exempt for years. The exemption is meant to expire.
+              if [ "$remaining" -gt "$window_nominal" ]; then
+                echo "::error::window_end_epoch is ${remaining}s away, beyond the ${window_nominal}s $INPUT_SERIES window"
+                exit 1
+              fi
               # 2h floor: launch, image build and shard bring-up eat ~20min,
               # and a sub-2h remainder is not worth an OCI VM.
               if [ "$remaining" -lt 7200 ]; then
@@ -323,6 +344,15 @@ jobs:
           case "$retry_attempt" in
             ''|*[!0-9]*) retry_attempt=0 ;;
           esac
+          # A window-bounded run IS a restart, whatever the caller passed: it
+          # covers only part of its series' span. Forcing the counter keeps
+          # provenance, baseline exclusion and the one-retry cap consistent
+          # even for a hand-rolled dispatch that set window_end_epoch without
+          # retry_attempt — which would otherwise publish a partial run as a
+          # full one and still be eligible to retry.
+          if [ -n "${INPUT_WINDOW_END:-}" ] && [ "$retry_attempt" -eq 0 ]; then
+            retry_attempt=1
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
@@ -414,7 +444,7 @@ jobs:
         env:
           # Same pinned compartment as ci-runner-reaper.yml; not a secret.
           CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
-          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
           KIND: ${{ needs.schedule_gate.outputs.kind }}
           SUPPRESS_LABEL_WARNING: "True"
         shell: bash -e {0}
@@ -425,8 +455,14 @@ jobs:
           # grace for final aggregation and artifact upload. Fail closed: an
           # untagged soak runner dies at the 2h mark, so a tagging failure
           # must fail the launch now, not the soak two hours in.
-          case "$DURATION_SECONDS" in
-            ''|*[!0-9]*) echo "::error::bad duration_seconds: $DURATION_SECONDS"; exit 1 ;;
+          #
+          # Anchored to the gate's end_epoch, not to now + duration: launch
+          # can be delayed by queueing or a slow image pull, and a tag
+          # measured from this step would then extend past the window it is
+          # meant to track, drifting from the same instant the restart logic
+          # uses.
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
           esac
           name="$(tail -1 /tmp/soak-runner-name)"
           test -n "$name"
@@ -435,7 +471,7 @@ jobs:
             --display-name "$name" \
             --query 'data[0].id' --raw-output)"
           test -n "$iid" && [ "$iid" != "null" ]
-          deadline="$(( $(date -u +%s) + DURATION_SECONDS + 7200 ))"
+          deadline="$((END_EPOCH + 7200))"
           oci compute instance update --instance-id "$iid" --force \
             --freeform-tags "{\"purpose\":\"soak\",\"series\":\"${KIND}\",\"soak-deadline-epoch\":\"${deadline}\"}" \
             >/dev/null
@@ -739,10 +775,19 @@ jobs:
         uses: ./ci-control/.github/actions/soak-segment
         with:
           label: final
-          # No deadline: run to the overall budget measured from the original
-          # start. This segment publishes through perf_report, which computes a
-          # real verdict and appends the run to its history series.
-          deadline_epoch: ""
+          # Normal run: no deadline, i.e. run to the overall budget measured
+          # from the original start. Restart: end on the window's absolute
+          # instant instead. The gate measures the remainder before the runner
+          # is provisioned, so a start-relative budget would overrun the
+          # window by however long launch, checkout and the image build took —
+          # exactly the guarantee a restart exists to keep. Normal runs stay
+          # start-relative: their 22h/60h budgets already sit inside the slot
+          # cadence with hours to spare, and re-anchoring them would shorten
+          # every weekend baseline by a variable provisioning time.
+          #
+          # This segment publishes through perf_report, which computes a real
+          # verdict and appends the run to its history series.
+          deadline_epoch: ${{ needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.end_epoch || '' }}
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -1094,6 +1139,8 @@ jobs:
           DASHBOARD_RESULT: ${{ needs.perf_report.result }}
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
+          RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
         shell: bash -euo pipefail {0}
@@ -1102,7 +1149,14 @@ jobs:
             echo "::error::SOAK_ONS_TOPIC_OCID is not configured; failure alert NOT sent"
             exit 1
           fi
-          if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          # From kind, not the raw duration: a restart's span is the window's
+          # remainder, so a duration test would label a restarted weekend as a
+          # daily. Say so explicitly too — "the weekend soak failed" and "the
+          # restart of the weekend soak failed" call for different responses.
+          if [ "$SOAK_KIND" = "weekend" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          if [ "${RETRY_ATTEMPT:-0}" != "0" ]; then
+            kind="$kind restart ($((DURATION_SECONDS / 3600))h remaining)"
+          fi
           # Name what actually broke. A soak that never ran and a report stage
           # that failed after a clean soak are different pages. perf_report
           # covers both the Pages deploy and the regression verdict gate, so
