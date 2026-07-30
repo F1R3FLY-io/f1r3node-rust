@@ -799,23 +799,34 @@ const CONVERTED_DEPTH: &[&str] = &[
     // repo's eight Θ(depth) "iterative" drivers all escaped through exactly this
     // boundary — `Category → Vec<Elem> → Elem`.
     "clone_send_chain",
-    // ★ The EXTERN obligation, MEASURED. `EPathMap` is treated as a BOUNDED field
-    // by the clone driver, which is only correct because its hand-written `Clone`
-    // is O(1) at the node. See `clone_pathmap_chain_body`.
-    "clone_pathmap_chain",
-    // ★★ `par_children::dismantle` on the `EPathMap`-nested shape — FLAT, and
-    // this is its FIRST measurement. It entered by being measured on a ladder
-    // nobody had driven it on, not by a ceiling moving.
-    //
-    // ⚠ It is here because a diagnosis went WRONG first, and the wrong answer is
-    // recorded on `pathmap_chain_drop_body`: two subjects sharing one sloped
-    // fixture BUILDER read identically, which looked like proof that the teardown
-    // was the cause. It was the builder — `EPathMap::new` keys each entry by its
-    // canonical bytes, so it runs the still-Θ(depth) prost encoder over a
-    // depth-`d` `Par`. Both subjects are flat once the fixture is built on a big
-    // stack.
-    "pathmap_chain_drop",
 ];
+
+/// ⚠★ **`clone_pathmap_chain` and `pathmap_chain_drop` are MEASURED but are NOT in
+/// [`CONVERTED_DEPTH`], and the reason is the FIXTURE, not the traversal.**
+///
+/// Both are flat — 0 B/level across 16 → 128 in BOTH profiles, asserted by
+/// [`the_clone_conversion_is_visible_against_its_own_derived_control`]'s leg 4.
+/// What they cannot do is clear [`assert_depth_independent`]'s mandated
+/// **4 → 4,096** bar, because building the ladder is Θ(depth²): `EPathMap::new`
+/// keys every entry by its canonical bytes, so nesting `d` path maps encodes
+/// `Σ k = O(d²)` nodes. At `d = 4,096` that is ~8.4 million node-encodes **per
+/// probe point**, and `min_stack_for` runs ~15 child processes per bisection.
+/// Measured: the subject did not finish a single 4,096 rung in four minutes.
+///
+/// ★ This is the same disposition [`S0_LADDERS`] gives `prost_de`, whose `hi_max`
+/// is 32 because *"widening past 33 would measure the error path"*. Here, widening
+/// past ~128 would measure the CONSTRUCTOR. A subject whose fixture costs more than
+/// its traversal cannot be put on a 1,000× ladder, and pretending otherwise would
+/// make `converted_traversals_are_depth_independent` — which CI runs on every push
+/// — effectively hang.
+///
+/// ⚠ They are therefore in the same position as `bincode_ser_derived` and the four
+/// S0 baseline subjects: measured, registered in [`subject`], asserted by a named
+/// test, and deliberately in NEITHER register list. "Absence means UNMEASURED" is
+/// the rule this file enforces, so the exception is stated here rather than left
+/// for a reader to infer.
+const CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE: &[(&str, usize, usize)] =
+    &[("clone_pathmap_chain", 16, 128), ("pathmap_chain_drop", 16, 128)];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
 const CONVERTED_WIDTH: &[&str] = &[
@@ -3542,10 +3553,15 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
     // Θ(depth) "iterative" drivers all escaped through the SAME boundary —
     // `Category -> Vec<Elem> -> Elem` — and a single-collection ladder is exactly
     // how that hid. These two nest through different fields.
-    for name in ["clone_send_chain", "clone_pathmap_chain"] {
-        let l = measure_ladder(name, LO, HI);
+    let mut leg4: Vec<(&str, usize, usize)> = vec![("clone_send_chain", LO, HI)];
+    // ★ The two whose ladder is capped by their FIXTURE rather than by their
+    // traversal are asserted HERE, at the depths they can actually be driven to.
+    // See `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`.
+    leg4.extend_from_slice(CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE);
+    for (name, lo, hi) in leg4 {
+        let l = measure_ladder(name, lo, hi);
         println!(
-            "  {name}: {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
+            "  {name}: {} KiB @ {lo} -> {} KiB @ {hi} = {} B/level",
             l.lo_stack / 1024,
             l.hi_stack / 1024,
             l.per_step()
