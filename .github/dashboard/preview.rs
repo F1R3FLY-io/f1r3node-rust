@@ -89,7 +89,11 @@ struct Run {
     failure_rate: f64,
     iters_per_hour: f64,
     rss_mb: f64,
+    cpu_pct: f64,
     final_p95: f64,
+    too_far_ahead: u64,
+    lfb_p95: u64,
+    lfb_max: u64,
     docker: (u64, u64),
     subprocess: (u64, u64),
     active: bool,
@@ -126,9 +130,12 @@ impl Run {
             concat!(
                 r#"{{"run": {}, "#,
                 r#""passive": {{"iterations": {}, "failures": {}, "failure_rate": {}, "#,
-                r#""iterations_per_hour": {}, "rss_peak_mb": {}, "finalization_p95_ms": {}, "#,
+                r#""iterations_per_hour": {}, "rss_peak_mb": {}, "cpu_peak_pct": {}, "#,
+                r#""finalization_p50_ms": {}, "finalization_p95_ms": {}, "finalization_p99_ms": {}, "#,
+                r#""too_far_ahead_errors": {}, "#,
                 r#""providers": {{"docker": {{"iterations": {}, "failures": {}}}, "#,
-                r#""subprocess": {{"iterations": {}, "failures": {}}}}}}}, "active": {}}}"#
+                r#""subprocess": {{"iterations": {}, "failures": {}}}}}, "#,
+                r#""tracked_metrics": {{"lfb_spread": {{"p95": {}, "max": {}}}}}}}, "active": {}}}"#
             ),
             self.run_json(),
             self.iterations,
@@ -136,11 +143,17 @@ impl Run {
             r(self.failure_rate, 4),
             r(self.iters_per_hour, 3),
             r(self.rss_mb, 1),
+            r(self.cpu_pct, 1),
+            r(self.final_p95 * 0.55, 1),
             r(self.final_p95, 1),
+            r(self.final_p95 * 1.35, 1),
+            self.too_far_ahead,
             self.docker.0,
             self.docker.1,
             self.subprocess.0,
             self.subprocess.1,
+            self.lfb_p95,
+            self.lfb_max,
             active
         )
     }
@@ -160,6 +173,7 @@ fn series(
     mut p95: f64,
     mut iph: f64,
     mut fr: f64,
+    mut cpu: f64,
     bad: Option<usize>,
     active: bool,
 ) -> Vec<Run> {
@@ -169,13 +183,16 @@ fn series(
         p95 *= 1.0 + rng.unif(-0.06, 0.07);
         iph *= 1.0 + rng.unif(-0.05, 0.05);
         fr = (fr + rng.unif(-0.012, 0.015)).max(0.0);
+        cpu = (cpu * (1.0 + rng.unif(-0.04, 0.05))).clamp(5.0, 100.0);
+        let lfb_p95 = 1 + (rng.unif(0.0, 3.0) as u64);
+        let lfb_max = lfb_p95 + (rng.unif(0.0, 2.0) as u64);
 
         // One deliberately regressed run per series, so the failure styling is
         // exercised by the default fixture instead of needing a hand edit.
-        let (f, p) = if bad == Some(i) {
-            (fr + 0.06, p95 * 1.28)
+        let (f, p, too_far_ahead) = if bad == Some(i) {
+            (fr + 0.06, p95 * 1.28, 5 + (rng.unif(0.0, 4.0) as u64))
         } else {
-            (fr, p95)
+            (fr, p95, 0)
         };
 
         let it = ((iph * hours) as u64).max(1);
@@ -199,7 +216,11 @@ fn series(
             failure_rate: f,
             iters_per_hour: iph,
             rss_mb: rss,
+            cpu_pct: cpu,
             final_p95: p,
+            too_far_ahead,
+            lfb_p95,
+            lfb_max,
             docker: (dk, (dk as f64 * f) as u64),
             subprocess: (sp, (sp as f64 * f * 1.3) as u64),
             active,
@@ -227,6 +248,7 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         2400.0,
         3.1,
         0.02,
+        55.0,
         Some(7),
         true,
     );
@@ -243,6 +265,7 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         2250.0,
         3.4,
         0.015,
+        48.0,
         Some(13),
         false,
     );

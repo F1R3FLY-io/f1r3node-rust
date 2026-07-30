@@ -225,10 +225,29 @@
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
+    { title: "Peak node CPU", unit: "%", fmt: v => v.toFixed(1),
+      series: [
+        { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
+      ] },
     { title: "Finalization latency p95", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },
         { name: "bench segments", path: ["active", "p95_ms"], c: 2 },
+      ] },
+    { title: "Finalization latency percentiles", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
+      series: [
+        { name: "p50", path: ["passive", "finalization_p50_ms"], c: 0 },
+        { name: "p95", path: ["passive", "finalization_p95_ms"], c: 1 },
+        { name: "p99", path: ["passive", "finalization_p99_ms"], c: 2 },
+      ] },
+    { title: "Too-far-ahead errors", unit: "rejections / run", fmt: v => Math.round(v).toLocaleString(),
+      series: [
+        { name: "total", path: ["passive", "too_far_ahead_errors"], c: 0 },
+      ] },
+    { title: "LFB convergence spread", unit: "blocks", fmt: v => Math.round(v).toLocaleString(),
+      series: [
+        { name: "p95", path: ["passive", "tracked_metrics", "lfb_spread", "p95"], c: 1 },
+        { name: "max", path: ["passive", "tracked_metrics", "lfb_spread", "max"], c: 2 },
       ] },
   ];
 
