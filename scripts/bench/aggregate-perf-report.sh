@@ -133,8 +133,12 @@ jq -n \
         failure_rate: $passive.failure_rate,
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
+        finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
-        providers: $passive.providers
+        finalization_p99_ms: $passive.finalization_p99_ms,
+        too_far_ahead_errors: $passive.too_far_ahead_errors,
+        providers: $passive.providers,
+        tracked_metrics: ($passive.tracked_metrics // {})
       } end),
       active: {
         segments_total: ($segs | length),
@@ -334,7 +338,10 @@ jq -r \
   "| failure rate | \(.passive.failure_rate // null | fmt) | \($bp.failure_rate | fmt) |",
   "| iterations/hour | \(.passive.iterations_per_hour // null | fmt) | \($bp.iterations_per_hour | fmt) |",
   "| peak RSS (MB) | \(.passive.rss_peak_mb // null | fmt) | \($bp.rss_peak_mb | fmt) |",
+  "| finalization p50 (ms) | \(.passive.finalization_p50_ms // null | fmt) | \($bp.finalization_p50_ms | fmt) |",
   "| finalization p95 (ms) | \(.passive.finalization_p95_ms // null | fmt) | \($bp.finalization_p95_ms | fmt) |",
+  "| finalization p99 (ms) | \(.passive.finalization_p99_ms // null | fmt) | \($bp.finalization_p99_ms | fmt) |",
+  "| too-far-ahead errors | \(.passive.too_far_ahead_errors // null | fmt) | \($bp.too_far_ahead_errors | fmt) |",
   "",
   "## Active benchmark segments (controlled-rate, medians)",
   "",

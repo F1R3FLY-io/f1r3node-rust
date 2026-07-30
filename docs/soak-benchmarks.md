@@ -149,12 +149,47 @@ Passive (the soak's own load, per iteration, rolled up per run):
 | failure rate | pytest results per iteration |
 | throughput (iterations/hour) | wall-clock per iteration |
 | peak node RSS | harness `--monitor` resource timeseries |
-| finalization latency p95 | `f1r3fly.propose.timing` node logs |
+| finalization latency p50 / p95 / p99 | `f1r3fly.propose.timing` node logs |
+| too-far-ahead errors | count of proposal rejections logged as too far ahead of the last finalized block, node logs |
+| LFB convergence spread (p95 / max) | `SOAK_METRIC` registry (`scripts/bench/soak-metrics.json`), track-only |
 
 Active (controlled-rate benchmark segments interleaved every Nth iteration —
 a fresh local shard flooded at a fixed deploy rate for run-over-run comparable
 latency): p50/p95 submit→finalize latency, throughput, finalization rate,
 peak RSS. See `scripts/bench/run-bench-segment.sh`.
+
+### Newly added metrics (2026-07-30)
+
+Extends the passive rollup with metrics modelled on `asi-chain-testbed`'s
+`pkg/metrics` chain-health charts, wired through the existing per-iteration →
+per-run → dashboard pipeline:
+
+- **Finalization latency p50 / p99** — the same `f1r3fly.propose.timing`
+  `total_ms` samples already used for p95 (`iteration_finalization_latency` in
+  `scripts/run-merge-recovery-soak.sh`), now also read at the 50th and 99th
+  percentile. Rolled up per run as the median of each iteration's percentile
+  (matching how p95 was already rolled up), and charted as three lines
+  ("Finalization latency percentiles").
+- **Too-far-ahead errors** — count, per iteration, of the exact log line
+  `"Proposal failed: too far ahead of the last finalized block"`
+  (`casper/src/rust/blocks/proposer/propose_result.rs:185`), summed across all
+  iterations in the run. Distinct from finalization latency: this counts
+  proposals the node refused outright rather than how slow finalization was.
+  Charted as "Too-far-ahead errors".
+- **LFB convergence spread (p95 / max)** — the `lfb_spread` metric already
+  declared in `scripts/bench/soak-metrics.json` (max−min last-finalized-block
+  across shard nodes) was captured per iteration but never reached the
+  dashboard: `summary.json` only rolled up the fixed passive fields, not the
+  registry's `SOAK_METRIC` output. `run-merge-recovery-soak.sh` now folds
+  every registry-declared metric into `summary.json.tracked_metrics`
+  generically (max/min aggregates fold with cross-iteration max/min, any other
+  declared aggregate — p50, p95, ... — folds with the cross-iteration
+  median), so declaring a new metric in `soak-metrics.json` is enough for it
+  to reach a run's `weekly-summary.json` and chart, no further code change.
+  Charted as "LFB convergence spread".
+
+All three are `track`-policy metrics: recorded and charted only, they do not
+enter the week-over-week gate in `soak-gate-thresholds.json`.
 
 ## Regression gates
 
