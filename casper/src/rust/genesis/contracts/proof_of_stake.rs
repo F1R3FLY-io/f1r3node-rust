@@ -48,6 +48,40 @@ impl ProofOfStake {
     // TODO: Determine how the "initial bonds" map can simulate transferring stake into the PoS contract
     //       when this must be done during genesis, under the authority of the genesisPk, which calls the
     //       linear receive in PoS.rho - OLD
+    /// ★★ **S1 — A LOAD-BEARING SORT. Do not remove it; it is the only reason genesis is
+    /// reproducible across nodes.**
+    ///
+    /// # What it masks
+    ///
+    /// `ProofOfStake::validators` arrives in **random per-`HashMap`-instance order**, in
+    /// production as well as in tests. Both construction sites collect a `HashMap` directly
+    /// into the `Vec`:
+    ///
+    /// | site | unordered source |
+    /// |---|---|
+    /// | `engine/approve_block_protocol.rs:167` | `BondsParser::parse_with_autogen` → `HashMap<PublicKey, i64>` |
+    /// | `engine/block_approver_protocol.rs:199` | `block_bonds: HashMap<Bytes, i64>` |
+    ///
+    /// `std`'s `RandomState::new()` re-seeds per constructed map, so the order is not even
+    /// stable within one process for two maps of identical content.
+    ///
+    /// # Why removing it would be a consensus break
+    ///
+    /// This function renders the validator set into Rholang **source text** — the
+    /// `$$initialBonds$$` substitution in `PoS.rhox`, a `{ "<pk hex>".hexToBytes() : <stake>, … }`
+    /// literal. That text becomes `DeployData.term`, is signed, seeds the deploy RNG, and is
+    /// executed in the order written, so the emitted order is visible in the resulting
+    /// **`post_state_hash`**. Unsorted, two nodes with the same bonds file would compute
+    /// different genesis state and the ceremony would never converge.
+    ///
+    /// # ⚠ The real fix is upstream, and it is NOT deleting this sort
+    ///
+    /// The defect is the `HashMap` at the source: an unordered container used to carry an
+    /// order-significant sequence. Canonicalising there (a `BTreeMap`, or a `Vec` sorted at
+    /// parse time) would make this sort redundant *and provably so*. Until then this line and
+    /// [`super::super::genesis::Genesis::bonds_proto`] (**S2**) are the two independent places
+    /// that repair the same unordered source, and **deleting either one INTRODUCES a break
+    /// that was always latent** rather than removing dead code — the `f5b2e820` lesson.
     pub fn initial_bonds(validators: &[Validator]) -> String {
         let mut sorted_validators = validators.to_vec();
         sorted_validators.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));

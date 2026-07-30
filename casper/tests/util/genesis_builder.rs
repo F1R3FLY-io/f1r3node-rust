@@ -76,6 +76,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
+/// `(accesses, misses)` of [`GENESIS_CACHE`], for tests that need the cache's behaviour as a
+/// VALUE rather than as a `println!`.
+///
+/// Exposed because the miss/access ratio is independent evidence about vault ordering: the cache
+/// is keyed on the whole [`GenesisParameters`] tuple, which embeds `Genesis.vaults` **in order**,
+/// so a repeated call with logically identical parameters can only hit if that order is stable.
+/// See `casper/tests/genesis/genesis_vaults_order_determinism.rs`.
+pub fn genesis_cache_stats() -> (u64, u64) {
+    (
+        CACHE_ACCESSES.load(Ordering::SeqCst),
+        CACHE_MISSES.load(Ordering::SeqCst),
+    )
+}
+
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
 }
@@ -194,12 +208,39 @@ impl GenesisBuilder {
             }
         }
 
-        let vaults: Vec<Vault> = genesis_vaults
+        // ★★ LOAD-BEARING SORT — the `vaults` ORDER IS CONSENSUS-VISIBLE.
+        //
+        // `bonds` is a `HashMap`, so `bonds.iter()` yields a per-instance RANDOM order
+        // (`RandomState::new()` bumps a thread-local seed for every map constructed, so even
+        // two maps with identical contents in ONE process iterate differently). That order
+        // is not cosmetic: `VaultsGenerator::create_from_user_vaults`
+        // (`casper/src/rust/genesis/contracts/vaults_generator.rs:18-28`) renders this `Vec`
+        // POSITIONALLY into Rholang SOURCE TEXT — `("<base58>", <balance>), …` — which
+        // becomes `DeployData.term`, is signed, seeds the deploy RNG, and is executed in
+        // that order by `compute_genesis`. Nothing downstream re-sorts it. Left unsorted,
+        // the test genesis therefore produces a DIFFERENT `post_state_hash` on every build
+        // from byte-identical inputs, and `GENESIS_CACHE` (keyed on `GenesisParameters`,
+        // which embeds `Genesis.vaults` in order) misses on every call and rebuilds.
+        //
+        // The key is `to_base58()` deliberately: that string is exactly what is emitted into
+        // the deploy term, so ordering by it orders the consensus artifact itself rather
+        // than some incidental in-memory representation. Only the bond-derived TAIL is
+        // sorted — `genesis_vaults` is an ordered `Vec` whose positions callers rely on.
+        //
+        // ⚠ The sibling copy of this function in
+        // `casper/src/rust/test_utils/util/genesis_builder.rs` needs the same sort.
+        //
+        // ⚠ PRODUCTION CONSTRAINT (not a defect, but consensus-visible): outside tests the
+        // `vaults` order comes from `wallets.txt` LINE ORDER — `VaultParser::parse`
+        // (`casper/src/rust/util/vault_parser.rs:37-49`) pushes one `Vault` per line into a
+        // `Vec` and never sorts. It is deterministic per node but NOT canonical across
+        // nodes: two operators whose `wallets.txt` list the same vaults in a different order
+        // compute a DIFFERENT genesis (different `post_state_hash`, hence a different
+        // `block_hash`) and will not agree in the genesis ceremony. `wallets.txt` is part of
+        // the shard's agreed configuration, byte-for-byte, line order included.
+        let mut bond_vaults: Vec<Vault> = bonds
             .iter()
-            .map(|(_, pk)| Self::predefined_vault(pk))
-            .collect::<Vec<Vault>>()
-            .into_iter()
-            .chain(bonds.iter().map(|(pk, _)| {
+            .map(|(pk, _)| {
                 // Initial validator vaults contain 0 Rev
                 VaultAddress::from_public_key(pk)
                     .map(|vault_address| Vault {
@@ -207,8 +248,50 @@ impl GenesisBuilder {
                         initial_balance: 0,
                     })
                     .expect("GenesisBuilder: Failed to create rev address")
-            }))
+            })
             .collect();
+        bond_vaults.sort_by(|a, b| a.vault_address.to_base58().cmp(&b.vault_address.to_base58()));
+
+        let vaults: Vec<Vault> = genesis_vaults
+            .iter()
+            .map(|(_, pk)| Self::predefined_vault(pk))
+            .collect::<Vec<Vault>>()
+            .into_iter()
+            .chain(bond_vaults)
+            .collect();
+
+        // ★★ THE SECOND UNORDERED MEMBER OF `GenesisParameters`, and it was found by measurement,
+        // not by reading: after sorting `vaults` above, `GENESIS_CACHE` STILL missed 5 times out of
+        // 6 accesses. `ProofOfStake::validators` is collected from the same `bonds` `HashMap` and is
+        // part of the cache key, so it varied per call on its own.
+        //
+        // ⚠ Unlike the vaults order, this one does NOT reach `post_state_hash` or `block_hash` —
+        // it is masked downstream by the two load-bearing sorts S1
+        // (`genesis/contracts/proof_of_stake.rs::initial_bonds`, which orders the rendered
+        // `$$initialBonds$$` map) and S2 (`genesis/genesis.rs::bonds_proto`, which orders
+        // `F1r3flyState::bonds`). So this sort is NOT a consensus fix and must not be mistaken for
+        // one; production still relies entirely on S1/S2, because production builds `validators`
+        // from its own `HashMap`s (`engine/approve_block_protocol.rs:167`,
+        // `engine/block_approver_protocol.rs:199`) and this file is test-only.
+        //
+        // What it does fix is the TEST CACHE: `GenesisParameters` is the `DashMap` key, so an
+        // unordered member there means logically identical parameters hash differently and every
+        // call rebuilds the whole genesis block.
+        //
+        // The key is `pk.bytes`, chosen to MATCH S1's and S2's key exactly. That makes this sort
+        // idempotent with respect to both, so the rendered Rholang and the block body are
+        // byte-identical to what they were before — this changes cache behaviour and nothing else.
+        // Pinned by `the_rendered_initial_bonds_map_is_stable_even_though_validators_is_not_sorted`
+        // and `validator_order_is_stable_and_agrees_with_the_downstream_sorts` in
+        // `casper/tests/genesis/genesis_vaults_order_determinism.rs`.
+        let mut validators: Vec<Validator> = bonds
+            .into_iter()
+            .map(|(pk, stake)| Validator {
+                pk: pk.clone(),
+                stake: *stake,
+            })
+            .collect();
+        validators.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
 
         (validator_key_pairs, genesis_vaults, Genesis {
             shard_id: "root".to_string(),
@@ -222,13 +305,7 @@ impl GenesisBuilder {
                 epoch_length: 1000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
-                validators: bonds
-                    .into_iter()
-                    .map(|(pk, stake)| Validator {
-                        pk: pk.clone(),
-                        stake: *stake,
-                    })
-                    .collect(),
+                validators,
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
                 max_cosigners_per_deploy:

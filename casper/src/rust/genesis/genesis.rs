@@ -204,6 +204,31 @@ impl Genesis {
 
         assert!(failed_deploys.is_empty(), "Failed deploys found");
 
+        // ★★ S3 — A LOAD-BEARING SORT, AND THE ONE NOBODY HAD NAMED. ⚠ DO NOT REMOVE, AND
+        // DO NOT "FIX" IT HERE.
+        //
+        // What it masks: the PER-DEPLOY RSPACE EVENT LOG ORDER. `deploy.deploy_log` is the
+        // sequence of RSpace comm/produce/consume events the deploy generated while
+        // executing. Canonicalising it by encoded-proto bytes here is only necessary because
+        // the order it ARRIVES in is not stable — which means per-deploy event ordering is
+        // itself nondeterministic. That is a strictly larger statement than the vaults/bonds
+        // ordering problems (S1/S2): those have one identifiable unordered container each,
+        // whereas this one is produced by the interpreter's own evaluation, so the source of
+        // the variance has not been localised.
+        //
+        // Why removing it would be a consensus break: `deploy_log` is part of
+        // `ProcessedDeploy`, `ProcessedDeploy` is part of `Body.deploys`, and `Body` is
+        // hashed into the **`block_hash`**. An unsorted log therefore yields a different
+        // genesis block hash per run, and the genesis ceremony's `block_approver_protocol`
+        // comparison would reject a block it should have accepted.
+        //
+        // ⚠ REPORTED, NOT REPAIRED. Two things are unknown and must not be guessed at from
+        // this line: (1) WHERE the event order becomes nondeterministic, and (2) whether the
+        // replay path applies the same canonicalisation, since a play/replay asymmetry here
+        // would be a `ReplayFailure` rather than a hash mismatch. Until both are answered,
+        // this sort is the thing keeping genesis reproducible and must stay exactly as it is.
+        // It needs its own work item; it is NOT in scope for the vaults-determinism fix that
+        // added S1/S2's documentation.
         let sorted_deploys = processed_deploys
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
@@ -230,6 +255,34 @@ impl Genesis {
         proto_util::unsigned_block_proto(body, header, Vec::new(), genesis.shard_id.clone(), None)
     }
 
+    /// ★★ **S2 — A LOAD-BEARING SORT. Do not remove it.**
+    ///
+    /// # What it masks
+    ///
+    /// The same unordered source as **S1**
+    /// ([`super::contracts::proof_of_stake::ProofOfStake::initial_bonds`]):
+    /// `ProofOfStake::validators` is collected straight out of a `HashMap` at both production
+    /// construction sites — `engine/approve_block_protocol.rs:167` (from
+    /// `BondsParser::parse_with_autogen`) and `engine/block_approver_protocol.rs:199` (from
+    /// `block_bonds: HashMap<Bytes, i64>`) — so its order is random per map instance.
+    ///
+    /// # Why removing it would be a consensus break
+    ///
+    /// The `Vec<Bond>` this returns becomes `F1r3flyState::bonds`, which sits in `Body.state`
+    /// and is hashed into the **`block_hash`**. `BlockApproverProtocol` then compares a
+    /// candidate genesis against its own locally computed expectation; an unsorted bonds list
+    /// makes that comparison fail on ordering alone, so no node would ever approve another
+    /// node's genesis.
+    ///
+    /// # ⚠ S1 and S2 are two independent repairs of ONE defect
+    ///
+    /// They canonicalise the same random order for two different digests — S1 for
+    /// `post_state_hash` (via rendered Rholang source), S2 for `block_hash` (via the block
+    /// body). Because either alone makes a *local* run look self-consistent, it is tempting to
+    /// read one as redundant. It is not: **deleting either INTRODUCES a consensus break that
+    /// was always latent** (the `f5b2e820` lesson). The real fix is to canonicalise
+    /// `validators` at its unordered source — a `BTreeMap`, or a `Vec` sorted at parse time —
+    /// after which both sorts become provably redundant and can be retired together.
     fn bonds_proto(proof_of_stake: &ProofOfStake) -> Vec<Bond> {
         let mut bonds: Vec<_> = proof_of_stake
             .validators
