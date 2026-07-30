@@ -437,30 +437,65 @@ pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
         .collect()
 }
 
-/// The set union of two byte-per-index `locally_free` bitsets, in **canonical**
-/// form (no trailing clear byte — see [`crate::canonical_bit_vector`]).
+/// The set union of two byte-per-index `locally_free` bitsets.
 ///
-/// # Why the canonicalisation is here even though this function cannot create the
-/// defect
+/// # ★ Canonical-PRESERVING, and deliberately NOT canonical-ISING
 ///
-/// Given two *canonical* operands the element-wise `OR` already produces a
-/// canonical result, and that is a proof: `max_len` is the length of the longer
-/// operand, whose last byte is non-zero by hypothesis, and `x | 0 = x`, so
-/// `result[max_len - 1] != 0`. What this function *could* do is **propagate** a
-/// non-canonical operand, and non-canonical operands are reachable — `Par
-/// .locally_free` is proto tag 9 (`bytes`) and a peer may send `[0]`, which the
-/// decoder accepts verbatim as it must.
+/// Given two *canonical* operands (no trailing clear byte — see
+/// [`crate::canonical_bit_vector`]) the element-wise `OR` produces a canonical
+/// result, and that is a proof rather than an observation: `max_len` is the length
+/// of the longer operand, whose last byte is non-zero by hypothesis, and
+/// `x | 0 = x`, so `result[max_len - 1] != 0`. ⇒ **this function cannot create the
+/// second spelling of `∅`.**
 ///
-/// So the postcondition is stated **unconditionally** ("canonical whatever it is
-/// given") rather than conditionally ("canonical if its inputs were"). A
-/// conditional postcondition is one a caller has to discharge, and the callers
-/// are folds — `ParSet::update_locally_free`, `ParMap::update_locally_free`,
-/// `EntryTrie::insert_entry` — where a single non-canonical element would
-/// otherwise contaminate the accumulator for the rest of the fold.
+/// What it *can* do is **propagate** one, and this is where the postcondition
+/// stops. It was strengthened to an unconditional *"canonical whatever it is
+/// given"* — one `crate::canonical_bit_vector(result)` on the way out — and that
+/// version was **REVERTED**, because it is a consensus-visible change and not
+/// this function's to make.
 ///
-/// `models/tests/bit_vector_canonicity.rs` pins both halves: the full cross
-/// product of the member lattice on `0..5` (1,024 pairs) and the non-canonical
-/// operand cases.
+/// ## ⚠⚠ The witness, measured — not an argument about what might happen
+///
+/// `rholang/tests/reduce_spec.rs::
+/// eval_of_to_byte_array_method_on_any_process_should_substitute_before_serialization`
+/// drives `toByteArray` over a substituted `New`. With the canonicalisation in
+/// place, the produced byte array LOST three bytes and the RSpace produce hash
+/// moved:
+///
+/// ```text
+///   canonical-preserving (this)   34,19,8,2,18,15,58,10,10,8,10,6,10,4,"zero",74,1,0
+///   canonical-ising (reverted)    34,16,8,2,18,12,58,10,10,8,10,6,10,4,"zero"
+///                                                                      └─ 74,1,0 =
+///                                        proto tag 9 (`Par.locally_free`), len 1, [0]
+///
+///   Produce hash   700b1b17bee9d8db61f3c4d14dd82bdbd9ac9c6a01fc2e314c80b609b9895ecc
+///              →   687a3de517a3ad84c10e2513e7d12a9684e56dc2c30d8b8f0e9ab6e57f39c17f
+/// ```
+///
+/// Two length prefixes moved with it (19→16, 15→12). ⇒ **A different channel hash
+/// for the same value**, i.e. a hard fork if one node canonicalises and another
+/// does not.
+///
+/// ## Why that is a decision and not a bug
+///
+/// `[0]` and `[]` denote the same member set, `<Par as PartialEq>::eq` **ignores**
+/// `locally_free`, and the protobuf wire **retains** it (proto tag 9). So the two
+/// spellings are one value with two encodings and two channel hashes — a real
+/// latent inconsistency, and canonicalising is the *correct* resolution of it.
+/// It is also a **state-hash change for every block containing such a term**, which
+/// is F1r3node's coordinated decision, not an incidental one.
+///
+/// The producer side is where the repair belongs and it is one line:
+/// `rholang/src/rust/interpreter/substitute_combine.rs:63`'s `set_bits_until`
+/// truncates at a POSITION, so `set_bits_until([0, 1], 1) = [0]` — it can cut away
+/// the only set byte and leave clear bytes behind, and it feeds `union` at eleven
+/// sites in that file. `filter_and_adjust_bitset` (the suffix twin) cannot.
+///
+/// ⇒ The law lives in [`crate::create_bit_vector`], which is byte-neutral and
+/// landed; this function keeps the behaviour it had, and
+/// `models/tests/bit_vector_canonicity.rs::
+/// canonicalising_union_would_move_consensus_bytes` holds the witness executable so
+/// the decision has its evidence attached rather than being re-derived.
 pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
     let max_len = bitset1.len().max(bitset2.len());
     let mut result = vec![0; max_len];
@@ -471,7 +506,7 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
         result[i] = bit1 | bit2;
     }
 
-    crate::canonical_bit_vector(result)
+    result
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]

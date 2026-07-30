@@ -69,6 +69,13 @@
 //!    a divergence. It is a residual, and [`the_wire_ingress_residual_is_real`]
 //!    exhibits it so that it is a measured fact rather than an assumption.
 //!
+//! 1b. ★★★ **`union` PROPAGATES a non-canonical operand, and stopping it is a
+//!    CONSENSUS CHANGE.** That was built, measured and reverted:
+//!    `reduce_spec::eval_of_to_byte_array_…_substitute_before_serialization` went
+//!    RED with three bytes of `Par` and an RSpace produce hash moving.
+//!    [`canonicalising_union_would_move_consensus_bytes`] carries the witness.
+//!    ⇒ the law landed here is `create_bit_vector`'s, which is byte-neutral.
+//!
 //! 2. **`rholang`'s own producers.** Two exist and this crate cannot reach them.
 //!    [`the_rholang_producers_are_named_with_their_verdicts`] records both, with
 //!    the verdict *derived by executing the same arithmetic* rather than
@@ -239,11 +246,14 @@ fn canonicalisation_is_idempotent_and_preserves_the_member_set() {
 /// `union` over the FULL cross product of the lattice: canonical in, canonical
 /// out, and the member set is the set union.
 ///
-/// ⚠ `union` could not *create* a trailing clear byte from two canonical
-/// operands even before this change — the longer operand's last byte is
-/// non-zero and `x | 0 = x`. It could *propagate* one, and this test pins the
-/// stronger property (canonical **whatever** it is given), which is what makes
-/// the ingress repair above composable.
+/// ★ This is `union`'s real postcondition and it is **conditional**: canonical
+/// operands give a canonical result, because `max_len` is the longer operand's
+/// length, its last byte is non-zero by hypothesis, and `x | 0 = x`. So `union`
+/// cannot *create* the second spelling of `∅`.
+///
+/// ⚠ It can *propagate* one, and the unconditional version — one
+/// `canonical_bit_vector` on the way out — was **built, measured, and REVERTED**.
+/// See [`canonicalising_union_would_move_consensus_bytes`].
 #[test]
 fn union_is_canonical_on_the_full_cross_product() {
     let lattice = member_lattice(5);
@@ -271,20 +281,132 @@ fn union_is_canonical_on_the_full_cross_product() {
     }
 }
 
-/// ★ `union` given a NON-canonical operand still returns canonical bytes. This
-/// is the case the old implementation got wrong, and it is reachable from wire
-/// ingress (see §4) rather than only from a constructor.
+/// ★★★ **`union` PROPAGATES a non-canonical operand, and making it stop is a
+/// CONSENSUS CHANGE. Measured, then reverted.**
+///
+/// # What was built
+///
+/// One line at the end of `models/src/rust/utils.rs::union`:
+/// `crate::canonical_bit_vector(result)`. It strengthens the postcondition from
+/// *"canonical if its operands were"* to *"canonical whatever it is given"*, which
+/// is the property that would make the wire-ingress residual of §4 harmless.
+///
+/// # What it moved
+///
+/// `rholang/tests/reduce_spec.rs::
+/// eval_of_to_byte_array_method_on_any_process_should_substitute_before_serialization`
+/// went RED, and the diff is not incidental — it is three bytes of `Par` and a
+/// different RSpace produce hash:
+///
+/// ```text
+///   before (this behaviour)  34,19,8,2,18,15,58,10,10,8,10,6,10,4,'z','e','r','o',74,1,0
+///   after  (reverted)        34,16,8,2,18,12,58,10,10,8,10,6,10,4,'z','e','r','o'
+///                                                                 └────────────┘
+///                            74 = (9<<3)|2 = proto tag 9 `Par.locally_free`,
+///                            len 1, payload [0] — the second spelling of ∅
+///
+///   Produce hash  700b1b17bee9d8db61f3c4d14dd82bdbd9ac9c6a01fc2e314c80b609b9895ecc
+///             →   687a3de517a3ad84c10e2513e7d12a9684e56dc2c30d8b8f0e9ab6e57f39c17f
+/// ```
+///
+/// The two enclosing length prefixes moved with it (19→16 and 15→12), which is
+/// what makes this **not** catchable by a length-only check in one direction and
+/// exactly what makes it a fork: a node that canonicalises and a node that does
+/// not compute different channel hashes for the same value.
+///
+/// # Why it is reverted rather than kept
+///
+/// `[0]` and `[]` denote the same member set; `<Par as PartialEq>::eq` **ignores**
+/// `locally_free`; the protobuf wire **retains** it. So the two spellings are one
+/// value with two encodings — a real latent inconsistency, and canonicalising is
+/// the *correct* resolution. It is also a **state-hash change for every block
+/// containing such a term**. That is a coordinated protocol decision, not an
+/// incidental one, and this crate does not get to make it as a side effect of
+/// tidying a constructor.
+///
+/// ⇒ [`models::create_bit_vector`]'s fix is landed (byte-neutral — the only input
+/// whose answer changes is `&[]`, which no production call site passes). `union`
+/// keeps its behaviour. **This test holds the evidence executable** so whoever
+/// takes the decision has the witness rather than a paragraph.
+///
+/// # Where the producer-side repair belongs
+///
+/// `rholang/src/rust/interpreter/substitute_combine.rs:63`,
+/// `set_bits_until(bits, until) = bits.into_iter().take(until).collect()`. It
+/// truncates at a **position**, so `set_bits_until([0, 1], 1) = [0]` — it cuts away
+/// the only set byte and leaves clear bytes behind — and it feeds `union` at eleven
+/// sites in that one file. Wrapping *its* return in `canonical_bit_vector` fixes the
+/// source instead of the accumulator, and moves the same bytes, so it carries the
+/// same decision.
 #[test]
-fn union_canonicalises_a_non_canonical_operand() {
+fn canonicalising_union_would_move_consensus_bytes() {
+    // 1. `union` PROPAGATES, which is the behaviour under decision.
     assert_eq!(
         union(vec![0], vec![]),
-        Vec::<u8>::new(),
-        "union([0], []) must be [] — [0] denotes ∅ and so does [], and the OR of two empty sets \
-         is the empty set"
+        vec![0u8],
+        "★ `union` no longer propagates a non-canonical operand. If this now answers `[]`, the \\
+         canonicalisation has been RE-APPLIED — and it moves `Par` bytes and RSpace produce \\
+         hashes. See this test's documentation for the measured witness; it is a coordinated \\
+         protocol decision, not an incidental one."
     );
-    assert_eq!(union(vec![0, 1, 0, 0], vec![]), vec![0u8, 1]);
-    assert_eq!(union(vec![], vec![0, 0, 0]), Vec::<u8>::new());
-    assert_eq!(union(vec![1, 0], vec![0, 0]), vec![1u8]);
+    assert_eq!(union(vec![0, 1, 0, 0], vec![]), vec![0u8, 1, 0, 0]);
+    assert_eq!(union(vec![], vec![0, 0, 0]), vec![0u8, 0, 0]);
+    assert_eq!(union(vec![1, 0], vec![0, 0]), vec![1u8, 0]);
+
+    // 2. and it is CANONICAL-PRESERVING, which is the property that makes the
+    //    producer-side repair sufficient on its own: fix every producer and the
+    //    accumulator needs no rule at all.
+    for a_idx in member_lattice(4) {
+        for b_idx in member_lattice(4) {
+            let u = union(create_bit_vector(&a_idx), create_bit_vector(&b_idx));
+            assert!(
+                is_canonical(&u),
+                "union of two CANONICAL operands ({a_idx:?}, {b_idx:?}) is {u:?}, which ends in \\
+                 a clear byte. That would break the argument that a producer-side repair is \\
+                 sufficient."
+            );
+        }
+    }
+
+    // 3. ★ THE MOVEMENT, exhibited on the wire in this process. The two spellings
+    //    of ∅ serialise to different `Par` bytes, which is the whole reason the
+    //    choice between them is consensus-visible.
+    use models::rhoapi::Par;
+    use prost::Message;
+
+    let non_canonical = Par {
+        locally_free: union(vec![0], vec![]),
+        ..Default::default()
+    };
+    let canonical = Par {
+        locally_free: canonical_bit_vector(union(vec![0], vec![])),
+        ..Default::default()
+    };
+    assert_eq!(
+        non_canonical, canonical,
+        "control: the two Pars are EQUAL — `<Par as PartialEq>::eq` ignores `locally_free`"
+    );
+    let a = non_canonical.encode_to_vec();
+    let b = canonical.encode_to_vec();
+    assert_ne!(
+        a, b,
+        "★ two EQUAL Pars must serialise DIFFERENTLY here, or the movement this test documents \\
+         could not happen"
+    );
+    assert_eq!(
+        a,
+        vec![74u8, 1, 0],
+        "the non-canonical spelling is proto tag 9, length 1, payload [0]"
+    );
+    assert!(
+        b.is_empty(),
+        "the canonical spelling writes nothing at all — `bytes` is skipped at its default"
+    );
+    assert_eq!(
+        a.len() - b.len(),
+        3,
+        "the movement is exactly the three bytes `74, 1, 0` that `reduce_spec` lost"
+    );
 }
 
 // ---------------------------------------------------------------------------
