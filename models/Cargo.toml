@@ -228,6 +228,13 @@ name = "wire_encode_space"
 path = "tests/wire_encode_space.rs"
 
 [[test]]
+# The prost encoder's space gate. `prost_encode.rs`'s §3 header claimed this file already
+# pinned its four space quantities; it did not exist, and `op_size`/`frame_size` had zero
+# references workspace-wide. Phase 4 names it as the gate blocking its start.
+name = "prost_encode_space"
+path = "tests/prost_encode_space.rs"
+
+[[test]]
 name = "wire_schema_conformance"
 path = "tests/wire_schema_conformance.rs"
 
