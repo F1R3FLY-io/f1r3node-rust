@@ -86,7 +86,7 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 46 consensus-visible changes** — 33 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
+**Result: 47 consensus-visible changes** — 34 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
 Of these, **43 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
 lost. On the bincode lane **23** entries move bytes; on the protobuf lane **23**; **23** move a
 *verdict*; **32** move the *post-state hash*; **13** move *acceptance*; **2** move *metering*.
@@ -597,6 +597,7 @@ is a *future* fork, not a present one).
 | [CBR-030](#cbr-030) | N | `NonNegativeNumber.rho`'s overflow guard becomes **total** — the genesis term moves | `e3a4494b`, `719f2432` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ? | ○ | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-032](#cbr-032) | N | The binder shift emitted the shifted **position** as the **value** | `084c93b5` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **M** |
+| [CBR-033](#cbr-033) | N | A resting send carries its reason — a diagnostic proven **off** the byte path | `8fc9afc9` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -611,27 +612,27 @@ is a *future* fork, not a present one).
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 
-**Totals — 46 entries**, recounted from the rows above rather than adjusted: **33 on Surface N, 13 on
-Surface L**; **44 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **35 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction: **29 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 47 entries**, recounted from the rows above rather than adjusted: **34 on Surface N, 13 on
+Surface L**; **45 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **35 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 2 NEUTRALITY-MEASURED. By direction: **29 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 3 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **2** — **CBR-L07** metering
 and **CBR-031** verdict.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 46 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 47 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 46 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 47 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**46**, which is the arithmetic check that no row was double-counted or dropped.
+**47**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -4292,6 +4293,182 @@ half drifts, so the claim is falsifiable from the side that was not changed.
 
 ---
 
+### CBR-033
+
+**A resting send is given its reason — and the reason is proven to be off the consensus byte path rather
+than assumed to be.**
+
+| | |
+|---|---|
+| Commit(s) | `8fc9afc9` — *feat(interpreter): a stuck term that carries its reason — resting is UNCHANGED, silence is not* |
+| Status | LANDED |
+| Direction | NEUTRAL |
+| Evidence grade | **NEUTRALITY-MEASURED** |
+| Files | `rholang/src/rust/interpreter/rest_diagnosis.rs` (new), `rholang/src/rust/interpreter/storage/storage_printer.rs` (one new function), `rholang/src/rust/interpreter/mod.rs`, `rholang/tests/rest_diagnosis_gives_a_stuck_send_its_reason.rs` (new) |
+
+#### (a) The issue
+
+An arity-mismatched send **rests silently**: no error, no diagnostic, the program simply blocks. That
+silence concealed a genesis contract invocation that was **two parameters out of date for the entire life
+of the harness**, discovered only when `92a6f36c` `e6525fbf` `a36cb019` `ff773073` made sixteen
+previously-never-executing genesis suites actually run.
+
+★ **The defect is the silence, not the resting.** In the rho-calculus a send with no matching receive
+rests, and that is the calculus rather than an error. `storage_printer::pretty_print_unmatched_sends`
+already renders the resting term; what no surface could say was **why** it was resting — indistinguishable,
+from outside, from a send legitimately waiting for a receive that has not arrived yet.
+
+⚠ **This entry is in the register although every axis reads `NO`.** It is in the obligation set — it touches
+`rholang/src/rust/interpreter/**` — and the claim *"nothing moves"* is the entry's content, which is what
+[§2.7](#27-evidence-grade--and-the-word-potentially)'s **NEUTRALITY-MEASURED** grade exists for.
+[CBR-019](#cbr-019) is the precedent.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — nothing in the reduction relation, the normalizer or the matcher was touched. The analysis is a reader. |
+| 2 · verdict | **NO** — ★ and this is the axis the design is *for*: an arity-mismatched send **still rests**. Changing it to an error would change which programs are accepted, which is the consensus break this entry deliberately does not make. |
+| 3 · bytes (Lane B, bincode) | **NO** — nothing is encoded. No `.proto` field, no wire-table row, no serializer changed. |
+| 3 · bytes (Lane P, prost) | **NO** — same. |
+| 4 · post-state hash | **NO** — **MEASURED**, three-armed (below). Not derived from "it only reads", because that is exactly the claim the measurement refutes for the *sibling* API. |
+| 5 · accepted programs | **NO** — ★ the strongest statement in this table. Every test asserts `EvaluateResult::errors.is_empty()`, so "resting is still resting" is *gated*, not intended. |
+| 6 · metering | **NO** — no `Cost`, no `charge`, no phlogiston. |
+
+**The disagreement.** ★ **There is none, and the reason is structural rather than intentional.** Six
+properties, each independently checkable:
+
+1. **No consensus-path call site.** The analysis is **pull-based**. Nothing in `Interpreter::inj_attempt`,
+   `Reduce::eval`, `RhoRuntimeImpl::evaluate` or the `casper` block pipeline calls it.
+2. **The surface it joins was already off the path, and its callers are a closed set** —
+   `rholang/src/rholang_cli.rs` (the developer CLI), `node/src/rust/api/repl_grpc_service.rs` (the REPL
+   service) and tests. There is no `casper` caller of `storage_printer`.
+3. **It cannot write.** It takes `&`-references into a *cloned* snapshot and returns owned values.
+4. **It cannot change control flow.** No entry point returns `Result`, so no caller can `?` on it and none
+   can make a deploy fail with it.
+5. **It never touches `EvaluateResult`** (`rholang/src/rust/interpreter/interpreter.rs:26`). `errors`
+   decides whether a deploy is recorded as failed and `cost` is metering; both are consensus-visible, and
+   this is the clause that rules out the tempting wiring.
+6. **It levies no charge.**
+
+⚠★ **Two traps found while establishing (3), and both are recorded because both are traps rather than
+trivia.**
+
+* `HotStore::to_map` (`rspace++/src/rspace/hot_store.rs:653`) takes a **read** lock and clones: no history
+  fill, no write. Its sibling `HotStore::get_data` (`rspace++/src/rspace/hot_store.rs:354`) takes a
+  **write** lock and inserts a history fill into the hot state, which `changes()` then emits as a store
+  action. ⇒ The *obvious* per-channel API mutates the state that becomes the checkpoint and the whole-map
+  API does not. **"It only reads" is a property of the specific API, not of reading.** The module uses only
+  `to_map`.
+* `RhoRuntime::evaluate_with_term` seeds a deploy with `Blake2b512Random::create_from_length(128)`, whose
+  body is `rand::thread_rng().fill(&mut bytes[..])`
+  (`crypto/src/rust/hash/blake2b512_random.rs:91`) — **nondeterministic**. A two-arm before/after
+  comparison of the post-state root therefore reports *"the diagnostic moved the state hash"* when nothing
+  of the sort happened. The first draft of the consensus guard did exactly that and went RED on two unequal
+  roots. **This is a warning to anyone else measuring a post-state root in this repository.**
+
+**Blast radius.** *Of the change:* nothing on the consensus path. *Of the capability:* every developer and
+harness that runs a program which rests — which is the point.
+
+**Could live chain state have been produced under the old behaviour?** **Not applicable in the usual
+direction, and the interesting answer is the other one.** No state was produced *by* this change. State
+was produced *under the silence*: the genesis suites named in (a) passed while a contract invocation was
+two parameters out of date, and that is recorded against the contract-side repair rather than here. This
+entry is what makes the next instance loud.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Nothing *breaks* — which is precisely the problem, and it is why
+the silence persisted for the whole life of a harness. A blocked program and a correctly-waiting program
+are the same observation, so a wrong arity is invisible until someone reads the tuplespace by hand and
+counts. The cost is not a fault at runtime; it is that a whole class of defect has **no detector**.
+
+**Why this repair rather than the alternatives.** Four were available:
+
+1. *Make an arity-mismatched send an error.* **Rejected, and it is the alternative the owner ruling below
+   forbids by implication:** it changes which programs are accepted. A program upstream accepts must be
+   accepted.
+2. *Emit at the `produce` site when no COMM results.* Rejected on the ground already recorded in
+   `reduce.rs`'s own comment at that arm: a produce with no matching consumer *"fires for an internal send
+   awaiting a future receive (whose rendezvous IS the COMM step) just as much as for a truly-resting
+   output, and the order is non-deterministic — so emitting here would spuriously show consumed sends."*
+   The reason only becomes *true* once reduction has finished.
+3. *Add a field to `EvaluateResult`.* Rejected: `errors` and `cost` are consensus-visible and a third field
+   travels with them through the `casper` pipeline. See (b)(5).
+4. *Call the analysis automatically at the end of `evaluate`.* Rejected **on the strength of the argument's
+   form, not its conclusion.** The call would in fact be safe today — `to_map` is read-only and the emission
+   is `tracing` — but its safety would be *contingent* on a function in a crate this work does not own
+   continuing not to fill a cache. A pull-based API's invisibility proof is **structural**: there is no
+   execution on the consensus path to have an effect. Given a choice between a contingent proof and a
+   structural one on a consensus interpreter, the structural one wins, and the cost is that the CLI and the
+   genesis harness must adopt one call each.
+
+**Authority.** Owner ruling, verbatim (2026-07-29): *"We can handle errors better than upstream Rholang,
+do not necessarily restrict your options to what upstream supports. We should support everything upstream
+supports correctly, but should fix any bugs that upstream has and make it more debuggable (e.g. better
+error handling, more specific and clearer error messages, etc.)"* ⇒ **Upstream is a floor on SEMANTICS, not
+a ceiling on DIAGNOSTICS.** What is binding: a program upstream accepts must be accepted, and it must
+compute the same value. What is free: how a failure is reported, how specific the message is, what
+provenance it carries, and whether a disposition is richer than upstream's. **CITED**.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 5 on the axis of *rest classes of a resting term*, of
+which 3 are diagnosable with the instrument available and 2 are not.** The axis is **derived**: it is the
+case analysis of `(data present?) × (continuation present at this key?) × (arity admissible?)` over a
+store row, and `diagnose_row`'s `match`
+(`rholang/src/rust/interpreter/rest_diagnosis.rs:349`) is total over the same product, so a case cannot be
+lost by omission.
+
+| # | rest class | named by the work item? | diagnosed |
+|---|---|---|---|
+| 1 | an **arity-mismatched** send — no bind will take this many payloads, ever | yes (#169) | ✔ `ArityMismatch` |
+| 2 | a send **nobody reads** — no continuation installed at the channel | yes (the sibling) | ✔ `NoReader` |
+| 3 | arities agree and the COMM still declines — the **pattern shapes** or a `where` guard refuse | **derived** | ✔ `ShapeOrGuardRefused` |
+| 4 | a `for` **nobody sends to** — the mirror of 2 | **derived** | ✘ instrument |
+| 5 | a **partially satisfied join** — `for (x <- a & y <- b)` with data only on `a` | **derived** | ✘ instrument |
+
+⚠ **Why 4 and 5 are not diagnosed, with the mechanism rather than a shrug.** `HotStore::to_map` iterates
+the **data** keys and looks up continuations at the same key. So a continuation resting on a channel that
+carries no data is absent from the snapshot **entirely**, and a continuation whose join is multi-channel is
+keyed under `[a, b]` and is therefore never found from the single-channel data key `[a]`. Making 4 and 5
+observable is a change to `HotStore::to_map`, in a crate this work does not own; it is **reported, not
+guessed at**, and a variant asserting them would have been a confident wrong answer.
+
+**★ The entry claims something needed no change — resting itself — and names the GUARD.** `rest_of`'s
+`assert!(result.errors.is_empty(), …)` runs on **every** row of the suite. If a future change made an
+arity mismatch fail instead of rest, every row fails there first and names the semantics that moved. That
+is the falsifier for the claim *"this entry does not change what programs are accepted"*, and it is the
+concrete form of [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5's remedy (b).
+
+#### Evidence
+
+- **RED against the status quo, and the status quo is a real implementation.** The guard was run with
+  `diagnose` returning `Vec::new()` — which **is** the pre-change behaviour, *no reason available* — and
+  9 of 10 rows failed. Verbatim: `a 2-payload send to a 3-name receive: expected exactly one resting site,
+  got 0: [] / left: 0 / right: 1` and `★ FLOOR for this guard: the treatment must actually ASK something.
+  An empty diagnosis would make the two roots equal for the wrong reason.` **MEASURED**.
+- ★★ **The post-state row is THREE-ARMED.** Two controls that ask nothing and one treatment that asks
+  through both entry points. The controls are compared **first**, so a nondeterministic harness fails as
+  *"the harness"* and never as *"the diagnostic is consensus-visible"*; then `treatment == control` on the
+  `Checkpoint::root`. **MEASURED** — and the arm ordering is not decoration: the two-arm version of this
+  row is what exposed the `thread_rng` seed.
+- **The floors, which are what stop the reason from being worthless.** A program that fully reduces rests
+  **nothing** (refuses a reason-finder that reports every channel); a shape refusal is **not** reported as
+  an arity mismatch (refuses one hard-coded to `ArityMismatch`); a remainder admits a surplus **and still
+  has a floor**, so `Admits::AtLeast(2)` and `Admits::Exactly(2)` are pinned against each other. ⚠ The
+  remainder row's first draft asserted the surplus alone and went RED with **zero** resting sites, because
+  that program *fires* — the premise was wrong, not the code, and the row now says so. **MEASURED**.
+- **Every row asserts the `RestReason` VALUE, not the message text.** The rendered message is checked once
+  and only for the numbers it must contain, so the wording stays free — diagnostics are not a consensus
+  surface — while a message that stopped naming the arities reddens. **MEASURED**.
+- `--test rest_diagnosis_gives_a_stuck_send_its_reason` **11/11**;
+  `--test storage_printer_renders_receive_guards` **5/5**; `--test interpreter_spec` **6/6** — the two
+  existing consumers of the surface this joins, run to show the new function is additive. **MEASURED**.
+- ⚠ **Two adoptions this entry does not make, because the files are not this work's.** One call in
+  `rholang/src/rholang_cli.rs`'s `print_storage_contents`, and one in the genesis harness. Until they land,
+  the capability exists and is exercised only by its own suite. **DERIVED**.
+
+---
+
 ## 4.4 Surface L — MeTTaIL's Rholang
 
 ⚠ **Read this section against a different clock.** MeTTaIL's Rholang does not run consensus today. A
@@ -5746,22 +5923,22 @@ to "design the literal", and that is a different work item with a different owne
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 46 |
+| Axis | Entries that move it | Share of the 47 |
 |---|---|---|
 | 1 · computed value | **20** | 43 % |
-| 2 · verdict | **24** | 52 % |
-| 3 · bytes — Lane B (bincode) | **23** | 50 % |
-| 3 · bytes — Lane P (prost) | **24** | 52 % |
-| 4 · post-state hash | **33** | 72 % |
+| 2 · verdict | **24** | 51 % |
+| 3 · bytes — Lane B (bincode) | **23** | 49 % |
+| 3 · bytes — Lane P (prost) | **24** | 51 % |
+| 4 · post-state hash | **33** | 70 % |
 | 5 · accepted programs | **13** | 28 % |
 | 6 · metering | **2** | 4 % |
 
-⚠ **Recounted 2026-07-30 from the 46 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
+⚠ **Recounted 2026-07-30 from the 47 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
 28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
 never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
 ★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 46 in every column, which is the check that no
+`●` counts per column, plus the `○` and `·` counts, sum to 47 in every column, which is the check that no
 row was skipped.
 
 **Reading.** The post-state hash is the most-touched axis, which is expected: it is downstream of both
@@ -5791,7 +5968,7 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-30 from the 46 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
+⚠ **Recounted 2026-07-30 from the 47 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
 
 | Direction | Count | Comment |
@@ -5799,11 +5976,11 @@ revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was adde
 | CORRECTIVE | **29** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
 | PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
-| NEUTRAL | **2** | **CBR-019**, **CBR-019b** — in the register because their neutrality is a measured claim. |
+| NEUTRAL | **3** | **CBR-019**, **CBR-019b**, **CBR-033** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **46** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **47** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -6811,8 +6988,8 @@ typed `Result<(), DriftBreach>` and every guard asserts on the value, following
 
 ## 8. Conclusions
 
-1. The register holds **46** consensus-visible changes, derived from the campaign record: **33** on the
-   F1r3node node, **13** on MeTTaIL's Rholang. **44 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **47** consensus-visible changes, derived from the campaign record: **34** on the
+   F1r3node node, **13** on MeTTaIL's Rholang. **45 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

@@ -41,7 +41,7 @@ unverified_budget = 2
 frontier_grace_days = 2
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
-# ENTRIES — 46. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
+# ENTRIES — 47. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
 # the gate re-projects §4.1's ●/○/·/? glyphs and asserts agreement cell by cell.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -537,6 +537,21 @@ axis_verdict = "MOVES"
 axis_bytes_bincode = "NO"
 axis_bytes_prost = "MOVES"
 axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-033"
+surface = "N"
+commits = ["8fc9afc9"]
+status = "LANDED"
+direction = "NEUTRAL"
+grade = "NEUTRALITY_MEASURED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
 axis_acceptance = "NO"
 axis_metering = "NO"
 
@@ -1341,6 +1356,46 @@ line = 103
 at = "HEAD"
 path = "rholang/src/rust/interpreter/matcher/fold_match.rs"
 token = "locally_free.is_empty"
+
+[[citation]]
+owner = "CBR-033"
+cited = "rholang/src/rust/interpreter/interpreter.rs"
+line = 26
+at = "HEAD"
+path = "rholang/src/rust/interpreter/interpreter.rs"
+token = "pub struct EvaluateResult"
+
+[[citation]]
+owner = "CBR-033"
+cited = "rspace++/src/rspace/hot_store.rs"
+line = 653
+at = "HEAD"
+path = "rspace++/src/rspace/hot_store.rs"
+token = "fn to_map"
+
+[[citation]]
+owner = "CBR-033"
+cited = "rspace++/src/rspace/hot_store.rs"
+line = 354
+at = "HEAD"
+path = "rspace++/src/rspace/hot_store.rs"
+token = "fn get_data"
+
+[[citation]]
+owner = "CBR-033"
+cited = "crypto/src/rust/hash/blake2b512_random.rs"
+line = 91
+at = "HEAD"
+path = "crypto/src/rust/hash/blake2b512_random.rs"
+token = "thread_rng"
+
+[[citation]]
+owner = "CBR-033"
+cited = "rholang/src/rust/interpreter/rest_diagnosis.rs"
+line = 349
+at = "HEAD"
+path = "rholang/src/rust/interpreter/rest_diagnosis.rs"
+token = "fn diagnose_row"
 
 [[citation]]
 owner = "CBR-L02"
