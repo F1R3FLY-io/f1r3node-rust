@@ -194,27 +194,83 @@ const WORKLOAD_SCALE: f64 = 2000.0;
 
 /// The acceptance threshold: `driven` must be at least this fraction of
 /// `derived`'s throughput on the weighted mix.
+///
+/// ## ⚠⚠★★ MEASURED 2026-07-30 — this floor FAILS at every configuration, and the
+/// ## 0.948×–0.962× on record is NOT reproduced by this harness
+///
+/// Four runs, alternating configuration, `taskset -c 8-15`, load 14.5–17.0, same
+/// binary shape, back to back:
+///
+/// ```text
+///   rep   k   median-of-rep   control drift   load
+///     1   0          0.6580           0.88%  16.87
+///     1   3          0.7454           0.30%  16.98
+///     2   0          0.8204           0.76%  15.44
+///     2   3          0.7143           1.90%  14.47
+/// ```
+///
+/// ★ **rep 1 says `k = 3` is +13.3%; rep 2 says it is −12.9%.** The ordering
+/// reverses, the intervals overlap, and the `k = 0` span alone is **24.7%**. ⇒ This
+/// instrument **does not resolve the descend budget**, and the deterministic `Ir`
+/// reading (−3.74% per node, `derived` arm invariant to +0.0000%) is the verdict.
+///
+/// ⚠ The floor fails at `k = 0` too — 0.6580 and 0.8204, both far below 0.90 — so
+/// **a failure here is not attributable to the budget.** It is a property of this
+/// harness, this host and this load.
+///
+/// ⚠★★ And the 0.948×–0.962× recorded elsewhere in this file came from the **2-arm**
+/// harness. Against a measured 3-arm `k = 0` span of 0.658–0.820 it reads like an
+/// upper-tail pair rather than a level, which is the same lesson as the ±0.005 that
+/// turned out to be luck: **a tight interval from few draws is not evidence of a
+/// tight measurement.** Absolute levels are not comparable across harness versions;
+/// only a contrast measured *within one harness* is, and even that did not survive
+/// replication here.
+///
+/// ## ★★★ What the INVARIANT CONTROL does and does NOT buy — measured, both ways
+///
+/// The control ([`clone_arms`], [`control_verdict`]) reads 0.30%–1.90% while the
+/// arms it is drawn from carry an 18–32% standard deviation. That is the paired
+/// design working exactly as claimed: the between-repetition load variance is
+/// common-mode and differences out.
+///
+/// ⚠ **But it measures WITHIN-run resolution only.** The `derived` arm is identical
+/// code in both builds and its mean moved **16.6%** between rep-1's two runs, and
+/// the paired *ratio* spans 24.7% at one configuration. So a control reading of
+/// 0.30% licenses "this run resolved 0.3%" and licenses **nothing** about whether a
+/// second run would agree. ⇒ A control is necessary and is not sufficient: it
+/// catches a broken instrument, not an irreproducible one. **Replicate the
+/// configuration, alternating, or do not make the claim.**
 const WALL_CLOCK_FLOOR: f64 = 0.90;
 
 /// ★★ **THE PRIMARY CRITERION**: the deterministic per-node instruction ratio,
 /// `Ir(driven) / Ir(derived)`, `fixture`-subtracted, from `TERM_OPS_ARM` under
 /// `cachegrind`.
 ///
-/// Measured at HEAD: **1.1740** (cachegrind), **1.1742** (`perf stat`) — two
-/// instruments, four significant figures. The ceiling is set at **1.20**, which is
-/// 2.2% of headroom over the measured value: enough that a rebuild or a compiler
-/// bump does not trip it, tight enough that a mechanism regression does.
+/// The ceiling is set at **1.20**. It was 2.2% of headroom over the value measured
+/// when it was set (1.1740); at `CLONE_DESCEND_BUDGET = 3` the measured value is
+/// **1.1079**, so the headroom is now 8.3% — deliberately not tightened, because
+/// the same mechanism re-measured across a rebuild moved 0.08% (1.1519 → 1.1510)
+/// and a ceiling that tracks the measurement stops being a gate.
 ///
 /// ⚠ **Not evaluated by this binary** — it needs `valgrind`, which is a separate
 /// process. The header records the exact command, and the number is quoted here so
-/// a reader comparing a fresh measurement has something to compare it *to*. ★ The
-/// criterion is falsifiable and has been seen to RESPOND: the walk elimination
-/// moved it 1.1740 → 1.1519 while wall clock moved the other way.
+/// a reader comparing a fresh measurement has something to compare it *to*.
+///
+/// ★ The criterion is falsifiable and has been seen to RESPOND **twice**, both
+/// times while the clock said something else or nothing at all:
+///
+/// | change | `Ir` ratio | paired wall clock |
+/// |---|---|---|
+/// | pre-form-B | 1.1740 | — |
+/// | form-B (walk elimination + leaf fast path) | 1.1519 | 0.954× → 0.885×, the WRONG way |
+/// | re-measured at HEAD before the budget | 1.1510 | — |
+/// | `CLONE_DESCEND_BUDGET = 3` | **1.1079** | a work reduction; no throughput claim |
 const IR_RATIO_CEILING: f64 = 1.20;
 
-/// The measured `Ir` ratio at the time the ceiling was set, so a drift is visible
-/// as a drift rather than as a pass.
-const IR_RATIO_MEASURED: f64 = 1.1740;
+/// The measured `Ir` ratio at HEAD, so a drift is visible as a drift rather than as
+/// a pass. ★ `Dr` 1.1876 and `Dw` 1.2143 at the same point; `derived` moved
+/// **+0.0000%** on all three counters, which is the deterministic invariant control.
+const IR_RATIO_MEASURED: f64 = 1.1079;
 
 fn gint(n: i64) -> Par {
     Par {
@@ -395,22 +451,100 @@ fn count_par_nodes(p: &Par) -> usize {
 // Statistics
 // ---------------------------------------------------------------------------
 
-/// The two clone arms, measured in the same repetitions and order-alternated:
-/// the derived oracle and the driven `<Par as Clone>::clone`.
+/// The clone arms, measured in the same repetitions and order-rotated: the derived
+/// oracle, the driven `<Par as Clone>::clone`, and ★ **an INVARIANT CONTROL**.
 ///
-/// ⚠ The release closure is load-bearing and UNTIMED: both arms produce owned
+/// ## ★★★ Why a third arm, and why it is a *duplicate* rather than a new workload
+///
+/// The instrument defect that shipped twice ([`paired`]) was invisible for a
+/// reason worth stating: the helper **had no test at all**, it was well-typed, and
+/// the acceptance test consumed its output — so the only thing a reviewer could
+/// check was its header, which carried a *correct* description of a paired design.
+/// Reassurance, not evidence. A third agent's invariant control later moved
+/// **+55%** while `criterion` reported `p < 0.05`.
+///
+/// `arms[2]` is `oracle_clone_par` **again** — the same function on the same
+/// workload as `arms[0]`, in the same repetitions. Its true ratio is **exactly
+/// 1.000 by construction**, so whatever it reads is pure instrument error measured
+/// *in the run that produced the treatment reading*. A separate synthetic workload
+/// would not have that property: it would have its own footprint, its own cache
+/// behaviour and its own true ratio, and a deviation could not be attributed.
+///
+/// ⇒ [`control_verdict`] refuses the run when the control moves. **A treatment
+/// reading taken in a run whose control moved is void, not weak.**
+///
+/// ⚠ The release closure is load-bearing and UNTIMED: every arm produces owned
 /// `Par`s, and `drop_in_place::<Par>` is itself Θ(depth) (gate subject
-/// `par_drop`), so timing the teardown would add the same large term to both arms
+/// `par_drop`), so timing the teardown would add the same large term to all arms
 /// and dilute the difference the experiment exists to measure.
-fn clone_arms(workload: &[Par]) -> Arms<2> {
+///
+/// ⚠ `REPS = 60` is divisible by 3, so `measure_arms`' `rep % N` rotation puts
+/// every arm in every slot exactly 20 times. The cold-first-walk bias is shared
+/// *exactly*, not approximately, which is what lets the control be read as
+/// instrument error rather than as slot bias.
+fn clone_arms(workload: &[Par]) -> Arms<3> {
     let mut derived = |p: &Par| oracle_clone_par(p);
     let mut driven = <Par as Clone>::clone;
+    // ★ Byte-identical to `derived`. Not a typo — see the doc comment.
+    let mut control = |p: &Par| oracle_clone_par(p);
     measure_arms(
-        ["derived", "driven"],
+        ["derived", "driven", "control"],
         workload,
-        &mut [&mut derived, &mut driven],
+        &mut [&mut derived, &mut driven, &mut control],
         &mut |drain| dismantle_all(drain),
     )
+}
+
+/// How far the invariant control may drift before the run is void, as a fraction.
+///
+/// ★ Derived from what this harness has been *seen* to do, not chosen: paired
+/// collection gave 0.8% and 1.9% spreads at double the load, while blocked arms
+/// gave 13% and 27% and an unrelated invariant control moved 55%. A 5% band
+/// therefore admits the paired instrument's demonstrated behaviour with ~2.6× of
+/// margin and rejects every failure this workspace has recorded.
+const CONTROL_BAND: f64 = 0.05;
+
+/// ★★ **The control gate.** Reports the invariant control and returns `false` when
+/// the run must be discarded.
+///
+/// Printed even when it passes, because the useful output is the *number*: it is
+/// this run's own resolution, and it is the honest denominator for the treatment
+/// effect measured beside it. ★ Effect size, not provenance, decides whether a
+/// reading survives — a 68% effect against a 27% spread stands, a 2.75% effect
+/// against the same spread does not.
+fn control_verdict(arms: &Arms<3>) -> bool {
+    let p = arms.pair(0, 2);
+    let median = p.median_ratio();
+    let drift = (median - 1.0).abs();
+    let ok = drift <= CONTROL_BAND;
+    println!(
+        "  ╔══ ★ INVARIANT CONTROL: `derived` vs `derived` (the SAME function, same \
+         repetitions)"
+    );
+    println!(
+        "  ║ true ratio is 1.0000 by construction; measured {median:.4} — a drift of \
+         {:.2}%, band ±{:.0}%  => {}",
+        100.0 * drift,
+        100.0 * CONTROL_BAND,
+        if ok { "the run is usable" } else { "VOID" }
+    );
+    println!(
+        "  ║ ⇒ this run's own resolution is ~{:.2}%. Any treatment effect smaller than \
+         that is not resolved by THIS instrument, whatever its p-value.",
+        100.0 * drift
+    );
+    if !ok {
+        println!(
+            "  ║ ⚠⚠ THE CONTROL MOVED. Two measurements of one function disagree by \
+             {:.2}%, so every wall-clock ratio in this run is void — including the \
+             treatment. Do not report it, and do not average it with other runs. Re-run \
+             at lower load (print /proc/loadavg) or rule on the deterministic Ir ratio, \
+             which does not have this failure mode.",
+            100.0 * drift
+        );
+    }
+    println!("  ╚══");
+    ok
 }
 
 fn report(name: &str, p: &Pair<'_>) -> f64 {
@@ -489,10 +623,11 @@ fn verdict(name: &str, p: &Pair<'_>) {
              ⚠ But do NOT rule on this number alone — take the deterministic Ir ratio first. \
              A reading below the floor here has been WRONG IN SIGN before: the walk \
              elimination measured 0.885× on this instrument while removing 54.3 instructions \
-             per node. The remaining candidate is a depth-k hybrid, which keeps a bounded \
-             native prefix per suspension and must stay FLAT in overall depth — ⚠ and must \
-             not imply any maximum representable depth, which is disqualifying rather than \
-             tunable."
+             per node. ★ The depth-k hybrid has LANDED as `CLONE_DESCEND_BUDGET` and took \
+             105.8 more instructions per node off, with the native prefix bounded by the \
+             BUDGET rather than the term — so it stays flat in overall depth and implies no \
+             maximum representable depth at any value of k. The remaining candidate for the \
+             residual gap is destination-passing descent at the budget FRONTIER."
         );
     }
     println!("  ╚══");
@@ -877,9 +1012,21 @@ fn main() {
     );
     let arms = clone_arms(&workload);
     arms.print();
+    // ★★ THE CONTROL FIRST, and deliberately before the treatment is printed: a
+    // reader who sees the treatment first has already formed a view by the time the
+    // control arrives. If this says VOID, nothing below it is a measurement.
+    let control_ok = control_verdict(&arms);
     let weighted = arms.pair(0, 1);
     report("weighted", &weighted);
     verdict("the production-weighted mix", &weighted);
+    if !control_ok {
+        println!(
+            "  ⚠⚠ THE INVARIANT CONTROL MOVED — every wall-clock figure printed above and \
+             below is VOID for this run. The deterministic Ir ratio is unaffected: it is a \
+             separate instrument (`TERM_OPS_ARM` under cachegrind) and does not share this \
+             failure mode."
+        );
+    }
 
     // -------------------------------------------------------------------
     // Per depth, so a regression at the dominant depth cannot hide behind a
