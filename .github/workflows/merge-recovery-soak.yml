@@ -453,20 +453,24 @@ jobs:
     needs: [schedule_gate, launch_runner, soak]
     # Restart only on infrastructure death: the launch never delivered a
     # runner, or the soak job ended without reaching its completion marker
-    # (VM preempted, reaped or frozen mid-run). A soak that completed red
-    # produced a real verdict — a second VM would only reproduce it. The
-    # restart conforms to the original window via window_end_epoch, so it can
-    # never spill into the next slot, and retry_attempt caps the chain at
-    # one: a second failure in the same window is a pattern to investigate,
-    # not a blip to retry, and OCI capacity shortages (the common launch
-    # failure) rarely clear within the night.
+    # (VM preempted, reaped or frozen mid-run — a lost runner surfaces as job
+    # FAILURE, not cancellation). A soak that completed red produced a real
+    # verdict — a second VM would only reproduce it. Cancellation never
+    # restarts anything: a manual cancel is an operator calling the night or
+    # weekend off, so !cancelled() skips this job for the whole run, and
+    # cancelled-shaped job results (timeout, next slot's concurrency cancel)
+    # stay dead too. The restart conforms to the original window via
+    # window_end_epoch, so it can never spill into the next slot, and
+    # retry_attempt caps the chain at one: a second failure in the same
+    # window is a pattern to investigate, not a blip to retry, and OCI
+    # capacity shortages (the common launch failure) rarely clear within the
+    # night.
     if: >-
-      always() &&
+      !cancelled() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.schedule_gate.outputs.retry_attempt == '0' &&
       (needs.launch_runner.result == 'failure' ||
-       needs.launch_runner.result == 'cancelled' ||
-       ((needs.soak.result == 'failure' || needs.soak.result == 'cancelled') &&
+       (needs.soak.result == 'failure' &&
         needs.soak.outputs.completed != 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
