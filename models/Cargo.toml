@@ -80,6 +80,14 @@ harness = true
 #
 # One per file in `tests/` that `tests/mod.rs` does NOT include. Kept in
 # alphabetical order, and kept COMPLETE by `test_target_registry_gate`.
+# The `locally_free` bitset's ONE spelling of ∅. Its §3 reads `models/src` as
+# TEXT to enumerate the bitset construction sites, so it is a target of its own
+# rather than a `mod` of `models_tests`: a scan that runs inside an aggregate is
+# a scan whose failure names the aggregate.
+[[test]]
+name = "bit_vector_canonicity"
+path = "tests/bit_vector_canonicity.rs"
+
 [[test]]
 name = "clone_equivalence_corpus"
 path = "tests/clone_equivalence_corpus.rs"

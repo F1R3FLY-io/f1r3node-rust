@@ -94,14 +94,115 @@ pub mod routing {
 pub use prost::bytes::Bytes as ByteString;
 use shared::rust::BitSet;
 
-pub fn create_bit_vector(indices: &[usize]) -> BitSet {
-    let max_index = *indices.iter().max().unwrap_or(&0);
-    let mut bit_vector = vec![0; max_index + 1];
-    for &index in indices {
-        bit_vector[index] = 1;
+/// ★★ The canonical form of a byte-per-index [`BitSet`]: **no trailing clear
+/// byte**.
+///
+/// # The representation, stated before the law
+///
+/// A `locally_free` bitset in this port is **one byte per de Bruijn index** —
+/// not a packed bitmap and not a list of indices. [`create_bit_vector`] is
+/// `vec![0; max_index + 1]` followed by `bit_vector[index] = 1`, and
+/// [`crate::rust::utils::union`] is an element-wise `OR` over the operands
+/// padded to the longer length. **A member's identity IS its position**, so a
+/// clear byte at the end carries no information: `[0, 1, 0]` and `[0, 1]` denote
+/// the same set `{1}`, and `[0]` and `[]` both denote `∅`.
+///
+/// # ★★ Why the law is load-bearing, and not merely tidy
+///
+/// `Vec::is_empty()` answers **length**, not set-emptiness, and the two spellings
+/// of `∅` disagree under it:
+///
+/// ```text
+///   [].is_empty()   =  true       ← length 0
+///   [0].is_empty()  =  false      ← length 1, all bits CLEAR
+/// ```
+///
+/// `locally_free.is_empty()` is read as a *set-emptiness* query on production
+/// paths — `rholang/src/rust/interpreter/matcher/fold_match.rs:103` and three
+/// siblings in `fold_match` / `list_match`. Under two spellings those four
+/// readers are unsound: a term whose free-variable set is empty answers "not
+/// empty" and takes the other branch. Because `<Par as PartialEq>::eq`
+/// deliberately ignores `locally_free` while the protobuf wire **retains** it
+/// (proto tag 9), two structurally-equal terms carrying different spellings also
+/// serialise to different bytes — which is a different RSpace channel hash for
+/// one value.
+///
+/// So the law is: *the canonical representative of a member set is the shortest
+/// byte string that spells it*, making the map from member sets to canonical
+/// bitsets a **bijection**.
+///
+/// ```math
+/// \mathrm{canon}(b) = [\,] \;\lor\; \mathrm{canon}(b)_{|\mathrm{canon}(b)|-1} \neq 0
+/// ```
+///
+/// # Why here, and not at the four readers
+///
+/// A law spelled at N readers drifts; this repository has *measured* that
+/// (`docs/design/audits/theta-depth-traversals-2026-07-26.md` §11.4 — one list,
+/// four copies, every copy drifted, two stale within the hour of being
+/// reconciled, twice). Making the non-canonical form unconstructible at the
+/// producer is one place instead of four.
+///
+/// # Cost
+///
+/// `truncate` on a `Vec<u8>` neither reallocates nor moves: it lowers the length
+/// and drops nothing (`u8` has no destructor). The scan is `O(trailing clear
+/// bytes)`, which for every caller in this crate is 0 or 1.
+///
+/// ⚠ It is *not* `O(len)`: it stops at the first non-zero byte from the end, so
+/// canonicalising an already-canonical bitset is a single comparison.
+#[inline]
+pub fn canonical_bit_vector(mut bits: BitSet) -> BitSet {
+    // `rposition`-style scan, without the iterator: the first index from the
+    // end holding a set byte fixes the canonical length.
+    let mut len = bits.len();
+    while len > 0 && bits[len - 1] == 0 {
+        len -= 1;
     }
-    // println!("\nbitvector: {:?}", bit_vector);
-    bit_vector
+    bits.truncate(len);
+    bits
+}
+
+/// The byte-per-index bitset of a set of de Bruijn indices, in canonical form.
+///
+/// # ⚠ The `&[]` case, and why the fix cannot move consensus
+///
+/// This function used to answer `[0]` for the empty slice: `max_index` is
+/// `*indices.iter().max().unwrap_or(&0)` = `0`, so `vec![0; max_index + 1]` is
+/// `vec![0; 1]`, and the loop that sets the bits runs zero times. That is a
+/// length-one vector whose only byte is clear — **a second spelling of `∅`** —
+/// and [`canonical_bit_vector`] now removes it.
+///
+/// ★ For every **non-empty** input the result is bit-identical to the old one,
+/// and that is a proof rather than an observation: `bit_vector[max_index] = 1` is
+/// executed for `index = max_index`, which is in `indices` because it is their
+/// maximum, so the last byte is `1` and there is nothing to truncate. The only
+/// input whose answer changes is `&[]`.
+///
+/// The five production call sites (`rholang/src/rust/interpreter/matcher/
+/// has_locally_free.rs:351, 435, 458, 705, 890`) all pass a **singleton**
+/// `&[index]`, so none of them reaches the changed case; every `&[]`-shaped call
+/// site in the workspace is inside a `#[cfg(test)]` module. ⇒ no serialized byte,
+/// no channel hash and no accept/reject decision moves. See
+/// `models/tests/bit_vector_canonicity.rs`.
+pub fn create_bit_vector(indices: &[usize]) -> BitSet {
+    match indices.iter().max() {
+        // ★ `∅` has ONE spelling. Returning `vec![0; 1]` here (which is what
+        // `unwrap_or(&0)` produced) is the defect: `Vec::is_empty()` would then
+        // answer `false` for the empty member set.
+        None => BitSet::new(),
+        Some(&max_index) => {
+            let mut bit_vector = vec![0; max_index + 1];
+            for &index in indices {
+                bit_vector[index] = 1;
+            }
+            // The last byte is `bit_vector[max_index]`, set to 1 by the
+            // iteration above, so this is already canonical — the call is here
+            // to make the postcondition hold BY CONSTRUCTION rather than by an
+            // argument a later edit could invalidate.
+            canonical_bit_vector(bit_vector)
+        }
+    }
 }
 
 use std::error::Error;

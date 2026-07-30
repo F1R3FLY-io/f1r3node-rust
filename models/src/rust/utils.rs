@@ -437,6 +437,30 @@ pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
         .collect()
 }
 
+/// The set union of two byte-per-index `locally_free` bitsets, in **canonical**
+/// form (no trailing clear byte — see [`crate::canonical_bit_vector`]).
+///
+/// # Why the canonicalisation is here even though this function cannot create the
+/// defect
+///
+/// Given two *canonical* operands the element-wise `OR` already produces a
+/// canonical result, and that is a proof: `max_len` is the length of the longer
+/// operand, whose last byte is non-zero by hypothesis, and `x | 0 = x`, so
+/// `result[max_len - 1] != 0`. What this function *could* do is **propagate** a
+/// non-canonical operand, and non-canonical operands are reachable — `Par
+/// .locally_free` is proto tag 9 (`bytes`) and a peer may send `[0]`, which the
+/// decoder accepts verbatim as it must.
+///
+/// So the postcondition is stated **unconditionally** ("canonical whatever it is
+/// given") rather than conditionally ("canonical if its inputs were"). A
+/// conditional postcondition is one a caller has to discharge, and the callers
+/// are folds — `ParSet::update_locally_free`, `ParMap::update_locally_free`,
+/// `EntryTrie::insert_entry` — where a single non-canonical element would
+/// otherwise contaminate the accumulator for the rest of the fold.
+///
+/// `models/tests/bit_vector_canonicity.rs` pins both halves: the full cross
+/// product of the member lattice on `0..5` (1,024 pairs) and the non-canonical
+/// operand cases.
 pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
     let max_len = bitset1.len().max(bitset2.len());
     let mut result = vec![0; max_len];
@@ -447,7 +471,7 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
         result[i] = bit1 | bit2;
     }
 
-    result
+    crate::canonical_bit_vector(result)
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
