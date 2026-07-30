@@ -666,12 +666,18 @@ fn every_derive_surface_is_dispositioned_with_a_reason() {
     }
 }
 
-/// The two surfaces already converted, and the ones still owed a driver.
+/// The surfaces already converted, and the ones still owed a driver.
 ///
 /// ★ Asserted by DISPOSITION rather than by name, so a stage that lands a driver
 /// moves this test by changing the table — not by editing an expectation.
+///
+/// ⚠ **It is a RATCHET, and it fired.** Landing stage F-4 made this test go RED
+/// with `Clone::clone` under "converted", because the list is deliberately
+/// closed: a surface that becomes `Converted` without anybody saying so is
+/// exactly what this refuses. The list grows by one, with the driver named,
+/// which is the intended cost of landing a conversion.
 #[test]
-fn the_converted_surfaces_are_the_two_this_campaign_has_landed() {
+fn the_converted_surfaces_are_the_three_this_campaign_has_landed() {
     let mut converted: BTreeSet<&str> = BTreeSet::new();
     let mut remaining: BTreeSet<&str> = BTreeSet::new();
     for (_, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
@@ -687,9 +693,22 @@ fn the_converted_surfaces_are_the_two_this_campaign_has_landed() {
     }
     assert_eq!(
         converted.iter().copied().collect::<Vec<_>>(),
-        vec!["Deserialize::deserialize", "Serialize::serialize"],
-        "exactly two derive surfaces have been converted: the bincode encoder (Stage H, \
-         `wire_encode`) and the bincode decoder (Stage F, `par_codec`)"
+        vec![
+            // Stage F — the cold-store DECODER (`par_codec`).
+            "Deserialize::deserialize",
+            // Stage H — the cold-store ENCODER (`wire_encode`).
+            "Serialize::serialize",
+            // ★ Stage F-4 — `term_ops::clone`, `drive_with` over the CLONE CUT
+            // SET. Gate subject `clone`, in `CONVERTED_DEPTH`.
+            "Clone::clone",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>(),
+        "three derive surfaces have been converted: the bincode decoder (Stage F, \
+         `par_codec`), the bincode encoder (Stage H, `wire_encode`), and `Clone` (Stage F-4, \
+         `term_ops::clone`)"
     );
     assert!(
         remaining.contains("Message::encode_raw") && remaining.contains("Message::encoded_len"),
@@ -697,6 +716,135 @@ fn the_converted_surfaces_are_the_two_this_campaign_has_landed() {
          AND production call sites route through it; a table that marked them converted while \
          `prost::Message::encode_to_vec` is still what the node calls would be a claim about \
          code nobody runs"
+    );
+}
+
+/// ★★ **The `Clone::clone` disposition is PER ITEM, and the split is DERIVED.**
+///
+/// One surface, three dispositions, and none of them is a list somebody keeps in
+/// step:
+///
+/// | item | disposition | derived from |
+/// |---|---|---|
+/// | not in `EMITTED_TRAVERSALS` | `NotATraversal` | prost derives `Copy`; `Clone` is `*self` |
+/// | in `CLONE_CUT_SET` | `Converted` | the feedback vertex set the emitter computed |
+/// | emitted, not in the cut set | `FollowsFrom` | a flat field-wise `Clone` |
+///
+/// ⚠ A uniform `Converted("term_ops::clone")` would be a **false claim about 61
+/// of the 62 generated items** — which is what the row said before
+/// `refine_disposition` existed. This test is the reason it cannot say that
+/// again: the registry is checked against the two tables the *emitter* published,
+/// so "which items were converted" is answered once, by the generator, and
+/// consumed twice.
+#[test]
+fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
+    use models::rust::rholang::term_ops::{CLONE_CUT_SET, EMITTED_TRAVERSALS};
+
+    let emitted: BTreeMap<&str, &str> = EMITTED_TRAVERSALS.iter().copied().collect();
+    let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
+
+    assert!(
+        !cut.is_empty(),
+        "the CLONE CUT SET is empty, so no `Clone` was converted at all and every row below \
+         would be vacuously consistent. The `rhoapi` child relation is cyclic by construction."
+    );
+    assert!(
+        !emitted.is_empty(),
+        "`EMITTED_TRAVERSALS` is empty — see the non-vacuity floors in \
+         `wire_schema::generate`."
+    );
+
+    let mut rows = 0usize;
+    let mut converted = 0usize;
+    let mut follows = 0usize;
+    let mut not_a_traversal = 0usize;
+    for (item, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
+        if *surface != "Clone::clone" {
+            continue;
+        }
+        rows += 1;
+        let shape = emitted.get(item).copied();
+        match (shape, cut.contains(item)) {
+            // A cut-set member: DRIVEN, and the emitter must agree on the shape.
+            (Some("driven"), true) => {
+                assert!(
+                    matches!(disposition, Disposition::Converted(_)),
+                    "`{item}` is in `CLONE_CUT_SET` and `EMITTED_TRAVERSALS` calls its body \
+                     `driven`, so its `Clone::clone` disposition must be `Converted`; it is \
+                     {disposition:?}"
+                );
+                converted += 1;
+            }
+            // Emitted but not in the cut set: FIELD-WISE, and flat only because
+            // every cycle passes through the cut set.
+            (Some("field-wise"), false) => {
+                assert!(
+                    matches!(disposition, Disposition::FollowsFrom(_)),
+                    "`{item}`'s `Clone` is emitted FIELD-WISE, which is flat only because a \
+                     driven clone is reached within CLONE_RESIDUAL_HEIGHT frames — that is \
+                     `FollowsFrom`, not {disposition:?}. `Converted` would claim a driver this \
+                     item does not have."
+                );
+                follows += 1;
+            }
+            // Not emitted at all: prost derived `Copy`, so `Clone` is `*self`.
+            (None, false) => {
+                assert!(
+                    matches!(disposition, Disposition::NotATraversal(_)),
+                    "`{item}` has no emitted `impl Clone`, so it kept its derive — which means \
+                     prost derived `Copy` for it and its `Clone` is a bitwise copy. That is \
+                     `NotATraversal`, not {disposition:?}."
+                );
+                not_a_traversal += 1;
+            }
+            (shape, in_cut) => panic!(
+                "`{item}` is in an impossible state: `EMITTED_TRAVERSALS` says {shape:?} and \
+                 `CLONE_CUT_SET` membership is {in_cut}. A cut-set member must be `driven`, a \
+                 non-member must be `field-wise` or absent, and an absent item must not be in \
+                 the cut set. This is the emitter's own two tables disagreeing with each other."
+            ),
+        }
+    }
+
+    assert_eq!(
+        rows,
+        DERIVE_DISPOSITION_REGISTRY
+            .iter()
+            .map(|(item, _, _)| *item)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        "every generated item must carry exactly one `Clone::clone` row — the derive is \
+         blanket (`.message_attribute` / `.enum_attribute` in `models/build.rs`), so an item \
+         without one would be an item this check silently skipped"
+    );
+    assert_eq!(
+        converted,
+        cut.len(),
+        "every cut-set member must have a `Converted` row: {} converted rows against {} cut-set \
+         members",
+        converted,
+        cut.len()
+    );
+    assert_eq!(
+        converted + follows,
+        emitted.len(),
+        "every emitted `impl Clone` must be dispositioned either `Converted` (driven) or \
+         `FollowsFrom` (field-wise): {} + {} against {} emitted",
+        converted,
+        follows,
+        emitted.len()
+    );
+    assert!(
+        not_a_traversal > 0,
+        "NO item was dispositioned `NotATraversal`, which would mean prost derived `Copy` for \
+         nothing — but `Var`, `EVar`, `VarRef`, `PCost`, `GSysAuthToken`, `Var.WildcardMsg` and \
+         `VarInstance` are all scalar-only. Zero here means the `Copy` reproduction in \
+         `wire_schema.rs` §4b has stopped agreeing with prost, and the three-way split has \
+         silently collapsed into two."
+    );
+    println!(
+        "  Clone::clone — {converted} Converted (the cut set), {follows} FollowsFrom \
+         (field-wise), {not_a_traversal} NotATraversal (`Copy`); {rows} rows"
     );
 }
 
