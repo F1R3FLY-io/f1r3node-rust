@@ -496,8 +496,20 @@ jobs:
           # rather than clobbered by a stale snapshot.
           tagged=""
           for attempt in $(seq 1 12); do
-            existing="$(oci compute instance get --instance-id "$iid" \
-              --query 'data."freeform-tags"' --raw-output 2>/dev/null || true)"
+            # A FAILED read must not fall through to `{}`. Because the update
+            # replaces the whole map, "read failed" and "instance has no tags"
+            # are indistinguishable once both become {} — and treating a
+            # transient read failure as "no tags" would erase every existing
+            # tag, which is the exact outcome the read-modify-write exists to
+            # prevent. Retry instead; only a *successful* read reporting an
+            # empty or null map may become {}.
+            if ! existing="$(oci compute instance get --instance-id "$iid" \
+                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
             case "$existing" in ''|null) existing='{}' ;; esac
             jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
             merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \

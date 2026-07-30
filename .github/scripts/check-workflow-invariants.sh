@@ -141,18 +141,32 @@ ok "both pipeline callers pass secrets down"
 #    pins it any more" branch below would be unreachable and the failure would
 #    surface as a red job with no annotation saying why. A guard that cannot
 #    explain itself is the failure mode this file exists to prevent.
-ocid_sites="$(grep -rlE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.' \
-    .github/workflows/*.yml 2>/dev/null | sort || true)"
-if [ -z "$ocid_sites" ]; then
-    err "no workflow pins a literal CI_RUNNER_COMPARTMENT_OCID; the reaper's compartment guard has gone missing (moving it to an Actions variable trades a compile-time guarantee for a mutable one — see the note above)"
-else
-    ocid_values="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
-        .github/workflows/*.yml 2>/dev/null \
-        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' | sort -u || true)"
-    if [ "$(printf '%s\n' "$ocid_values" | grep -c .)" -ne 1 ]; then
-        err "CI_RUNNER_COMPARTMENT_OCID differs across workflows ($(printf '%s ' $ocid_sites)); the reaper and the soak tagger must name the same compartment"
+#    Both files are checked BY NAME and required to pin exactly one literal
+#    each. An earlier version only asserted "at least one file pins it, and
+#    all literals found agree", which passed when one of the two declarations
+#    was deleted or rewritten as `${{ vars.X }}` — the single most likely way
+#    this drifts, since that is precisely the migration the note above argues
+#    against. My own mutation tests missed it: they covered divergent values
+#    and both-removed, never one-removed.
+ocid_required=".github/workflows/ci-runner-reaper.yml .github/workflows/merge-recovery-soak.yml"
+ocid_values=""
+for ocid_file in $ocid_required; do
+    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        "$ocid_file" 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+    ocid_count="$(printf '%s' "$ocid_found" | grep -c . || true)"
+    if [ "$ocid_count" -ne 1 ]; then
+        err "$ocid_file must pin exactly one literal CI_RUNNER_COMPARTMENT_OCID, found $ocid_count (an Actions variable trades a compile-time guarantee for an admin-mutable one — see the note in ci-runner-reaper.yml)"
     else
-        ok "CI_RUNNER_COMPARTMENT_OCID pinned identically in $(printf '%s\n' "$ocid_sites" | grep -c .) workflow(s)"
+        ocid_values="${ocid_values}${ocid_found}
+"
+    fi
+done
+if [ "$fail" -eq 0 ]; then
+    if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
+        err "CI_RUNNER_COMPARTMENT_OCID differs between $(printf '%s' "$ocid_required" | tr '\n' ' '); the reaper and the soak tagger must name the same compartment"
+    else
+        ok "CI_RUNNER_COMPARTMENT_OCID pinned identically in both required workflows"
     fi
 fi
 
