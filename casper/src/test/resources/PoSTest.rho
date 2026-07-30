@@ -699,9 +699,22 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               @posVault!("balance", *retCh) 
           } |
 
+          // ⚠ `closeBlock` takes FIVE arguments, not three. `mintList` and `feeConvertList` were
+          // added to `PoS.rhox`'s signature by the cost-accounting work — `mintList` at `879e75c5`
+          // ("Stage B — validator phlogiston mint at epoch/bond + Σ⟦v⟧ dual-write seam"),
+          // `feeConvertList` with Stage D — and this caller was not updated with it. A Rholang send
+          // whose arity matches no contract on the channel never matches: it RESTS, silently, so
+          // `ackCh0` never received and every one of this contract's ten callers blocked forever.
+          // Nothing noticed because `pos_spec` did not execute until `92a6f36c`.
+          //
+          // Both are Rust-supplied channels in production (`CloseBlockDeploy` publishes onto them
+          // and its `post_eval` reads them back to mirror mints and fee conversions into the
+          // Rust-held pools). A test that only needs `closeBlock` to RUN supplies fresh names:
+          // `closeBlock` publishes its lists onto them and, with no reader, they simply rest.
           contract closeBlock(ackCh) = {
-            new ackCh0, activeValidatorsCh, setBlockData(`rho:test:block:data:set`), blockDataSet in {
-              @PoS!("closeBlock", sysAuthToken, *ackCh0) |
+            new ackCh0, mintListCh, feeConvertListCh,
+                activeValidatorsCh, setBlockData(`rho:test:block:data:set`), blockDataSet in {
+              @PoS!("closeBlock", sysAuthToken, *mintListCh, *feeConvertListCh, *ackCh0) |
               for (@ack              <- ackCh0) {
                 @PoS!("getActiveValidators", *activeValidatorsCh) |
                 for (@activeValidators <- activeValidatorsCh){

@@ -31,7 +31,7 @@ use crate::helper::{
 use crate::helper::rho_spec_suite_manifest::{
     check_registration, check_report, registered_test_names,
 };
-use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext, GenesisParameters};
 use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
@@ -326,13 +326,21 @@ pub fn test_framework_contracts(
     ]
 }
 
-pub async fn get_results(
-    test_object: &CompiledRholangSource,
-    other_libs: &[Signed<DeployData>],
-    execution_timeout: Duration,
+/// A play runtime over the RSpace **genesis was written into**, pinned to genesis's post-state.
+///
+/// ★ Extracted from [`get_results`] rather than copied into the probes that need it. The comment
+/// on `resources::SHARED_LMDB_LOCK` records what a second copy of a genesis fixture costs here:
+/// "the two copies of `with_genesis` / `with_storage` looked identical and behaved differently".
+/// A probe that builds its own runtime is a probe that can silently stop testing the harness's
+/// runtime; `casper/tests/genesis/contracts/deep_recursion_spec.rs` has such a copy and it opens
+/// a FRESH scope — which is exactly the defect this module was repaired for.
+///
+/// `additional_system_processes` is taken by `&mut` because `create_runtime_from_kv_store` needs
+/// it that way (it appends the built-in URN definitions).
+pub async fn genesis_runtime(
     genesis_parameters: GenesisParameters,
-    test_result_collector: Arc<TestResultCollector>,
-) -> Result<TestResult, InterpreterError> {
+    additional_system_processes: &mut Vec<Definition>,
+) -> Result<(impl RhoRuntime, GenesisContext), InterpreterError> {
     let mut genesis_builder = GenesisBuilder::new();
     let genesis = genesis_builder
         .build_genesis_with_parameters(Some(genesis_parameters))
@@ -368,8 +376,6 @@ pub async fn get_results(
     let matcher = Arc::new(Box::new(Matcher::default())
         as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
-    let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
-
     // `init_registry: false` — the genesis post-state ALREADY contains the bootstrapped
     // registry. `bootstrap_registry` is an `inj` of the registry's Rholang term
     // (`rho_runtime.rs:1231`), so its produces/consumes are ordinary tuplespace changes that
@@ -382,7 +388,7 @@ pub async fn get_results(
         r_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
         false,
-        &mut additional_system_processes,
+        additional_system_processes,
         matcher,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
@@ -401,9 +407,25 @@ pub async fn get_results(
     runtime.reset(&genesis_post_state).await?;
 
     println!(
-        "Starting tests from {} against genesis post-state {} (rspace scope {})",
-        test_object.path, genesis_post_state, genesis.rspace_scope_id
+        "Runtime open on genesis post-state {} (rspace scope {})",
+        genesis_post_state, genesis.rspace_scope_id
     );
+
+    Ok((runtime, genesis))
+}
+
+pub async fn get_results(
+    test_object: &CompiledRholangSource,
+    other_libs: &[Signed<DeployData>],
+    execution_timeout: Duration,
+    genesis_parameters: GenesisParameters,
+    test_result_collector: Arc<TestResultCollector>,
+) -> Result<TestResult, InterpreterError> {
+    let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
+    let (runtime, _genesis) =
+        genesis_runtime(genesis_parameters, &mut additional_system_processes).await?;
+
+    println!("Starting tests from {}", test_object.path);
 
     let runtime = setup_runtime(runtime, other_libs).await?;
 
