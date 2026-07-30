@@ -17,13 +17,36 @@ on:
         default: dev
         type: string
       duration:
-        description: Requested soak duration
+        description: Requested soak duration (ignored when window_end_epoch is set)
         required: true
         default: daily-24h
         type: choice
         options:
           - daily-24h
           - weekend-60h
+      window_end_epoch:
+        description: >-
+          Restart mode: epoch second the ORIGINAL window ends at. When set,
+          the run soaks only the remainder of that window instead of a fresh
+          full span, so a restarted night still conforms to its slot and can
+          never overlap the next one. Set by the automatic in-window retry;
+          usable manually to the same effect.
+        required: false
+        default: ""
+        type: string
+      series:
+        description: >-
+          Restart mode: which published series (daily | weekend) the run
+          belongs to. Required alongside window_end_epoch — a remainder span
+          no longer identifies the series by duration.
+        required: false
+        default: ""
+        type: string
+      retry_attempt:
+        description: Automatic-retry counter; the chain stops after 1.
+        required: false
+        default: "0"
+        type: string
 
 permissions:
   contents: read
@@ -64,6 +87,10 @@ jobs:
       # the two are kept in separate files so the week-over-week regression
       # gate never compares a 22h daily against a 60h weekend baseline.
       kind: ${{ steps.resolve.outputs.kind }}
+      # Epoch second the run's window ends at. retry_within_window anchors a
+      # restarted run to this instant so it conforms to the original slot.
+      end_epoch: ${{ steps.resolve.outputs.end_epoch }}
+      retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
       # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
       # slots are skipped; see the resolve step for why there are five.
       checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
@@ -79,6 +106,9 @@ jobs:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
+          INPUT_SERIES: ${{ inputs.series }}
+          INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
           # Read-only, for the "did anything land since the last window?" check.
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
@@ -96,6 +126,27 @@ jobs:
             # this the step dies on an unbound variable under `set -u` — a
             # manual dispatch would fail the gate outright.
             slot_epoch="$(date -u +%s)"
+            # Restart mode: window_end_epoch anchors this run to the original
+            # slot's window instead of a fresh full span, so a soak restarted
+            # after an infrastructure failure still ends exactly when the
+            # scheduled run would have — it can never spill into the next
+            # slot. The checkpoint enumeration below then yields exactly the
+            # original window's remaining Pacific instants.
+            if [ -n "$INPUT_WINDOW_END" ]; then
+              case "$INPUT_WINDOW_END" in
+                *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
+              esac
+              remaining="$((INPUT_WINDOW_END - slot_epoch))"
+              # 2h floor: launch, image build and shard bring-up eat ~20min,
+              # and a sub-2h remainder is not worth an OCI VM.
+              if [ "$remaining" -lt 7200 ]; then
+                should_run=false
+                restart_skip=true
+                echo "only ${remaining}s left of the window ending $(date -u -d "@${INPUT_WINDOW_END}" +%FT%TZ); not launching"
+              else
+                duration_seconds="$remaining"
+              fi
+            fi
           else
             # GitHub delivers cron triggers minutes-to-hours late, so gate on
             # the cron's intended slot (most recent occurrence at or before
@@ -170,11 +221,21 @@ jobs:
               duration_seconds=216000
             fi
           fi
-          run_benchmarks=false
           kind=daily
           if [ "$duration_seconds" = "216000" ]; then
-            run_benchmarks=true
             kind=weekend
+          fi
+          # A restart's remaining span is arbitrary, so the duration-based
+          # guess above is wrong for it; the retry passes the original series
+          # through explicitly and it wins. Everything series-scoped below
+          # (benchmarks, publish series, job timeout, concurrency) keys on
+          # kind, never on the raw duration.
+          if [ "$INPUT_SERIES" = "daily" ] || [ "$INPUT_SERIES" = "weekend" ]; then
+            kind="$INPUT_SERIES"
+          fi
+          run_benchmarks=false
+          if [ "$kind" = "weekend" ]; then
+            run_benchmarks=true
           fi
 
           # Checkpoints: every 07:30 and 13:00 Pacific strictly inside the run.
@@ -229,7 +290,15 @@ jobs:
               printf '  %s Pacific\n' "$(TZ=America/Los_Angeles date -d "@${cp}" '+%a %F %H:%M')"
             done
           fi
-          if [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
+          if [ "$should_run" != "true" ] && [ "${restart_skip:-false}" = "true" ]; then
+            echo "::notice::Restart gate skip: less than 2h remains of the original window. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Restart gate: skipped (window nearly over)"
+              echo ""
+              echo "The original window ends too soon for a restart to be worth an OCI runner."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
             echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: skipped (no new commits)"
@@ -247,12 +316,21 @@ jobs:
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The counter rides through the gate untrusted; anything that is
+          # not a plain integer becomes 0 so a malformed dispatch can neither
+          # break the gate nor unlock an unbounded retry chain.
+          retry_attempt="${INPUT_RETRY_ATTEMPT:-0}"
+          case "$retry_attempt" in
+            ''|*[!0-9]*) retry_attempt=0 ;;
+          esac
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
+            echo "end_epoch=$end_epoch"
+            echo "retry_attempt=$retry_attempt"
             echo "checkpoint_1=$cp1"
             echo "checkpoint_2=$cp2"
             echo "checkpoint_3=$cp3"
@@ -268,7 +346,10 @@ jobs:
     environment: oci-credentials
     timeout-minutes: 10
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      # Grouped by series (not raw duration — a restart's remainder is
+      # arbitrary) so the next night's launch still cancels a lingering
+      # previous run of the same series, restarts included.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
@@ -367,11 +448,78 @@ jobs:
           shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
           rm -rf ~/.oci
 
+  retry_within_window:
+    name: Restart Failed Soak In Window
+    needs: [schedule_gate, launch_runner, soak]
+    # Restart only on infrastructure death: the launch never delivered a
+    # runner, or the soak job ended without reaching its completion marker
+    # (VM preempted, reaped or frozen mid-run). A soak that completed red
+    # produced a real verdict — a second VM would only reproduce it. The
+    # restart conforms to the original window via window_end_epoch, so it can
+    # never spill into the next slot, and retry_attempt caps the chain at
+    # one: a second failure in the same window is a pattern to investigate,
+    # not a blip to retry, and OCI capacity shortages (the common launch
+    # failure) rarely clear within the night.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.schedule_gate.outputs.retry_attempt == '0' &&
+      (needs.launch_runner.result == 'failure' ||
+       needs.launch_runner.result == 'cancelled' ||
+       ((needs.soak.result == 'failure' || needs.soak.result == 'cancelled') &&
+        needs.soak.outputs.completed != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # workflow_dispatch via the API is exempt from GitHub's rule that
+    # GITHUB_TOKEN events start no workflows, so actions:write is all the
+    # re-dispatch needs. No checkout, no other scopes.
+    permissions:
+      actions: write
+    steps:
+      - name: Re-dispatch soak for the remainder of the window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        shell: bash -euo pipefail {0}
+        run: |
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::no usable end_epoch from the gate; cannot restart"; exit 1 ;;
+          esac
+          remaining="$(( END_EPOCH - $(date -u +%s) ))"
+          # Same 2h floor as the gate — checked here too so a failure near
+          # the window's end skips the dispatch instead of launching a run
+          # whose own gate immediately no-ops.
+          if [ "$remaining" -lt 7200 ]; then
+            echo "::notice::not restarting: only ${remaining}s left of the window (2h floor)"
+            exit 0
+          fi
+          # duration is ignored whenever window_end_epoch is set; passed so
+          # the dispatched run's inputs read sensibly in the UI.
+          dur=daily-24h
+          [ "$KIND" = "weekend" ] && dur=weekend-60h
+          gh workflow run merge-recovery-soak.yml \
+            --ref "$WORKFLOW_REF" \
+            -f target_ref="$TARGET_REF" \
+            -f duration="$dur" \
+            -f window_end_epoch="$END_EPOCH" \
+            -f series="$KIND" \
+            -f retry_attempt=1
+          echo "::notice::restarted $KIND soak for the remaining $((remaining / 3600))h of the window (ends $(date -u -d "@${END_EPOCH}" +%FT%TZ))"
+
   soak:
     name: Merge Recovery Soak
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+    outputs:
+      # Set by the job's last step. Empty means the VM died mid-run — the
+      # signal retry_within_window keys on to tell infrastructure death from
+      # a run that completed red.
+      completed: ${{ steps.complete.outputs.completed }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -385,10 +533,12 @@ jobs:
     # slack: this budget also covers the image build, poetry install and the
     # post-soak aggregate/alert/upload steps, so a ceiling equal to the soak
     # duration would kill the job while it uploads its own results. With the
-    # daily soak at 22h the ceiling is a true 24h.
-    timeout-minutes: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && 3840 || 1440 }}
+    # daily soak at 22h the ceiling is a true 24h. Keyed on kind, not the raw
+    # duration: an in-window restart's remainder is arbitrary, and a
+    # restarted weekend with >24h left must still get the weekend ceiling.
+    timeout-minutes: ${{ needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440 }}
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Checkout CI control files
@@ -475,7 +625,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -497,7 +647,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -519,7 +669,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -541,7 +691,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -563,7 +713,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -588,7 +738,7 @@ jobs:
           # The 8h floor keeps an early merge from reducing a night to a token
           # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
           # completion for its numbers to be comparable week over week.
-          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
@@ -682,6 +832,18 @@ jobs:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/merge-recovery-soak
           retention-days: 14
+
+      - name: Mark soak job complete
+        id: complete
+        if: always()
+        shell: bash -e {0}
+        # Deliberately last. If the VM is lost mid-run (preempted, reaped,
+        # frozen) this never executes and the job's `completed` output stays
+        # empty — which is how retry_within_window tells infrastructure death
+        # from a soak that ran its course. A run that reaches here produced a
+        # real result, even a red one, and a restart would only spend a
+        # second VM reproducing it.
+        run: echo "completed=true" >> "$GITHUB_OUTPUT"
 
   perf_report:
     name: Publish Soak Dashboard
