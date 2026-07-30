@@ -2,8 +2,13 @@ name: Merge Recovery Soak
 
 on:
   schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
+    # Both slots target Pacific 19:30; one matches PDT (UTC-7), the other PST
+    # (UTC-8), and the schedule gate no-ops whichever is currently wrong.
+    # 19:30 Pacific is chosen so the Friday weekend-60h soak finishes at
+    # exactly 07:30 Pacific on Monday (19:30 + 60h), in both DST regimes.
+    # Pacific 19:30 falls on the *next* UTC day, hence 02:30/03:30 UTC.
+    - cron: "30 2 * * *"
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       target_ref:
@@ -25,7 +30,18 @@ permissions:
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
-  SYSTEM_INTEGRATION_REF: a50eeb198c6e542504af8db92389de5c02500422
+  # THIRD pin site. The other two — .github/oci-validation.env and
+  # _integration-pipeline.yml — are held identical by build_base's drift check;
+  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
+  # system-integration 81284fc, which added integration-tests/certs/validator4.
+  # compose.py bind-mounts that path, so with no host file Docker created a
+  # directory and every node start died on "Failed to read the X.509
+  # certificate: IO error: Is a directory (os error 21)" — the soak failed at
+  # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
+  # completed segments, the dashboard never published. Bump this whenever the
+  # other two move.
+  SYSTEM_INTEGRATION_REF: 29d7bd0ff1973f4ddee8a3af34c5a6224557f8ea
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -41,6 +57,17 @@ jobs:
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # weekend | daily. Selects which published series this run appends to;
+      # the two are kept in separate files so the week-over-week regression
+      # gate never compares a 22h daily against a 60h weekend baseline.
+      kind: ${{ steps.resolve.outputs.kind }}
+      # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
+      # slots are skipped; see the resolve step for why there are five.
+      checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
+      checkpoint_2: ${{ steps.resolve.outputs.checkpoint_2 }}
+      checkpoint_3: ${{ steps.resolve.outputs.checkpoint_3 }}
+      checkpoint_4: ${{ steps.resolve.outputs.checkpoint_4 }}
+      checkpoint_5: ${{ steps.resolve.outputs.checkpoint_5 }}
     steps:
       - name: Resolve schedule
         id: resolve
@@ -49,49 +76,171 @@ jobs:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          # Read-only, for the "did anything land since the last window?" check.
+          GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
             else
-              duration_seconds=86400
+              duration_seconds=79200
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            # A manual run has no cron slot, so it starts now. The checkpoint
+            # computation below needs a start instant either way, and without
+            # this the step dies on an unbound variable under `set -u` — a
+            # manual dispatch would fail the gate outright.
+            slot_epoch="$(date -u +%s)"
           else
             # GitHub delivers cron triggers minutes-to-hours late, so gate on
             # the cron's intended slot (most recent occurrence at or before
             # now), not the wall clock at execution time.
+            # The window is on a half hour, so the minute field matters as
+            # much as the hour — compare %H%M, not %H.
+            cron_min="$(awk '{print $1}' <<<"$EVENT_SCHEDULE")"
             cron_hour="$(awk '{print $2}' <<<"$EVENT_SCHEDULE")"
             now_epoch="$(date -u +%s)"
-            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:00:00" +%s)"
+            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:${cron_min}:00" +%s)"
             if [ "$slot_epoch" -gt "$now_epoch" ]; then
               slot_epoch=$((slot_epoch - 86400))
             fi
-            pacific_hour="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H)"
+            pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
-            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hour=$pacific_hour pacific_weekday=$pacific_weekday"
+            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
             target_ref=dev
             should_run=false
-            duration_seconds=86400
-            if [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+            idle_skip=false
+            duration_seconds=79200
+            if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+              # 22h, not 24h. The soak job shares a concurrency group with
+              # cancel-in-progress, so a 24h soak on a 24h cadence is cancelled
+              # by the next night's launch ~10min before it finishes — losing
+              # its final iteration and its entire artifact upload. 22h leaves
+              # the run time to report before the next one starts.
               should_run=true
-            elif [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -eq 5 ]; then
+              duration_seconds=79200
+              # Don't re-soak code that has already been soaked. If nothing
+              # landed on the branch since the previous window there is nothing
+              # new to learn, and an OCI runner is not worth spending on it.
+              #
+              # Fails OPEN: any API error, empty response or unparseable count
+              # runs the soak. A silently skipped soak is the exact failure this
+              # workflow exists to avoid, so "unsure" must mean "soak".
+              #
+              # The window is anchored to the previous eligible slot, not to a
+              # fixed 24h, because daily windows are not 24h apart: dailies run
+              # Mon-Thu, so Monday's window is four days after Thursday's. A 24h
+              # lookback on a Monday cannot see anything that landed over the
+              # weekend, and would skip the soak on code that has never been
+              # soaked at all — `dev` gets no weekend coverage either, since the
+              # 60h weekend soak targets `master`.
+              if [ "$pacific_weekday" -eq 1 ]; then
+                prev_slot_epoch=$((slot_epoch - 4 * 86400))
+              else
+                prev_slot_epoch=$((slot_epoch - 86400))
+              fi
+              # Two hours of overlap, for two reasons. Slot-aligned windows tile
+              # exactly, so a commit landing on a boundary could fall between
+              # two of them and never be seen. And the arithmetic above is in
+              # epoch seconds, so a window spanning a Pacific DST change lands
+              # an hour off — on the November change, Monday's window would
+              # otherwise start at Thursday 20:30 PT and miss the hour before
+              # it. The margin absorbs both without needing DST-aware date
+              # maths. Erring wide costs at most one redundant soak; erring
+              # narrow is the bug this whole check is meant to avoid.
+              since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
+              new_commits="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                --jq 'length' 2>/dev/null || echo "")"
+              if [ "$new_commits" = "0" ]; then
+                should_run=false
+                idle_skip=true
+                echo "no commits on $target_ref since $since; skipping tonight's soak"
+              else
+                echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+              fi
+            elif [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -eq 5 ]; then
+              # Friday 19:30 + 60h = Monday 07:30 Pacific.
               should_run=true
               duration_seconds=216000
             fi
           fi
           run_benchmarks=false
+          kind=daily
           if [ "$duration_seconds" = "216000" ]; then
             run_benchmarks=true
+            kind=weekend
           fi
-          if [ "$should_run" != "true" ]; then
-            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 22:00 launch window. No soak was attempted; this run's success is not a soak result."
+
+          # Checkpoints: every 07:30 and 13:00 Pacific strictly inside the run.
+          # A soak publishes only when it ends, so without these a 22h nightly
+          # is invisible until the following afternoon and a 60h weekend is dark
+          # for two and a half days. The soak is run as consecutive segments
+          # ending on these instants, with a publish after each.
+          #
+          # Enumerated by Pacific calendar date rather than by adding 86400 to
+          # an epoch: a DST day is 23 or 25 hours long, so epoch arithmetic
+          # would drift the wall-clock time and, on the short day, could skip a
+          # date entirely. Interpreting "<date> 07:30" in the Pacific zone keeps
+          # each checkpoint at the intended local time year round.
+          #
+          # Five slots. A 60h Friday-evening weekend normally needs four (Sat
+          # and Sun, two each), but on the spring-forward weekend the clocks
+          # jump and 60h from Friday 19:30 lands at Monday 08:30 rather than
+          # 07:30 — putting a fifth checkpoint, the Monday-morning one this
+          # schedule exists for, strictly inside the run. A daily uses the
+          # first two and never crosses a transition, since those fall on
+          # Sundays and dailies run Mon–Thu. GitHub cannot generate a variable
+          # number of steps, so unused slots are emitted empty and skip.
+          end_epoch=$((slot_epoch + duration_seconds))
+          base_day="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%F)"
+          checkpoints=()
+          for d in 0 1 2 3; do
+            day="$(date -u -d "${base_day} +${d} days" +%F)"
+            for hm in 07:30 13:00; do
+              cp="$(TZ=America/Los_Angeles date -d "${day} ${hm}" +%s)"
+              # Strictly inside: a checkpoint on the final instant would leave a
+              # zero-length last segment that publishes the same data twice.
+              if [ "$cp" -gt "$slot_epoch" ] && [ "$cp" -lt "$end_epoch" ]; then
+                checkpoints+=("$cp")
+              fi
+            done
+          done
+          cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
+          [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
+          [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
+          [ "${#checkpoints[@]}" -ge 3 ] && cp3="${checkpoints[2]}"
+          [ "${#checkpoints[@]}" -ge 4 ] && cp4="${checkpoints[3]}"
+          [ "${#checkpoints[@]}" -ge 5 ] && cp5="${checkpoints[4]}"
+          # Never drop a checkpoint silently. If the schedule ever grows past
+          # five, the run still works — it just publishes less often than
+          # intended — and this says so instead of leaving it to be noticed.
+          if [ "${#checkpoints[@]}" -gt 5 ]; then
+            echo "::warning::${#checkpoints[@]} checkpoints computed but only 5 slots exist; the last $(( ${#checkpoints[@]} - 5 )) will not publish. Add slots in schedule_gate and matching soak segments."
+          fi
+          if [ "$should_run" = "true" ]; then
+            printf 'checkpoints (%s):\n' "${#checkpoints[@]}"
+            for cp in "${checkpoints[@]}"; do
+              printf '  %s Pacific\n' "$(TZ=America/Los_Angeles date -d "@${cp}" '+%a %F %H:%M')"
+            done
+          fi
+          if [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (no new commits)"
+              echo ""
+              echo "Nothing landed on \`$target_ref\` since the previous window, so this"
+              echo "soak would have re-tested code that was already soaked."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ]; then
+            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 19:30 launch window. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: no-op"
               echo ""
-              echo "This scheduled trigger resolved outside the Pacific 22:00 launch window."
+              echo "This scheduled trigger resolved outside the Pacific 19:30 launch window."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -100,6 +249,12 @@ jobs:
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
             echo "run_benchmarks=$run_benchmarks"
+            echo "kind=$kind"
+            echo "checkpoint_1=$cp1"
+            echo "checkpoint_2=$cp2"
+            echo "checkpoint_3=$cp3"
+            echo "checkpoint_4=$cp4"
+            echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
 
   launch_runner:
@@ -182,7 +337,21 @@ jobs:
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
-    timeout-minutes: 3840
+    # actions: write is needed only so a segment can dispatch the checkpoint
+    # publish workflow. Without it `gh workflow run` is rejected and — because
+    # that dispatch is deliberately fail-soft — checkpoints would silently
+    # never publish while the soak still reported success.
+    permissions:
+      contents: read
+      actions: write
+    # Backstop only — the soak script stops itself at SOAK_DURATION_SECONDS.
+    # Scaled to the kind of run so a stuck daily cannot burn a 64h runner:
+    # daily 79200s (22h) + 2h, weekend 216000s (60h) + 4h. The margin is not
+    # slack: this budget also covers the image build, poetry install and the
+    # post-soak aggregate/alert/upload steps, so a ceiling equal to the soak
+    # duration would kill the job while it uploads its own results. With the
+    # daily soak at 22h the ceiling is a true 24h.
+    timeout-minutes: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && 3840 || 1440 }}
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
       cancel-in-progress: true
@@ -245,30 +414,171 @@ jobs:
           poetry lock --no-update
           poetry install --with integration
 
-      - name: Run soak
-        env:
-          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
-          F1R3FLY_NODE_BINARY: /tmp/rnode
-          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
-          SOAK_DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
-          SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
-          SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
-          SOAK_TARGET_SHA: ${{ steps.target.outputs.sha }}
-          SOAK_RUN_BENCHMARKS: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          SOAK_NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
-          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
-        shell: bash -e {0}
-        run: ci-control/scripts/run-merge-recovery-soak.sh
+      # The soak runs as consecutive segments sharing one output directory, so
+      # results can be published part-way through. The script resumes from its
+      # state file each time — counters, the original start time and iteration
+      # numbering all continue — so the run behaves as one continuous soak.
+      # Unused checkpoint slots are empty and their segments skip; the final
+      # segment carries no deadline and runs to the overall budget.
+      #
+      # A segment that fails does not stop the ones after it: an iteration
+      # failure is a soak result, not a workflow error, and the run must still
+      # reach its end to publish. `steps.target` is read by every segment, so
+      # they stay in this job rather than becoming a matrix.
+      - name: Soak segment 1
+        if: always() && needs.schedule_gate.outputs.checkpoint_1 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-1
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
 
-      - name: Aggregate weekly report + verdict
-        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+      - name: Soak segment 2
+        if: always() && needs.schedule_gate.outputs.checkpoint_2 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-2
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 3
+        if: always() && needs.schedule_gate.outputs.checkpoint_3 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-3
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 4
+        if: always() && needs.schedule_gate.outputs.checkpoint_4 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-4
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 5
+        if: always() && needs.schedule_gate.outputs.checkpoint_5 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-5
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak final segment
+        if: always()
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: final
+          # No deadline: run to the overall budget measured from the original
+          # start. This segment publishes through perf_report, which computes a
+          # real verdict and appends the run to its history series.
+          deadline_epoch: ""
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      # Runs for dailies too. The aggregator needs no benchmark segments — it
+      # emits the passive rollup with a null `active` block — and without this
+      # a daily soak produces no summary at all, so there is nothing to publish
+      # and its numbers die with the 14-day artifact.
+      - name: Aggregate soak report + verdict
+        if: always() && needs.schedule_gate.outputs.should_run == 'true'
         shell: bash -euo pipefail {0}
         env:
           SOAK_DIR: /tmp/merge-recovery-soak
           OUT_DIR: /tmp/merge-recovery-soak/report
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # Non-empty value must be the truthy branch: GitHub treats '' as
+          # false, so `kind == 'weekend' && '' || '-daily'` would yield
+          # '-daily' for BOTH series.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
         run: |
           # Cache-busted so the week-over-week deltas are not computed against
           # a stale CDN copy. Unlike the history fetch this stays soft: a 60h
@@ -277,11 +587,29 @@ jobs:
           # but a non-404 miss is warned about, since a silently absent
           # baseline makes the verdict look clean.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Compared against the same series only. A daily measured against a
+          # 60h weekend baseline would flag a regression purely because the
+          # spans differ.
           base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/soak-baseline.json \
-            "${DASHBOARD_URL}data/latest-summary.json?cb=${cb}")" || base_code=000
+            -o /tmp/soak-history.json \
+            "${DASHBOARD_URL}data/history${SERIES_SUFFIX}.json?cb=${cb}")" || base_code=000
           case "$base_code" in
-            200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
+            200)
+              if jq -e 'type == "array"' /tmp/soak-history.json >/dev/null 2>&1; then
+                jq --arg run_id "$RUN_ID" \
+                  '[.[] | select((.run.status // "complete") != "in_progress")
+                        | select((.run.run_id // "" | tostring) != $run_id)]
+                   | sort_by(.run.date // "") | last // empty' \
+                  /tmp/soak-history.json > /tmp/soak-baseline.json
+                if [ -s /tmp/soak-baseline.json ]; then
+                  export BASELINE_JSON=/tmp/soak-baseline.json
+                else
+                  echo "no completed baseline yet (bootstrap run)"
+                fi
+              else
+                echo "::warning::published history is not a JSON array; verdict computed without week-over-week comparison"
+              fi
+              ;;
             404) echo "no published baseline yet (bootstrap run)" ;;
             *)   echo "::warning::baseline fetch failed (HTTP ${base_code}); verdict computed without week-over-week comparison" ;;
           esac
@@ -323,7 +651,10 @@ jobs:
   perf_report:
     name: Publish Soak Dashboard
     needs: [schedule_gate, soak]
-    if: needs.schedule_gate.outputs.run_benchmarks == 'true' && !cancelled()
+    # Both series publish. Gating this on run_benchmarks made it weekend-only,
+    # so the dashboard's Daily tab had no producer and nightly results expired
+    # with the artifact.
+    if: needs.schedule_gate.outputs.should_run == 'true' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -353,40 +684,106 @@ jobs:
         shell: bash -euo pipefail {0}
         env:
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # See the note on the aggregate step: the non-empty value has to be
+          # the truthy branch, because GitHub treats '' as false.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
+          # Weekend runs once a week, so its series stays small on its own.
+          # Dailies land up to four a week and would grow without bound, so the
+          # series is trimmed to roughly half a year of runs.
+          MAX_HISTORY: ${{ needs.schedule_gate.outputs.kind == 'daily' && '120' || '0' }}
         run: |
           test -s soak-results/report/weekly-summary.json || {
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
-          cp -r ci-control/site/soak-dashboard/. site/
-          # Pages is the only durable store for the history series — soak
-          # artifacts expire after 14 days — and this is the job that appends
-          # to it. Treating a transient fetch failure as "nothing published"
-          # would permanently reset the series to this run alone, so only a
-          # 404 may start an empty history and anything else aborts. The
-          # cache-busting query string stops the CDN serving a copy older
-          # than the last publish, which would drop intervening weeks.
+          cp -r ci-control/.github/dashboard/. site/
+          # Pages is the only durable store for these series — soak artifacts
+          # expire after 14 days — and a Pages deploy replaces the whole site.
+          # So this job must republish BOTH series, not just its own: a daily
+          # run that uploaded only daily files would delete the weekend series
+          # outright. Every published file is therefore fetched and carried
+          # forward, and only this run's own series is overwritten below.
+          #
+          # Treating a transient fetch failure as "nothing published" would
+          # permanently reset a series, so only a 404 may yield an absent file
+          # and anything else aborts. The cache-busting query string stops the
+          # CDN serving a copy older than the last publish, which would drop
+          # intervening runs.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/history.json "${DASHBOARD_URL}data/history.json?cb=${cb}")" || code=000
-          case "$code" in
-            200)
-              jq -e 'type == "array"' /tmp/history.json >/dev/null 2>&1 || {
-                echo "::error::published history.json is not a JSON array; refusing to reset the series"
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+          done
+          # HTTP 200 is not proof of valid content — a CDN or proxy error page
+          # is served with 200 too, and republishing one would corrupt the
+          # series just as thoroughly as dropping it. Every carried-forward
+          # JSON file is checked, not just the histories: a summary or verdict
+          # replaced by an error page breaks the dashboard tab that reads it
+          # and, for a summary, becomes the baseline the next run compares
+          # against.
+          for f in history.json history-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON array; refusing to replace it"
+              exit 1
+            }
+          done
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
+              exit 1
+            }
+          done
+
+          # A 404 is only trustworthy when a series has genuinely never
+          # published. Once its history has entries, every run wrote a summary
+          # and a verdict alongside, so a 404 on those means the fetch lied
+          # rather than that they are absent — and accepting it would publish a
+          # site with that series' tab silently emptied. An empty history is
+          # the legitimate bootstrap case and stays permitted.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
                 exit 1
               }
-              ;;
-            404) echo '[]' > /tmp/history.json ;;
-            *)
-              echo "::error::could not read published history.json (HTTP ${code}); aborting so the series is not reset to this run alone"
-              exit 1
-              ;;
-          esac
-          jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
-            /tmp/history.json soak-results/report/weekly-summary.json \
-            > site/data/history.json
-          cp soak-results/report/weekly-summary.json site/data/latest-summary.json
-          cp soak-results/report/verdict.json site/data/latest-verdict.json
-          cp soak-results/report/perf-report.md site/data/latest-report.md
+            done
+          done
+
+          # Append this run to its own series, leaving the other untouched.
+          # Replace rather than append when an entry for this run already
+          # exists: a re-run reuses github.run_id, so a plain append would add
+          # a second entry for the same night, double-counting it on the chart
+          # and burning a slot of the daily retention cap. Runs whose id is
+          # missing or "unknown" are always appended — they cannot be told
+          # apart, so collapsing them would merge genuinely distinct runs.
+          hist="site/data/history${SERIES_SUFFIX}.json"
+          [ -e "$hist" ] || echo '[]' > "$hist"
+          jq -s --argjson max "$MAX_HISTORY" \
+            '.[0] as $hist | .[1] as $new
+             | ($new.run.run_id // "") as $rid
+             | (if $rid == "" or $rid == "unknown" then $hist
+                else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+             | ($kept + [$new] | sort_by(.run.date)) as $all
+             | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
+            "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
+          mv /tmp/history-merged.json "$hist"
+          cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
+          cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
+          cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -399,13 +796,24 @@ jobs:
 
       - name: Gate on regression verdict
         shell: bash -euo pipefail {0}
+        env:
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
         run: |
           verdict="$(jq -r '.verdict' soak-results/report/verdict.json)"
-          echo "Weekly soak verdict: $verdict"
-          if [ "$verdict" != "pass" ]; then
-            jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
-            exit 1
+          echo "${KIND} soak verdict: $verdict"
+          [ "$verdict" = "pass" ] && exit 0
+          jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
+          # Only the weekend series gates. Dailies vary in span — they stop
+          # early when dev advances — so a run-over-run delta can reflect a
+          # shorter run rather than a real regression. Failing on that would
+          # train people to ignore a red soak, which costs more than the
+          # signal is worth. The verdict is still published, and the dashboard
+          # shows it on the Daily tab.
+          if [ "$KIND" != "weekend" ]; then
+            echo "::warning::Daily soak regressed against the previous daily run — see the dashboard's Daily tab. Not failing the run: only the weekend series gates releases."
+            exit 0
           fi
+          exit 1
 
   notify_failure:
     name: Email Soak Failure Alert

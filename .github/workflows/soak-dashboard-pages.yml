@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
     paths:
-      - site/soak-dashboard/**
+      - .github/dashboard/**
       - .github/workflows/soak-dashboard-pages.yml
   workflow_dispatch:
 
@@ -40,8 +40,10 @@ jobs:
           # Bootstrap/refresh deploy: publish the dashboard shell while
           # preserving any data already published by the weekend soak's
           # perf_report job. First deploy ships an empty history.
+          # .github/dashboard/ is the source; site/ is the ephemeral tree the
+          # Pages artifact is assembled in (gitignored, CI-only).
           mkdir -p site/data
-          cp -r site/soak-dashboard/. site/
+          cp -r .github/dashboard/. site/
           # Pages is CDN-backed, so a plain GET can return a copy cached from
           # before the weekend soak's last publish — and we would then
           # republish that stale copy over the newer data. A per-run query
@@ -51,7 +53,9 @@ jobs:
           # outcome (outage, timeout, rate limit, 5xx) is transient, and
           # treating it as "no data" would republish an empty dashboard
           # over real soak history — so abort instead.
-          for f in history.json latest-summary.json latest-verdict.json latest-report.md; do
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -65,24 +69,49 @@ jobs:
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too. Republishing one would corrupt the data.
-          for f in history.json latest-summary.json latest-verdict.json; do
+          # Shapes, not just parseability — kept identical to the soak
+          # publisher. `jq -e .` accepts a bare string or number, so an error
+          # body that happens to be valid JSON would pass here and be rejected
+          # there, which is how the two drift apart.
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json; do
             [ -e "site/data/${f}" ] || continue
-            jq -e . "site/data/${f}" >/dev/null 2>&1 || {
-              echo "::error::published ${f} is not valid JSON; refusing to republish it"
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
               exit 1
             }
           done
-          if [ -e site/data/history.json ]; then
-            jq -e 'type == "array"' site/data/history.json >/dev/null 2>&1 || {
-              echo "::error::published history.json is not a JSON array; refusing to replace it"
-              exit 1
-            }
-          else
-            echo '[]' > site/data/history.json
-          fi
+          for f in history.json history-daily.json; do
+            if [ -e "site/data/${f}" ]; then
+              jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+                echo "::error::published ${f} is not a JSON array; refusing to replace it"
+                exit 1
+              }
+            else
+              echo '[]' > "site/data/${f}"
+            fi
+          done
+          # Same rule as the soak publisher: once a series' history has
+          # entries, its summary and verdict were written alongside, so a 404
+          # on those is a lying fetch rather than genuine absence. Publishing
+          # anyway would empty that tab. This job only ever carries data
+          # forward, so it has nothing to gain by proceeding on doubt.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
+          done
           test -s site/data/latest-report.md \
             || echo 'No soak report yet — the first successful weekend soak publishes one.' \
               > site/data/latest-report.md
+          test -s site/data/latest-report-daily.md \
+            || echo 'No daily soak report yet — the first successful nightly soak publishes one.' \
+              > site/data/latest-report-daily.md
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
