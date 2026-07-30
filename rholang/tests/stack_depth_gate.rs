@@ -5084,135 +5084,15 @@ fn the_prost_read_ceiling_is_pinned_per_envelope() {
 // ★ THE INVENTORY — acknowledged, not a threshold
 // ---------------------------------------------------------------------------
 
-/// How deep a term a BUILD-side path can carry, as measured elsewhere.
-///
-/// ⚠★★ **`Bisected` IS DELETED (#157), and the reason is that this file used it to pin a
-/// value its own source explicitly refuses to pin.**
-///
-/// `rholang/tests/deploy_depth_ceiling.rs` measures these ceilings and then declines to
-/// assert either number, because *"pinning either number would pin a constant that a
-/// legitimate improvement must then delete"* — it asserts the ORDERING instead. This
-/// inventory transcribed `env_get_deploy` as a bisected **283** anyway, and the tree
-/// subsequently measured **274**. The drift was the predicted consequence of the
-/// transcription, not a surprise.
-///
-/// ★★★ **And re-transcribing 274 would have repaired nothing, which is the part worth
-/// keeping.** The only consumer is
-/// [`the_read_ceiling_binds_and_the_build_side_clears_it`], whose check is
-/// `floor(depth / widest_read) >= ACKNOWLEDGED_HEADROOM` with `widest_read = 33` — so every
-/// depth in `[264, 297)` produces the identical verdict. **The check's resolution is 33
-/// levels against a drift of 9.** A number the gate cannot distinguish from its neighbours
-/// is not being checked; it is being carried.
-///
-/// ⇒ The disposition is a **LOWER BOUND**, always, for every row. That is what the claim
-/// actually needs (*"every build-side path clears the wire with headroom"*), it is what the
-/// source is willing to stand behind, and it is monotone in the right direction: a
-/// legitimate improvement only raises the true ceiling, so the bound stays true and needs no
-/// edit, while a regression that drops the true ceiling below the bound is exactly what
-/// should fire.
-#[derive(Clone, Copy, Debug)]
-enum BuildCeiling {
-    /// Measured to reach at least this depth. ★ A **bound**, never an equality — see the
-    /// type's own doc for why no row may claim a bisected value.
-    AtLeast(usize),
-}
-
-impl BuildCeiling {
-    /// The lower bound, in nesting levels.
-    fn depth(self) -> usize {
-        match self {
-            BuildCeiling::AtLeast(d) => d,
-        }
-    }
-}
-
-/// ★★ **The acknowledged inventory of build-side depth ceilings.**
-///
-/// **Why this is an inventory and not a threshold.** Every row already clears
-/// the read ceiling — by 8.6× at the tightest and by four orders of magnitude
-/// at the loosest. A test that asserted "no build path exceeds what the wire can
-/// carry" would be RED on arrival for every row, and a gate that is red on
-/// arrival gets muted. So the claim asserted is the one that is actually true
-/// and actually worth defending:
-///
-/// > **The wire is the binding constraint, and every build-side path clears it
-/// > with headroom.**
-///
-/// That claim fails in exactly the two ways that matter — a NEW build path
-/// joins without being classified (caught by
-/// [`the_build_side_inventory_is_complete`]), or an existing path's headroom
-/// ratio degrades (caught by [`the_read_ceiling_binds_and_the_build_side_clears_it`]).
-///
-/// Rows are `(path, ceiling, where it was measured)`. None is re-measured here:
-/// re-bisecting an end-to-end deploy ceiling is
-/// `rholang/tests/deploy_depth_ceiling.rs`'s whole job, and a second copy of
-/// that measurement would be a second number to drift.
-const BUILD_DEPTH_INVENTORY: &[(&str, BuildCeiling, &str)] = &[
-    // ★ THE BINDING ONE. A deploy that receives a deep value over a channel is
-    // bounded by `Env::get`'s clone (`substitute_deep_binding_body`), which is
-    // documented there as un-removable: the copy IS the meaning of
-    // substitution.
-    //
-    // ⚠★★ **This row is #157, and its bound is the BAND FLOOR rather than a reading.**
-    // It carried `Bisected(283)`; the tree later measured 274. Both sit inside the only
-    // band the consumer can resolve — `floor(d / 33) >= 8` admits every depth in
-    // `[264, 297)` — so neither number was ever being checked, and re-transcribing 274
-    // would have changed nothing except the date on the drift.
-    //
-    // 264 is `widest_read * ACKNOWLEDGED_HEADROOM`: the weakest claim that still carries
-    // the inventory's thesis. It needs no edit when the true ceiling moves within the
-    // band, which is what its own source asked for when it declined to pin a value —
-    // *"pinning either number would pin a constant that a legitimate improvement must
-    // then delete."*
-    (
-        "env_get_deploy",
-        BuildCeiling::AtLeast(264),
-        "rholang/tests/deploy_depth_ceiling.rs (bound, NOT a transcribed reading — see #157)",
-    ),
-    (
-        "plain_deploy",
-        BuildCeiling::AtLeast(6_831),
-        "rholang/tests/deploy_depth_ceiling.rs",
-    ),
-    // `inj_attempt`'s `set-initial-cost` phase, after `into_source_process`
-    // removed the `<Par as Clone>` copy: 0 B/level, flat 32,768 B from depth 4
-    // to 4,096.
-    (
-        "inj_attempt set-initial-cost",
-        BuildCeiling::AtLeast(1_048_576),
-        "this file, `inj_attempt_clone_body`",
-    ),
-    // Source-text ingress. `normalize` is CONVERTED (43,542 → 0 B/level debug,
-    // 7,261 → 0 release), so it has no stack slope; the figure is the deepest
-    // source a 2 MiB worker was observed to normalize, not a bisected wall.
-    (
-        "normalize (source-text ingress, pre-metering)",
-        BuildCeiling::AtLeast(39_960),
-        "rholang/tests/stack_depth_probe.rs; audit evidence row E63",
-    ),
-];
-
-/// The acknowledged headroom floor: the tightest build-side ceiling divided by
-/// the loosest read ceiling, rounded down. Recorded at
-/// $`283 / 33 = 8.57`$, so the floor is **8**.
-///
-/// ⚠ This is a **tripwire, not a pass** — the same standing this file gives
-/// [`assert_slope_below`]. It certifies only that the relationship has not got
-/// *worse*; it does not certify that 283 is a comfortable number.
-///
-/// ⚠★ **The 283 in that derivation is the stale value #157 is about** — the tree has since
-/// measured **274** — and the constant is nonetheless correct and stays: $`274 / 33 = 8.3`$,
-/// which still floors to **8**. That is not luck. It is the same resolution argument that
-/// makes the transcription pointless in the first place: the check cannot distinguish any
-/// depth in $`[264, 297)`$, and both values sit inside it. The derivation is left reading 283
-/// rather than silently updated to 274, because the number it was taken from is part of the
-/// record and **annotating beats overwriting**.
-///
-/// ★ The ratchet's DIRECTION is what must be preserved: it may only ever go **UP**, as
-/// `UNMEASURED_TRAVERSALS` may only go down. Raising it claims the relationship improved and
-/// must arrive with the measurement that shows it; lowering it is accepting a regression, and
-/// there is no form of words that makes that a repair.
-const ACKNOWLEDGED_HEADROOM: usize = 8;
+// ★★ The build-side bounds moved to `build_depth_bounds.rs` so that ONE definition is
+// shared with `deploy_depth_ceiling.rs`, which MEASURES these ceilings and can therefore
+// check each measurement against its bound at the point of measurement. See that module's
+// header for why a file channel was rejected: its failure mode when the file is absent is a
+// SILENT SKIP, and a gate that goes green having checked nothing is the defect this campaign
+// exists to close.
+#[path = "build_depth_bounds.rs"]
+mod build_depth_bounds;
+use build_depth_bounds::{BuildCeiling, ACKNOWLEDGED_HEADROOM, BUILD_DEPTH_INVENTORY};
 
 /// ★★ **The wire binds; the build side clears it — and by how much is pinned.**
 #[test]

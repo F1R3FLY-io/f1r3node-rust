@@ -57,6 +57,13 @@ use models::rhoapi::{Expr, Par};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
+// ★ ONE definition of the build-side bounds, shared with `stack_depth_gate.rs`.
+// See that module's header for why the bound lives beside the measurement rather
+// than being transcribed into the gate (#157).
+#[path = "build_depth_bounds.rs"]
+mod build_depth_bounds;
+
+
 // ---------------------------------------------------------------------------
 // The production worker stack, and the one knob that can hide it
 // ---------------------------------------------------------------------------
@@ -399,5 +406,29 @@ fn the_deploy_depth_ceiling_at_a_production_worker_stack() {
          traversals are a strict SUBSET of it — stopped at {plain}. A superset of \
          traversals cannot have the higher ceiling, so one of the two fixtures is not \
          carrying the depth it claims."
+    );
+
+    // ★★★ **#157's remaining half: the bound is checked WHERE THE MEASUREMENT IS.**
+    //
+    // This test still declines to PIN either number — the paragraph above says why, and that
+    // stands. What it can honestly do, and now does, is check each reading against the LOWER
+    // BOUND that `stack_depth_gate.rs`'s headroom thesis rests on.
+    //
+    // The bounds live in `build_depth_bounds.rs`, included by both binaries, so there is ONE
+    // definition rather than a transcription. That is the whole repair: the gate used to
+    // carry a copy of these numbers and the copy drifted — `env_get_deploy` was held as 283
+    // while the tree measured 274 — exactly as this test's own refusal to pin them predicted.
+    //
+    // ⚠ Turning the gate's rows into bounds removed the drifting value but left nothing
+    // comparing a bound to a measurement, so a REGRESSION below the bound would have passed
+    // unnoticed. A bound nothing checks is a comment. This is the check.
+    build_depth_bounds::assert_measured_clears_bound("plain_deploy", plain);
+    build_depth_bounds::assert_measured_clears_bound("env_get_deploy", env_get);
+    println!(
+        "    bounds cleared: plain_deploy {} >= {}, env_get_deploy {} >= {}",
+        plain,
+        build_depth_bounds::bound_for("plain_deploy").expect("plain_deploy is inventoried"),
+        env_get,
+        build_depth_bounds::bound_for("env_get_deploy").expect("env_get_deploy is inventoried"),
     );
 }
