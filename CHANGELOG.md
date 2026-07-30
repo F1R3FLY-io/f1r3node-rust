@@ -4,6 +4,19 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.33] - 2026-07-30
+
+### Bug Fixes
+
+- require both workflows to pin the OCID; never write tags on a failed read
+- close the non-finite deadline hole in the reaper's exemption
+- retry the reaper tag through OCI's provisioning conflict
+
+### Documentation
+
+- cross-reference the pinned compartment OCID; record TASK-010-8
+
+
 ## [0.4.32] - 2026-07-30
 
 ### Bug Fixes
