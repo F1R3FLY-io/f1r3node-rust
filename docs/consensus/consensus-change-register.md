@@ -96,7 +96,9 @@ described, and decrementing would have hidden that (see the note under §4.1). �
 divergence.** The one that was (**CBR-L09** — float division by zero answering `error` rather than
 $`\pm\infty`$) was ruled kept and then, the same day, **reversed and widened to every float arithmetic
 operator**, because IEEE 754 §7.3 *defines* the result and the bug-fix carve-out that licenses divergence
-was therefore unavailable; it is re-classified **CONVERGENT** and retains three named residuals. A further
+was therefore unavailable; it is re-classified **CONVERGENT**. ★ Of the three residuals it retained, the
+third — `NaN` **comparison** — was itself ruled on and **RESOLVED 46 minutes later** (`19510082`); the two
+that survive are properties of the float **carrier**, not of any operator. A further
 **21 commits touching consensus-critical paths were examined and
 rejected** as not consensus-visible; each is listed with its typed reason in
 [Appendix B](#appendix-b--the-exemption-table), so that a reviewer can judge whether the sweep applied a
@@ -593,7 +595,7 @@ is a *future* fork, not a present one).
 | [CBR-L06](#cbr-l06) | L | Published diagnostics stop being derived `Debug` dumps | `2d0ec9b1`, `df57a828` | ○ | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | ? | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
-| [CBR-L09](#cbr-l09) | L | ★ **DIVERGENCE WITHDRAWN AND WIDENED** — **every** float arithmetic arm ($`+`$, $`-`$, $`\times`$, $`\div`$, unary $`-`$) answers IEEE 754 | `b77e657c`, `ab885336` ⚠ | ● | ● | ● | ● | ● | ● | ○ | CONVERGENT | **W** |
+| [CBR-L09](#cbr-l09) | L | ★ **DIVERGENCE WITHDRAWN AND WIDENED** — **every** float arithmetic arm ($`+`$, $`-`$, $`\times`$, $`\div`$, unary $`-`$) answers IEEE 754, and comparison follows §5.11 | `b77e657c`, `ab885336` ⚠, `19510082` | ● | ● | ● | ● | ● | ● | ○ | CONVERGENT | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L11](#cbr-l11) | L | The literal-domain and canonical-surface repairs | six commits, see body | ● | ○ | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -624,7 +626,8 @@ which is a projection of a table must be computed by a machine that reads the ta
 ★ **The register now records no live deliberate divergence.** The DIVERGENT count fell from 1 to **0**
 when **CBR-L09**'s ruling was reversed on 2026-07-29 and the entry was re-statused CONVERGENT. ⚠ This is
 a claim about the *register*, not about the *implementations*: **CBR-L09** retains two **carrier**
-divergences and one filed-not-fixed **comparison** divergence as residuals, and they are listed in its
+divergences as residuals (a third, the `NaN` **comparison** divergence, was ruled on and resolved the same
+evening by `19510082`), and they are listed in its
 body. A reviewer reading "zero DIVERGENT" as "no differences remain" would be misreading it.
 
 ⚠ **Six entries are outside the anchored range** `7293d57c..dc383ed1`: **CBR-027** (`6ff46f8a`,
@@ -4483,8 +4486,8 @@ one**, which is a fact about the *register's* maintenance model, not only about 
 
 | | |
 |---|---|
-| Commit(s) | `b77e657c` — *fix(rholang)!: float ÷0 answers IEEE-754 — RULING 2 REVERSED, and it took more than deleting the guard* (division only); `ab885336` — *fix(rholang,runtime)!: the ruling extended to EVERY float arm — and a FOURTH arm the list did not name* (the other four arms, the shared adapter, and the repair of an uncompilable `HEAD`) ⚠ see also `2eebf722`, which broke `HEAD` |
-| Status | **CLOSED** — the divergence is withdrawn and implemented. ⚠ Two **carrier** residuals and one filed-not-fixed **comparison** residual survive; they are listed in [the residuals](#the-residuals--the-carriers-divergence-not-the-operators) and they are *not* this entry's divergence. |
+| Commit(s) | `b77e657c` — *fix(rholang)!: float ÷0 answers IEEE-754 — RULING 2 REVERSED, and it took more than deleting the guard* (division only); `ab885336` — *fix(rholang,runtime)!: the ruling extended to EVERY float arm — and a FOURTH arm the list did not name* (the other four arms, the shared adapter, and the repair of an uncompilable `HEAD`); `19510082` — *fix(rholang)!: float comparison is a NUMERIC PREDICATE, not structural identity — two relations, two questions* (residual 3, resolved) ⚠ see also `2eebf722`, which broke `HEAD` |
+| Status | **CLOSED** — the divergence is withdrawn and implemented. ⚠ **Two** residuals survive, and both are properties of the float **carrier** rather than of any operator; a **third**, the `NaN` comparison divergence, was filed by `ab885336` and **resolved 46 minutes later** by `19510082`. All three are listed in [the residuals](#the-residuals--the-carriers-divergence-not-the-operators). |
 | Direction | **CONVERGENT** ([§2.6](#26-direction-of-change)) — the vocabulary entry was added for this entry |
 | Evidence grade | WITNESSED |
 | Files | `mettail-rust` at `ab885336`: the adapter `nan_is_a_value` at `runtime/src/safe_arith.rs:633`, the `QuietNaN` trait at **:560** with its four impls at **:565** (`f64`), **:570** (`f32`), **:575** (`CanonicalFloat64`), **:580** (`CanonicalFloat32`); the export at `runtime/src/lib.rs:125`; the **five** `CastFloat` arms in `languages/src/rholang.rs` — `Add` **:1782**, `Sub` **:1845**, `Mul` **:1903**, `Div` **:2042**, unary `Neg` **:2141**. ⚠ **Cited at the SHA, not at the working tree**: that file is under concurrent edit and the same five call sites sit at **:1854**, **:1917**, **:1975**, **:2114**, **:2213** in the tree at the time of writing. F1r3node (unchanged, and the floor): `rholang/src/rust/interpreter/reduce.rs`, the `(GDouble, GDouble)` arms of `combine_plus` / `combine_minus` / `combine_mult` / `combine_div` — bare `f64::from_bits` arithmetic with **no guard** — and `combine_mod`'s refusal at **:3424**. **DERIVED** (read at both sides). |
@@ -4691,7 +4694,8 @@ Three properties make this the right shape, and each is a rejected alternative:
 
 ##### The residuals — the CARRIER's divergence, not the operators'
 
-⚠ **Three differences survive, and none of them is this entry's subject.** They are properties of the
+⚠ **Three differences were recorded here; TWO survive.** None of the three is this entry's subject — the
+two that remain are properties of the
 **float carrier** — the price of a term algebra whose members have usable `Eq` / `Hash` / `Ord` — not of
 the five arithmetic arms. Recording them here rather than closing the entry silently is the point.
 
@@ -4699,19 +4703,121 @@ the five arithmetic arms. Recording them here rather than closing the entry sile
 |---|---|---|---|---|
 | 1 | **signed zero collapses at PARSE** | `float(-0.0,64)` parses to `FloatLit(0.0)`, so `1.0 / -0.0` is $`+\infty`$ and `-0.0 / 1.0` is $`+0.0`$ | $`-\infty`$; and $`-0.0`$'s bits preserved | `CanonicalFloat64::canonicalize` (`runtime/src/canonical_float.rs:35-42`) maps $`-0.0 \mapsto +0.0`$. A signed zero is **not a representable `Float` term**, so IEEE's sign rule has no operand to act on. `safe_neg` normalises the same way. |
 | 2 | **`NaN` bit pattern** | `f64::NAN`'s pattern | the hardware's | `QuietNaN::quiet_nan()` names one `NaN`; IEEE §6.2 permits any quiet `NaN` payload, so this is conformant but not bit-identical. |
-| 3 | ★ **`NaN` comparisons follow the carrier, not IEEE §5.11** — `NaN == NaN` is `true`, `NaN != NaN` is `false`, `NaN > 1.0` is `true`, `NaN >= NaN` is `true` (`NaN < 1.0` is `false`, agreeing coincidentally) | as stated | all `false`; f1r3node's `float_nan_comparisons_return_false` and `float_nan_equality_follows_ieee754` are both green | `CanonicalFloat64`'s `PartialEq` is reflexive on `NaN` and its `Ord` sorts `NaN` last (`canonical_float.rs:94-135`), deliberately, so a term has a usable `Eq`/`Hash`/`Ord`. Note `binop_to_safe_method` does **not** rewrite `==` / `>` / `<`, so unlike the arithmetic arms these are not safe-ified behind the author's back. |
+| ~~3~~ | ★ **`NaN` comparisons followed the carrier, not IEEE §5.11** — `NaN == NaN` was `true`, `NaN != NaN` `false`, `NaN > 1.0` `true`, `NaN >= NaN` `true` (`NaN < 1.0` was `false`, agreeing coincidentally) | **RESOLVED by `19510082`** — see below | all `false` per §5.11 | `CanonicalFloat64`'s `PartialEq` is reflexive on `NaN` and its `Ord` sorts `NaN` last (`canonical_float.rs:94-135`) — and **that carrier is unchanged**; the six comparison *arms* now reach past it with `.get()`. |
 
-★★ **Residual 3 is a divergence these rulings ACTIVATED, and it is FILED, NOT FIXED.** `NaN` was
-previously **unreachable** — every path to it answered `error` or stuck — so the comparison operators'
-`NaN` behaviour was unobservable. It is observable now. ⚠ The arm-level fix is two lines (compare
-`x.get()` to `y.get()`) and needs no carrier change, **but** it would make Rholang's `==` disagree with the
-term algebra's own equality: two `NaN` terms would be `==`-unequal yet **indistinguishable** to pattern
-matching, to a `Map` key and to `SemanticHash`. That is a semantics decision about *what `NaN` is in this
-language*, not a bug fix, so it is filed and pinned
-(`nan_comparisons_follow_the_carrier_not_ieee754_and_that_is_filed`) rather than patched. `int(NaN, 64)`
-and `int(` $`\pm\infty`$ `, 64)` were checked at the same time and both correctly answer `error`, so the casts
-opened no hole. **CITED** (`ab885336`). $`\Rightarrow`$ **It owes its own register entry when it is ruled on**, and it is
-recorded in [§6.3](#63-known-open-questions).
+★★ **Residual 3 was a divergence these rulings ACTIVATED, and it has since been RESOLVED — this row is an
+amendment made within four hours of the row being written.** `NaN` was previously **unreachable** — every
+path to it answered `error` or stuck — so the comparison operators' `NaN` behaviour was unobservable. It
+became observable, and was ruled on and fixed by `19510082` (*fix(rholang)!: float comparison is a NUMERIC
+PREDICATE, not structural identity — two relations, two questions*, 2026-07-29T21:13:28-04:00).
+
+**The ruling, verbatim with its date.**
+
+> **2026-07-29** — *"follow IEEE at the operator level. `NaN == NaN` $`\rightarrow`$ false,
+> `NaN != NaN` $`\rightarrow`$ true, `NaN > 1.0` $`\rightarrow`$ false, `NaN >= NaN` $`\rightarrow`$
+> false."* ⚠ *"And the CARRIER stays exactly as it is."*
+
+⚠ The ruling's four arrows are rendered as math spans rather than as the literal rightwards-arrow
+character (U+2192) it was typed with.
+They typeset to the same glyph, so the quotation is faithful as **rendered**; the substitution is recorded
+because a quotation labelled *verbatim* should disclose any transformation applied to it, however
+presentational.
+
+★★ **The resolution is a SPLIT, and the split is not a compromise — it is the correct modelling of two
+distinct questions.** The apparent inconsistency the filed row worried about dissolves once the two
+relations are named:
+
+| relation | the question it answers | governing law | site |
+|---|---|---|---|
+| Rholang's `==` `!=` `<` `<=` `>` `>=` on floats | *"how do these two numbers compare?"* — a **numeric predicate** | IEEE 754 §5.11: a `NaN` is **unordered**, so every comparison but `!=` is false | the six `CastFloat` comparison arms, at `19510082:languages/src/rholang.rs` **:1499** (`Eq`), **:1566** (`Ne`), **:1626** (`Gt`), **:1677** (`Lt`), **:1728** (`GtEq`), **:1779** (`LtEq`) |
+| pattern matching, a term-keyed container, `HashSet` membership, `Proc::semantic_hash` | *"are these the same term?"* — **structural identity** | must be an **equivalence relation**: reflexive, symmetric, transitive | `CanonicalFloat64`'s `PartialEq` / `Ord` (`canonical_float.rs:94-135`), **untouched** |
+
+$`\Rightarrow`$ **IEEE equality is deliberately irreflexive on `NaN`, so it is not an equivalence relation
+and a term algebra cannot be built on it.** The two must differ.
+
+⚠⚠ **AND THE COST OF CONFLATING THEM IS MEASURED, NOT ARGUED — this is the strongest evidence in the
+residual.** The structural cell was driven RED by patching `CanonicalFloat64::PartialEq` to
+`self.0 == other.0`, i.e. by making the *carrier* follow IEEE. The failure was **not** an assertion about
+map keys. It was
+
+```text
+generated Dovetail saturation for language Rholang stopped before convergence: IterationLimit
+```
+
+on the very first fold of `0.0 / 0.0`. **The rewrite engine stops terminating.** Saturation recognises a
+fixpoint by comparing terms, and *a term that is not equal to itself can never be recognised as unchanged.*
+$`\Rightarrow`$ **The reflexive carrier is not a convenience for containers; it is a precondition for the
+fold converging at all.** **MEASURED** (`19510082`).
+
+★ **Upstream has the same split — verified from source, because the argument depended on it.**
+
+| | upstream site | what it does |
+|---|---|---|
+| numeric | `combine_relop`'s `GDouble` arm, `reduce.rs:3146-3162` | reads `if f1.is_nan() \|\| f2.is_nan() { GBool(false) }` **before** it ever calls `partial_cmp`, so all four ordered operators are IEEE; `combine_eq` / `combine_neq` (`:3734`, `:3752`) consult `par_contains_nan_double` (`:9622`) |
+| structural | `models/src/main/protobuf/RhoTypes.proto:269` — `fixed64 g_double = 34; // IEEE 754 f64 stored as raw bits` | `GDouble(u64)`'s prost-derived `PartialEq` / `Hash` compare **bit patterns**, so two same-bit `NaN`s are structurally equal upstream too |
+
+**DERIVED** (all four read at `HEAD`). ⓘ Worth recording because it was surprising: upstream *needs* an
+explicit `NaN` branch for the ordered operators, because it routes through `partial_cmp` whose `None` it
+would otherwise map to *"equal"* — whereas Rust's native `f64` comparison is already IEEE, so the MeTTaIL
+fix needs no special-casing at all and `x.get() > y.get()` is correct by construction.
+
+**Site count: SIX arms, enumerated from the grammar rather than from a list of operators.** ★ Unlike the
+arithmetic arms this was a **plain** fix, not an adapter problem: `binop_to_safe_method`
+(`rust_code_rewrite.rs:206-215`) maps only `+ - * / %` and unary `- !`, so `==` / `<` / `>` fall through and
+are **not** safe-ified behind the author's back; `.get()` is likewise untouched by `rewrite_method_call`.
+⚠ The other **fourteen** direct comparison arms were verified correct and untouched — every one carries
+`Fixed`, `Str` or `Bool` (`:1503`–`:1787`), none of which has a `NaN`, so comparing the carrier value
+directly is right for them and only `Float` needed to reach past it. **MEASURED** (`19510082`).
+
+★ **The split is asserted in BOTH directions**, which is the point of the ruling — one cell would only have
+proved that the fix does *something*:
+`float_comparison_is_a_numeric_predicate_and_follows_ieee754` (13 IEEE rows across all six operators, both
+operand orders where order matters, **3 infinity controls** so that perfectly-ordered $`\pm\infty`$ is not
+swept up by the `NaN` rule, and a 12-row floor of ordinary comparisons asserting **both** verdicts on each
+operator); and `two_nan_terms_stay_structurally_identical_and_that_is_deliberate` — ⚠ *"the one a future
+reader will assume is broken and will fix"*, which says so **at the site where that change would be made**.
+It asserts that two `NaN` terms are `term_eq` (the relation the spatial matcher uses), that a `NaN` from
+$`0/0`$ is `term_eq` to a `NaN` from $`\infty - \infty`$ (different §7.2 invalid operations, same canonical
+bit pattern), that they `semantic_hash` equally, and that a value stored under one is retrievable by the
+other — with controls that a `NaN` term is **not** `term_eq` to `1.0` and their hashes differ, so neither
+family holds vacuously.
+
+**Guards watched RED, one build per operator — six separate builds, each reverting exactly one arm.** ★ The
+`Lt` row is the instructive one and it justifies a decision in the test: it had to fire on `1.0 < NaN`, the
+**reversed** order, because `NaN < 1.0` is coincidentally `false` under the carrier's `Ord` too (`NaN`
+sorts last). $`\Rightarrow`$ *An arm-level bug in `<` is invisible from one operand order*, which is why both orders are
+asserted. **CITED**.
+
+**Axis effect of the resolution: `verdict` alone.** An `if` or `match` on a float comparison with a `NaN`
+operand now takes the other branch. Computed **value** is unchanged (only the boolean a comparison yields
+moves), **bytes** and **post-state hash** are unchanged (no encoding, tag or normalized-term shape is
+touched), and **acceptance** is unchanged. ★ Programs that never produce a `NaN` are **bit-identical**: the
+arms differ only on the unordered case. And since `NaN` became reachable at all only through `b77e657c` and
+`ab885336`, the divergence closed here was **latent and unreachable in every prior release** — newly
+*observable*, not newly *created*. It therefore adds no `●` cell beyond the `T` this entry already carries,
+which is why it is a sub-entry rather than a 45th entry. **CITED** (`19510082`).
+
+⚠ **Two further carrier notes, recorded so a later reader does not have to re-derive them.**
+`CanonicalFloat32` carries a **byte-identical** `PartialEq` / `Ord` pair, so if it ever becomes a grammar
+carrier it inherits the same split and needs the same six arms; and `CanonicalFloat64` is currently the
+**only** float carrier in any grammar (`rholang.rs:84`, `![f64] as Float` — `calculator.rs:18` declares one
+but has **zero** `CastFloat` arms), whereas `QuietNaN` covers four carriers because `SafeArith` is a
+general-purpose runtime library rather than because four appear in a grammar. **MEASURED** (`19510082`).
+
+Finally: `int(NaN, 64)` and `int(` $`\pm\infty`$ `, 64)` were checked while the arithmetic rulings landed and
+both correctly answer `error`, so the casts opened no hole. **CITED** (`ab885336`).
+
+★★ **This amendment is itself a drift datum, and the register should own it rather than absorb it.** The
+row above was written as *"FILED, NOT FIXED"* against `ab885336` (20:27) and was falsified by `19510082`
+(21:13) — **46 minutes later**, and before this document was first saved with the row in it. It is the
+third staleness incident in two days ([§7.6](#76--four-findings-about-what-can-be-pinned-at-all) finding
+2 records the first two) and the **fastest**. ⚠ Note which proposed clause would have caught it: **neither**.
+Clause 8 reads an entry's `Status`, and this entry's status was already correct; clause 9 reads `file:line`
+coordinates, and the ones cited still resolved. What went stale was a **prose claim about the world**
+(*"not fixed"*), and no `git`-only check can decide that. $`\Rightarrow`$ **A fourth finding, stated
+plainly: some staleness is not mechanically detectable, and for that residue the only remedy is that a
+Surface-L commit be able to write here directly** — which is [§7.5](#75-first-extensions) extension 6, and
+this incident is its strongest justification.
 
 ⚠ **Residuals 1 and 2 are asserted, not merely described**, so a carrier change goes RED:
 `signed_zero_is_the_carriers_divergence_and_it_is_pinned` records six rows carrying **both** answers and
@@ -5280,7 +5386,7 @@ revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was adde
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **2** | **CBR-019**, **CBR-019b** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
-| DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries three residuals. |
+| DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
 | **Total** | **44** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
@@ -5411,7 +5517,7 @@ who observed it.
 | 4 | `#109 residual 3` — a peer-steerable `decode_trie_path(..).unwrap_or(..)`, reachable via an `EZipper.current_path` that is not a valid codec path, and `current_path` crosses the wire as `repeated bytes`. | campaign ledger | **RULED** *"stuck term"* (owner, 2026-07-29T14:04:34Z), **not started**. It is not in this register because no change has been made; when it lands it becomes an entry with Axis 1 and Axis 2 moving. |
 | 5 | Does MeTTaIL's `last` reuse `nth`'s price, as F1r3node's does? | **CBR-L07** | **UNVERIFIED** — the one `?` cell in the summary table. |
 | 6 | Two CI jobs lack the f1r3node sibling checkout, so the cross-repository agreement **CBR-L10** rests on is not gated. | campaign ledger | ⚠ **OPEN.** |
-| 7 | ★ **What is `NaN` in MeTTaIL's Rholang?** Its comparisons follow the *carrier* (`NaN == NaN` is `true`, `NaN > 1.0` is `true`) rather than IEEE 754 §5.11 (all `false`), and the arm-level fix would make `==` disagree with the term algebra's own equality — two `NaN` terms `==`-unequal yet indistinguishable to pattern matching, to a `Map` key and to `SemanticHash`. | **CBR-L09** residual 3 | ⚠ **OPEN — a semantics decision, filed not fixed.** It became *observable* only because **CBR-L09**'s rulings made `NaN` reachable, so this is a divergence the repair **activated**. Pinned by `nan_comparisons_follow_the_carrier_not_ieee754_and_that_is_filed`. It owes its own entry when it is ruled on. |
+| 7 | ★ **What is `NaN` in MeTTaIL's Rholang?** Its comparisons followed the *carrier* (`NaN == NaN` was `true`) rather than IEEE 754 §5.11 (all `false`), and the naive arm-level fix would have made `==` disagree with the term algebra's own equality. | **CBR-L09** residual 3 | ★★ **CLOSED — ruled and fixed by `19510082`, 46 minutes after it was filed as open.** The answer is a **split**: the six comparison arms follow IEEE §5.11 (a numeric predicate) while the carrier keeps its reflexive `PartialEq` and `NaN`-last `Ord` (structural identity, which must be an equivalence relation). ⚠ Making the *carrier* follow IEEE was **measured** and it stops the rewrite engine terminating — `IterationLimit` on the first fold of `0.0 / 0.0`, because a term unequal to itself can never be recognised as a fixpoint. Upstream has the identical split. Recorded in full under [CBR-L09](#cbr-l09)'s residual 3. |
 | 8 | **MeTTaIL cannot construct a byte array at all** — it has `toByteArray` (a pure constructor with no fold body) and lacks all eight of upstream's byte-producing methods, so `"deadbeef".hexToBytes()` is unsayable. | **CBR-L13** blast-radius enumeration | ⚠ **OPEN**, and *larger* than the byte-literal question it was found under. It is why **CBR-L13**'s byte movement is zero, and it is the real alignment work. |
 | 9 | **How should a `GByteArray` render?** Upstream is internally inconsistent — `pretty_printer.rs:2860` emits **bare hex** while `par_to_sexpr.rs:107` emits `0x…` — and *neither* form is parseable by upstream's own grammar, which has no byte-array literal. | **CBR-L13** evidence | ⚠ **OPEN.** Classified **BUG FIX** (upstream is a floor on semantics; its bugs are ours to fix), but the remedy is a **grammar** decision, not a printer patch. ★ It converts "MeTTaIL cannot render a `Bytes`" from a MeTTaIL gap into a **shared** one, which is why the held `![Vec<u8>] as Bytes` carrier is blocked on a design rather than on a token. |
 | 10 | **Is the test genesis builder's `post_state_hash` non-determinism confined to the test builder?** | **CBR-030** evidence; `719f2432` | ⚠ **OPEN, and the most consequential of these.** A consensus network whose genesis post-state depends on the run cannot agree on genesis. Leading hypothesis, carrying exactly the weight of a hypothesis: `GenesisParameters` holds `bonds: HashMap<PublicKey, i64>` (`genesis_builder.rs:175-177`), and Rust's `HashMap` iteration order is seeded per process, so any genesis term built by iterating it varies run to run. ★ Note the **sibling shape** in the same workspace on the same day: **CBR-L12** (`mettail-rust f5b2e820`), *"the two sorts turn out to have been MASKING a run-varying order"* — the same defect class, found independently, in two repositories. |
@@ -5693,7 +5799,7 @@ the machine-readable index and this document. ⚠ Every step is a set operation 
 file; none requires a build, a network call, or a judgement — which is the property
 [§7.3](#73-why-this-design-and-not-the-alternatives) trades everything else for.
 
-⚠ **Status: DESIGNED, NOT BUILT** — and see [§7.6](#76--three-findings-about-what-can-be-pinned-at-all)
+⚠ **Status: DESIGNED, NOT BUILT** — and see [§7.6](#76--four-findings-about-what-can-be-pinned-at-all)
 finding 2 for two clauses this algorithm is now known to be *missing*, both discovered by a
 naturally-occurring drift that all seven clauses above would have passed.
 
@@ -5821,11 +5927,13 @@ dictionary. **Status: DESIGNED, NOT BUILT.**
    `mettail-rust` that the gate reads, or a `[[pending]]` table in this file that a Surface-L commit may
    append to without holding the whole document.
 
-### 7.6 ★ Three findings about what can be pinned at all
+### 7.6 ★ Four findings about what can be pinned at all
 
 These are **findings**, not changes: nothing in the code moved because of them. They belong to the
 maintenance story because each one constrains what a gate is *able* to check, and a gate specified against
-an unpinnable artefact fails open.
+an unpinnable artefact fails open. ★ Findings 1–3 were derived while writing the five owed entries;
+finding 4 was forced by an event that happened **during** the writing, which is the most direct evidence
+this section could have of the problem it describes.
 
 #### Finding 1 — no artefact of the genesis build is currently stable enough to pin
 
@@ -5900,6 +6008,44 @@ upstream"* (impossible: upstream has two answers and neither parses) to *"design
 different work item with a different owner and a different reviewer. $`\Rightarrow`$ **A gap that both implementations
 share is not a divergence, and filing it as one would send it to the wrong queue.**
 
+#### Finding 4 — some staleness is not mechanically detectable, and this one has a witness
+
+⚠⚠ **A residual recorded as *"FILED, NOT FIXED"* was falsified 46 minutes after the commit it was written
+against.** [CBR-L09](#cbr-l09)'s residual 3 — the `NaN` comparison divergence — was filed by `ab885336`
+(2026-07-29T20:27:28-04:00) and ruled on and fixed by `19510082` (**21:13:28**), which is *before* this
+document was first saved carrying the row. It is the **third** staleness incident in two days (finding 2
+records the first two) and by a wide margin the fastest.
+
+★ **The finding is which clauses would have caught it: none of the five now specified.**
+
+| clause | reads | would it have fired? |
+|---|---|---|
+| 2 · coverage ([Algorithm 1](#72-the-design-and-why-this-one)) | whether a commit appears in some row | **No.** `19510082` touches `languages/src/rholang.rs`, already named by this entry's row. |
+| 5 · complete axis answers | whether seven cells are present | **No.** All seven were present and all seven were **correct** — the resolution moves only the `T` cell this entry already carried. |
+| 8 · in-flight staleness (proposed) | an entry's `Status` against `git` ancestry | **No.** The entry's status was `CLOSED` and remained correct. |
+| 9 · `file:line` re-derivability (proposed) | whether a cited coordinate still contains its token | **No.** Every coordinate cited still resolved. |
+| 4 · derived-figure agreement ([Algorithm 2](#75-first-extensions)) | stated figures against the table | **No.** The entry count did not change; a sub-entry is not a row. |
+
+$`\Rightarrow`$ **What went stale was a prose claim about the state of the world** — *"not fixed"* — and no
+`git`-only, decidable check can evaluate that. It is not a gap in the gate's design; it is **outside the
+class of properties a gate of this kind can have**, and saying so is more useful than proposing a tenth
+clause that would not work either.
+
+★ **The remedy is therefore organisational, not mechanical, and it is already specified:**
+[§7.5](#75-first-extensions) extension 6 — *give a Surface-L change a path into this file.* Every one of
+the three incidents has the same shape: a `mettail-rust` commit could not amend the register (no register
+there, and this file held by another agent), so it described its entry in a commit message and the
+transcription happened later, by a different author, from a snapshot. ⚠ **The window between the commit and
+the transcription is exactly the interval in which the register is knowingly wrong**, and it is the only
+variable any of these three incidents share. Closing it removes the class; no clause can.
+
+⓵ **A candidate mechanism, stated concretely enough to be argued with.** Add a `[[pending]]` array to
+`docs/consensus/register.toml` that a Surface-L commit may **append** to without reading or rewriting the
+prose — `{ sha, surface, one_line, axes_claimed, owed_to }` — and have [Algorithm 1](#72-the-design-and-why-this-one)
+fail while any `[[pending]]` row is older than one working day. An append-only array has no merge conflict
+with a concurrent writer, which is the property that makes it usable from a commit that cannot take the
+document's lock.
+
 ---
 
 ## 8. Conclusions
@@ -5934,7 +6080,8 @@ share is not a divergence, and filing it as one would send it to the wrong queue
    upstream runs. The reversal was then **widened from division to all five float arithmetic arms**
    ($`+`$, $`-`$, $`\times`$, $`\div`$, unary $`-`$). ⚠ Zero DIVERGENT entries is a claim about the
    *register*, not the implementations: **CBR-L09** retains two **carrier** residuals and one
-   filed-not-fixed **comparison** residual, all listed in its body. ★ The transferable rule the reversal
+   **comparison** residual that was resolved 46 minutes after it was filed (`19510082`), all listed in its
+   body. ★ The transferable rule the reversal
    establishes: *"our semantics are better" survives only where upstream has no standard behind it.*
 6. **A shipped commit contains a claim that is currently false** (§6.2), disclosed with its mechanism,
    its remedy, and the measurement a reviewer should require. ⚠ **And two shipped commits do not
@@ -5981,7 +6128,7 @@ three RED cells before the gate is trusted.
   exception's default handling **delivers** it rather than trapping), §6.2 governs `NaN` propagation, §6.3
   that a `NaN`'s sign is not interpreted, §7.4 that overflow delivers $`\pm\infty`$ under default rounding,
   and §5.11 that every ordered comparison with a `NaN` operand is false — the last being **CBR-L09**'s
-  filed-not-fixed residual 3.
+  residual 3 — filed against `ab885336` and resolved by `19510082` the same evening.
 - [Aumasson2013] J.-P. Aumasson, S. Neves, Z. Wilcox-O'Hearn, C. Winnerlein. *BLAKE2: Simpler, Smaller,
   Fast as MD5.* ACNS 2013, LNCS 7954, 119–135. DOI:
   [10.1007/978-3-642-38980-1_8](https://doi.org/10.1007/978-3-642-38980-1_8). — `Blake2b256` (event
