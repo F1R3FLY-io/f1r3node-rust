@@ -1,0 +1,1548 @@
+# The consensus-change register — MACHINE INDEX
+#
+# ⚠ THIS FILE IS READ BY A GATE. `casper/tests/consensus_change_register_gate.rs`
+#   parses it with a strict, dependency-free parser that REFUSES every line it does
+#   not recognise, so an unrecognised key is a test failure and never a silent skip.
+#
+# Every field is a PROJECTION of `consensus-change-register.md`, never an independent
+# claim: the gate re-derives each one from the prose and fails naming the
+# disagreement. The derivation recipe is Appendix C of that document.
+#
+# GRAMMAR — the whole of it. The parser accepts nothing else:
+#   * `#` at the start of a line opens a comment;
+#   * a blank line is ignored;
+#   * `[[table]]` opens a row of the array-of-tables `table`;
+#   * `key = "string"`, `key = 123`, `key = ["a", "b"]` assign to the open row, or
+#     to the file header if no row is open;
+#   * inline tables, nesting, dotted keys and multi-line values are REFUSED.
+
+schema_version = 1
+
+# The anchor. Moves only by an explicit, reviewed edit — which is what makes 'the
+# range' a decision rather than an accident (§7.2).
+register_base = "7293d57c"
+
+# The upper bound of the EXACT-PARTITION window. §4.1 claims 57 entry SHAs + 21
+# exemptions = 78 over `register_base..partition_head`, and that claim is checkable
+# only against a pinned bound. Commits after it are the LIVING FRONTIER (§7.7.3).
+partition_head = "dc383ed1"
+
+# §6.4's budget, asserted EXACTLY so `UNVERIFIED` can neither creep up nor be
+# quietly retired after its evidence returns. ★ A budget that can only rise is a
+# ratchet, not a measurement.
+unverified_budget = 1
+
+# The fuse on the living frontier, in COMMIT-DATE days between an unregistered
+# consensus-path commit and HEAD. Deterministic on any checkout — both dates are in
+# the objects — so the gate is a ratchet with a fuse rather than a tripwire that
+# fires on whoever commits next. Every witnessed drift was caught inside one day
+# (CBR-027 "under one day"; CBR-L09 46 minutes), so two days is longer than every
+# drift observed and cannot be argued too tight.
+frontier_grace_days = 2
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ENTRIES — 44. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
+# the gate re-projects §4.1's ●/○/·/? glyphs and asserts agreement cell by cell.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[entry]]
+id = "CBR-001"
+surface = "N"
+commits = ["6bc58743", "5d37f67e"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-002"
+surface = "N"
+commits = ["6ab1c78b", "eaa44c2f"]
+status = "LANDED"
+direction = "REGRESSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "N/A"
+
+[[entry]]
+id = "CBR-003"
+surface = "N"
+commits = ["99b7b1c4"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-004"
+surface = "N"
+commits = ["b0f18672"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-005"
+surface = "N"
+commits = ["f5fd6c34", "eaa905fe"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "MECHANISM_ONLY"
+axis_value = "MOVES"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-006"
+surface = "N"
+commits = ["8853f839"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "MECHANISM_ONLY"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-007"
+surface = "N"
+commits = ["b219e199", "dc383ed1"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-008"
+surface = "N"
+commits = ["a1feb437"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-009"
+surface = "N"
+commits = ["ce7bb4fd"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-010"
+surface = "N"
+commits = ["0a6d2ce0", "5aacebc3"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-011"
+surface = "N"
+commits = ["478102a4"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-012"
+surface = "N"
+commits = ["9994a75b"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-013"
+surface = "N"
+commits = ["c705776c"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "MECHANISM_ONLY"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-014"
+surface = "N"
+commits = ["7dcff96f"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-015"
+surface = "N"
+commits = ["76de7d44"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "LATENT"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-016"
+surface = "N"
+commits = ["ca84d535", "4290303c"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-017"
+surface = "N"
+commits = ["a4c23a58"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-018"
+surface = "N"
+commits = ["bd7cb45f", "b98fa20a", "739368a4"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-019"
+surface = "N"
+commits = ["c28f4cf6", "903cefb3", "00ff9187"]
+status = "LANDED"
+direction = "NEUTRAL"
+grade = "NEUTRALITY_MEASURED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-019b"
+surface = "N"
+commits = ["7c74260d", "56fb1fd0"]
+status = "LANDED"
+direction = "NEUTRAL"
+grade = "DORMANT"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "N/A"
+axis_acceptance = "NO"
+axis_metering = "N/A"
+
+[[entry]]
+id = "CBR-020"
+surface = "N"
+commits = ["9a5521a2", "2bcfaf87", "000b95d7"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-021"
+surface = "N"
+commits = ["b961d7c4"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "LATENT"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-022"
+surface = "N"
+commits = ["a09f1de2", "3b265eb7"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-023"
+surface = "N"
+commits = ["f0894109", "f11ffb54", "b98fa20a", "6714a128", "2c32b173", "6ce7c5b9", "07853de0", "88ef41cd", "6675fc06", "739368a4", "a3fd6fe4", "d2591fa1", "9082d12c", "6c87b3f9", "94dc983f", "64a5d2bc"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-024"
+surface = "N"
+commits = ["2fee67fa"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "N/A"
+axis_post_state_hash = "N/A"
+axis_acceptance = "MOVES"
+axis_metering = "MOVES"
+
+[[entry]]
+id = "CBR-025"
+surface = "N"
+commits = ["98d2422d"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "N/A"
+axis_post_state_hash = "N/A"
+axis_acceptance = "MOVES"
+axis_metering = "MOVES"
+
+[[entry]]
+id = "CBR-026"
+surface = "N"
+commits = ["2087c043"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "DORMANT"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "N/A"
+axis_post_state_hash = "N/A"
+axis_acceptance = "MOVES"
+axis_metering = "N/A"
+
+[[entry]]
+id = "CBR-027"
+surface = "N"
+commits = ["6ff46f8a", "fd5474ab"]
+status = "LANDED"
+direction = "REGRESSIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-028"
+surface = "N"
+commits = ["80f5e5d3", "d8081107", "935704d6", "9994a75b", "f0894109"]
+status = "OPEN"
+direction = "NOT_APPLICABLE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "N/A"
+
+[[entry]]
+id = "CBR-029"
+surface = "N"
+commits = ["d8e95fb0"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "LATENT"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-030"
+surface = "N"
+commits = ["e3a4494b", "719f2432"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-L01"
+surface = "L"
+commits = ["3ff1c98b", "f586e138", "ce887d0b"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L02"
+surface = "L"
+commits = ["0f3d298c"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L03"
+surface = "L"
+commits = ["69c66cd1"]
+status = "LANDED"
+direction = "REGRESSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L04"
+surface = "L"
+commits = ["ac7f71af", "6e6639ee"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L05"
+surface = "L"
+commits = ["03ec33de", "826bb96e", "11472763"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L06"
+surface = "L"
+commits = ["2d0ec9b1", "df57a828"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L07"
+surface = "L"
+commits = ["bbceb6d9", "6e543c01"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "N/A"
+axis_bytes_bincode = "N/A"
+axis_bytes_prost = "N/A"
+axis_post_state_hash = "N/A"
+axis_acceptance = "MOVES"
+axis_metering = "UNVERIFIED"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L08"
+surface = "L"
+commits = []
+status = "IN_FLIGHT"
+direction = "REGRESSIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L09"
+surface = "L"
+commits = ["b77e657c", "ab885336", "19510082", "2eebf722"]
+status = "LANDED"
+direction = "CONVERGENT"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "mettail-rust rholang-runtime/tests/rho_rholang_conformance.rs"
+
+[[entry]]
+id = "CBR-L10"
+surface = "L"
+commits = ["832d510f"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L11"
+surface = "L"
+commits = ["ab13aee0", "4aa64cb6", "9485d372", "f2f2351b", "5a5cc9b0", "7244058b"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L12"
+surface = "L"
+commits = ["f5b2e820"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L13"
+surface = "L"
+commits = ["ef49d8c2"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "LATENT"
+axis_value = "NO"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+source_gate = "NOT_NAMED"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# EXEMPTIONS. `window = "PARTITION"` rows complete the exact partition of
+# `register_base..partition_head`; `window = "FRONTIER"` rows discharge commits that
+# landed after `partition_head`. Every `reason` is from §3.2's closed enum and every
+# `evidence` names a test or a measurement — a free-text reason is a shrug.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[exempt]]
+commit = "1112dcc8"
+window = "PARTITION"
+reason = "HYGIENE"
+evidence = "Appendix B row 1 — The deleted rule's output was always in `encode_trie_path`'s image, so `entry_key_is_in_codec_image` was vacuous on exactly this output: *'no assertion placed on this expression could have failed.'* No caller. CITED. [CITED]"
+
+[[exempt]]
+commit = "cf35ab53"
+window = "PARTITION"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B row 2 — *'The 36 same-variant arms are byte-identical to before; behaviour is unchanged for every variant that exists.'* The change turns a future 37th variant into `E0004`. Reflexivity and `Eq`/`Hash` agreement asserted for all 54 variants, with 1,352 ordered … [CITED]"
+
+[[exempt]]
+commit = "f0eb7e5f"
+window = "PARTITION"
+reason = "HYGIENE"
+evidence = "Appendix B row 3 — Imports only."
+
+[[exempt]]
+commit = "20c9aa88"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 4 — Two production entry points gain fallible forms; *'no consensus-visible behaviour change: every existing caller still gets the identical panic with a byte-identical message.'*  The one genuinely consensus-visible member was deliberately deferred and became … [CITED]"
+
+[[exempt]]
+commit = "0e0f9719"
+window = "PARTITION"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B row 5 — *'The consensus version is NOT bumped and the match relation is unchanged: every `.expect` fires exactly where its `.unwrap` fired, on inputs no well-formed term can produce.'* The consensus reachability probe is a measurement, not a false zero: five … [CITED]"
+
+[[exempt]]
+commit = "ec247023"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 6 — A test isolation defect that was live-RED in f1r3node CI because CI runs `cargo test` (threads in one process) while the campaign's headline counts came from nextest (process per test). Six siblings audited. CITED. [CITED]"
+
+[[exempt]]
+commit = "a365a5d1"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 7 — Promotes proptest seeds to `#[test]`s. Establishes that `New::bind_count` is protobuf `int32`, so *'the printer's domain is `i32`, not `0..`. Totality over the wire type is a consensus obligation.'* — an argument, not a change. CITED. [CITED]"
+
+[[exempt]]
+commit = "ab1908e0"
+window = "PARTITION"
+reason = "HYGIENE"
+evidence = "Appendix B row 8 — Imports only; follows CBR-019."
+
+[[exempt]]
+commit = "254f489d"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 9 — Turns cardinality-only assertions into content assertions. Went RED 7-of-8 and caught the defect that became CBR-009. CITED. [CITED]"
+
+[[exempt]]
+commit = "21017a17"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 10 — Mutation-table execution. Measured slope: interval 32 B flat; materialised 4 B/name. Feeds CBR-017's evidence. CITED. [CITED]"
+
+[[exempt]]
+commit = "a8ec319f"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 11 — One row had gone stale. The `ParK` 'equivalent mutant' becomes a theorem, executed over all $`8! = 40{,}320`$ permutations of six length vectors (241,920 comparisons). CITED. [CITED]"
+
+[[exempt]]
+commit = "e2b6c688"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 12 — One of the two claims was FALSE. `test_scratch.rs` restored byte-identically, sha256 checked. CITED. [CITED]"
+
+[[exempt]]
+commit = "29263381"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 13 — A provenance claim corrected; no production code changes. CITED. [CITED]"
+
+[[exempt]]
+commit = "40bb088b"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 14 — 4 of 10 functions byte-identical under the declared rename, 6 carrying deviations.  The reason it matters is recorded and is a real methodological finding: *'if the oracle drifts toward the machine … every green result becomes worthless without anyone … [CITED]"
+
+[[exempt]]
+commit = "516bd2ee"
+window = "PARTITION"
+reason = "HYGIENE"
+evidence = "Appendix B row 15 — 37 `mutable_key_type` findings resolved at the root cause (`EPathMap`'s `OnceLock` is derived state read by neither `PartialEq` nor `Hash`) via one `clippy.toml` entry rather than 37 site `#[allow]`s. `ConnArm::Ground`'s two spellings shown byte-identical … [CITED]"
+
+[[exempt]]
+commit = "892b74e8"
+window = "PARTITION"
+reason = "INFRA"
+evidence = "Appendix B row 16 — Rust runs no destructors for statics. Measured: 20 tests $`/rightarrow`$ 20 directories $`/rightarrow`$ 72 MB of tmpfs; after, zero bytes. Test infrastructure only. CITED. [CITED]"
+
+[[exempt]]
+commit = "779bf881"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 17 — 'VERBATIM' overclaimed on 22 of 23 blocks; one block carried an undocumented hand edit. *'the block's meaning is unchanged and the differential's results stand.'* CITED. [CITED]"
+
+[[exempt]]
+commit = "b9aaa3d4"
+window = "PARTITION"
+reason = "DOCS_ONLY"
+evidence = "Appendix B row 18 — Documentation in `cold_store_decode.rs`."
+
+[[exempt]]
+commit = "96ca51a0"
+window = "PARTITION"
+reason = "DOCS_ONLY"
+evidence = "Appendix B row 19 — Audit record plus a test-corpus edit. Records that F2 (*'an owned `Env` per work item is acceptable'*) was REFUTED by measurement. CITED. [CITED]"
+
+[[exempt]]
+commit = "550b967a"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 20 — Adds `substitute_descends_into` as *'a checkable record'*; the record's content is reproduced verbatim from production, and *'Reproducing that verbatim is a requirement, not an oversight: descending would change substituted bytes, hence signed bytes.'* CITED. [CITED]"
+
+[[exempt]]
+commit = "caadf839"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Appendix B row 21 — Test module only. Produced the witnesses that made CBR-010 reviewable, including *'asking for the bare `1` returns the singleton list `[1]` — a wrong ANSWER, not a miss.'* CITED. [CITED]"
+
+[[exempt]]
+commit = "8fb813a7"
+window = "PARTITION"
+reason = "INFRA"
+evidence = "Declares every `models` test target and sets `autotests = false`; the diff is `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs` or `models/build/` path is touched, so no codec, sorter or wire table can move. [DERIVED: file list]"
+
+[[exempt]]
+commit = "09b80afe"
+window = "PARTITION"
+reason = "TESTS_ONLY"
+evidence = "Tracks five shrunk proptest counterexample corpora that `.gitignore` had been discarding; the diff is `.gitignore` plus two corpus files. A shrunk counterexample is not regenerable, which is why it is tracked, and it is read only by the proptest harness. [DERIVED: file list]"
+
+[[exempt]]
+commit = "decda6dd"
+window = "PARTITION"
+reason = "INFRA"
+evidence = "Adds a `[[bench]]` declaration and a massif harness (923x less allocation churn, measured). Benches are outside the derived path set; the commit reaches the obligation set only through the `models/Cargo.toml` declaration hunk. [DERIVED: file list]"
+
+[[exempt]]
+commit = "b228545f"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the refutation record for walk-elimination (driven clone at 0.678x the derived form's throughput against a 0.98x threshold, Welch t = -65, intervals disjoint at alpha = 0.01). The emitted table is unchanged. [CITED]"
+
+[[exempt]]
+commit = "0eac9c3a"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "`clone` moves from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`, its `assert_slope_below` DELETED rather than relaxed; the other files are `models/benches/`, `models/Cargo.toml` and an audit record. [CITED]"
+
+[[exempt]]
+commit = "c709fbfa"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "The clone-equivalence corpus: 67 terms ENUMERATED from the generated `wire_schema::*_VARIANTS` tables, each asserted on eight axes twice. Diff is `models/tests/clone_equivalence_corpus.rs` plus its `[[test]]` declaration. [CITED]"
+
+[[exempt]]
+commit = "959a123a"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "`Clone` for the 55 non-`Copy` types is generated through the shared driver, the cut set DERIVED at a feedback vertex set of the child relation and cross-checked as SETS in both directions. Equivalence is asserted by `models/tests/clone_equivalence_corpus.rs` over 67 enumerated terms on eight axes, driven-vs-oracle, where the oracle is the derive's own re-emitted body. [CITED]"
+
+[[exempt]]
+commit = "699ee646"
+window = "FRONTIER"
+reason = "DORMANT"
+evidence = "`drive_with` — a bring-your-own-stacks entry point — is added to `models/src/rust/rholang/drive.rs` and has NO caller in this commit (the diff is that one file). Both stacks are asserted empty on entry and on every return path. [DERIVED: file list; CITED]"
+
+[[exempt]]
+commit = "3deacce0"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Records why stage F-3 does not land, in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. [CITED]"
+
+[[exempt]]
+commit = "dc4e165c"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "The only hunk outside `rholang/tests/` is a single doc-comment table cell in `pretty_printer.rs` ('3 witnesses' -> '4 witnesses'), recounted from the executed table rather than incremented. [DERIVED: diff is 1 insertion, 1 deletion, both in a `//!` line]"
+
+[[exempt]]
+commit = "53e78427"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Self-declared CONSENSUS-CRITICAL: `cost_accounting/sig.rs` signs `ParSortMatcher::sort_match(&par).term.encode_to_vec()`, so a one-element reordering is a fork. Every `descend_*` and `combine_*_k` is byte-for-byte the code that produced the canonical form before the move; only the loop, the two stacks and the invariants moved. Byte identity is GATED — four gates green, three of the four watched RED first. [CITED]"
+
+[[exempt]]
+commit = "16090241"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Watches `drive.rs`'s three configuration refusals RED, each in a CHILD PROCESS with the parent reading exit status and diagnostic text, and `Outcome::Done` watched stopping. Diff is `models/tests/drive_configuration_gate.rs` plus its declaration. [CITED]"
+
+[[exempt]]
+commit = "14c4bdaf"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Every hunk is inside `rho-pure-eval/src/eval.rs`'s `#[cfg(test)]` modules `differential_eval_with` and `depth_gate`; a smoke test that was vacuous three ways is deleted and the destructor's cost becomes a measured rung. [DERIVED: all six hunk headers name a test module; CITED]"
+
+[[exempt]]
+commit = "383a8b56"
+window = "FRONTIER"
+reason = "VERDICT_NEUTRAL_MEASURED"
+evidence = "Stage F-1 factors the three hand-written LIFO trampolines into one `Traversal` in `models/src/rust/rholang/drive.rs`, with `rho-pure-eval`'s `eval_with` as the first instance. `rho-pure-eval` DECIDES `where` verdicts, so byte neutrality is not the relevant claim — verdict neutrality is, and it is asserted by `rho-pure-eval/src/eval.rs`'s `differential_eval_with` module, which compares `eval_with` against the retained recursive twin. [CITED]"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
+# carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`
+# in `git show <at>:<path>`) or `unchecked` with a typed reason. The gate asserts the
+# row set is EXACTLY the coordinate set the document yields, so the corpus cannot
+# shrink by deletion, and it asserts each unchecked class's size EXACTLY.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[citation]]
+owner = "(doc)"
+cited = "casper/src/rust/validate.rs"
+line = 273
+at = "HEAD"
+path = "casper/src/rust/validate.rs"
+token = "fn version"
+
+[[citation]]
+owner = "(doc)"
+cited = "casper/src/rust/block_status.rs"
+line = 183
+at = "HEAD"
+path = "casper/src/rust/block_status.rs"
+token = "is_slashable"
+
+[[citation]]
+owner = "CBR-005"
+cited = "maximum_bipartite_match.rs"
+line = 14
+at = "eaa905fe"
+path = "rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs"
+token = "BTreeMap<Candidate<T>"
+
+[[citation]]
+owner = "CBR-007"
+cited = "p_conjunction_normalizer.rs"
+line = 12
+at = "dc383ed1"
+path = "rholang/src/rust/interpreter/compiler/normalizer/processes/p_conjunction_normalizer.rs"
+token = "free_map"
+
+[[citation]]
+owner = "CBR-007"
+cited = "models/src/rust/utils.rs"
+line = 260
+at = "dc383ed1"
+path = "models/src/rust/utils.rs"
+token = "FreeMap"
+
+[[citation]]
+owner = "CBR-010"
+cited = "RhoTypes.proto"
+line = 352
+at = "0a6d2ce0"
+path = "models/src/main/protobuf/RhoTypes.proto"
+token = "current_path"
+
+[[citation]]
+owner = "CBR-011"
+cited = "pathmap-0.2.2/src/lib.rs"
+line = 15
+at = "478102a4"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-015"
+cited = "models/src/rust/spliced_event_bytes.rs"
+line = 576
+at = "76de7d44"
+path = "models/src/rust/spliced_event_bytes.rs"
+token = "cursor_kind"
+
+[[citation]]
+owner = "CBR-018"
+cited = "casper/src/rust/rholang/replay_runtime.rs"
+line = 745
+at = "bd7cb45f"
+path = "casper/src/rust/rholang/replay_runtime.rs"
+token = "expected_error"
+
+[[citation]]
+owner = "CBR-019"
+cited = "src/internal.rs"
+line = 25
+at = "00ff9187"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-021"
+cited = "casper/src/rust/validate.rs"
+line = 273
+at = "b961d7c4"
+path = "casper/src/rust/validate.rs"
+token = "fn version"
+
+[[citation]]
+owner = "CBR-022"
+cited = "deploy_grpc_service_v1.rs"
+line = 256
+at = "3b265eb7"
+path = "node/src/rust/api/deploy_grpc_service_v1.rs"
+token = "do_deploy"
+
+[[citation]]
+owner = "CBR-022"
+cited = "dispatch.rs"
+line = 66
+at = "3b265eb7"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "CBR-022"
+cited = "block_admission.rs"
+line = 105
+at = "3b265eb7"
+path = "casper/src/rust/engine/multi_parent_casper/block_admission.rs"
+token = "normalizer_env_from_cosigned_deploy"
+
+[[citation]]
+owner = "CBR-022"
+cited = "acceptance.rs"
+line = 321
+at = "3b265eb7"
+path = "casper/src/rust/util/rholang/acceptance.rs"
+token = "source_to_adt"
+
+[[citation]]
+owner = "CBR-025"
+cited = "RhoTypes.proto"
+line = 352
+at = "98d2422d"
+path = "models/src/main/protobuf/RhoTypes.proto"
+token = "current_path"
+
+[[citation]]
+owner = "CBR-027"
+cited = "rholang/src/rust/interpreter/reduce.rs"
+line = 3397
+at = "61a53157"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "wrapping_add"
+
+[[citation]]
+owner = "CBR-027"
+cited = "accounting/costs.rs"
+line = 91
+at = "fd5474ab"
+path = "rholang/src/rust/interpreter/accounting/costs.rs"
+token = "sum_cost"
+
+[[citation]]
+owner = "CBR-028"
+cited = "CasperMessage.proto"
+line = 393
+at = "80f5e5d3"
+path = "models/src/main/protobuf/CasperMessage.proto"
+token = "outputValue"
+
+[[citation]]
+owner = "CBR-028"
+cited = "reduce.rs"
+line = 1076
+at = "80f5e5d3"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "decode_non_deterministic_output"
+
+[[citation]]
+owner = "CBR-028"
+cited = "reduce.rs"
+line = 1213
+at = "80f5e5d3"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "decode_non_deterministic_output"
+
+[[citation]]
+owner = "CBR-028"
+cited = "contract_call.rs"
+line = 94
+at = "80f5e5d3"
+path = "rholang/src/rust/interpreter/contract_call.rs"
+token = "decode_non_deterministic_output"
+
+[[citation]]
+owner = "CBR-028"
+cited = "contract_call.rs"
+line = 129
+at = "80f5e5d3"
+path = "rholang/src/rust/interpreter/contract_call.rs"
+token = "decode_non_deterministic_output"
+
+[[citation]]
+owner = "CBR-030"
+cited = "casper/src/main/resources/NonNegativeNumber.rho"
+line = 32
+at = "719f2432"
+path = "casper/src/main/resources/NonNegativeNumber.rho"
+token = "9223372036854775807"
+
+[[citation]]
+owner = "CBR-030"
+cited = "accounting/costs.rs"
+line = 91
+at = "719f2432"
+path = "rholang/src/rust/interpreter/accounting/costs.rs"
+token = "sum_cost"
+
+[[citation]]
+owner = "CBR-030"
+cited = "casper/src/main/resources/Registry.rho"
+line = 586
+at = "719f2432"
+path = "casper/src/main/resources/Registry.rho"
+token = "blake2b256!"
+
+[[citation]]
+owner = "CBR-030"
+cited = "casper/src/rust/util/rholang/registry_sig_gen.rs"
+line = 206
+at = "719f2432"
+path = "casper/src/rust/util/rholang/registry_sig_gen.rs"
+token = "new_etuple_par"
+
+[[citation]]
+owner = "CBR-030"
+cited = "rholang/src/rust/interpreter/merging/mergeable_tags.rs"
+line = 29
+at = "719f2432"
+path = "rholang/src/rust/interpreter/merging/mergeable_tags.rs"
+token = "NON_NEGATIVE_NUMBER_PK"
+
+[[citation]]
+owner = "CBR-030"
+cited = "registry_sig_gen.rs"
+line = 203
+at = "719f2432"
+path = "casper/src/rust/util/rholang/registry_sig_gen.rs"
+token = "Self::MAX_LONG"
+
+[[citation]]
+owner = "CBR-030"
+cited = "MakeMint.rho"
+line = 133
+at = "719f2432"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "CBR-030"
+cited = "reduce.rs"
+line = 3470
+at = "719f2432"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "ExprInstance::GInt(_), other"
+
+[[citation]]
+owner = "CBR-030"
+cited = "NonNegativeNumber.rho"
+line = 46
+at = "719f2432"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "CBR-030"
+cited = "ListOps.rho"
+line = 197
+at = "719f2432"
+path = "casper/src/main/resources/ListOps.rho"
+token = "sc == cc + 1"
+
+[[citation]]
+owner = "CBR-030"
+cited = "genesis_builder.rs"
+line = 215
+at = "719f2432"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "CBR-L02"
+cited = "guard_par_substrate.rs"
+line = 754
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L05"
+cited = "rspace++/src/rspace/hot_store.rs"
+line = 90
+at = "HEAD"
+path = "rspace++/src/rspace/hot_store.rs"
+token = "HashMap"
+
+[[citation]]
+owner = "CBR-L08"
+cited = "wpda_walker.rs"
+line = 15667
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "runtime/src/safe_arith.rs"
+line = 633
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "runtime/src/lib.rs"
+line = 125
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "runtime/src/safe_arith.rs"
+line = 532
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "runtime/src/canonical_float.rs"
+line = 35
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "canonical_float.rs"
+line = 94
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "reduce.rs"
+line = 3062
+at = "HEAD"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "is_nan"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "models/src/main/protobuf/RhoTypes.proto"
+line = 269
+at = "HEAD"
+path = "models/src/main/protobuf/RhoTypes.proto"
+token = "fixed64 g_double = 34;"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "rust_code_rewrite.rs"
+line = 206
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "rholang.rs"
+line = 84
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "calculator.rs"
+line = 18
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "reduce.rs"
+line = 3312
+at = "HEAD"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "ExprInstance::GDouble(_), ExprInstance::GDouble(_)"
+
+[[citation]]
+owner = "CBR-L09"
+cited = "macros/src/gen/syntax/display.rs"
+line = 3196
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L12"
+cited = "rholang-runtime/src/rholang_ast.rs"
+line = 1897
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L12"
+cited = "macros/src/gen/syntax/display.rs"
+line = 4608
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L12"
+cited = "languages/src/rholang/zipper.rs"
+line = 364
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L12"
+cited = "rholang-runtime/src/rholang_ast/recursive_oracle.rs"
+line = 1396
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L13"
+cited = "reduce.rs"
+line = 4644
+at = "HEAD"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "hexToBytes"
+
+[[citation]]
+owner = "CBR-L13"
+cited = "system_processes.rs"
+line = 737
+at = "HEAD"
+path = "rholang/src/rust/interpreter/system_processes.rs"
+token = "sha256Hash"
+
+[[citation]]
+owner = "CBR-L13"
+cited = "languages/src/rholang.rs"
+line = 2464
+at = "HEAD"
+unchecked = "FOREIGN_REPOSITORY"
+
+[[citation]]
+owner = "CBR-L13"
+cited = "rholang/src/rust/interpreter/pretty_printer.rs"
+line = 2860
+at = "HEAD"
+path = "rholang/src/rust/interpreter/pretty_printer.rs"
+token = "hex::encode"
+
+[[citation]]
+owner = "CBR-L13"
+cited = "models/src/rust/par_to_sexpr.rs"
+line = 107
+at = "HEAD"
+path = "models/src/rust/par_to_sexpr.rs"
+token = "hex::encode"
+
+[[citation]]
+owner = "(doc)"
+cited = "accounting/costs.rs"
+line = 91
+at = "HEAD"
+path = "rholang/src/rust/interpreter/accounting/costs.rs"
+token = "sum_cost"
+
+[[citation]]
+owner = "(doc)"
+cited = "pretty_printer.rs"
+line = 2860
+at = "HEAD"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "(doc)"
+cited = "par_to_sexpr.rs"
+line = 107
+at = "HEAD"
+path = "models/src/rust/par_to_sexpr.rs"
+token = "hex::encode"
+
+[[citation]]
+owner = "(doc)"
+cited = "genesis_builder.rs"
+line = 175
+at = "HEAD"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "(doc)"
+cited = ".github/workflows/ci.yml"
+line = 177
+at = "HEAD"
+path = ".github/workflows/ci.yml"
+token = "matrix:"
+
+[[citation]]
+owner = "(doc)"
+cited = "genesis_builder.rs"
+line = 215
+at = "HEAD"
+unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "(doc)"
+cited = "rholang/src/rust/interpreter/pretty_printer.rs"
+line = 2860
+at = "HEAD"
+path = "rholang/src/rust/interpreter/pretty_printer.rs"
+token = "hex::encode"
+
+[[citation]]
+owner = "(doc)"
+cited = "models/src/rust/par_to_sexpr.rs"
+line = 107
+at = "HEAD"
+path = "models/src/rust/par_to_sexpr.rs"
+token = "hex::encode"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# OPEN QUESTIONS — §6.3's ten rows, each with a TYPED FALSIFIER. This is the
+# machinery for drift class 4 (a stale prose claim about the world): a claim's state
+# is either decidable here from a named site, or it is typed as undecidable HERE with
+# the reason why. The undecidable set is asserted EXACTLY, so the gate's advertised
+# coverage equals its real coverage. See §7.7.6.
+#
+# falsifier vocabulary:
+#   SYMBOL_PRESENT   the claim stays live while `token` occurs near `line` of `path`
+#                    at HEAD; a CLOSED row inverts the test.
+#   SYMBOL_ABSENT    the claim stays live while `token` does NOT occur there.
+#   UNDECIDABLE_HERE__FOREIGN_REPOSITORY   the subject is in another repository.
+#   UNDECIDABLE_HERE__CHAIN_HISTORY        the subject is the block store.
+#   UNDECIDABLE_HERE__REQUIRES_EXPERIMENT  the subject needs a constructed witness.
+#   UNDECIDABLE_HERE__REQUIRES_OWNER_RULING  the subject is a decision, not a fact.
+#   UNDECIDABLE_HERE__NO_CITED_SITE        decidable in principle; the row cites no
+#                                          site precise enough to test. ACTIONABLE.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[open_question]]
+number = 1
+state = "OPEN"
+falsifier = "SYMBOL_PRESENT"
+path = "rholang/src/rust/interpreter/compiler/compiler.rs"
+line = 110
+token = "let connectives: Vec<String> = free_map"
+why = "`top_level_error` still builds its message by iterating a `HashMap`-backed free map, so the question whether that order reaches persisted bytes is still live."
+
+[[open_question]]
+number = 2
+state = "OPEN"
+falsifier = "UNDECIDABLE_HERE__REQUIRES_EXPERIMENT"
+why = "Whether a deploy can reach the `EPathMap` tag-8 read ceiling is a reachability result about the deploy space, not a property of any line of source. It needs a constructed witness."
+
+[[open_question]]
+number = 3
+state = "OPEN"
+falsifier = "UNDECIDABLE_HERE__REQUIRES_OWNER_RULING"
+why = "'What is the disposition of the five FFI reads that panic?' asks for a decision, not a fact. No predicate over the tree can answer it."
+
+[[open_question]]
+number = 4
+state = "RULED"
+falsifier = "UNDECIDABLE_HERE__NO_CITED_SITE"
+why = "The row cites the code shape `decode_trie_path(..).unwrap_or(..)`, which matches nothing in the tree at HEAD, so the claim 'not started' has no site to test. Completing the citation is the obligation this row carries."
+
+[[open_question]]
+number = 5
+state = "UNVERIFIED"
+falsifier = "UNDECIDABLE_HERE__FOREIGN_REPOSITORY"
+why = "Whether MeTTaIL's `last` reuses `nth`'s price is a fact about `mettail-rust`. Nothing in this repository can read it."
+
+[[open_question]]
+number = 6
+state = "OPEN"
+falsifier = "UNDECIDABLE_HERE__FOREIGN_REPOSITORY"
+why = "The two CI jobs lacking a sibling checkout are `mettail-rust`'s. `.github/workflows/ci.yml` here names no sibling checkout at all, so there is nothing local to test."
+
+[[open_question]]
+number = 7
+state = "CLOSED"
+falsifier = "UNDECIDABLE_HERE__FOREIGN_REPOSITORY"
+why = "The `NaN`-comparison split was ruled and fixed in `mettail-rust` by `19510082`. ★ This is the row that went stale 46 minutes after it was filed, and it is exactly the row no git-only clause here can check — see §7.7.6."
+
+[[open_question]]
+number = 8
+state = "OPEN"
+falsifier = "UNDECIDABLE_HERE__FOREIGN_REPOSITORY"
+why = "'MeTTaIL cannot construct a byte array at all' is a fact about `mettail-rust`'s method table."
+
+[[open_question]]
+number = 9
+state = "OPEN"
+falsifier = "SYMBOL_PRESENT"
+path = "models/src/rust/par_to_sexpr.rs"
+line = 107
+token = "hex::encode"
+why = "The question stays open while the two renderings differ. This row pins the `0x`-prefixed one; `pretty_printer.rs:2860`'s bare-hex twin is pinned as a citation of CBR-L13."
+
+[[open_question]]
+number = 10
+state = "OPEN"
+falsifier = "SYMBOL_PRESENT"
+path = "casper/src/rust/test_utils/util/genesis_builder.rs"
+line = 174
+token = "HashMap<PublicKey, i64>"
+why = "The leading hypothesis is that `GenesisParameters.bonds` is a `HashMap`, iterated. The question stays open while that type is still there."
