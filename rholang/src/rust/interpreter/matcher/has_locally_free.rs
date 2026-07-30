@@ -31,6 +31,72 @@ pub trait HasLocallyFree<T> {
     fn locally_free(&self, source: T, depth: i32) -> Vec<u8>;
 }
 
+/// `target matches pattern` — the node's `locally_free`, over **both** slots.
+///
+/// # The invariant, and where it is specified
+///
+/// [`HasLocallyFree::locally_free`]'s contract, three doc-comments above, is
+/// *"a bitset representing which variables are locally free if the term is
+/// located at depth `depth`"*, where *"a top level term is depth 0, a pattern in
+/// a top-level term is depth 1"*. It is a question about **scope**: which de
+/// Bruijn indices of the enclosing *process* scope does this subtree name?
+///
+/// Every contribution lives in that one index space, at every depth, which is
+/// why the two slots can be `union`ed raw with no shift. A `BoundVar(i)`
+/// contributes only at `depth == 0` (`HasLocallyFree<VarInstance>`), and a
+/// `VarRef { index, depth: d }` contributes only when the traversal depth
+/// equals `d` (`HasLocallyFree<Connective>`) — i.e. exactly when the chain
+/// distance `d` carries it back to absolute depth 0. So a bit means "index `i`
+/// of the process scope", whoever set it and however deep they were.
+///
+/// # Why the `pattern` slot contributes — the `VarRef` case
+///
+/// `p_matches_normalizer::combine_p_matches` normalizes the pattern under
+/// `bound_map_chain.push()` in a fresh `FreeMap`, so it is a nested pattern one
+/// binding level deeper — the same status `ReceiveBind::patterns` and
+/// `MatchCase::pattern` have. Two lookups decide what a name inside it means:
+///
+/// * a plain `x` goes through `BoundMapChain::get`, which reads the **current**
+///   scope only, so it is a fresh binding occurrence and can never point
+///   outside. It contributes nothing, and needs no reporting.
+/// * `=x` goes through `BoundMapChain::find`, which walks the **whole chain**,
+///   and is emitted as `VarRef { depth }` carrying the chain distance. It names
+///   an outer binder from inside the pattern, and the normalizer already sets
+///   its bit in `pattern.locally_free`.
+///
+/// The second case is the one that must be reported, and it is the case the two
+/// sibling pattern positions do report: `p_match_normalizer` unions
+/// `pattern_result.par.locally_free` into `Match.locally_free`, and
+/// `p_input_normalizer` folds `done_patterns`' bitsets into
+/// `Receive.locally_free`. Reading the target alone made `EMatches` the sole
+/// dissenter among the language's three pattern positions, and the bit it
+/// dropped never reappeared: for
+/// `for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }` the pattern
+/// carried `[0, 1]` while every ancestor read `[]`, where the `match`-cased twin
+/// propagated `[0, 1]` up and let the *outer* `for` clear it.
+///
+/// ⚠ It also broke the agreement with substitution. `locally_free` sets a
+/// `VarRef`'s bit when `depth == var_depth`; `maybe_substitute_var_ref_view`
+/// replaces it when `term.depth == ctx.depth`. One predicate. Since `8853f839`
+/// substitution visits `EMatches::pattern` at `depth + 1` — the depth at which
+/// that `VarRef` *does* contribute — so the substituter was acting on an index
+/// this reader refused to name.
+///
+/// # ⚠ Why [`HasLocallyFree::connective_used`] reads the TARGET ALONE
+///
+/// Its contract is a different question: *"constructions that make a pattern
+/// non-concrete. A non-concrete pattern cannot be viewed as if it were a
+/// term."* A `matches` pattern is **allowed** to be non-concrete — that is the
+/// entire purpose of the construct — while `target matches pattern` is itself a
+/// perfectly concrete term that evaluates to a `GBool`. So `1 matches ~1` has
+/// `connective_used == false`, pinned by
+/// `p_matches_normalizer`'s `p_matches_should_normalize_one_matches_tilda_with_
+/// connective_used_false`. That asymmetry is correct and is deliberately left
+/// standing; only the `locally_free` half moved.
+pub fn ematches_locally_free(target: &Par, pattern: &Par) -> Vec<u8> {
+    union(target.locally_free.clone(), pattern.locally_free.clone())
+}
+
 // forTuple
 impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
     fn connective_used(&self, source: (Par, Par)) -> bool {
@@ -235,9 +301,15 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             ),
 
             Some(EMethodBody(e)) => e.locally_free,
-            Some(EMatchesBody(EMatches { target, .. })) => {
-                target.expect("EMatches.target").locally_free
-            }
+            // ★ BOTH SLOTS — see `ematches_locally_free` for why, and for why
+            // `connective_used` reads the target ALONE and must keep doing so.
+            // Written out rather than delegated: these two impls take the term
+            // BY VALUE and can MOVE both bitsets, where the helper (a
+            // by-reference reader) must clone.
+            Some(EMatchesBody(EMatches { target, pattern })) => union(
+                target.expect("EMatches.target").locally_free,
+                pattern.expect("EMatches.pattern").locally_free,
+            ),
 
             Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => union(
                 p1.expect("EPercentPercent.p1").locally_free,
@@ -579,9 +651,15 @@ impl HasLocallyFree<Expr> for Expr {
             ),
 
             Some(EMethodBody(e)) => e.locally_free,
-            Some(EMatchesBody(EMatches { target, .. })) => {
-                target.expect("EMatches.target").locally_free
-            }
+            // ★ BOTH SLOTS — see `ematches_locally_free` for why, and for why
+            // `connective_used` reads the target ALONE and must keep doing so.
+            // Written out rather than delegated: these two impls take the term
+            // BY VALUE and can MOVE both bitsets, where the helper (a
+            // by-reference reader) must clone.
+            Some(EMatchesBody(EMatches { target, pattern })) => union(
+                target.expect("EMatches.target").locally_free,
+                pattern.expect("EMatches.pattern").locally_free,
+            ),
 
             Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => union(
                 p1.expect("EPercentPercent.p1").locally_free,
@@ -720,11 +798,13 @@ pub fn expr_locally_free_ref(expr: &Expr, depth: i32) -> Vec<u8> {
         Some(EOrBody(EOr { p1, p2 })) => lf2(p1, p2),
 
         Some(EMethodBody(e)) => e.locally_free.clone(),
-        Some(EMatchesBody(EMatches { target, .. })) => target
-            .as_ref()
-            .expect("EMatches.target")
-            .locally_free
-            .clone(),
+        // ★ BOTH SLOTS. Not `lf2`, so a missing slot names ITSELF rather than
+        // "binary operand", and not inlined, so the normalizer's production
+        // reader and the guard assert the same function.
+        Some(EMatchesBody(EMatches { target, pattern })) => ematches_locally_free(
+            target.as_ref().expect("EMatches.target"),
+            pattern.as_ref().expect("EMatches.pattern"),
+        ),
 
         Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => lf2(p1, p2),
         Some(EPlusPlusBody(EPlusPlus { p1, p2 })) => lf2(p1, p2),

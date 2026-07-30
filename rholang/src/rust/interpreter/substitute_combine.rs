@@ -141,13 +141,19 @@ pub(crate) fn expr_arm_pattern_slots(arm: &ExprArm) -> &'static [usize] {
             // that `depth` equals the traversal's. Visiting the pattern at the
             // enclosing depth therefore strands exactly those `VarRef`s.
             //
-            // The asymmetry with `has_locally_free`, which reads this node's
-            // `locally_free`/`connective_used` from the TARGET alone, is not a
-            // disagreement: a plain `x` in the pattern goes through
-            // `BoundMapChain::get` (current scope only), so it is a fresh
-            // binding occurrence and contributes nothing to the enclosing
-            // scope's free variables. See `matcher::spatial_matcher`'s
-            // `EMatchesBody` arm and `par_children::substitute_descends_into`.
+            // ⚠ CORRECTED. This comment used to argue that
+            // `has_locally_free`'s reading BOTH fields of this node from the
+            // TARGET alone was "not a disagreement", on the ground that a plain
+            // `x` in the pattern is a fresh binder. That covers `x` and it
+            // silently dropped `=x` — the very construct the paragraph above
+            // proves is the only one that names an outer binder from in here.
+            // `locally_free` sets a `VarRef`'s bit when `depth == var_depth`,
+            // the same predicate `maybe_substitute_var_ref` fires on, so
+            // bumping here without teaching that reader made the substituter
+            // act on an index the reader would not name. `locally_free` now
+            // unions BOTH slots (`matcher::has_locally_free::
+            // ematches_locally_free`); `connective_used` still reads the target
+            // alone, and that half IS correct — see that function's docs.
             BinaryArm::EMatches => SLOT_1,
 
             BinaryArm::EMult
