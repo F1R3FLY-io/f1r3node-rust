@@ -86,10 +86,10 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 49 consensus-visible changes** — 36 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
-Of these, **47 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **24** entries move bytes; on the protobuf lane **25**; **26** move a
-*verdict*; **35** move the *post-state hash*; **13** move *acceptance*; **3** move *metering*.
+**Result: 51 consensus-visible changes** — 37 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **49 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **25** entries move bytes; on the protobuf lane **26**; **27** move a
+*verdict*; **36** move the *post-state hash*; **14** move *acceptance*; **3** move *metering*.
 ⚠★★ **Only three of the ten figures in this paragraph are pinned by the gate, and the other seven had
 ALL drifted by 2026-07-30 — four of them wrongly.** The previous revision of this paragraph claimed *"Every
 figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no longer
@@ -611,6 +611,7 @@ is a *future* fork, not a present one).
 | [CBR-033](#cbr-033) | N | A resting send carries its reason — a diagnostic proven **off** the byte path | `8fc9afc9` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-034](#cbr-034) | N | `TreeHashMap` `update`-after-`delete` **resurrected** the key — the updater tested the leaf, not the key | `7c0cfd0a` | ● | ● | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-035](#cbr-035) | N | A walk elimination in the generated `Clone` — behaviourally **byte-identical** | `87ee699c` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
+| [CBR-036](#cbr-036) | N | The DESCEND BUDGET — one `descend` walks `k+1` cut-set levels; 5.91× fewer trampoline re-entries | `88ec2734`, `9442f76b` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -624,30 +625,31 @@ is a *future* fork, not a present one).
 | [CBR-L11](#cbr-l11) | L | The literal-domain and canonical-surface repairs | six commits, see body | ● | ○ | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
+| [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 49 entries**, recounted from the rows above rather than adjusted: **36 on Surface N, 13 on
-Surface L**; **47 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **37 WITNESSED**, 3 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 3 NEUTRALITY-MEASURED. By direction: **30 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 4 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 51 entries**, recounted from the rows above rather than adjusted: **37 on Surface N, 14 on
+Surface L**; **49 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **37 WITNESSED**, 3 MECHANISM-ONLY, **5 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **31 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 49 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 51 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 49 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 51 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**49**, which is the arithmetic check that no row was double-counted or dropped.
+**51**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -4953,6 +4955,150 @@ attached**, and the load-bearing `Step == 16 B` pin is unchanged.
 
 ---
 
+### CBR-036
+
+**The DESCEND BUDGET — one `descend` walks `k+1` cut-set levels natively, so the generated `Par` clone re-enters its trampoline 5.91× less often and the product is structurally identical.**
+
+| | |
+|---|---|
+| Commit(s) | `88ec2734` (the budget, threaded through 117 generated functions), `9442f76b` (the invariant control) |
+| Status | LANDED |
+| Direction | NEUTRAL |
+| Evidence grade | **NEUTRALITY-MEASURED** |
+| Files | `models/build/wire_schema.rs` (the generator: `DESCEND_BUDGET` at **:4058**, `emit_clone_pool` at **:4093**, `emit_clone_traversal` at **:4171**, `emit_clone_family_message` at **:4478**, `emit_clone_family_oneof` at **:4712**), `models/Cargo.toml`, `models/tests/clone_descend_budget.rs` (new) |
+
+★ **Attribution.** The analysis below is the descend-budget work item's, handed over because that work item
+was fenced out of `docs/consensus/**`. Filed substantially as given; the credit is its author's.
+
+#### (a) The issue
+
+`models/build/wire_schema.rs` at **:4058** introduces `const DESCEND_BUDGET: usize = 3`, published to
+generated code as `CLONE_DESCEND_BUDGET` (emitted by `emit_clone_pool`, **:4093**). The three generated
+clone families — `clone_push_children_*`, `clone_child_count_*`, `clone_rebuild_*`, **117 functions over 39
+entered types** (`emit_clone_family_message` **:4478**, `emit_clone_family_oneof` **:4712**) — each take a
+`budget: usize`. At a cut-set child site, `budget == 0` suspends a `Step::Descend` exactly as before;
+`budget > 0` re-enters the cut-set type's own family **natively** at `budget − 1`. The visitor
+(`emit_clone_traversal`, **:4171**) enters `descend` / `combine` / `arity` at `CLONE_DESCEND_BUDGET`.
+
+★ **This is the generated `impl Clone for Par`, on the consensus path**: the sorter clones, the encoders
+clone, and `sort_match` output is signed. ⚠ It is therefore not a private optimisation — it is a change to
+code every produce and every consume runs, which is why it gets an entry rather than an exemption.
+
+#### (b) How it (potentially) breaks consensus
+
+⚠ Every cell is `NO` rather than `N/A`: the axes **apply** — this is consensus-path code — and the answer
+is *measured not to move*, which is the stronger claim. Only [CBR-019b](#cbr-019b)'s dormant encoder earns
+`N/A` on this kind of axis, and it earns it by having no caller at all.
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — `clone_equivalence_corpus` **4/4**, `driven == derived` on **8 axes over 67 shapes**. ★ `models` **475/475 in DEBUG**, so `drive.rs`'s Invariant 1, the deficit invariant and the `clone_child_count_*` recount ran on **every** clone rather than on a sample. `clone_descend_budget` compares the counted walk against `oracle_clone_par` over the whole 2,001-datum mix and chains to **4,096** levels. **MEASURED**. |
+| 2 · verdict | **NO** — ⚠ **this cell was not in the incoming table and is DERIVED here rather than invented**, on the same ground [CBR-035](#cbr-035) uses: a clone is not a decision, and a structurally identical product cannot change one. Nothing in `rho-pure-eval`, the spatial matcher or `where`-guard approval reads anything this change touches. **DERIVED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — the product is structurally identical, so any function of it is too. `cold_store_records`, `par_codec_differential`, `par_codec_wire_shapes`, `serializer_par_byte_goldens`, `sorter_canonical_golden`, `wire_encode_differential` all green. **MEASURED**. |
+| 3 · bytes (Lane P, prost) | **NO** — `prost_encode_differential` (including `deep_terms_encode_identically`), `par_prost_depth_ceiling`, `epathmap_*` all green. **MEASURED**. |
+| 4 · post-state hash | **NO** — `blessed_contract_source_pins` **5/5** including `every_blessed_normalized_term_is_pinned`: **all 11** blessed contracts' normalized `Par` **digest *and* length** unmoved. ⚠ **Scope stated: a CORPUS result over the blessed contracts, not a proof over all terms.** ★ And the diagnostic that makes it load-bearing — *same length, different digest ⇒ an encoder field-value change*, the discriminator [CBR-032](#cbr-032)'s witness rests on — **did not fire**. **MEASURED**. |
+| 5 · accepted programs | **NO** — adds and removes no failure mode. Native recursion is bounded by $`\texttt{CLONE\_DESCEND\_BUDGET} \times \texttt{CLONE\_RESIDUAL\_HEIGHT} + O(1)`$ — a constant of the **schema and the budget, with no term in it**. `stack_depth_gate` subject `clone` reads **0 B/level from depth 4 to 4,096**, identical to the pre-change bound. **MEASURED**. |
+| 6 · metering | **NO** — ⚠ **filed as `NO`; the incoming table said `N/A`, and the correction is a CONVENTION argument rather than a disagreement about the facts.** The facts are agreed: `Clone` carries no `Cost`, no charge site changed, and the 3.74 %/node instruction reduction is not a consensus quantity — *that last clause is itself the `NO` evidence*, since it says the axis was evaluated and what moved was not what the axis measures. The register reserves `·` (`N/A`) for the **dormant or unreachable** — [CBR-019b](#cbr-019b) — and uses `○` (`NO`) for **live code whose charges do not move, including live code that carries no charge**: [CBR-019](#cbr-019) (an encoder), [CBR-033](#cbr-033) (a diagnostic) and [CBR-035](#cbr-035) (this same generated clone family) are all `NO`. ★ **If the owner prefers `N/A` here, all four must move together** — four entries disagreeing about one relationship is the defect, not the letter chosen. **DERIVED**. |
+
+**The disagreement — and why it cannot occur.** Node A runs budget 3; node B runs budget 0 after a rebuild
+from a diverged generator. Both clone the same `Par` on the `sort_match` path and sign it. For them to
+disagree the two budgets would have to produce different terms, and they cannot: at **every** budget the
+same three families walk the same child relation in the same **declaration** order, and the budget selects
+only *where the value is materialised* — on `vals` via `CloneVal`, or directly in the parent's slot via the
+`sret` ABI. Frontier order is preserved because `drive_with` pops from the end of an in-place-reversed
+region, making it a DFS, and `clone_rebuild_*` re-enters that DFS in the same order; `clone_child_count_*`
+is a **third independently-written** walk of the same frontier, and `CloneChildren::finish` compares it
+against what the rebuild **consumed** in *every* profile including release.
+
+★★ **This was EXECUTED, not argued: the budget was set to 0 and the equivalence corpus stayed 4/4 green on
+all eight axes** — the two budgets were literally run against each other. $`\Rightarrow`$
+`CLONE_DESCEND_BUDGET` is a **performance parameter with no consensus-visible degree of freedom**, and
+version skew in it is **not** a fork risk. ⚠ That is a materially stronger claim than *"we believe the
+budget is invisible"*, and it is the reason this entry's axis cells are `NO` rather than `UNVERIFIED`.
+
+**Blast radius.** Total in reach, empty in effect — the same shape as [CBR-035](#cbr-035), and the same
+caution applies: `Clone` for the 55 non-`Copy` types runs on every sort, every encode and every event hash,
+so a defect here would be unbounded, which is why the neutrality is gated by an enumerated corpus and by a
+third independent walk rather than by a round-trip test. [§5.2](#52-the-three-highest-risk-entries-and-why)'s
+reasoning about [CBR-019](#cbr-019) applies verbatim: *neutrality claims are the ones that fail silently.*
+
+**Could live chain state have been produced under the old behaviour?** **N/A** — the question presupposes a
+behavioural difference, and the budget-0-versus-budget-3 execution shows there is none.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Nothing *correctness*-wise. The motivation is that the trampolined
+clone re-entered its driver **12,286** times over the production-weighted mix and now re-enters **2,078**
+times — **5.91×** fewer — with instruction count down 3.74 %/node. ★ Inefficiency is a form of brokenness.
+
+**Why this repair rather than the alternatives — three independent reasons.**
+
+1. **The budget cannot escape its bound, because it is spent at cut-set boundaries ONLY.** It is threaded
+   *unchanged* through an `Enter` — a residual hop such as `Par → Expr → ExprInstance → EList` — and
+   decremented **only** at a `Cut` site. The generator refuses to emit unless the residual relation is
+   verified **acyclic**, so the residual contributes at most `CLONE_RESIDUAL_HEIGHT = 3` frames per cut-set
+   level, giving native frames $`\le (k+1) \times 3 + O(1)`$ — bounded by **schema and budget, never by the
+   term**. ★ **Structural, not measured**, which is why surviving depth is unbounded at *every* `k`.
+2. **The three families cannot disagree, by construction and by cross-check.** All three are emitted from
+   **one** resolved-field vector in declaration order, and the budget fork is the *same three-line shape* in
+   all three — so *"forked in `push` but not in `rebuild`"* is **not spellable in the emitter**. The value
+   stack is then checked twice: `arity()` against what `combine` popped (debug), and `clone_child_count_*`
+   against what `clone_rebuild_*` consumed (**all** profiles). 117 functions, 117 budget parameters, **zero
+   un-threaded call sites**, verified mechanically. ★ Making the wrong form *unspellable* is the shape this
+   register keeps asking for, as against enumerating the ways it could go wrong.
+3. ★★ **The amortization is guarded against silent reversion, and the guard is NECESSARY rather than
+   decorative.** `budget = 0` is the pre-change machine *exactly* — and it **passes the equivalence corpus
+   and the depth gate**. $`\Rightarrow`$ **The correctness gates structurally cannot see a reverted
+   amortization.** `models/tests/clone_descend_budget.rs` closes that gap: it **counts** trampoline
+   re-entries (12,286 $`\rightarrow`$ **2,078**, 5.91×), checks the count against
+   $`\lceil L/(k+1) \rceil`$ **and** against an independent prediction written over the hand-written
+   `par_children::par_child_pars` relation, and compares every counted walk's product against the derive
+   oracle so the count is a fact about the **shipping** machine. **Three of its six tests were seen RED at
+   budget 0.** ⚠ This is the [§7.4](#74-anti-vacuity--the-gate-must-be-shown-red) discipline applied to a
+   *performance* invariant, which is unusual and correct: a property no test can fail is not a property.
+
+**Authority.** No owner ruling. ⚠ No **throughput** claim is attached — see the evidence.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 3 on the axis of generated clone-family functions that
+walk the child relation and therefore had to be budget-threaded** — `clone_push_children_*`,
+`clone_child_count_*`, `clone_rebuild_*`, being 117 functions over 39 entered types. The axis is DERIVED
+from the emitter's own family list, and the count is 3 *families* rather than 117 *functions* because the
+emitter writes one shape per family; the 117 is the multiplicity, not the sibling set. ★ Zero un-threaded
+call sites, verified mechanically rather than by inspection.
+
+**★ The entry claims the emitted behaviour needed no change; the GUARDS are named.**
+`models/tests/clone_equivalence_corpus.rs` (8 axes × 67 shapes, corpus derived from the generated variant
+tables), `models/tests/clone_descend_budget.rs` (the counted-walk product against the oracle),
+`CloneChildren::finish` (the third-walk cross-check, **all** profiles), and
+`casper/tests/genesis/contracts/blessed_contract_source_pins.rs`'s
+`every_blessed_normalized_term_is_pinned` (11 rows, digest **and** length).
+
+#### Evidence
+
+- Trampoline re-entries over the production-weighted mix: **12,286 $`\rightarrow`$ 2,078**, a **5.91×**
+  reduction, cross-checked against $`\lceil L/(k+1) \rceil`$ and against an independent prediction over
+  `par_children::par_child_pars`. **MEASURED**.
+- Native-frame bound $`\le (k+1) \times \texttt{CLONE\_RESIDUAL\_HEIGHT} + O(1)`$, with the residual
+  relation **verified acyclic by the generator** as an emission precondition. **DERIVED** — a property of
+  the schema, with no term in it.
+- `stack_depth_gate` subject `clone`: **0 B/level, depth 4 to 4,096**, identical to the pre-change bound.
+  **MEASURED**.
+- The acceptance matrix: `clone_equivalence_corpus` 4/4; `models` **475/475 in debug**;
+  `cold_store_records`, `par_codec_differential`, `par_codec_wire_shapes`, `serializer_par_byte_goldens`,
+  `sorter_canonical_golden`, `wire_encode_differential`, `prost_encode_differential`,
+  `par_prost_depth_ceiling`, `epathmap_*` all green; `blessed_contract_source_pins` 5/5 with all 11
+  normalized digests **and** lengths unmoved. **MEASURED**.
+- ⚠★★ **NO THROUGHPUT CLAIM IS ATTACHED, and `9442f76b` is why.** The invariant control — a third arm that
+  is a *duplicate* of another arm, so its true ratio is exactly $`1`$ — was measured over four alternating
+  runs. **The ordering REVERSED between runs (+13.3 % then −12.9 %) while every run's control drift stayed
+  under 2 %.** $`\Rightarrow`$ **A control measures WITHIN-run resolution and says nothing about
+  BETWEEN-run reproducibility.** ★ That is a correction to
+  [§7.8.6](#786-the-two-drift-questions-answered)'s own recommendation and is recorded there too. This
+  entry therefore lands as a **work reduction with no throughput claim**, the same disposition as
+  [CBR-035](#cbr-035). **MEASURED**.
+
+---
+
 ## 4.4 Surface L — MeTTaIL's Rholang
 
 ⚠ **Read this section against a different clock.** MeTTaIL's Rholang does not run consensus today. A
@@ -6375,6 +6521,20 @@ conformance binary pass unchanged: `a_s5_5_byte_identity_pins`, `a_s5_6_byte_ide
 `s6_channel_fingerprint_invariant`, `fix_a_alpha_canonical_semantic_key`, `canonical_to_bytes`,
 `rho_rholang_conformance`, `rho_rholang_ast`. **CITED** (`ef49d8c2`).
 
+⚠★★ **THREE OF THOSE SEVEN NAMES ARE NOT TESTS, and the citation is to prose — re-derived 2026-07-30.**
+`2eebf722` named six pin sites; only **three** exist as test functions —
+`a_s5_5_byte_identity_pins` (2 rows), `a_s5_6_byte_identity_pins` (3) and `rho_rholang_conformance` (23) =
+**28 rows**. `s6_channel_fingerprint_invariant`, `fix_a_alpha_canonical_semantic_key` and
+`canonical_to_bytes` are **prose references, not executable checks**. $`\Rightarrow`$ **The "105 tests"
+figure does not re-derive**, and the sentence above is retained with this correction beneath it rather than
+silently repaired, so the overclaim is visible. ★ **A named falsifier that is not a test is exactly the
+coverage-overclaim shape [§7.8.6](#786-the-two-drift-questions-answered) records as this register's own
+recurring failure** — the Abstract's *"every figure … is PROJECTED … by a test"* was the same defect in the
+same document. ⚠ The **conclusion** — that zero bytes moved — is **unaffected**: it rests on the three real
+suites and on the structural argument that nothing constructs a `Bytes`, and
+[CBR-L14](#cbr-l14) has since made the construction path exist and re-measured all of them green.
+**DERIVED** (the three absent names, by search).
+
 ⚠ **The zero must not be mistaken for the change being inert.** It is zero *because* nothing constructs a
 `Bytes`, not because the encoding is unchanged. Stated as a counterfactual: were a construction path
 present, the prost field number would move $`3 \to 25`$ for every `Bytes` term reaching the wire and all
@@ -6401,28 +6561,188 @@ to "design the literal", and that is a different work item with a different owne
 
 ---
 
+### CBR-L14
+
+**MeTTaIL's `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>] as Bytes` plus the `b"deadbeef"` literal — which removes a spurious reading of every string literal, makes `GByteArray` reachable from source for the first time, and closes three byte methods and one rational operator.**
+
+| | |
+|---|---|
+| Commit(s) | `713e0364` (carrier + literal + `LiteralFamily::Custom`), `5a9efa00` (byte methods), `93155150` (`BigRat %`), `3aea562f` (census re-derivation) — all in `mettail-rust` on `feature/rho-native-set-automata`. Supersedes the HELD state recorded in `2eebf722`. |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | **LATENT** — the mechanism is loaded but no reachable program contained a `Bytes` term before `713e0364`, so nothing on the wire moved. |
+| Files | `mettail-rust` at `93155150`: `languages/src/rholang.rs` (`![Vec<u8>] as Bytes`; `literals { Bytes { … } }`; the `Mod` `BigRat` arm; three `M*` method rules + three congruences), `languages/src/rholang/runtime.rs` (`fold_hex_to_bytes`, `fold_bytes_to_hex`, `fold_to_utf8_bytes`, `fold_bytes_nth`, the `CastBytes` arm of `fold_proc_length`), `rholang-runtime/src/rholang_ast.rs` (`lower_arm_cast_bytes`; three `self.method(…)` arms), `rholang-runtime/src/rholang_ast/recursive_oracle.rs` (three `lower_arm_*`), `macros/src/gen/native/mod.rs::is_byte_vector`, `macros/src/gen/mod.rs::generate_literal_label`, `macros/src/gen/runtime/wpda_codegen/prefix.rs` (`LiteralFamily::Custom`, `literal_family_for_category`), `macros/src/gen/syntax/display.rs` (the byte-vector Display arm). Upstream: `models/src/main/protobuf/RhoTypes.proto` at **:230-232**; `rholang/src/rust/interpreter/reduce.rs` at **:3435**, **:4670**, **:4753**, **:4849**, **:4893**, **:4948**, **:8775**, **:9337-9405**; `pretty_printer.rs` at **:2860**; `models/src/rust/string_ops.rs` at **:17-28**. **DERIVED** (read at those refs). |
+
+⚠ **Two editorial changes were made in filing, and both are recorded rather than silent.** The entry is
+otherwise as its author wrote it and the credit is theirs.
+
+1. ★ **The metering cell was changed from `N/A` to `NO`.** The author's justification — *"budgets are
+   F1r3node's (`wallet.txt`) and MeTTaIL carries no metering surface"* — cites a standing owner ruling
+   correctly, but that ruling is about **what MeTTaIL must not build**, not about whether the axis has an
+   answer. Two things settle it. (i) **The register's own convention**: all thirteen prior Surface-L entries
+   answer this axis `NO`, and [CBR-L07](#cbr-l07)'s answers `UNVERIFIED` — *"this register did not establish
+   whether MeTTaIL's `last` reuses `nth`'s price"* — a cell that would be incoherent if the axis did not
+   apply on Surface L. (ii) **The entry's own second sentence is already the `NO` evidence**: the three
+   routed methods reach existing `hex_to_bytes_cost` / `bytes_to_hex_cost` handlers *unchanged*, so no cost
+   function is added, altered or bypassed. $`\Rightarrow`$ *"Measured not to move"* is `NO`; `N/A` is
+   *"the axis does not apply"*, and it would have been the weaker claim as well as the wrong one. ⚠ This
+   is the same slip corrected in [CBR-035](#cbr-035), whose cells are `NO` for the same reason.
+2. **Upstream and cross-repository coordinates are written with the line number OUTSIDE the code span:**
+
+   ```text
+   used here:      `reduce.rs` at :3435          ← the line is prose, so the scan skips it
+   NOT used here:  `reduce.rs:3435`              ← a joined span IS a corpus member
+   ```
+
+   ⚠ **The contrast above is inside a fenced block for the same reason it is the rule**, and this was
+   found by the check rather than foreseen: spelled inline, the *illustration* of the wrong form is
+   itself matched by the extractor and demanded a `[[citation]]` row — a coordinate invented by a
+   sentence explaining why not to invent coordinates. That is
+   [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 1 recurring inside its own
+   remedy. This spelling is
+   used here for a substantive reason rather than for convenience: the citation corpus is **derived** from
+   the `` `path:line` `` form, and these nine coordinates are *upstream reads* and *foreign-repository*
+   references, not pinned claims about this tree at a SHA. Spelling them as pinned citations would have
+   added nine rows whose tokens cannot be checked here — which is precisely the coverage-overclaim shape
+   [§7.7.7](#777-what-the-gate-cannot-cover-stated-as-prominently-as-what-it-can) exists to prevent.
+
+#### (a) The issue
+
+Three distinct defects at one site, all created by the DECLARATION rather than chosen as behaviour.
+
+**1. `![String] as Bytes` made every string literal ambiguous.** Both `Str` and `Bytes` were string-shaped, so `macros/src/gen/types/enums.rs` emitted a `StringLit` variant for each, and every `"…"` in the language had two readings — `CastStr` and `CastBytes`. It was cohort 9 of `languages/tests/rholang_semantic_predicate_ambiguity.rs`'s D02 golden, `[StringLit] CastStr vs CastBytes`. Upstream cannot express such an ambiguity: `RhoTypes.proto` at **:230-232** carries `string g_string = 3` and `bytes g_byte_array = 25` as TWO DISTINCT types, and the consensus grammar (`rholang-tree-sitter/grammar.js` at **:435-436**) offers `string_literal` and `uri_literal` only, with `ByteArray` at **:424** a TYPE NAME in `simple_type`. **DERIVED.**
+
+**2. A declared `literals { … }` block was silently discarded by the parser.** `classify_literal_patterned` (`macros/src/gen/runtime/wpda_codegen/prefix.rs`) resolved a category's `LiteralFamily` from its `NativeKind` alone. Any carrier outside the built-in families returned `None`, and the rule fell through to `AtomicShape::NonAtomic` — after the block had been parsed, validated, desugared into a `TokenDef`, and compiled into the lexer DFA. The token was produced and nothing could consume it. This is why `2eebf722` measured `Bytes` as having no surface at all rather than merely no literal. **MEASURED** (`2eebf722`: `gen_rholang_prop::bytes_display_parse_roundtrip` — `arb_bytes produced unparseable surface term ""`, eleven rows).
+
+**3. `Bytes` was unreachable, so every byte method's gap was invisible.** Walking every `fn <name>_method` in `reduce.rs` and keeping those with a `GByteArray` arm gives EIGHT: `nth` (**:4670**), `last` (**:4753**), `toByteArray` (**:4815**), `hexToBytes` (**:4849**), `bytesToHex` (**:4893**), `toUtf8Bytes` (**:4948**), `length` (**:8775**), `slice` (**:8857**). ⚠ **The count is axis-dependent and every previously-quoted figure was correct on some other axis** — [CBR-L13](#cbr-l13) records "1 of 9" on the byte-PRODUCING axis (methods ∪ five crypto system processes); the byte-NAMED axis gives "1 of 4"; the `GByteArray`-arm axis gives 8. **The axis nobody had measured is the one that mattered: of those eight, the number that ACCEPTED a `Bytes` receiver in MeTTaIL's host fold lane was ZERO** — `fold_proc_length` matched `CastStr`/`CastList`/`CastMap`/`CastBag`/`CastSet` and not `CastBytes`; `LNth`/`LLast` matched only `Proc::CastList`. Since `length`/`nth`/`last` ARE keys of the reducer's `method_table`, the two lanes DISAGREED: the machine answered a value, the fold answered `error`. **MEASURED** (RED, `93155150`'s parent: `` `b"dead".length()` … left: None, right: Some(2) ``).
+
+**4. `BigRat %` was missing.** Measured over the full 13-operator × 6-carrier cross product (78 cells), four cells did not answer in their operand carrier: `BigRat %`, `Float %`, `Float bitand`, `Float bitor`. Only `BigRat %` is a gap against upstream, whose `combine_mod` `GBigRat` arm (`reduce.rs` at **:3435-3444**) answers the rational ZERO for a non-zero divisor. **MEASURED** (`languages/tests/rholang_arith_carrier_matrix.rs`).
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES**, in two places, both CORRECTIONS. (i) `b"…".length()` / `.nth(i)` / `.last()` answered the `error` term in the host fold lane and now answer what the reducer answers — the lanes were in disagreement and now agree. (ii) `6r % 3r` answered `error` and now answers `0r`, which is what `combine_mod`'s `GBigRat` arm answers. Elsewhere NO: the reduction relation is untouched. |
+| 2 · verdict | **MOVES** — a `Bytes` and a `Str` of the same content were previously INDISTINGUISHABLE (both lowered through `new_gstring_par`; [CBR-L13](#cbr-l13) corrected the target and this completes it) and are now distinct, so an `==` or a spatial match between them answered *equal* and now answers *unequal*. Latently — see the grade. |
+| 3 · bytes (Lane B, bincode) | **MOVES** for any `Bytes` term: the AST payload changes from `Bytes::StringLit(String)` to `Bytes::BytesLit(Vec<u8>)`. **MEASURED: no golden moved** — `rholang-codegen`'s `a_s5_5_byte_identity_pins` (2 rows) and `a_s5_6_byte_identity_pins` (3 rows) pass unedited, because no pinned term contains a `Bytes`. |
+| 3 · bytes (Lane P, prost) | **MOVES** for any `Bytes` term reaching the wire — `ExprInstance` field **25** (`g_byte_array`, length-delimited bytes) rather than field **3** (`g_string`, length-delimited UTF-8). ⚠ Additionally, the payload is now the bytes THEMSELVES rather than a UTF-8 re-encode of a `String`, so a non-UTF-8 sequence such as `b"80c328fe"` is expressible for the first time — it could not be held by the old carrier at all. |
+| 4 · post-state hash | **MOVES** — strictly downstream of the bytes. **MEASURED: no fingerprint moved** (`s6`/driver fingerprints in `a_s5_6_byte_identity_pins`, `rho_rholang_conformance` 23 rows). |
+| 5 · accepted programs | **MOVES — and this is the largest axis here.** ADDED: `b"<even run of hex digits>"` (previously not a term: Rholang has no juxtaposition, so an identifier abutted to a string literal did not parse); `"…".hexToBytes()`, `b"…".bytesToHex()`, `"…".toUtf8Bytes()`. REMOVED: nothing — but the READING SET shrinks, since a `"…"` literal no longer has a `CastBytes` reading. RESERVED: three new keywords (`hexToBytes`, `bytesToHex`, `toUtf8Bytes`), since every method terminal is keyword-reserved in this grammar. |
+| 6 · metering | **NO** — ⚠ **filed as `NO`, not `N/A`; see the editorial note above.** The three routed methods reach `reduce.rs`'s existing `hex_to_bytes_cost` / `bytes_to_hex_cost` handlers **unchanged**, so no cost function is added, altered, or bypassed — a *measured* non-movement rather than an inapplicable axis. ★ Contrast [CBR-024](#cbr-024) / [CBR-025](#cbr-025), which move this axis by adding a **new charge site for a new method**: three methods are added here and all three reuse existing prices. MeTTaIL itself carries no metering surface **by ruling** — budgets are F1r3node's (`wallet.txt`) — and that ruling is why nothing was built, not why the axis has no answer. |
+
+**The disagreement.** A node on the old code and a node on the new code would disagree on the post-state of any program containing a `Bytes` term: the old node writes field 3 with the literal's UTF-8 bytes, the new node writes field 25 with the byte sequence, and the two `Par`s hash differently. They would also disagree on `6r % 3r` (`error` vs `0r`) and on `b"dead".length()` (`error` vs `2`) in the host lane. Fault class: **safety fork**.
+
+**Blast radius.** Every program containing a `Bytes` term, a byte method, or a rational modulo. ★ **The `Bytes` half of that set was EMPTY before `713e0364`, for a structural reason rather than by luck**: a `"…"` literal elects `Str`, and `CastBytes` had no other construction path in the spec — MeTTaIL had none of upstream's byte-producing builtins. That is exactly the enumeration [CBR-L13](#cbr-l13) recorded, and this entry closes it. The `6r % 3r` half is reachable by an ordinary deploy but answered `error`, which no correct program depends on.
+
+**Could live chain state have been produced under the old behaviour?** **NO, and it is settled from inside the repository.** No MeTTaIL term has entered a block, and on Surface L the `Bytes` construction path did not exist. For the record, the query that would settle it if it had: scan every deploy term for a `GByteArray` expression whose provenance is a MeTTaIL-compiled `Par` — i.e. `SELECT … FROM deploys WHERE term LIKE '%g_byte_array%'` against the block store, cross-referenced with the MeTTaIL-compiled deploy set (currently empty).
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Three things, each independently sufficient. (i) A wire model in which `Bytes` and `Str` are the same type — the distinction `RhoTypes.proto` makes is simply lost, and [CBR-L13](#cbr-l13)'s corrected lowering target cannot express a non-UTF-8 byte array. (ii) Every string literal in the language has a spurious second reading, which the disambiguator must clean up on every parse; the ambiguity was created by the declaration and was never a behaviour anyone chose. (iii) `Bytes` remains a category that is constructible in Rust and neither writable nor printable in the language — a broken Display→parse invariant for a whole category.
+
+**Why this repair rather than the alternatives.**
+
+- **`0x…` as the literal spelling — REFUTED, and my own earlier argument for it was INVERTED.** I argued for `0x…` on upstream-alignment grounds. MeTTaIL already spends `0x…` on THREE hex INTEGER forms (`Int`, `BigInt`, `BigRat` radix patterns in the same `literals` block), and upstream Rholang has **zero** `0x…` syntax anywhere. It is refuted twice over.
+- **"A builtin plus a type pattern, NOT a literal" — REJECTED.** This was `2eebf722`'s own guess at the faithful shape, and it answers the wrong question: a builtin gives a byte array a PRODUCER, and what was missing is a SURFACE — something `Display` can write and the parser can read back. (The builtins are added here too, so the alternative is subsumed rather than dismissed.)
+- **Suppressing the failing Display-roundtrip rows — REJECTED.** They are the only thing that noticed the defect. `2eebf722` refused this and was right to.
+- **A new `NativeKind` variant per exotic carrier — REJECTED** in favour of electing `LiteralFamily::Custom` from the DECLARATION. A per-carrier enumeration is a hand-maintained mirror of an open set; keying on "did this category declare a `literals { … }` block with an `eval`?" is the author's own statement that a surface exists, and it leaves every carrier that deliberately has none untouched (`Set`, `Pathmap`, `ReadZipper`, `WriteZipper` are all `NativeKind::Other` and declare no block).
+- **Repairing upstream's `hexToBytes` decoder — REJECTED, and this is the one place where "fix upstream's bugs" does NOT apply.** `StringOps::unsafe_decode_hex` filters out non-hex characters and left-pads an odd-length result (`"hello world"` ⇒ `[0xed]`), explicitly matching Scala's `Base16.unsafeDecode`. It is consensus-reachable — `Registry.rho` calls `hexToBytes` on public keys — so its decoder decides computed values on a live path. A deliberate, documented, load-bearing behaviour is not a bug to fix. Reproduced exactly and pinned so nobody cleans it up.
+- **Declaring `Float %` — REJECTED as a divergence dressed as completeness.** Upstream refuses it *explicitly*, with a message (`reduce.rs` at **:3425**, `"Modulus not defined on floating point"`). ⚠ Note this is the one place the IEEE-754 disposition does not extend: float ÷0 answers IEEE-754 (pinned: `inf`, `-inf`, `NaN`) and [IEEE754-2019](#references) §5.3.1 does define `remainder`, but upstream declines it and upstream is the floor on SEMANTICS.
+- **Declaring `Float bitand`/`bitor` — REJECTED by ruling, not omitted.** Upstream has NO bitwise operators anywhere (derived: zero occurrences across `f1r3node-rust-mettail`, none in the consensus grammar), so these are MeTTaIL-only and the disposition is ours. A bitwise op on an IEEE-754 float has no arithmetic reading; the only implementable one masks the bit PATTERN, which is not a function of the represented VALUE (`0.0` and `-0.0` are equal with different patterns), breaking the property every other arm has.
+
+**★ Upstream is internally inconsistent on the byte-array SURFACE, and this rules rather than replicates.** `pretty_printer.rs` at **:2860** prints `GByteArray(bs) => Ok(hex::encode(bs))` — **bare hex, which upstream's own grammar cannot read** — while `par_to_sexpr.rs` at **:107** spells the same value `0x…`. Upstream prints a value in two forms, neither parseable by upstream. `b"…"` frames **exactly** `hex::encode`'s digits, so the digits agree byte for byte with what upstream prints and with what `hexToBytes` reads, and the round trip upstream loses is recovered. Classified **BUG FIX**, never DIVERGENT.
+
+**Authority.** Owner rulings, verbatim with their dates:
+
+> *"How are `Str` and `Bytes` modeled by upstream Rholang? We should construct our rholang spec to align with upstream's in that regard."* — 2026-07-29
+>
+> *"If upstream Rholang already has syntax and semantics for bytes, we should use the same"* — 2026-07-29
+>
+> *"yes, dispatch the carrier change to `Vec<u8>`"* — 2026-07-29
+>
+> On the literal spelling, after asking how C++ does it: **`b"deadbeef"`, implemented via `LiteralFamily::Custom`** — 2026-07-29
+>
+> *"We should support everything upstream supports correctly, but should fix any bugs that upstream has and make it more debuggable."* — standing
+>
+> On the missing arithmetic operators: **"declare them explicitly"** — 2026-07-30
+
+**★ Sibling enumeration, ON FOUR NAMED AXES.**
+
+- **Axis: categories declaring `![String]` where a byte sequence was meant.** **Count: 1 on this axis** — only `rholang` declares a `Bytes` category (`grep -rn 'as Bytes' languages/src/*.rs`); `rhocalc` and the other eleven bundled languages have none. The sibling that would have shared the defect does not exist.
+- **Axis: categories whose declared `literals { … }` block was silently discarded by the family lookup.** **Count: 1 on this axis** (`Bytes`) — and the *repair* is general: `literal_family_for_category` is now the single election site and any future carrier outside the built-in families is covered automatically. The DERIVED gate (`rholang_literal_surface_census.rs`) computes the domain from the grammar, so a new such category joins it without an edit.
+- **Axis: `method_table` entries with a `GByteArray` arm that MeTTaIL cannot reach.** **Count: 8 before, 1 after** — `slice` alone remains, and its absence is not a byte gap: it is missing for `String`, `List` and `ByteArray` alike, so declaring it means one rule with three carrier arms plus a keyword reservation affecting all categories. Reported, not smuggled in. The five crypto builtins of [CBR-L13](#cbr-l13)'s axis (`sha256Hash`, `keccak256Hash`, `blake2b256Hash`, `secp256k1Verify`, `ed25519Verify`) are unforgeable CHANNELS, not method-table entries, and remain absent for the same reason.
+- **Axis: operator × carrier cells that do not answer in their operand carrier.** **Count: 4 of 78 before, 3 after** — and the surviving three are RULED, not missing. ⚠ The four cells #115 named (`BigRat -`, `UInt32 -`, `UInt32 *`, `UInt32 /`) all compute and preserve their carrier; the filing's premise is refuted by measurement.
+
+**★ Where this entry claims something needed no change, the GUARD is named.**
+
+| claim | falsifier |
+|---|---|
+| no serialized byte or fingerprint moved | `rholang-codegen`'s `a_s5_5_byte_identity_pins` (2) + `a_s5_6_byte_identity_pins` (3); `rholang-runtime`'s `rho_rholang_conformance` (23) |
+| the `Str`/`Bytes` ambiguity is unspellable, not merely unelected | `rholang_byte_literal.rs::a_string_literal_has_no_byte_array_reading` |
+| every declared literal has a reachable surface | `rholang_literal_surface_census.rs::every_category_declaring_a_literal_has_a_reachable_surface` — domain DERIVED from the reconstructed `LanguageDef`, floored against vacuity |
+| `hexToBytes`'s filter-and-pad oddity is preserved exactly | `rholang_byte_methods.rs::hex_to_bytes_filters_and_pads_exactly_as_upstream_does` |
+| `Float %`/`bitand`/`bitor` stay `error` BY RULING | `rholang_arith_carrier_matrix.rs::RULED_NON_PRESERVING`, checked in BOTH directions — a ruled cell that STARTS preserving its carrier also fails |
+| float ÷0 answers IEEE-754 | `rholang_arith_carrier_matrix.rs::float_division_by_zero_answers_ieee_754` |
+| every exact carrier fails closed on ÷0 and %0 | `::modulo_and_division_by_zero_fail_closed_at_the_exact_carriers` (9 cells) |
+| the two `Fixed` divergences are known and unrepaired | `::the_two_fixed_point_divergences_are_pinned_with_upstreams_answer`, with upstream's answer written down |
+
+★ **All eight falsifiers are executable test functions**, which is why this row set is admissible as a
+falsifier table at all. ⚠ Contrast the defect recorded against
+[CBR-L13](#cbr-l13)'s evidence: three of the six pin sites `2eebf722` named are **prose references, not
+tests**. A named falsifier that is not a test is the coverage-overclaim shape
+[§7.8.6](#786-the-two-drift-questions-answered) treats as the register's own recurring failure, so the
+distinction is worth asserting positively here rather than assumed.
+
+#### Evidence
+
+**DERIVED** — the D02 unresolvable-ambiguity golden moved **9 → 8**, re-derived by rebuilding rather than edited: `warning[D02] (Rholang): 8 unresolvable ambiguity in 1 categories`. ⚠ Row 9 (`[StringLit] CastStr vs CastBytes`) was **REMOVED, not RESOLVED** — the other eight are inherent grammar conflicts settled by a tropical weight, while row 9 was a declaration artefact whose losing reading is now unconstructible.
+
+**MEASURED** — the guards, RED then green. Census gate, under a revert of the carrier and the literals block:
+
+```text
+thread 'every_category_declaring_a_literal_has_a_reachable_surface' panicked at
+languages/tests/rholang_literal_surface_census.rs:109:5:
+`Bytes` must DECLARE its literal surface, and it does not. Derived domain:
+["BigInt", "BigRat", "Fixed", "Float", "Int"].
+```
+
+The derived domain moves 5 → 6. Byte rows, under the same revert, do not compile: `error[E0599]: no variant … named BytesLit found for enum mettail_languages::rholang::Bytes`. Byte methods, before the fold arms: `` `b"dead".length()` must be 2 … left: None, right: Some(2) ``, and `` `"deadbeef".hexToBytes()` must parse: "1:12: … found identifier `hexToBytes`" ``. `BigRat %`, before the arm: `1 of 78 cells do not preserve their operand carrier and are NOT among the ruled exceptions: 6r % 3r answered error (want BigRat)`.
+
+**MEASURED** — the acceptance matrix at `93155150`: `languages` 1072 rows / 17 suites green; `rholang-runtime` 107 rows green; `rholang-codegen` byte identity 5/5, zero fingerprints moved; `macros` 438 green after the census re-derivation. Derived counts that moved and why: `gen_rholang_rewrite` 171→174 (+3 congruences), `gen_rholang_unit` 176→179 (+3 rules), `rholang_dovetail_fold` 6→7, `factoring.rs` method cohort 44→47 (three `LoneRootChild` singletons, still zero factorable groups).
+
+**UNVERIFIED** — the two `Fixed` divergences surfaced by the matrix are reported, pinned, and NOT repaired, because each moves a computed value and needs an owner ruling: (1) `Fixed %` computes `a − trunc_p(a/b)·b` where upstream computes the integer-quotient remainder (`7.00p2 % 3.00p2` is `0.01p2` here, `1.00p2` upstream; `7.50p2 % 2.00p2` is `0p0` here, `1.50p2` upstream) — not an arithmetic slip, since `checked_rem` is the matched pair of `checked_div` and the two satisfy `q·b + r = a`; (2) mixed scales are accepted here (`7.00p2 + 3.000p3` ⇒ `10.000p3`) and refused upstream (`OperatorExpectedError`).
+
+★ **This entry CLOSES [open question 8](#63-known-open-questions)** — *"MeTTaIL cannot construct a byte array at
+all … so `"deadbeef".hexToBytes()` is unsayable"* — whose premise is now false by measurement. ⚠ The
+closure is **partial and the residue is named**: construction is possible and three byte methods exist, but
+**5 of the 9** byte-producing surfaces on [CBR-L13](#cbr-l13)'s axis are still absent, all five being
+unforgeable crypto **channels** rather than method-table entries. **MEASURED** (the question's premise) +
+**DERIVED** (the residue, from the sibling enumeration above).
+
+---
+
 ## 5. Risk analysis
 
 ### 5.1 Aggregate axis exposure
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 49 |
+| Axis | Entries that move it | Share of the 51 |
 |---|---|---|
-| 1 · computed value | **21** | 43 % |
-| 2 · verdict | **26** | 53 % |
-| 3 · bytes — Lane B (bincode) | **24** | 49 % |
-| 3 · bytes — Lane P (prost) | **25** | 51 % |
-| 4 · post-state hash | **35** | 71 % |
-| 5 · accepted programs | **13** | 27 % |
+| 1 · computed value | **22** | 43 % |
+| 2 · verdict | **27** | 53 % |
+| 3 · bytes — Lane B (bincode) | **25** | 49 % |
+| 3 · bytes — Lane P (prost) | **26** | 51 % |
+| 4 · post-state hash | **36** | 71 % |
+| 5 · accepted programs | **14** | 27 % |
 | 6 · metering | **3** | 6 % |
 
-⚠ **Recounted 2026-07-30 from the 49 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
+⚠ **Recounted 2026-07-30 from the 51 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
 28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
 never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
 ★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 49 in every column, which is the check that no
+`●` counts per column, plus the `○` and `·` counts, sum to 51 in every column, which is the check that no
 row was skipped.
 
 **Reading.** The post-state hash is the most-touched axis at **71 %**, which is expected: it is downstream
@@ -6475,19 +6795,19 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-30 from the 49 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
+⚠ **Recounted 2026-07-30 from the 51 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **30** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| CORRECTIVE | **31** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
 | PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
-| NEUTRAL | **4** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035** — in the register because their neutrality is a measured claim. |
+| NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **49** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **51** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -6617,7 +6937,7 @@ who observed it.
 | 5 | Does MeTTaIL's `last` reuse `nth`'s price, as F1r3node's does? | **CBR-L07** | **UNVERIFIED** — the one `?` cell in the summary table. |
 | 6 | Two CI jobs lack the f1r3node sibling checkout, so the cross-repository agreement **CBR-L10** rests on is not gated. | campaign ledger | ⚠ **OPEN.** |
 | 7 | ★ **What is `NaN` in MeTTaIL's Rholang?** Its comparisons followed the *carrier* (`NaN == NaN` was `true`) rather than IEEE 754 §5.11 (all `false`), and the naive arm-level fix would have made `==` disagree with the term algebra's own equality. | **CBR-L09** residual 3 | ★★ **CLOSED — ruled and fixed by `19510082`, 46 minutes after it was filed as open.** The answer is a **split**: the six comparison arms follow IEEE §5.11 (a numeric predicate) while the carrier keeps its reflexive `PartialEq` and `NaN`-last `Ord` (structural identity, which must be an equivalence relation). ⚠ Making the *carrier* follow IEEE was **measured** and it stops the rewrite engine terminating — `IterationLimit` on the first fold of `0.0 / 0.0`, because a term unequal to itself can never be recognised as a fixpoint. Upstream has the identical split. Recorded in full under [CBR-L09](#cbr-l09)'s residual 3. |
-| 8 | **MeTTaIL cannot construct a byte array at all** — it has `toByteArray` (a pure constructor with no fold body) and lacks all eight of upstream's byte-producing methods, so `"deadbeef".hexToBytes()` is unsayable. | **CBR-L13** blast-radius enumeration | ⚠ **OPEN**, and *larger* than the byte-literal question it was found under. It is why **CBR-L13**'s byte movement is zero, and it is the real alignment work. |
+| 8 | **MeTTaIL cannot construct a byte array at all** — it has `toByteArray` (a pure constructor with no fold body) and lacks all eight of upstream's byte-producing methods, so `"deadbeef".hexToBytes()` is unsayable. | **CBR-L13** blast-radius enumeration | ★★ **CLOSED 2026-07-30 by [CBR-L14](#cbr-l14) — the premise is now FALSE by measurement.** `b"deadbeef"` is a term, and `hexToBytes` / `bytesToHex` / `toUtf8Bytes` are declared and routed. ⚠ **The closure is PARTIAL and the residue is named**: **5 of the 9** byte-producing surfaces on **CBR-L13**'s axis remain absent, all five being unforgeable crypto **channels** rather than method-table entries — recorded with the reason in **CBR-L14**'s sibling enumeration rather than left as a gap. ⚠ And the closure is **UNCHECKED**: this row's falsifier is `UNDECIDABLE_HERE__FOREIGN_REPOSITORY`, and [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two)'s both-directions rule applies only to the decidable falsifiers, so a `CLOSED` undecidable row is admitted without evaluation. Stated because a closure nothing can check is a weaker thing than a closure something did. |
 | 9 | **How should a `GByteArray` render?** Upstream is internally inconsistent — `pretty_printer.rs:2860` emits **bare hex** while `par_to_sexpr.rs:107` emits `0x…` — and *neither* form is parseable by upstream's own grammar, which has no byte-array literal. | **CBR-L13** evidence | ⚠ **OPEN.** Classified **BUG FIX** (upstream is a floor on semantics; its bugs are ours to fix), but the remedy is a **grammar** decision, not a printer patch. ★ It converts "MeTTaIL cannot render a `Bytes`" from a MeTTaIL gap into a **shared** one, which is why the held `![Vec<u8>] as Bytes` carrier is blocked on a design rather than on a token. |
 | 10 | **Is the test genesis builder's `post_state_hash` non-determinism confined to the test builder?** | **CBR-030** evidence; `719f2432` | ⚠ **OPEN, and the most consequential of these.** A consensus network whose genesis post-state depends on the run cannot agree on genesis. Leading hypothesis, carrying exactly the weight of a hypothesis: `GenesisParameters` holds `bonds: HashMap<PublicKey, i64>` (`genesis_builder.rs:175-177`), and Rust's `HashMap` iteration order is seeded per process, so any genesis term built by iterating it varies run to run. ★ Note the **sibling shape** in the same workspace on the same day: **CBR-L12** (`mettail-rust f5b2e820`), *"the two sorts turn out to have been MASKING a run-varying order"* — the same defect class, found independently, in two repositories. |
 
@@ -7433,10 +7753,10 @@ the gate has a RED cell that does precisely that.
 gaps, and the gate itself asserts that this section still names them — if a future edit removes a
 disclosure, `the_gate_states_the_classes_it_cannot_cover` fails.
 
-1. **Cross-repository rows.** A test in f1r3node cannot read mettail's gate. All **13** Surface-L entries
+1. **Cross-repository rows.** A test in f1r3node cannot read mettail's gate. All **14** Surface-L entries
    name commits that do not resolve here; that is asserted *positively*, so a Surface-L row naming an
    f1r3node SHA fails. What cannot be checked is whether those entries are **true**. Surface-L rows name
-   their source gate instead — and **12 of the 13 carry `NOT_NAMED`**, which is the measured size of the
+   their source gate instead — and **12 of the 14 carry `NOT_NAMED`**, which is the measured size of the
    gap and is itself asserted exactly.
 2. **The task tracker.** ★ *Nothing in this repository reads the task tracker, which is precisely why the
    tracker is the copy that drifted furthest.* Rejected as a clause in
@@ -7650,6 +7970,14 @@ judged against could not be evaluated by the instrument that produced them.
 
 **What the paired instrument says instead**, recorded so the corrected figure does not silently replace the
 old one: the production-weighted mix reads **$`0.948\times`$–$`0.962\times`$** — a **5 % deficit, not 32 %**.
+⚠★ **And that pair carries its own scope caveat, added 2026-07-30 rather than left to be read as a level.**
+It came from the **two-arm** harness. Against a **three-arm** baseline whose measured span is
+$`0.658`$–$`0.820`$, $`0.948`$–$`0.962`$ reads as an **upper-tail pair, not a level** — two draws that
+happened to land high, which is the same error class as the $`\pm 0.005`$
+[§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance) retracts, one
+instrument generation later. $`\Rightarrow`$ **The 5 % figure bounds the deficit's ORDER, not its value**,
+and no throughput claim rests on it: [CBR-035](#cbr-035) and [CBR-036](#cbr-036) both land as work
+reductions with **no throughput claim attached**.
 And the **acceptance criterion itself was replaced**, because a $`0.98\times`$ threshold has to resolve 2 %
 of an instrument that scatters by 13–27 %:
 
@@ -7797,6 +8125,26 @@ should not be trusted to measure a difference.** ⚠ The general form is worth s
 specific to benchmarks: *a measuring device needs a calibration subject whose answer is known
 independently of the device.*
 
+⚠★★ **THE RECOMMENDATION ABOVE IS TOO STRONG, and the correction is MEASURED — 2026-07-30.** The control
+was built (`9442f76b`: a third arm that is a *duplicate* of another, so its true ratio is exactly $`1`$) and
+then run four times, alternating. **The ordering REVERSED between runs — $`+13.3\%`$ then $`-12.9\%`$ —
+while every run's control drift stayed under 2 %.**
+
+$`\Rightarrow`$ **A control bounds WITHIN-run resolution and says nothing about BETWEEN-run
+reproducibility.** The two are different quantities, and the paragraph above conflated them: it claimed the
+control answers *"can this instrument resolve a difference?"*, when what it answers is *"can this instrument
+resolve a difference **inside one run**?"*. A blocked estimator would indeed fail it — that part stands, and
+it is why the recommendation is kept rather than withdrawn — but a **passing** control does **not** license
+a magnitude quoted across runs.
+
+★ **Recorded here as a correction to this section's own recommendation, because the alternative is the
+failure this section exists to describe.** §7.8.5's rule was *"effect size against instrument spread"*, and
+a control that measures only within-run spread supplies the wrong denominator. ⇒ The honest form of the
+recommendation is **two** assertions, not one: an invariant control for within-run resolution, **and** a
+between-run reproducibility check — the same comparison repeated in a fresh process, with the *ordering* of
+the arms recorded, since it was the ordering that reversed. ⚠ Neither is a substitute for the other, and
+nothing in this register's reach can supply the second.
+
 **Q2 — The register is a hand-maintained mirror of a derived fact. Does it have the guard-tier golden's
 shape?**
 
@@ -7888,8 +8236,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **49** consensus-visible changes, derived from the campaign record: **36** on the
-   F1r3node node, **13** on MeTTaIL's Rholang. **47 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **51** consensus-visible changes, derived from the campaign record: **37** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **49 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

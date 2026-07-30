@@ -607,6 +607,34 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 
 [[entry]]
+id = "CBR-036"
+surface = "N"
+commits = ["88ec2734", "9442f76b"]
+status = "LANDED"
+direction = "NEUTRAL"
+grade = "NEUTRALITY_MEASURED"
+# ⚠ Every cell NO, not N/A: this is the generated `impl Clone for Par`, ON the consensus
+#   path (the sorter clones, the encoders clone, `sort_match` output is signed). The
+#   budget-0-vs-budget-3 arms were literally RUN against each other and the equivalence
+#   corpus stayed 4/4 on all eight axes, so the budget has no consensus-visible degree of
+#   freedom and version skew in it is not a fork risk.
+axis_value = "NO"
+# DERIVED here: this cell was absent from the incoming table. A clone is not a decision and
+# a structurally identical product cannot change one. Same ground as CBR-035.
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+# A CORPUS result: all 11 blessed contracts' normalized digest AND length unmoved. Not a
+# proof over all terms, and the entry says so.
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+# ⚠ Incoming said "N/A". Filed NO: the register reserves N/A for the DORMANT/unreachable
+#   (CBR-019b) and uses NO for live code whose charges do not move, INCLUDING live code
+#   carrying no charge — CBR-019 (encoder), CBR-033 (diagnostic), CBR-035 (this same clone
+#   family) are all NO. If the owner prefers N/A, all four move together.
+axis_metering = "NO"
+
+[[entry]]
 id = "CBR-L01"
 surface = "L"
 commits = ["3ff1c98b", "f586e138", "ce887d0b"]
@@ -826,6 +854,35 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 foreign_repo = "mettail-rust"
 source_gate = "NOT_NAMED"
+
+[[entry]]
+id = "CBR-L14"
+surface = "L"
+commits = ["713e0364", "5a9efa00", "93155150", "3aea562f"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "LATENT"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+# ★ The LARGEST axis here: `b"…"` plus three method surfaces added, the reading set
+#   shrunk (a `"…"` literal loses its `CastBytes` reading), three keywords reserved.
+axis_acceptance = "MOVES"
+# ⚠ FILED AS "NO", NOT "N/A" — the incoming entry wrote "N/A" on the strength of the
+#   standing ruling that budgets are F1r3node's (`wallet.txt`). That ruling governs what
+#   MeTTaIL must not BUILD, not whether the axis has an answer. All 13 prior Surface-L
+#   rows answer this axis NO, and CBR-L07's answers UNVERIFIED — a cell that would be
+#   incoherent if the axis did not apply here. The entry's own evidence is a MEASURED
+#   non-movement: the three routed methods reach existing hex_to_bytes_cost /
+#   bytes_to_hex_cost handlers UNCHANGED. "Measured not to move" is NO; N/A is "does not
+#   apply". Same correction as CBR-035.
+axis_metering = "NO"
+foreign_repo = "mettail-rust"
+# ★ NAMED rather than NOT_NAMED, so `check_foreign_rows`'s NOT_NAMED count stays at 12
+#   while the Surface-L total moves 13 -> 14. §7.7.7's prose is re-projected to match.
+source_gate = "mettail-rust languages/tests/rholang_literal_surface_census.rs, languages/tests/rholang_byte_literal.rs, languages/tests/rholang_byte_methods.rs, languages/tests/rholang_arith_carrier_matrix.rs"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # EXEMPTIONS. `window = "PARTITION"` rows complete the exact partition of
@@ -1782,9 +1839,17 @@ why = "The `NaN`-comparison split was ruled and fixed in `mettail-rust` by `1951
 
 [[open_question]]
 number = 8
-state = "OPEN"
+# ★★ CLOSED 2026-07-30 by CBR-L14 (`713e0364`, `5a9efa00`): `b"deadbeef"` is a term and
+#   hexToBytes / bytesToHex / toUtf8Bytes are declared and routed, so the premise "MeTTaIL
+#   cannot construct a byte array at all" is FALSE by measurement. ⚠ PARTIAL: 5 of the 9
+#   byte-producing surfaces on CBR-L13's axis remain absent, all five unforgeable crypto
+#   CHANNELS rather than method-table entries — named in CBR-L14's sibling enumeration.
+#   ⚠ And UNCHECKED: the falsifier is UNDECIDABLE_HERE__*, and the gate's both-directions
+#   rule (§7.7.6) evaluates only the decidable falsifiers, so this CLOSED row is admitted
+#   without evaluation. The undecidable count is unchanged at 7.
+state = "CLOSED"
 falsifier = "UNDECIDABLE_HERE__FOREIGN_REPOSITORY"
-why = "'MeTTaIL cannot construct a byte array at all' is a fact about `mettail-rust`'s method table."
+why = "'MeTTaIL cannot construct a byte array at all' is a fact about `mettail-rust`'s method table. CLOSED by CBR-L14; the residue is 5 of 9 byte-PRODUCING surfaces, all crypto channels."
 
 [[open_question]]
 number = 9

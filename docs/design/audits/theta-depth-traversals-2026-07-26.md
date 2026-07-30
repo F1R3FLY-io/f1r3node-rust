@@ -2138,6 +2138,25 @@ steps apart.
 | `score_cmp_wide` | width (4 → 65,536) | 12 KiB | 12 KiB | `6ce7c5b9` |
 | `free_check` | width (4 → 65,536) | 44 KiB | 12 KiB | `6714a128` |
 
+⚠★★ **FLAGGED 2026-07-30 — every `12 KiB` cell in the table above is an INSTRUMENT FLOOR, not a
+measurement.** `getconf PTHREAD_STACK_MIN` on this host is **16384**, so glibc **clamps** every smaller
+`stack_size` request up to 16 KiB, and `min_stack_for` bisects only over $`[8192,\ 16384]`$ — making
+**12,288 B the smallest value it can ever return.** Verified directly: the `clone` subject survives
+`GATE_STACK=1024` at depth 4,096, which is well below the floor the instrument reports for it.
+
+$`\Rightarrow`$ **Twelve of the fifteen depth subjects read "12 KiB at 4, 12 KiB at 4,096" because ONE floor
+is showing through twelve times, not because twelve independent measurements agree.** ★ The 0 B/level
+*slope* conclusions are **UNAFFECTED** — a flat reading between two clamped points still establishes
+flatness, and flatness is what this table exists to show. What is **not** supported is reading `12 KiB` as
+the subject's actual stack requirement, or reading agreement across subjects as corroboration: they agree
+because they are all pinned to the same clamp.
+
+⚠ **REPORTED, NOT REPAIRED.** The instrument fix is filed as its own work item; changing the numbers here
+before the bisector's lower bound moves would substitute one unverified figure for another. The same caveat
+applies to the two independently-bisected figures quoted later in this audit (**:2219** and the `sort_nested_set`
+row), each of which cites *"12,288 B at parameter 2"* — that lower endpoint is the floor, and only the upper
+endpoint (57,344 B) is a measurement.
+
 **(B) Still Θ(depth), tripwired.** `theta_depth_tripwire`, same run. `B/level`
 is the tripwire's own two-point figure,
 $`(S_{hi} - S_{lo}) / (\text{hi} - \text{lo})`$, integer-divided exactly as
