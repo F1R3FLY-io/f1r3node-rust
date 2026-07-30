@@ -822,12 +822,31 @@ const CONVERTED_DEPTH: &[&str] = &[
     //
     // ⚠ Nobody re-measured it on the REAL bar, and the tripwire could not see
     // the change: `assert_slope_below` ran it on 16 → 128, where the subject
-    // reported a FALSE ZERO both before and after (`slope_below_verdict`
-    // consults only `per_step`, so a large intercept reads as a flat ladder —
-    // the failure mode this file already records for `substitute`'s 437 B/level
-    // residual). It is admitted here only because it clears
+    // reported a FALSE ZERO both before and after — a large intercept reads as a
+    // flat ladder, the failure mode this file already records for `substitute`'s
+    // 437 B/level residual. It is admitted here only because it clears
     // `assert_depth_independent`'s 4 → 4,096 span, which a non-zero slope
     // cannot pass at any constant.
+    //
+    // ★ **The parenthetical that stood here — "`slope_below_verdict` consults only
+    // `per_step`" — was TRUE and is now SUPERSEDED, and the distinction matters
+    // because the two failure modes were being conflated.** `per_step` is still
+    // what the verdict compares, but it is no longer a quotient of a bare
+    // `saturating_sub`: a floor reading is now a typed [`MinStack::BelowResolution`]
+    // and the difference is an explicit BOUND rather than a number, so the three
+    // paths that used to reach a verdict as `0` — both ends at the floor, one end
+    // at the floor, and a NEGATIVE difference — are each dispositioned on their own
+    // terms. See [`Unresolved`].
+    //
+    // ⚠⚠ **That repair does NOT fix this subject's reading, and it was never going
+    // to.** The intercept problem is a property of the LADDER, not of the
+    // arithmetic: at 16 → 128 both probe points sit inside this subject's own
+    // ~136 KiB intercept, both readings are genuine measurements well above the
+    // instrument floor, and their difference is genuinely small. No amount of type
+    // safety recovers a slope from a ladder too short to express it. **The remedy
+    // for an intercept is a LONGER LADDER; the remedy for a floor reading is a
+    // typed refusal to call it a number. Two defects, two repairs, and reading
+    // either as the other is how the wrong prescription got written down.**
     //
     // ⚠ The superseded rationale is kept verbatim so it cannot be restored as a
     // bug fix: *"`Env::get` clones a deep bound value. It STAYS here: `Env::shift`
@@ -960,9 +979,95 @@ thread_local! {
 /// tripwire's derived slope are quantised to this.
 const RESOLUTION: usize = 4096;
 
+/// ⚠★★ **THE INSTRUMENT FLOOR.** The smallest value [`min_stack_for`] can return for any
+/// subject on any build — a property of the ALGORITHM, not of any traversal.
+///
+/// `min_stack_for` opens with `hi = 16 KiB`. A subject that survives 16 KiB never enters the
+/// doubling loop, so the bisection runs on `[8192, 16384]`: `hi - lo = 8192 > 4096` gives
+/// `mid = 12288`; the probe succeeds, `hi` becomes 12288, and `hi - lo = 4096` is not
+/// `> RESOLUTION`, so the loop exits returning **12,288**. Nothing below that is reachable.
+///
+/// **And the floor sits far above the true minimum**, measured: `gate_child` runs on
+/// `thread::Builder::stack_size(stack)`, which `std` clamps to `PTHREAD_STACK_MIN` plus TLS.
+/// `GATE_STACK=1` — one byte — SURVIVES. ⇒ **Every probe below ~16 KiB is the same probe.**
+///
+/// ★ This constant exists so a floor reading can be RENDERED as a floor instead of as a
+/// number. `d0279621` offered `"release 12 KiB at 4 → 12 KiB at 4,096, O(1)"` as measured
+/// evidence for an admission — in a commit whose own thesis is that instrument geometry is
+/// not measurement.
+///
+/// ⚠ Ported from `mettail-rust`'s gate (`125065a8`), which named THIS gate as affected and
+/// fixed only its own. **Port the TYPE, not the reason**: mettail uses
+/// `setrlimit(RLIMIT_STACK)` before `exec`, so nothing clamps and its floor is
+/// environment-size-bound; this gate uses `thread::Builder::stack_size`, which `std` clamps.
+/// Same artefact, different mechanism.
+const SMALLEST_POSEABLE_STACK: usize = 12 * 1024;
+
+/// A bisected minimum-stack reading, or the admission that the instrument could not resolve
+/// one.
+///
+/// ⚠ **The whole mechanism is that [`MinStack::BelowResolution`] never renders as a number.**
+/// A `usize` return makes a floor reading indistinguishable from a measurement, and
+/// arithmetic on it — a difference, a quotient, a per-step slope — yields figures that look
+/// measured and are artefacts of the probe window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MinStack {
+    /// A resolved reading, strictly above the floor.
+    Bytes(usize),
+    /// The bisection bottomed out at [`SMALLEST_POSEABLE_STACK`]. The subject's true minimum
+    /// is *at or below* that; the instrument cannot say where.
+    BelowResolution,
+}
+
+impl std::fmt::Display for MinStack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MinStack::Bytes(bytes) => write!(f, "{} KiB", bytes / 1024),
+            // ⚠ Never a number. That is the entire mechanism.
+            MinStack::BelowResolution => write!(
+                f,
+                "<{} KiB (BELOW THE INSTRUMENT FLOOR)",
+                SMALLEST_POSEABLE_STACK / 1024
+            ),
+        }
+    }
+}
+
+impl MinStack {
+    /// An **UPPER BOUND** on the reading, as a number — for the one thing that genuinely
+    /// needs one: re-probing at a stack size that is known to suffice for this subject.
+    ///
+    /// ★★ A floor reading yields [`SMALLEST_POSEABLE_STACK`], and that is sound *for this
+    /// use specifically*, not a relaxation. Every caller asks the same question:
+    ///
+    /// > *"On a stack that suffices for X, does Y survive?"*
+    ///
+    /// A floor reading says X's true need lies in `[0, FLOOR]`, so `FLOOR` is an upper bound
+    /// on it. Probing Y at an upper bound makes the claim **harder** to establish — Y is
+    /// given more stack than X actually needed — so a `false` result holds a fortiori.
+    ///
+    /// ⚠ **This is the one direction in which a floor value may be used as a number**, and
+    /// the reason is that the conclusion is monotone in it. It must NOT be reached for by
+    /// slope arithmetic, where the same substitution would manufacture the very
+    /// zero-difference this type exists to prevent — [`Ladder::growth`] handles that case
+    /// and refuses where refusal is right.
+    ///
+    /// The `subject` parameter is kept for the panic-free call sites' readability and for
+    /// any future clause that needs to name which reading it bounded.
+    fn bytes_upper_bound(self, _subject: &str) -> usize {
+        match self {
+            MinStack::Bytes(bytes) => bytes,
+            MinStack::BelowResolution => SMALLEST_POSEABLE_STACK,
+        }
+    }
+}
+
 /// Smallest stack (to `RESOLUTION` granularity) on which `name` survives at
 /// `depth`. Exponential probe, then bisect.
-fn min_stack_for(name: &str, depth: usize) -> usize {
+///
+/// ★ Returns [`MinStack`], not `usize`, so a reading that bottomed out at the instrument
+/// floor cannot be arithmetic'd into a slope. See [`SMALLEST_POSEABLE_STACK`].
+fn min_stack_for(name: &str, depth: usize) -> MinStack {
     let mut hi = 16 * 1024;
     while hi <= 512 * 1024 * 1024 && !runs_within(hi, depth, name) {
         hi *= 2;
@@ -982,7 +1087,11 @@ fn min_stack_for(name: &str, depth: usize) -> usize {
             lo = mid;
         }
     }
-    hi
+    if hi <= SMALLEST_POSEABLE_STACK {
+        MinStack::BelowResolution
+    } else {
+        MinStack::Bytes(hi)
+    }
 }
 
 /// The maximum growth in minimum-stack, across the whole zero-slope ladder,
@@ -1006,7 +1115,12 @@ const ZERO_SLOPE_TOLERANCE: usize = 4 * RESOLUTION;
 /// [`the_depth_checkers_reject_a_recursive_destructor`], which runs it on its
 /// flat twin and requires a `false`.
 fn clears_tolerance_by_an_order_of_magnitude(l: Ladder) -> bool {
-    l.growth() > 8 * ZERO_SLOPE_TOLERANCE
+    // ⚠ An UNRESOLVED ladder answers `false`, and that is the conservative direction: this
+    // predicate claims "definitely sloped, by a wide margin", and an instrument that could
+    // not read the ladder has not established that. The effect is that a POSITIVE control
+    // built on an unreadable ladder fails loudly rather than certifying itself — which is
+    // what a control that cannot be read should do.
+    l.growth().map(|g| g > 8 * ZERO_SLOPE_TOLERANCE).unwrap_or(false)
 }
 
 /// **The real bar, depth axis.**
@@ -1077,9 +1191,9 @@ fn assert_width_independent(name: &str, stack: usize) {
 #[derive(Debug, Clone, Copy)]
 struct Ladder {
     lo_param: usize,
-    lo_stack: usize,
+    lo_stack: MinStack,
     hi_param: usize,
-    hi_stack: usize,
+    hi_stack: MinStack,
 }
 
 /// Bisect both ends of a ladder for `name`.
@@ -1092,60 +1206,283 @@ fn measure_ladder(name: &str, lo_param: usize, hi_param: usize) -> Ladder {
     }
 }
 
-impl Ladder {
-    /// Growth in minimum stack across the ladder, in bytes.
-    fn growth(&self) -> usize { self.hi_stack.saturating_sub(self.lo_stack) }
+/// Why a ladder's growth is not a number.
+///
+/// ⚠★★ **The three FALSE-PASS PATHS this type exists for**, each of which reached a verdict
+/// as `0` while `growth()` was `hi_stack.saturating_sub(lo_stack)` over two bare `usize`s:
+///
+/// | path | old reading | what is actually true |
+/// |---|---|---|
+/// | both ends at the instrument floor | `0` | both true values lie in `[0, FLOOR]`, so growth ≤ FLOOR — a SOUND but uninformative bound |
+/// | one end at the floor | `0` or a wrong difference | an INTERVAL: with a resolved deep end `h`, growth ∈ `[h − FLOOR, h]` |
+/// | `hi_stack < lo_stack` | `0`, via `saturating_sub` | genuinely **unresolvable** — the probe disagrees with itself about direction |
+///
+/// ★★ **Only the third is an unknown, and that is the correction that matters.** The first
+/// two were tempting to refuse outright — an early draft of this repair did, and it reddened
+/// the gate's own controls, because a sloped subject legitimately needs almost no stack at
+/// depth 4 and a great deal at depth 4,096, and a flat one legitimately sits under the floor
+/// at both. **A floor reading is a BOUND, not an absence of information.** What must never
+/// happen is for the bound to be reported as a measurement — and that is [`MinStack`]'s
+/// `Display`'s job, not a refusal's.
+///
+/// ⇒ [`Ladder::growth`] returns the UPPER bound (what both verdicts need: *"is the slope at
+/// most X?"*) and [`Ladder::growth_at_least`] the LOWER one (what a positive control needs:
+/// *"is this definitely sloped?"*). Neither can be reached for through a bare subtraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unresolved {
+    /// `hi_stack < lo_stack`. Deeper needed LESS stack — the probe is unstable.
+    NegativeDifference { lo: usize, hi: usize },
+}
 
-    /// Derived cost per parameter step, in bytes.
-    fn per_step(&self) -> usize { self.growth() / (self.hi_param - self.lo_param) }
+impl std::fmt::Display for Unresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unresolved::NegativeDifference { lo, hi } => write!(
+                f,
+                "the deep end needed LESS stack than the shallow end ({} KiB at the top vs {} KiB \
+                 at the bottom) — the probe is unstable, and `saturating_sub` used to render this \
+                 as zero growth",
+                hi / 1024,
+                lo / 1024
+            ),
+        }
+    }
+}
+
+/// Render a possibly-unresolved figure for a human-readable line.
+///
+/// ★ `UNRESOLVED` rather than `0`. Every printed line in this gate is read by someone
+/// deciding whether a subject regressed, and `0 B/level` from a subject known to be sloped
+/// is the most misleading thing the instrument can say.
+fn show(v: Result<usize, Unresolved>) -> String {
+    match v {
+        Ok(n) => n.to_string(),
+        Err(_) => "UNRESOLVED".to_string(),
+    }
+}
+
+impl Ladder {
+    /// Growth in minimum stack across the ladder, in bytes — or why it is not a number.
+    ///
+    /// ★ Replaces `hi_stack.saturating_sub(lo_stack)`, whose three zero-producing paths are
+    /// enumerated on [`Unresolved`].
+    /// ★★ **A floor reading is an INTERVAL, not an unknown, and conflating the two is a
+    /// second way to get this wrong.** A shallow end below the floor means its true value
+    /// lies in `[0, FLOOR]`, so with a resolved deep end `h` the growth lies in
+    /// `[h - FLOOR, h]`. That is usable — it is only *imprecise*. Refusing it outright
+    /// would redden the gate's own positive controls, whose sloped subjects legitimately
+    /// need almost no stack at depth 4 and a great deal at depth 4,096.
+    ///
+    /// ⇒ This returns the **UPPER** bound, because both verdicts ask *"is the slope at most
+    /// X?"* and an upper bound is the conservative answer to that question. Callers that
+    /// need the other direction — *"is this definitely sloped?"* — use
+    /// [`Ladder::growth_at_least`].
+    ///
+    /// Only two states are genuinely unreadable: **both** ends at the floor (the difference
+    /// is bounded by the probe window and its sign is unknown) and a **negative** difference
+    /// (the probe disagreeing with itself).
+    fn growth(&self) -> Result<usize, Unresolved> {
+        match (self.lo_stack, self.hi_stack) {
+            // BOTH ends below the floor ⇒ both true values lie in `[0, FLOOR]`, so the
+            // growth is at most FLOOR. ★ SOUND, and deliberately not a refusal: the bound
+            // holds, it is simply uninformative about the subject. What must not happen is
+            // for it to be REPORTED as a measurement — and that is `MinStack`'s `Display`'s
+            // job, which renders both ends as `<12 KiB (BELOW THE INSTRUMENT FLOOR)`.
+            (MinStack::BelowResolution, MinStack::BelowResolution) => {
+                Ok(SMALLEST_POSEABLE_STACK)
+            }
+            // Shallow end below the floor ⇒ growth ≤ hi (the floor end is at worst 0).
+            (MinStack::BelowResolution, MinStack::Bytes(hi)) => Ok(hi),
+            // Deep end below the floor while the shallow end resolved ABOVE it: the deep end
+            // needs strictly less than the shallow one. Not an interval — the readings
+            // disagree about direction.
+            (MinStack::Bytes(lo), MinStack::BelowResolution) => {
+                Err(Unresolved::NegativeDifference { lo, hi: SMALLEST_POSEABLE_STACK })
+            }
+            (MinStack::Bytes(lo), MinStack::Bytes(hi)) if hi < lo => {
+                Err(Unresolved::NegativeDifference { lo, hi })
+            }
+            (MinStack::Bytes(lo), MinStack::Bytes(hi)) => Ok(hi - lo),
+        }
+    }
+
+    /// The **LOWER** bound on growth — the smallest value consistent with the readings.
+    ///
+    /// ★ For a POSITIVE control, whose claim is *"this subject is definitely sloped"*, the
+    /// lower bound is the honest one: asserting a floor on the slope from an over-estimate
+    /// would let a flat subject certify itself as the sloped control.
+    fn growth_at_least(&self) -> Result<usize, Unresolved> {
+        match (self.lo_stack, self.hi_stack) {
+            // Nothing is established: both true values lie in `[0, FLOOR]`, so the growth
+            // may be zero.
+            (MinStack::BelowResolution, MinStack::BelowResolution) => Ok(0),
+            (MinStack::BelowResolution, MinStack::Bytes(hi)) => {
+                Ok(hi.saturating_sub(SMALLEST_POSEABLE_STACK))
+            }
+            _ => self.growth(),
+        }
+    }
+
+    /// Derived cost per parameter step, in bytes — or why it is not a number.
+    fn per_step(&self) -> Result<usize, Unresolved> {
+        self.growth().map(|g| g / (self.hi_param - self.lo_param))
+    }
+
+    /// The per-step slope of a CONTROL subject, or a panic naming why it could not be read.
+    ///
+    /// ★ Controls are the one population where an unresolved ladder must ABORT rather than
+    /// be handled: a control exists to prove a checker discriminates, and **a control that
+    /// cannot be read certifies nothing**. Swallowing the `Err` here would leave the RED
+    /// cells asserting against a fabricated `0` — which is the very defect
+    /// [`slope_below_verdict`]'s new refusal clause exists to close, reintroduced one layer
+    /// up.
+    fn per_step_of_control(&self, subject: &str) -> usize {
+        self.growth_at_least()
+            .map(|g| g / (self.hi_param - self.lo_param))
+            .unwrap_or_else(|why| {
+            panic!(
+                "CONTROL `{subject}` produced an UNREADABLE ladder: {why}.\n\
+                 A control that cannot be read is not a control. Move the ladder's ends so \
+                 both clear the {} KiB instrument floor; do not relax the assertion that \
+                 depends on it.",
+                SMALLEST_POSEABLE_STACK / 1024
+            )
+        })
+    }
+
+    /// The growth of a CONTROL subject, or a panic naming why it could not be read.
+    /// See [`Ladder::per_step_of_control`].
+    fn growth_of_control(&self, subject: &str) -> usize {
+        self.growth_at_least().unwrap_or_else(|why| {
+            panic!(
+                "CONTROL `{subject}` produced an UNREADABLE ladder: {why}.\n\
+                 A control that cannot be read is not a control."
+            )
+        })
+    }
 }
 
 /// **The zero-slope VERDICT.** A pure function of one [`Ladder`]: `Ok` iff the
 /// minimum stack did not grow across it. `Err` carries the message, so a caller
 /// can assert WHICH clause rejected rather than only that something did.
+///
+/// ★★ **A floor reading is a legitimate PASS here, and that asymmetry with
+/// [`slope_below_verdict`] is deliberate.** This gate asks *"is the cost independent of the
+/// parameter?"* A subject that still fits under the instrument floor at parameter 4,096 has
+/// answered yes — its per-level cost is bounded below ~4 B/level by the floor itself, which
+/// is a real bound however coarse. The tripwire asks a different question and cannot accept
+/// the same reading; see there.
+///
+/// ⚠ A NEGATIVE difference is refused in both. It is not a small slope — it is the probe
+/// disagreeing with itself, and no verdict can be drawn from it.
 fn zero_slope_verdict(name: &str, axis: &str, l: Ladder) -> Result<(), String> {
-    if l.growth() <= ZERO_SLOPE_TOLERANCE {
+    let growth = match l.growth() {
+        Ok(g) => g,
+        // A bound, not a measurement — but a bound in the direction this gate needs.
+        // The only unresolvable state left is a NEGATIVE difference; a floor reading is a
+        // sound (if coarse) upper bound and flows through `growth()` as a number.
+        Err(why @ Unresolved::NegativeDifference { .. }) => {
+            return Err(format!(
+                "ZERO-SLOPE GATE CANNOT DECIDE for `{name}` on the {axis} axis: {why}.\n\
+                 This is an INSTRUMENT fault, not a subject fault, and it must not be read as \
+                 a pass: the old `saturating_sub` reported exactly this case as zero growth. \
+                 Re-run; if it persists, the probe is contended or the fixture is \
+                 nondeterministic."
+            ))
+        }
+    };
+    if growth <= ZERO_SLOPE_TOLERANCE {
         return Ok(());
     }
     Err(format!(
         "ZERO-SLOPE GATE FAILED for `{}` on the {} axis: minimum stack grew {} KiB \
-         between {} = {} ({} KiB) and {} = {} ({} KiB), which is {} B per step.\n\
+         between {} = {} ({}) and {} = {} ({}), which is {} B per step.\n\
          A converted traversal's native stack must not depend on {}. See\n\
          docs/design/audits/theta-depth-traversals-2026-07-26.md.",
         name,
         axis,
-        l.growth() / 1024,
+        growth / 1024,
         axis,
         l.lo_param,
-        l.lo_stack / 1024,
+        l.lo_stack,
         axis,
         l.hi_param,
-        l.hi_stack / 1024,
-        l.per_step(),
+        l.hi_stack,
+        growth / (l.hi_param - l.lo_param),
         axis
     ))
 }
 
 /// **The tripwire VERDICT.** A pure function of one [`Ladder`] and a ceiling.
+///
+/// ⚠★★★ **A FLOOR READING IS A FAILURE HERE, and this is the opposite of
+/// [`zero_slope_verdict`]'s disposition.** The asymmetry is the whole repair.
+///
+/// A subject is in `TRIPWIRE_DEPTH` precisely *because it is known to be sloped*. The gate's
+/// job is to notice when its slope gets worse. So a reading of `0 B/level` from this subject
+/// is not the good news it looks like — it is the instrument failing to see a slope that is
+/// known to be there. The old code computed `per_step` from a `saturating_sub` of two
+/// `usize`s and compared it to the ceiling, so **all three** paths on [`Unresolved`] produced
+/// `0`, cleared any ceiling, and passed:
+///
+/// * both ends at the floor — the subject fits under the probe window at both rungs;
+/// * one end at the floor — a measurement minus an unknown;
+/// * a negative difference — the deep end needing less stack than the shallow end.
+///
+/// ⇒ **This gate could not have gone red on the regression it exists to catch**, for any
+/// subject whose ladder landed in one of those states. Measured at the time of the repair:
+/// none of the six live `assert_slope_below` sites is currently floor-bound, so this is a
+/// live weakness that had not yet fired — a distinction worth keeping, because "it never
+/// failed" is not evidence that it could have.
+///
+/// ★ The remedy is to REFUSE rather than to widen the ceiling. An unresolvable ladder means
+/// *re-measure on a discriminating window* — the ladder's ends must straddle the instrument
+/// floor — not *accept the subject*.
 fn slope_below_verdict(
     name: &str,
     ceiling_bytes_per_level: usize,
     l: Ladder,
 ) -> Result<(), String> {
-    if l.per_step() <= ceiling_bytes_per_level {
+    let per_step = match l.per_step() {
+        Ok(p) => p,
+        Err(why) => {
+            return Err(format!(
+                "Θ(DEPTH) TRIPWIRE CANNOT DECIDE for `{name}`: {why}.\n\
+                 \n\
+                 `{name}` is in the tripwire set BECAUSE it is known to be sloped, so an \
+                 unreadable ladder is an INSTRUMENT failure and must not be scored as a pass. \
+                 Before this clause existed the same ladder produced 0 B/level, cleared the \
+                 {ceiling_bytes_per_level} B/level ceiling, and passed while measuring nothing.\n\
+                 \n\
+                 Observed: {} @ {} = {}, {} @ {} = {}.\n\
+                 \n\
+                 ⚠ The remedy is a DISCRIMINATING WINDOW — move the ladder's ends so both clear \
+                 the {} KiB instrument floor — NOT a wider ceiling. Raising the ceiling on an \
+                 unreadable ladder buys a green run and no information.",
+                l.lo_stack,
+                "depth",
+                l.lo_param,
+                l.hi_stack,
+                "depth",
+                l.hi_param,
+                SMALLEST_POSEABLE_STACK / 1024,
+            ))
+        }
+    };
+    if per_step <= ceiling_bytes_per_level {
         return Ok(());
     }
     Err(format!(
         "Θ(DEPTH) TRIPWIRE for `{}`: {} B/level exceeds the {} B/level ceiling \
-         ({} KiB @ depth {} -> {} KiB @ depth {}).\n\
+         ({} @ depth {} -> {} @ depth {}).\n\
          Either a traversal regressed, or codegen changed materially. See\n\
          docs/design/audits/theta-depth-traversals-2026-07-26.md.",
         name,
-        l.per_step(),
+        per_step,
         ceiling_bytes_per_level,
-        l.lo_stack / 1024,
+        l.lo_stack,
         l.lo_param,
-        l.hi_stack / 1024,
+        l.hi_stack,
         l.hi_param
     ))
 }
@@ -1157,11 +1494,9 @@ fn assert_no_slope(name: &str, lo_param: usize, hi_param: usize, axis: &str) {
     if let Err(why) = zero_slope_verdict(name, axis, l) {
         panic!("{why}");
     }
-    println!(
-        "  {name} ({axis}): O(1) — {} KiB at {lo_param}, {} KiB at {hi_param}",
-        l.lo_stack / 1024,
-        l.hi_stack / 1024
-    );
+    // ★ The readings print through `MinStack`'s `Display`, so a floor reading renders as
+    // `<12 KiB (BELOW THE INSTRUMENT FLOOR)` rather than as the number 12.
+    println!("  {name} ({axis}): O(1) — {} at {lo_param}, {} at {hi_param}", l.lo_stack, l.hi_stack);
 }
 
 /// **Tripwire for traversals not yet converted.** Bisects the minimum stack at
@@ -1181,10 +1516,16 @@ fn assert_slope_below(name: &str, ceiling_bytes_per_level: usize, lo: usize, hi_
     if let Err(why) = slope_below_verdict(name, ceiling_bytes_per_level, l) {
         panic!("{why}");
     }
-    println!(
-        "  {name}: {} B/level (ceiling {ceiling_bytes_per_level})",
-        l.per_step()
-    );
+    // ★ An unresolved ladder prints WHY rather than a number — the printed line is the only
+    // record a reader sees, and `0 B/level` from a tripwire subject reads as good news.
+    match l.per_step() {
+        Ok(per_step) => {
+            println!("  {name}: {per_step} B/level (ceiling {ceiling_bytes_per_level})")
+        }
+        Err(why) => println!(
+            "  {name}: UNRESOLVED — {why} (ceiling {ceiling_bytes_per_level}, not applied)"
+        ),
+    }
 }
 
 /// Per-profile ceiling. Debug frames are ~2–12× release because `-O0` does not
@@ -2838,32 +3179,32 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     // that inlined the recursion away, a subject-table mix-up) and the rejections
     // below would be attributable to the wrong thing.
     assert!(
-        sloped.per_step() >= SYNTHETIC_FRAME_BYTES,
+        sloped.per_step_of_control("sloped") >= SYNTHETIC_FRAME_BYTES,
         "the synthetic control must actually cost its ballast per level: measured \
          {} B/level against {SYNTHETIC_FRAME_BYTES} B of ballast ({} KiB at depth 4, \
          {} KiB at depth 4,096). Below the ballast means the recursion was elided, \
          and this leg would be certifying nothing.",
-        sloped.per_step(),
-        sloped.lo_stack / 1024,
-        sloped.hi_stack / 1024
+        sloped.per_step_of_control("sloped"),
+        sloped.lo_stack,
+        sloped.hi_stack
     );
     assert!(
-        sloped.per_step() <= 16 * SYNTHETIC_FRAME_BYTES,
+        sloped.per_step_of_control("sloped") <= 16 * SYNTHETIC_FRAME_BYTES,
         "the synthetic control measured {} B/level, more than 16× its \
          {SYNTHETIC_FRAME_BYTES} B ballast — that is not the toy this leg thinks it \
          is driving",
-        sloped.per_step()
+        sloped.per_step_of_control("sloped")
     );
 
     // The sharpest statement of the difference, and it needs no checker at all:
     // on the stack that suffices for the FLAT control at parameter 4,096, the
     // SLOPED one does not survive.
     assert!(
-        !runs_within(flat.hi_stack, 4096, "synthetic_sloped"),
+        !runs_within(flat.hi_stack.bytes_upper_bound("flat"), 4096, "synthetic_sloped"),
         "the two synthetic subjects must be separable at all: `synthetic_flat` needs \
          {} KiB at 4,096 and `synthetic_sloped` survived the same stack, so the \
          control has no slope and every rejection below is vacuous",
-        flat.hi_stack / 1024
+        flat.hi_stack
     );
 
     // ── The fixed-stack half, run on a subject that is Θ(depth) by construction.
@@ -2898,7 +3239,7 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
         clears_tolerance_by_an_order_of_magnitude(sloped),
         "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
          order of magnitude, or this leg is a coin-flip on bisection noise",
-        sloped.growth() / 1024,
+        sloped.growth_of_control("sloped") / 1024,
         ZERO_SLOPE_TOLERANCE / 1024
     );
 
@@ -2906,13 +3247,13 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     // Ceilings are derived from the control's measured slope rather than
     // hardcoded, so this leg is profile-independent exactly like the rest of the
     // file — no `cfg!(debug_assertions)` constant to drift.
-    let why = slope_below_verdict("synthetic_sloped", sloped.per_step() / 2, sloped)
+    let why = slope_below_verdict("synthetic_sloped", sloped.per_step_of_control("sloped") / 2, sloped)
         .expect_err("the tripwire must reject a slope twice its ceiling");
     assert!(
         why.contains("Θ(DEPTH) TRIPWIRE"),
         "the rejection must come from the tripwire clause; got: {why}"
     );
-    slope_below_verdict("synthetic_sloped", sloped.per_step() * 2, sloped).expect(
+    slope_below_verdict("synthetic_sloped", sloped.per_step_of_control("sloped") * 2, sloped).expect(
         "the tripwire must ACCEPT a slope at half its ceiling — a checker that rejects \
          unconditionally is no checker",
     );
@@ -2937,18 +3278,18 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
          minimum stack does not move",
     );
     assert!(
-        flat.growth() <= ZERO_SLOPE_TOLERANCE,
+        flat.growth_of_control("flat") <= ZERO_SLOPE_TOLERANCE,
         "the Θ(1) control's minimum stack must not move at all across the ladder; grew {} KiB",
-        flat.growth() / 1024
+        flat.growth_of_control("flat") / 1024
     );
 
     println!(
         "  synthetic control (depth): sloped {} B/level ({} KiB -> {} KiB over 4 -> 4,096), \
          flat {} B/level — checkers separate them",
-        sloped.per_step(),
-        sloped.lo_stack / 1024,
-        sloped.hi_stack / 1024,
-        flat.per_step()
+        sloped.per_step_of_control("sloped"),
+        sloped.lo_stack,
+        sloped.hi_stack,
+        flat.per_step_of_control("flat")
     );
 }
 
@@ -2999,23 +3340,23 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     // only failure this check exists for — an ELIDED recursion reads ~0, not 8.
     const RETURN_ADDRESS_BYTES: usize = std::mem::size_of::<usize>();
     assert!(
-        recursive.per_step() >= RETURN_ADDRESS_BYTES,
+        recursive.per_step_of_control("recursive") >= RETURN_ADDRESS_BYTES,
         "the synthetic DESTRUCTOR must cost at least one return address \
          ({RETURN_ADDRESS_BYTES} B) per level: measured {} B/level ({} KiB at {}, {} KiB at \
          {}). Below that means `drop_in_place::<DropChain>` was not recursive in this \
          build — the glue was flattened — and this leg would certify nothing.",
-        recursive.per_step(),
-        recursive.lo_stack / 1024,
+        recursive.per_step_of_control("recursive"),
+        recursive.lo_stack,
         recursive.lo_param,
-        recursive.hi_stack / 1024,
+        recursive.hi_stack,
         recursive.hi_param
     );
     assert!(
-        recursive.per_step() <= 16 * SYNTHETIC_FRAME_BYTES,
+        recursive.per_step_of_control("recursive") <= 16 * SYNTHETIC_FRAME_BYTES,
         "the synthetic destructor measured {} B/level, more than 16x the \
          {SYNTHETIC_FRAME_BYTES} B chain link it is tearing down — that is not the toy \
          this leg thinks it is driving",
-        recursive.per_step()
+        recursive.per_step_of_control("recursive")
     );
 
     // The sharpest statement, needing no checker: on the stack that suffices to
@@ -3027,11 +3368,11 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     // moving [`DESTRUCTOR_CONTROL_HI`] cannot leave this comparison probing a
     // depth neither subject was measured at.
     assert!(
-        !runs_within(iterative.hi_stack, iterative.hi_param, "synthetic_drop"),
+        !runs_within(iterative.hi_stack.bytes_upper_bound("iterative"), iterative.hi_param, "synthetic_drop"),
         "the two destructors must be separable at all: `synthetic_drop_flat` needs {} KiB \
          at {} links and the recursive destructor survived the same stack, so the \
          control has no slope and every rejection below is vacuous",
-        iterative.hi_stack / 1024,
+        iterative.hi_stack,
         iterative.hi_param
     );
 
@@ -3049,7 +3390,7 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
          coin-flip on bisection noise. See DESTRUCTOR_CONTROL_HI: at 32 B/level in \
          release this needs a longer ladder than the 96 B function control does, and \
          the answer is a longer ladder — never a smaller multiple.",
-        recursive.growth() / 1024,
+        recursive.growth_of_control("recursive") / 1024,
         recursive.lo_param,
         recursive.hi_param,
         ZERO_SLOPE_TOLERANCE / 1024
@@ -3078,7 +3419,7 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
          anyway. That means the ladder is now long enough to manufacture the margin \
          from nothing, and the recursive control's clearance above certifies the \
          ladder rather than the slope.",
-        iterative.growth() / 1024,
+        iterative.growth_of_control("iterative") / 1024,
         iterative.lo_param,
         iterative.hi_param,
         (8 * ZERO_SLOPE_TOLERANCE) / 1024
@@ -3087,13 +3428,13 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     // ── Checker 2: the tripwire — the checker `par_drop` and `normalize_drop`
     // are actually asserted with — BOTH directions. Ceilings derived from the
     // control's own slope, so this leg carries no profile-dependent constant.
-    let why = slope_below_verdict("synthetic_drop", recursive.per_step() / 2, recursive)
+    let why = slope_below_verdict("synthetic_drop", recursive.per_step_of_control("recursive") / 2, recursive)
         .expect_err("the tripwire must reject a destructor whose slope is twice its ceiling");
     assert!(
         why.contains("Θ(DEPTH) TRIPWIRE"),
         "the rejection must come from the tripwire clause; got: {why}"
     );
-    slope_below_verdict("synthetic_drop", recursive.per_step() * 2, recursive).expect(
+    slope_below_verdict("synthetic_drop", recursive.per_step_of_control("recursive") * 2, recursive).expect(
         "the tripwire must ACCEPT a destructor at half its ceiling — a checker that rejects \
          unconditionally is no checker",
     );
@@ -3109,12 +3450,12 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     println!(
         "  synthetic DESTRUCTOR (depth): recursive {} B/level ({} KiB -> {} KiB over {} -> \
          {}), iterative {} B/level — checkers separate them",
-        recursive.per_step(),
-        recursive.lo_stack / 1024,
-        recursive.hi_stack / 1024,
+        recursive.per_step_of_control("recursive"),
+        recursive.lo_stack,
+        recursive.hi_stack,
         recursive.lo_param,
         recursive.hi_param,
-        iterative.per_step()
+        iterative.per_step_of_control("iterative")
     );
 }
 
@@ -3236,10 +3577,20 @@ fn theta_depth_tripwire() {
     //
     // ★ And the ceiling it carried was never certifying anything: on 16 → 128
     // this subject read **0 B/level in BOTH profiles** at the commit that
-    // converted `Par::clone` AND at the commit before it, because
-    // `slope_below_verdict` consults only `per_step` and both probe points sat
-    // inside the intercept. The tripwire could not have gone red on the
-    // regression it existed to catch. The 4 → 4,096 bar can.
+    // converted `Par::clone` AND at the commit before it, because both probe
+    // points sat inside the intercept. The tripwire could not have gone red on
+    // the regression it existed to catch. The 4 → 4,096 bar can.
+    //
+    // ⚠ **The clause "because `slope_below_verdict` consults only `per_step`" is
+    // struck from that sentence, and the correction is not cosmetic.** It named the
+    // wrong mechanism: the readings here were genuine measurements far above the
+    // instrument floor, and their difference was genuinely small because the LADDER
+    // was too short — not because the verdict mis-read a floor. Attributing an
+    // intercept artefact to the verdict's arithmetic pointed the repair at the
+    // instrument when the fix was a longer ladder, which is exactly the prescription
+    // that then sat here as load-bearing documentation.
+    // ⇒ Both defects are now closed, separately: this ladder moved to 4 → 4,096, and
+    // `slope_below_verdict` refuses an unreadable ladder rather than scoring it `0`.
     // ⚠★ `assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128)` USED TO BE
     // HERE, and it is deleted rather than relaxed.
     //
@@ -3563,13 +3914,26 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
     let mut hi = rung.hi;
     loop {
         let l = measure_ladder(rung.subject, rung.lo, hi);
-        if l.growth() >= S0_MIN_GROWTH {
+        // ★ An UNRESOLVED ladder is exactly "not bound yet" — the state this loop already
+        // exists to escape by lengthening the ladder. It falls through to the expansion
+        // below rather than needing a new branch: this harness's SHAPE was always right, it
+        // was the `saturating_sub` underneath it that reported a floor pair as a growth of
+        // 0 rather than as an unreadable ladder.
+        if l.growth().is_ok_and(|g| g >= S0_MIN_GROWTH) {
             return l;
         }
+        let growth_note = match l.growth() {
+            Ok(g) => format!("{g} B"),
+            Err(why) => format!("an unreadable amount — {why}"),
+        };
+        let per_step_note = match l.per_step() {
+            Ok(p) => format!("{p}"),
+            Err(_) => "an unreadable".to_string(),
+        };
         assert!(
             hi < rung.hi_max,
             "S0 LADDER DID NOT BIND for `{}` ({}): at depth {} → {} the minimum stack grew \
-             only {} B, below the {} B this harness requires before a derived slope is \
+             only {}, below the {} B this harness requires before a derived slope is \
              evidence rather than bisection quantisation (±{} B). The deep end is already \
              at its maximum {}.\n\
              \n\
@@ -3585,11 +3949,11 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
             rung.label,
             rung.lo,
             hi,
-            l.growth(),
+            growth_note,
             S0_MIN_GROWTH,
             2 * RESOLUTION,
             rung.hi_max,
-            l.per_step()
+            per_step_note
         );
         // Double, but never past the cap — `prost_de`'s cap is a hard property
         // of `prost`, not a budget.
@@ -3674,15 +4038,15 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
 
     println!(
         "  clone_oracle (the DERIVE): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
-        control.lo_stack / 1024,
-        control.hi_stack / 1024,
-        control.per_step()
+        control.lo_stack,
+        control.hi_stack,
+        control.per_step_of_control("control")
     );
     println!(
         "  clone        (the DRIVER): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
-        subject.lo_stack / 1024,
-        subject.hi_stack / 1024,
-        subject.per_step()
+        subject.lo_stack,
+        subject.hi_stack,
+        show(subject.per_step())
     );
 
     // ── LEG 1: the control is sloped, by an order of magnitude. ──
@@ -3694,8 +4058,8 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
          conversion. A flat control means the oracle is not the traversal it claims to be — most \
          likely it has started routing through the DRIVEN `<Par as Clone>::clone` instead of \
          recursing into its own family — and every comparison below would be vacuous.",
-        control.growth(),
-        control.per_step()
+        control.growth_of_control("control"),
+        control.per_step_of_control("control")
     );
 
     // ── LEG 2: the subject is flat. ──
@@ -3709,11 +4073,11 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
     // on the stack that suffices for the DRIVEN clone at depth `HI`, the DERIVED
     // one does not run.
     assert!(
-        !runs_within(subject.hi_stack, HI, "clone_oracle"),
+        !runs_within(subject.hi_stack.bytes_upper_bound("subject"), HI, "clone_oracle"),
         "★ the DERIVED control survived the {} KiB the DRIVEN clone needs at depth {HI}, so the \
          two are not separable on this ladder and the conversion is not visible. Either the \
          ladder is too short (raise HI) or the oracle is no longer the derive.",
-        subject.hi_stack / 1024
+        subject.hi_stack
     );
 
     // ── LEG 4: the Vec-nested ladders, which `clone` alone cannot cover. ──
@@ -3732,9 +4096,9 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
         let l = measure_ladder(name, lo, hi);
         println!(
             "  {name}: {} KiB @ {lo} -> {} KiB @ {hi} = {} B/level",
-            l.lo_stack / 1024,
-            l.hi_stack / 1024,
-            l.per_step()
+            l.lo_stack,
+            l.hi_stack,
+            show(l.per_step())
         );
         if let Err(why) = zero_slope_verdict(name, "depth", l) {
             panic!(
@@ -3823,8 +4187,8 @@ fn four_quadrant_s0_baseline() {
             l.lo_stack,
             l.hi_param,
             l.hi_stack,
-            l.growth(),
-            l.per_step()
+            show(l.growth()),
+            show(l.per_step())
         );
         measured += 1;
     }
@@ -3895,49 +4259,62 @@ fn the_deploy_composition_is_bounded_below_by_its_destructor() {
 
     // ── Lower bound: sequential composition cannot cost LESS than either part.
     assert!(
-        compose.hi_stack + ZERO_SLOPE_TOLERANCE >= destruct.hi_stack,
+        compose.hi_stack.bytes_upper_bound("compose") + ZERO_SLOPE_TOLERANCE >= destruct.hi_stack.bytes_upper_bound("destruct"),
         "VACUOUS COMPOSITION: `normalize_drop` needed only {} KiB at depth 4,096 while \
          `par_drop` — the destructor it runs — needed {} KiB. A composition cannot cost \
          less than a traversal it performs, so the normalized term is not carrying the \
          depth the subject asked for and its tripwire reading means nothing.",
-        compose.hi_stack / 1024,
-        destruct.hi_stack / 1024
+        compose.hi_stack.bytes_upper_bound("compose"),
+        destruct.hi_stack.bytes_upper_bound("destruct")
     );
 
     // ── Upper bound: the two traversals must not NEST.
     assert!(
-        compose.hi_stack <= destruct.hi_stack + build.hi_stack + ZERO_SLOPE_TOLERANCE,
+        compose.hi_stack.bytes_upper_bound("compose") <= destruct.hi_stack.bytes_upper_bound("destruct") + build.hi_stack.bytes_upper_bound("build") + ZERO_SLOPE_TOLERANCE,
         "`normalize_drop` needed {} KiB at depth 4,096, more than `par_drop` ({} KiB) plus \
          `normalize` ({} KiB). Those two run one after the other, so the composition should \
          need the MAXIMUM and not the SUM — exceeding the sum means the normalizer is now \
          holding a frame chain alive across the teardown, which is a new Θ(depth) member \
          that no other assertion in this file would see.",
-        compose.hi_stack / 1024,
-        destruct.hi_stack / 1024,
-        build.hi_stack / 1024
+        compose.hi_stack.bytes_upper_bound("compose"),
+        destruct.hi_stack.bytes_upper_bound("destruct"),
+        build.hi_stack.bytes_upper_bound("build")
     );
 
     // ── The normalizer's own contribution to the composition's SLOPE is nil,
     // and that is the point: the deploy path is flat to build and sloped to
     // release. Asserted as an inequality so a conversion of the destructor
     // leaves it green.
+    // ★ A FLOOR reading passes, and it is the same asymmetry `zero_slope_verdict` carries:
+    // this leg asserts `normalize` is FLAT, and a subject still fitting under the instrument
+    // floor at depth 4,096 has answered that — the floor itself bounds its per-level cost.
+    // ⚠ A NEGATIVE difference does NOT pass: that is the probe disagreeing with itself, and
+    // the attribution below would rest on an unstable measurement.
+    let build_is_flat = match build.growth() {
+        Ok(g) => g <= ZERO_SLOPE_TOLERANCE,
+        Err(Unresolved::NegativeDifference { .. }) => false,
+    };
     assert!(
-        build.growth() <= ZERO_SLOPE_TOLERANCE,
-        "`normalize` grew {} KiB across 256 -> 4,096; it is in the converted list and must \
+        build_is_flat,
+        "`normalize` grew {} across 256 -> 4,096; it is in the converted list and must \
          be flat, or the attribution of `normalize_drop`'s slope to the destructor is unsound",
-        build.growth() / 1024
+        show(build.growth())
     );
 
     println!(
+        // ★ The two stack readings print through `MinStack`'s `Display`, which supplies its
+        // own `KiB` and renders a floor reading as a floor — so the literal must NOT repeat
+        // the unit. It did, and the line read `196 KiB KiB -> 1908736 KiB` (the second a raw
+        // byte count). A printed line nobody can parse is a measurement nobody can check.
         "  deploy composition: normalize {} B/level, par_drop {} B/level, \
-         normalize_drop {} B/level ({} KiB -> {} KiB); band [{}, {}] KiB at 4,096",
-        build.per_step(),
-        destruct.per_step(),
-        compose.per_step(),
-        compose.lo_stack / 1024,
-        compose.hi_stack / 1024,
-        destruct.hi_stack / 1024,
-        (destruct.hi_stack + build.hi_stack) / 1024
+         normalize_drop {} B/level ({} -> {}); band [{}, {}] KiB at 4,096",
+        show(build.per_step()),
+        show(destruct.per_step()),
+        show(compose.per_step()),
+        compose.lo_stack,
+        compose.hi_stack,
+        destruct.hi_stack.bytes_upper_bound("destruct") / 1024,
+        (destruct.hi_stack.bytes_upper_bound("destruct") + build.hi_stack.bytes_upper_bound("build")) / 1024
     );
 }
 
@@ -3986,21 +4363,21 @@ fn theta_width_tripwire() {
     // is written so it cannot (see its doc comment); this is the check that says
     // so out loud, in whichever profile the gate is run.
     assert!(
-        sloped.per_step() >= SYNTHETIC_FRAME_BYTES,
+        sloped.per_step_of_control("sloped") >= SYNTHETIC_FRAME_BYTES,
         "the width control measured {} B/sibling against {SYNTHETIC_FRAME_BYTES} B of \
          ballast ({} KiB at width 4, {} KiB at width 65,536). Below the ballast means \
          the recursion became a loop — the exact codegen accident this axis exists to \
          distrust — and the rejections below would certify nothing.",
-        sloped.per_step(),
-        sloped.lo_stack / 1024,
-        sloped.hi_stack / 1024
+        sloped.per_step_of_control("sloped"),
+        sloped.lo_stack,
+        sloped.hi_stack
     );
     assert!(
-        !runs_within(flat.hi_stack, 65_536, "synthetic_sloped"),
+        !runs_within(flat.hi_stack.bytes_upper_bound("flat"), 65_536, "synthetic_sloped"),
         "the two synthetic subjects must be separable on the width axis: \
          `synthetic_flat` needs {} KiB at width 65,536 and `synthetic_sloped` survived \
          the same stack",
-        flat.hi_stack / 1024
+        flat.hi_stack
     );
 
     // The fixed-stack half ACCEPTS it — 256 siblings of a small frame fit in
@@ -4030,7 +4407,7 @@ fn theta_width_tripwire() {
         clears_tolerance_by_an_order_of_magnitude(sloped),
         "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
          order of magnitude",
-        sloped.growth() / 1024,
+        sloped.growth_of_control("sloped") / 1024,
         ZERO_SLOPE_TOLERANCE / 1024
     );
 
@@ -4077,7 +4454,7 @@ fn theta_width_tripwire() {
     println!(
         "  width axis: {} un-converted subject(s); control separates at {} B/sibling",
         UNCONVERTED_WIDTH_SUBJECTS.len(),
-        sloped.per_step()
+        sloped.per_step_of_control("sloped")
     );
 }
 
