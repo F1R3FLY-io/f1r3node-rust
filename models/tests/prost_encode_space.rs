@@ -61,9 +61,16 @@ fn nested_list(depth: usize) -> Par {
 #[test]
 fn the_op_stack_entry_is_four_words() {
     let word = std::mem::size_of::<usize>();
+    // ⚠ The expected width is bound ONCE and both the comparison and the message read it.
+    // Written out twice, a perturbation of the comparison leaves the message quoting the old
+    // value — which is exactly what the first RED run of this file printed:
+    // "32 B against the pinned 32 B". A failure message that misreports the thing it failed
+    // on is worse than no message, because it sends the reader to look for a bug in the code
+    // under test rather than in the assertion.
+    let expected = 4 * word;
     assert_eq!(
         op_size(),
-        4 * word,
+        expected,
         "PROST `Op` CHANGED WIDTH: {} B against the pinned {} B (4 × {} B word).\n\n\
          The op stack is the encoder's per-level heap, so a wider `Op` multiplies the only \
          per-call allocation there is — at depth 4,096 each extra word costs 32 KiB.\n\n\
@@ -72,7 +79,7 @@ fn the_op_stack_entry_is_four_words() {
          `Node`+`Kont` split (two tags at one offset) is predicted at 40 B = 5 words. If `Op` \
          moved, that prediction is stale and the exemption must be RE-DERIVED, not re-quoted.",
         op_size(),
-        4 * word,
+        expected,
         word
     );
 }
@@ -85,14 +92,15 @@ fn the_op_stack_entry_is_four_words() {
 #[test]
 fn the_frame_is_two_words() {
     let word = std::mem::size_of::<usize>();
+    let expected = 2 * word;   // bound once; see `the_op_stack_entry_is_four_words`
     assert_eq!(
         frame_size(),
-        2 * word,
+        expected,
         "PROST `Frame` CHANGED WIDTH: {} B against the pinned {} B.\n\
          The frame stack is Θ(depth), so this is a per-level cost: at depth 4,096 each extra \
          word is 32 KiB.",
         frame_size(),
-        2 * word
+        expected
     );
 }
 
