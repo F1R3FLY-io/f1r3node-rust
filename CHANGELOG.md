@@ -4,6 +4,17 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.30] - 2026-07-30
+
+### Bug Fixes
+
+- bump the system-integration pin past the validator4 certs
+
+### Documentation
+
+- record the pin-rot and no-op-slot failure modes as TASK-010-6
+
+
 ## [0.4.29] - 2026-07-30
 
 ### Bug Fixes
