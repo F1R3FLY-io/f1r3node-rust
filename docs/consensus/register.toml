@@ -537,7 +537,14 @@ surface = "N"
 commits = ["084c93b5"]
 status = "LANDED"
 direction = "CORRECTIVE"
-grade = "MECHANISM_ONLY"
+# ★★ UPGRADED 2026-07-30, MECHANISM_ONLY -> WITNESSED. §2.7: WITNESSED is "a concrete
+#   program, term, or byte string is known that exhibits the divergence"; MECHANISM_ONLY is
+#   "no witnessing program has been exhibited". ELEVEN blessed genesis contracts now exhibit
+#   it, each with a measured before/after normalized-term digest at IDENTICAL LENGTH across
+#   `084c93b5^` -> `084c93b5`. ⚠ No axis cell moves and the UNVERIFIED budget is untouched:
+#   this entry carries no UNVERIFIED cell. What the eleven witness is the FIELD-VALUE change
+#   (axes 1 and 3-P); the two IDENTITY CONSUMERS of axis 2 remain mechanism — see (b).
+grade = "WITNESSED"
 axis_value = "MOVES"
 axis_verdict = "MOVES"
 axis_bytes_bincode = "NO"

@@ -607,7 +607,7 @@ is a *future* fork, not a present one).
 | [CBR-029](#cbr-029) | N | The pretty printer renders a receive's `where` guard | `d8e95fb0` | · | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-030](#cbr-030) | N | `NonNegativeNumber.rho`'s overflow guard becomes **total** — the genesis term moves | `e3a4494b`, `719f2432` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **W** |
-| [CBR-032](#cbr-032) | N | The binder shift emitted the shifted **position** as the **value** | `084c93b5` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **M** |
+| [CBR-032](#cbr-032) | N | The binder shift emitted the shifted **position** as the **value** | `084c93b5` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-033](#cbr-033) | N | A resting send carries its reason — a diagnostic proven **off** the byte path | `8fc9afc9` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-034](#cbr-034) | N | `TreeHashMap` `update`-after-`delete` **resurrected** the key — the updater tested the leaf, not the key | `7c0cfd0a` | ● | ● | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-035](#cbr-035) | N | A walk elimination in the generated `Clone` — behaviourally **byte-identical** | `87ee699c` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
@@ -627,7 +627,7 @@ is a *future* fork, not a present one).
 
 **Totals — 49 entries**, recounted from the rows above rather than adjusted: **36 on Surface N, 13 on
 Surface L**; **47 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **36 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 3 NEUTRALITY-MEASURED. By direction: **30 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 4 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+grade: **37 WITNESSED**, 3 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 3 NEUTRALITY-MEASURED. By direction: **30 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 4 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
@@ -4179,7 +4179,7 @@ representation that is not a `BitSet`.**
 | Commit(s) | `084c93b5` — *fix(interpreter): the binder shift emitted the shifted POSITION as the VALUE — one function, eight call sites* |
 | Status | LANDED |
 | Direction | CORRECTIVE |
-| Evidence grade | **MECHANISM-ONLY** |
+| Evidence grade | **WITNESSED** — ★★ UPGRADED 2026-07-30 from **MECHANISM-ONLY**; **eleven** blessed genesis contracts exhibit the divergence with measured before/after normalized-term digests. See the Evidence. |
 | Files | `rholang/src/rust/interpreter/util/mod.rs` (the function and its new law tests), `rholang/tests/locally_free_binder_shift.rs` (new), `rholang/tests/matches_pattern_locally_free.rs` (the pin it carried) |
 
 #### (a) The issue
@@ -4230,7 +4230,7 @@ tests plus 13 rows specifically about `locally_free` had never gone red on it.
 | Axis | Verdict |
 |---|---|
 | 1 · computed value | **MOVES** — the normalized `Par` a deploy produces differs: a nested `Receive`/`New`/`Match` carries `[1]` where it carried `[0]`. **MEASURED** (below). |
-| 2 · verdict | **MOVES** — ★ and this cell **closes [CBR-031](#cbr-031)'s `UNVERIFIED`**. Two consumers decide *identity* from bytes that include `locally_free`, and both are named below; neither is exercised by a known program, hence the entry's grade. |
+| 2 · verdict | **MOVES** — ★ and this cell **closes [CBR-031](#cbr-031)'s `UNVERIFIED`**. Two consumers decide *identity* from bytes that include `locally_free`, and both are named below; **neither is exercised by a known program**, so this cell is **mechanism, unwitnessed**. ⚠ **REVISED 2026-07-30 — this cell used to end *"hence the entry's grade"*, and that clause is now wrong.** The entry's grade is **WITNESSED** on the strength of eleven blessed contracts exhibiting the *field-value* change (axes 1 and 3-P); this cell's *consumers* remain unexhibited. ★ A cell must justify **itself**, not the entry — a per-cell note that reaches out to the grade column goes stale whenever the grade moves for a reason belonging to a different cell, which is exactly what happened here. |
 | 3 · bytes (Lane B, bincode) | **NO** — `models/build.rs:165` injects `serialize_with = serialize_as_empty_bytes` on **every** `locally_free` declaration and cross-checks its own rewrite count against the wire-schema generator's `EmptyBytes` count, so the blanking is total rather than per-message. **MEASURED** (byte-equal, below). |
 | 3 · bytes (Lane P, prost) | **MOVES** — prost retains the field. **MEASURED** (unequal, below). |
 | 4 · post-state hash | **MOVES** — not through the event-hash preimage, which is Lane B and is blanked, but through the two Lane-P consumers of axis 2, both of which place prost bytes into a *location*: an RSpace channel and a pathmap trie key. **Mechanism, unwitnessed.** ⚠ This is a **wider answer than [CBR-031](#cbr-031)'s `NO`** — see the disagreement. |
@@ -4274,8 +4274,26 @@ therefore blanked. `substitute.rs` contains no occurrence of `locally_free` at a
 body names an index the inner binder does not own — `for (@x <- c) { for (@y <- d) { … x … } }` and its
 `new` / `contract` / `match` spellings. That is ordinary Rholang and it is extremely common. *State-level:*
 the intersection of that class with the two paths above — a `# P` quote principal, or a pathmap entry
-outside the ground domain. Reachable by an ordinary deploy: **byte-level yes, state-level yes in principle,
-unwitnessed.**
+outside the ground domain.
+
+⚠★★ **WIDENED 2026-07-30 — the byte-level radius is no longer a class description, it is a COUNT.** This
+paragraph previously closed *"Reachable by an ordinary deploy: **byte-level yes, state-level yes in
+principle, unwitnessed.**"*, quoted so the narrower claim is not restored. Measured across
+`084c93b5^` $`\rightarrow`$ `084c93b5`: of the **13** contracts embedded in the genesis image, **11 of the
+11 that normalize MOVED — every one of them at identical length.** These are not deploys someone might
+write; they are the blessed contracts every node normalizes at genesis. $`\Rightarrow`$ **Reachable by an
+ordinary deploy: byte-level yes and WITNESSED, eleven times over; state-level yes in principle, still
+unwitnessed** (see the grade note in the evidence for exactly where that line falls).
+
+★★ **And the measurement is a coverage finding about the INSTRUMENT, not only about the defect.** The
+pre-existing pin was **one hand-written cell** — a single contract's normalized digest. Eleven moved.
+$`\Rightarrow`$ **Ten consensus-visible movements had nothing watching them.** ⚠ That is the same shape
+[§7.7.2](#772-the-derived-path-set--and-the-two-false-negatives-the-hand-list-had) records for the hand-listed
+path set and [§7.8.6](#786-the-two-drift-questions-answered) records for the Abstract's unanchored axis
+counts: **a hand-maintained sample of a computable domain, whose gaps are invisible precisely because
+nothing enumerates the domain.** The pin is now a `NormalizedPin` per row with
+`every_blessed_normalized_term_is_pinned` over a derived row set and a floor of **11** pinned rows, so the
+count is asserted rather than sampled.
 
 **Could live chain state have been produced under the old behaviour?** ⚠ **Not settleable from inside the
 repository**, and the two paths need two different queries. For path 1: scan the chain's
@@ -4376,7 +4394,61 @@ half drifts, so the claim is falsifiable from the side that was not changed.
   measurement. That measurement is sound and it covers Lane B only; the two Lane-P consumers named in (b)
   apply to `EMatches::pattern`'s bitset exactly as they do to this one. Amending a reviewed row moves three
   projected figures and the `UNVERIFIED` budget, so it is left as a **reviewed edit to be made**, not made
-  here. **DERIVED**.
+  here. **DERIVED**. ★ **MADE 2026-07-30** — CBR-031's verdict cell reads `MOVES` and its post-state-hash
+  cell reads `MOVES`, with the superseded text quoted in its (b). The `UNVERIFIED` budget moved
+  $`2 \rightarrow 1`$ accordingly.
+
+- ★★★ **THE WITNESS — MEASURED 2026-07-30, and it upgrades this entry's grade from MECHANISM-ONLY to
+  WITNESSED.** Three `git archive` exports, each built from the committed manifest with only the `[patch]`
+  block appended, so no working-tree state can reach the result:
+
+  | export | ref | normalized-term digest | length |
+  |---|---|---|---:|
+  | `pre` | `084c93b5^` (`d630af54`) | `a537547892a0…a2` | 2,652 |
+  | `fix` | `084c93b5` | `eb17e6a37e7e…a92` | 2,652 |
+  | `head` | `a3b3aa65`, clean tree | `eb17e6a37e7e…a92` | 2,652 |
+  | working tree | + 51 dirty files | `eb17e6a37e7e…a92` | 2,652 |
+
+  `pre` reproduces the **old pin exactly** and `fix` the **new value exactly**, which is what makes the
+  attribution a measurement rather than a correlation. **MEASURED**.
+
+- ★★ **The two rival explanations are EXCLUDED, and one of them twice over.** A digest that moves is
+  evidence for nothing until the other candidates are ruled out.
+
+  | candidate | how it is excluded |
+  |---|---|
+  | a `models/**` change | Excluded on **both** sides of the comparison — the exports differ only in the `rholang` normalizer commit. |
+  | the ~51 uncommitted files, 23 of them normalizers | ⚠ Excluded **twice**: (i) clean `head` equals the dirty working tree **byte for byte**; (ii) a Rust **token**-level diff of all 23 files finds **17 token-identical** — pure `rustfmt` reflow — including **all four** files carrying the 25 `locally_free` / `connective_used` lines. ★ A token-level diff is the right instrument here because a *whitespace* diff cannot distinguish reflow from a semantic edit, and that distinction is the whole question. |
+
+- ★★★ **THE CONTROL, which is what makes *"same length, different digest"* diagnostic rather than merely
+  suggestive.** Across the same eleven contracts, **`REGISTRY` is the only row whose *length* also moved**
+  (28,068 $`\rightarrow`$ 28,455) — because `7c0cfd0a` edited `Registry.rho`'s **source**
+  ([CBR-034](#cbr-034)). $`\Rightarrow`$ **A source edit moves the length; a field-value change inside the
+  encoder cannot.** The two mechanisms are therefore distinguishable by a property of the measurement
+  itself, and the eleven-row table exhibits one instance of each. ⚠ Without that control, *"same length,
+  different digest"* would be a hypothesis about a fixed-width encoding; with it, it is a discriminator that
+  has been seen to discriminate. **MEASURED**.
+
+- ⚠★ **What the eleven witness, and what they do NOT — stated because the grade is a single letter and this
+  entry's cells are not uniform.** The eleven exhibit the **field-value change**: axis 1 (a nested binder's
+  bitset carries `[1]` where it carried `[0]`) and axis 3-Lane P (the prost bytes differ), now at eleven
+  concrete programs rather than at one constructed differential term. They do **not** exhibit either
+  **identity consumer** of axis 2 — no `# P` quote principal with a nested binder, and no pathmap trie-key
+  comparison decided at a `locally_free` byte, has been constructed. Those cells keep their *"mechanism,
+  unwitnessed"* annotation and are unchanged. ★ **The grading rule applied here is the same one
+  [CBR-031](#cbr-031) records**: §2.7 grades an *entry* by whether a concrete program exhibiting **its
+  divergence** is known, and per-cell evidence lives **in the cell**. Using it consistently across both
+  entries in one revision is deliberate — a grade column whose rule varies per author is a glyph, not a
+  measurement.
+
+- ⚠ **A genesis post-state-hash witness is NOT claimed, and the blocker is the report's own.** Eleven
+  blessed contracts whose normalized terms move would, on the face of it, move the genesis post-state — but
+  [finding 1](#finding-1--no-artefact-of-the-genesis-build-is-currently-stable-enough-to-pin) records six
+  builds producing **six distinct** `post_state_hash` values at byte-identical source, so no genesis-derived
+  value is stable enough to attribute a movement to. The post-state-hash cell therefore keeps the mechanism
+  it already names — the two Lane-P consumers — and gains no genesis claim. ★ Same discipline
+  [CBR-034](#cbr-034) applies to its own post-state-hash magnitude, and for the same reason. **UNVERIFIED**,
+  with the blocker named rather than the claim made.
 
 ---
 
@@ -4713,6 +4785,38 @@ worktree currently carries ~51 modified files including 23 normalizer files that
 campaign's work — so any digest taken now measures the working tree, not the commit. ★ And the pin was
 deliberately **left RED**: re-blessing it now *"would launder an unlanded change through a consensus
 pin"*, which is the correct call and stands. **UNVERIFIED**, with the experiment named.
+
+★★★ **DISCHARGED 2026-07-30 — and the deferral above is retained deliberately rather than deleted.** ⚠ A
+deferral that vanishes when it is answered leaves no trace that the question was ever open, and *"the
+question was open and here is what closed it"* is the durable content — the same reason this register quotes
+superseded claims instead of overwriting them.
+
+**What discharged it: the experiment named above, performed exactly as specified.** The blocker was *"any
+digest taken now measures the working tree, not the commit"*, and it was removed rather than argued away —
+three `git archive` exports, each built from the committed manifest with only the `[patch]` block appended,
+so no working-tree state can reach the result. `084c93b5^` reproduces the **old pin exactly**; `084c93b5`
+gives the **new value exactly**. ★ And the deferral's own stated worry about the 23 dirty normalizers is
+answered **twice over**: clean `HEAD` equals the dirty tree byte for byte, and a Rust **token**-level diff
+finds 17 of the 23 token-identical (pure `rustfmt` reflow), including all four files carrying the 25
+`locally_free` / `connective_used` lines.
+
+$`\Rightarrow`$ **The attribution HOLDS**, the reach is **eleven of the eleven blessed contracts that
+normalize** rather than one, and [CBR-032](#cbr-032) is now graded **WITNESSED** — with its full evidence,
+its `REGISTRY` length control and an explicit statement of what the eleven do *not* witness recorded in
+[CBR-032](#cbr-032)'s own Evidence, not here. ⚠ **Two things the discharge does NOT do**, so the upgrade is
+not read as wider than it is: no **axis cell** moves — CBR-032's `axis_value`, `axis_verdict`,
+`axis_bytes_prost` and `axis_post_state_hash` already read `MOVES` — and the **`UNVERIFIED` budget is
+untouched**, because CBR-032 carries no `UNVERIFIED` cell. Only the **grade** moved, MECHANISM-ONLY
+$`\rightarrow`$ WITNESSED, which re-projects §4.1's grade split.
+
+★ **The pin's RED is resolved the way this section asked for and not the way that was easy.** The re-bless is
+legitimate because the whole delta traces to **landed** commits, which was the deferral's own stated
+condition. And the pin gained a mechanism rather than a new number: a `NormalizedPin` per row plus
+`every_blessed_normalized_term_is_pinned`, with the pin as **one struct rather than two `Option`s so that
+"digest pinned but length not" is unspellable**, `None` checked against reality rather than trusted, and a
+floor of **11** pinned rows. $`\Rightarrow`$ The instrument that missed ten movements is now derived from the
+contract set instead of sampled from it — [CBR-032](#cbr-032)'s blast radius records that as a coverage
+finding in its own right. **MEASURED**.
 
 ---
 
