@@ -4,6 +4,7 @@ pub mod comm;
 pub mod construct_deploy;
 pub mod dag_operations;
 pub mod event_converter;
+pub mod event_log_canonical;
 pub mod mergeable_channels_gc;
 pub mod proto_util;
 pub mod rholang;

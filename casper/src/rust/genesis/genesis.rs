@@ -204,41 +204,51 @@ impl Genesis {
 
         assert!(failed_deploys.is_empty(), "Failed deploys found");
 
-        // ★★ S3 — A LOAD-BEARING SORT, AND THE ONE NOBODY HAD NAMED. ⚠ DO NOT REMOVE, AND
-        // DO NOT "FIX" IT HERE.
+        // ★★ S3 — A LOAD-BEARING CANONICALISATION. ⚠ DO NOT REMOVE THIS CALL.
         //
         // What it masks: the PER-DEPLOY RSPACE EVENT LOG ORDER. `deploy.deploy_log` is the
         // sequence of RSpace comm/produce/consume events the deploy generated while
-        // executing. Canonicalising it by encoded-proto bytes here is only necessary because
-        // the order it ARRIVES in is not stable — which means per-deploy event ordering is
-        // itself nondeterministic. That is a strictly larger statement than the vaults/bonds
-        // ordering problems (S1/S2): those have one identifiable unordered container each,
-        // whereas this one is produced by the interpreter's own evaluation, so the source of
-        // the variance has not been localised.
+        // executing, and the order it ARRIVES in is not stable — it is the order in which
+        // the reducer's concurrently-evaluated `Par` members reached the logging seams.
+        // Unlike its siblings S1 (`contracts/proof_of_stake.rs`) and S2 (`bonds_proto`
+        // below), which each mask ONE identifiable unordered `HashMap`, there is no single
+        // container here to canonicalise at the source. That root cause is still open.
         //
-        // Why removing it would be a consensus break: `deploy_log` is part of
-        // `ProcessedDeploy`, `ProcessedDeploy` is part of `Body.deploys`, and `Body` is
-        // hashed into the **`block_hash`**. An unsorted log therefore yields a different
-        // genesis block hash per run, and the genesis ceremony's `block_approver_protocol`
-        // comparison would reject a block it should have accepted.
+        // ⚠ Removing this INTRODUCES a break that is currently latent: `deploy_log` is part
+        // of `ProcessedDeploy`, `ProcessedDeploy` is part of `Body.deploys`, and `Body` is
+        // hashed into the **`block_hash`**, so an unsorted log yields a different genesis
+        // block hash per run. That is the `f5b2e820` trap — deleting a sort that is masking
+        // an unordered source turns a hidden defect into a live one.
         //
-        // ⚠ REPORTED, NOT REPAIRED. Two things are unknown and must not be guessed at from
-        // this line: (1) WHERE the event order becomes nondeterministic, and (2) whether the
-        // replay path applies the same canonicalisation, since a play/replay asymmetry here
-        // would be a `ReplayFailure` rather than a hash mismatch. Until both are answered,
-        // this sort is the thing keeping genesis reproducible and must stay exactly as it is.
-        // It needs its own work item; it is NOT in scope for the vaults-determinism fix that
-        // added S1/S2's documentation.
+        // ★ CORRECTION (2026-07-30) to what this comment used to claim. It said the genesis
+        // ceremony's `block_approver_protocol` "comparison would reject a block it should
+        // have accepted". ⚠ **That is not what the approver does.**
+        // `BlockApproverProtocol::validate_candidate`
+        // (`casper/src/rust/engine/block_approver_protocol.rs:151-316`) compares the bonds
+        // SET, compares each deploy's `deploy.data.term` in order, REPLAYS the candidate's
+        // deploys and compares `post_state_hash`, then compares the tuplespace bonds. It
+        // never recomputes the candidate's block hash and never inspects `deploy_log` order,
+        // and an approver signs `Blake2b256::hash(candidate.to_proto().encode_to_vec())`
+        // over the bytes it RECEIVED. So the exposure is NOT cross-node approval; it is that
+        // a node re-deriving genesis from identical inputs — a restart mid-ceremony, a
+        // second builder in the same shard, the `GENESIS_CACHE` key — gets a different block
+        // hash each time. Still a defect, still load-bearing, but attributed correctly.
+        //
+        // ★ SETTLED (2026-07-30): REPLAY DOES NOT APPLY THIS, AND MUST NOT NEED TO.
+        // `ReplayRSpace::rig` reduces the log to a `HashSet<IOEvent>` plus a
+        // `MultisetMultiMap<IOEvent, COMM>` of per-key COUNTERS, both functions of the event
+        // MULTISET — so permuting the log cannot move `replay_data`, and canonicalising it
+        // here cannot break replay. See
+        // [`crate::rust::util::event_log_canonical`] for the derivation and
+        // `casper/tests/deploy_log_canonicalization_and_replay.rs` for both halves as
+        // executable claims.
         let sorted_deploys = processed_deploys
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
             .map(|mut deploy| {
-                use prost::Message;
-                deploy.deploy_log.sort_by(|a, b| {
-                    let a_bytes = a.to_proto().encode_to_vec();
-                    let b_bytes = b.to_proto().encode_to_vec();
-                    a_bytes.cmp(&b_bytes)
-                });
+                crate::rust::util::event_log_canonical::canonicalize_deploy_log(
+                    &mut deploy.deploy_log,
+                );
                 deploy
             })
             .collect();
