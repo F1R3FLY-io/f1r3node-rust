@@ -29,7 +29,7 @@ use crate::helper::{
     secp256k1_sign_contract, sys_auth_token_contract,
 };
 use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 const RHO_SPEC_PRIVATE_KEY: &str =
@@ -299,16 +299,29 @@ pub async fn get_results(
     test_result_collector: Arc<TestResultCollector>,
 ) -> Result<TestResult, InterpreterError> {
     let mut genesis_builder = GenesisBuilder::new();
-    let _genesis = genesis_builder
+    let genesis = genesis_builder
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .map_err(|e| {
             InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
         })?;
 
-    let scope_id = generate_scope_id();
-
-    let mut kvs_manager = mk_test_rnode_store_manager_shared(scope_id);
+    // ★★ THE RUNTIME MUST OPEN THE RSPACE GENESIS WAS WRITTEN INTO.
+    //
+    // This used to bind the genesis context to `_genesis`, throw it away, and then open a
+    // **fresh** `generate_scope_id()` RSpace — an empty tuplespace with no genesis state in
+    // it at all. Every `.rho` in this suite reaches its subject through the registry, and
+    // `RhoSpecContract.rho` itself defines the whole `RhoSpec` contract *inside*
+    // `for(@(_, ListOps) <- ListOpsCh)` after `rl!(`rho:lang:listOps`, *ListOpsCh)`. The
+    // `rho:lang:listOps` alias lives in `Registry.rho:496` and the contract it names lives in
+    // `ListOps.rho`; both are genesis blessed terms. Against an empty RSpace that lookup never
+    // answers, so `RhoSpec` is never defined, so `@RhoSpec!("testSuite", …)` rests forever as
+    // unmatched data — no assertions, no error, and (before the floor below) a PASS.
+    //
+    // `mk_test_rnode_store_manager_from_genesis` opens the shared LMDB environment at genesis's
+    // OWN `rspace_scope_id`, which is how every other genesis-dependent test in this suite
+    // reaches genesis state (see `resources::with_runtime_manager`).
+    let mut kvs_manager = mk_test_rnode_store_manager_from_genesis(&genesis);
     let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
     })?;
@@ -322,17 +335,40 @@ pub async fn get_results(
 
     let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
 
-    let runtime = create_runtime_from_kv_store(
+    // `init_registry: false` — the genesis post-state ALREADY contains the bootstrapped
+    // registry. `bootstrap_registry` is an `inj` of the registry's Rholang term
+    // (`rho_runtime.rs:1231`), so its produces/consumes are ordinary tuplespace changes that
+    // genesis checkpointed; that is exactly what `RuntimeManager::empty_state_hash_fixed`'s
+    // comment means by "the bootstrap registry's installed continuations and patterns".
+    // Injecting it a second time on top of that state would duplicate data on the registry's
+    // channels, and `create_runtime` follows it with a `create_checkpoint()` that would move the
+    // shared genesis scope's current-root pointer out from under any sibling test.
+    let mut runtime = create_runtime_from_kv_store(
         r_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
-        true,
+        false,
         &mut additional_system_processes,
         matcher,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
     .await;
 
-    println!("Starting tests from {}", test_object.path);
+    // Pin the read root to genesis's post-state rather than trusting the roots store's
+    // current-root pointer. `RSpace::create` starts at `RootRepository::current_root()`
+    // (`rspace.rs:642`), which is whatever was committed to this scope LAST — genesis's
+    // post-state under `cargo nextest` (one process per test), but not necessarily under
+    // `cargo test`, where the whole binary shares one process and a sibling test that creates a
+    // block over the same genesis scope advances that pointer. `reset` also calls
+    // `restore_installs`, so the fixed-channel system processes installed above survive it.
+    let genesis_post_state = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+        &genesis.genesis_block.body.state.post_state_hash,
+    );
+    runtime.reset(&genesis_post_state).await?;
+
+    println!(
+        "Starting tests from {} against genesis post-state {} (rspace scope {})",
+        test_object.path, genesis_post_state, genesis.rspace_scope_id
+    );
 
     let runtime = setup_runtime(runtime, other_libs).await?;
 
