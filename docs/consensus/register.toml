@@ -1209,6 +1209,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "ad468163"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 43 — both files are under models/tests/. THE CANONICAL FORM DID NOT MOVE, measured rather than argued: the golden fixture diff is 6 insertions and 0 deletions, so every pre-existing row is byte-identical and the three new depth->=2 fixtures perturbed nothing. Shown RED first (120 corpus entries against the golden's 114) before blessing. Blessed from the PRE-conversion recursive implementation, which is what gives it authority over the Phase 3b conversion rather than restating whatever that conversion emits. Also derives corpus_covers_every_expr_instance_variant from distinct discriminants in place of a transcribed len() == COUNT + 1 allowance. [DERIVED]"
+
+[[exempt]]
 commit = "5a744c66"
 window = "FRONTIER"
 reason = "HYGIENE"
