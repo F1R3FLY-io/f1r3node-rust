@@ -140,10 +140,28 @@ gates=()
 for d in "${decls[@]}"; do gates+=("${d%%:*}"); done
 
 if [ "${#gates[@]}" -eq 0 ]; then
-  printf '%s━━ gate router ━━%s no gate declares %s@watches:%s — the router has an EMPTY MAP and\n' \
-    "$C_ERR" "$C_0" "$C_B" "$C_0"
-  printf '   cannot fire. Add one module-doc line to each gate that watches a domain:\n'
-  printf '     %s//! @watches: <path> [<path>...]%s\n' "$C_CMD" "$C_0"
+  # ★ Say so — a router with an empty map is a router that never fires, which is the defect
+  # being repaired, and a silent exit here would reproduce it exactly.
+  #
+  # ⚠ But at most ONCE PER DAY. This notice is addressed to whoever seeds the declarations,
+  # not to the agent committing right now, and a warning that prints on every commit with
+  # nothing actionable *for the reader* becomes wallpaper and then gets deleted — which is how
+  # the fence being replaced came to be inert. Rate-limiting is what keeps a standing,
+  # non-actionable notice alive. The stamp lives under .git/ and is not committable.
+  stamp="$root/$(git rev-parse --git-path gate-router-emptymap.stamp)"
+  case "$stamp" in "$root"/[!/]*) ;; *) stamp="$(git rev-parse --git-path gate-router-emptymap.stamp)" ;; esac
+  now=$(date +%s)
+  last=0
+  [ -r "$stamp" ] && read -r last < "$stamp" 2>/dev/null
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$((now - last))" -ge 86400 ]; then
+    printf '%s' "$now" > "$stamp" 2>/dev/null
+    printf '%s━━ gate router ━━%s no gate declares %s@watches:%s — the router has an EMPTY MAP\n' \
+      "$C_ERR" "$C_0" "$C_B" "$C_0"
+    printf '   and cannot fire. Add one module-doc line to each gate that watches a domain:\n'
+    printf '     %s//! @watches: <path> [<path>...]%s\n' "$C_CMD" "$C_0"
+    printf '   (this notice is rate-limited to once per day)\n'
+  fi
   exit 0
 fi
 
