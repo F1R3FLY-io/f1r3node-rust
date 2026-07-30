@@ -1483,6 +1483,149 @@ construct_expr(
             
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ★★★ THE IDENTICAL-TOTAL-ORDER ARGUMENT — required BEFORE converting these three arms
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// `ESetBody`, `EMapBody` and `EPathmapBody` each re-enter `ParSortMatcher::sort_match` per
+// element — one native frame per nesting level. Converting them to the work-stack driver is
+// stack-safety Phase 3b, and this block is the argument that obligation demands, recorded
+// BEFORE any code. Sorting is ORDER-DEFINING, so the usual "evaluation order is unobservable"
+// reasoning does not apply, and `SortedParMap` feeds the canonical sort that
+// `cost_accounting/sig.rs` signs. **A conversion that reproduces the order ALMOST exactly is a
+// fork.**
+//
+// ── What actually establishes the order, read from this file ──────────────────────────
+//
+// It is NOT this arm. `combine_eset` never sorts by score. It:
+//
+//   1. maps each element through `sort_match`, in the ITERATION ORDER of
+//      `par_set.ps.sorted_pars`;
+//   2. `split_scored_terms` splits that into `(element_terms, element_scores)`, preserving
+//      that order in both;
+//   3. hands `element_terms` to `SortedParHashSet::create_from_vec` — and THE CONTAINER
+//      establishes the term order;
+//   4. chains `element_scores` into the score `Tree`, still in the order from step 1.
+//
+// ⇒ ★★ **Terms and scores are ordered by two DIFFERENT things** — the terms by the
+// container's constructor, the scores by the input iteration — and those are not the same
+// permutation. Any conversion must preserve both.
+//
+// ── The three obligations a converted form must discharge ─────────────────────────────
+//
+// **O1 · Score order is INPUT order, and a LIFO work stack does not preserve it — but the
+// driver ALREADY DISCHARGES THIS, by construction.** A work stack completes children in
+// reverse push order, so a naive conversion would chain `element_scores` reversed. That
+// changes the score tree, which is the sort key of the ENCLOSING term, so the corruption
+// would not be local to this collection.
+//
+// ★★ It cannot happen here. `SortNode.idx` / `IxKont.idx` carry the **source index** through
+// both stacks — `sort_drive.rs:209` documents the wrapper as existing for exactly this — and
+// `SortTraversal::combine` runs
+//
+//     assert_children_are_in_source_order(vals, kont.arity());
+//
+// **before any pop**, "exactly where the bespoke loop ran it… the assertion that turns 'push
+// in reverse' from a convention into a failure on every term any test sorts." The `pop_n_*`
+// helpers then restore forward order and assert the indices descend by one while doing it.
+//
+// ⇒ O1 is **not** an obligation the conversion's author must remember; it is an invariant the
+// driver fails on. ★ That is what makes 3b tractable at all — the one hazard a byte
+// differential would be blind to is the one already mechanised.
+//
+// **O2 · The container's constructor is part of the canonical form.**
+// `ParSetTypeMapper::eset_to_par_set` yields a `SortedParSet` whose order comes from
+// `create_from_vec`, not from this arm. A conversion that sorts elements itself and bypasses
+// the mapper would be a SECOND opinion about set order. It must keep handing terms to the
+// same constructor.
+//
+// **O3 · `EMapBody` keeps only the KEY's score.** `sort_key_value_pair` (`:1442-1450`) sorts
+// key and value and returns `score: sorted_key.score`; **the value's score is DISCARDED**.
+// That asymmetry is the map's ordering rule, not an implementation detail. ⚠ It is also the
+// obligation most likely to be lost in conversion, because a converted arm pushes key and
+// value as two peer children and both scores are then sitting on the value stack — combining
+// them is the *natural* thing to write and it is wrong. The conversion must drop the value's
+// score deliberately, and say so where it does.
+//
+// ── Why `NodeKind` cannot express this today ──────────────────────────────────────────
+//
+// ⚠ `sort_drive.rs`'s `NodeKind` has twelve variants (`:190-207`) and none is `ESet`, `EMap`
+// or `EPathMap`; `:1353` records the same fact from this side ("take **no** children"). The
+// elements ARE `Par`s, so `NodeKind::Par` carries the descent unchanged — what is missing is
+// a COMBINE that pops N scored children and routes the terms through the mapper (O2). That is
+// a `SortKont` variant rather than a `NodeKind` variant, and
+//
+// ★ adding one is FORCED to be complete: `SortKont::arity` is exhaustive with no `_` arm, and
+// the driver cross-checks it against the per-arm pop counts on every combine. A new variant
+// that forgot its arity does not compile; one that mis-stated it fails the assertion. ⇒ The
+// missing piece is bounded and the compiler names it.
+//
+// ⚠ Note what this does NOT give: arity is a count, so it pins how many children are popped,
+// never that the RIGHT scores were kept (O3) or that the mapper was used (O2). Those two stay
+// the human obligations, which is why they are written out above rather than left to review.
+// Continuing —
+// `IxKont` already carries an index.
+//
+// ── The falsifier — what the two existing checks CAN and CANNOT catch, measured ───────
+//
+// ⛔★★ **Neither existing check gates this conversion at depth ≥ 2, and for opposite reasons.**
+//
+// **`sort_recursive.rs` — the frozen oracle — is blind to it BY CONSTRUCTION, and says so.**
+// Its header: *"The oracle shares [`super::sort_combine`] with the driver, so the two differ
+// **only** in traversal shape… It follows that this differential **cannot** catch an error
+// transcribed into the shared table itself — both sides would be wrong together."* ⇒ These
+// three arms ARE that shared table. O2 and O3 live inside them, so converting the arms moves
+// both sides of the differential at once and the check goes quiet on exactly the change being
+// made. ★ This is not a flaw in the oracle — it is the design that makes it a sharp test of
+// traversal shape — but it means **the oracle is not 3b's gate**, and reaching for it out of
+// habit would be a vacuous pass.
+//
+// ★ `sorter_canonical_golden.rs` is the one that can see arm errors, and it is better than a
+// byte gate: `line()` (`:207`) records **both
+// columns** — `sort_match(x).term` *and* `sort_match(x).score` (header, `:29`). So it observes
+// the score tree directly, and **O3's discard is visible to it**: keeping the value's score
+// would add atoms to the recorded column even where the emitted bytes did not move. ⇒ Do not
+// repeat the "byte gates are blind" reflex here without checking; for the score it is false.
+//
+// ⛔ **What it cannot catch: the recursion 3b converts.** Measured at HEAD, every collection in
+// the corpus is DEPTH 1 and scalar-only —
+//
+//     ESetBody      ps  = [gint(9), gint(3), gstring("m")]        (`:392`)
+//     EMapBody      kvs = [9→90, 3→30]                            (`:401-410`)
+//     EPathmapBody  pathmap_of([gint(9), gint(3)])                (`:418`)
+//
+// **No element of any collection is itself a collection.** The three arms are precisely the
+// ones that re-enter `sort_match` per nesting level, and the corpus never makes them re-enter
+// even once. A conversion could be wrong at every level below the first and this golden would
+// be byte- and score-identical.
+//
+// ⚠ The `EMapBody` row is additionally **monotone** — keys 3 < 9 pair with values 30 < 90 — so
+// key-order and key⊕value-order agree, and O3's defect would not reorder it even at depth 1.
+// Discriminating O3 by ORDER (rather than by the score column) needs an ANTI-MONOTONE pair:
+// `3→90, 9→30`.
+//
+// ⇒ **The two blindnesses compose into one gap, and it is precisely 3b's target.** The oracle
+// covers traversal shape but not the arms; the golden covers the arms but only at depth 1;
+// **the arms at depth ≥ 2 are covered by neither** — and "the arms at depth ≥ 2" is the exact
+// description of the recursion this conversion removes.
+//
+// ⇒ **The prerequisite is a corpus extension, not just a diff.** Before any arm is converted,
+// `sorter_canonical_golden.rs` must carry: a set inside a map inside a set, each collection
+// ≥ 2 elements, plus an anti-monotone map (`3→90, 9→30`), captured from the PRE-conversion
+// implementation exactly as the existing rows were. ★ A one-element collection has exactly one
+// permutation, so it cannot separate any ordering hypothesis from any other; a depth-1 corpus
+// cannot separate a correct conversion from one that is right only at the root.
+//
+// ⚠ Capture order matters and is not recoverable later: the golden's authority comes from
+// being taken **before** the change. Extending it afterwards would pin whatever the conversion
+// happened to produce — a fixture that agrees with the code by construction, which is the
+// vacuous-gate shape this campaign has now hit three times.
+//
+// ★ Precedent for taking this seriously rather than as a formality: `69e67043` deleted a push
+// from `contains_par` and all 30 byte-gate tests stayed green, and this campaign then hit the
+// same shape again — an unsound memoisation caught by the predicate oracle while every byte
+// gate stayed green.
+
 /// The `ESetBody` arm.
 #[inline(never)]
 fn combine_eset(eset: &crate::rhoapi::ESet) -> ScoredTerm<Expr> {
