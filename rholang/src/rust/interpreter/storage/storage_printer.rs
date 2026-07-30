@@ -10,6 +10,7 @@ use models::rust::rholang::implicits::concatenate_pars;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 
 use crate::rust::interpreter::pretty_printer::PrettyPrinter;
+use crate::rust::interpreter::rest_diagnosis;
 use crate::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 
 pub async fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
@@ -39,6 +40,32 @@ pub async fn pretty_print(runtime: &RhoRuntimeImpl) -> String {
         let mut pretty_printer = PrettyPrinter::new();
         pretty_printer.build_string_from_message(&combined_par)
     }
+}
+
+/// ★ The resting terms, **with their reasons** — the companion to
+/// [`pretty_print_unmatched_sends`], which renders the same terms and cannot say
+/// why any of them is stuck.
+///
+/// # Why this is a NEW function and not a change to the two above
+///
+/// `pretty_print_unmatched_sends` renders a resting send as Rholang source, and
+/// that string is a gRPC response body (`node/src/rust/api/repl_grpc_service.rs`).
+/// Appending a diagnosis to it would change an API's payload for every existing
+/// caller. Silence is a defect in the *surface*, not in that function's contract,
+/// so the reason gets its own surface.
+///
+/// # ⚠ What it is safe to call this from
+///
+/// It reads `get_hot_changes()`, whose implementation is `HotStore::to_map` — a
+/// read-lock clone with no history fill and no write. It returns a `String` and
+/// not a `Result`, so no caller can `?` on it and none can make a deploy fail
+/// with it. It writes nothing to the store, nothing to `EvaluateResult`, and
+/// nothing to the event log. See
+/// [`crate::rust::interpreter::rest_diagnosis`] §4 for the full argument and for
+/// the reason it is deliberately **not** called from the deploy path.
+pub async fn pretty_print_rest_diagnosis(runtime: &RhoRuntimeImpl) -> String {
+    let snapshot = runtime.get_hot_changes().await;
+    rest_diagnosis::report(&rest_diagnosis::diagnose(&snapshot))
 }
 
 pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntimeImpl) -> String {

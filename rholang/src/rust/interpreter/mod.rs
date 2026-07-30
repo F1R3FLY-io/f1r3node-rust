@@ -31,6 +31,11 @@ pub mod pretty_printer;
 pub mod pretty_printer_oracle;
 pub mod reduce;
 pub mod registry;
+/// ★ Why a term rests. A **pull-based**, store-read-only analysis that gives a
+/// resting send its reason without giving it a voice on the consensus path — see
+/// the module's §4 for the invisibility argument, which is structural rather than
+/// intentional.
+pub mod rest_diagnosis;
 pub mod rho_runtime;
 pub mod rho_type;
 pub mod storage;
