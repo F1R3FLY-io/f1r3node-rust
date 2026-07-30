@@ -39,6 +39,7 @@ than publishing a site with a series missing.
 | Benchmark segments | yes | no |
 | Gates releases | yes | no |
 | Regression verdict | fails the run | published, warns only |
+| Restart on infrastructure failure | within the window, once | within the window, once |
 
 A daily regression is published and shown on the dashboard's Daily tab but does
 not fail the workflow. Daily spans vary — they stop early once `dev` advances —
@@ -86,6 +87,80 @@ and the dashboard says so while a run is in progress.
 
 Checkpoint publishing is fail-soft throughout. The dispatch is a warning if it
 fails, and the soak continues — the run's real result still publishes at the end.
+
+## Restarting a failed soak
+
+An infrastructure failure — no OCI capacity at launch, or a runner lost
+mid-run — used to forfeit the entire night, because the next launch is a day
+away. A soak can instead be restarted **within its original window**: the
+restarted run ends at the instant the original would have, so it can never
+overlap the next scheduled slot, and it publishes what it did cover rather
+than nothing at all.
+
+### Automatic
+
+The `retry_within_window` job re-dispatches the workflow once, for the
+remainder of the window, when the run died of infrastructure rather than
+results:
+
+| Outcome | Restarts? |
+|---|---|
+| Runner launch failed | yes |
+| Soak job failed without reaching its completion marker (VM preempted, reaped, frozen) | yes |
+| Soak completed with failing iterations (red verdict) | no — that is a real result, not a lost run |
+| Run cancelled by hand | no — an operator calling the night off is a decision, not a fault |
+| Job timeout, or next slot's concurrency cancel | no |
+| A restart that itself fails | no — the chain caps at one |
+
+A lost runner surfaces as job *failure*, not cancellation, which is what lets
+"never restart a cancellation" and "always restart a lost VM" coexist. The cap
+is one attempt: a second failure in the same window is a pattern worth
+investigating, and OCI capacity shortages — the common launch failure — rarely
+clear within the night. Below a **2h floor** the restart is skipped entirely;
+bring-up alone costs ~20 minutes, and a shorter remainder is not worth a VM.
+
+### By hand
+
+`scripts/restart-soak.sh` dispatches the same restart mode from an operator
+machine. It needs `gh` (authenticated), `jq` and `python3`:
+
+```bash
+scripts/restart-soak.sh --last-failed            # infer everything from the last failed run
+scripts/restart-soak.sh --series daily --until-next-slot
+scripts/restart-soak.sh --series weekend --hours 12
+scripts/restart-soak.sh --series daily --hours 4 --dry-run
+```
+
+`--last-failed` finds the most recent failed *scheduled* run and recomputes the
+window its cron slot defined (Friday 19:30 Pacific → weekend on `master`,
+Mon–Thu → daily on `dev`), then restarts for whatever remains. The explicit
+form takes `--until-next-slot` (end 30 minutes before the next 19:30 Pacific
+launch — the shape for a same-day validation run that finishes and publishes
+without touching tonight's schedule), `--hours N`, or `--window-end EPOCH`. It
+confirms before dispatching unless given `--yes`, and mirrors the 2h floor
+client-side so a doomed dispatch is refused locally.
+
+### What a restarted run looks like
+
+Every restart — automatic or manual — is stamped in the published data:
+`run.restarted`, `run.retry_attempt`, and `run.window_seconds` (the series'
+nominal 22h/60h span, against `duration_seconds`, which for a restart is only
+the remainder). The report header says so:
+
+```
+- **Run:** 30516534214, 150000s soak — restarted; covered 40h of the 60h window
+```
+
+**A restarted run is never used as a baseline.** It covers a partial span, so
+its lower iteration count and peak RSS would make the next full-window run look
+like a regression purely because the spans differ. The week-over-week
+comparison skips it and reaches back to the last complete run. This is also why
+the manual script always stamps its dispatches as restarts, even when the
+operator is simply redeploying by hand: a short ad-hoc run must never become
+the bar a real 60h weekend is judged against.
+
+Checkpoints still work — the shortened window is enumerated for the 07:30 and
+13:00 Pacific instants that remain inside it.
 
 ## Previewing the dashboard locally
 
@@ -171,4 +246,26 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   `.github/dashboard/` changes, preserving any already-published data.
 - Metric emission is fail-soft end-to-end: a broken segment or missing
   sample never fails the soak; only the weekend verdict comparison can.
+- **Iteration failures do not stop the run.** A failed iteration is counted,
+  the soak sleeps 30s and continues, and the run exits red at the end with its
+  metrics intact. The script runs under `set -uo pipefail` and deliberately
+  never enables `errexit`: metric collection returns nonzero when a failed
+  iteration leaves nothing to sample, and making that fatal killed every
+  segment mid-loop before any state or rollup was written.
+- **The harness RSS watchdog is sized to the host.** Its default ceiling
+  (5000MB) is laptop-scale, while the 6-node shard legitimately peaks ~10GB
+  under `test_load` on the 32GB soak VM, so the soak passes
+  `--rss-ceiling-mb` computed as `MemTotal − 8GB` (~24.5GB there). Override
+  with `SOAK_RSS_CEILING_MB`; `0` disables the watchdog, which is not
+  recommended — it exists to kill the shard before swap-thrash freezes the VM,
+  a state that reports nothing and keeps billing. Sustained RSS growth is
+  policed week-over-week by the regression gate, not by this ceiling.
+- **Soak runners are exempt from the CI reaper, with an expiry.**
+  `ci-runner-reaper.yml` terminates `ci-eph-*` instances older than 2h, which
+  would kill any healthy soak mid-run. The launch job tags its instance with
+  `soak-deadline-epoch` (window end + 2h grace, alongside `purpose` and
+  `series`) and the reaper skips it until then. A leaked soak VM still dies,
+  just later; an untagged or expired one is reaped on the normal rule. Tagging
+  fails closed — if it fails, the launch fails immediately rather than the
+  soak dying silently at hour two.
 - First run bootstraps: no baseline → verdict passes and seeds the history.
