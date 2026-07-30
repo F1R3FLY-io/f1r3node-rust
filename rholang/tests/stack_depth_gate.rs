@@ -799,6 +799,31 @@ const CONVERTED_DEPTH: &[&str] = &[
     // repo's eight Θ(depth) "iterative" drivers all escaped through exactly this
     // boundary — `Category → Vec<Elem> → Elem`.
     "clone_send_chain",
+    // ★★ Stage F-4, SECOND ORDER — `Env::get`'s deep splice. It LEFT
+    // `TRIPWIRE_DEPTH` below by being CONVERTED, never by having a ceiling
+    // raised, and the conversion is the one `0eac9c3a` already landed: this
+    // subject's entire slope WAS `<Par as Clone>::clone` over the bound value
+    // (measured 15,850 B/level debug, "`Par::clone`'s 15,875 to within 0.2%"),
+    // so driving `Par::clone` drove this too.
+    //
+    // ⚠ Nobody re-measured it on the REAL bar, and the tripwire could not see
+    // the change: `assert_slope_below` ran it on 16 → 128, where the subject
+    // reported a FALSE ZERO both before and after (`slope_below_verdict`
+    // consults only `per_step`, so a large intercept reads as a flat ladder —
+    // the failure mode this file already records for `substitute`'s 437 B/level
+    // residual). It is admitted here only because it clears
+    // `assert_depth_independent`'s 4 → 4,096 span, which a non-zero slope
+    // cannot pass at any constant.
+    //
+    // ⚠ The superseded rationale is kept verbatim so it cannot be restored as a
+    // bug fix: *"`Env::get` clones a deep bound value. It STAYS here: `Env::shift`
+    // is `Env { shift: .., ..(*self).clone() }`, i.e. a `HashMap<i32, Par>`
+    // clone, and while each entry's `Par::clone` is now DRIVEN, the map walk
+    // that reaches them is a different traversal from the one stage F-4
+    // converted."* That is true of `Env::shift`, which `substitute_binders`
+    // measures; it is NOT true of this subject, which never shifts. The map
+    // here holds ONE binding and `Env::get` clones that one value.
+    "substitute_deep_binding",
 ];
 
 /// ⚠★ **`clone_pathmap_chain` and `pathmap_chain_drop` are MEASURED but are NOT in
@@ -848,12 +873,12 @@ const TRIPWIRE_DEPTH: &[&str] = &[
     // ordinary send path, with no binder and no COMM. See
     // `subst_and_charge_body`.
     "subst_and_charge",
-    // ⚠ `Env::get` clones a deep bound value. It STAYS here: `Env::shift` is
-    // `Env { shift: .., ..(*self).clone() }`, i.e. a `HashMap<i32, Par>` clone,
-    // and while each entry's `Par::clone` is now DRIVEN, the map walk that
-    // reaches them is a different traversal from the one stage F-4 converted.
-    // Re-measured after the conversion, under the same ceiling.
-    "substitute_deep_binding",
+    // ⚠★ `substitute_deep_binding` IS GONE FROM THIS LIST — see
+    // [`CONVERTED_DEPTH`] above, where its departure and the superseded
+    // rationale are both recorded. It left by being CONVERTED (stage F-4, at
+    // second order: its whole slope was `<Par as Clone>::clone`), never by
+    // having its ceiling raised, and its `assert_slope_below` call is deleted
+    // rather than relaxed.
     // ⚠★ `clone` IS GONE FROM THIS LIST — see [`CONVERTED_DEPTH`] above. It left
     // by being CONVERTED (stage F-4: `models/build.rs` strips the derive,
     // `models/build/wire_schema.rs` generates the impl over `drive_with`), never
@@ -3138,7 +3163,20 @@ fn theta_depth_tripwire() {
     // pre-repair reading, so the lowered ceiling refuses the exact regression it
     // was lowered to refuse, and not merely something.
     assert_slope_below("subst_and_charge", ceiling(3_000, 700), 16, 128);
-    assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
+    // ⚠★ `assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000),
+    // 16, 128)` USED TO BE HERE, and it is deleted rather than relaxed.
+    //
+    // The subject is in [`CONVERTED_DEPTH`], driven by
+    // `converted_traversals_are_depth_independent` over 4 → 4,096. A ceiling
+    // here would be a WEAKER statement about the same traversal and would put
+    // the name in two registers at once.
+    //
+    // ★ And the ceiling it carried was never certifying anything: on 16 → 128
+    // this subject read **0 B/level in BOTH profiles** at the commit that
+    // converted `Par::clone` AND at the commit before it, because
+    // `slope_below_verdict` consults only `per_step` and both probe points sat
+    // inside the intercept. The tripwire could not have gone red on the
+    // regression it existed to catch. The 4 → 4,096 bar can.
     // ⚠★ `assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128)` USED TO BE
     // HERE, and it is deleted rather than relaxed.
     //
