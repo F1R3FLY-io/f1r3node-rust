@@ -9,7 +9,9 @@
 # Outputs (OUT_DIR):
 #   weekly-summary.json   the record appended to the dashboard data history
 #   verdict.json          pass/regress + per-metric deltas (release gate input)
-#   badge.json            shields.io endpoint badge, derived from verdict.json
+#   badge.json            shields.io endpoint badge (soak verdict)
+#   badge-stability.json  endpoint badge: iteration success rate
+#   badge-perf.json       endpoint badge: finalization p95 + throughput
 #   perf-report.md        human summary (step summary / artifact)
 #
 # Verdict policy (thresholds file, maintainer-approved EPOCH-010):
@@ -354,6 +356,6 @@ jq -r \
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
 rm -f "$SEGMENTS_JSON"
-echo "wrote weekly-summary.json, verdict.json, badge.json, perf-report.md to $OUT_DIR" >&2
+echo "wrote weekly-summary.json, verdict.json, badge.json, badge-stability.json, badge-perf.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
 	"$OUT_DIR/verdict.json" >&2

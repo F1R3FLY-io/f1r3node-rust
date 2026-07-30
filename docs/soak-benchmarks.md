@@ -18,10 +18,29 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
   (iteration metrics, benchmark segments, logs, `report/` with
   `weekly-summary.json`, `verdict.json`, `badge.json`, `perf-report.md`).
-- **README badges**: `Soak · dev` and `Soak · master` are shields.io *endpoint*
-  badges reading `data/badge-soak-daily.json` and `data/badge-soak.json`, which
-  are generated from the same `verdict.json` the dashboard renders — so a badge
-  cannot disagree with the dashboard behind it.
+- **README badges**: four shields.io *endpoint* badges, all generated from the
+  same `verdict.json` / `weekly-summary.json` the dashboard renders, so a badge
+  cannot disagree with the page behind it:
+
+  | Badge | Endpoint file | Producer |
+  |---|---|---|
+  | `soak · master` | `data/badge-soak.json` | `badge.json` |
+  | `soak · dev` | `data/badge-soak-daily.json` | `badge.json` |
+  | `stability` | `data/badge-stability.json` | `badge-stability.json` |
+  | `perf` | `data/badge-perf.json` | `badge-perf.json` |
+
+  `stability` is the share of iterations that completed a full bring-up → load →
+  finalize cycle — a success rate, deliberately not called uptime, since the
+  soak creates a fresh shard per iteration rather than watching a standing
+  deployment. Its colour bands are absolute and advisory; the release gate is
+  relative (week-over-week) and stays with the soak verdict, so 100% stability
+  alongside a `regress` verdict is coherent. `perf` is always blue: a readout,
+  not a judgement, because absolute latency and throughput have no threshold
+  here.
+
+  There are no CI badges. Per-commit build status is already rendered on the
+  repository home page and in pull requests; the badge row is reserved for the
+  soak signal, which has no other surface.
 
 Both series publish to Pages, into separate files — `history.json` and
 `history-daily.json`, each with its own `latest-summary`, `latest-verdict`,
