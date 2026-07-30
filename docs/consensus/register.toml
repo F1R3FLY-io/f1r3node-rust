@@ -30,7 +30,7 @@ partition_head = "dc383ed1"
 # §6.4's budget, asserted EXACTLY so `UNVERIFIED` can neither creep up nor be
 # quietly retired after its evidence returns. ★ A budget that can only rise is a
 # ratchet, not a measurement.
-unverified_budget = 1
+unverified_budget = 2
 
 # The fuse on the living frontier, in COMMIT-DATE days between an unregistered
 # consensus-path commit and HEAD. Deterministic on any checkout — both dates are in
@@ -511,6 +511,21 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 
 [[entry]]
+id = "CBR-031"
+surface = "N"
+commits = ["0b270eca"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "UNVERIFIED"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
 id = "CBR-L01"
 surface = "L"
 commits = ["3ff1c98b", "f586e138", "ce887d0b"]
@@ -868,85 +883,103 @@ evidence = "Appendix B row 21 — Test module only. Produced the witnesses that 
 commit = "8fb813a7"
 window = "PARTITION"
 reason = "INFRA"
-evidence = "Declares every `models` test target and sets `autotests = false`; the diff is `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs` or `models/build/` path is touched, so no codec, sorter or wire table can move. [DERIVED: file list]"
+evidence = "Appendix B.2 row 22 — `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs` or `models/build/` path is touched, so no codec, sorter or wire table can move. DERIVED (file list). [DERIVED]"
 
 [[exempt]]
 commit = "09b80afe"
 window = "PARTITION"
 reason = "TESTS_ONLY"
-evidence = "Tracks five shrunk proptest counterexample corpora that `.gitignore` had been discarding; the diff is `.gitignore` plus two corpus files. A shrunk counterexample is not regenerable, which is why it is tracked, and it is read only by the proptest harness. [DERIVED: file list]"
+evidence = "Appendix B.2 row 23 — `.gitignore` plus two corpus files. A shrunk counterexample is not regenerable, which is why it is tracked, and it is read only by the proptest harness. DERIVED (file list). [DERIVED]"
 
 [[exempt]]
 commit = "decda6dd"
 window = "PARTITION"
 reason = "INFRA"
-evidence = "Adds a `[[bench]]` declaration and a massif harness (923x less allocation churn, measured). Benches are outside the derived path set; the commit reaches the obligation set only through the `models/Cargo.toml` declaration hunk. [DERIVED: file list]"
-
-[[exempt]]
-commit = "b228545f"
-window = "FRONTIER"
-reason = "DOCS_ONLY"
-evidence = "68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the refutation record for walk-elimination (driven clone at 0.678x the derived form's throughput against a 0.98x threshold, Welch t = -65, intervals disjoint at alpha = 0.01). The emitted table is unchanged. [CITED]"
-
-[[exempt]]
-commit = "0eac9c3a"
-window = "FRONTIER"
-reason = "TESTS_ONLY"
-evidence = "`clone` moves from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`, its `assert_slope_below` DELETED rather than relaxed; the other files are `models/benches/`, `models/Cargo.toml` and an audit record. [CITED]"
-
-[[exempt]]
-commit = "c709fbfa"
-window = "FRONTIER"
-reason = "TESTS_ONLY"
-evidence = "The clone-equivalence corpus: 67 terms ENUMERATED from the generated `wire_schema::*_VARIANTS` tables, each asserted on eight axes twice. Diff is `models/tests/clone_equivalence_corpus.rs` plus its `[[test]]` declaration. [CITED]"
-
-[[exempt]]
-commit = "959a123a"
-window = "FRONTIER"
-reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "`Clone` for the 55 non-`Copy` types is generated through the shared driver, the cut set DERIVED at a feedback vertex set of the child relation and cross-checked as SETS in both directions. Equivalence is asserted by `models/tests/clone_equivalence_corpus.rs` over 67 enumerated terms on eight axes, driven-vs-oracle, where the oracle is the derive's own re-emitted body. [CITED]"
-
-[[exempt]]
-commit = "699ee646"
-window = "FRONTIER"
-reason = "DORMANT"
-evidence = "`drive_with` — a bring-your-own-stacks entry point — is added to `models/src/rust/rholang/drive.rs` and has NO caller in this commit (the diff is that one file). Both stacks are asserted empty on entry and on every return path. [DERIVED: file list; CITED]"
-
-[[exempt]]
-commit = "3deacce0"
-window = "FRONTIER"
-reason = "DOCS_ONLY"
-evidence = "Records why stage F-3 does not land, in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. [CITED]"
-
-[[exempt]]
-commit = "dc4e165c"
-window = "FRONTIER"
-reason = "DOCS_ONLY"
-evidence = "The only hunk outside `rholang/tests/` is a single doc-comment table cell in `pretty_printer.rs` ('3 witnesses' -> '4 witnesses'), recounted from the executed table rather than incremented. [DERIVED: diff is 1 insertion, 1 deletion, both in a `//!` line]"
-
-[[exempt]]
-commit = "53e78427"
-window = "FRONTIER"
-reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Self-declared CONSENSUS-CRITICAL: `cost_accounting/sig.rs` signs `ParSortMatcher::sort_match(&par).term.encode_to_vec()`, so a one-element reordering is a fork. Every `descend_*` and `combine_*_k` is byte-for-byte the code that produced the canonical form before the move; only the loop, the two stacks and the invariants moved. Byte identity is GATED — four gates green, three of the four watched RED first. [CITED]"
-
-[[exempt]]
-commit = "16090241"
-window = "FRONTIER"
-reason = "TESTS_ONLY"
-evidence = "Watches `drive.rs`'s three configuration refusals RED, each in a CHILD PROCESS with the parent reading exit status and diagnostic text, and `Outcome::Done` watched stopping. Diff is `models/tests/drive_configuration_gate.rs` plus its declaration. [CITED]"
-
-[[exempt]]
-commit = "14c4bdaf"
-window = "FRONTIER"
-reason = "TESTS_ONLY"
-evidence = "Every hunk is inside `rho-pure-eval/src/eval.rs`'s `#[cfg(test)]` modules `differential_eval_with` and `depth_gate`; a smoke test that was vacuous three ways is deleted and the destructor's cost becomes a measured rung. [DERIVED: all six hunk headers name a test module; CITED]"
+evidence = "Appendix B.2 row 24 — A `[[bench]]` declaration and a massif harness. Benches are outside the derived path set; the commit reaches the obligation set only through the `models/Cargo.toml` declaration hunk. DERIVED (file list). [DERIVED]"
 
 [[exempt]]
 commit = "383a8b56"
 window = "FRONTIER"
 reason = "VERDICT_NEUTRAL_MEASURED"
-evidence = "Stage F-1 factors the three hand-written LIFO trampolines into one `Traversal` in `models/src/rust/rholang/drive.rs`, with `rho-pure-eval`'s `eval_with` as the first instance. `rho-pure-eval` DECIDES `where` verdicts, so byte neutrality is not the relevant claim — verdict neutrality is, and it is asserted by `rho-pure-eval/src/eval.rs`'s `differential_eval_with` module, which compares `eval_with` against the retained recursive twin. [CITED]"
+evidence = "Appendix B.3 row 25 — Factors three hand-written LIFO trampolines into one `Traversal`, with `rho-pure-eval`'s `eval_with` as the first instance. `rho-pure-eval` decides `where` verdicts, so byte neutrality is not the claim that matters — verdict neutrality is, and it is asserted … [CITED]"
+
+[[exempt]]
+commit = "14c4bdaf"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 26 — All six hunks are inside `rho-pure-eval/src/eval.rs`'s `#[cfg(test)]` modules `differential_eval_with` and `depth_gate`. A test that *'never made the comparison it was named for'* is deleted and the destructor's cost becomes a measured rung. DERIVED (hunk … [CITED]"
+
+[[exempt]]
+commit = "16090241"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 27 — Five arms over a 64-long summed chain, each in a child process with the parent reading exit status *and* diagnostic text — no `#[should_panic]` anywhere. `models/tests/` plus its declaration. CITED. [CITED]"
+
+[[exempt]]
+commit = "53e78427"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 28 — Self-declared CONSENSUS-CRITICAL: `cost_accounting/sig.rs` signs `ParSortMatcher::sort_match(&par).term.encode_to_vec()`, so *'a one-element reordering is a fork.'* Every `descend_*` and `combine_*_k` is byte-for-byte the code that produced the canonical form … [CITED]"
+
+[[exempt]]
+commit = "dc4e165c"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Appendix B.3 row 29 — The only hunk outside `rholang/tests/` is a single doc-comment table cell in `pretty_printer.rs` (`3 witnesses` → `4 witnesses`), recounted from the executed table rather than incremented. DERIVED (1 insertion, 1 deletion, both on a `//!` line). [DERIVED]"
+
+[[exempt]]
+commit = "3deacce0"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Appendix B.3 row 30 — Records the refutation in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. CITED. [CITED]"
+
+[[exempt]]
+commit = "699ee646"
+window = "FRONTIER"
+reason = "DORMANT"
+evidence = "Appendix B.3 row 31 — Adds a bring-your-own-stacks entry point to `models/src/rust/rholang/drive.rs` with no caller in this commit (the diff is that one file). Both stacks are asserted empty on entry and on every return path. DERIVED (file list) + CITED. [CITED]"
+
+[[exempt]]
+commit = "959a123a"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 32 — `Clone` for the 55 non-`Copy` types is generated through the shared driver, the cut set DERIVED at a feedback vertex set of the child relation and cross-checked as SETS in both directions. Equivalence is asserted by `models/tests/clone_equivalence_corpus.rs` … [CITED]"
+
+[[exempt]]
+commit = "c709fbfa"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 33 — 67 terms enumerated from the generated `wire_schema::*_VARIANTS` tables rather than hand-listed, *'so a 37th arm fails this file instead of escaping it.'* `models/tests/` plus its `[[test]]` declaration. CITED. [CITED]"
+
+[[exempt]]
+commit = "a36cb019"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 34 — Reaches the obligation set only through `casper/src/test/resources/*.rho` — test fixtures under the `src/test` exclusion's own subject. 49 tests, 45 pass, 4 classified; two repaired corpus-locally. CITED. [CITED]"
+
+[[exempt]]
+commit = "0eac9c3a"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 35 — `clone` moves from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`, its ceiling assertion deleted rather than relaxed. Other files are `models/benches/`, `models/Cargo.toml` and an audit record. CITED. [CITED]"
+
+[[exempt]]
+commit = "b228545f"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Appendix B.3 row 36 — 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the driven clone at 0.678× the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint at $`/alpha = 0.01`$. The emitted table is unchanged. … [CITED]"
+
+[[exempt]]
+commit = "00c9ce6e"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 37 — `rholang/tests/stack_depth_gate.rs` and an audit record only. The ladders move to `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE` because building one is $`/Theta(d^2)`$ — *'a subject whose fixture costs more than its traversal cannot be put on a 1,000× ladder.'* … [CITED]"
+
+[[exempt]]
+commit = "80a4aff9"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 38 — Reaches the obligation set through `casper/src/rust/test_utils/util/genesis_builder.rs`, which is compiled only under the `test-utils` feature and invoked only by tests. MEASURED RED: 24 parameter builds → 14 distinct vault orders; 6 genesis computations → 5 … [CITED]"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
@@ -1221,6 +1254,14 @@ cited = "genesis_builder.rs"
 line = 215
 at = "719f2432"
 unchecked = "AMBIGUOUS_PATH"
+
+[[citation]]
+owner = "CBR-031"
+cited = "rholang/src/rust/interpreter/util/mod.rs"
+line = 132
+at = "0b270eca"
+path = "rholang/src/rust/interpreter/util/mod.rs"
+token = "filter_and_adjust_bitset"
 
 [[citation]]
 owner = "CBR-L02"
