@@ -132,6 +132,17 @@ path = "tests/epathmap_intern_store.rs"
 name = "epathmap_spliced_event_bytes"
 path = "tests/epathmap_spliced_event_bytes.rs"
 
+# ★ Work item #124 — the byte-identity obligation of routing the datum, pattern
+# and continuation event-hash legs through `ColdStoreEncode::cold_encode`. The
+# question it settles is a CONSENSUS one (event hashes enter the block Merkle
+# log), so it is asked at the leg boundary and over the value class that
+# actually reaches `direct()` — including `EPathMap`s whose intern cell is
+# UNFILLED, which neither `wire_encode_differential` nor
+# `epathmap_spliced_event_bytes` compares against the trampolined encoder.
+[[test]]
+name = "event_hash_leg_cold_encode_identity"
+path = "tests/event_hash_leg_cold_encode_identity.rs"
+
 # ★ The tag-8 total-write / bounded-read asymmetry, and the measurement that
 # separates it from the prost recursion ceiling: a `bytes` field costs ZERO
 # nested-message levels, so `COLLECTION_DEPTH_LIMIT` is the ONLY constraint on

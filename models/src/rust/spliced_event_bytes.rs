@@ -36,10 +36,43 @@
 //!
 //! DISPATCH: the intern-aware path is taken only when the value CONTAINS a
 //! filled-cell `EPathMap` (`EPathMap::interned_handle()` — a read-only cell
-//! peek that never forces an intern); otherwise the existing direct
-//! `bincode::serialize` runs, byte-identically and with zero new work. The
-//! contains-scan short-circuits at filled cells and descends unfilled maps
-//! (a filled inner map inside an unfilled outer map still splices).
+//! peek that never forces an intern); otherwise the TRAMPOLINED direct path
+//! (`ColdStoreEncode::cold_encode`) runs, byte-identically and with zero new
+//! work. The contains-scan short-circuits at filled cells and descends
+//! unfilled maps (a filled inner map inside an unfilled outer map still
+//! splices).
+//!
+//! ★ WORK ITEM #124 — WHY THE DIRECT PATH IS `cold_encode` AND NOT
+//! `bincode::serialize`. The derived `Serialize` recurses once per term level
+//! and was measured at **3,040 B/level debug, 160 B/level release** by
+//! `casper/tests/event_hash_leg_depth_probe.rs`, i.e. a deep enough datum
+//! overflows a node worker's stack while computing an EVENT HASH — during
+//! `hash_produce`, after the deploy has been accepted. `cold_encode` is the
+//! single-walk trampolined encoder from `rust::rholang::wire_encode`, flat in
+//! native stack, and **byte-identical by contract**.
+//!
+//! ⚠ Byte identity here is a CONSENSUS obligation, not a nicety: these bytes
+//! are hashed into the block Merkle log. It is discharged by
+//! `models/tests/event_hash_leg_cold_encode_identity.rs`, which asks the
+//! question at this module's own entry points, over every `ExprInstance` and
+//! `ConnectiveInstance` arm lifted into all three root types, over `EPathMap`
+//! shapes whose intern cell is UNFILLED (the class that reaches this branch),
+//! to depth 4,096, under proptest, and with an executed demonstration that the
+//! differential can go red.
+//!
+//! ⚠ THIS IS NOT THE WHOLE OF #124. Two Θ(depth) native-stack recursions
+//! remain in this file and are deliberately NOT addressed by that conversion:
+//!
+//!   1. the `contains_*` SCAN below, which runs on EVERY event hash — including
+//!      every one that then takes the flat `cold_encode` path — and must
+//!      descend the entire term to prove the ABSENCE of a filled cell; and
+//!   2. the hand-written `emit_*` spine, which is what runs once the scan says
+//!      `true`.
+//!
+//! Both are measured; see the probe's `*-spliced` rows and the report in
+//! `docs/design/stack-safety/`. Converting them is a separate change with its
+//! own correctness argument, and the ruling recorded at `00ff9187` was not to
+//! rewrite the spliced emitter as part of the channel-leg work.
 //!
 //! SPLICE UNIT: `InternedEPathMap.serde_bytes` = `bincode::serialize` of the
 //! source `EPathMap` — the wrapper's derived serde impl (P3) already skips
@@ -57,6 +90,8 @@
 
 use serde::Serialize;
 
+use crate::rust::rholang::wire_encode::ColdStoreEncode;
+
 use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::tagged_continuation::TaggedCont;
@@ -72,11 +107,11 @@ use crate::rhoapi::{
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// bincode-of-`ListParWithRandom` for `hash_produce`'s datum leg —
-/// intern-aware when the datum contains a filled-cell EPathMap, the direct
-/// path otherwise.
+/// intern-aware when the datum contains a filled-cell EPathMap, the
+/// TRAMPOLINED direct path otherwise.
 pub fn event_hash_bytes_list_par_with_random(datum: &ListParWithRandom) -> Vec<u8> {
     if !datum.pars.iter().any(contains_par) {
-        return direct(datum);
+        return datum.cold_encode();
     }
     let mut out = Vec::new();
     emit_vec(&datum.pars, contains_par, emit_par, &mut out);
@@ -87,7 +122,7 @@ pub fn event_hash_bytes_list_par_with_random(datum: &ListParWithRandom) -> Vec<u
 /// bincode-of-`BindPattern` for `hash_consume`'s per-pattern leg.
 pub fn event_hash_bytes_bind_pattern(pattern: &BindPattern) -> Vec<u8> {
     if !pattern.patterns.iter().any(contains_par) {
-        return direct(pattern);
+        return pattern.cold_encode();
     }
     let mut out = Vec::new();
     emit_vec(&pattern.patterns, contains_par, emit_par, &mut out);
@@ -99,7 +134,7 @@ pub fn event_hash_bytes_bind_pattern(pattern: &BindPattern) -> Vec<u8> {
 /// bincode-of-`TaggedContinuation` for `hash_consume`'s continuation leg.
 pub fn event_hash_bytes_tagged_continuation(continuation: &TaggedContinuation) -> Vec<u8> {
     if !contains_tagged_continuation(continuation) {
-        return direct(continuation);
+        return continuation.cold_encode();
     }
     let mut out = Vec::new();
     // Declaration order: `guard` (Option<Par>), then `tagged_cont`.
@@ -220,17 +255,208 @@ fn contains_epathmap(map: &EPathMap) -> bool {
     map.interned_handle().is_some() || map.ps().iter().any(contains_par)
 }
 
-fn contains_par(par: &Par) -> bool {
-    par.sends.iter().any(contains_send)
-        || par.receives.iter().any(contains_receive)
-        || par.news.iter().any(contains_new)
-        || par.exprs.iter().any(contains_expr)
-        || par.matches.iter().any(contains_match)
-        || par.bundles.iter().any(contains_bundle)
-        || par.connectives.iter().any(contains_connective)
-        || par.conditionals.iter().any(contains_if)
-    // unforgeables carry no Par (GPrivate/GDeployId/GDeployerId/GSysAuthToken
-    // are byte/unit payloads) — never map-bearing.
+/// Initial worklist reservation for [`contains_par`]. Sized so that the common
+/// shallow term never reallocates; deep ones grow it geometrically as usual.
+const CONTAINS_WORKLIST_CAPACITY: usize = 32;
+
+/// ★★ WORK ITEM #124 — **THE GUARD SCAN, AS AN EXPLICIT WORKLIST.**
+///
+/// # Why this one is not optional
+///
+/// This predicate runs on **every event hash**, before either emitter, and when
+/// it answers `false` — the 95.43 % production case — it has had to descend the
+/// *entire* term to prove the absence of a filled cell. So while
+/// `event_hash_bytes_*` now returns the depth-flat `cold_encode()` on that
+/// branch, the *guard* was still Θ(depth) in native stack and the leg as a whole
+/// still overflowed. Measured on `casper/tests/event_hash_leg_depth_probe.rs`:
+///
+/// | leg min-stack slope, B/level | debug | release |
+/// |---|---|---|
+/// | before any conversion (`contains_par` + derived `Serialize`) | 3,040 | 160 |
+/// | `cold_encode` only — **this scan is what is left** | 960 | 128 |
+/// | both converted | **0** | **0** |
+///
+/// ★ The middle row is the point, and it is why converting the encoder alone was
+/// not the repair: it bought 68 % of the debug slope and 20 % of the release
+/// slope while leaving a leg still unbounded in term depth. A guard that costs
+/// more stack than the operation it guards is still a stack-overflow bug — in
+/// release the guard was, at 128 of the original 160 B/level, **80 % of the
+/// whole defect**.
+///
+/// # The traversal
+///
+/// A LIFO worklist of `&Par`. Every type in the old mutually-recursive SCC
+/// (`Send`, `Receive`, `ReceiveBind`, `New`, `Match`, `MatchCase`, `If`,
+/// `Bundle`, `Connective`, `KeyValuePair`, `Expr`) reaches its own children as
+/// `Par` or `Option<Par>` and never nests inside itself, so ONE stack of `&Par`
+/// covers the whole term: each pop enumerates that `Par`'s children through
+/// exactly one level of indirection and pushes them. No frame is added per level.
+///
+/// ⚠ `EPathMap` and `EZipper` are handled INLINE rather than by calling
+/// [`contains_epathmap`]. That is deliberate: `contains_epathmap` calls
+/// `contains_par`, so routing nested maps through it would start a fresh walk per
+/// map-nesting level and reintroduce Θ(map depth) native frames — the exact defect
+/// being removed, hidden one indirection deeper.
+///
+/// # Equivalence with the recursive form
+///
+/// The predicate is a pure existential over the term's `EPathMap` nodes —
+/// "does any reachable map have a filled intern cell?" — with no side effects
+/// (`interned_handle()` is a read-only cell peek that never forces an intern).
+/// An existential is order-insensitive, so replacing in-order short-circuiting
+/// recursion with LIFO short-circuiting iteration cannot change the answer; only
+/// the order in which nodes are visited moves.
+///
+/// ★ And the answer only *selects an emitter*: both emitters are byte-identical,
+/// asserted by `models/tests/epathmap_spliced_event_bytes.rs` and
+/// `models/tests/event_hash_leg_cold_encode_identity.rs`. So this conversion
+/// cannot move a consensus byte even if the predicate were wrong — but it is
+/// gated as if it could be, because "cannot matter" is a bad reason to skip a
+/// differential on an event-hash path.
+///
+/// ⚠ NOT FIXED HERE, and not a regression introduced here: this scan is still
+/// Θ(term size) in TIME per call, and `emit_vec`/`emit_option` re-invoke it once
+/// per level of the spliced walk, making the SPLICED path Θ(depth²) in time. That
+/// is a separate finding with its own correctness argument (memoising or hoisting
+/// the scan); it is recorded on the module header and deliberately left alone.
+fn contains_par(root: &Par) -> bool {
+    let mut worklist: Vec<&Par> = Vec::with_capacity(CONTAINS_WORKLIST_CAPACITY);
+    worklist.push(root);
+
+    while let Some(par) = worklist.pop() {
+        for send in &par.sends {
+            push_opt(&send.chan, &mut worklist);
+            push_all(&send.data, &mut worklist);
+        }
+        for receive in &par.receives {
+            for bind in &receive.binds {
+                push_all(&bind.patterns, &mut worklist);
+                push_opt(&bind.source, &mut worklist);
+            }
+            push_opt(&receive.body, &mut worklist);
+            push_opt(&receive.condition, &mut worklist);
+        }
+        for new in &par.news {
+            push_opt(&new.p, &mut worklist);
+            worklist.extend(new.injections.values());
+        }
+        for expr in &par.exprs {
+            // The ONLY place the predicate can answer `true`.
+            if expr_answers_true(expr, &mut worklist) {
+                return true;
+            }
+        }
+        for match_proc in &par.matches {
+            push_opt(&match_proc.target, &mut worklist);
+            for case in &match_proc.cases {
+                push_opt(&case.pattern, &mut worklist);
+                push_opt(&case.source, &mut worklist);
+                push_opt(&case.guard, &mut worklist);
+            }
+        }
+        for bundle in &par.bundles {
+            push_opt(&bundle.body, &mut worklist);
+        }
+        for connective in &par.connectives {
+            match &connective.connective_instance {
+                Some(ConnectiveInstance::ConnAndBody(body))
+                | Some(ConnectiveInstance::ConnOrBody(body)) => push_all(&body.ps, &mut worklist),
+                Some(ConnectiveInstance::ConnNotBody(inner)) => worklist.push(inner),
+                _ => {}
+            }
+        }
+        for conditional in &par.conditionals {
+            push_opt(&conditional.condition, &mut worklist);
+            push_opt(&conditional.if_true, &mut worklist);
+            push_opt(&conditional.if_false, &mut worklist);
+        }
+        // `unforgeables` carry no Par (GPrivate/GDeployId/GDeployerId/
+        // GSysAuthToken are byte/unit payloads) — never map-bearing.
+    }
+    false
+}
+
+fn push_opt<'a>(value: &'a Option<Par>, worklist: &mut Vec<&'a Par>) {
+    if let Some(par) = value {
+        worklist.push(par);
+    }
+}
+
+fn push_all<'a>(values: &'a [Par], worklist: &mut Vec<&'a Par>) {
+    worklist.extend(values);
+}
+
+/// The two operands of a binary `Expr` arm.
+fn push_pair<'a>(p1: &'a Option<Par>, p2: &'a Option<Par>, worklist: &mut Vec<&'a Par>) {
+    push_opt(p1, worklist);
+    push_opt(p2, worklist);
+}
+
+/// One `Expr`, flattened: `true` iff it carries a FILLED intern cell directly;
+/// otherwise its `Par` children are pushed and the walk continues.
+///
+/// ⚠ Mirrors [`contains_expr`]'s arm-for-arm structure deliberately, including
+/// the `_ => false` fallthrough for ground scalars and `EVar`. The two must agree;
+/// they are held to that by the differential gates named on [`contains_par`].
+fn expr_answers_true<'a>(expr: &'a Expr, worklist: &mut Vec<&'a Par>) -> bool {
+    match &expr.expr_instance {
+        Some(ExprInstance::EPathmapBody(map)) => {
+            if map.interned_handle().is_some() {
+                return true;
+            }
+            push_all(map.ps(), worklist);
+        }
+        Some(ExprInstance::EZipperBody(zipper)) => {
+            if let Some(map) = zipper.pathmap.as_ref() {
+                if map.interned_handle().is_some() {
+                    return true;
+                }
+                push_all(map.ps(), worklist);
+            }
+        }
+        Some(ExprInstance::EListBody(list)) => push_all(&list.ps, worklist),
+        Some(ExprInstance::ETupleBody(tuple)) => push_all(&tuple.ps, worklist),
+        Some(ExprInstance::ESetBody(set)) => push_all(&set.ps, worklist),
+        Some(ExprInstance::EMapBody(map)) => {
+            for kv in &map.kvs {
+                push_opt(&kv.key, worklist);
+                push_opt(&kv.value, worklist);
+            }
+        }
+        Some(ExprInstance::EMethodBody(method)) => {
+            push_opt(&method.target, worklist);
+            push_all(&method.arguments, worklist);
+        }
+        Some(ExprInstance::EMatchesBody(matches)) => {
+            push_opt(&matches.target, worklist);
+            push_opt(&matches.pattern, worklist);
+        }
+        Some(ExprInstance::ENotBody(e)) => push_opt(&e.p, worklist),
+        Some(ExprInstance::ENegBody(e)) => push_opt(&e.p, worklist),
+        // ⚠ The sixteen binary arms are spelled out rather than collapsed into an
+        // or-pattern: `EMult`, `EDiv`, … are DISTINCT generated types that merely
+        // share a field shape, so `|` cannot bind them to one name. Kept
+        // arm-for-arm with [`contains_expr`] so the two read as the same list.
+        Some(ExprInstance::EMultBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EDivBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EModBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EPlusBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EMinusBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::ELtBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::ELteBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EGtBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EGteBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EEqBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::ENeqBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EAndBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EOrBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EPercentPercentBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EPlusPlusBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        Some(ExprInstance::EMinusMinusBody(e)) => push_pair(&e.p1, &e.p2, worklist),
+        // Ground scalars and EVar: map-free.
+        _ => {}
+    }
+    false
 }
 
 fn contains_opt_par(par: &Option<Par>) -> bool { par.as_ref().is_some_and(contains_par) }
@@ -798,3 +1024,384 @@ impl StableHashSerialize for Par {
 // Default-body impls (direct bincode) for rhoapi types used as space type
 // parameters in tests/tools without an EPathMap-bearing hot path.
 impl StableHashSerialize for ParWithRandom {}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ★★ WORK ITEM #124 — THE PREDICATE-EQUIVALENCE DIFFERENTIAL
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `contains_par` was converted from a mutually-recursive 15-function SCC to an
+// explicit worklist (see its doc comment for the measurement that forced it).
+// Every OTHER gate on this module compares BYTES — and every one of them is
+// structurally blind to this change, because the predicate does not produce
+// bytes: it only chooses which of two BYTE-IDENTICAL emitters runs. A predicate
+// that answered `true` everywhere, or `false` everywhere, would keep
+// `epathmap_spliced_event_bytes`, `epathmap_canonical_fixtures` and
+// `event_hash_leg_cold_encode_identity` all green while silently disabling the
+// splice optimisation (or, worse, forcing the hand-written spine onto values it
+// was never exercised against).
+//
+// ⚠ So byte gates cannot discharge this conversion's obligation, and this
+// module-private test is the only place the obligation CAN be discharged:
+// `contains_par` is not public, by design.
+//
+// The oracle is the PRE-CONVERSION implementation, preserved verbatim from
+// `42d5082a` with every name prefixed `ref_`. It is a frozen reference, not a
+// second implementation to maintain: if the production predicate's *meaning* is
+// ever intended to change, this oracle must be updated in the same commit and
+// the change stated — which is exactly the review event that should happen.
+
+#[cfg(test)]
+mod contains_par_equivalence {
+    use super::*;
+    use crate::rhoapi::{ConnectiveBody, EMap, EMethod, ETuple, ESet, Var, var::VarInstance};
+
+    // ── the frozen recursive oracle (verbatim from 42d5082a) ─────────────────
+
+    fn ref_contains_epathmap(map: &EPathMap) -> bool {
+        map.interned_handle().is_some() || map.ps().iter().any(ref_contains_par)
+    }
+
+    fn ref_contains_par(par: &Par) -> bool {
+        par.sends.iter().any(ref_contains_send)
+            || par.receives.iter().any(ref_contains_receive)
+            || par.news.iter().any(ref_contains_new)
+            || par.exprs.iter().any(ref_contains_expr)
+            || par.matches.iter().any(ref_contains_match)
+            || par.bundles.iter().any(ref_contains_bundle)
+            || par.connectives.iter().any(ref_contains_connective)
+            || par.conditionals.iter().any(ref_contains_if)
+        // unforgeables carry no Par (GPrivate/GDeployId/GDeployerId/GSysAuthToken
+        // are byte/unit payloads) — never map-bearing.
+    }
+
+    fn ref_contains_opt_par(par: &Option<Par>) -> bool { par.as_ref().is_some_and(ref_contains_par) }
+
+    fn ref_contains_send(send: &Send) -> bool {
+        ref_contains_opt_par(&send.chan) || send.data.iter().any(ref_contains_par)
+    }
+
+    fn ref_contains_receive_bind(bind: &ReceiveBind) -> bool {
+        bind.patterns.iter().any(ref_contains_par) || ref_contains_opt_par(&bind.source)
+    }
+
+    fn ref_contains_receive(receive: &Receive) -> bool {
+        receive.binds.iter().any(ref_contains_receive_bind)
+            || ref_contains_opt_par(&receive.body)
+            || ref_contains_opt_par(&receive.condition)
+    }
+
+    fn ref_contains_new(new: &New) -> bool {
+        ref_contains_opt_par(&new.p) || new.injections.values().any(ref_contains_par)
+    }
+
+    fn ref_contains_match_case(case: &MatchCase) -> bool {
+        ref_contains_opt_par(&case.pattern) || ref_contains_opt_par(&case.source) || ref_contains_opt_par(&case.guard)
+    }
+
+    fn ref_contains_match(match_proc: &Match) -> bool {
+        ref_contains_opt_par(&match_proc.target) || match_proc.cases.iter().any(ref_contains_match_case)
+    }
+
+    fn ref_contains_if(conditional: &If) -> bool {
+        ref_contains_opt_par(&conditional.condition)
+            || ref_contains_opt_par(&conditional.if_true)
+            || ref_contains_opt_par(&conditional.if_false)
+    }
+
+    fn ref_contains_bundle(bundle: &Bundle) -> bool { ref_contains_opt_par(&bundle.body) }
+
+    fn ref_contains_connective(connective: &Connective) -> bool {
+        match &connective.connective_instance {
+            Some(ConnectiveInstance::ConnAndBody(body))
+            | Some(ConnectiveInstance::ConnOrBody(body)) => body.ps.iter().any(ref_contains_par),
+            Some(ConnectiveInstance::ConnNotBody(par)) => ref_contains_par(par),
+            _ => false,
+        }
+    }
+
+    fn ref_contains_key_value_pair(kv: &KeyValuePair) -> bool {
+        ref_contains_opt_par(&kv.key) || ref_contains_opt_par(&kv.value)
+    }
+
+    fn ref_contains_expr(expr: &Expr) -> bool {
+        match &expr.expr_instance {
+            Some(ExprInstance::EPathmapBody(map)) => ref_contains_epathmap(map),
+            Some(ExprInstance::EZipperBody(zipper)) => {
+                zipper.pathmap.as_ref().is_some_and(ref_contains_epathmap)
+            }
+            Some(ExprInstance::EListBody(list)) => list.ps.iter().any(ref_contains_par),
+            Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(ref_contains_par),
+            Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(ref_contains_par),
+            Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(ref_contains_key_value_pair),
+            Some(ExprInstance::EMethodBody(method)) => {
+                ref_contains_opt_par(&method.target) || method.arguments.iter().any(ref_contains_par)
+            }
+            Some(ExprInstance::EMatchesBody(matches)) => {
+                ref_contains_opt_par(&matches.target) || ref_contains_opt_par(&matches.pattern)
+            }
+            Some(ExprInstance::ENotBody(e)) => ref_contains_opt_par(&e.p),
+            Some(ExprInstance::ENegBody(e)) => ref_contains_opt_par(&e.p),
+            Some(ExprInstance::EMultBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EDivBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EModBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EPlusBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EMinusBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::ELtBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::ELteBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EGtBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EGteBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EEqBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::ENeqBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EAndBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EOrBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EPercentPercentBody(e)) => {
+                ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2)
+            }
+            Some(ExprInstance::EPlusPlusBody(e)) => ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2),
+            Some(ExprInstance::EMinusMinusBody(e)) => {
+                ref_contains_opt_par(&e.p1) || ref_contains_opt_par(&e.p2)
+            }
+            // Ground scalars and EVar: map-free.
+            _ => false,
+        }
+    }
+
+    // ── fixture construction, ITERATIVE ──────────────────────────────────────
+
+    fn expr_par(instance: ExprInstance) -> Par {
+        Par { exprs: vec![Expr { expr_instance: Some(instance) }], ..Default::default() }
+    }
+
+    fn gint(value: i64) -> Par { expr_par(ExprInstance::GInt(value)) }
+
+    fn map_par(filled: bool, entries: Vec<Par>) -> Par {
+        let map = EPathMap::new(entries, Vec::new(), false, None);
+        if filled {
+            let _ = map.intern();
+            assert!(map.interned_handle().is_some(), "intern() must fill the cell");
+        }
+        expr_par(ExprInstance::EPathmapBody(map))
+    }
+
+    /// Wrap `inner` in each container the predicate descends, one per element.
+    /// ★ This is the coverage that matters: the two implementations can only
+    /// disagree at a container whose child enumeration they spell differently.
+    fn every_container(inner: Par) -> Vec<(&'static str, Par)> {
+        let some = |p: &Par| Some(p.clone());
+        vec![
+            ("elist", expr_par(ExprInstance::EListBody(EList {
+                ps: vec![inner.clone()], locally_free: vec![], connective_used: false, remainder: None }))),
+            ("etuple", expr_par(ExprInstance::ETupleBody(ETuple {
+                ps: vec![inner.clone()], locally_free: vec![], connective_used: false }))),
+            ("eset", expr_par(ExprInstance::ESetBody(ESet {
+                ps: vec![inner.clone()], locally_free: vec![], connective_used: false, remainder: None }))),
+            ("emap-key", expr_par(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair { key: some(&inner), value: Some(gint(1)) }],
+                locally_free: vec![], connective_used: false, remainder: None }))),
+            ("emap-value", expr_par(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair { key: Some(gint(1)), value: some(&inner) }],
+                locally_free: vec![], connective_used: false, remainder: None }))),
+            ("emethod-target", expr_par(ExprInstance::EMethodBody(EMethod {
+                method_name: "m".into(), target: some(&inner), arguments: vec![],
+                locally_free: vec![], connective_used: false }))),
+            ("emethod-arg", expr_par(ExprInstance::EMethodBody(EMethod {
+                method_name: "m".into(), target: Some(gint(1)), arguments: vec![inner.clone()],
+                locally_free: vec![], connective_used: false }))),
+            ("ematches-target", expr_par(ExprInstance::EMatchesBody(EMatches {
+                target: some(&inner), pattern: Some(gint(1)) }))),
+            ("ematches-pattern", expr_par(ExprInstance::EMatchesBody(EMatches {
+                target: Some(gint(1)), pattern: some(&inner) }))),
+            ("eplus-p1", expr_par(ExprInstance::EPlusBody(
+                crate::rhoapi::EPlus { p1: some(&inner), p2: Some(gint(1)) }))),
+            ("eplus-p2", expr_par(ExprInstance::EPlusBody(
+                crate::rhoapi::EPlus { p1: Some(gint(1)), p2: some(&inner) }))),
+            ("enot", expr_par(ExprInstance::ENotBody(
+                crate::rhoapi::ENot { p: some(&inner) }))),
+            ("eneg", expr_par(ExprInstance::ENegBody(
+                crate::rhoapi::ENeg { p: some(&inner) }))),
+            ("send-chan", Par { sends: vec![Send {
+                chan: some(&inner), data: vec![], persistent: false,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("send-data", Par { sends: vec![Send {
+                chan: Some(gint(1)), data: vec![inner.clone()], persistent: false,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("receive-pattern", Par { receives: vec![Receive {
+                binds: vec![ReceiveBind { patterns: vec![inner.clone()], source: Some(gint(1)),
+                    remainder: None, free_count: 0 }],
+                body: None, condition: None, persistent: false, peek: false, bind_count: 0,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("receive-source", Par { receives: vec![Receive {
+                binds: vec![ReceiveBind { patterns: vec![], source: some(&inner),
+                    remainder: None, free_count: 0 }],
+                body: None, condition: None, persistent: false, peek: false, bind_count: 0,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("receive-body", Par { receives: vec![Receive {
+                binds: vec![], body: some(&inner), condition: None, persistent: false, peek: false,
+                bind_count: 0, locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("receive-condition", Par { receives: vec![Receive {
+                binds: vec![], body: None, condition: some(&inner), persistent: false, peek: false,
+                bind_count: 0, locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("new-body", Par { news: vec![New {
+                bind_count: 0, p: some(&inner), uri: vec![], injections: Default::default(),
+                locally_free: vec![] }], ..Default::default() }),
+            ("new-injection", Par { news: vec![New {
+                bind_count: 0, p: None, uri: vec![],
+                injections: [("k".to_string(), inner.clone())].into_iter().collect(),
+                locally_free: vec![] }], ..Default::default() }),
+            ("match-target", Par { matches: vec![Match {
+                target: some(&inner), cases: vec![], locally_free: vec![],
+                connective_used: false }], ..Default::default() }),
+            ("match-case-pattern", Par { matches: vec![Match {
+                target: None, cases: vec![MatchCase { pattern: some(&inner), source: None,
+                    guard: None, free_count: 0 }],
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("match-case-source", Par { matches: vec![Match {
+                target: None, cases: vec![MatchCase { pattern: None, source: some(&inner),
+                    guard: None, free_count: 0 }],
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("match-case-guard", Par { matches: vec![Match {
+                target: None, cases: vec![MatchCase { pattern: None, source: None,
+                    guard: some(&inner), free_count: 0 }],
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("bundle", Par { bundles: vec![Bundle {
+                body: some(&inner), write_flag: false, read_flag: false }], ..Default::default() }),
+            ("conn-and", Par { connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(
+                    ConnectiveBody { ps: vec![inner.clone()] })) }], ..Default::default() }),
+            ("conn-or", Par { connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnOrBody(
+                    ConnectiveBody { ps: vec![inner.clone()] })) }], ..Default::default() }),
+            ("conn-not", Par { connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnNotBody(
+                    inner.clone())) }], ..Default::default() }),
+            ("if-condition", Par { conditionals: vec![If {
+                condition: some(&inner), if_true: None, if_false: None,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("if-true", Par { conditionals: vec![If {
+                condition: None, if_true: some(&inner), if_false: None,
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("if-false", Par { conditionals: vec![If {
+                condition: None, if_true: None, if_false: some(&inner),
+                locally_free: vec![], connective_used: false }], ..Default::default() }),
+            ("epathmap-entry", map_par(false, vec![inner.clone()])),
+            ("ezipper", expr_par(ExprInstance::EZipperBody(EZipper {
+                pathmap: match EPathMap::new(vec![inner], Vec::new(), false, None) { m => Some(m) },
+                current_path: vec![], is_write_zipper: false, locally_free: vec![],
+                connective_used: false, cursor_kind: 0 }))),
+        ]
+    }
+
+    /// ★★ **THE OBLIGATION**: at every container position, for a FILLED cell
+    /// (answer `true`) and an UNFILLED one (answer `false`), the worklist and the
+    /// frozen recursive oracle agree.
+    ///
+    /// Both polarities are asserted at every position on purpose. A worklist that
+    /// forgot to push some container's children would answer `false` where the
+    /// oracle answers `true` — visible only in the FILLED row. A worklist that
+    /// answered `true` unconditionally would pass the filled row and fail the
+    /// unfilled one. Neither row alone is a test.
+    #[test]
+    fn the_worklist_agrees_with_the_frozen_recursive_oracle_at_every_container() {
+        let mut positions = 0usize;
+        for filled in [true, false] {
+            let leaf = map_par(filled, vec![gint(7)]);
+            for (label, term) in every_container(leaf.clone()) {
+                let machine = contains_par(&term);
+                let oracle = ref_contains_par(&term);
+                assert_eq!(
+                    machine, oracle,
+                    "PREDICATE DIVERGENCE at `{label}` with a {} cell: the worklist \
+                     said {machine} and the frozen recursive oracle said {oracle}. \
+                     The two emitters are byte-identical so this does not move \
+                     consensus bytes, but it means the worklist's child \
+                     enumeration has drifted from the recursion's.",
+                    if filled { "FILLED" } else { "UNFILLED" }
+                );
+                // ★ ANTI-VACUITY: the FILLED row must actually be positive.
+                // If `every_container` ever stopped embedding the leaf, both
+                // sides would agree on `false` at every position and this test
+                // would pass while covering nothing.
+                if filled {
+                    assert!(
+                        machine,
+                        "VACUOUS at `{label}`: a FILLED cell is embedded at this \
+                         position and the predicate did not find it"
+                    );
+                } else {
+                    assert!(!machine, "an UNFILLED fixture answered true at `{label}`");
+                }
+                positions += 1;
+            }
+        }
+        assert!(
+            positions >= 68,
+            "container coverage collapsed to {positions} position/polarity pairs \
+             (68 when this gate was written)"
+        );
+    }
+
+    /// Depth: a filled cell at the BOTTOM of a long chain, which is the shape the
+    /// depth probe uses and the one a short-circuiting bug would still pass.
+    ///
+    /// ⚠ The oracle is Θ(depth) in native stack — that is what this change
+    /// removes — so it runs on an explicitly large stack. The MACHINE is the
+    /// thing that must not need one, and
+    /// `casper/tests/event_hash_leg_depth_probe.rs` is where that is measured.
+    #[test]
+    fn the_worklist_agrees_with_the_oracle_on_deep_chains() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                for depth in [1usize, 2, 8, 64, 512, 4096] {
+                    for filled in [true, false] {
+                        let mut term = map_par(filled, vec![gint(7)]);
+                        for _ in 0..depth {
+                            term = expr_par(ExprInstance::EListBody(EList {
+                                ps: vec![term], locally_free: vec![],
+                                connective_used: false, remainder: None,
+                            }));
+                        }
+                        assert_eq!(
+                            contains_par(&term), ref_contains_par(&term),
+                            "PREDICATE DIVERGENCE at depth {depth}, filled={filled}"
+                        );
+                        assert_eq!(contains_par(&term), filled, "VACUOUS at depth {depth}");
+                    }
+                }
+            })
+            .expect("spawn")
+            .join()
+            .expect("deep equivalence panicked");
+    }
+
+    /// A filled cell reachable ONLY through an unfilled outer map — the case the
+    /// module header calls out ("a filled inner map inside an unfilled outer map
+    /// still splices") and the one an implementation that stopped at the first
+    /// `EPathMap` would get wrong.
+    #[test]
+    fn a_filled_inner_map_under_an_unfilled_outer_map_is_still_found() {
+        let inner = map_par(true, vec![gint(1)]);
+        let outer = map_par(false, vec![inner]);
+        assert!(contains_par(&outer), "the worklist missed a nested filled cell");
+        assert_eq!(contains_par(&outer), ref_contains_par(&outer));
+
+        let all_unfilled = map_par(false, vec![map_par(false, vec![gint(1)])]);
+        assert!(!contains_par(&all_unfilled));
+        assert_eq!(contains_par(&all_unfilled), ref_contains_par(&all_unfilled));
+    }
+
+    /// The empty / ground cases: no maps at all, and a bare `Par`.
+    #[test]
+    fn map_free_terms_answer_false_in_both_implementations() {
+        for (label, term) in [
+            ("default", Par::default()),
+            ("gint", gint(3)),
+            ("gstring", expr_par(ExprInstance::GString("x".into()))),
+            ("evar", expr_par(ExprInstance::EVarBody(crate::rhoapi::EVar {
+                v: Some(Var { var_instance: Some(VarInstance::BoundVar(0)) }) }))),
+        ] {
+            assert!(!contains_par(&term), "`{label}` is map-free but answered true");
+            assert_eq!(contains_par(&term), ref_contains_par(&term), "`{label}`");
+        }
+    }
+}

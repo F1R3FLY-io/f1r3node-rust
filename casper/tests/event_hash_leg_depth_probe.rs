@@ -23,55 +23,118 @@
 //! overflow` + `abort()` — signal 6, shell status 134. It is not catchable, it is
 //! not a failed deploy, and it takes the whole node process.
 //!
-//! ## Why the legs are (still) Θ(depth) — two independent recursions each
+//! ## ★★ STATUS (work item #124): the DIRECT legs are converted; the SPLICED
+//! ## spine is not
+//!
+//! | path | native stack, debug ▸ release | state |
+//! |---|---|---|
+//! | `contains_par` guard + `direct()` | 3,040 ▸ 160 B/level | ⟶ **converted** |
+//! | `cold_encode()` only, guard untouched | 960 ▸ 128 B/level | an intermediate that was NOT the fix |
+//! | both converted (**today**) | **0 ▸ 0** | ✓ `the_direct_legs_are_flat_…` |
+//! | the hand-written `emit_*` spine | 1,008 ▸ **208** B/level | ⚠ **still Θ(depth)** |
+//!
+//! ⚠★ **A DISCLOSED REGRESSION ON THE SPLICED ROW: 176 ▸ 208 B/level in RELEASE.**
+//! The spliced spine's source was not touched, but its release per-level frame
+//! grew by 32 B (+18 %) when `contains_par` became a worklist. This is
+//! **measured**, not inferred, by an A/B in which the *instrument was held
+//! invariant* — the same probe binary source, the same machine, the same session,
+//! swapping only `models/src/rust/spliced_event_bytes.rs`:
+//!
+//! | arm | subject | spliced, release |
+//! |---|---|---|
+//! | C | the pre-conversion file at `42d5082a` | 176.0 B/level |
+//! | D | the converted file | 208.0 B/level |
+//!
+//! Debug is **unaffected** (1,008 B/level in every run, before and after), which
+//! is what identifies this as an optimiser-layout effect rather than an
+//! algorithmic one — `emit_vec` invokes the guard at every level of the spliced
+//! walk, so the guard's locals can land in the recursive frame. ★ Two mitigations
+//! were tried and **both failed to move it**: `#[inline(never)]` on `contains_par`
+//! (208.0) and `#[inline(never)]` on all thirteen `contains_*` wrappers handed to
+//! `emit_vec` as function pointers (208.0). The mechanism is therefore *not* the
+//! guard being inlined into the emit chain, and is not yet identified.
+//!
+//! ★ The trade is stated rather than buried: the SPLICED path was already
+//! Θ(depth) and is already the known-unconverted residual, while the DIRECT path
+//! — **95.43 % of production datums** — went from Θ(depth) to flat. Paying 18 %
+//! more per level on a path that is scheduled for conversion anyway, to remove
+//! the exposure entirely from the common path, is the right direction; but it is
+//! a real cost on a real tripwire subject and is recorded here so that the next
+//! reader of the 208 does not attribute it to the spliced emitter's own code.
+//!
+//! ⚠ Do not read `72ae7101`'s recorded release figure of 208 as agreeing with the
+//! 208 above. That commit recorded 208 for the **unconverted** file; this file's
+//! unconverted arm measures **176**, three times (two pre-conversion ladder runs
+//! and arm C). The agreement is a coincidence of two different configurations,
+//! and the recorded 208 does not reproduce here.
+//!
+//! ★ **The direct legs took TWO conversions, and the middle row is why this file
+//! exists.** The obvious repair — route `direct()` through `cold_encode` — moved
+//! the debug slope from 3,040 to 960 and the release slope from 160 to only 128,
+//! and the pre-conversion form of this file's ladder test stayed GREEN through it,
+//! because the leg was *still sloping*. The residual was recursion 1 below: the
+//! `contains_par` guard, which runs before either emitter and, to answer `false`,
+//! must descend the entire term. In release it was 128 of the original 160
+//! B/level — **80 % of the defect lived in the guard, not the encoder.**
+//!
+//! ## The structure — a dispatch scan followed by one of two emitters
 //!
 //! `spliced_event_bytes` exists to splice cached `InternedEPathMap.serde_bytes`
-//! into the bincode stream at filled-cell `EPathMap` nodes. Its structure is a
-//! dispatch scan followed by one of two emitters, and **both branches recurse**:
+//! into the bincode stream at filled-cell `EPathMap` nodes:
 //!
 //! ```text
 //!   event_hash_bytes_<leg>(value)
 //!        │
-//!        ├─ contains_par(value)                    ← RECURSION 1, ALWAYS RUN
-//!        │     `spliced_event_bytes.rs:223-234`      mutually recursive with
-//!        │     contains_{expr,send,receive,new,…}    contains_expr over
-//!        │                                          `EList.ps: Vec<Par>`
+//!        ├─ contains_par(value)                    ← was RECURSION 1, ALWAYS RUN
+//!        │     now an EXPLICIT WORKLIST over &Par    (a LIFO `Vec<&Par>`; every
+//!        │     ✓ CONVERTED — 0 native frames/level    container reaches its
+//!        │                                            children as Par, so one
+//!        │                                            stack covers the term)
 //!        │
-//!        ├─ false ⇒ direct(value)                  ← RECURSION 2a (the 95.43 %
-//!        │     `= bincode::serialize(value)`          case: no filled cell)
-//!        │     the DERIVED `Serialize`, which is
-//!        │     mutually recursive Par ▸ Expr ▸ …
+//!        ├─ false ⇒ value.cold_encode()            ← was RECURSION 2a (the
+//!        │     the trampolined single-walk encoder     95.43 % case: no filled
+//!        │     ✓ CONVERTED — 0 native frames/level     cell)
 //!        │
 //!        └─ true  ⇒ emit_<leg>(value, out)         ← RECURSION 2b
-//!              emit_vec ▸ emit_par ▸ emit_expr ▸ …
-//!              hand-written, mutually recursive
+//!              emit_vec ▸ emit_par ▸ emit_expr ▸ …    ⚠ STILL Θ(depth), and
+//!              hand-written, mutually recursive       still measured below
 //! ```
 //!
-//! ★ **Recursion 2a is the one that matters most**, and it is the one that reads
-//! as already-fixed if you only look at the *names* in the tree. The cold-store
-//! encoder **was** converted: `models::rust::rholang::wire_encode` provides
-//! `ColdStoreEncode::cold_encode`, a single-walk trampolined encoder that is
-//! byte-identical to `bincode::serialize` with O(1) native stack, and it is
-//! implemented for exactly `Par`, `BindPattern`, `ListParWithRandom` and
-//! `TaggedContinuation` — i.e. for **all three legs' root types**. The event-hash
-//! legs simply never started calling it: `direct()` is still
-//! `bincode::serialize`. So the conversion that landed for the cold store did not
-//! reach the event hash, and the exposure the campaign existed to remove is still
-//! present on three of the four legs (the **channel** leg was routed through the
-//! new encoder in `00ff9187`; these three were not).
+//! `ColdStoreEncode::cold_encode` (`models::rust::rholang::wire_encode`) is a
+//! single-walk trampolined encoder, byte-identical to `bincode::serialize` with
+//! O(1) native stack, implemented for exactly `Par`, `BindPattern`,
+//! `ListParWithRandom` and `TaggedContinuation` — i.e. for **all three legs' root
+//! types**. The **channel** leg was routed through it in `00ff9187`; these three
+//! followed, and the byte-identity obligation that carries (event hashes reach
+//! the block hash) is discharged by
+//! `models/tests/event_hash_leg_cold_encode_identity.rs`.
+//!
+//! ⚠ The guard's conversion carries a *different* obligation, which no byte
+//! differential can discharge: the predicate produces no bytes, it only selects
+//! between two byte-identical emitters, so a broken predicate leaves every byte
+//! gate green. It is gated instead by the module-private
+//! `contains_par_equivalence` tests in `spliced_event_bytes.rs`, which compare the
+//! worklist against the pre-conversion recursion held verbatim as a frozen oracle.
 //!
 //! ## What this file measures, and what it deliberately does not assert
 //!
 //! This is a **measurement** harness in the sense of
 //! `rholang/tests/stack_depth_probe.rs`: one traversal per number. It reports the
 //! minimum stack on which each leg survives at two depths and derives B/level.
-//! It asserts only what is *currently true* — that the three legs slope and that
-//! the `cold_encode` control does not — so that:
+//! It asserts only what is *currently true* — the three direct legs are flat, the
+//! three spliced ones still slope, and the `cold_encode` control is flat — so
+//! that:
 //!
 //! * the numbers in the report are reproducible by anyone, on any machine, and
-//! * the day someone routes the legs through `wire_encode`, this file's
-//!   `the_three_legs_still_slope` test goes RED and has to be re-derived into a
-//!   flatness claim. A one-sided floor would have gone quietly green instead.
+//! * the day someone converts the spliced spine, this file goes RED and has to be
+//!   re-derived again rather than deleted. A one-sided floor would have gone
+//!   quietly green instead.
+//!
+//! ★ That discipline is not decorative: it is what produced the finding above.
+//! The pre-conversion test was written as "the three legs still slope" with the
+//! instruction to invert it on repair, and when the encoder was converted it
+//! **stayed green** — which is precisely how the 960 B/level residual in the
+//! guard was caught instead of being shipped as a completed conversion.
 //!
 //! ⚠ **12,288 B is this instrument's FLOOR, not a measurement.** `getconf
 //! PTHREAD_STACK_MIN` is 16,384 on this platform and clamps every smaller
@@ -506,98 +569,155 @@ fn slope(lo_stack: usize, hi_stack: usize) -> f64 {
 // the claims
 // ---------------------------------------------------------------------------
 
-/// ★★ **THE THREE EVENT-HASH LEGS ARE Θ(depth) IN NATIVE STACK, AND THE
-/// CONVERTED ENCODER ON THE SAME FIXTURE IS NOT.**
+/// ★★ **THE THREE DIRECT EVENT-HASH LEGS ARE NOW FLAT; THE THREE SPLICED ONES
+/// ARE STILL Θ(depth).**
 ///
-/// This is a *characterisation* test, and it is deliberately two-sided:
+/// ⚠ **THIS TEST HAS BEEN INVERTED, AS ITS PREVIOUS FORM SAID IT WOULD BE.** It
+/// was written as "the three legs still slope", with the standing instruction
+/// that the conversion must *re-derive* it into a flatness claim rather than
+/// delete it. That has now happened, and the three-way split below is the record
+/// of what moved and what did not.
+///
+/// # What changed, and what it took
+///
+/// | subject | before | after | in both profiles |
+/// |---|---|---|---|
+/// | `datum` / `pattern` / `continuation` | 3,040 ▸ 160 B/level | **0 ▸ 0** | converted |
+/// | `*-spliced` | 1,008 ▸ 176 B/level | **unchanged** | NOT converted |
+/// | `*-cold` (control) | 0 ▸ 0 | **0 ▸ 0** | must not move |
+///
+/// ★ **The direct legs needed TWO conversions, not one, and the previous form of
+/// this test is what proved it.** Routing `direct()` through
+/// `ColdStoreEncode::cold_encode` moved the debug slope only from 3,040 to 960
+/// B/level and the release slope only from 160 to 128 — this test stayed GREEN,
+/// because the leg was still sloping. The residual was `contains_par`, the guard
+/// scan that runs *before* either emitter and must descend the whole term to
+/// prove the ABSENCE of a filled intern cell. Converting that scan to an explicit
+/// worklist is what took both profiles to zero. A test that had asserted only
+/// "the encoder is now `cold_encode`" would have reported success at the 960
+/// B/level state.
+///
+/// # The three-way structure
 ///
 /// | leg | asserts | what it refuses |
 /// |---|---|---|
-/// | 1 | each of the three legs' minimum stack GROWS over `256 → 4,096` | a probe that cannot see the defect at all |
-/// | 2 | `cold_encode` on the SAME three fixtures does not grow | "everything slopes, the instrument is broken" |
+/// | 1 | the three DIRECT legs do not grow over `256 → 4,096` | "the conversion is done" without measuring it |
+/// | 2 | the three SPLICED legs still DO grow | a residual quietly reclassified as fixed |
+/// | 3 | `cold_encode` on the same fixtures does not grow | "everything is flat, the instrument is broken" |
 ///
-/// Leg 2 is what makes leg 1 a statement about the *legs* rather than about the
-/// fixture or the instrument. The control differs from the subject in **one
-/// call** — `value.cold_encode()` instead of `event_hash_bytes_…(&value)` — over
-/// a byte-identical encoding of a byte-identical term. Any explanation that makes
-/// the subject vacuously sloped (a runaway fixture builder, a leaked destructor,
-/// a mis-set `stack_size`) makes the control slope too, and leg 2 fails.
+/// Leg 3 is what makes leg 1 mean anything: a harness that had stopped reaching
+/// the subject would read flat for the converted legs *and* for the controls, and
+/// leg 2 — which still demands real slope from real subjects on the same
+/// instrument, in the same run — is what refuses that reading. ★ The three legs
+/// are therefore mutually load-bearing: **no single failure mode can make all
+/// three pass**, which is a property the two-sided form did not have once its
+/// subjects started going flat.
 ///
-/// ⚠ **This test is expected to be INVERTED, not deleted, when the legs are
-/// converted.** It fails the moment `direct()` starts calling `cold_encode`,
-/// which is the point: a one-sided "the legs need at least X bytes" floor would
-/// have gone quietly green on the repair and left no record that anything moved.
+/// ⚠ Leg 2 is a TRIPWIRE, not an aspiration. The spliced spine is deliberately
+/// not converted here — see `models/src/rust/spliced_event_bytes.rs` and the
+/// ruling recorded at `00ff9187`. When it *is* converted, this test must be
+/// re-derived again rather than deleted, on the same rule that produced this
+/// revision.
 #[test]
-fn the_three_legs_still_slope() {
+fn the_direct_legs_are_flat_and_the_spliced_legs_still_slope() {
     println!(
         "\n  leg                      min stack @ {LADDER_LO}   @ {LADDER_HI}     B/level"
     );
     println!("  ────────────────────────  ───────────────  ───────────────  ─────────");
 
-    let mut sloped: Vec<(Leg, f64)> = Vec::with_capacity(DIRECT_LEGS.len() + SPLICED_LEGS.len());
-    for leg in DIRECT_LEGS.into_iter().chain(SPLICED_LEGS) {
+    /// One ladder reading, printed as it is taken.
+    fn measure(leg: Leg) -> f64 {
         let lo = min_stack_for(leg, LADDER_LO);
         let hi = min_stack_for(leg, LADDER_HI);
         let b = slope(lo, hi);
-        println!(
-            "  {:<24}  {lo:>15}  {hi:>15}  {b:>9.1}",
-            leg.tag()
-        );
-        sloped.push((leg, b));
-        assert!(
-            hi > lo + ZERO_SLOPE_TOLERANCE,
-            "leg {} did NOT slope: {lo} B at depth {LADDER_LO} and {hi} B at depth \
-             {LADDER_HI}, a growth of {} B over {} levels, which is within the \
-             {ZERO_SLOPE_TOLERANCE} B tolerance. Either the leg has been CONVERTED \
-             — in which case this test must be re-derived into a flatness claim \
-             beside the other converted subjects, not deleted — or the fixture \
-             stopped carrying depth.",
-            leg.tag(),
-            hi.saturating_sub(lo),
-            LADDER_HI - LADDER_LO
-        );
+        println!("  {:<24}  {lo:>15}  {hi:>15}  {b:>9.1}", leg.tag());
+        b
     }
 
-    let mut flat: Vec<(Leg, f64)> = Vec::with_capacity(COLD_LEGS.len());
-    for leg in COLD_LEGS {
+    /// A subject that must NOT grow, with its own reason for existing.
+    fn assert_flat(leg: Leg, why: &str) -> f64 {
         let lo = min_stack_for(leg, LADDER_LO);
         let hi = min_stack_for(leg, LADDER_HI);
         let b = slope(lo, hi);
-        println!(
-            "  {:<24}  {lo:>15}  {hi:>15}  {b:>9.1}",
-            leg.tag()
-        );
-        flat.push((leg, b));
+        println!("  {:<24}  {lo:>15}  {hi:>15}  {b:>9.1}", leg.tag());
         assert!(
             hi <= lo + ZERO_SLOPE_TOLERANCE,
-            "THE CONTROL SLOPED. `{}` grew from {lo} B to {hi} B over {} levels. \
-             `cold_encode` is the trampolined encoder and must be depth-flat; if \
-             it is not, then every 'sloping' verdict above is uninterpretable \
-             because the instrument, the fixture or the harness — not the leg — is \
-             what is being measured.",
+            "`{}` SLOPED: {lo} B at depth {LADDER_LO} and {hi} B at depth \
+             {LADDER_HI} — {} B of growth over {} levels, past the \
+             {ZERO_SLOPE_TOLERANCE} B tolerance. {why}",
             leg.tag(),
-            LADDER_HI - LADDER_LO
+            hi.saturating_sub(lo),
+            LADDER_HI - LADDER_LO,
+        );
+        b
+    }
+
+    // ── leg 1 — THE DELIVERABLE: the three direct legs are depth-flat ─────────
+    let mut converted: Vec<f64> = Vec::with_capacity(DIRECT_LEGS.len());
+    for leg in DIRECT_LEGS {
+        converted.push(assert_flat(
+            leg,
+            "This leg was CONVERTED — `event_hash_bytes_*` returns \
+             `cold_encode()` on the map-free branch AND `contains_par` is an \
+             explicit worklist. A regression here means one of those two was \
+             undone, or a THIRD recursion has been introduced on the path; \
+             `models/src/rust/spliced_event_bytes.rs` is the subject. \
+             ⚠ Do not 'fix' this by widening the tolerance.",
+        ));
+    }
+
+    // ── leg 2 — THE TRIPWIRE: the spliced spine is still Θ(depth) ─────────────
+    let mut sloped: Vec<f64> = Vec::with_capacity(SPLICED_LEGS.len());
+    for leg in SPLICED_LEGS {
+        let b = measure(leg);
+        sloped.push(b);
+        assert!(
+            b > 0.0,
+            "leg {} did NOT slope. Either the hand-written `emit_*` spine has \
+             been CONVERTED — in which case this test must be re-derived AGAIN \
+             (move the leg up to the flat group; do not delete the assertion) — \
+             or the spliced fixture stopped carrying depth, or stopped filling \
+             its intern cell and silently fell through to the now-flat direct \
+             path, which `the_spliced_fixture_actually_splices` is what catches.",
+            leg.tag()
         );
     }
 
-    // ── the evidence margin, stated as a comparison ──────────────────────────
-    let worst_control = flat
+    // ── leg 3 — THE CONTROL: unchanged, and it must stay unchanged ────────────
+    let mut controls: Vec<f64> = Vec::with_capacity(COLD_LEGS.len());
+    for leg in COLD_LEGS {
+        controls.push(assert_flat(
+            leg,
+            "THE CONTROL SLOPED. `cold_encode` is the trampolined encoder and \
+             must be depth-flat; if it is not, then every verdict above is \
+             uninterpretable, because the instrument, the fixture or the harness \
+             — not the leg — is what is being measured.",
+        ));
+    }
+
+    // ── the evidence margin ──────────────────────────────────────────────────
+    //
+    // ★ The margin is now taken between the SPLICED tripwire and the CONVERTED
+    // legs, which is a strictly stronger statement than the pre-conversion form
+    // could make: the two groups are the SAME three root types, on the SAME
+    // instrument, in the SAME run, differing only in which emitter the fixture
+    // routes to. A harness-wide artefact would move both groups together and
+    // collapse this ratio.
+    let worst_flat = converted
         .iter()
-        .map(|(_, b)| *b)
+        .chain(controls.iter())
+        .copied()
         .fold(0.0f64, f64::max);
-    let best_subject = sloped
-        .iter()
-        .map(|(_, b)| *b)
-        .fold(f64::INFINITY, f64::min);
+    let weakest_sloped = sloped.iter().copied().fold(f64::INFINITY, f64::min);
     println!(
-        "\n  weakest sloping leg: {best_subject:.1} B/level   \
-         strongest flat control: {worst_control:.1} B/level\n"
+        "\n  weakest sloping leg: {weakest_sloped:.1} B/level   \
+         strongest flat subject/control: {worst_flat:.1} B/level\n"
     );
     assert!(
-        best_subject > 10.0 * worst_control.max(1.0),
-        "The separation between subjects and controls is under 10×: weakest \
-         subject {best_subject:.1} B/level against strongest control \
-         {worst_control:.1} B/level. That is not an evidence margin."
+        weakest_sloped > 10.0 * worst_flat.max(1.0),
+        "The separation between the sloping spliced legs and the flat ones is \
+         under 10×: weakest sloping {weakest_sloped:.1} B/level against \
+         strongest flat {worst_flat:.1} B/level. That is not an evidence margin."
     );
 }
 
@@ -662,10 +782,18 @@ fn the_spliced_fixture_actually_splices() {
 ///   that matched nothing) would report `success()` at every depth, and the
 ///   whole ladder would read flat.
 ///
-/// ⚠ The second half is asserted for the six sloping subjects ONLY. The
-/// `*-cold` controls are depth-flat by design, so they are *expected* to survive
-/// 65,536 levels on [`DISCRIMINATOR_STACK`] — asserting otherwise would demand
-/// the controls fail at being controls.
+/// ⚠ The second half is asserted for the **three spliced** subjects only — the
+/// ones still Θ(depth). The `*-cold` controls are depth-flat by design, and the
+/// three DIRECT legs are now depth-flat by *repair*; both are expected to survive
+/// 65,536 levels on [`DISCRIMINATOR_STACK`], and asserting otherwise would demand
+/// that the deliverable fail.
+///
+/// ★ The direct legs are not merely dropped from the second half — they are moved
+/// into it with the opposite polarity. "Survives 65,536 levels on 1 MiB" is a far
+/// stronger statement than the ladder's "flat from 256 to 4,096": at 3,040 B/level
+/// the unconverted leg would have needed ~190 MiB there. That is the conversion
+/// stated as a fact about a term no node will ever legitimately see, rather than
+/// as a slope.
 #[test]
 fn the_probe_discriminates() {
     /// One stack that is comfortably above every subject's *fixed* cost and
@@ -689,7 +817,7 @@ fn the_probe_discriminates() {
         );
     }
 
-    for leg in DIRECT_LEGS.into_iter().chain(SPLICED_LEGS) {
+    for leg in SPLICED_LEGS {
         assert!(
             !leg_survives(leg, DEEP, DISCRIMINATOR_STACK),
             "THE PROBE CANNOT GO RED: leg {} 'survived' depth {DEEP} on a {} KiB \
@@ -699,4 +827,174 @@ fn the_probe_discriminates() {
             DISCRIMINATOR_STACK / 1024
         );
     }
+
+    // ★ THE CONVERSION, stated at a depth no ladder reaches. At the measured
+    // pre-conversion slope of 3,040 B/level (debug) a depth-65,536 datum needed
+    // ~190 MiB of native stack; it now runs in one.
+    for leg in DIRECT_LEGS {
+        assert!(
+            leg_survives(leg, DEEP, DISCRIMINATOR_STACK),
+            "leg {} did NOT survive depth {DEEP} on a {} KiB stack. It is a \
+             CONVERTED leg — `cold_encode()` on the map-free branch and an \
+             explicit-worklist `contains_par` guard — so it must be independent \
+             of term depth. A failure here is the conversion coming undone, not \
+             a probe defect.",
+            leg.tag(),
+            DISCRIMINATOR_STACK / 1024
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ THE SECOND FINDING — THE SPLICED PATH IS Θ(depth²) IN TIME
+// ---------------------------------------------------------------------------
+
+/// ★★ **A SEPARATE DEFECT FROM THE STACK ONE, IN THE SAME FUNCTION, AND THE
+/// STACK CONVERSION DOES NOT TOUCH IT.**
+///
+/// # The mechanism, read from source
+///
+/// `emit_vec` and `emit_option` decide per element which emitter to use:
+///
+/// ```ignore
+/// fn emit_vec<T>(items: &[T], contains: fn(&T) -> bool, emit: fn(&T, &mut Vec<u8>), out: &mut Vec<u8>) {
+///     emit_u64(items.len() as u64, out);
+///     for item in items {
+///         if contains(item) { emit(item, out) } else { emit_black_box(item, out) }
+///     }
+/// }
+/// ```
+///
+/// `contains` is the **whole-subtree** scan. On a chain of `d` levels that is
+/// map-bearing all the way down, the walk calls it at level 1 on a subtree of
+/// size `d`, at level 2 on a subtree of size `d − 1`, and so on:
+///
+/// ```math
+/// T(d) \;=\; \sum_{k=1}^{d} \Theta(k) \;=\; \Theta(d^{2})
+/// ```
+///
+/// ⚠ The stack conversion did **not** change this and could not have: making
+/// `contains_par` iterative removes its native *frames*, not its *work*. The
+/// asymptotics are unchanged, which is the honest reading and is why this is
+/// filed as its own finding rather than absorbed into the conversion's report.
+///
+/// ★ The DIRECT path is **not** quadratic: it runs the scan exactly once, so it
+/// is Θ(term size) in time. This test measures both, so "quadratic" is a
+/// statement about the spliced spine specifically and not about event hashing.
+///
+/// # Why this is `#[ignore]`d
+///
+/// It is a **timing** measurement, and a wall-clock assertion in CI is a flake
+/// generator on shared runners. It is kept executable and reproducible on demand
+/// rather than deleted, because the alternative — a paragraph of prose asserting
+/// a complexity class — is exactly the kind of claim that rots. Run it with:
+///
+/// ```text
+/// cargo test --release -p casper --test event_hash_leg_depth_probe -- \
+///     --ignored --nocapture the_spliced_path_is_quadratic_in_time
+/// ```
+///
+/// # Reading the output
+///
+/// The `ns/level` column is the discriminator, not `ns`. Linear time would hold
+/// it constant as depth grows; quadratic time makes it grow in proportion to
+/// depth. The `ratio` column doubles the depth each row: **≈2 means linear, ≈4
+/// means quadratic.**
+#[test]
+#[ignore = "wall-clock measurement; run explicitly (see the doc comment)"]
+fn the_spliced_path_is_quadratic_in_time() {
+    use std::time::Instant;
+
+    /// Repeats per point, so a single scheduling hiccup cannot own a row.
+    const REPS: u32 = 5;
+
+    fn time_leg(build: fn(usize) -> Par, depth: usize) -> f64 {
+        let mut best = f64::INFINITY;
+        for _ in 0..REPS {
+            // ★ The fixture is built OUTSIDE the timed region. Building it is
+            // itself Θ(depth) and would otherwise be counted as the subject.
+            let value = ListParWithRandom {
+                pars: vec![build(depth)],
+                random_state: vec![0xAA; 32],
+            };
+            let t0 = Instant::now();
+            let bytes = event_hash_bytes_list_par_with_random(&value);
+            let dt = t0.elapsed().as_secs_f64() * 1e9;
+            // ★ ANTI-VACUITY, inside the loop: an emitter that returned early
+            // would be timed as instantaneous and read as beautifully linear.
+            assert!(
+                bytes.len() > depth,
+                "VACUOUS: depth {depth} produced only {} B",
+                bytes.len()
+            );
+            std::mem::forget(value);
+            std::mem::forget(bytes);
+            best = best.min(dt);
+        }
+        best
+    }
+
+    println!("\n  ── SPLICED (filled cell at the bottom of the chain) ──");
+    println!("  {:>7}  {:>14}  {:>12}  {:>7}", "depth", "ns", "ns/level", "ratio");
+    let mut rows: Vec<(usize, f64)> = Vec::with_capacity(6);
+    let mut prev_per_level = f64::NAN;
+    for depth in [64usize, 128, 256, 512, 1_024, 2_048] {
+        let ns = time_leg(nested_list_over_filled_map, depth);
+        let per_level = ns / depth as f64;
+        let ratio = per_level / prev_per_level;
+        println!("  {depth:>7}  {ns:>14.0}  {per_level:>12.1}  {ratio:>7.2}");
+        prev_per_level = per_level;
+        rows.push((depth, ns));
+    }
+
+    println!("\n  ── DIRECT (map-free — the converted path, for contrast) ──");
+    println!("  {:>7}  {:>14}  {:>12}  {:>7}", "depth", "ns", "ns/level", "ratio");
+    let mut direct_rows: Vec<(usize, f64)> = Vec::with_capacity(6);
+    let mut prev = f64::NAN;
+    for depth in [64usize, 128, 256, 512, 1_024, 2_048] {
+        let ns = time_leg(nested_list, depth);
+        let per_level = ns / depth as f64;
+        println!("  {depth:>7}  {ns:>14.0}  {per_level:>12.1}  {:>7.2}", per_level / prev);
+        prev = per_level;
+        direct_rows.push((depth, ns));
+    }
+
+    // The empirical exponent, by least squares on log-log. `t = c·dᵖ` ⇒
+    // `log t = log c + p·log d`, so `p` is the slope.
+    fn exponent(rows: &[(usize, f64)]) -> f64 {
+        let n = rows.len() as f64;
+        let (sx, sy) = rows.iter().fold((0.0, 0.0), |(sx, sy), (d, t)| {
+            (sx + (*d as f64).ln(), sy + t.ln())
+        });
+        let (mx, my) = (sx / n, sy / n);
+        let (num, den) = rows.iter().fold((0.0, 0.0), |(num, den), (d, t)| {
+            let dx = (*d as f64).ln() - mx;
+            (num + dx * (t.ln() - my), den + dx * dx)
+        });
+        num / den
+    }
+
+    let spliced_p = exponent(&rows);
+    let direct_p = exponent(&direct_rows);
+    println!(
+        "\n  fitted exponent  spliced: {spliced_p:.2}   direct: {direct_p:.2}   \
+         (1.0 = linear, 2.0 = quadratic)\n"
+    );
+
+    // ⚠ A loose bar, deliberately. The claim is a COMPLEXITY CLASS, not a
+    // constant, and the point of separation is that the two paths land on
+    // different sides of 1.5 — not that either hits its ideal exponent.
+    assert!(
+        spliced_p > 1.5,
+        "the spliced path fitted an exponent of {spliced_p:.2}, i.e. it no longer \
+         looks quadratic. If `contains_par` has been memoised or hoisted out of \
+         `emit_vec`, this finding is RESOLVED and this test should be re-derived \
+         into a linearity claim rather than deleted."
+    );
+    assert!(
+        direct_p < 1.5,
+        "the DIRECT path fitted an exponent of {direct_p:.2}. It runs the \
+         contains-scan exactly once and must be linear; a quadratic direct path \
+         would mean the scan is being re-entered somewhere it should not be."
+    );
 }
