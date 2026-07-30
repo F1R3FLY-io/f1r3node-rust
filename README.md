@@ -1,8 +1,24 @@
 # F1R3node Rust
 
+[![CI · dev](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml?query=branch%3Adev)
+[![CI · master](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml?query=branch%3Amaster)
+[![Soak · master](https://img.shields.io/badge/soak-master%20%C2%B7%20weekend-informational)](https://f1r3fly-io.github.io/f1r3node-rust/)
+[![Soak · dev](https://img.shields.io/badge/soak-dev%20%C2%B7%20daily-informational)](https://f1r3fly-io.github.io/f1r3node-rust/)
+
 Pure Rust implementation of the F1R3FLY blockchain node.
 
 This repository tracks the Rust node implementation that lives on `rust/dev` in the upstream `f1r3node` repository and documents it as a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
+
+## Project Status
+
+Two independent signals, both published per branch:
+
+| Signal | `dev` | `master` | Source |
+| --- | --- | --- | --- |
+| Build and test | CI on every push and PR | CI on every push and tag | [CI workflow](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml) |
+| Merge-recovery soak | Daily run (~22h) | Weekend run (~60h) | [Status dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) |
+
+The [status dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) carries the soak verdict, failure rate, throughput, peak RSS, and finalization latency for each branch, with week-over-week history. A green CI badge does not imply a passing soak — CI gates correctness on a single commit, while the soak gates sustained behavior against a live shard.
 
 ## Overview
 

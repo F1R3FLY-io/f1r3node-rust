@@ -28,8 +28,8 @@ env:
   # latest) and makes install.sh fetch the version-pinned install.py from the
   # v${OCI_CLI_VERSION} tag; OCI_CLI_INSTALLER_PY_SHA256 is passed to install.sh
   # --verify-checksum so a moved/compromised install.py fails closed too.
-  # Keep identical to _integration-pipeline.yml — this job holds OCI_* secrets
-  # and RELEASE_PAT, so it must not use a weaker install path than the main
+  # Keep identical to _integration-pipeline.yml — this job holds OCI and
+  # GitHub App credentials, so it must not use a weaker install path than the main
   # pipeline. Bump all four together in both files.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
@@ -143,11 +143,22 @@ jobs:
             echo "system_integration_ref=${SYSTEM_INTEGRATION_REF}"
           } >> "$GITHUB_OUTPUT"
 
-  launch_ephemeral_runners:
-    name: Launch Ephemeral OCI Runners
+  await_approval:
+    name: Await OCI Validation Approval
     needs: validate_pr
     runs-on: ubuntu-latest
     environment: ephemeral-launch
+    permissions: {}
+    steps:
+      - name: Approval recorded
+        shell: bash -e {0}
+        run: echo "Full OCI validation approved; privileged launch may proceed."
+
+  launch_ephemeral_runners:
+    name: Launch Ephemeral OCI Runners
+    needs: [validate_pr, await_approval]
+    runs-on: ubuntu-latest
+    environment: oci-credentials
     timeout-minutes: 10
     permissions:
       contents: read
@@ -202,10 +213,18 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch 11 amd64 + 11 arm64 ephemeral runners
         shell: bash -e {0}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |

@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - f1r3fly-rust-ci-ephemeral
+    - oracle-cloud

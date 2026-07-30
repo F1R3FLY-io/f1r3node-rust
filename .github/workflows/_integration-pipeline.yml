@@ -10,7 +10,7 @@
 #     GITHUB_TOKEN is never written to .git/config where fork code could read it.
 #   - The ONLY secret-bearing job (launch_ephemeral_runners) checks out solely
 #     F1R3FLY-io/system-integration (trusted) and runs only its scripts. Fork
-#     code never executes in a job that has OCI_* / RELEASE_PAT in scope.
+#     code never executes in a job that has OCI or GitHub App credentials in scope.
 #   - Fork code runs only in build_docker_image / integration_tests / smoke_*,
 #     none of which reference secrets.
 name: Integration Pipeline (reusable)
@@ -33,14 +33,6 @@ on:
         type: boolean
         required: false
         default: false
-    secrets:
-      OCI_TENANCY_OCID: { required: true }
-      OCI_USER_OCID: { required: true }
-      OCI_REGION: { required: true }
-      OCI_FINGERPRINT: { required: true }
-      OCI_PRIVATE_KEY: { required: true }
-      RELEASE_PAT: { required: true }
-
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
@@ -67,8 +59,22 @@ env:
 
 jobs:
   # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
+  #
+  # Gated on await_approval so that NOTHING in this pipeline runs for an
+  # unapproved fork PR. This job compiles fork-authored code on the permanent
+  # self-hosted runners, and the smoke_* jobs that depend on it burn
+  # GitHub-hosted minutes; without the gate an untrusted contributor could spend
+  # both simply by pushing, which is the abuse the ephemeral-launch approval
+  # exists to prevent. Approval — not the concurrency group — is what holds
+  # untrusted work back, so this must stay even if the grouping changes again.
+  #
+  # Internal runs are unaffected in substance: ephemeral-launch-internal has no
+  # protection rules, so the gate resolves in seconds. The build still overlaps
+  # the ~1-minute runner launch, since build and launch gate on the same node
+  # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
+    needs: await_approval
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -141,6 +147,44 @@ jobs:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
 
+  # Approval gate, deliberately separated from the launch job below.
+  #
+  # This job exists solely to hold the environment's required-reviewer wait. It
+  # runs no steps, touches no secrets, and carries NO concurrency group — so a
+  # fork run parked here awaiting a maintainer costs nothing but a queue slot.
+  #
+  # Why the split: a job sitting in `waiting` holds any concurrency group it
+  # names, for as long as the approval takes (GitHub expires pending approvals
+  # after 30 days). When the OCI serialization group lived on the same job as
+  # the environment, one unapproved fork PR blocked every other heavy run
+  # indefinitely — observed 2026-07-29, where a run waiting since 04:21 held the
+  # lane for twelve hours. Keeping the wait outside the serialized section
+  # bounds the lock to actual VM creation.
+  #
+  # gated=true (fork path) uses ephemeral-launch, whose required_reviewers rule
+  # is what a maintainer clears after reviewing the fork diff. gated=false
+  # (internal path) uses ephemeral-launch-internal, which has NO protection
+  # rules, so internal events pass straight through unattended. Both branches
+  # must name a real environment: an empty-string environment name fails
+  # workflow startup (the value is validated when the run graph is built), so
+  # the ungated path cannot fall back to ''.
+  await_approval:
+    name: Await Launch Approval
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
+    permissions: {}
+    # No timeout-minutes. This job's entire purpose is to wait, and the wait is
+    # human-paced: GitHub lets a pending environment approval sit for up to 30
+    # days. A tight timeout here would cancel the whole pipeline whenever a
+    # maintainer did not click Approve promptly — a worse failure than the lane
+    # blockage this split was introduced to fix, and one that would only surface
+    # the first time someone stepped away. The single step below is an echo, so
+    # there is no runaway-execution risk to bound; do not add one.
+    steps:
+      - name: Approval recorded
+        shell: bash -e {0}
+        run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
+
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
   # jobs. Runs in parallel with build_docker_image so the ~1-minute launch
   # overhead overlaps with the ~7-minute Docker build. Each VM boots from a
@@ -150,19 +194,36 @@ jobs:
   #
   # This is the only job that handles secrets. It checks out ONLY the trusted
   # system-integration repo and runs only its scripts — never the code-under-test.
+  #
+  # `needs: await_approval` is the gate: this job cannot start until the
+  # environment's reviewers have cleared the run, exactly as before. The
+  # difference is that the waiting happens in a job that holds no lock.
+  # SECURITY: do not remove that `needs:` — it is the only thing sequencing the
+  # OCI credentials behind maintainer approval now that the environment is
+  # declared one job upstream.
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
+    needs: await_approval
     runs-on: ubuntu-latest
-    # gated=true (fork path) routes through the ephemeral-launch environment so
-    # the required-reviewer approval releases OCI_* + RELEASE_PAT to the job.
-    # gated=false (internal path) uses ephemeral-launch-internal, an environment
-    # with NO protection rules, so internal events get secrets and run unattended.
-    # Both branches must name a real environment: an empty-string environment
-    # name fails workflow startup (the value is validated when the run graph is
-    # built), so the ungated path cannot fall back to ''.
-    environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
-    # Runner registration uses RELEASE_PAT (admin scope); the default GITHUB_TOKEN
-    # mints nothing here, so this job needs only read access for the checkout.
+    environment: oci-credentials
+    # Serializes real OCI VM creation across every heavy run in the repository:
+    # the tenancy's daily instance-creation quota is shared, so two pipelines
+    # launching at once both risk LimitExceeded. cancel-in-progress: false makes
+    # a second launcher queue rather than cancel the in-flight one. The lock is
+    # now held only for the ~1 minute of actual launching, not across an
+    # unbounded approval wait.
+    #
+    # Residual risk, accepted: GitHub keeps only ONE pending entry per group, so
+    # if three launchers contend within that ~1-minute window, the middle one is
+    # cancelled. Recovery is a manual re-run of the affected job — there is no
+    # silent data loss, but the PR shows a cancelled Heavy Pipeline rather than
+    # a failure, so check for cancelled runs before assuming a pipeline was
+    # never triggered.
+    concurrency:
+      group: oci-ephemeral-launch
+      cancel-in-progress: false
+    # Runner registration uses a short-lived GitHub App token; the default
+    # GITHUB_TOKEN cannot mint repository runner registration tokens.
     permissions:
       contents: read
     timeout-minutes: 10
@@ -193,6 +254,30 @@ jobs:
             --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
+      # TEMPORARY DIAGNOSTIC — remove before merging this PR.
+      #
+      # Determines which store actually supplies these credentials. Prints only a
+      # byte length and a truncated SHA-256 per value: GitHub masks secret values
+      # in logs but not digests, so this distinguishes "empty" (delivery failed)
+      # from "present but unexpected" (a different store won) without disclosing
+      # anything. Compare the digests against the values stored in the
+      # oci-credentials environment. Runs before the config step so it still
+      # reports when that step fails.
+      - name: Diagnose credential delivery (temporary)
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          for name in OCI_TENANCY_OCID OCI_USER_OCID OCI_REGION OCI_FINGERPRINT OCI_PRIVATE_KEY; do
+            value="${!name}"
+            printf '%-18s len=%-5s sha256=%s\n' "$name" "${#value}" \
+              "$(printf '%s' "$value" | sha256sum | cut -c1-16)"
+          done
+
       - name: Configure OCI auth from secrets
         shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
@@ -216,14 +301,18 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch 2 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
-          # The default GITHUB_TOKEN can't mint runner registration tokens even
-          # with permissions: actions: write — that endpoint requires admin-on-
-          # repo scope. RELEASE_PAT is already provisioned with the repo scope
-          # (used by release.yml for tag creation) so reuse it here.
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Register ephemeral runners on the base repo (where the run executes).
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
@@ -642,8 +731,18 @@ jobs:
 
       - name: Install just
         shell: bash -ex {0}
+        env:
+          JUST_VERSION: 1.57.0
+          JUST_SHA256: 45b548094283cb9739af8f13273b8cddeee869f5b4ef2bb631b1f311cb566155
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+          archive="just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors -sSfL \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          printf '%s  %s\n' "$JUST_SHA256" "/tmp/${archive}" | sha256sum -c -
+          tar -xzf "/tmp/${archive}" -C /tmp just
+          sudo install -m 0755 /tmp/just /usr/local/bin/just
+          just --version
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4

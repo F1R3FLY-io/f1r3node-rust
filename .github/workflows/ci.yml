@@ -20,12 +20,26 @@ on:
 
 # Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
 # (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 4-VM OCI matrices. Nothing is
-# cancelled mid-flight — a re-push queues behind its own in-flight run, so release
+# serialize rather than piling up independent 4-VM OCI matrices.
+#
+# Pushes never cancel: a re-push queues behind its own in-flight run, so release
 # jobs and long integration runs always reach completion.
+#
+# PRs DO cancel their own older runs, and must. GitHub keeps only one *pending*
+# run per group, so queueing instead of superseding means a third event evicts
+# the queued one — and an evicted run reports nothing, leaving every required
+# check on the current head permanently "Expected — waiting for status to be
+# reported". PR #158 hit exactly that on 2026-07-29: the run for head 1d3d79b1
+# was cancelled while queued behind a 14-hour predecessor, all 12 required
+# checks never reported, and the PR sat BLOCKED with no failure to point at.
+#
+# Superseding is also what you actually want per PR: once a newer head exists,
+# the older head's results cannot satisfy branch protection anyway, because
+# required checks are commit-scoped. Cancelling them deliberately frees the lane
+# for the head that matters instead of starving it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -135,6 +149,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Deliberately the first step and deliberately in this job. `Lint` is a
+      # required status check on devProtect and masterProtect, so a violation
+      # blocks the merge; a guard living in a job that is merely a `needs:`
+      # ancestor can surface as `skipped`, which required-check evaluation may
+      # treat as satisfied. Placed ahead of the toolchain install so a breach of
+      # the credential model fails in seconds rather than after a Rust build.
+      - name: Verify workflow security invariants
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-workflow-invariants.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -192,12 +216,24 @@ jobs:
           # accepted because it is transient by definition (seen from
           # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
           # dead link returns 404/410, not 503.
+          # --timeout 45 (lychee defaults to 20). The slashing references carry
+          # ~73 doi.org citations, and doi.org resolution is slow and variable:
+          # it redirects to publisher portals that can take tens of seconds to
+          # answer, and lychee fires the whole corpus concurrently. Runs
+          # therefore flip between zero timeouts and a handful, on unchanged
+          # content — run 30482440004 reported 3 TIMEOUT and 0 errors, which is
+          # "valid but slow", not "broken". Raising the ceiling keeps every DOI
+          # actually verified; excluding them instead would leave 73 citations
+          # unchecked and would need extending every time a different one is
+          # unlucky. The whole 1744-link sweep runs in ~65s against a
+          # timeout-minutes: 10 job, so the extra tail costs nothing.
           args: >-
             --no-progress
             --exclude-loopback
             --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
+            --timeout 45
             --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
@@ -281,8 +317,8 @@ jobs:
   # cannot get secrets on a `pull_request` event, so they skip this job and are
   # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
   #
-  # Promotion PRs (head is a push-covered branch: dev/staging/master/trying)
-  # also skip: the push run on the identical commit already runs the identical
+  # Promotion PRs whose head is dev or master also skip: the push run on the
+  # identical commit already runs the identical
   # pipeline, so the PR-event copy would only double OCI VM creations against
   # the tenancy's daily limit. Required checks are commit-scoped — the push
   # run's aggregator results land on the same SHA and gate the PR; the
@@ -293,9 +329,21 @@ jobs:
     name: Heavy Pipeline
     needs: lint
     if: >-
-      github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref))
+      (github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref))
+    # `secrets: inherit` is required here, not incidental. A called workflow's
+    # jobs do not receive `secrets.*` merely by naming an environment — the
+    # caller must pass secrets down. Removing this line made the launch job's
+    # OCI_* expressions resolve to empty strings, and the OCI CLI rejected the
+    # resulting config as malformed (runs 30495007422 and 30498890544); the same
+    # commit with the line restored passed (run 30495738655). Do not "tighten"
+    # the credential scoping by deleting it.
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
@@ -308,15 +356,20 @@ jobs:
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
-  # Promotion PRs skip too, mirroring the pipeline job's dedupe condition.
+  # PRs from dev/master skip too, mirroring the pipeline job's dedupe condition.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
     if: >-
       always()
-      && (github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
+      && ((github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -347,9 +400,14 @@ jobs:
     needs: pipeline
     if: >-
       always()
-      && (github.event_name == 'push'
-      || (github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
+      && ((github.event_name == 'push'
+      && (github.ref == 'refs/heads/dev'
+      || github.ref == 'refs/heads/master'
+      || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'pull_request'
+      && contains(fromJSON('["dev", "master"]'), github.base_ref)
+      && github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -376,7 +434,7 @@ jobs:
           echo "All arm64 integration test slots succeeded"
 
   # Publish Docker image to Docker Hub + OCIR.
-  # Runs on tag pushes and on push to dev/master/staging/trying (with suffix).
+  # Runs on release tag pushes and on push to dev/master (with suffix).
   release_docker_image:
     name: Release Docker Image
     timeout-minutes: 15
@@ -389,11 +447,9 @@ jobs:
       - pipeline
     if: >-
       github.event_name == 'push' && (
-        startsWith(github.ref, 'refs/tags/') ||
+        startsWith(github.ref, 'refs/tags/v') ||
         github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/dev' ||
-        github.ref == 'refs/heads/staging' ||
-        github.ref == 'refs/heads/trying'
+        github.ref == 'refs/heads/dev'
       )
     runs-on: ubuntu-latest
     environment: ephemeral-launch

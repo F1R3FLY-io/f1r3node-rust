@@ -1,19 +1,109 @@
-# Weekend Soak Benchmarks (EPIC-010)
+# Soak Benchmarks (EPIC-010)
 
-The 60-hour merge-recovery soak (Friday 22:00 Pacific → Monday morning) produces
-week-over-week benchmark metrics instead of pass/fail only. Design history and
-decisions: [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story
-US-004 in [UserStories.md](UserStories.md).
+The 60-hour weekend merge-recovery soak (Friday 19:30 Pacific → Monday 07:30
+Pacific) produces week-over-week benchmark metrics instead of pass/fail only.
+The Mon–Thu 22h soaks run the same suite against `dev` but are not benchmark
+runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions:
+[work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
+[UserStories.md](UserStories.md).
 
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):
-  <https://f1r3fly-io.github.io/f1r3node-rust/>
+  <https://f1r3fly-io.github.io/f1r3node-rust/> — two tabs, Weekend and Daily,
+  each showing its own verdict on the tab button so both series are readable
+  without clicking through.
 - **Weekly email alert**: plain-text summary with the verdict and dashboard
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
   (iteration metrics, benchmark segments, logs, `report/` with
   `weekly-summary.json`, `verdict.json`, `perf-report.md`).
+
+Both series publish to Pages, into separate files — `history.json` and
+`history-daily.json`, each with its own `latest-summary`, `latest-verdict` and
+`latest-report`. They are kept apart so the week-over-week regression gate never
+compares a variable-length daily against the fixed 60h weekend baseline. A Pages
+deploy replaces the whole site, so whichever soak publishes carries the other
+series forward untouched; a transient fetch failure aborts the deploy rather
+than publishing a site with a series missing.
+
+## Weekend vs daily
+
+| | Weekend | Daily |
+|---|---|---|
+| Window | Fri 19:30 → Mon 07:30 Pacific | Mon–Thu 19:30 Pacific |
+| Duration | 60h, fixed | up to 22h, variable |
+| Target | `master` | `dev` |
+| Launches | always | only if commits landed since the last window |
+| Early exit | never | when the target branch advances, after an 8h floor |
+| Benchmark segments | yes | no |
+| Gates releases | yes | no |
+| Regression verdict | fails the run | published, warns only |
+
+A daily regression is published and shown on the dashboard's Daily tab but does
+not fail the workflow. Daily spans vary — they stop early once `dev` advances —
+so a run-over-run delta can reflect a shorter run rather than a real regression,
+and failing on that would train people to ignore a red soak.
+
+The weekend soak is exempt from the skip and the early exit because its numbers
+are the week-over-week baseline, and those are only comparable if every run
+covers an identical span. The dailies trade that comparability for catching
+regressions sooner.
+
+## Mid-run checkpoints
+
+A soak publishes when it finishes, which for a 22h nightly means no visibility
+until the following afternoon, and for a 60h weekend means two and a half days
+of silence. Both series therefore publish **checkpoints** at **07:30 and 13:00
+Pacific** for every such instant inside the run:
+
+| Run | Checkpoints | Segments |
+|---|---|---|
+| Daily (Mon 19:30 + 22h) | Tue 07:30, Tue 13:00 | 3 |
+| Weekend (Fri 19:30 + 60h) | Sat and Sun, 07:30 and 13:00 | 5 |
+| Weekend crossing spring-forward | the above plus Mon 07:30 | 6 |
+
+The extra weekend checkpoint is not a rounding artefact: 60h from Friday 19:30
+lands at Monday 08:30 rather than 07:30 once the clocks jump, which brings the
+Monday-morning instant inside the run.
+
+Mechanically, the soak runs as consecutive **segments** sharing one output
+directory. The script resumes from a state file each time, so counters, the
+original start time and iteration numbering all continue and the run behaves as
+one continuous soak. Each segment except the last publishes what has happened so
+far.
+
+**A checkpoint carries no verdict.** It reports `status: in_progress`, and the
+dashboard shows `running · Nh of Mh` on the tab. A partial run has fewer
+iterations, a lower peak RSS and a throughput figure over a shorter window than
+the baseline it would be compared against, so a regression verdict at that point
+would measure the clock rather than the code.
+
+**A checkpoint does not append to history.** The charts and table show completed
+runs only; a partial entry would double-count the night once the run finishes
+and publishes for real. Only the `latest-*` files for that series are replaced,
+and the dashboard says so while a run is in progress.
+
+Checkpoint publishing is fail-soft throughout. The dispatch is a warning if it
+fails, and the soak continues — the run's real result still publishes at the end.
+
+## Previewing the dashboard locally
+
+The page loads its data with `fetch()`, which browsers refuse over `file://`,
+so opening `index.html` directly shows a permanently empty page. Use:
+
+```bash
+scripts/preview-soak-dashboard.sh            # synthetic sample data, port 8770
+scripts/preview-soak-dashboard.sh --live     # data from the published site
+scripts/preview-soak-dashboard.sh --empty    # the bootstrap (no data) state
+```
+
+Source is `.github/dashboard/`; the server and sample-data generator are one
+std-only Rust program built with plain `rustc` (no crates, no `Cargo.toml`,
+nothing added to the workspace). The sample fixtures are deterministic and
+deliberately include a regressed run, so the failure styling is exercised
+without hand-editing anything. Everything generated lands in the gitignored
+`site/`, rebuilt on start and removed on exit.
 
 ## What is measured
 
@@ -74,9 +164,11 @@ oci ons subscription delete --subscription-id <subscription-ocid>
 ## Operational notes
 
 - Benchmarks run **only** in the 60h weekend soak (`duration_seconds ==
-  216000`); the Mon–Thu 24h soaks are unchanged.
+  216000`); see [Weekend vs daily](#weekend-vs-daily) for the full split.
 - The dashboard site deploys from the soak workflow via GitHub Pages
-  (Settings → Pages → source "GitHub Actions" must be enabled once).
+  (Settings → Pages → source "GitHub Actions" must be enabled once). A separate
+  workflow, `soak-dashboard-pages.yml`, redeploys the page shell when
+  `.github/dashboard/` changes, preserving any already-published data.
 - Metric emission is fail-soft end-to-end: a broken segment or missing
-  sample never fails the soak; only the verdict comparison can.
+  sample never fails the soak; only the weekend verdict comparison can.
 - First run bootstraps: no baseline → verdict passes and seeds the history.

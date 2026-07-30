@@ -46,6 +46,7 @@ jobs:
   reap:
     name: Reap leaked ephemeral runners
     runs-on: ubuntu-latest
+    environment: oci-credentials
     timeout-minutes: 15
     steps:
       - name: Install OCI CLI (pinned, checksum-verified)

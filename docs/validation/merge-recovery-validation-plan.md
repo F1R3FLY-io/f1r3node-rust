@@ -54,13 +54,22 @@ marked as expected failures.
 
 ### Daily soak
 
-Monday through Thursday at 22:00 Pacific, Oracle Cloud runs a minimum 24-hour integration soak. A newly scheduled or manually dispatched run cancels the prior soak run.
+Monday through Thursday at 19:30 Pacific, Oracle Cloud runs a 22-hour integration soak. A newly scheduled or manually dispatched run cancels the prior soak run.
+
+The duration is 22 hours rather than 24 deliberately. Soak runs share a concurrency group with `cancel-in-progress`, so a 24-hour soak on a 24-hour cadence is cancelled by the following night's launch shortly *before* it finishes — losing its final iteration and its entire artifact upload. Ending at 22 hours leaves the run time to report before the next one starts.
+
+Two conditions can shorten or skip a daily soak:
+
+- **Nothing new to test.** If no commits landed on the branch under test since the previous window, the run is skipped rather than re-soaking already-soaked code. The check fails *open*: any API error or unparseable response runs the soak, because a silently skipped soak is the failure this workflow exists to prevent.
+- **The branch moved.** A soak pins one SHA at checkout and tests that image for its whole run, so once the branch advances it is measuring history. After a floor of 8 hours, the soak stops at the next iteration boundary when the tip changes, recording `early_exit_reason=target_advanced` in its summary. The floor stops an early merge from reducing a night to a token soak; before it, merges are ignored.
 
 ### Weekend soak
 
-Friday at 22:00 Pacific, Oracle Cloud runs a minimum 72-hour integration soak. The same replacement policy prevents duplicate weekend runs.
+Friday at 19:30 Pacific, Oracle Cloud runs a 60-hour integration soak, finishing at 07:30 Pacific on Monday. The same replacement policy prevents duplicate weekend runs.
 
-The schedule uses paired UTC cron entries and an `America/Los_Angeles` runtime gate so the start time remains 22:00 across daylight-saving transitions.
+Neither shortening condition applies to the weekend run. It always launches, and merge-triggered exit is disabled, because its numbers are the week-over-week benchmark baseline and are only comparable if every run covers the same span.
+
+The schedule uses paired UTC cron entries and an `America/Los_Angeles` runtime gate so the start time remains 19:30 across daylight-saving transitions. The gate matches on hour *and* minute, and 19:30 Pacific falls on the following UTC day, so the cron entries read 02:30 and 03:30 UTC.
 
 ## Overnight workload
 
