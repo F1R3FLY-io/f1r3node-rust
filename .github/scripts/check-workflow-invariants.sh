@@ -124,6 +124,61 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
+# 5. Fork-checkout hygiene. Every checkout of the code under test must set
+#    BOTH `persist-credentials: false` and `allow-unsafe-pr-checkout: true`.
+#
+#    The second is what makes the fork lane work at all: actions/checkout
+#    refuses fork code under pull_request_target without it, and because the
+#    action is pinned to the moving `@v4` tag, that guard arrived upstream and
+#    silently broke every fork PR at Clone Repository with no change in this
+#    repo. Asserting it means a future removal fails CI loudly instead of
+#    breaking outside contributors invisibly again.
+#
+#    The first is the control that opt-in leans on. Once we tell checkout to
+#    fetch untrusted code in a base-repo context, `persist-credentials: false`
+#    is what keeps a writable token out of a workspace that fork code will be
+#    built in. It was previously convention; opting past a security guard is
+#    exactly when convention stops being good enough.
+fork_bad_persist=""
+fork_bad_optin=""
+while read -r line_no flags; do
+    case "$flags" in
+        *P*) ;;
+        *) fork_bad_persist="$fork_bad_persist $PIPELINE:$line_no" ;;
+    esac
+    case "$flags" in
+        *A*) ;;
+        *) fork_bad_optin="$fork_bad_optin $PIPELINE:$line_no" ;;
+    esac
+done <<EOF
+$(awk '
+    function flush() {
+        if (is_fork) printf "%d %s%s\n", start, (has_persist ? "P" : "-"), (has_optin ? "A" : "-")
+        is_fork = 0; has_persist = 0; has_optin = 0
+    }
+    # Anchored to the start of the line so a YAML KEY is required, not just a
+    # mention of one. Unanchored, the comment above these settings — which
+    # names `persist-credentials: false` while explaining why it matters —
+    # satisfied the match by itself, and that half of the check could never
+    # fail. Caught by mutation testing; a guard defeated by its own
+    # documentation is worse than no guard, because it reports ok.
+    /^      - (name|uses):/ { flush(); start = NR }
+    /inputs\.checkout_repository/                       { is_fork = 1 }
+    /^[[:space:]]*persist-credentials:[[:space:]]*false/     { has_persist = 1 }
+    /^[[:space:]]*allow-unsafe-pr-checkout:[[:space:]]*true/ { has_optin = 1 }
+    END { flush() }
+' "$PIPELINE")
+EOF
+if [ -n "$fork_bad_persist" ]; then
+    err "checkout of fork-authored code without 'persist-credentials: false' at:${fork_bad_persist}; a writable token must never reach a workspace holding untrusted code"
+fi
+if [ -n "$fork_bad_optin" ]; then
+    err "checkout of fork-authored code without 'allow-unsafe-pr-checkout: true' at:${fork_bad_optin}; actions/checkout refuses fork code under pull_request_target without it, which breaks every fork PR at clone"
+fi
+if [ -z "$fork_bad_persist$fork_bad_optin" ]; then
+    ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
+fi
+
 if [ "$fail" -ne 0 ]; then
     printf '::error::%s\n' "workflow security invariants violated; see errors above"
     exit 1
