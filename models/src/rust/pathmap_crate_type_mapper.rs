@@ -357,7 +357,94 @@ pub fn eval_stable_epathmap(e_pathmap: &EPathMap) -> bool {
 /// `pub(crate)` since the canonical path codec (`canonical_path.rs`) uses THIS
 /// function as its ground-domain gate — the codec grammar and `eval_stable_par`
 /// must remain ONE grammar, pinned by the codec's agreement property test.
+/// ★★ Native `Par` levels one classification may descend before SUSPENDING onto
+/// the heap.
+///
+/// # Why a budget and not a plain worklist
+///
+/// This predicate is on the **encode path** — it selects proto field 8 versus the
+/// tag-1 field walk, and `canonical_path.rs` calls it once per segment of every
+/// trie key. A plain worklist would allocate a `Vec` on every call, turning a
+/// zero-allocation predicate into an allocating one on the hottest path there is.
+/// A budget keeps the shallow case **exactly** as cheap as the recursion it
+/// replaces (`Vec::new()` does not allocate until its first `push`) and makes the
+/// deep case finite.
+///
+/// This is the shape `88ec2734` established for the derived `Clone`: the budget is
+/// threaded **unchanged** through a residual hop and decremented **only** at a
+/// cut-set site, so native frames are bounded by *schema and budget, never by the
+/// term*. Here the cut-set site is a `Par` inside an `EList`/`ETuple`, which is
+/// the only edge the classifier's recursion can cycle through.
+///
+/// # Why 64
+///
+/// Two native frames per `Par` level ([`eval_stable_par_budgeted`] and
+/// [`eval_stable_expr_budgeted`]), both small — no arrays, no by-value `Par`, only
+/// references and a `u32`. 64 levels is therefore a few KiB, which fits inside the
+/// smallest stack this workspace measures on (a 256 KiB probe thread,
+/// `models/tests/trie_escape_arm_stack.rs`) with two orders of magnitude of
+/// headroom, while covering every term depth a real contract produces.
+const STABILITY_DESCEND_BUDGET: u32 = 64;
+
+/// ★★ A `Par` in ground normal form. **Iterative past
+/// [`STABILITY_DESCEND_BUDGET`] levels.**
+///
+/// # The defect this replaces
+///
+/// `eval_stable_par` and `eval_stable_expr` were **mutually recursive** with no
+/// bound, descending through `EList.ps` and `ETuple.ps`. That put a Θ(depth)
+/// native-stack traversal on `canonical_path.rs::encode_trie_path`, which is
+/// **required total** (R3F-2: *"trie keys must build for every legal runtime
+/// value"*) and whose module header promises *"unlimited depth; iterative; no
+/// panics."* It could not honour either: a sufficiently nested entry aborted the
+/// process inside a function documented not to.
+///
+/// ★ It was found by *bisection*, not by reading: a 256 KiB probe thread that was
+/// built to show the escape arm's protobuf encode had become stack-safe overflowed
+/// anyway, and the encoder was not the frame that ran out.
+///
+/// ⚠ A crash is strictly worse than a rejection. A clean `Err` is a decision every
+/// node reaches identically; a `SIGSEGV` is a liveness failure of whichever node
+/// was asked first, on input a peer controls.
+///
+/// # Why the answer cannot change
+///
+/// The predicate is a **conjunction over a tree with no side effects**, so its
+/// value does not depend on the order the conjuncts are evaluated in. `Iterator::
+/// all` short-circuits at the first `false`; this version returns at the first
+/// `false` it *reaches*, which may be a different one — and the boolean is the
+/// same. Nothing else observes which. That matters because the answer selects a
+/// wire arm: `eval_stable_par` is exact rather than conservative, and a
+/// conservative `false` here would move a ground map off field 8, which is a
+/// consensus-visible byte change.
 pub(crate) fn eval_stable_par(par: &Par) -> bool {
+    // ★ NOT preallocated, deliberately. `Vec::new()` performs no allocation, and
+    // the overwhelming majority of calls never push: a term shallower than
+    // `STABILITY_DESCEND_BUDGET` is classified entirely in native frames, exactly
+    // as before. Reserving capacity here would add an allocation to every call on
+    // the encode path in order to speed up the case that a hostile input reaches.
+    let mut deferred: Vec<&Par> = Vec::new();
+    if !eval_stable_par_budgeted(par, STABILITY_DESCEND_BUDGET, &mut deferred) {
+        return false;
+    }
+    // Each suspended `Par` restarts with a FULL budget — the same rule the clone
+    // driver uses: the budget bounds one descent's native frames, not the whole
+    // traversal. Termination is by the term being finite: every iteration pops one
+    // node and pushes only that node's proper descendants.
+    while let Some(next) = deferred.pop() {
+        if !eval_stable_par_budgeted(next, STABILITY_DESCEND_BUDGET, &mut deferred) {
+            return false;
+        }
+    }
+    true
+}
+
+/// One `Par` level of [`eval_stable_par`], with `budget` native levels left.
+fn eval_stable_par_budgeted<'p>(
+    par: &'p Par,
+    budget: u32,
+    deferred: &mut Vec<&'p Par>,
+) -> bool {
     if !par.sends.is_empty()
         || !par.receives.is_empty()
         || !par.news.is_empty()
@@ -379,7 +466,7 @@ pub(crate) fn eval_stable_par(par: &Par) -> bool {
             Some(UnfInstance::GPrivateBody(_))
         ),
         // The single-expr carrier.
-        ([expr], []) => eval_stable_expr(expr),
+        ([expr], []) => eval_stable_expr_budgeted(expr, budget, deferred),
         // Nil Pars, multi-expr Pars, expr+unforgeable mixes, multiple
         // unforgeables: all conservatively unstable.
         _ => false,
@@ -387,7 +474,17 @@ pub(crate) fn eval_stable_par(par: &Par) -> bool {
 }
 
 /// The stable expr alphabet (see [`eval_stable_epathmap`]).
-fn eval_stable_expr(expr: &Expr) -> bool {
+///
+/// ⚠ `budget` is threaded **unchanged** into this hop and decremented only where a
+/// child `Par` is entered. An `Expr` is not a level of the cycle — the cycle is
+/// `Par → Expr → EList|ETuple → Par` — so charging it a level would make the
+/// budget mean something other than "Par levels", and the residual relation
+/// (everything except that one edge) is acyclic.
+fn eval_stable_expr_budgeted<'p>(
+    expr: &'p Expr,
+    budget: u32,
+    deferred: &mut Vec<&'p Par>,
+) -> bool {
     match &expr.expr_instance {
         Some(
             ExprInstance::GBool(_)
@@ -404,17 +501,43 @@ fn eval_stable_expr(expr: &Expr) -> bool {
             list.remainder.is_none()
                 && list.locally_free.is_empty()
                 && !list.connective_used
-                && list.ps.iter().all(eval_stable_par)
+                && stable_children(&list.ps, budget, deferred)
         }
         Some(ExprInstance::ETupleBody(tuple)) => {
             tuple.locally_free.is_empty()
                 && !tuple.connective_used
-                && tuple.ps.iter().all(eval_stable_par)
+                && stable_children(&tuple.ps, budget, deferred)
         }
+        // ★ O(1): the entry half is the `EntryTrie`'s fold, maintained as entries
+        // arrive. This arm never descends, which is why an `EPathMap` nested inside
+        // a key costs the classifier no depth at all.
         Some(ExprInstance::EPathmapBody(inner)) => eval_stable_epathmap(inner),
         // EVar, ESet, EMap, EMethod, EZipper, operators, connective exprs,
         // interpolation/concatenation, None: conservatively unstable.
         _ => false,
+    }
+}
+
+/// ★ THE CUT-SET SITE — the one edge the classifier's recursion cycles through,
+/// and therefore the one place the budget is spent.
+///
+/// With budget remaining, a child is entered natively (no allocation). With the
+/// budget spent, it is pushed onto the heap worklist and
+/// [`eval_stable_par`]'s loop picks it up with a fresh budget.
+///
+/// ⚠ Suspension is **not** an answer: a deferred child is `true`-so-far, and the
+/// loop that owns it will return `false` if it turns out unstable. That is why the
+/// deferral must go to the caller's worklist and not be dropped.
+#[inline]
+fn stable_children<'p>(children: &'p [Par], budget: u32, deferred: &mut Vec<&'p Par>) -> bool {
+    match budget {
+        0 => {
+            deferred.extend(children.iter());
+            true
+        }
+        remaining => children
+            .iter()
+            .all(|child| eval_stable_par_budgeted(child, remaining - 1, deferred)),
     }
 }
 

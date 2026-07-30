@@ -620,7 +620,32 @@ impl<'p> EncMachine<'p> {
             // positions (hereditary rule): nested positions are inside stable
             // subtrees where `stable` always holds.
             debug_assert!(top_level, "escape below a top-level segment position");
-            let prost_bytes = par.encode_to_vec();
+            // ★★ THE ITERATIVE PROST ENCODER, not `prost::Message::encode_to_vec`.
+            //
+            // `encode_trie_path` is required TOTAL (R3F-2: "trie keys must build
+            // for every legal runtime value") and this module's header promises
+            // "no panics". The derived `encode_to_vec` cannot honour either:
+            // it is Θ(depth) on the NATIVE stack (302 B/level release, 1,937
+            // debug — `docs/design/stack-safety/stack-safety-report-2026-07-29.md`
+            // §8.1), so a ¬eval_stable entry nested ~6,900 deep aborts the
+            // process INSIDE a function documented to be total. Nothing in the
+            // grammar bounds that depth: the escape arm exists precisely because
+            // the payload is an arbitrary `Par`.
+            //
+            // `prost_encode::encode_to_vec` keeps its obligation stack on the
+            // heap and is byte-identical to the derived path by construction —
+            // it CALLS `prost::encoding::<module>::{encode, encoded_len}` and
+            // replaces only the recursion. The identity is gated by
+            // `models/tests/prost_encode_differential.rs`, and the escape arm's
+            // own bytes are gated by `escape_arm_roundtrip_ordering_and_rejections`
+            // and by every trie-key golden.
+            //
+            // ⚠ NAMED RESIDUAL: an `EPathMap` nested inside the payload is an
+            // OPAQUE LEAF to this encoder (`prost_wire.rs` §D — its `encode_raw`
+            // has three arms of which only one is a field walk), so the native
+            // stack is not bounded THROUGH that one shape. Byte-identical, not
+            // depth-independent; the two are separate statements.
+            let prost_bytes = crate::rust::rholang::prost_encode::encode_to_vec(par);
             self.emit_byte(tag::ESCAPE)?;
             self.emit_uv(prost_bytes.len() as u64)?;
             return self.emit(&prost_bytes);
@@ -1075,7 +1100,15 @@ impl<'b> DecMachine<'b> {
                 // Canonicality of the payload (decode-accepts ≡ image): the
                 // encoder writes canonical prost bytes of ¬eval_stable Pars
                 // only.
-                if par.encode_to_vec() != payload {
+                //
+                // ★ It must be the SAME function the writer used, not merely one
+                // that agrees with it. "Canonical" is defined as *what the
+                // encoder emits*, so a second encoder here would be a second
+                // opinion about the accept set, and the two opinions would decide
+                // this `!=` differently on the first byte they disagreed about.
+                // That is why the two sites are converted TOGETHER; converting
+                // only the writer would have been the more dangerous half-change.
+                if crate::rust::rholang::prost_encode::encode_to_vec(&par) != payload {
                     return Err(CodecError::EscapePayloadNonCanonical);
                 }
                 if eval_stable_par(&par) {

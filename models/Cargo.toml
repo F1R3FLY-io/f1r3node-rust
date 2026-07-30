@@ -196,6 +196,14 @@ path = "tests/schema_meta_conformance.rs"
 name = "serializer_par_byte_goldens"
 path = "tests/serializer_par_byte_goldens.rs"
 
+# ★ The trie-key ESCAPE arm's protobuf encode, on a 256 KiB thread. `encode_trie_path`
+# is REQUIRED total (R3F-2) and promises no panics, and its escape payload is an
+# arbitrary `Par` — so the derived Θ(depth) `encode_to_vec` could abort the process
+# inside a function documented total.
+[[test]]
+name = "trie_escape_arm_stack"
+path = "tests/trie_escape_arm_stack.rs"
+
 [[test]]
 name = "variant_exhaustiveness_gate"
 path = "tests/variant_exhaustiveness_gate.rs"
@@ -234,6 +242,15 @@ harness = false
 [[bench]]
 name = "wire_encode_bench"
 path = "benches/wire_encode_bench.rs"
+harness = false
+
+# ★ The two trie-key write-path conversions. `harness = false` because the
+# statistic is a PAIRED t-test over a depth ladder (both conversions are
+# depth-sensitive, in opposite directions), and because `TRIE_KEY_ARM=<arm>` must
+# make the process run ONE arm so `cachegrind` has a subject.
+[[bench]]
+name = "trie_key_bench"
+path = "benches/trie_key_bench.rs"
 harness = false
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
