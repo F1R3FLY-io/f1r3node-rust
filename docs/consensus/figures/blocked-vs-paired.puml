@@ -1,0 +1,86 @@
+@startuml blocked-vs-paired
+' Why a BLOCKED two-arm benchmark cannot be rescued by more repetitions, and why a
+' PAIRED one can. Subject: §7.8.2 of docs/consensus/consensus-change-register.md.
+'
+' Colour key, one hue per CONCEPT and used nowhere else:
+'   blue   #1565C0  arm A (`derived`)      — the control implementation
+'   teal   #00695C  arm B (`driven`)       — the implementation under test
+'   amber  #E65100  drift δ(w)             — belongs to the WINDOW, not to the code
+'   red    #B71C1C  a term that SURVIVES into the estimate (the defect)
+'   green  #1B5E20  a term that CANCELS    (the repair)
+'   grey   #37474F  the estimator and its algebra
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 12
+skinparam roundCorner 6
+skinparam RectangleBorderThickness 1.5
+skinparam ArrowThickness 1.4
+skinparam PackageBorderThickness 1.6
+skinparam PackageBackgroundColor #FAFAFA
+
+title <b>Blocked vs paired two-arm measurement</b>\nthe window term <latex>2\sigma_\delta^2</latex> carries no <latex>n</latex>, so repetitions cannot shrink it
+
+package "BLOCKED — what `measure()` DID\n(and what the header denied)" as BLK #FFF3E0 {
+
+  rectangle "wall-clock window  <latex>w_1</latex>\n<b>all 60 repetitions of arm A</b>\n`derived`" as A1 #BBDEFB
+  rectangle "drift in <latex>w_1</latex>\n<latex>\delta(w_1)</latex>" as D1 #FFE0B2
+  rectangle "wall-clock window  <latex>w_2</latex>\n<b>all 60 repetitions of arm B</b>\n`driven`" as B1 #B2DFDB
+  rectangle "drift in <latex>w_2</latex>\n<latex>\delta(w_2)</latex>" as D2 #FFE0B2
+
+  rectangle "estimator\n<latex>\widehat{\Delta}_{\mathrm{blocked}} = \bar t_A - \bar t_B</latex>" as EB #CFD8DC
+
+  rectangle "<b>the window offset SURVIVES</b>\n<latex>\delta(w_1) - \delta(w_2) \neq 0</latex>\n<latex>\mathrm{Var} = \frac{2\sigma_\varepsilon^2}{n} + 2\sigma_\delta^2</latex>\n<b>no  n  in the second term</b>" as RB #FFCDD2
+
+  A1 -[#1565C0]-> EB
+  B1 -[#00695C]-> EB
+  D1 -[#E65100,dashed]-> A1 : <color:#E65100>contaminates A only</color>
+  D2 -[#E65100,dashed]-> B1 : <color:#E65100>contaminates B only</color>
+  EB -[#B71C1C]-> RB
+}
+
+package "PAIRED — what the header CLAIMED\n(and what `paired.rs` now does)" as PRD #E8F5E9 {
+
+  rectangle "window  <latex>w_1</latex>\nrep 1:  <b>A then B</b>" as P1 #E1F5FE
+  rectangle "window  <latex>w_2</latex>\nrep 2:  <b>B then A</b>\n<i>order rotated by parity</i>" as P2 #E1F5FE
+  rectangle "…\nrep 60" as P3 #E1F5FE
+
+  rectangle "drift <latex>\delta(w_i)</latex>\n<b>shared by BOTH arms</b>\nin every repetition" as DP #FFE0B2
+
+  rectangle "estimator\n<latex>\widehat{\Delta}_{\mathrm{paired}} = \frac{1}{n}\sum_i (t_{A,i} - t_{B,i})</latex>" as EP #CFD8DC
+
+  rectangle "<b>the window offset CANCELS</b>\n<latex>\delta(w_i) - \delta(w_i) = 0</latex>  identically\n<latex>\mathrm{Var} = \frac{2\sigma_\varepsilon^2}{n}</latex>\n<b>shrinks with  n</b>" as RP #C8E6C9
+
+  P1 -[#37474F]-> EP
+  P2 -[#37474F]-> EP
+  P3 -[#37474F]-> EP
+  DP -[#E65100,dashed]-> P1 : <color:#E65100>affects A and B equally</color>
+  DP -[#E65100,dashed]-> P2
+  EP -[#1B5E20]-> RP
+}
+
+note bottom of RB #FFCDD2
+  <b><color:#B71C1C>And this is why a Welch  t  of  −307  was possible</color></b>
+  <latex>t_{\mathrm{Welch}} = \dfrac{\bar t_A - \bar t_B}{\sqrt{s_A^2/n + s_B^2/n}}</latex>
+  The denominator is built from the <b>within-arm</b> variances —
+  that is, from <latex>\sigma_\varepsilon</latex> alone. The window offset sits in the
+  <b>numerator and nowhere in the denominator</b>, so
+  <latex>|t| \to \infty</latex> as <latex>n</latex> grows for <b>any</b> non-zero offset.
+  ⇒ A large <latex>|t|</latex> on blocked arms is evidence of a <b>QUIET WINDOW</b>,
+  not of a large effect.
+end note
+
+note bottom of RP #C8E6C9
+  <b><color:#1B5E20>MEASURED on this host — the repair, on the harder case</color></b>
+  `wire_encode_bench`, weighted owned `Vec`, three runs of one binary:
+  blocked  1.261× · 1.471× · 1.154×   →  <b>27%</b>  at loadavg 16.7
+  paired   1.092× · 1.078× · 1.073×   →  <b>1.9%</b> at loadavg <b>31–37</b>
+  <b>14× less spread at roughly DOUBLE the load.</b>
+  A quieter machine would have narrowed both columns; only one narrowed,
+  which is what identifies the <b>defect</b> rather than the <b>host</b>.
+end note
+
+BLK -[hidden]-> PRD
+
+@enduml

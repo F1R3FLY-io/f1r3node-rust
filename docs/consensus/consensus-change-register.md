@@ -7441,6 +7441,18 @@ carry the whole argument.
 
 #### 7.8.2 Why a blocked design cannot be rescued by more repetitions — and why Welch's $`t`$ INFLATES
 
+#### Figure 6 — the window term survives in one design and cancels in the other
+
+![Blocked vs paired two-arm measurement](figures/blocked-vs-paired.svg)
+
+*Source: [`figures/blocked-vs-paired.puml`](figures/blocked-vs-paired.puml).* **Reading the figure.** The
+left panel is what `measure()` did: each arm owns a *disjoint* wall-clock window, so the amber drift term
+$`\delta`$ reaches exactly one arm and its difference **survives into the estimate** (red). The right panel
+is what the header claimed: both arms are timed *inside* every repetition, so the same $`\delta(w_i)`$ is
+subtracted from itself and **cancels identically** (green). ★ The colour of a term is its fate, and the two
+panels differ in *when* the arms are measured and in nothing else — same code, same workload, same
+repetition count.
+
 Model one repetition's time as an effect, a window term and independent noise:
 
 ```math
