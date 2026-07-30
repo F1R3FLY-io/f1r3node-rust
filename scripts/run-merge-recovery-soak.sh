@@ -91,12 +91,12 @@ iteration_rss_peak_mb() {
   local iteration_dir="$1" ts_csv
   ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name resource-timeseries.csv -newer "$iteration_dir/.started" 2>/dev/null \
-    | xargs -r ls -t 2>/dev/null | head -1)"
+    | xargs -r ls -t 2>/dev/null | head -1 || true)"
   [ -n "$ts_csv" ] || return 0
   cp "$ts_csv" "$iteration_dir/resource-timeseries.csv" 2>/dev/null || true
   awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $3 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
-                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null
+                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null || true
 }
 
 # Propose-timing latency samples (total_ms) from node JSON logs written after
@@ -104,6 +104,8 @@ iteration_rss_peak_mb() {
 # profile-casper-latency.sh. Emits "p50 p95 count" or nothing.
 iteration_finalization_latency() {
   local iteration_dir="$1"
+  # `|| true` is load-bearing under pipefail: a failed iteration can leave
+  # zero matching samples, making grep exit 1 and the pipeline nonzero.
   find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name '*.log' -newer "$iteration_dir/.started" 2>/dev/null \
     | xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null \
@@ -112,7 +114,7 @@ iteration_finalization_latency() {
     | awk '{ a[NR] = $1 }
            END { if (NR == 0) exit
                  p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]
-                 print p50, p95, NR }'
+                 print p50, p95, NR }' || true
 }
 
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
@@ -124,7 +126,7 @@ emit_iteration_metrics() {
         iter_started="$4" iter_finished="$5" exit_code="$6"
   command -v jq >/dev/null || return 0
   local summary_line passed failed skipped errors rss_peak latency lat_p50 lat_p95 lat_n
-  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1)"
+  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
   passed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)"
   failed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)"
   skipped="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)"
@@ -201,7 +203,6 @@ run_bench_segment() {
   local segment_dir
   segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
   mkdir -p "$segment_dir"
-  set +e
   NODE_REPO_DIR="$NODE_REPO_DIR" \
   OUT_DIR="$segment_dir" \
   BENCH_DURATION="$BENCH_DURATION" \
@@ -210,7 +211,6 @@ run_bench_segment() {
   SOAK_STARTED_AT="$STARTED_AT" \
     "$SCRIPT_DIR/bench/run-bench-segment.sh" > "$segment_dir/segment.log" 2>&1
   local status=$?
-  set -e
   if [ "$status" -ne 0 ]; then
     BENCH_FAILURES="$((BENCH_FAILURES + 1))"
     printf '%s\n' "$status" > "$segment_dir/exit-code.txt"
@@ -238,7 +238,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
   ITER_STARTED="$(date +%s)"
   touch "$ITERATION_DIR/.started"
-  set +e
   (
     cd "$SYSTEM_INTEGRATION_DIR"
     timeout --signal=TERM --kill-after=120 "${REMAINING}s" \
@@ -250,10 +249,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
   STATUS="${PIPESTATUS[0]}"
-  set -e
+  # No `set -e` restore: this script never enables errexit (line 2 is
+  # `set -uo pipefail`), and turning it on here made the first failed
+  # iteration fatal — the metric pipelines return nonzero when a failed
+  # iteration leaves nothing to sample, which killed every segment mid-loop
+  # before the state file or rollup could be written (run 30516534214).
   ITER_FINISHED="$(date +%s)"
   emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS"
+    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
 
   if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
     printf '%s\n' "deadline reached during iteration $ITERATIONS" > "$ITERATION_DIR/deadline.txt"
