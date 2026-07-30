@@ -81,6 +81,10 @@ harness = true
 # One per file in `tests/` that `tests/mod.rs` does NOT include. Kept in
 # alphabetical order, and kept COMPLETE by `test_target_registry_gate`.
 [[test]]
+name = "clone_equivalence_corpus"
+path = "tests/clone_equivalence_corpus.rs"
+
+[[test]]
 name = "cold_store_records"
 path = "tests/cold_store_records.rs"
 
