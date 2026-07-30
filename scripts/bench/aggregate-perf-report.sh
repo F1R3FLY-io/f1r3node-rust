@@ -243,6 +243,66 @@ jq \
   }
 ' "$OUT_DIR/verdict.json" >"$OUT_DIR/badge.json"
 
+# Stability readout: how often a full bring-up -> load -> finalize iteration
+# succeeded. Deliberately NOT called uptime — the soak builds a fresh shard per
+# iteration rather than watching a standing one, so this is a success rate, not
+# an availability measurement, and labelling it uptime would claim monitoring
+# this repo does not have.
+#
+# The colour bands are advisory and absolute; the release gate is relative
+# (week-over-week deltas) and stays with the verdict badge. A run can be
+# brightgreen here and `regress` there, which is correct: perfect iterations
+# that got slower are still a regression.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null or (($p.iterations // 0) == 0)
+    then {schemaVersion: 1, label: "stability", message: "no data", color: "lightgrey"}
+    else (((1 - ($p.failure_rate // 0)) * 1000 | round) / 10) as $pct
+      | {schemaVersion: 1,
+         label: "stability",
+         message: "\($pct)% · \($p.iterations) iters",
+         color: (if $partial then "lightgrey"
+                 elif $pct >= 100 then "brightgreen"
+                 elif $pct >= 99 then "green"
+                 elif $pct >= 95 then "yellow"
+                 else "orange" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-stability.json"
+
+# Performance readout: the two headline numbers, finalization p95 and iteration
+# throughput. Always blue — a readout, not a judgement. Performance has no
+# absolute threshold here (the gate is week-over-week), so colouring it green or
+# red would invent a standard that does not exist; the verdict badge carries the
+# pass/regress call.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  # One decimal, always, including the .0. jq drops a trailing zero — 2966.9ms
+  # would render "p95 3s", which reads like a suspiciously round number rather
+  # than a measurement — so the tenths digit is assembled by hand.
+  def one_dp: (. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)";
+  def ms_short: if . == null then null
+                elif . >= 1000 then "\((. / 1000) | one_dp)s"
+                else "\(. | round)ms" end;
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null then {schemaVersion: 1, label: "perf", message: "no data", color: "lightgrey"}
+    else [($p.finalization_p95_ms | ms_short | if . == null then null else "p95 \(.)" end),
+          (if $p.iterations_per_hour == null then null
+           else "\($p.iterations_per_hour | one_dp)/h" end)]
+         | map(select(. != null))
+      | {schemaVersion: 1,
+         label: "perf",
+         # Grey whenever there is nothing to report, matching the stability
+         # badge — a blue "no data" reads as a healthy reading.
+         message: (if length == 0 then "no data" else join(" · ") end),
+         color: (if length == 0 or $partial then "lightgrey" else "blue" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-perf.json"
+
 jq -r \
 	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
 	--argjson baseline "$BASELINE_ARG" \

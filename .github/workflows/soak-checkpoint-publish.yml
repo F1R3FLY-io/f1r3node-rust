@@ -146,7 +146,9 @@ jobs:
           for f in history.json latest-summary.json latest-verdict.json latest-report.md \
                    history-daily.json latest-summary-daily.json latest-verdict-daily.json \
                    latest-report-daily.md \
-                   badge-soak.json badge-soak-daily.json; do
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -165,7 +167,9 @@ jobs:
           done
           for f in latest-summary.json latest-verdict.json \
                    latest-summary-daily.json latest-verdict-daily.json \
-                   badge-soak.json badge-soak-daily.json; do
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
               echo "::error::published ${f} is not a JSON object; refusing to republish it"; exit 1; }
@@ -226,9 +230,10 @@ jobs:
           # must never be able to block publishing the dashboard itself. An
           # older soak whose aggregator predates badge.json simply leaves the
           # previously published badge in place.
-          if [ -e checkpoint/badge.json ]; then
-            cp checkpoint/badge.json "site/data/badge-soak${SERIES_SUFFIX}.json"
-          fi
+          for b in badge:badge-soak badge-stability:badge-stability badge-perf:badge-perf; do
+            src="checkpoint/${b%%:*}.json"
+            [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
+          done
           echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload Pages artifact
