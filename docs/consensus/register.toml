@@ -1209,6 +1209,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "5a744c66"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 42 — the identical-total-order argument for combine_eset/combine_emap/combine_epathmap, written as stack-safety Phase 3b's prerequisite. MECHANICALLY COMMENT-ONLY: of 143 added lines, filtering out comment lines leaves exactly one and that one is BLANK; deletions are zero. No token reaches the compiler, so emitted bytes are identical by construction rather than by a passing test. The SUBJECT is consensus-critical — these arms decide canonical form for SortedParMap, which feeds the sort cost_accounting/sig.rs signs — and the conversion it prepares will require a full seven-axis entry; this row exempts what the commit CHANGED, never what it is about. [DERIVED]"
+
+[[exempt]]
 commit = "9560a068"
 window = "FRONTIER"
 reason = "HYGIENE"
