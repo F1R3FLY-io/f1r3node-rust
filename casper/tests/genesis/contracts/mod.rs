@@ -14,6 +14,7 @@ pub mod failing_result_collector_spec;
 pub mod genesis_contract_failure_mechanisms;
 pub mod genesis_overflow_guard_shape;
 pub mod list_ops_spec;
+pub mod make_mint_setlog_arity_collision;
 pub mod make_mint_spec;
 pub mod multi_sig_system_vault_spec;
 pub mod non_negative_number_spec;
