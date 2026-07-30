@@ -85,7 +85,7 @@ Headline results, all **MEASURED**:
 | metered wrapper `subst_and_charge` (release) | 2,852 B/level | **146** B/level | $`19.5\times`$ |
 | end-to-end `plain_deploy` on a 2 MiB worker | 286 levels | **6,831** levels | $`23.9\times`$ |
 | end-to-end `env_get_deploy` — **the control** | 283 levels | **274** levels (2026-07-29) | **$`\approx 1\times`$, as predicted** |
-| cold-store encode, production-weighted wall clock | — | $`1.194 \pm 0.005\times`$ **faster** | see §5.4 |
+| cold-store encode, production-weighted wall clock | — | **faster**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.19\times`$ | ⚠ see §5.4.1 — the $`\pm 0.005`$ is **RETRACTED** |
 | cold-store encode, allocations (reused-buffer form) | 20,022 blocks / 20k calls | **26** blocks / 20k calls | $`770\times`$ fewer |
 
 The costs are reported with the same candour. The single-walk encoder performs **$`3.25\times`$ more heap writes** than the derive it replaces and **doubles peak heap** on the production shape, because it retains two thread-local arenas (**MEASURED (f)**, DHAT (dynamic heap analysis tool)). The prost network encoder's memoised rewrite trades $`O(1)`$ space for $`\Theta(n)`$ space to buy $`\Theta(d^2) \rightarrow \Theta(n)`$ work, and is **dormant** — not wired into any `src/` tree (**DERIVED**, `56fb1fd0`).
@@ -282,7 +282,7 @@ The transformation applied throughout §5 is not novel and was not treated as su
 * **Pointer reversal** requires mutating the structure during traversal. Several traversals here run on `&`-borrowed terms (the encoder walks `&dyn WireNode`), several run on terms shared behind `Arc`, and the sorter's output is *signed* — a traversal that transiently mutates a term another thread may observe is not admissible in this setting. Constant auxiliary space was also never the requirement: $`\Theta(d)`$ **heap** is entirely acceptable, because the heap can refuse.
 * **Cheney's trick** presumes the output region is being built contiguously and can double as the queue. The encoder's output *is* contiguous — and, notably, the encoder needs no value stack at all for that reason (§5.3.2) — but the decoder must reassemble a pointer-rich `Par` whose children are not adjacent, so there is no to-space to borrow.
 
-**Statistics.** Throughput comparisons use Welch's unequal-variances $`t`$-test [[Welch 1947](#ref-welch1947)], as implemented in the repository's own bench harness.
+**Statistics.** ⚠★★ **REVISED 2026-07-30 — this sentence described the instrument, and the instrument was wrong.** It read: *"Throughput comparisons use Welch's unequal-variances $`t`$-test [[Welch 1947](#ref-welch1947)], as implemented in the repository's own bench harness."* They did, and that was the defect: the harness measured its arms in **disjoint time windows** (a **blocked** design) while its header claimed per-repetition interleaving, and Welch's $`t`$ divides by the *within-arm* standard error, which on blocked arms omits the dominant error term. Throughput comparisons now use the **paired** $`t`$ on the per-repetition difference [[Student 1908](#ref-student1908)] plus the median-of-repetition ratio as the load-robust point estimate, in the shared `models/benches/paired.rs`. ★ Every wall-clock magnitude taken under the old instrument is retracted in §5.4.1; every **stack-depth** figure in this report is unaffected, because none of them is a timing.
 
 **Instruments.** Heap measurements use Valgrind's massif and DHAT tools [[Nethercote & Seward 2007](#ref-nethercote2007)].
 
@@ -341,7 +341,7 @@ The transformation applied throughout §5 is not novel and was not treated as su
 | `rholang/tests/deploy_depth_ceiling.rs` | the **end-to-end** deploy ceilings, from source text through the real runtime on an explicit 2 MiB `tokio` worker | §A.3 |
 | `valgrind --tool=massif --time-unit=B` | **peak heap** and the heap-over-time series of §5.3.4 | §A.4 |
 | `valgrind --tool=dhat` | **allocation counts**, total bytes, and heap read/write traffic | §A.5 |
-| `models/benches/wire_encode_bench.rs` | wall-clock throughput with Welch's $`t`$-test, interleaved A/B, 60 reps after 10 warm-up | §A.6 |
+| `models/benches/wire_encode_bench.rs` | wall-clock throughput, 60 reps after 10 warm-up. ⚠ **This cell read *"with Welch's $`t`$-test, interleaved A/B"* and BOTH halves were wrong**: the arms were **blocked**, not interleaved, and an unpaired $`t`$ is invalid on blocked arms. Now the shared paired harness (`models/benches/paired.rs`), paired $`t`$ + median-of-repetition ratio, order rotated by repetition parity | §A.6, §5.4.1 |
 | `perf record -e cpu-clock --call-graph dwarf` | the CPU profile of §5.4.2 | §A.7 |
 
 ⚠ **`perf record --call-graph lbr` could not be used.** The observed failure was:
@@ -416,7 +416,7 @@ and `models/benches/term_ops_bench.rs`'s `TERM_OPS_ARM` mode for the harness.
 * **Resource limits.** Every build and every heavy test ran under `systemd-run --user --scope -p MemoryMax=28G`.
 * **`n` and warm-up.** The timing bench performs `REPS = 60` measured repetitions after `WARMUP = 10` discarded ones, per arm, per cell; the whole bench was then run **3 times** end-to-end, so the between-run figures in §5.4.1 are $`n = 3`$ over means each of which is itself $`n = 60`$.
 * **Teeing.** Every command's output was written to a file and the file analysed; no benchmark was re-run to see a different part of its output. Locations in Appendix B.
-* **Overlap rule.** A difference is reported as a result only if the arms' $`[\text{mean} - \text{sd},\ \text{mean} + \text{sd}]`$ intervals do **not** overlap, in addition to the harness's own Welch test at $`\alpha = 0.01`$. Where they overlap, the row says *no measured difference*.
+* **Overlap rule.** A difference is reported as a result only if the arms' $`[\text{mean} - \text{sd},\ \text{mean} + \text{sd}]`$ intervals do **not** overlap. ⚠★ **The clause *"in addition to the harness's own Welch test at $`\alpha = 0.01`$"* is RETRACTED as a sufficiency criterion**, and so is the overlap rule itself for *blocked* arms: both are computed from **within-arm** scatter, so on a blocked design both certify a quiet window rather than a real difference. Non-overlap plus $`\alpha = 0.01`$ is exactly what §5.4.1's three retracted runs reported. ⇒ For wall-clock rows the criterion is now the **paired** $`t`$ [[Student 1908](#ref-student1908)] with the median-of-repetition ratio, and where the effect is smaller than the instrument's measured run-to-run spread the row says **NOW UNKNOWN with a bracket** rather than *no measured difference* — an absence and an unknown are different dispositions. Non-timing rows (B/level, $`D_{\max}`$, DHAT block counts) are deterministic and keep the original rule.
 
 ### 4.6 Anti-vacuity discipline
 
@@ -906,7 +906,11 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 
 **Hypothesis, stated before the measurement** (and stated in the harness's own header): *"$`2\times`$ faster at depth 6,000 and 20 % slower at depth 3 is a NET LOSS."* The conversion's value is a class change, so the acceptance criterion was **not a speed-up** but *no regression on the production-weighted mix*. The measured distribution is 95.43 % depth 2 and **nothing deeper than 6 was observed**, so the verdict cell is deliberately the shallow one, where a per-node dispatch cost would show up worst.
 
-**MEASURED (f)** — `/tmp/sd_wire_bench.log`, release, core 8, 3 independent whole-bench runs $`\times`$ 60 measured repetitions after 10 warm-up, interleaved A/B within each repetition. Production-weighted mix, 2,001 datums/pass, 693 B/datum.
+⚠⚠ **RETRACTED IN PART, 2026-07-30 — read the retraction after the ratio table before using any figure in this subsection.** The interval $`\pm 0.005`$ is **OVERTURNED**, the three Welch statistics are **OVERTURNED**, and the *magnitude* is **NOW UNKNOWN**. The **sign** is unaffected. The whole of §5.4.1 is retained rather than rewritten, because what the instrument printed is the evidence for what was wrong with it.
+
+**MEASURED (f)** — `/tmp/sd_wire_bench.log`, release, core 8, 3 independent whole-bench runs $`\times`$ 60 measured repetitions after 10 warm-up. Production-weighted mix, 2,001 datums/pass, 693 B/datum.
+
+⚠ **This paragraph previously ended *"…after 10 warm-up, interleaved A/B within each repetition."* That clause is DELETED because it was false.** The harness's private `measure()` helper ran **all 60 repetitions of one arm**, returned, and was called again for the next — so the three arms were timed in **three disjoint time windows** on a host running several concurrent builds. The claim of interleaving was in the module header too, in the same words, and it was untrue there for as long as the file existed.
 
 | run | `derived` mean ± sd (ns) | `machine` mean ± sd (ns) | `machine_reused` mean ± sd (ns) |
 |---|---:|---:|---:|
@@ -915,14 +919,81 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 | 3 | 1,026,084 ± 14,119 | 862,601 ± 10,952 | 835,020 ± 11,588 |
 | **between-run mean ± sd ($`n=3`$)** | **1,033,349 ± 9,259** | **865,682 ± 4,072** | **829,571 ± 5,876** |
 
-**Overlap check.** `derived` spans $`[1{,}011{,}965,\ 1{,}068{,}026]`$ ns across all runs at $`\pm 1`$ sd; `machine` spans $`[851{,}649,\ 905{,}036]`$. **The ranges do not overlap.** The harness's own Welch test [[Welch 1947](#ref-welch1947)] reports $`t = 51.03,\ 30.99,\ 70.87`$ at $`\mathrm{df} \approx 80\text{–}111`$, significant at $`\alpha = 0.01`$ in all three runs.
+**Overlap check.** `derived` spans $`[1{,}011{,}965,\ 1{,}068{,}026]`$ ns across all runs at $`\pm 1`$ sd; `machine` spans $`[851{,}649,\ 905{,}036]`$. **The ranges do not overlap.** The harness's own Welch test [[Welch 1947](#ref-welch1947)] reported $`t = 51.03,\ 30.99,\ 70.87`$ at $`\mathrm{df} \approx 80\text{–}111`$. ⚠ **Those three statistics are OVERTURNED** — see the retraction below. A Welch $`t`$ divides by the *within-arm* standard error, which on blocked arms omits the dominant error term entirely, so it is not a test about the world here.
 
-| comparison | run 1 | run 2 | run 3 | mean ± sd |
-|---|---:|---:|---:|---:|
-| `derived` $`\rightarrow`$ `machine` (like-for-like, owned `Vec`) | 1.199 $`\times`$ | 1.192 $`\times`$ | 1.190 $`\times`$ | **1.194 ± 0.005 $`\times`$** |
-| `derived` $`\rightarrow`$ `machine_reused` (contract change) | 1.257 $`\times`$ | 1.251 $`\times`$ | 1.229 $`\times`$ | **1.246 ± 0.015 $`\times`$** |
+| comparison | run 1 | run 2 | run 3 | disposition |
+|---|---:|---:|---:|---|
+| `derived` $`\rightarrow`$ `machine` (like-for-like, owned `Vec`) | 1.199 $`\times`$ | 1.192 $`\times`$ | 1.190 $`\times`$ | **faster; magnitude NOW UNKNOWN, bracketed $`1.07\times`$–$`1.19\times`$.** ⚠ The interval this cell used to state, **$`1.194 \pm 0.005\times`$**, is **OVERTURNED** |
+| `derived` $`\rightarrow`$ `machine_reused` (contract change) | 1.257 $`\times`$ | 1.251 $`\times`$ | 1.229 $`\times`$ | **faster; magnitude NOW UNKNOWN, bracketed $`1.07\times`$–$`1.25\times`$.** ⚠ The interval **$`1.246 \pm 0.015\times`$** is **OVERTURNED**, for the same reason |
 
-★ **The prediction was that the conversion would cost throughput on shallow terms, and it was wrong in the favourable direction.** The single-walk machine is **$`1.194\times`$ faster** on the exact distribution production sees. §5.4.2 says why.
+★ **The prediction was that the conversion would cost throughput on shallow terms, and it was wrong in the favourable direction.** ★ **That conclusion STANDS** — the sign is the one thing this instrument could resolve. What does not stand is any statement of *how much*. §5.4.2 says why the direction is what it is.
+
+##### ⚠★★ RETRACTED 2026-07-30 — a tight interval from BLOCKED arms is not a tight measurement
+
+**The defect.** `measure()` did not interleave. Model one repetition's time as
+$`t_{X,i} = \mu_X + \delta(w_i) + \varepsilon_{X,i}`$, where $`\mu_X`$ is arm $`X`$'s true mean,
+$`\delta`$ is drift belonging to the *time window* $`w_i`$ rather than to the code, and
+$`\varepsilon`$ is independent noise with variance $`\sigma_\varepsilon^2`$. Then:
+
+```math
+\operatorname{Var}\big(\widehat{\Delta}_{\text{blocked}}\big) \;=\; \frac{2\sigma_\varepsilon^2}{n} \;+\; 2\sigma_\delta^2,
+\qquad\qquad
+\operatorname{Var}\big(\widehat{\Delta}_{\text{paired}}\big) \;=\; \frac{2\sigma_\varepsilon^2}{n}
+```
+
+★★ **The term $`2\sigma_\delta^2`$ contains no $`n`$.** The 60 retained repetitions shrink
+$`\sigma_\varepsilon`$ and do **nothing** to the window term, so a blocked design reports a
+*tight-looking* result whose dominant error is never estimated. And the Welch denominator is built from
+the within-arm variances — $`\sigma_\varepsilon`$ alone — while the window offset sits in the numerator,
+so $`|t| \to \infty`$ as $`n`$ grows for **any** non-zero offset. $`t = 70.87`$ is therefore evidence of a
+*quiet window*, not of a precise effect. This is the measurement-bias class of
+[[Mytkowicz 2009](#ref-mytkowicz2009)]; [[Georges 2007](#ref-georges2007)] sets out the design discipline
+that avoids it.
+
+**★★★ Why the $`\pm 0.005`$ specifically was LUCK, stated as a number rather than as a worry.** The three
+runs above agree to $`1.199 / 1.190 = 1.0076`$ — **0.76 %**. The *same instrument*, the *same three-run
+construction*, on the *same bench*, later reported the same weighted owned-`Vec` ratio as
+$`1.261\times`$, $`1.471\times`$, $`1.154\times`$ — $`1.471 / 1.154 = 1.2747`$, **27.5 %**:
+
+```math
+\frac{27.5\,\%}{0.76\,\%} \;\approx\; 36
+```
+
+$`\Rightarrow`$ **The instrument is capable of a 36× wider three-run spread than the one it happened to
+deliver here.** Three draws that land close are not a precision; they are three draws that fell in similar
+windows. ⚠ **A disposition is a value, not an absence** — so the cells above read *"NOW UNKNOWN, bracketed
+$`1.07\times`$–$`1.19\times`$"* rather than being blanked, and the bracket is **not a replacement
+interval**: its upper end is this instrument's most favourable blocked draw and its lower end is the paired
+instrument's reading, so the true value is somewhere in it and no narrower claim is available.
+
+**What the repaired instrument says.** Genuine per-repetition interleaving with order rotation and a paired
+$`t`$ [[Student 1908](#ref-student1908)], in the shared `models/benches/paired.rs`:
+
+| instrument | blocked, three runs | spread | paired, three runs | spread |
+|---|---|---|---|---|
+| this bench, weighted owned `Vec` | $`1.261`$, $`1.471`$, $`1.154`$ | **27 %** at loadavg 16.7 | $`1.092`$, $`1.078`$, $`1.073`$ | **1.9 %** at loadavg **31–37** |
+| the sibling `term_ops_bench` | $`1.0748`$ then $`0.9461`$ — a **verdict flip** | **13 %** at loadavg 15.7 | $`0.962`$, $`0.956`$, $`0.954`$ | **0.8 %** at loadavg 19.8–23.8 |
+
+★ **14× less spread at roughly double the load.** A quieter machine would have narrowed both columns; only
+one narrowed, which is what identifies the *defect* rather than the *host* as the dominant term.
+
+**What is UNAFFECTED, and why — because effect size decides, not provenance.** ⚠ Do not read this
+retraction as invalidating §5.4 or the report.
+
+| figure | status | why |
+|---|---|---|
+| the **sign** — the machine is faster on the production mix | ★ **UNAFFECTED** | Even the least favourable blocked draw is $`> 1`$, and the paired instrument agrees at $`1.073\times`$–$`1.092\times`$. Two instruments, one conclusion. |
+| the $`770\times`$ **allocation** reduction (§1, and the row below) | ★ **UNAFFECTED** | A DHAT block count is **deterministic**. It is not a wall clock and no window term enters it. |
+| every **B/level** slope and $`D_{\max}`$ ceiling in this report | ★ **UNAFFECTED** | Measured by stack-pointer differencing and by binary search on depth, neither of which is a timing. **The stack-safety results — which are what this report is for — do not depend on the retracted instrument at all.** |
+| the $`3.25\times`$ heap-**write** and $`2\times`$ peak-heap costs | ★ **UNAFFECTED** | DHAT, deterministic, same reason as the allocation count. |
+| the $`\pm 0.005`$ and $`\pm 0.015`$ intervals | ⚠ **OVERTURNED** | Three correlated draws, not a precision. |
+| the three Welch $`t`$ values | ⚠ **OVERTURNED** | An unpaired statistic on drift-contaminated arms. |
+| the **magnitudes** $`1.194\times`$ and $`1.246\times`$ | ⚠ **NOW UNKNOWN**, bracketed | Sign survives; the third significant digit was never real. |
+
+$`\Rightarrow`$ ★ **The rule this establishes:** whether a figure from a bad instrument survives is decided
+by **effect size against instrument spread**, not by how the figure was obtained. A 19 % effect against a
+27 % spread cannot be *quantified*; it can still be *signed*, because two independent instruments agree on
+the direction. A 2 % criterion against the same spread is not a criterion at all.
 
 **The rest of the shape space** (run 3, one representative; all cells $`\alpha = 0.01`$ significant, all ranges non-overlapping):
 
@@ -945,7 +1016,7 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 
 #### 5.4.2 CPU profile — where the derived path's time actually goes
 
-**MEASURED (f)** — `perf record -e cpu-clock -F 9999 --call-graph dwarf,16384` over the interleaved A/B bench, 29,436 samples, 0 lost. Full flat profile at `/tmp/sd_perf/report.flat.txt`.
+**MEASURED (f)** — `perf record -e cpu-clock -F 9999 --call-graph dwarf,16384` over the bench (⚠ described here as *"the interleaved A/B bench"*; it was **blocked** — see §5.4.1), 29,436 samples, 0 lost. Full flat profile at `/tmp/sd_perf/report.flat.txt`. ★ **A flat profile is a SHARE-of-samples attribution within one arm, so the blocking defect does not reach it**: it says where an arm spends its time, not how two arms compare, and the window term cancels in a ratio taken inside a single run.
 
 ⚠ **The gross per-arm totals are *not* a valid A/B comparison** and are not presented as one: the bench runs `derived` once but `machine` **and** `machine_reused`, so the `wire_encode` bucket covers two arms. The wall clock of §5.4.1 is the comparison. What the profile *does* establish is the **internal structure of the derived arm**, which no timing can show:
 
@@ -1863,7 +1934,9 @@ The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(
 
 2. **The two headline availability defects are closed.** A term that could be *built* and not *destroyed* (8.8 kB of source aborting a node) and a pre-consensus ingress teardown reachable from unauthenticated gRPC (43.5 kB of source aborting a node) are both $`0`$ B/level with no ceiling below the search bound.
 
-3. **The trampolined codecs are faster, not slower** — $`1.194 \pm 0.005\times`$ on the exact production-weighted distribution, ranges non-overlapping, $`\alpha = 0.01`$ — because the transformation deletes bincode's *sizing* traversal, which the CPU profile shows to be the more expensive of its two. **And they allocate $`770\times`$ fewer blocks** in the reused-buffer form. The cost is $`3.25\times`$ more heap **writes** and $`2\times`$ peak heap on the shallow shape, both of which are relocations of previously-uncounted native-stack traffic.
+3. **The trampolined codecs are faster, not slower** on the exact production-weighted distribution — because the transformation deletes bincode's *sizing* traversal, which the CPU profile shows to be the more expensive of its two. ⚠★★ **The DIRECTION is the claim; the magnitude is NOW UNKNOWN, bracketed $`1.07\times`$–$`1.19\times`$.** This conclusion previously read *"$`1.194 \pm 0.005\times`$ … ranges non-overlapping, $`\alpha = 0.01`$"*, and the interval and the significance test are both **OVERTURNED**: the harness timed its arms in **disjoint time windows** while claiming per-repetition interleaving, and the same instrument later spread **27 %** over three runs where these three agreed to 0.76 % — a **36×** difference in three-run spread, which is what makes the $`\pm 0.005`$ luck rather than precision. §5.4.1's retraction derives it. ★ The sign survives because **two independent instruments agree on it**: even the least favourable blocked draw exceeds $`1`$, and the repaired paired harness reads $`1.073\times`$–$`1.092\times`$ at higher load. **And they allocate $`770\times`$ fewer blocks** in the reused-buffer form. The cost is $`3.25\times`$ more heap **writes** and $`2\times`$ peak heap on the shallow shape, both of which are relocations of previously-uncounted native-stack traffic. ★ **Those three figures are UNAFFECTED**: DHAT block counts are deterministic and are not a wall clock.
+
+   ⚠★ **And nothing in conclusions 1, 2 or 4 depends on the retracted instrument.** Every B/level slope and every $`D_{\max}`$ ceiling in this report is obtained by stack-pointer differencing and by binary search on depth — neither is a timing — so the **stack-safety** results, which are what this report exists to establish, are untouched. The retraction is confined to the *throughput* claim, and it is confined to its *magnitude*.
 
 4. **The `tokio` work is two fixes, not one**, and the report says which is which: inline `.await` nesting was a **native-stack** $`\Theta(d)`$ chain that had been *fed* by `stacker` rather than removed, and the awaited-parent chain was a **heap** $`\Theta(N)`$ chain of parked futures. Detaching both removed the `stacker` dependency entirely and cut the reference contract's work by $`\approx 3.2\times`$ in the one clock that is invariant to machine contention.
 
@@ -1944,9 +2017,21 @@ Abbreviations used in the entries below:
 
 **[Tarjan 1972]** Tarjan, R. (1972). *Depth-first search and linear graph algorithms.* SIAM Journal on Computing, 1(2), 146–160. [doi:10.1137/0201010](https://doi.org/10.1137/0201010)
 
+###### ref-georges2007
+
+**[Georges et al. 2007]** Georges, A., Buytaert, D., & Eeckhout, L. (2007). *Statistically rigorous Java performance evaluation.* In Proceedings of the 22nd ACM SIGPLAN Conference on Object-Oriented Programming Systems, Languages and Applications (OOPSLA '07), 57–76. [doi:10.1145/1297027.1297033](https://doi.org/10.1145/1297027.1297033) — the design discipline §5.4.1's retraction failed to follow: an interval must be reported with the method that produced it, because a between-run spread over blocked arms estimates a different quantity from a within-run one.
+
+###### ref-mytkowicz2009
+
+**[Mytkowicz et al. 2009]** Mytkowicz, T., Diwan, A., Hauswirth, M., & Sweeney, P. F. (2009). *Producing wrong data without doing anything obviously wrong!* In Proceedings of the 14th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS '09), 265–276. [doi:10.1145/1508244.1508275](https://doi.org/10.1145/1508244.1508275) — ★ the class §5.4.1's defect belongs to: measurement bias that **reverses a conclusion** while every visible part of the method looks correct. The title is the finding.
+
+###### ref-student1908
+
+**[Student 1908]** "Student" (Gosset, W. S.) (1908). *The probable error of a mean.* Biometrika, 6(1), 1–25. [doi:10.2307/2331554](https://doi.org/10.2307/2331554) — the **paired** $`t`$-test, which is the valid statistic for a two-arm throughput comparison, because pairing cancels the window term $`\delta(w_i)`$ *before* the test sees the data rather than attempting to model it afterwards.
+
 ###### ref-welch1947
 
-**[Welch 1947]** Welch, B. L. (1947). *The generalization of "Student's" problem when several different population variances are involved.* Biometrika, 34(1–2), 28–35. [doi:10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28)
+**[Welch 1947]** Welch, B. L. (1947). *The generalization of "Student's" problem when several different population variances are involved.* Biometrika, 34(1–2), 28–35. [doi:10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28) — ⚠ the **unpaired** test whose three statistics §5.4.1 retracts. Sound for its own assumptions; those assumptions are violated by blocked arms, because its denominator is built from the within-arm variances and therefore omits $`\sigma_\delta`$ entirely.
 
 ★ **Every DOI above was resolved against the Crossref API on 2026-07-29** and its title, container and year confirmed to match the citation as written. Command in Appendix A.8.
 

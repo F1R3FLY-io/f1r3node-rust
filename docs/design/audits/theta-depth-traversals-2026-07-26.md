@@ -3683,8 +3683,60 @@ after.
 
 Not a cost: the converted encoder is **faster** on a *measured* production
 depth distribution (95.43% of 1,773 instrumented produces are at depth 2;
-nothing deeper than 6). Production-weighted, release, Welch-tested at α = 0.01:
-**1.190×** returning an owned `Vec`, **1.245×** into a reused buffer, with no
-shape regressing — the derived path traverses the term twice
+nothing deeper than 6) — the derived path traverses the term twice
 (`serialized_size`, then `serialize_into`) and allocates a fresh vector every
 call, while the machine walks once and, warm, allocates nothing at all.
+
+⚠★★ **RETRACTED IN PART, 2026-07-30 — the DIRECTION stands, the MAGNITUDES do
+not.** This paragraph previously read:
+
+> Production-weighted, release, Welch-tested at α = 0.01: **1.190×** returning an
+> owned `Vec`, **1.245×** into a reused buffer, with no shape regressing
+
+quoted verbatim so it cannot be restored as a bug fix. Three things in that
+sentence are wrong, and the reason is one defect:
+
+* **`models/benches/wire_encode_bench.rs`'s `measure()` did not interleave its
+  arms**, although its own module header said, in these words, *"Interleaved A/B.
+  One repetition measures A then B, and the loop is repeated `REPS` times. Any
+  drift in clock, thermals or cache state moves both arms together."* It ran all
+  60 repetitions of one arm, returned, and was called again for the next. With
+  **three** arms the drift window between the first and the last is twice as long
+  as a two-arm bench's.
+* ⇒ **"Welch-tested at α = 0.01" is not a warrant here.** A Welch statistic
+  divides by the *within-arm* standard error. On arms measured in disjoint time
+  windows the dominant error term is the difference between the windows, which
+  appears in the numerator and nowhere in the denominator — so the statistic
+  grows without bound as repetitions are added, whatever the window offset is.
+* ⇒ **The magnitudes are NOW UNKNOWN.** Measured: the same instrument, the same
+  three-run construction, reported the weighted owned-`Vec` ratio as **1.261×,
+  1.471× and 1.154×** on three consecutive runs of one binary at loadavg 16.7 —
+  **27% peak-to-peak**, where these three agreed to under 1%. The repaired
+  harness (`models/benches/paired.rs`: per-repetition interleaving, order rotated
+  by repetition parity, a paired *t*) reads **1.073×–1.092×** at loadavg 31–37,
+  roughly **double** the load and **14× less spread**.
+
+| figure | disposition |
+|---|---|
+| the encoder is **faster** on the production-weighted mix | ★ **UNAFFECTED** — two independent instruments agree on the sign, and even the least favourable blocked draw exceeds 1× |
+| **1.190×**, owned `Vec` | ⚠ **NOW UNKNOWN**, bracketed **1.07×–1.19×** |
+| **1.245×**, reused buffer | ⚠ **NOW UNKNOWN**, bracketed **1.07×–1.25×** |
+| *"Welch-tested at α = 0.01"* | ⚠ **OVERTURNED** — an unpaired test on blocked arms |
+| *"with no shape regressing"* | ⚠ **NOW UNKNOWN** — the per-shape ratios came from the same instrument, and the shapes whose ratio sat within ±13% of 1× cannot be signed either way |
+| every **Θ(depth)** and **B/level** result in this audit | ★ **UNAFFECTED** — obtained by stack-pointer differencing and binary search on depth, not by timing |
+
+⚠ **The bracket is not a replacement interval.** Its upper end is the most
+favourable blocked draw and its lower end is the paired reading; the true value
+lies inside it and no narrower claim is available. ★ **A disposition is a value,
+not an absence** — which is why these rows say *"NOW UNKNOWN, bracketed"* rather
+than being deleted, and why the retracted figures stay on the page beside their
+replacements.
+
+★ **What decides whether a figure from this instrument survives is effect size
+against instrument spread, not provenance.** A 19–25% effect against a 27% spread
+can be *signed* (because a second, sound instrument agrees) but not *quantified*.
+By the same rule the audit's other headline claim — that a per-field table
+interpretation ran at **0.594×** the derive, i.e. **1.7× slower** — **STANDS**:
+1/0.594 = 1.684 is a 68% effect, **2.5× the instrument's entire peak-to-peak
+scatter**, so no plausible window offset moves it across 1×. The full derivation
+is in the consensus register's §7.8.
