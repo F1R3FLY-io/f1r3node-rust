@@ -87,6 +87,44 @@
 //!
 //! ★ A single "typical" depth would report one point on two curves with different
 //! shapes, which is why the ladder is the workload and each rung is printed.
+//!
+//! ### ⚠⚠ THE CROSSOVER — the iterative encoder is SLOWER at depth 1, measured
+//!
+//! The `` $\Theta(d^2) \to \Theta(n)$ `` trade is not free at the shallow end.
+//! `prost_encode` runs **two** passes and materialises a `lens` table; the derived
+//! encoder runs one pass and allocates nothing extra. Wall clock,
+//! `taskset -c 8`, release, 60 reps, 2026-07-30:
+//!
+//! ```text
+//!   depth   iterative ÷ derived (median-of-rep)   verdict
+//!       1   0.264×   (= 3.79× SLOWER, +278 %)     ⚠ REGRESSION
+//!       8   1.071×                                crossover is between 1 and 8
+//!      33   5.009×
+//!      64  10.426×
+//!     256  48.095×
+//!    1024 233.874×
+//! ```
+//!
+//! At depth 1 that is ~96 ns → ~363 ns per escape payload. ★ It matters because
+//! the escape arm's *typical* payload is shallow — a `Nil`, an `EVar`, a small
+//! send — so the common case pays and the pathological case is what is bought.
+//!
+//! **Why it is still the right trade, stated rather than assumed:** the
+//! alternative at the deep end is not "slower", it is `SIGSEGV` — the derived
+//! encoder aborts the process at depth ≳ 6,900 inside a function documented total
+//! and no-panics (`models/tests/trie_escape_arm_stack.rs`). A liveness failure on
+//! peer-controlled input is not comparable to 267 ns.
+//!
+//! ⚠ It is a **named residual all the same**, and the mitigation is *not* a
+//! shallow/deep dispatch — two encoders selected at run time is a dual path whose
+//! bytes must agree forever. The place to spend the effort is `prost_encode`'s
+//! fixed cost (the `lens` table's first allocation, `LEN_TABLE_CAPACITY = 256`
+//! entries for a term with one node).
+//!
+//! ⚠ The aggregate `Ir` figure below (−96.2 %) is dominated by the deep rungs,
+//! because the ladder's instruction count is. It is the right figure for "what
+//! does the ladder cost" and the WRONG one for "what does a shallow escape payload
+//! cost"; the per-rung wall clock above is the one that answers the second.
 
 #[path = "paired.rs"]
 mod paired;
