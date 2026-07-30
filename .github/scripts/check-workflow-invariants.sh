@@ -46,7 +46,11 @@ scan_jobs() {
         job == "" { next }
         /^    environment:/                                                  { has_env[job] = 1 }
         /secrets\.OCI_[A-Z_]+/                                               { oci[job] = 1 }
-        /secrets\.CI_GITHUB_APP_PRIVATE_KEY/                                 { app[job] = 1 }
+        # Any App private key, not one specific name. There are two Apps — a
+        # release identity and a runner-admin identity — and more may follow, so
+        # matching a literal name would let a renamed or newly added App key slip
+        # past every check below while they all still reported ok.
+        /secrets\.[A-Z_]*APP_PRIVATE_KEY/                                    { app[job] = 1 }
         /await_approval/                                                     { gated[job] = 1 }
         /^    uses:[[:space:]]*\.\/\.github\/workflows\/_integration-pipeline\.yml/ { calls[job] = 1 }
         /^    secrets:[[:space:]]*inherit/                                   { inherits[job] = 1 }
