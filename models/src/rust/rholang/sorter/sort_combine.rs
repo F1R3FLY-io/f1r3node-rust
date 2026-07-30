@@ -1626,6 +1626,51 @@ construct_expr(
 // same shape again — an unsound memoisation caught by the predicate oracle while every byte
 // gate stayed green.
 
+// ── O4 · THE STRUCTURAL BLOCKER, found while starting the conversion ──────────────────
+//
+// ⛔★★ **The elements this arm scores are NOT the elements on the message.** Read the first
+// three lines of `combine_eset` below: it builds `par_set` with
+// `ParSetTypeMapper::eset_to_par_set(eset.clone())` and then scores
+// `par_set.ps.sorted_pars` — the elements of a container constructed **inside the arm**,
+// whose order is a PERMUTATION of `eset.ps` and which, being a set, may also DEDUPLICATE.
+//
+// ⚠ This defeats the otherwise-obvious conversion. `descend_expr` (`sort_drive.rs:733`) is
+// already generic: it collects children with [`expr_child_pars`] and pushes each as
+// `NodeKind::Par` under the existing `ExprK` kont, so at first sight the whole conversion is
+// "stop returning nothing for these three arms at `:280-282`". It is not:
+//
+//   * `expr_child_pars` yields `&'t Par` **borrowed from the message**, so it can only offer
+//     `eset.ps` — i.e. WIRE order.
+//   * the arm scores SORTED-SET order.
+//   * the score `Tree` records the order elements were scored in (O1's premise).
+//   ⇒ Pushing `eset.ps` would chain the element scores in a different order. **That is a
+//     consensus fork, and the golden's new depth-≥2 rows are what would catch it.**
+//
+// ⚠ It cannot be fixed by having the kont own the container either: a `SortKont` variant
+// *may* own a `ParSet`, but the children pushed alongside it would then have to borrow from
+// that owned value while it sits on the work stack — self-referential, and not expressible.
+//
+// ⇒ **The tractable route, and it must be written deliberately rather than discovered:** have
+// the descent build the same container (`eset_to_par_set` is deterministic in `eset`), read
+// its `sorted_pars` order, and push the corresponding **message-borrowed** `&'t Par`s in that
+// order, dropping the temporary. The arm then consumes pre-scored children and keeps calling
+// `SortedParHashSet::create_from_vec` for the term side (O2).
+//
+// ⚠⚠ Two hazards on that route, both of which the depth-≥2 golden rows now cover:
+//   1. **Dedup changes the child COUNT.** `sorted_pars` may be shorter than `eset.ps`, and the
+//      pushed count must equal `SortKont::arity`, which the driver cross-checks per combine.
+//      Take the count from `sorted_pars`, never from `eset.ps`.
+//   2. **Mapping a sorted element back to a borrowed message element is an IDENTITY question.**
+//      If `eset_to_par_set` normalizes elements rather than merely reordering them, no
+//      message-borrowed `&Par` corresponds, and this route fails outright — in which case the
+//      arm needs an owning driver (the same shape §3d's ruling adopts for `par_drop`), not
+//      this one. **Settle that before writing code**; it is the premise the whole route rests
+//      on, and it is exactly the kind of premise this campaign has been wrong about before.
+//
+// ★ `EMapBody` and `EPathmapBody` have the same shape — `par_map_to_emap`/the trie — so this
+// obligation is per-arm, not per-collection-kind, and O3 (the discarded value score) sits on
+// top of it for the map.
+
 /// The `ESetBody` arm.
 #[inline(never)]
 fn combine_eset(eset: &crate::rhoapi::ESet) -> ScoredTerm<Expr> {
