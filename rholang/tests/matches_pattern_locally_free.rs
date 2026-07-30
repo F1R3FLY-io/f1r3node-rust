@@ -93,26 +93,21 @@ const IDX_0: &[u8] = &[1];
 const IDX_1: &[u8] = &[0, 1];
 /// Closed.
 const CLOSED: &[u8] = &[];
-/// ⚠ What survives a one-name binder, as `filter_and_adjust_bitset` computes
-/// it — **not** a well-formed bitset, and that is a SEPARATE defect this test
-/// deliberately does not repair.
+/// What survives a one-name binder: index 1 escapes as index 0, so the answer is
+/// [`IDX_0`].
 ///
-/// `filter_and_adjust_bitset(bitset, bound_count)` is
-/// `bitset.into_iter().enumerate().filter_map(|(i, _)| (i >= bound_count)
-/// .then(|| i as u8 - bound_count as u8))`. It discards the BIT (`_`) and emits
-/// the shifted *position* as the *value*, so index 1 surviving a one-name binder
-/// comes out as `[0]` — a length-1 vector whose only byte is zero — where a
-/// well-formed "index 0 is free" is `[1]`. The Scala it cites,
-/// `bodyResult.par.locallyFree.from(boundCount).map(x => x - boundCount)`, maps
-/// the *members* of a `BitSet`, which is correct there; the Rust port models the
-/// bitset as one byte per index (`create_bit_vector`) and then applied the
-/// member map to positions.
-///
-/// It is load-bearing only in that the chain still ends `CLOSED` at the binder
-/// that owns the index, and it is identical for all three pattern positions —
-/// which is why the rows below can use it to compare `matches` against `match`
-/// without either endorsing it or depending on it being right.
-const ADJUSTED_PAST_ONE_BINDER: &[u8] = &[0];
+/// ⚠ This constant used to be `&[0]` — "index 0 is NOT free", i.e. `∅` with a
+/// trailing zero — because `filter_and_adjust_bitset` discarded the bit and
+/// emitted the shifted *position* as the *value*. The rows below deliberately
+/// pinned that value while its repair was carried as a separate,
+/// consensus-visible change; the repair has landed (see
+/// `rholang/tests/locally_free_binder_shift.rs` and
+/// `interpreter::util::binder_shift_law`), so the alias now names the
+/// well-formed answer. It is kept as an alias rather than inlined because the
+/// rows read as "the value that survives ONE binder", which is the property
+/// under test, and because the identity `ADJUSTED_PAST_ONE_BINDER == IDX_0` is
+/// itself the fix's statement.
+const ADJUSTED_PAST_ONE_BINDER: &[u8] = IDX_0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ★ THE DIFFERENTIAL — `matches` versus its two siblings, same content
