@@ -174,10 +174,40 @@ fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
          B.",
         std::mem::size_of::<CloneNode<'_>>()
     );
-    assert_eq!(
-        std::mem::size_of::<CloneKont<'_>>(),
-        WORD,
-        "`CloneKont` must be one word, for the same reason as `CloneNode`. It is {} B.",
+    // ★★ `CloneKont` is budgeted at TWO words, not one, and the difference is a
+    // MEASURED decision rather than slack.
+    //
+    // It was one word — a bare `&'t Par` — until the walk elimination landed: the
+    // `Kont` now also carries `base`, the value-stack index its children start at,
+    // which deletes the third `ExprInstance` dispatch walk per node. Measured, on
+    // the production-weighted mix under `cachegrind`, per `Par` node:
+    //
+    //     Ir  2883.4 -> 2829.1   (-54.3, -1.88%)     Dw  698.4 -> 698.5  (+0.01%)
+    //
+    // ⚠ And the reason the budget is TWO rather than THREE is the fact this file's
+    // `niche_packing` test exists to record: widening `CloneKont` from one word to
+    // two leaves `size_of::<Step>()` at **16 B**, because rustc puts the
+    // discriminant in the `&Par`'s null niche. So this widening is free PER LEVEL,
+    // which is the only place width is expensive. A THIRD word would not be: it
+    // would exhaust the niche's slack and grow `Step`, and the assertion above is
+    // what would catch it.
+    //
+    // ★ This assertion was RED before it was green, and the RED is quoted rather
+    // than described, because a width budget nobody has seen fail is not a budget:
+    //
+    //     assertion `left == right` failed: `CloneKont` must be one word, for the
+    //     same reason as `CloneNode`. It is 16 B.
+    //       left: 16
+    //      right: 8
+    assert!(
+        std::mem::size_of::<CloneKont<'_>>() <= 2 * WORD,
+        "`CloneKont` is {} B, over its two-word budget. One word is the bare `&'t Par`; the \
+         second is `base`, the value-stack index that deletes a whole `ExprInstance` dispatch \
+         walk per node (-54.3 Ir/node, measured). A THIRD word is NOT free: two words fit \
+         because rustc packs `Step`'s discriminant into the `&Par` null niche (see \
+         `niche_packing`), and a third would grow `Step` — which multiplies by DEPTH. If a \
+         `Kont` needs more state, put it in `Traversal::State`, the discipline `par_codec`'s \
+         `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
         std::mem::size_of::<CloneKont<'_>>()
     );
 }

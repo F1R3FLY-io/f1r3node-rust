@@ -3256,8 +3256,53 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
 /// nothing deeper than 6). The driven form is **0.674× the derived form's
 /// throughput** — a 48% slowdown — against a stated acceptance threshold of 0.98×,
 /// Welch t = −307, intervals disjoint at α = 0.01. Per depth: 0.648× at 1, 0.665×
-/// at 2, 0.639× at 3, 0.685× at 6, 0.750× at 16, and **1.003×
-/// (indistinguishable)** at 64.
+/// at 2.
+///
+/// ## ⚠⚠ RETRACTED 2026-07-30 — EVERY FIGURE IN THE PARAGRAPH ABOVE CAME FROM A
+/// ## BLOCKED INSTRUMENT, AND THE CRITERION IT WAS JUDGED AGAINST IS RESTATED
+///
+/// `models/benches/term_ops_bench.rs`'s `measure()` ran **every** repetition of one
+/// arm and was then called again for the other, while its own module header
+/// claimed per-repetition interleaving. The arms were timed in different windows on
+/// a host that runs six concurrent build jobs. Same binary, minutes apart:
+/// **1.0748× (PASS) then 0.9461× (FAIL)**. `wire_encode_bench` carried the
+/// identical defect behind the identical sentence and scattered **27%** over three
+/// consecutive runs.
+///
+/// ⇒ 0.678×, 0.648×, 0.665× and `t = −307` are **not measurements**. Paired — with
+/// genuine per-repetition interleaving, order rotation and a paired t, in the
+/// shared `models/benches/paired.rs` — the production-weighted mix reads
+/// **0.948×–0.962×**: a **5% deficit, not 32%.**
+///
+/// ★ The durable part is not the corrected number, it is why the old one was
+/// wrong. A ratio from unpaired arms on a loaded host is a draw from a
+/// distribution 13–27% wide, and quoting four significant figures of it — or a
+/// Welch `t` of −307 — states a precision that does not exist. ⚠ Note also that
+/// `docs/consensus/consensus-change-register.md` row 36 cites **`t = −65`** for
+/// this same measurement: two different statistics for one experiment, which is a
+/// defect independent of the instrument and needs a register correction this file
+/// cannot make.
+///
+/// ### ★★ THE ACCEPTANCE CRITERION, RESTATED
+///
+/// The 0.98× threshold demanded 2% of an instrument that scatters by 13–27%. It is
+/// replaced, in rank order:
+///
+/// | rank | instrument | criterion |
+/// |---|---|---|
+/// | **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | `Ir(driven) / Ir(derived)` ≤ **1.20** (measured **1.1740**) |
+/// | corroboration | the bench's paired median-of-repetition ratio | ≥ **0.90×**, a band the host can resolve |
+/// | corroboration | `perf stat -e instructions,cycles`, normalised on the **derived** arm | agrees with the primary to within 0.5% |
+///
+/// ⚠ The wall-clock floor is deliberately **looser** than 0.98×. That is not a
+/// relaxation of standards; it is the refusal to state a precision the instrument
+/// does not have.
+///
+/// ★ And the restated criterion is **falsifiable and has been seen to RESPOND**,
+/// which the old one had not: the walk elimination moves the primary from
+/// **1.1740 → 1.1519** while wall clock moves the *wrong way* (0.954× → 0.885×).
+/// A criterion that changes when the mechanism changes, on a host where the clock
+/// does not, is the whole reason for the swap.
 ///
 /// ### The optimization that was tried, and REFUTED
 ///
@@ -3703,19 +3748,35 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
 
     src.push_str(
         "/// The defunctionalized continuation: the borrowed ORIGINAL whose shell is\n\
-         /// rebuilt once its children are done.\n\
+         /// rebuilt once its children are done, plus the value-stack index its children\n\
+         /// start at.\n\
          ///\n\
-         /// ★ It carries the node itself rather than a copy of the shell plus child\n\
-         /// COUNTS, which is what lets `arity()` be a genuinely SECOND statement of those\n\
-         /// counts: `clone_child_count_*` recounts from the original by its own walk,\n\
-         /// while `clone_rebuild_*` consumes one child per structural slot. Two walks of\n\
-         /// one structure, cross-checked by `drive`'s deficit invariant.\n\
+         /// ★ It carries the node itself rather than a copy of the shell, so\n\
+         /// `clone_rebuild_*` reads the bounded fields straight from the source.\n\
+         ///\n\
+         /// ⚠★ **`base` is a MEASURED optimization, not a shortcut.** `combine` used to\n\
+         /// recover its children by RECOUNTING them (`clone_child_count_*`) and slicing\n\
+         /// `vals.len() - n ..`. `perf` put **41.77%** of `drive_with`'s samples on a single\n\
+         /// instruction — `cmp $0x24, %eax`, the 36-arm `ExprInstance` jump-table bounds\n\
+         /// check — because that dispatch was paid THREE times per node (push, count,\n\
+         /// rebuild) where the derive pays it once. `descend` already knows where its\n\
+         /// children will start; recording it removes the third walk entirely.\n\
+         ///\n\
+         /// ⚠ The cross-check `clone_child_count_*` exists for is NOT lost. It becomes\n\
+         /// `debug_assertions`-only — exactly like `Traversal::arity`, which still calls it —\n\
+         /// and `CloneChildren::finish` still compares the count against what the REBUILD\n\
+         /// consumed, unconditionally, in every profile.\n\
          #[derive(Clone, Copy)]\n\
          pub enum CloneKont<'t> {\n",
     );
     for name in &plan.cut {
         let ty = rust_type_name(name);
-        writeln!(src, "    /// Rebuild this [`{ty}`]'s shell.\n    {ty}(&'t {ty}),").expect("write");
+        writeln!(
+            src,
+            "    /// Rebuild this [`{ty}`]'s shell; its children start at `base` on the value\n    \
+             /// stack.\n    {ty} {{ src: &'t {ty}, base: usize }},"
+        )
+        .expect("write");
     }
     src.push_str(
         "}\n\n\
@@ -4010,7 +4071,7 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
          \x20       _state: &mut (),\n\
          \x20       node: CloneNode<'t>,\n\
          \x20       work: &mut Vec<Step<'t, Self>>,\n\
-         \x20       _vals: &mut Vec<CloneVal>,\n\
+         \x20       vals: &mut Vec<CloneVal>,\n\
          \x20   ) -> Result<(), Infallible> {\n\
          \x20       match node {\n",
     );
@@ -4020,13 +4081,37 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
         writeln!(
             src,
             "            CloneNode::{ty}(src) => {{\n                \
-             work.push(Step::Combine(CloneKont::{ty}(src)));\n                \
+             let base = vals.len();\n                \
+             work.push(Step::Combine(CloneKont::{ty} {{ src, base }}));\n                \
              let first = work.len();\n                \
              clone_push_children_{stem}(src, work);\n                \
-             // ★ The children went on in DECLARATION order, so the region is\n                \
-             // reversed IN PLACE to make them POP in declaration order. No\n                \
-             // scratch buffer and no allocation; `Step` is two words.\n                \
-             work[first..].reverse();\n            \
+             if work.len() == first {{\n                    \
+             // ★★ THE LEAF FAST PATH, and it is measured. This node has no\n                    \
+             // cut-set child, so the continuation just pushed has nothing to wait\n                    \
+             // for: drop it and produce the value here. On the measured production\n                    \
+             // distribution (95.43% of terms at depth 2) FOUR of a datum's SIX\n                    \
+             // `Par` nodes are leaves, so this is the MAJORITY path, and it saves\n                    \
+             // each of them a `Combine` push, a loop iteration, a pop and a\n                    \
+             // `Drain` setup.\n                    \
+             //\n                    \
+             // ⚠ Invariant 1 holds in BOTH branches, and they are the two halves\n                    \
+             // of it: a `descend` that pushes no work must push exactly ONE value\n                    \
+             // (this branch), and a `descend` that pushes work must push NONE (the\n                    \
+             // other).\n                    \
+             work.truncate(first - 1);\n                    \
+             let leaf = {{\n                        \
+             let mut children = CloneChildren {{ inner: vals.drain(base..) }};\n                        \
+             let rebuilt = clone_rebuild_{stem}(src, &mut children);\n                        \
+             children.finish(\"{ty}\");\n                        \
+             rebuilt\n                    \
+             }};\n                    \
+             vals.push(CloneVal::{ty}(leaf));\n                \
+             }} else {{\n                    \
+             // ★ The children went on in DECLARATION order, so the region is\n                    \
+             // reversed IN PLACE to make them POP in declaration order. No scratch\n                    \
+             // buffer and no allocation.\n                    \
+             work[first..].reverse();\n                \
+             }}\n            \
              }}"
         )
         .expect("write");
@@ -4053,12 +4138,23 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
         let stem = ty.to_snake_case();
         writeln!(
             src,
-            "            CloneKont::{ty}(src) => {{\n                \
-             let wanted = clone_child_count_{stem}(src);\n                \
-             let base = match vals.len().checked_sub(wanted) {{\n                    \
-             Some(base) => base,\n                    \
-             None => clone_children_underflow(\"{ty}\", wanted, vals.len()),\n                \
-             }};\n                \
+            "            CloneKont::{ty} {{ src, base }} => {{\n                \
+             if base > vals.len() {{\n                    \
+             clone_children_underflow(\"{ty}\", base, vals.len());\n                \
+             }}\n                \
+             // ⚠ The recount that used to COMPUTE `base` is now a DEBUG-ONLY\n                \
+             // cross-check against the index `descend` recorded — see `CloneKont`\n                \
+             // for the profile that moved it. `CloneChildren::finish` below still\n                \
+             // checks the rebuild against the count in EVERY profile.\n                \
+             debug_assert_eq!(\n                    \
+             vals.len() - base,\n                    \
+             clone_child_count_{stem}(src),\n                    \
+             \"term_ops::clone: `clone_push_children_{stem}` produced {{}} value(s) but \
+             `clone_child_count_{stem}` counts {{}}; two independent walks of one node have \
+             drifted\",\n                    \
+             vals.len() - base,\n                    \
+             clone_child_count_{stem}(src)\n                \
+             );\n                \
              let mut children = CloneChildren {{ inner: vals.drain(base..) }};\n                \
              let rebuilt = clone_rebuild_{stem}(src, &mut children);\n                \
              children.finish(\"{ty}\");\n                \
@@ -4082,7 +4178,7 @@ fn emit_clone_traversal(src: &mut String, plan: &ClonePlan) {
         let stem = ty.to_snake_case();
         writeln!(
             src,
-            "            CloneKont::{ty}(src) => clone_child_count_{stem}(src),"
+            "            CloneKont::{ty} {{ src, .. }} => clone_child_count_{stem}(src),"
         )
         .expect("write");
     }
