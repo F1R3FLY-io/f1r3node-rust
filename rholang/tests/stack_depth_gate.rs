@@ -103,9 +103,7 @@ fn elist(ps: Vec<Par>) -> Par {
 }
 
 /// `[[[…[0]…]]]` with `depth` bracket levels — the reported shape.
-fn nested_list(depth: usize) -> Par {
-    nested_list_leaf(depth, 0)
-}
+fn nested_list(depth: usize) -> Par { nested_list_leaf(depth, 0) }
 
 /// [`nested_list`] with the LEAF integer chosen.
 ///
@@ -596,6 +594,20 @@ fn subject(name: &str) -> fn(usize) {
         "tree_clone" => tree_clone_body,
         "pretty" => pretty_body,
         "clone" => clone_body,
+        // ★★ The two stage-F-4 ladders that `clone` alone cannot stand in for.
+        // `clone_send_chain` nests through a DIFFERENT `Vec` field so that a
+        // regression to `<Vec<Send> as Clone>::clone` reddens something; and
+        // `clone_pathmap_chain` measures the EXTERN obligation the driver's
+        // bounded treatment of `EPathMap` rests on. See their bodies.
+        "clone_send_chain" => clone_send_chain_body,
+        "clone_pathmap_chain" => clone_pathmap_chain_body,
+        // ★★ The DERIVED CONTROL for `clone`, in the `bincode_ser_derived` idiom
+        // — and the instrument that makes the conversion's "before" leg a
+        // MEASUREMENT rather than a manual revert. See `clone_oracle_body`.
+        "clone_oracle" => clone_oracle_body,
+        // ★ The TEARDOWN control that decides whether `clone_pathmap_chain`'s
+        // reading is the CLONE's or the fixture's `Drop`. See its body.
+        "pathmap_chain_drop" => pathmap_chain_drop_body,
         // ⚠ RENAMED 2026-07-27, from `drop`. The subject is `drop_in_place::<Par>`
         // and it has been here since the gate was written — but under a name that
         // says only *which operation*, never *on what*. mettail-rust's twin gate
@@ -767,6 +779,42 @@ const CONVERTED_DEPTH: &[&str] = &[
     // worker) to a FLAT 32,768 B across 4 → 4,096. See `inj_attempt_clone_body`
     // for the before/after table and the bisection evidence.
     "inj_attempt_clone",
+    // ★★ Stage F-4 — `<Par as Clone>::clone`. It LEFT `TRIPWIRE_DEPTH` below by
+    // being CONVERTED, never by having its ceiling raised: `models/build.rs`
+    // STRIPS the `Clone` derive from the 55 non-`Copy` `rhoapi` items and
+    // `models/build/wire_schema.rs` GENERATES the impls, `Par`'s over
+    // `drive::drive_with`. The derived form measured 16,493 B/level debug and
+    // 3,254 release (`four_quadrant_s0_baseline`, re-measured at HEAD before the
+    // conversion); the driven form holds its native stack flat from depth 16 to
+    // 4,096 on both profiles.
+    //
+    // ⚠ The conversion is at a FEEDBACK VERTEX SET of the child relation, not at
+    // every recursive type: `{Par}`, derived and verified by the generator. The
+    // other 54 `Clone`s are generated FIELD-WISE and are flat because every cycle
+    // passes through `Par`, reaching a driven clone within a residual height of 3.
+    "clone",
+    // ★ The `Vec`-NESTED ladder, and it is not a duplicate of `clone`. See
+    // `clone_send_chain_body`: a ladder that nests through only ONE collection
+    // field cannot show that the others were converted too, and the sibling
+    // repo's eight Θ(depth) "iterative" drivers all escaped through exactly this
+    // boundary — `Category → Vec<Elem> → Elem`.
+    "clone_send_chain",
+    // ★ The EXTERN obligation, MEASURED. `EPathMap` is treated as a BOUNDED field
+    // by the clone driver, which is only correct because its hand-written `Clone`
+    // is O(1) at the node. See `clone_pathmap_chain_body`.
+    "clone_pathmap_chain",
+    // ★★ `par_children::dismantle` on the `EPathMap`-nested shape — FLAT, and
+    // this is its FIRST measurement. It entered by being measured on a ladder
+    // nobody had driven it on, not by a ceiling moving.
+    //
+    // ⚠ It is here because a diagnosis went WRONG first, and the wrong answer is
+    // recorded on `pathmap_chain_drop_body`: two subjects sharing one sloped
+    // fixture BUILDER read identically, which looked like proof that the teardown
+    // was the cause. It was the builder — `EPathMap::new` keys each entry by its
+    // canonical bytes, so it runs the still-Θ(depth) prost encoder over a
+    // depth-`d` `Par`. Both subjects are flat once the fixture is built on a big
+    // stack.
+    "pathmap_chain_drop",
 ];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
@@ -789,8 +837,20 @@ const TRIPWIRE_DEPTH: &[&str] = &[
     // ordinary send path, with no binder and no COMM. See
     // `subst_and_charge_body`.
     "subst_and_charge",
-    "substitute_deep_binding", // `Env::get` clones a deep bound value
-    "clone",                   // derived `<Par as Clone>`
+    // ⚠ `Env::get` clones a deep bound value. It STAYS here: `Env::shift` is
+    // `Env { shift: .., ..(*self).clone() }`, i.e. a `HashMap<i32, Par>` clone,
+    // and while each entry's `Par::clone` is now DRIVEN, the map walk that
+    // reaches them is a different traversal from the one stage F-4 converted.
+    // Re-measured after the conversion, under the same ceiling.
+    "substitute_deep_binding",
+    // ⚠★ `clone` IS GONE FROM THIS LIST — see [`CONVERTED_DEPTH`] above. It left
+    // by being CONVERTED (stage F-4: `models/build.rs` strips the derive,
+    // `models/build/wire_schema.rs` generates the impl over `drive_with`), never
+    // by having its ceiling raised. The `assert_slope_below("clone", …)` call
+    // that pinned it at `ceiling(25_000, 5_000)` is deleted with it, because
+    // `theta_depth_tripwire` RECORDS every subject it drives and refuses to
+    // finish unless the recorded set is exactly this list — so a name cannot be
+    // removed here without removing its assertion, or vice versa.
     "par_drop",                // derived `drop_in_place::<Par>`
     "normalize_drop",          // ★ the DEPLOY composition: flat build, sloped release
     "encode",                  // prost encoder (capped by RECURSION_LIMIT on decode)
@@ -1811,6 +1871,19 @@ fn inj_attempt_clone_body(depth: usize) {
 /// walks the term.
 const INJ_ATTEMPT_GATE_PHLO: i64 = 1_000_000;
 
+/// `<Par as Clone>::clone` — GENERATED over `drive::drive_with` since stage F-4.
+///
+/// ★ The ladder `nested_list` builds already nests **through two `Vec` fields**:
+/// `Par.exprs: Vec<Expr>` and `EList.ps: Vec<Par>`. That matters, because the
+/// defect class this subject guards against is not "recursion" in general but
+/// **collection-element delegation** — a `Vec<T>` field routed to a whole-value
+/// `<Vec<T> as Clone>::clone`, which re-enters the element type's `Clone` and
+/// recurses. Eight of the nine "iterative" drivers the sibling `mettail-rust`
+/// generator emits are Θ(depth) for exactly that reason, at 254–10,592 B/level.
+///
+/// ⚠ It is a `Vec`-nested ladder, but it exercises only TWO of `Par`'s nine
+/// recursive collections. [`clone_send_chain_body`] is the second ladder, through
+/// a different one, for that reason.
 fn clone_body(depth: usize) {
     let term = nested_list(depth);
     assert_carries("the clone input's nesting", par_depth(&term), depth);
@@ -1818,6 +1891,285 @@ fn clone_body(depth: usize) {
     assert_carries("the CLONE's nesting", par_depth(&c), depth);
     dismantle(c);
     dismantle(term);
+}
+
+/// ★★ The **`Vec`-nested** clone ladder, through `Par.sends[0].chan`.
+///
+/// ⚠ **Why a second clone ladder is not redundant.** The generated driver has one
+/// `clone_push_children_*` / `clone_child_count_*` / `clone_rebuild_*` triple per
+/// entered type, and a ladder that nests through one collection field proves
+/// nothing about the other eight. `nested_list` descends
+/// `Par.exprs → Expr → EList.ps → Par`; this one descends
+/// `Par.sends → Send.chan → Par`, which is a **different** `Vec` field reached
+/// through an `Option<Par>` rather than a `Vec<Par>`.
+///
+/// ★ It is also the ladder that would go RED if the emitter regressed to
+/// `self.sends.clone()`: `<Vec<Send> as Clone>::clone` re-enters `Send::clone`,
+/// which clones `chan: Option<Par>`, which re-enters the DRIVEN `Par::clone` —
+/// one native frame per level, i.e. Θ(depth), with the `clone` subject above
+/// still flat because it never touches `sends`. A single-collection ladder is
+/// exactly how the sibling repo's defect hid.
+fn clone_send_chain_body(depth: usize) {
+    let term = nested_send_chain(depth);
+    assert_carries(
+        "the clone_send_chain input's nesting",
+        send_chain_depth(&term),
+        depth,
+    );
+    let c = term.clone();
+    assert_carries("the CLONE's nesting", send_chain_depth(&c), depth);
+    dismantle(c);
+    dismantle(term);
+}
+
+/// ★ The **EXTERN obligation**, measured rather than asserted.
+///
+/// The clone driver treats `EPathMap` as a **bounded** field — one whole-value
+/// `Clone` call — because an extern type contributes no descriptor-derived
+/// children. That is correct only because `EPathMap::clone` is O(1) **at the
+/// node**: `ps` is an `EntryTrie` whose clone is a refcount bump on the trie root
+/// plus an `Arc` bump on the memoized projection, and the shadow cell is an
+/// `OnceLock<Arc<_>>` clone (`models/src/rust/rhoapi_ext.rs`).
+///
+/// ⚠ If that ever stops being true — if `EPathMap::clone` starts deep-copying its
+/// `Vec<Par>` — this ladder goes sloped while every other clone subject stays
+/// flat, because `EPathMap` is the ONE recursive edge the driver does not own.
+/// Nesting is `Par → Expr → EPathmapBody(EPathMap) → ps[0] → Par`.
+///
+/// ## ⚠★ Why this subject LEAKS instead of dismantling — measured, not assumed
+///
+/// Its first reading was **1,865 B/level** (debug, 16 → 128) while `clone` and
+/// `clone_send_chain` were both flat, which looked exactly like the emitter
+/// having routed one field to a whole-value clone. It was not. The control
+/// [`pathmap_chain_drop_body`] builds the same ladder and releases it **with no
+/// clone at all**, and it measures the SAME two numbers to the byte:
+///
+/// ```text
+///   clone_pathmap_chain   69,632 -> 278,528   1,865 B/level
+///   pathmap_chain_drop    69,632 -> 278,528   1,865 B/level   ◀── no clone
+/// ```
+///
+/// So the clone contributes **zero** and the slope is the FIXTURE's teardown:
+/// `par_children::dismantle` cannot tear down through an `EPathMap`. Its
+/// `EPathmapBody` arm does `out.extend(x.ps().iter().cloned())` — it clones the
+/// entries out of the trie and leaves the ORIGINAL trie to drop through the
+/// derived recursive destructor. (`par_children.rs` already calls that exclusion
+/// *"a real gap, not a formality"*, for the matcher; this ladder is the first
+/// thing to measure it.)
+///
+/// A subject whose reading is `max(clone, drop)` reports the wrong traversal —
+/// the exact trap that once made the score-tree subjects report the SORTER's
+/// 78,573 B/level instead of the comparator's 1,329. So the term is **forgotten**
+/// rather than dismantled, and the teardown is measured separately by
+/// `pathmap_chain_drop`, which is in [`TRIPWIRE_DEPTH`] where it belongs.
+///
+/// ⚠ Leaking is correct HERE and nowhere else: every subject runs in its own
+/// child process, which exits immediately afterwards. `models/benches/wire_encode_bench.rs`
+/// uses `std::mem::forget` for the same reason.
+fn clone_pathmap_chain_body(depth: usize) {
+    // ⚠★ THE FIXTURE IS BUILT ON A BIG STACK, and that is the second measured
+    // correction to this subject. With the teardown removed it was STILL sloped —
+    // 49,152 -> 278,528, i.e. 2,048 B/level — and the deep end was UNCHANGED at
+    // 278,528, so whatever was sloped was in the part both readings shared: the
+    // BUILDER. `EPathMap::new` keys each entry by its canonical bytes, so
+    // constructing an `EPathMap` around a depth-`d` `Par` encodes that `Par`, and
+    // the prost encoder is audit row 7 — still Θ(depth) and in `TRIPWIRE_DEPTH`
+    // as `encode`. The ladder was measuring the ENCODER.
+    //
+    // ★ `on_a_big_stack` is the gate's existing instrument for exactly this, and
+    // the reason it exists is the same one: the score-tree subjects would have
+    // read `max(sort_match, subject)` if their fixtures had been built by scoring
+    // a deep `Par`.
+    let term = on_a_big_stack(move || nested_pathmap_chain(depth));
+    assert_carries(
+        "the clone_pathmap_chain input's nesting",
+        pathmap_chain_depth(&term),
+        depth,
+    );
+    let c = term.clone();
+    assert_carries("the CLONE's nesting", pathmap_chain_depth(&c), depth);
+    // ⚠ NOT `dismantle` — see the section above. The teardown of this shape is a
+    // DIFFERENT, still-Θ(depth) traversal, and including it here would attribute
+    // its slope to the clone.
+    std::mem::forget(c);
+    std::mem::forget(term);
+}
+
+/// ★★ **The DERIVED CONTROL for [`clone_body`]** — `term_ops::oracle_clone_par`,
+/// which is the `#[derive(Clone)]` expansion `models/build.rs` stripped, re-emitted
+/// by the same generator from the same resolved-field vector.
+///
+/// ## Why this exists rather than a manual revert
+///
+/// The "before" leg of a conversion's bisection evidence is normally taken by
+/// reverting the change and re-measuring. For a converted TRAIT IMPL that is both
+/// awkward and dangerous: the revert has to be un-reverted, and this workspace has
+/// already frozen a deliberately-broken probe form into history once by
+/// committing mid-measurement.
+///
+/// `models/build/wire_schema.rs` §F therefore retains the derive's own body as a
+/// free function, and `models/tests/clone_equivalence_corpus.rs` proves it
+/// byte-identical to the driven form on eight axes over 67 enumerated shapes. So
+/// the control and the subject live in the SAME binary, run on the SAME ladder, in
+/// the SAME invocation — and the "before" figure stops being a number somebody
+/// has to reproduce and becomes a number this file measures.
+///
+/// ⚠ It is deliberately in NEITHER [`CONVERTED_DEPTH`] nor [`TRIPWIRE_DEPTH`],
+/// exactly as `bincode_ser_derived` is: it is a Θ(depth) control, not a claim.
+/// Adding it to the tripwire list would require an [`assert_slope_below`] call
+/// pinning a ceiling on code that exists only to be sloped.
+fn clone_oracle_body(depth: usize) {
+    use models::rust::rholang::term_ops::oracle_clone_par;
+    let term = nested_list(depth);
+    assert_carries("the clone_oracle input's nesting", par_depth(&term), depth);
+    let c = oracle_clone_par(&term);
+    assert_carries("the ORACLE CLONE's nesting", par_depth(&c), depth);
+    dismantle(c);
+    dismantle(term);
+}
+
+/// ★ The **TEARDOWN control** for [`clone_pathmap_chain_body`]: build the same
+/// ladder and release it, with **no clone at all**.
+///
+/// ⚠ This exists because the first release measurement of `clone_pathmap_chain`
+/// came out SLOPED at 1,865 B/level (debug) while `clone` and `clone_send_chain`
+/// were both flat, and there are two candidate causes with opposite conclusions:
+///
+/// 1. the driven clone recurses through `EPathMap` — a defect in the emitter;
+/// 2. the FIXTURE's teardown recurses through `EPathMap` — a defect in
+///    `par_children::dismantle`, which the clone subject would then be reporting
+///    as its own.
+///
+/// This subject decides it. If it is sloped, cause (2) holds and the clone is
+/// innocent; the gate's own history contains the same trap — "a cloning fixture
+/// would report `max(clone, eq)`", which once made the score-tree subjects report
+/// the SORTER's 78,573 B/level instead of the comparator's 1,329.
+///
+/// ★ It stays in the file whatever the answer is, because a subject whose reading
+/// is a maximum over two traversals needs the other one measured beside it.
+///
+/// ## ★★★ THE ANSWER: NEITHER. It was a THIRD cause, and the first "confirmation"
+/// was a COMMON-CAUSE ARTIFACT.
+///
+/// The measurement sequence, recorded in full because the middle step is exactly
+/// the mistake this note exists to stop somebody repeating:
+///
+/// | step | `clone_pathmap_chain` | `pathmap_chain_drop` | read as |
+/// |---|---|---|---|
+/// | 1. both dismantle their fixture | 69,632 → 278,528 (1,865) | 69,632 → 278,528 (1,865) | "identical ⇒ the TEARDOWN is the cause" |
+/// | 2. clone subject leaks instead | 49,152 → 278,528 (2,048) | — | ⚠ still sloped, and the DEEP END DID NOT MOVE |
+/// | 3. fixture built on a big stack | **32,768 → 32,768 (0)** | **69,632 → 69,632 (0)** | ★ the BUILDER was the cause |
+///
+/// Step 1's identical numbers were **not** evidence that the teardown was the
+/// cause. Two bodies that share one sloped component read identically whatever
+/// else they do — and both of these shared the FIXTURE BUILDER. The step-1
+/// reading is a true statement ("the clone contributes zero") that supports a
+/// false conclusion, and step 2's unchanged deep end is what gave it away.
+///
+/// **The actual cause**: `EPathMap::new` keys every entry by its canonical bytes,
+/// so building an `EPathMap` around a depth-`d` `Par` *encodes* that `Par`, and
+/// the prost encoder is audit row 7 — still Θ(depth), still in
+/// [`TRIPWIRE_DEPTH`] as `encode`. The ladder was measuring the ENCODER through a
+/// constructor.
+///
+/// ⇒ **`par_children::dismantle` handles the `EPathMap` shape FLAT.** Its
+/// `EPathmapBody` arm clones the entries out of the trie and pushes them onto the
+/// worklist; the residual trie holds `Par`s that were *moved out*, so its drop is
+/// O(1) per node. That is a genuine property and this subject is its first
+/// measurement, which is why it is in [`CONVERTED_DEPTH`] rather than in the
+/// tripwire list.
+///
+/// ⚠ The `EPathmapBody` exclusion `par_children.rs` calls *"a real gap, not a
+/// formality"* is about **matching and substitution descent**, not about
+/// teardown. Nothing here bears on it.
+fn pathmap_chain_drop_body(depth: usize) {
+    // Built on a BIG stack, for the same reason [`clone_pathmap_chain_body`] is:
+    // `EPathMap::new` encodes each entry to key the trie, and the prost encoder
+    // is still Θ(depth) (audit row 7, gate subject `encode`). A fixture built on
+    // the sized stack would make this reading `max(build, teardown)`.
+    let term = on_a_big_stack(move || nested_pathmap_chain(depth));
+    assert_carries(
+        "the pathmap_chain_drop input's nesting",
+        pathmap_chain_depth(&term),
+        depth,
+    );
+    // The ONE thing under test: releasing this shape through the iterative
+    // teardown the clone subjects use.
+    dismantle(term);
+}
+
+/// `Par { sends: [Send { chan: <inner> }] }`, nested `depth` times.
+fn nested_send_chain(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for level in 0..depth {
+        p = Par {
+            sends: vec![models::rhoapi::Send {
+                chan: Some(p),
+                data: vec![],
+                persistent: false,
+                locally_free: vec![(level % 251) as u8],
+                connective_used: false,
+            }],
+            ..Default::default()
+        };
+    }
+    p
+}
+
+/// The measured nesting of a [`nested_send_chain`] term.
+///
+/// ⚠ Iterative, like [`par_depth`]: a recursive depth probe would consume the
+/// very stack the subject is measuring and the reading would be `max(subject,
+/// probe)`.
+fn send_chain_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.sends.first().and_then(|s| s.chan.as_ref()) {
+            Some(inner) => {
+                n += 1;
+                cur = inner;
+            }
+            None => return n,
+        }
+    }
+}
+
+/// `Par { exprs: [EPathmapBody(EPathMap { ps: [<inner>] })] }`, nested `depth`
+/// times.
+fn nested_pathmap_chain(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for level in 0..depth {
+        p = Par {
+            exprs: vec![models::rhoapi::Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(
+                    models::rust::rhoapi_ext::EPathMap::new(
+                        vec![p],
+                        vec![(level % 251) as u8],
+                        false,
+                        None,
+                    ),
+                )),
+            }],
+            ..Default::default()
+        };
+    }
+    p
+}
+
+/// The measured nesting of a [`nested_pathmap_chain`] term.
+fn pathmap_chain_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EPathmapBody(pm)) if !pm.ps().is_empty() => {
+                n += 1;
+                cur = &pm.ps()[0];
+            }
+            _ => return n,
+        }
+    }
 }
 
 /// `drop_in_place::<Par>` — `prost`'s DERIVED recursive destructor.
@@ -1994,7 +2346,11 @@ fn prost_de_body(depth: usize) {
     let decoded = Par::decode(&bytes[..]).expect(
         "stack_depth_gate: prost_de failed to decode a term inside its own recursion limit",
     );
-    assert_carries("the prost-DECODED term's nesting", par_depth(&decoded), depth);
+    assert_carries(
+        "the prost-DECODED term's nesting",
+        par_depth(&decoded),
+        depth,
+    );
     dismantle(decoded);
 }
 
@@ -2772,7 +3128,21 @@ fn theta_depth_tripwire() {
     // was lowered to refuse, and not merely something.
     assert_slope_below("subst_and_charge", ceiling(3_000, 700), 16, 128);
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
-    assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
+    // ⚠★ `assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128)` USED TO BE
+    // HERE, and it is deleted rather than relaxed.
+    //
+    // Stage F-4 converted `<Par as Clone>::clone`: `models/build.rs` strips the
+    // `Clone` derive from the 55 non-`Copy` `rhoapi` items and
+    // `models/build/wire_schema.rs` generates the impls, `Par`'s as an
+    // explicit-worklist traversal over `drive::drive_with`. The subject is in
+    // [`CONVERTED_DEPTH`] and `converted_traversals_are_depth_independent` now
+    // drives it, so a ceiling here would be a weaker statement about the same
+    // traversal AND would put the name in two registers at once.
+    //
+    // ★ **It LEFT the tripwire list by being CONVERTED, never by having its
+    // ceiling raised** — the same rule and the same words as `bincode_ser`'s
+    // departure. Pre-conversion baselines, by direct bisection of this subject:
+    // 16,493 B/level debug and 3,254 release.
     assert_slope_below("par_drop", ceiling(1_500, 800), 256, 4096);
     // ★★ THE DEPLOY-REACHABLE COMPOSITION — see `normalize_drop_body`.
     //
@@ -2907,21 +3277,89 @@ const S0_MIN_GROWTH: usize = 8 * RESOLUTION;
 /// recursion and `models/tests/par_prost_depth_ceiling.rs` exhibits a depth-34
 /// term that builds, writes, and fails to read. Widening past 33 would measure
 /// the error path.
+/// ⚠★ **`clone` HAS LEFT THIS TABLE, and its own harness said so.**
+///
+/// This table's rows must BIND — [`measure_binding_ladder`] widens the deep end
+/// until the growth clears [`S0_MIN_GROWTH`] and **fails loudly at `hi_max`**
+/// rather than reporting an unbound ladder, with a message whose first branch
+/// reads: *"the traversal is DEPTH-INDEPENDENT — then it belongs in
+/// `converted_traversals_are_depth_independent`, checked by `assert_no_slope`, not
+/// in an S0 slope row"*.
+///
+/// Stage F-4 made `clone` depth-independent, so that is exactly where it went.
+/// Its last measurement as a sloped subject — **16,493 B/level debug, 3,254
+/// release** — is the "before" leg of the conversion's bisection evidence and is
+/// recorded in `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`.
+/// Leaving the row here would have failed this test to make a point that is
+/// already made by `clone` appearing in [`CONVERTED_DEPTH`].
 const S0_LADDERS: &[S0Ladder] = &[
-    S0Ladder { subject: "clone",    label: "clone",          lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "par_drop", label: "par_drop",       lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "eq",       label: "eq",             lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "hash",     label: "hash",           lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "ord",      label: "ord",            lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "debug",    label: "debug",          lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder {
+        subject: "par_drop",
+        label: "par_drop",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "eq",
+        label: "eq",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "hash",
+        label: "hash",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "ord",
+        label: "ord",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "debug",
+        label: "debug",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
     // ★ `prost_ser` IS the `encode` subject. It is not given a second name:
     // "one name for one traversal" is this file's rule, and the rename note in
     // [`subject`] records what a second name cost the last time there was one.
-    S0Ladder { subject: "encode",   label: "prost_ser",      lo: 16,  hi: 128,  hi_max: 4096 },
-    S0Ladder { subject: "prost_de", label: "prost_de",       lo: 4,   hi: 32,   hi_max: 32   },
+    S0Ladder {
+        subject: "encode",
+        label: "prost_ser",
+        lo: 16,
+        hi: 128,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "prost_de",
+        label: "prost_de",
+        lo: 4,
+        hi: 32,
+        hi_max: 32,
+    },
     // ── the two cross-checks against ladders this gate already publishes ──
-    S0Ladder { subject: "par_drop", label: "par_drop@gate",  lo: 256, hi: 4096, hi_max: 4096 },
-    S0Ladder { subject: "encode",   label: "prost_ser@gate", lo: 64,  hi: 1024, hi_max: 1024 },
+    S0Ladder {
+        subject: "par_drop",
+        label: "par_drop@gate",
+        lo: 256,
+        hi: 4096,
+        hi_max: 4096,
+    },
+    S0Ladder {
+        subject: "encode",
+        label: "prost_ser@gate",
+        lo: 64,
+        hi: 1024,
+        hi_max: 1024,
+    },
 ];
 
 /// Measure `rung`, widening its deep end until the ladder BINDS.
@@ -2978,6 +3416,155 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
     }
 }
 
+/// ★★★ **Stage F-4's bisection evidence, as a TEST rather than as a transcript.**
+///
+/// A conversion's evidence is a before/after pair at both ends of a ladder, in
+/// both profiles. The "before" is normally taken by reverting the change — which
+/// for a converted TRAIT IMPL means un-deriving and re-deriving `Clone`, and this
+/// workspace has already frozen a deliberately-broken probe form into history
+/// once by committing mid-measurement.
+///
+/// So the "before" is a **live control**. `models/build/wire_schema.rs` §F retains
+/// the derive's own body as `term_ops::oracle_clone_par`, and
+/// `models/tests/clone_equivalence_corpus.rs` proves it byte-identical to the
+/// driven form on eight axes over 67 enumerated shapes. Subject and control are in
+/// the same binary, on the same ladder, in the same invocation.
+///
+/// ## The four legs
+///
+/// | leg | what it establishes |
+/// |---|---|
+/// | the control is SLOPED, by an order of magnitude | the ladder can see a Θ(depth) clone at all, so the subject's flatness is a finding and not a short ladder |
+/// | the subject is FLAT | the conversion worked |
+/// | the control does **not** survive the stack the subject needs at the deep rung | the sharpest form of the difference, and it needs no checker |
+/// | the two `Vec`-nested ladders are flat too | ★ the collection-element boundary, which a single-collection ladder cannot cover |
+///
+/// ⚠ **Leg 3 is the guard watched RED at the value it refuses.** `clone_oracle` IS
+/// the pre-conversion `<Par as Clone>::clone` semantically; asserting that it
+/// fails on the subject's stack is the same statement as "reverting the emitter
+/// reproduces a Θ(depth) clone", taken by measurement instead of by revert.
+///
+/// ## ⚠★ How faithfully the oracle reproduces the derive — MEASURED, and not
+/// equally in both profiles
+///
+/// ```text
+///                       oracle, measured here      derive, on record
+///   debug                    16,128 B/level          16,493 B/level   (−2.2%)
+///   release                   7,021 B/level           3,254 B/level   (+116%)
+/// ```
+///
+/// The oracle is a **semantic** reproduction, and that much is proved rather than
+/// asserted: `models/tests/clone_equivalence_corpus.rs` shows it byte-identical to
+/// the driven clone on eight axes over 67 enumerated shapes. It is **not** a
+/// frame-layout reproduction. In debug it lands within 2.2% of the derive; under
+/// `-O` a family of free functions inlines differently from a single
+/// `<Par as Clone>::clone`, and it costs 2.16× more per level.
+///
+/// ⇒ **Do not read 7,021 as the derive's release figure.** The derive's release
+/// figure is **3,254 B/level**, bisected directly from this subject at HEAD before
+/// the conversion and recorded in
+/// `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md` and in
+/// `models/build/wire_schema.rs`'s disposition table.
+///
+/// ★ The divergence is CONSERVATIVE for every leg that uses the oracle: legs 1 and
+/// 3 both want the control to be *expensive*, so an over-costly control makes them
+/// easier to pass and cannot manufacture a false green for leg 2 — which measures
+/// the subject alone.
+///
+/// `#[ignore]`d because it is eight bisections, each an exponential probe plus
+/// ~15 child processes. Drive it per profile:
+///
+/// ```text
+///   cargo test -p rholang --test stack_depth_gate -- --ignored --exact \
+///       the_clone_conversion_is_visible_against_its_own_derived_control --nocapture
+///   cargo test --release -p rholang --test stack_depth_gate -- --ignored --exact \
+///       the_clone_conversion_is_visible_against_its_own_derived_control --nocapture
+/// ```
+#[test]
+#[ignore = "eight bisections; drive explicitly per profile"]
+fn the_clone_conversion_is_visible_against_its_own_derived_control() {
+    // The ladder `clone` was tripwired on before the conversion, so the numbers
+    // are comparable to the ones on record.
+    const LO: usize = 16;
+    const HI: usize = 128;
+
+    let control = measure_ladder("clone_oracle", LO, HI);
+    let subject = measure_ladder("clone", LO, HI);
+
+    println!(
+        "  clone_oracle (the DERIVE): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
+        control.lo_stack / 1024,
+        control.hi_stack / 1024,
+        control.per_step()
+    );
+    println!(
+        "  clone        (the DRIVER): {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
+        subject.lo_stack / 1024,
+        subject.hi_stack / 1024,
+        subject.per_step()
+    );
+
+    // ── LEG 1: the control is sloped, by an order of magnitude. ──
+    assert!(
+        clears_tolerance_by_an_order_of_magnitude(control),
+        "the DERIVED control `clone_oracle` grew only {} B across depth {LO} -> {HI} ({} \
+         B/level). It is `term_ops::oracle_clone_par`, the `#[derive(Clone)]` body this stage \
+         replaced, and it was measured at 16,493 B/level debug / 3,254 release before the \
+         conversion. A flat control means the oracle is not the traversal it claims to be — most \
+         likely it has started routing through the DRIVEN `<Par as Clone>::clone` instead of \
+         recursing into its own family — and every comparison below would be vacuous.",
+        control.growth(),
+        control.per_step()
+    );
+
+    // ── LEG 2: the subject is flat. ──
+    if let Err(why) = zero_slope_verdict("clone", "depth", subject) {
+        panic!("{why}");
+    }
+
+    // ── LEG 3: the control does not survive the subject's stack. ──
+    //
+    // The sharpest statement of the difference, and it needs no verdict function:
+    // on the stack that suffices for the DRIVEN clone at depth `HI`, the DERIVED
+    // one does not run.
+    assert!(
+        !runs_within(subject.hi_stack, HI, "clone_oracle"),
+        "★ the DERIVED control survived the {} KiB the DRIVEN clone needs at depth {HI}, so the \
+         two are not separable on this ladder and the conversion is not visible. Either the \
+         ladder is too short (raise HI) or the oracle is no longer the derive.",
+        subject.hi_stack / 1024
+    );
+
+    // ── LEG 4: the Vec-nested ladders, which `clone` alone cannot cover. ──
+    //
+    // ★★ `clone` descends `Par.exprs -> Expr -> EList.ps -> Par`: two of `Par`'s
+    // nine recursive collections. The sibling `mettail-rust` generator's eight
+    // Θ(depth) "iterative" drivers all escaped through the SAME boundary —
+    // `Category -> Vec<Elem> -> Elem` — and a single-collection ladder is exactly
+    // how that hid. These two nest through different fields.
+    for name in ["clone_send_chain", "clone_pathmap_chain"] {
+        let l = measure_ladder(name, LO, HI);
+        println!(
+            "  {name}: {} KiB @ {LO} -> {} KiB @ {HI} = {} B/level",
+            l.lo_stack / 1024,
+            l.hi_stack / 1024,
+            l.per_step()
+        );
+        if let Err(why) = zero_slope_verdict(name, "depth", l) {
+            panic!(
+                "{why}\n\
+                 \n\
+                 ★ This ladder nests through a DIFFERENT collection field from `clone`'s, and it \
+                 is sloped while `clone` is flat. That is the exact signature of \
+                 COLLECTION-ELEMENT DELEGATION: the emitter routed one `Vec<T>` field to a \
+                 whole-value `<Vec<T> as Clone>::clone`, which re-enters the element type's \
+                 `Clone` and recurses. Check `clone_push_children_*` in \
+                 `OUT_DIR/rhoapi_term_ops.rs` for a `.clone()` where a `for` loop belongs."
+            );
+        }
+    }
+}
+
 /// ★★ **The S0 baseline: measure first, claim nothing.**
 ///
 /// This test asserts **no ceiling**. It bisects each subject's minimum stack at
@@ -2989,10 +3576,20 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// ⚠ **The audit's §12.6 constants (2,852 / 144 / 310 / 1,244) are NOT
 /// inherited here.** `9082d12c` removed a *call* to `<Par as Clone>::clone` at
 /// `inj_attempt`'s set-initial-cost phase and entered the COMPOSITION in
-/// [`CONVERTED_DEPTH`] as `inj_attempt_clone`; `<Par as Clone>::clone` itself is
-/// untouched and still in [`TRIPWIRE_DEPTH`]. And `tree_clone` / `tree_drop` are
+/// [`CONVERTED_DEPTH`] as `inj_attempt_clone`. And `tree_clone` / `tree_drop` are
 /// `score_tree::Tree<T>`, not `Par`. Every number this test prints is re-measured
 /// at HEAD.
+///
+/// ⚠★ **CORRECTED 2026-07-29.** This paragraph used to end *"`<Par as
+/// Clone>::clone` itself is untouched and still in `TRIPWIRE_DEPTH`"*. That was
+/// true when it was written and it is not true now: **stage F-4 converted it**
+/// (`models/build.rs` strips the `Clone` derive from the 55 non-`Copy` `rhoapi`
+/// items; `models/build/wire_schema.rs` generates the impls, `Par`'s over
+/// `drive::drive_with`). `clone` is in [`CONVERTED_DEPTH`], its
+/// [`assert_slope_below`] call is deleted, and its [`S0_LADDERS`] row is gone —
+/// see the note on that constant. The reading the old sentence stood behind,
+/// **16,493 B/level debug and 3,254 release**, is now the pre-conversion baseline
+/// rather than a current measurement.
 ///
 /// ## Running it
 ///

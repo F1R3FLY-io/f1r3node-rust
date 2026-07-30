@@ -57,14 +57,15 @@ test that runs, and a test that runs is a name here.
 ```text
 converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
                  tree_drop, tree_clone, eval_with_nots, bincode_de, bincode_ser, pretty,
-                 normalize, inj_attempt_clone
+                 normalize, inj_attempt_clone, clone, clone_send_chain,
+                 clone_pathmap_chain, pathmap_chain_drop
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
-tripwire-depth:  subst_and_charge, substitute_deep_binding, clone, par_drop,
+tripwire-depth:  subst_and_charge, substitute_deep_binding, par_drop,
                  normalize_drop, encode, sort_nested_set, sort_nested_map,
                  clone_nested_set
 tripwire-width:
-totals:          converted=19, tripwired=9
+totals:          converted=23, tripwired=8
 ```
 <!-- GATE-SUBJECTS:END -->
 

@@ -199,6 +199,11 @@ doctest = false
 # t-test over a PRODUCTION-WEIGHTED workload, which the default harness does
 # not produce; the weighting is the experiment, not a detail of it.
 [[bench]]
+name = "term_ops_bench"
+path = "benches/term_ops_bench.rs"
+harness = false
+
+[[bench]]
 name = "wire_encode_bench"
 path = "benches/wire_encode_bench.rs"
 harness = false
