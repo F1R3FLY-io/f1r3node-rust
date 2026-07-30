@@ -78,6 +78,27 @@ BENCH_FAILURES="${BENCH_FAILURES:-0}"
 MERGE_EXIT_MIN_SECONDS="${SOAK_MERGE_EXIT_MIN_SECONDS:-0}"
 EARLY_EXIT_REASON=""
 
+# Total-node-RSS watchdog ceiling passed to the harness (--rss-ceiling-mb).
+# The harness default is 5000MB — sized for laptops, not the 32GB soak VM:
+# the 6-node shard legitimately peaks ~10GB under test_load, and the default
+# killed every iteration of run 30516534214 ~130s in. Size to the host
+# instead, leaving 8GB for OS/Docker/harness, so the watchdog stays on to
+# catch a real leak before swap-thrash freezes the VM without ever firing on
+# normal load. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+RSS_CEILING_MB="${SOAK_RSS_CEILING_MB:-}"
+if [ -n "$RSS_CEILING_MB" ]; then
+  if ! [[ "$RSS_CEILING_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_RSS_CEILING_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  RSS_CEILING_MB="$((mem_total_kb / 1024 - 8192))"
+  if [ "$RSS_CEILING_MB" -lt 5000 ]; then
+    RSS_CEILING_MB=5000
+  fi
+fi
+
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
   exit 2
@@ -115,12 +136,12 @@ iteration_rss_peak_mb() {
   local iteration_dir="$1" ts_csv
   ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name resource-timeseries.csv -newer "$iteration_dir/.started" 2>/dev/null \
-    | xargs -r ls -t 2>/dev/null | head -1)"
+    | xargs -r ls -t 2>/dev/null | head -1 || true)"
   [ -n "$ts_csv" ] || return 0
   cp "$ts_csv" "$iteration_dir/resource-timeseries.csv" 2>/dev/null || true
   awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $3 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
-                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null
+                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null || true
 }
 
 # Peak total node CPU (%) for this iteration, same resource-timeseries.csv as
@@ -140,6 +161,8 @@ iteration_cpu_peak_percent() {
 # profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
 iteration_finalization_latency() {
   local iteration_dir="$1"
+  # `|| true` is load-bearing under pipefail: a failed iteration can leave
+  # zero matching samples, making grep exit 1 and the pipeline nonzero.
   find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name '*.log' -newer "$iteration_dir/.started" 2>/dev/null \
     | xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null \
@@ -151,7 +174,7 @@ iteration_finalization_latency() {
                  if (p50 == "") p50 = a[NR]
                  if (p95 == "") p95 = a[NR]
                  if (p99 == "") p99 = a[NR]
-                 print p50, p95, p99, NR }'
+                 print p50, p95, p99, NR }' || true
 }
 
 # Count of proposal rejections logged as too far ahead of the last finalized
@@ -177,7 +200,7 @@ emit_iteration_metrics() {
         iter_started="$4" iter_finished="$5" exit_code="$6"
   command -v jq >/dev/null || return 0
   local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
-  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1)"
+  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
   passed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)"
   failed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)"
   skipped="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)"
@@ -262,7 +285,6 @@ run_bench_segment() {
   local segment_dir
   segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
   mkdir -p "$segment_dir"
-  set +e
   NODE_REPO_DIR="$NODE_REPO_DIR" \
   OUT_DIR="$segment_dir" \
   BENCH_DURATION="$BENCH_DURATION" \
@@ -271,7 +293,6 @@ run_bench_segment() {
   SOAK_STARTED_AT="$STARTED_AT" \
     "$SCRIPT_DIR/bench/run-bench-segment.sh" > "$segment_dir/segment.log" 2>&1
   local status=$?
-  set -e
   if [ "$status" -ne 0 ]; then
     BENCH_FAILURES="$((BENCH_FAILURES + 1))"
     printf '%s\n' "$status" > "$segment_dir/exit-code.txt"
@@ -299,7 +320,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
   ITER_STARTED="$(date +%s)"
   touch "$ITERATION_DIR/.started"
-  set +e
   (
     cd "$SYSTEM_INTEGRATION_DIR"
     timeout --signal=TERM --kill-after=120 "${REMAINING}s" \
@@ -307,14 +327,19 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       integration-tests/test/tests/custom/test_load.py \
       --provider="$PROVIDER" \
       --monitor \
+      --rss-ceiling-mb "$RSS_CEILING_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
   STATUS="${PIPESTATUS[0]}"
-  set -e
+  # No `set -e` restore: this script never enables errexit (line 2 is
+  # `set -uo pipefail`), and turning it on here made the first failed
+  # iteration fatal — the metric pipelines return nonzero when a failed
+  # iteration leaves nothing to sample, which killed every segment mid-loop
+  # before the state file or rollup could be written (run 30516534214).
   ITER_FINISHED="$(date +%s)"
   emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS"
+    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
 
   if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
     printf '%s\n' "deadline reached during iteration $ITERATIONS" > "$ITERATION_DIR/deadline.txt"
