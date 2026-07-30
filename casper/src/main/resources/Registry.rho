@@ -294,18 +294,42 @@ in {
                   if (n == len) {
                     // We're at the end of the path.
                     if (val == 0) {
-                      // There's nothing here.
+                      // The leaf was created by MakeNode and never written, so val is still the
+                      // Int 0 rather than a Map. There's nothing here.
                       // Return
                       ret!(Nil)
                     } else {
                       new resultCh in {
                         // Acquire the lock on this node
                         for (@val <- @(*bitmaskTag, node, *storeToken)) {
-                          // Update the current value
-                          update!(val.get(suffix), *resultCh) |
-                          for (@newVal <- resultCh) {
-                            // Release the lock
-                            @(*bitmaskTag, node, *storeToken)!(val.set(suffix, newVal)) |
+                          // ASK ABOUT THE KEY, NOT ABOUT THE LEAF. The "val == 0" test above only
+                          // separates "this leaf has never been written" (an Int) from "this leaf
+                          // holds a Map"; it says nothing about whether THIS key is in that Map.
+                          // "delete" writes val.delete(suffix) and leaves the Map in place, so
+                          // after a delete -- and equally for a key that was never set into a leaf
+                          // some OTHER key already occupies -- val is a Map that lacks suffix.
+                          // Without this test the updater called update!(val.get(suffix), ...),
+                          // i.e. update!(Nil, ...), and then wrote the answer back with
+                          // val.set(suffix, newVal), RESURRECTING a deleted key. "contains" is the
+                          // same question TreeHashMapContains asks of the same Map below.
+                          // The test sits INSIDE the lock, and is nested rather than combined with
+                          // "val == 0" by "or", deliberately: "or" is not short-circuit, so
+                          // "val == 0 or not val.contains(suffix)" would evaluate 0.contains(...)
+                          // on a never-written leaf and raise.
+                          if (val.contains(suffix)) {
+                            // Update the current value
+                            update!(val.get(suffix), *resultCh) |
+                            for (@newVal <- resultCh) {
+                              // Release the lock
+                              @(*bitmaskTag, node, *storeToken)!(val.set(suffix, newVal)) |
+                              // Return
+                              ret!(Nil)
+                            }
+                          } else {
+                            // The key is absent from this leaf: there is nothing to update.
+                            // Release the lock UNCHANGED and answer exactly as the
+                            // "the path doesn't exist" branch below does.
+                            @(*bitmaskTag, node, *storeToken)!(val) |
                             // Return
                             ret!(Nil)
                           }

@@ -1,8 +1,10 @@
 use std::time::Duration;
 
+pub mod rho_spec_probe;
 pub mod test_util;
 
 pub mod auth_key_spec;
+pub mod blessed_contract_source_pins;
 pub mod block_data_contract_spec;
 pub mod capabilities_registry_spec;
 pub mod deep_recursion_spec;
@@ -25,6 +27,7 @@ pub mod standard_deploys_spec;
 pub mod system_vault_spec;
 pub mod timeout_result_collector_spec;
 pub mod token_metadata_spec;
+pub mod tree_hash_map_delete_restores_never_set;
 pub mod tree_hash_map_spec;
 pub mod vault_address_spec;
 pub mod vault_issuance_test;

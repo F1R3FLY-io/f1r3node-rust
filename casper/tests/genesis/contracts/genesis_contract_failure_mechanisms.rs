@@ -11,18 +11,11 @@
 //!
 //! # ⚠ Why every probe goes through `get_results` and not through a bare `inj`
 //!
-//! **A Rholang program that blocks is not an error.** `runtime.inj(term, …)` returns `Ok(())` for a
-//! program that reduced to a *stuck* normal form just as readily as for one that finished its work,
-//! so `assert!(eval(code).is_ok())` is a **vacuous** control: it passes when the code under test
-//! never ran. Measured the hard way — the first version of this file asserted exactly that, and its
-//! "control: the purse-log round trip is clean" was passing on a program that had gone quiet. That
-//! is the same defect as the one this whole work item is about, reproduced inside its own probe.
-//!
-//! A synthetic **RhoSpec** suite fixes it, because `RhoSpecContract.rho` supplies a liveness
-//! signal: `testSuiteCompleted` fires only after `ListOps.foreach` has walked the registered list,
-//! and each `assert` is recorded by name. [`SuiteOutcome`] therefore reports *reached the end*
-//! separately from *did not raise*, and no cell here is allowed to conclude anything from the
-//! second alone.
+//! **A Rholang program that blocks is not an error**, so `assert!(eval(code).is_ok())` is a vacuous
+//! control. The instrument that fixes this — and the full rationale, measured the hard way inside
+//! this file's own first version — now lives in [`super::rho_spec_probe`], because a second file
+//! measures with it. [`SuiteOutcome`] reports *reached the end* separately from *did not raise*, and
+//! no cell here is allowed to conclude anything from the second alone.
 //!
 //! # Why probes and not a bisected `.rho`
 //!
@@ -31,188 +24,9 @@
 //! mutate the corpus under measurement; narrowing by *reconstruction* leaves the corpus alone and
 //! produces a permanent, self-contained statement of the mechanism.
 
-use std::collections::{BTreeSet, HashMap};
-use std::time::Duration;
-
-use casper::rust::helper::test_result_collector::TestResultCollector;
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-use rholang::rust::interpreter::errors::InterpreterError;
-
-use crate::helper::rho_spec::get_results;
-use crate::util::genesis_builder::GenesisBuilder;
-
-/// How long a probe suite gets. Each probe is a handful of COMM events once genesis is built, so a
-/// suite still running after this has blocked rather than slowed down.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// What a probe suite did, with *raised* and *reached the end* reported separately.
-#[derive(Debug)]
-enum SuiteOutcome {
-    /// The suite ran to `testSuiteCompleted` and reported these test names.
-    Completed { reported: BTreeSet<String> },
-    /// The suite reduced to a normal form without completing: something blocked.
-    /// `reported` is what it managed to assert before going quiet.
-    Blocked { reported: BTreeSet<String> },
-    /// The suite raised.
-    Raised(InterpreterError),
-}
-
-impl SuiteOutcome {
-    fn is_completed(&self) -> bool { matches!(self, SuiteOutcome::Completed { .. }) }
-
-    fn raise_text(&self) -> Option<String> {
-        match self {
-            SuiteOutcome::Raised(e) => Some(format!("{e:?}")),
-            _ => None,
-        }
-    }
-
-    /// The reported names, for cells that want to compare them regardless of whether the suite
-    /// finished. `None` for a raise, where "which tests reported" is not a meaningful question.
-    fn reported_set(&self) -> Option<BTreeSet<String>> {
-        match self {
-            SuiteOutcome::Completed { reported } | SuiteOutcome::Blocked { reported } => {
-                Some(reported.clone())
-            }
-            SuiteOutcome::Raised(_) => None,
-        }
-    }
-}
-
-/// Drive a synthetic RhoSpec suite through the harness's own `get_results`.
-///
-/// Deliberately NOT `RhoSpec::run_tests`: the non-vacuity floor would turn a probe's deliberately
-/// partial suite into a panic, and what a probe wants is the outcome as a value.
-async fn run_suite(source: &str) -> SuiteOutcome {
-    let compiled = match CompiledRholangSource::new(
-        source.to_string(),
-        HashMap::new(),
-        "<probe suite>".to_string(),
-    ) {
-        Ok(compiled) => compiled,
-        Err(e) => {
-            return SuiteOutcome::Raised(InterpreterError::BugFoundError(format!(
-                "probe source must compile: {e:?}"
-            )))
-        }
-    };
-
-    let collector = std::sync::Arc::new(TestResultCollector::new());
-    match get_results(
-        &compiled,
-        &[],
-        PROBE_TIMEOUT,
-        GenesisBuilder::build_genesis_parameters_with_defaults(None, None),
-        collector,
-    )
-    .await
-    {
-        Err(e) => SuiteOutcome::Raised(e),
-        Ok(result) => {
-            let reported = result.assertions.keys().cloned().collect();
-            match result.has_finished {
-                true => SuiteOutcome::Completed { reported },
-                false => SuiteOutcome::Blocked { reported },
-            }
-        }
-    }
-}
-
-/// [`run_suite`], plus the **verdicts** — which [`SuiteOutcome`] deliberately does not carry.
-///
-/// `SuiteOutcome` answers *did it reach the end* and *did it raise*, because those are the two
-/// questions the block-vs-raise cells need and conflating them with pass/fail is what made the
-/// original probe vacuous. But a cell that pins a VALUE needs the third question, and
-/// `TestResult::assertions` already holds it: [`RhoTestAssertion::is_success`] per recorded
-/// assertion. Returned as `Some(all_succeeded)` when at least one assertion was recorded, and `None`
-/// when none was — so "no assertions ran" can never be mistaken for "every assertion passed", which
-/// is the vacuity this whole file exists to avoid.
-async fn run_suite_with_verdicts(source: &str) -> (SuiteOutcome, Option<bool>) {
-    let compiled = match CompiledRholangSource::new(
-        source.to_string(),
-        HashMap::new(),
-        "<probe suite>".to_string(),
-    ) {
-        Ok(compiled) => compiled,
-        Err(e) => {
-            return (
-                SuiteOutcome::Raised(InterpreterError::BugFoundError(format!(
-                    "probe source must compile: {e:?}"
-                ))),
-                None,
-            )
-        }
-    };
-
-    let collector = std::sync::Arc::new(TestResultCollector::new());
-    match get_results(
-        &compiled,
-        &[],
-        PROBE_TIMEOUT,
-        GenesisBuilder::build_genesis_parameters_with_defaults(None, None),
-        collector,
-    )
-    .await
-    {
-        Err(e) => (SuiteOutcome::Raised(e), None),
-        Ok(result) => {
-            let mut total = 0usize;
-            let mut passed = 0usize;
-            for attempts in result.assertions.values() {
-                for assertions in attempts.values() {
-                    for assertion in assertions {
-                        total += 1;
-                        if assertion.is_success() {
-                            passed += 1;
-                        }
-                    }
-                }
-            }
-
-            let reported = result.assertions.keys().cloned().collect();
-            let outcome = match result.has_finished {
-                true => SuiteOutcome::Completed { reported },
-                false => SuiteOutcome::Blocked { reported },
-            };
-            let verdict = match total {
-                0 => None,
-                _ => Some(passed == total),
-            };
-            (outcome, verdict)
-        }
-    }
-}
-
-/// A one-test RhoSpec suite: `setup` and `body` spliced into the standard preamble.
-///
-/// `rho:id:zphjg…` is `RhoSpecContract.rho`'s registered URI (its own header table, row 8).
-fn one_test_suite(test_name: &str, setup: &str, body: &str) -> String {
-    format!(
-        r#"
-new rl(`rho:registry:lookup`), RhoSpecCh, setup, probeTest in {{
-  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
-  for(@(_, RhoSpec) <- RhoSpecCh) {{
-    @RhoSpec!("testSuite", *setup, [("{test_name}", *probeTest)])
-  }} |
-  contract setup(_, retCh) = {{
-{setup}
-  }} |
-  contract probeTest(rhoSpec, setupResult, ackCh) = {{
-{body}
-  }}
-}}
-"#
-    )
-}
-
-/// The name every probe registers, so `Completed { reported }` is checkable against one constant.
-const PROBE_TEST: &str = "the probe";
-
-fn only(name: &str) -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
-    set.insert(name.to_string());
-    set
-}
+use crate::genesis::contracts::rho_spec_probe::{
+    one_test_suite, only, run_suite, run_suite_with_verdicts, SuiteOutcome, PROBE_TEST,
+};
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // (a) `MakeMint.rho`'s LOGGING path raises — `make_mint_spec`, `test_log_set`
@@ -434,19 +248,31 @@ fn with_single_registered_test(source: &str, keep: &str) -> String {
 ///   value to update" branch at `:319-321` and returns **without calling `update`**. `Nil + 1` is
 ///   never evaluated.
 /// * after delete — `TreeHashMapDeleter` removes the key from the leaf map at
-///   `Registry.rho:393` (`val.delete(suffix)`) but leaves the now-EMPTY leaf map in place. The
-///   updater's emptiness test at `Registry.rho:296` is `val == 0`, which is true of an absent
-///   *path* but false of an empty *map*, so it falls through to `update!(val.get(suffix), …)` at
-///   `:305` — i.e. `update!(Nil, …)`. `Nil + 1` IS evaluated, and raises.
+///   `Registry.rho:393` (`val.delete(suffix)`) but leaves the leaf map in place. The updater's leaf
+///   test at `Registry.rho:296` is `val == 0`, which is true of a never-written leaf (an `Int`) but
+///   false of *any* `Map`, so it falls through to `update!(val.get(suffix), …)` — i.e.
+///   `update!(Nil, …)`. `Nil + 1` IS evaluated, and raises.
 ///
 /// So "Update after delete behaves like update on never-set" — the fixture's own sentence — is
-/// exactly the invariant `delete` fails to restore, and the raise is only the messenger. The repair
-/// belongs in the blessed contract, is consensus-visible, and owes a
-/// `docs/consensus/consensus-change-register.md` entry; it is therefore REPORTED here, not made.
+/// exactly the invariant the updater fails to uphold, and the raise is only the messenger.
 ///
-/// The consequence meanwhile is not "the update is a no-op": a raise inside `inj` aborts the
-/// **whole** program, so `tree_hash_map_spec` dies at that test and the twelve tests registered
-/// after it never run.
+/// ★★ **FIXED, and the mechanism above needed one correction to be actionable.** This cell
+/// originally described the leaf as "the now-EMPTY leaf map", which reads as *emptiness* being the
+/// defect and points the repair at the deleter. That is wrong, and
+/// [`super::tree_hash_map_delete_restores_never_set::update_in_a_leaf_a_sibling_still_occupies_does_not_resurrect`]
+/// refutes it: a leaf that a SIBLING key still occupies — so not empty at all — resurrects the
+/// deleted key just the same. The question `Registry.rho:296` asks is about the leaf's *carrier*
+/// where it must be about the *key*, and the repair is `if (val.contains(suffix))` inside the lock.
+///
+/// The raise was also not the worst of it. With an update body that can cope with `Nil`, the updater
+/// wrote its answer back through `val.set(suffix, newVal)` and **the deleted key came back** — a
+/// data-integrity defect in a contract `Registry.rho:486` publishes to the registry as
+/// `rho:lang:treeHashMap`. That is the finding; see the sibling file for the measurement, and
+/// `docs/consensus/consensus-change-register.md` CBR-033 for the consensus analysis.
+///
+/// This cell is unaffected by the repair and stays as it is: it measures `Nil + 1` in isolation, not
+/// through `TreeHashMap`, so it remains the statement that the fixture's premise about `Nil + 1` was
+/// false independently of who called it.
 #[tokio::test]
 async fn adding_to_nil_raises_rather_than_yielding_no_result() {
     const SETUP: &str = r#"    retCh!(Nil)"#;

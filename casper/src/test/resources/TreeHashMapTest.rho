@@ -55,7 +55,7 @@ in {
         ("Update after delete behaves like update on never-set", *test_update_after_delete),
         ("ToMap reflects deletions", *test_to_map_after_delete),
         ("TreeHashMap with depth=1 (max interior sharing)", *test_treehashmap_depth_1),
-        ("GetOrElse returns default after delete", *test_get_or_else_after_delete),
+        ("GetOrElse signals nilCh after delete", *test_get_or_else_after_delete),
         ("Bulk insert + bulk delete + bulk reinsert", *test_bulk_insert_then_bulk_delete_then_reinsert),
         ("Convert to map 0 values", *test_convert_to_map_0_values),
         ("Convert to map 1 values", *test_convert_to_map_1_values),
@@ -456,20 +456,31 @@ in {
         }
       } |
 
-      // getOrElse on a deleted key must return the default — covers a gap
+      // getOrElse on a DELETED key must take the nil branch — covers a gap
       // relative to test_get_or_else_when_key_missing (which only covers
       // never-set keys).
+      //
+      // ARITY. `getOrElse` takes TWO CHANNELS and no default VALUE
+      // (Registry.rho:349): it signals nilCh when "get" answers Nil and valueCh
+      // otherwise. This test used to send ("getOrElse", thm, "k",
+      // "default_value", *geCh) -- a String where valueCh belongs -- and then
+      // read the answer off *geCh with the one-argument receive that
+      // ("default_value", "== <-", *geCh) compiles to. `nilCh!()` sends ZERO
+      // arguments, so that receive could never match: the send rested silently,
+      // nothing raised, and the WHOLE SUITE blocked here. The seven tests
+      // registered after this one had never run in the life of the harness.
+      // Mirrors test_get_or_else_when_key_missing above, which was always right.
       contract test_get_or_else_after_delete(rhoSpec, _, ackCh) = {
-        new ret, setCh, delCh, geCh in {
+        new ret, setCh, delCh, valueCh, nilCh in {
           TreeHashMap!("init", 3, *ret) |
           for (@thm <- ret) {
             TreeHashMap!("set", thm, "k", "original", *setCh) |
             for (_ <- setCh) {
               TreeHashMap!("delete", thm, "k", *delCh) |
               for (_ <- delCh) {
-                TreeHashMap!("getOrElse", thm, "k", "default_value", *geCh) |
-                rhoSpec!("assert", ("default_value", "== <-", *geCh),
-                  "getOrElse returns default value after key is deleted",
+                TreeHashMap!("getOrElse", thm, "k", *valueCh, *nilCh) |
+                rhoSpec!("assert", ("nothing <-", *nilCh),
+                  "getOrElse signals nilCh after the key is deleted",
                   *ackCh)
               }
             }
