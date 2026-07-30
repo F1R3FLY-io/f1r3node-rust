@@ -411,6 +411,66 @@
 //! `size_of::<Outcome<CloneVal, CloneNode<'_>>>() == 256`, of which not one byte
 //! is per-level.
 //!
+//! # ★★★ THE CODEC EXEMPTION, WRITTEN DOWN — read this before proposing Stage F-3 again
+//!
+//! **The four codecs are SANCTIONED as a second pattern.** They do not host their walks on
+//! this driver, and that is a decision with arithmetic behind it rather than an omission. It
+//! is recorded here because it has been re-derived three times, and not writing it down is
+//! what bought the third.
+//!
+//! ## The arithmetic, derived INDEPENDENTLY by both encoders
+//!
+//! | codec | widest `Op` arm | payload | with tag |
+//! |---|---|---:|---:|
+//! | `wire_encode` | `&dyn`(16) + u32 + u32 | 24 B | **32 B** |
+//! | `prost_encode` | `&dyn`(16) + u32 + u32 + u32 | 28 B | **32 B**, 4 spare |
+//!
+//! A `Node` + `Kont` split needs **two tags at the same offset**, and two tags cannot overlay.
+//! ⇒ A shared `Step` is predicted at **40 B = 5 words against a pinned 4-word ceiling**,
+//! costing **+64 KiB at depth 4,096**. Both codecs reach that figure on their own.
+//!
+//! ## ★★ The 40 bytes ARE the union tax, and that is the general statement
+//!
+//! One driver must carry the union of four formats' needs, and **each already carries a
+//! FORMAT-FORCED optimization the others cannot use**:
+//!
+//! * **bincode-encode** pools its op stack thread-locally — [`super::pooled_stack`];
+//! * **prost-encode** is two-pass with a memoised length table, because protobuf
+//!   length-delimits and a parent's header needs its children's lengths;
+//! * **bincode-decode** uses 18 typed value stacks and counted `split_off` — positional,
+//!   pre-order;
+//! * **prost-decode** can use **none** of that: cardinality is discovered by tag recurrence,
+//!   so it needs a stack of ABSOLUTE buffer watermarks no other codec has.
+//!
+//! ⇒ The union is not four similar things. It is four incompatible ones, and merging them
+//! costs every codec the optimization that is specific to its format.
+//!
+//! ## What IS shared, and it is not nothing
+//!
+//! * The **pooling discipline** and its soundness argument — [`super::pooled_stack`], extracted
+//!   precisely because `prost_encode` did **not** copy it and that omission is the measured
+//!   3.79× shallow regression (~96 → ~363 ns at depth 1, crossover at depth 8).
+//! * The **generated schema table** — one schema pass, both formats, both directions.
+//! * This driver's two production instances (`SortTraversal`, `EvalTraversal`) plus the
+//!   generated `CloneTraversal`.
+//!
+//! ★ The owner's ruling is an **AND**, not a choice between one driver and four: *"Share logic
+//! where it is sensible, use helpers, traits, etc. Whatever is cleanest architecturally.
+//! **Allow specialization among drivers.**"* Share the discipline; specialize the walk.
+//!
+//! ## ⚠ Blocker status, corrected
+//!
+//! `699ee646` closed blocker **2** (`drive_with`) — **not** 3 or 4. Blockers **3 and 4 are a
+//! DOCUMENTATION obligation rather than code blockers**; the hosting recipe is given above.
+//! **Blocker 1 is the one that governs**, and blocker 1 is the `Step` ceiling.
+//!
+//! ⚠ Invariant 2 is also **WEAKER for any decoder** and must be stated in the module header
+//! rather than inherited: with `Val = ()` it asserts only that the suspension structure is a
+//! CHAIN. For prost it is weaker still — **no arity cross-check whatsoever**, because
+//! cardinality is never a declared number. Its three guards are instead: `cursor == frame.limit`
+//! at every Build; a decode differential over the malformed corpus; and `MachineInvariant` on
+//! typed-stack underflow.
+//!
 //! ⚠ What blocker 1 *does* still bind is any design that widens `Step` — which is
 //! the encoder's `Op` split, and the destination-passing descent above. Those must
 //! be measured against that gate, and the gate must be watched RED on a

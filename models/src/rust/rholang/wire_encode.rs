@@ -192,66 +192,20 @@ const OUT_CAPACITY: usize = 4096;
 /// reasoning, as [`SHRINK_THRESHOLD`] for the output buffer.
 const MAX_POOLED_OPS: usize = 4096;
 
-thread_local! {
-    /// The pooled op-stack **allocation**.
+// ★★ The pooling discipline and its soundness argument live ONCE, in
+// `super::pooled_stack`. `prost_encode` allocates three fresh `Vec`s per encoder because
+// this code was written here, in one file, and the next codec did not find it — that
+// omission IS the 3.79× shallow regression. Declaring it through the macro is what makes it
+// findable.
+crate::pooled_stack! {
+    /// The pooled op-stack **allocation** for the bincode encoder.
     ///
-    /// ★ This is the last per-encode allocation. The output buffer is already
-    /// reused; without this, every `hash_produce` would still pay one
-    /// `Vec::with_capacity(64)` malloc/free pair — small, but per produce, and
-    /// "zero allocation in the steady state" is a stated acceptance criterion
-    /// rather than an aspiration.
-    ///
-    /// ⚠ The parameter is `'static` because a thread-local cannot be generic
-    /// over a caller's lifetime. It is **always empty while parked**, so no
-    /// `Op<'static>` value ever exists — see [`take_ops`].
-    static OPS: RefCell<Vec<Op<'static>>> = RefCell::new(Vec::with_capacity(OP_STACK_CAPACITY));
-}
-
-/// Borrow the pooled op-stack allocation with the caller's lifetime.
-///
-/// # Soundness
-///
-/// The parked vector is **empty** (asserted), so the transmute re-types zero
-/// live values — only the heap allocation is carried across, which is the
-/// standard buffer-recycling idiom. `Op<'a>` and `Op<'static>` are
-/// layout-identical: lifetimes are erased before codegen and appear in no
-/// discriminant, size or alignment. [`give_ops`] clears before parking, so the
-/// emptiness invariant is restored on every path, including a panic (the
-/// machine's [`Drop`] returns the buffer).
-///
-/// If the slot is already taken — a nested encode, which the spliced event-hash
-/// emitter can produce — a private vector is used instead of aliasing.
-fn take_ops<'a>() -> Vec<Op<'a>> {
-    OPS.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut parked) if parked.is_empty() && parked.capacity() > 0 => {
-            let recycled = std::mem::take(&mut *parked);
-            debug_assert!(recycled.is_empty(), "the pooled op stack must be parked empty");
-            unsafe { std::mem::transmute::<Vec<Op<'static>>, Vec<Op<'a>>>(recycled) }
-        }
-        _ => Vec::with_capacity(OP_STACK_CAPACITY),
-    })
-}
-
-/// Return an op-stack allocation to the pool.
-///
-/// Parks only if the slot is vacant and the capacity is worth keeping, so
-/// neither a nested encode nor a one-off deep term can pin memory.
-fn give_ops(mut ops: Vec<Op<'_>>) {
-    ops.clear();
-    if ops.capacity() == 0 || ops.capacity() > MAX_POOLED_OPS {
-        return;
-    }
-    // SAFETY: emptied immediately above; see `take_ops`.
-    let parked: Vec<Op<'static>> = unsafe { std::mem::transmute(ops) };
-    OPS.with(|cell| {
-        if let Ok(mut slot) = cell.try_borrow_mut() {
-            // Keep the LARGER of the two, so the pool converges upward to the
-            // working set instead of oscillating.
-            if slot.capacity() < parked.capacity() {
-                *slot = parked;
-            }
-        }
-    });
+    /// ★ This is the last per-encode allocation. The output buffer is already reused;
+    /// without this, every `hash_produce` would still pay one `Vec::with_capacity(64)`
+    /// malloc/free pair — small, but per produce, and "zero allocation in the steady state"
+    /// is a stated acceptance criterion rather than an aspiration.
+    pool OPS for Op, capacity = OP_STACK_CAPACITY, max = MAX_POOLED_OPS,
+    take = take_ops, give = give_ops,
 }
 
 struct Machine<'a> {
