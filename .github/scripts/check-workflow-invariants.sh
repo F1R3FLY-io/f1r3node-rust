@@ -124,6 +124,38 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
+# 5. The CI runner compartment OCID is pinned identically wherever it appears.
+#    It is hardcoded rather than held in an Actions variable on purpose: the
+#    reaper's own comment claims it "can never touch other compartments", and a
+#    variable is mutable by anyone with repo admin, so moving it there would
+#    trade a compile-time guarantee for a permissions one. The cost of pinning
+#    is drift — ci-runner-reaper.yml decides what may be terminated, while
+#    merge-recovery-soak.yml tags the instance that must not be, and if those
+#    two ever name different compartments the tag is written where the reaper
+#    never looks. The soak then dies at the 2h mark with its exemption intact
+#    but invisible, which is indistinguishable from the bug we just fixed.
+#    Checking equality keeps the value immutable in-repo and makes divergence
+#    fail CI instead of failing a 60h weekend soak.
+#    `|| true` on both greps is load-bearing: under `set -e` a no-match grep
+#    inside a command substitution kills the script outright, so the "nobody
+#    pins it any more" branch below would be unreachable and the failure would
+#    surface as a red job with no annotation saying why. A guard that cannot
+#    explain itself is the failure mode this file exists to prevent.
+ocid_sites="$(grep -rlE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.' \
+    .github/workflows/*.yml 2>/dev/null | sort || true)"
+if [ -z "$ocid_sites" ]; then
+    err "no workflow pins a literal CI_RUNNER_COMPARTMENT_OCID; the reaper's compartment guard has gone missing (moving it to an Actions variable trades a compile-time guarantee for a mutable one — see the note above)"
+else
+    ocid_values="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        .github/workflows/*.yml 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' | sort -u || true)"
+    if [ "$(printf '%s\n' "$ocid_values" | grep -c .)" -ne 1 ]; then
+        err "CI_RUNNER_COMPARTMENT_OCID differs across workflows ($(printf '%s ' $ocid_sites)); the reaper and the soak tagger must name the same compartment"
+    else
+        ok "CI_RUNNER_COMPARTMENT_OCID pinned identically in $(printf '%s\n' "$ocid_sites" | grep -c .) workflow(s)"
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     printf '::error::%s\n' "workflow security invariants violated; see errors above"
     exit 1

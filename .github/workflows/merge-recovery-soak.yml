@@ -472,20 +472,46 @@ jobs:
             --query 'data[0].id' --raw-output)"
           test -n "$iid" && [ "$iid" != "null" ]
           deadline="$((END_EPOCH + 7200))"
+          # launch-runner.sh returns as soon as OCI accepts the launch call,
+          # but the instance keeps transitioning through PROVISIONING for
+          # another 30-60s, and `instance update` against a transitioning
+          # instance is refused with HTTP 409 "currently being modified, try
+          # again later". Run 30584775602 hit exactly that, 3s after launch.
+          # 409 is explicitly retryable, so retry rather than fail on it —
+          # while keeping the fail-closed contract: if the tag never lands we
+          # still fail the launch, because an untagged soak runner is reaped
+          # at the 2h mark.
+          #
           # --freeform-tags REPLACES the instance's whole tag map; it does not
           # merge. The launcher sets no freeform tags today, so overwriting
           # would be harmless right now — but system-integration TASK-010-7
           # plans cost-tracking tags applied at launch, and this step would
           # then silently erase them, breaking cost attribution in a way
-          # nobody notices until a bill arrives. Read-modify-write instead.
-          existing="$(oci compute instance get --instance-id "$iid" \
-            --query 'data."freeform-tags"' --raw-output 2>/dev/null || true)"
-          case "$existing" in ''|null) existing='{}' ;; esac
-          jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
-          merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-            '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
-          oci compute instance update --instance-id "$iid" --force \
-            --freeform-tags "$merged" >/dev/null
+          # nobody notices until a bill arrives. Read-modify-write instead,
+          # re-read each attempt so a write that lands mid-retry is merged
+          # rather than clobbered by a stale snapshot.
+          tagged=""
+          for attempt in $(seq 1 12); do
+            existing="$(oci compute instance get --instance-id "$iid" \
+              --query 'data."freeform-tags"' --raw-output 2>/dev/null || true)"
+            case "$existing" in ''|null) existing='{}' ;; esac
+            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
+            if update_err="$(oci compute instance update --instance-id "$iid" --force \
+                 --freeform-tags "$merged" 2>&1)"; then
+              tagged=1
+              break
+            fi
+            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
+              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
+            if [ "$attempt" -lt 12 ]; then sleep 15; fi
+          done
+          if [ -z "$tagged" ]; then
+            printf '%s\n' "$update_err" | tail -20
+            echo "::error::could not tag ${name} after 12 attempts (~3min); refusing to launch an unexempt soak runner, which the reaper would terminate at the 2h mark"
+            exit 1
+          fi
           echo "tagged ${name} (${iid}): reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Remove OCI credentials
