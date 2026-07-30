@@ -344,7 +344,7 @@ The transformation applied throughout §5 is not novel and was not treated as su
 | `models/benches/wire_encode_bench.rs` | wall-clock throughput with Welch's $`t`$-test, interleaved A/B, 60 reps after 10 warm-up | §A.6 |
 | `perf record -e cpu-clock --call-graph dwarf` | the CPU profile of §5.4.2 | §A.7 |
 
-⚠ **`perf record --call-graph lbr` could not be used.** The hardware PMU (performance monitoring unit) refused every cycles event on this host:
+⚠ **`perf record --call-graph lbr` could not be used.** The observed failure was:
 
 ```text
 Failure to open event 'cpu/cycles/Pu' on PMU 'cpu'
@@ -352,6 +352,63 @@ The sys_perf_event_open() syscall failed for event (cpu/cycles/Pu): Invalid argu
 ```
 
 with `kernel.perf_event_paranoid = 2`. The profile was taken with the **software** `cpu-clock` event and DWARF unwinding instead. This is a deviation from the standing measurement discipline and is recorded as such; the substitution costs sampling fidelity (software timer rather than cycle counter) but not symbol attribution, which is what §5.4.2 uses.
+
+#### ⚠⚠ CORRECTED 2026-07-29 — the diagnosis above was wrong, twice
+
+This section said *"the hardware PMU refused every cycles event on this host."* It
+does not, and the correction matters because it decides which instruments the next
+measurement campaign may rely on. Two errors:
+
+**1. Plain `cycles` always worked.** What the trace above shows failing is
+`cpu/cycles/Pu` — the `u` is the user-space modifier and **the `P` is the *precise*
+modifier**. The event that failed is `cycles:P`, not `cycles`. Measured on this
+host, same binary, same session:
+
+| event | result |
+|---|---|
+| `perf stat -e cycles` | ✓ counts (78,056,897 on the probe) |
+| `perf stat -e cycles:P` | ✓ counts **now** (89,395,859) — see (2) |
+| `perf stat -e instructions` | ✓ counts |
+| `perf stat -e ls_dispatch.store_dispatch` | ✓ counts — the AMD store-µop counter |
+| `perf stat -e ls_dispatch.ld_dispatch` | ✓ counts |
+| `perf record --call-graph dwarf -e cycles:P` | ✓ records (690 samples) |
+| `perf stat -e mem-stores` | ✗ *"Unable to find event on a PMU"* |
+| `perf record ... -e ibs_op/swfilt=1/` per-thread | ✗ *"Invalid event … enable system wide with `-a`"* |
+| `perf record --call-graph lbr` | ✗ still fails on this part |
+
+**2. The precise modifier is an *ISA* fact, not a permissions fact.** `:P` is
+implemented on Intel by **PEBS** (Precise Event-Based Sampling). This host is an
+**AMD Ryzen Threadripper PRO 5975WX — Zen 3, family 0x19 model 0x8 — and PEBS does
+not exist on that ISA.** That is also why `mem-stores` cannot be found at all: it is
+an Intel PEBS event, and no amount of privilege conjures it. AMD's counterpart is
+**IBS** (Instruction-Based Sampling), which `perf` exposes as the `ibs_op` PMU —
+⚠ and which **refuses per-thread mode**, wanting `-a` (system-wide, i.e. root). A
+measurement plan that names *"a PEBS-precise `mem-stores` profile"* as its decisive
+experiment is therefore unrunnable here **by construction**, and one such plan was
+written before this was checked.
+
+`kernel.perf_event_paranoid` was subsequently set to **0** on this host, after
+which `cycles:P` and `ls_dispatch.*` count and `--call-graph dwarf` records. So the
+paranoid setting was *a* blocker for some events and never the blocker for `:P`
+sampling fidelity on AMD.
+
+★ **What to use instead, and it is better than what was asked for.**
+`valgrind --tool=cachegrind --cache-sim=yes` is **deterministic** — no sampling, no
+skid, no run-to-run variation — and its `Dw` column counts exactly the write
+references a byte-movement hypothesis is denominated in. On 2026-07-29 it resolved
+the clone-conversion question that wall-clock could not: `Ir` +17.40%, `Dr` +26.04%,
+`Dw` +25.71% per node with **cache misses at parity**, and `cg_annotate` attributed
++93.6 write references per node to `drive_with` itself against a predicted
+`3 × 248 / 8 = 93`. Hardware then corroborated it — `instructions` gave **1.1742×**
+where cachegrind gave **1.1740×**. Two instruments, four significant figures, on a
+host whose *wall-clock* could not distinguish 1.07× from 0.95× on the same binary
+minutes apart.
+
+⇒ ★ For any future question of this shape, **make the deterministic instrument
+primary and wall-clock corroboration only** — and characterise what actually opens
+before designing a measurement around an event name. See
+`models/build/wire_schema.rs`'s clone-throughput section for the full accounting
+and `models/benches/term_ops_bench.rs`'s `TERM_OPS_ARM` mode for the harness.
 
 ### 4.5 Procedure
 
@@ -1225,8 +1282,8 @@ Seven, each with its reason. None is estimated.
 | 1 | **`spawn_detached` per-spawn overhead** (`catch_unwind`, the atomic, the `Arc` clone) | No isolated micro-benchmark exists in the tree and none was constructed. The end-to-end CPU figure of §5.2.2 includes it but cannot separate it. |
 | 2 | **`prost_encode` wall-clock vs `prost`'s own encoder** | The code is **dormant** (§5.3.5); a number from a path production does not execute would be misleading. The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally instead. |
 | 3 | **massif/DHAT profiles for the substitution, sorter, normaliser and evaluator conversions** | No heap-profiling harness exists for those subjects. Building four correct ones — each needing an off-thread $`\Theta(d)`$ set-up so the harness does not measure itself, per §5.7 — was out of scope for this report. Their heap costs are therefore **unquantified**; only their native-stack slopes are measured. |
-| 4 | **`perf record --call-graph lbr`** | The hardware PMU refused every cycles event on this host (§4.4). Substituted with software `cpu-clock` + DWARF, which is recorded as a deviation. |
-| 5 | **A cycle-accurate CPU profile of the decoder** | Same PMU limitation, plus no decode benchmark harness exists (only the massif arm). |
+| 4 | **`perf record --call-graph lbr`** | ⚠ **The stated reason was wrong — corrected in §4.4.** `--call-graph lbr` does fail on this part, but *not* because "the PMU refused every cycles event": plain `cycles` always counted, and what failed was the **precise** modifier `cycles:P`, whose Intel implementation (PEBS) **does not exist on this AMD Zen 3 host**. Substituted with software `cpu-clock` + DWARF, which remains a recorded deviation. ★ `perf record --call-graph dwarf -e cycles:P` now works (`perf_event_paranoid = 0`), and for byte-movement questions `valgrind --tool=cachegrind` is the better instrument because it is deterministic. |
+| 5 | **A cycle-accurate CPU profile of the decoder** | ⚠ The "same PMU limitation" is likewise misattributed — see §4.4; a cycle-accurate profile IS available on this host (plain `cycles`, and `cycles:P` since `perf_event_paranoid = 0`). What genuinely blocks this row is the second clause: **no decode benchmark harness exists** (only the massif arm). |
 | 6 | **Attribution of the `env_get_deploy` 283 $`\rightarrow`$ 274 drift** | Requires bisecting four `rholang` commits through a 6-second end-to-end runtime bisection each; the drift is *reported* (§5.5.4) and its cause is **not** asserted. |
 | 7 | **The falsified prediction the commissioning brief cited as `#103`** (*"predicted d=6 at 55–60 ms, measured 103.57 ms; the cost model was wrong"*) | **Not found in this worktree.** `grep` over all `*.md` and `*.rs` for `103.57`, `55-60` and `55–60` returns nothing outside `target/`. Either it belongs to a different repository or a different document. Three falsified predictions **were** found and are reported (§5.5.1, §5.5.2, §5.6.3). |
 | 8 | ~~Depth-axis slopes for 8 of the 9 `mettail` generated drivers~~ | ★★ **OBTAINED** 2026-07-29 — 18 new probe subjects (`ecbe352c`, `f8f71f4c`), both profiles, two ladders. **Eight of nine are SLOPED and it is a live defect class.** See [§5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped). |
