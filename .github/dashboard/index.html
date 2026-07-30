@@ -106,7 +106,23 @@
   .failures strong { color: var(--serious); }
   .failures ul { margin: .35rem 0 0; padding-left: 1.1rem; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.25rem; }
+  /* Four charts, stacking 4 → 2 → 1.
+
+     Breakpoints are set by legibility, not round numbers. Each chart is a
+     360-unit viewBox scaled to its column, and the 11px axis labels scale with
+     it, so the rendered label size is 11 × (column − 32px figure padding) / 360.
+     Holding that at 10px or more needs a column of ~359px, which is 1550px of
+     viewport for four columns and 800px for two. Measured: 10.0px at the
+     1550 boundary, 10.2px at the 800 one. Lowering either breakpoint shrinks
+     the axis labels rather than the charts.
+
+     auto-fit was dropped because with exactly four charts it settled on three
+     across and left the fourth orphaned on its own row. minmax(0, 1fr) rather
+     than 1fr so a wide SVG can never force a column past its share and push
+     the page into horizontal scroll. */
+  .grid { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 800px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (min-width: 1550px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
   figure { margin: 0; background: var(--surface-2); border-radius: 8px; padding: 1rem; }
   figcaption { font-weight: 600; margin-bottom: .25rem; }
   .unit { color: var(--text-muted); font-weight: 400; }
