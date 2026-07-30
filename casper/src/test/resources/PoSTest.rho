@@ -783,7 +783,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
                 computeHash(`rho:crypto:keccak256Hash`), hashCh, invalidBlocksSetCh,
                 initialBondSumCh, chargeCh, refundCh, initialCoopBalanceCh, finalCoopBalanceCh,
-                setupCh, slashCh, activeValidatorsCh, withdrawersCh,
+                setupCh, slashCh, slashedPkCh, activeValidatorsCh, withdrawersCh,
+                finalQuarantinedStakeCh, finalMintingHaltedCh,
                 initialPosBalanceCh, finalPosBalanceCh,
                 initialUserBalanceCh, finalUserBalanceCh,
                 initialRewardsCh, finalRewardsCh,
@@ -815,27 +816,72 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @initialUserBalance <- initialUserBalanceCh &
                                    @initialRewards     <- initialRewardsCh &
                                    @initialPosBalance  <- initialPosBalanceCh) {
-                                @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+                                // ★ SIX arguments, matching `PoS.rhox:774`
+                                //   contract PoS(@"slash", @deployerId, @blockHash,
+                                //                @sysAuthToken, slashedPk, returnCh).
+                                // `slashedPk` is an OUTPUT SINK, not the offender: the
+                                // contract resolves the offender itself from the
+                                // invalid-block evidence (`invalidBlocks.get(blockHash)`,
+                                // PoS.rhox:790) and PUBLISHES it with `slashedPk!(validator)`
+                                // (PoS.rhox:856) for the Rust-side `Σ⟦v⟧`-zero. In
+                                // production the channel is the deploy-RNG-derived
+                                // `sys:casper:slashedPk` env name and the send is
+                                // `@PoS!("slash", *deployerId, …, *slashedPk, *return)`
+                                // (`costacc/slash_deploy.rs:177,182`); here a plain `new`
+                                // channel plays that role. NOTHING in Rholang consumes it —
+                                // `SlashDeploy::post_eval` reads it out of band via
+                                // `get_data_par`, so gating `ackCh` on it would add a block
+                                // production does not have (and the idempotent branch,
+                                // PoS.rhox:812-813, publishes nothing at all).
+                                @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashedPkCh, *slashCh) |
                                 for (@(true, _) <- slashCh) {
                                   @PoS!("getBonds", *finalBondsCh) |
                                   getPosBalance!(*finalPosBalanceCh) |
                                   @userVault!("balance", *finalUserBalanceCh) |
                                   @PoS!("getRewards", *finalRewardsCh) |
                                   @PoS!("getWithdrawers", *withdrawersCh) |
+                                  // The two Stage-C effects that REPLACED the vault
+                                  // transfer, so the test witnesses where the bond went
+                                  // instead of asserting it moved (PoS.rhox:381, :372).
+                                  @PoS!("getQuarantinedStake", *finalQuarantinedStakeCh) |
+                                  @PoS!("getMintingHalted", *finalMintingHaltedCh) |
                                   getCoopBalance!(*finalCoopBalanceCh) |
-                                  for (@finalPosBalance  <- finalPosBalanceCh &
-                                       @finalUserBalance <- finalUserBalanceCh &
-                                       @finalBonds       <- finalBondsCh &
-                                       @finalRewards     <- finalRewardsCh &
-                                       @withdrawers      <- withdrawersCh &
-                                       @finalCoopBalance <- finalCoopBalanceCh) {
+                                  for (@finalPosBalance       <- finalPosBalanceCh &
+                                       @finalUserBalance      <- finalUserBalanceCh &
+                                       @finalBonds            <- finalBondsCh &
+                                       @finalRewards          <- finalRewardsCh &
+                                       @withdrawers           <- withdrawersCh &
+                                       @finalQuarantinedStake <- finalQuarantinedStakeCh &
+                                       @finalMintingHalted    <- finalMintingHaltedCh &
+                                       @finalCoopBalance      <- finalCoopBalanceCh) {
                                     stdlog!("info", (initialBonds, finalBonds,slashedValidator)) |
                                     rhoSpec!("assertMany",
                                       [
                                         ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is reduced to 0"),
                                         ((0, "==", finalRewards.get(slashedValidator)), "Slashed validator's rewards are reduced to 0"),
-                                        ((finalPosBalance, "==", initialPosBalance - initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred out of the PoS vault"),
-                                        ((finalCoopBalance, "==", initialCoopBalance + initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred to the Coop vault")
+                                        // ★★ THE STAGE-C TWO-EFFECT SLASH: NO VAULT TRANSFER.
+                                        // These two assertions used to read
+                                        //   finalPosBalance  == initialPosBalance  - bond
+                                        //   finalCoopBalance == initialCoopBalance + bond
+                                        // which is the ORIGINAL single-effect slash still
+                                        // described by `PoS.rhox`'s own stale header comment
+                                        // (`PoS.rhox:52`, "Transfer the bonding amount … from
+                                        // posVault to coopMultiSigVault"). The contract no
+                                        // longer does that. `PoS.rhox:765-768` states it and
+                                        // `PoS.rhox:857-863` is the whole effect: the slash
+                                        // sets `allBonds[v]=0`, deletes `v` from
+                                        // `activeValidators` and `committedRewards`, adds `v`
+                                        // to `mintingHalted`, and EARMARKS the pre-slash bond
+                                        // on `quarantinedStake[v] = (valBond, v)`. There is no
+                                        // `transfer` anywhere in the `"slash"` body — the REV
+                                        // stays in `posVault` pending adjudication, and coop
+                                        // grows ONLY in `redeemSlashed`'s Guilty branch. So
+                                        // BOTH balances are unchanged by a slash, and the
+                                        // quarantine earmark is what carries the bond.
+                                        ((finalPosBalance, "==", initialPosBalance), "Slash does NOT move REV out of the PoS vault (Stage-C quarantine, PoS.rhox:765-768)"),
+                                        ((finalCoopBalance, "==", initialCoopBalance), "Slash does NOT credit the Coop vault (coop grows only in redeemSlashed's Guilty branch)"),
+                                        ((initialBonds.get(slashedValidator), "==", finalQuarantinedStake.get(slashedValidator).nth(0)), "Slashed validator's pre-slash bond is earmarked on quarantinedStake"),
+                                        ((true, "==", finalMintingHalted.contains(slashedValidator)), "Slashed validator is minting-halted")
                                       ],
                                       *ackCh
                                     )
