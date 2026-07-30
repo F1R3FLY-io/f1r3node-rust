@@ -142,7 +142,7 @@ fn only(name: &str) -> BTreeSet<String> {
 // (a) `MakeMint.rho`'s LOGGING path raises — `make_mint_spec`, `test_log_set`
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// ★★ **`MakeMintTest.rho` ITSELF, one registered test at a time — `test_log_set` raises.**
+/// ★★ **`MakeMintTest.rho` ITSELF, one registered test at a time — `test_log_set` is a RACE.**
 ///
 /// `make_mint_spec` dies inside `test_log_set` ("be able to set a log channel and receive
 /// notifications") with `ReduceError("Error: parallel or non expression found where expression
@@ -168,8 +168,33 @@ fn only(name: &str) -> BTreeSet<String> {
 /// then **verifies the rewrite with the extractor that the non-vacuity floor uses** — so the
 /// narrowing is checked, not assumed. `test_deposit` is the control: same file, same setup, same
 /// `deposit` contract, log left at its `Nil` default.
+///
+/// # ★★ THE FAILURE IS INTERMITTENT — which is the finding, not an obstacle
+///
+/// Observed 2026-07-29, same tree, same command shape:
+///
+/// | observation | `make_mint_spec` | narrowed `test_log_set` |
+/// |---|---|---|
+/// | full suite, run 1 (453 s) | **FAIL**, `parallel or non expression …` | — |
+/// | this cell, isolated | — | **Raised**, `parallel or non expression …` |
+/// | full suite, run 2 (649 s) | **PASS** | **Completed** |
+///
+/// A deterministic contract cannot do that. `MakeMint.rho`'s logging path therefore contains a
+/// **race**, and its losing interleaving puts a non-expression where an expression is required. The
+/// suspicious shape is the single `bdCh` that each `new success, thisPurseDecrCh, decrCh,
+/// bd(`rho:block:data`), bdCh in { … }` block shares across several `if (Nil != *logCh)` branches
+/// (`MakeMint.rho:44-46` for `decr`, and the corresponding block for `deposit`), with a concurrent
+/// `setLog` that consumes and re-produces `logStore` linearly (`MakeMint.rho:102-104`) while the
+/// logging sites PEEK it. That is a hypothesis and is labelled one; what is measured is the
+/// nondeterminism and the identity of the error when it fires.
+///
+/// ⚠ **This cell must therefore NOT assert that the subject raises** — that would be a flaky test,
+/// and a flaky guard is worse than none. It asserts the two things that ARE invariant: the control
+/// completes, and the subject's outcome is *never* something other than "completed" or "raised with
+/// this exact error". A block, or a different error, fails it. The subject is run several times so a
+/// single run's luck does not decide what gets recorded.
 #[tokio::test]
-async fn makemint_test_log_set_raises_where_test_deposit_passes() {
+async fn makemint_test_log_set_is_nondeterministic_where_test_deposit_is_not() {
     let fixture = crate::util::rholang::test_rho_loader::load_test_rho("MakeMintTest.rho")
         .expect("MakeMintTest.rho must be loadable");
 
@@ -196,21 +221,52 @@ async fn makemint_test_log_set_raises_where_test_deposit_passes() {
         "★ CONTROL: exactly the narrowed test must have reported",
     );
 
-    let subject = run_suite(&subject_source).await;
-    println!("subject  ({LOG_SET}): {subject:?}");
-    let raise = subject.raise_text().unwrap_or_else(|| {
-        panic!(
-            "★★ MEASURED 2026-07-29: `MakeMintTest.rho`'s `{LOG_SET}` RAISES on its own, while \
-             `{DEPOSIT}` from the same file completes. If it no longer raises the defect has been \
-             fixed — delete this cell and let `make_mint_spec` be the guard, since the fixture \
-             covers it directly. Got {subject:?}"
-        )
-    });
-    assert!(
-        raise.contains("parallel or non expression found where expression expected"),
-        "★ the failure must still be the expression-position one `make_mint_spec` reports; a \
-         DIFFERENT error means the mechanism moved and this cell's analysis needs redoing. \
-         Got {raise}",
+    // ★★ The subject, repeated. `ATTEMPTS` is small because each attempt is a genesis-backed
+    // suite; it is >1 because one attempt cannot distinguish "deterministic" from "won the race".
+    const ATTEMPTS: usize = 3;
+    let mut subjects = Vec::with_capacity(ATTEMPTS);
+    for attempt in 1..=ATTEMPTS {
+        let outcome = run_suite(&subject_source).await;
+        println!("subject attempt {attempt}/{ATTEMPTS} ({LOG_SET}): {outcome:?}");
+        subjects.push(outcome);
+    }
+
+    let expected_raise = "parallel or non expression found where expression expected";
+    for (attempt, outcome) in subjects.iter().enumerate() {
+        match outcome {
+            // The race was won: the log entries were read and the assertions ran.
+            SuiteOutcome::Completed { reported } => assert_eq!(
+                *reported,
+                only(LOG_SET),
+                "★ a completing attempt must have reported under the narrowed name; attempt {}",
+                attempt + 1,
+            ),
+            // The race was lost: it must be THIS failure and no other.
+            SuiteOutcome::Raised(_) => {
+                let raise = outcome.raise_text().expect("matched Raised");
+                assert!(
+                    raise.contains(expected_raise),
+                    "★★ attempt {} of `{LOG_SET}` failed with an error this cell does not \
+                     document. The mechanism has moved and the analysis above needs redoing. \
+                     Expected {expected_raise:?}, got {raise}",
+                    attempt + 1,
+                );
+            }
+            // Neither: a block is a third mechanism and would need its own analysis.
+            SuiteOutcome::Blocked { reported } => panic!(
+                "★★ attempt {} of `{LOG_SET}` BLOCKED — `testSuiteCompleted` never fired and \
+                 nothing raised. That is a third mechanism, distinct from both the completion and \
+                 the raise this cell documents, and it needs its own analysis. reported: \
+                 {reported:?}",
+                attempt + 1,
+            ),
+        }
+    }
+
+    let raised = subjects.iter().filter(|o| o.raise_text().is_some()).count();
+    println!(
+        "★ `{LOG_SET}` raised on {raised} of {ATTEMPTS} attempts (control `{DEPOSIT}`: completed). \
+         Intermittency at this site was first observed 2026-07-29; see the cell documentation."
     );
 }
 
@@ -293,7 +349,26 @@ fn with_single_registered_test(source: &str, keep: &str) -> String {
 /// expressions given."` — a message that names the wrong condition for an operand that is empty
 /// rather than plural, which is why the suite's failure was hard to place.
 ///
-/// The consequence for the fixture is not "the update is a no-op": a raise inside `inj` aborts the
+/// ★★ **AND THE FIXTURE IS RIGHT — the contract violates the invariant the fixture names.**
+/// `test_get_after_update_nil` (`TreeHashMapTest.rho:81`) has the **identical** `ret!(val + 1)`
+/// update body and PASSES, on a key that was never set. The difference is in `TreeHashMap`:
+///
+/// * never set — the path does not exist, so `TreeHashMapUpdater`
+///   (`casper/src/main/resources/Registry.rho:288`) takes its "the path doesn't exist, there's no
+///   value to update" branch at `:319-321` and returns **without calling `update`**. `Nil + 1` is
+///   never evaluated.
+/// * after delete — `TreeHashMapDeleter` removes the key from the leaf map at
+///   `Registry.rho:393` (`val.delete(suffix)`) but leaves the now-EMPTY leaf map in place. The
+///   updater's emptiness test at `Registry.rho:296` is `val == 0`, which is true of an absent
+///   *path* but false of an empty *map*, so it falls through to `update!(val.get(suffix), …)` at
+///   `:305` — i.e. `update!(Nil, …)`. `Nil + 1` IS evaluated, and raises.
+///
+/// So "Update after delete behaves like update on never-set" — the fixture's own sentence — is
+/// exactly the invariant `delete` fails to restore, and the raise is only the messenger. The repair
+/// belongs in the blessed contract, is consensus-visible, and owes a
+/// `docs/consensus/consensus-change-register.md` entry; it is therefore REPORTED here, not made.
+///
+/// The consequence meanwhile is not "the update is a no-op": a raise inside `inj` aborts the
 /// **whole** program, so `tree_hash_map_spec` dies at that test and the twelve tests registered
 /// after it never run.
 #[tokio::test]
@@ -375,6 +450,13 @@ async fn adding_to_nil_raises_rather_than_yielding_no_result() {
 /// and nothing noticed because `pos_spec` has never run. This is a real defect latent for the whole
 /// life of the harness, not a corpus expectation that was never true: the two-argument call was
 /// correct until Stage B changed the contract under it.
+///
+/// ★ REPAIRED at `PoSTest.rho:702-716`, and the effect measured: `pos_spec` went from reporting
+/// **1 of 14** registered tests to **4 of 14** — `PoS is created with empty rewards`, `closeBlock
+/// finishes successfully`, `bonding success`, `withdraw succeeds` — and now blocks at `validator is
+/// paid after withdraw`. ⚠ That is a SECOND latent defect behind the first, in the same suite, and
+/// it is reported rather than fixed: the non-vacuity floor keeps `pos_spec` red until it is, which
+/// is the correct state for a suite whose remaining ten tests have still never been checked.
 #[tokio::test]
 async fn pos_close_block_arity_mismatch_is_why_pos_test_blocks() {
     // Resolve PoS and a system auth token, the way `PoSTest.rho:33-44` does.
