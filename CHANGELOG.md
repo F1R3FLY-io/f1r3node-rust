@@ -4,6 +4,19 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.29] - 2026-07-30
+
+### Bug Fixes
+
+- supersede stale fork PR runs too
+- supersede stale PR runs instead of queueing them
+- drop the timeout on the approval-wait job
+- gate the whole heavy pipeline on launch approval
+- hold launch approval outside the OCI serialization lock
+- keep internal PRs out of the fork concurrency group
+- clear inherited git env before cargo in pre-commit
+
+
 ## [0.4.26] - 2026-07-29
 
 ### Bug Fixes
