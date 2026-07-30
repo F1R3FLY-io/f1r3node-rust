@@ -185,7 +185,34 @@ else
   [[ "$WINDOW_END" =~ ^[1-9][0-9]*$ ]] || { echo "--window-end must be epoch seconds" >&2; exit 2; }
 fi
 
+case "$SERIES" in
+  daily) WINDOW_NOMINAL=79200 ;;
+  weekend) WINDOW_NOMINAL=216000 ;;
+esac
+
 REMAINING=$((WINDOW_END - NOW))
+
+# The gate refuses a remainder longer than the series' nominal window — a
+# restart may only ever shorten what it inherits. Mirror that here so a bad
+# invocation fails on this machine with an explanation, instead of dispatching
+# a run that no-ops in CI a minute later.
+#
+# --until-next-slot is capped rather than rejected: its intent is "end before
+# the next scheduled launch", and invoked in the evening the gap to tomorrow's
+# 19:30 exceeds a 22h daily (e.g. 23h at 20:00 PT). Capping preserves the
+# intent and still ends before the slot. An explicit --hours/--window-end is
+# rejected instead, because the operator named a span we cannot honour.
+if [ "$REMAINING" -gt "$WINDOW_NOMINAL" ]; then
+  if [ "$UNTIL_NEXT_SLOT" = "true" ]; then
+    echo "note: $((REMAINING / 3600))h to the next slot exceeds the ${SERIES} window ($((WINDOW_NOMINAL / 3600))h); capping"
+    WINDOW_END=$((NOW + WINDOW_NOMINAL))
+    REMAINING="$WINDOW_NOMINAL"
+  else
+    echo "window is ${REMAINING}s, beyond the ${WINDOW_NOMINAL}s ${SERIES} window; the gate would refuse it. A restart can only shorten the window it inherits." >&2
+    exit 1
+  fi
+fi
+
 if [ "$REMAINING" -lt "$FLOOR_SECONDS" ]; then
   echo "only ${REMAINING}s remain before $(pacific "$WINDOW_END") — under the 2h floor; the gate would refuse, so not dispatching" >&2
   exit 1

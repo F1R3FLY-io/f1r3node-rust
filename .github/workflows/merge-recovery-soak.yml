@@ -472,9 +472,20 @@ jobs:
             --query 'data[0].id' --raw-output)"
           test -n "$iid" && [ "$iid" != "null" ]
           deadline="$((END_EPOCH + 7200))"
+          # --freeform-tags REPLACES the instance's whole tag map; it does not
+          # merge. The launcher sets no freeform tags today, so overwriting
+          # would be harmless right now — but system-integration TASK-010-7
+          # plans cost-tracking tags applied at launch, and this step would
+          # then silently erase them, breaking cost attribution in a way
+          # nobody notices until a bill arrives. Read-modify-write instead.
+          existing="$(oci compute instance get --instance-id "$iid" \
+            --query 'data."freeform-tags"' --raw-output 2>/dev/null || true)"
+          case "$existing" in ''|null) existing='{}' ;; esac
+          jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+          merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
+            '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
           oci compute instance update --instance-id "$iid" --force \
-            --freeform-tags "{\"purpose\":\"soak\",\"series\":\"${KIND}\",\"soak-deadline-epoch\":\"${deadline}\"}" \
-            >/dev/null
+            --freeform-tags "$merged" >/dev/null
           echo "tagged ${name} (${iid}): reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Remove OCI credentials
