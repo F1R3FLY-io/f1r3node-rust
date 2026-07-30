@@ -490,13 +490,79 @@ fn is_ancestor(sha: &str, of: &str) -> bool {
 
 fn show(at: &str, path: &str) -> Option<String> { git(&["show", &format!("{at}:{path}")]).ok() }
 
+/// ⚠⚠ **A REVISION ARGUMENT MUST BE FENCED WITH `--`, OR A FILE CAN IMPERSONATE A COMMIT.**
+///
+/// `git log -1 --format=%ct <sha>` is ambiguous the moment a path named `<sha>` exists in the
+/// working tree, and git refuses rather than guessing:
+///
+/// ```text
+/// fatal: ambiguous argument 'ff244c69': both revision and filename
+/// ```
+///
+/// That is not hypothetical: on 2026-07-30 a commit hook wrote its JSONL ledger to a file
+/// literally named `$sha` in the repository root, and the gate answered with
+///
+/// ```text
+/// ★ HISTORY UNAVAILABLE — `git log -1 --format=%ct ff244c69` failed: …
+/// If this is CI the checkout is shallow — set `fetch-depth: 0`.
+/// ```
+///
+/// ★ **The diagnosis was wrong, and confidently so.** History was complete; one stray
+/// untracked file was shadowing a revision. A gate whose refusal names the wrong cause sends
+/// its reader to `git fetch --unshallow`, which cannot help, and the real cause — an eight-byte
+/// filename — is invisible in the message. Appending `--` makes the argument unambiguously a
+/// revision, so no file in any tree can ever change this gate's verdict.
+///
+/// Every rev-taking helper below routes through here for that reason.
+fn rev_only(args: &[&str]) -> String {
+    let fenced = fenced_args(args);
+    git_expect(&fenced.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The argument vector [`rev_only`] hands to git — split out so the fence is a VALUE that can
+/// be asserted, not a line that has to be read.
+fn fenced_args(args: &[&str]) -> Vec<String> {
+    let mut fenced: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    fenced.push("--".to_string());
+    fenced
+}
+
+/// A git subcommand this gate invokes WITHOUT a `--` fence, and the reason it is safe to.
+///
+/// ★ A typed exception table rather than a naked allowance: each row states why the subcommand
+/// cannot confuse a path for a revision, so [`no_unfenced_git_call_can_be_shadowed_by_a_path`]
+/// can hold the set EXACTLY and a new unfenced call has to justify itself.
+struct UnfencedSubcommand {
+    subcommand: &'static str,
+    why: &'static str,
+}
+
+const UNFENCED_SUBCOMMANDS: &[UnfencedSubcommand] = &[
+    UnfencedSubcommand {
+        subcommand: "cat-file",
+        why: "takes OBJECT names only and accepts no pathspec; the call additionally writes \
+              `<sha>^{commit}`, a peel suffix that is not a legal filename component in this \
+              position, so the argument cannot parse as a path.",
+    },
+    UnfencedSubcommand {
+        subcommand: "merge-base",
+        why: "takes COMMIT arguments only and accepts no pathspec, so there is no path/rev \
+              grammar for a file to sit in.",
+    },
+    UnfencedSubcommand {
+        subcommand: "show",
+        why: "the call writes the unambiguous `<rev>:<path>` object form, which git parses as \
+              one object name and never as two arguments.",
+    },
+];
+
 fn subject(sha: &str) -> String {
-    git_expect(&["log", "-1", "--format=%s", sha]).trim().to_string()
+    rev_only(&["log", "-1", "--format=%s", sha]).trim().to_string()
 }
 
 /// Committer date as a Unix timestamp.
 fn commit_time(sha: &str) -> i64 {
-    git_expect(&["log", "-1", "--format=%ct", sha])
+    rev_only(&["log", "-1", "--format=%ct", sha])
         .trim()
         .parse()
         .unwrap_or_else(|e| panic!("unparseable commit time for {sha}: {e}"))
@@ -2313,6 +2379,115 @@ fn the_floor_refuses_a_corpus_in_which_nothing_is_checkable() {
         breach,
         DriftBreach::EmptyIndexTable { table: "open_question (all undecidable)" }
     );
+}
+
+/// ★★ **NO FILE CAN IMPERSONATE A COMMIT — asserted on the argument vectors, not on the prose.**
+///
+/// The failure this closes: on 2026-07-30 a commit hook wrote its ledger to a file literally
+/// named `$sha` in the repository root, and `git log -1 --format=%ct ff244c69` — no `--` —
+/// became *"fatal: ambiguous argument 'ff244c69': both revision and filename"*. The gate turned
+/// that into **"★ HISTORY UNAVAILABLE … the checkout is shallow — set `fetch-depth: 0`"**, which
+/// is a confident diagnosis of the wrong cause. History was complete.
+///
+/// Two legs, and the second is the one that keeps this fixed:
+///
+/// | leg | asserts | what it refuses |
+/// |---|---|---|
+/// | 1 | [`fenced_args`] ends every vector with `--` | the fence being dropped from the helper |
+/// | 2 | **every** `git` call in this file either carries `"--"` or names a subcommand in [`UNFENCED_SUBCOMMANDS`] | a NEW unfenced rev call being added elsewhere in the file |
+///
+/// Leg 2 reads this file's own source, because the property is about *every call site* and a
+/// property about every call site cannot be checked by exercising one of them. The exception
+/// table is asserted EXACTLY in both directions, so a row that no longer describes any call is
+/// dead weight and fails, exactly as [`PATH_EXCLUSIONS`] is treated.
+#[test]
+fn no_unfenced_git_call_can_be_shadowed_by_a_path() {
+    // ── leg 1 ────────────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        fenced_args(&["log", "-1", "--format=%ct", "deadbeef"]),
+        vec!["log", "-1", "--format=%ct", "deadbeef", "--"],
+        "★ the rev fence is gone from `fenced_args`, so any file named like a SHA prefix can \
+         change this gate's verdict"
+    );
+
+    // ── leg 2: every call site in this file ──────────────────────────────────────────────
+    //
+    // ⚠ THE OPENERS ARE ASSEMBLED AT RUNTIME, AND THAT IS NOT STYLE. Written as literals they
+    // would appear in this file's own source and the scanner would match ITSELF: the first run
+    // reported `git , ()), ( …` as an unfenced subcommand, having found the array of openers
+    // instead of a call. Nothing below may spell an opener contiguously — including in a panic
+    // message or a doc comment.
+    let source = include_str!("consensus_change_register_gate.rs");
+    let array_open = format!("{}{}", "(&", "[");
+    let openers = [
+        format!("{}{array_open}", "git"),
+        format!("{}{array_open}", "git_expect"),
+    ];
+
+    let mut inspected = 0usize;
+    let mut used_exceptions: BTreeSet<&str> = BTreeSet::new();
+
+    for opener in &openers {
+        let mut rest = source;
+        while let Some(at) = rest.find(opener.as_str()) {
+            let after = &rest[at + opener.len()..];
+            let close = after
+                .find(']')
+                .expect("a git call site must close its argument bracket");
+            let call = &after[..close];
+            rest = &after[close..];
+
+            // The subcommand is the first string literal in the vector. A call built from a
+            // `Vec` rather than a literal array (`obligation_set`) has none, and is skipped by
+            // this scan — it fences explicitly and is covered by leg 1's sibling `--` push.
+            let Some(first) = call.split('"').nth(1) else {
+                continue;
+            };
+            inspected += 1;
+
+            if call.contains("\"--\"") {
+                continue;
+            }
+            match UNFENCED_SUBCOMMANDS
+                .iter()
+                .find(|x| x.subcommand == first)
+            {
+                Some(x) => {
+                    used_exceptions.insert(x.subcommand);
+                },
+                None => panic!(
+                    "★★ UNFENCED REVISION ARGUMENT. `git {first} …` is invoked without a `--` \
+                     fence and `{first}` is not in `UNFENCED_SUBCOMMANDS`. A file named like a \
+                     SHA prefix then makes git refuse with 'ambiguous argument: both revision \
+                     and filename', and this gate reports it as a shallow checkout. Route the \
+                     call through `rev_only`, or add a row to `UNFENCED_SUBCOMMANDS` stating \
+                     why the subcommand cannot take a pathspec.\n  arguments: {call}"
+                ),
+            }
+        }
+    }
+
+    assert!(
+        inspected >= 4,
+        "VACUOUS SCAN: only {inspected} git call sites were found in this file, so the scanner \
+         is not reading the calls it claims to check"
+    );
+
+    let declared: BTreeSet<&str> = UNFENCED_SUBCOMMANDS.iter().map(|x| x.subcommand).collect();
+    assert_eq!(
+        used_exceptions, declared,
+        "★ the unfenced-subcommand table is asserted EXACTLY. A declared row that matches no \
+         call site is dead weight and must be deleted; a call site that matched none would have \
+         panicked above."
+    );
+    for x in UNFENCED_SUBCOMMANDS {
+        assert!(
+            x.why.len() > 60,
+            "★ the `{}` row must STATE why the subcommand cannot confuse a path for a revision; \
+             an exception without an argument is an assumption",
+            x.subcommand
+        );
+    }
 }
 
 /// ★ RED, the floor, on the path-exclusion table: every row must exclude something.
