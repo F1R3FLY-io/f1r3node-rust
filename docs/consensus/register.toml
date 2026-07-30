@@ -635,6 +635,70 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 
 [[entry]]
+id = "CBR-037"
+surface = "N"
+commits = ["063974c5"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+# ★ The axis the change EXISTS to move: Err(DepthLimitExceeded) -> Ok.
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+# NO for previously-accepted inputs. For newly-accepted ones a post-state now EXISTS where a
+# rejection stood, which is counted on the verdict axis rather than twice.
+axis_post_state_hash = "NO"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-038"
+surface = "N"
+commits = ["d7818967", "b75aa6a0"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "NO"
+# NO, and the reason is stated: what changes is that a term which previously ABORTED THE
+# PROCESS now completes, and an abort is not a verdict — no node produced a decision to
+# disagree with. Same reading CBR-023's verdict cell takes.
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+# ⚠ MOVES. The incoming analysis said NO on all seven; CBR-023 ("a deploy that killed the
+#   node is now processed") and CBR-022 are the register's own precedents against that. This
+#   is another member of CBR-023's Theta(depth) conversion programme, and LIVENESS LIVES ON
+#   THE ACCEPTANCE AXIS here — which is also why the direction is PERMISSIVE, not NEUTRAL.
+axis_acceptance = "MOVES"
+# NO *by charge site*. ⚠ CONDITION: the WORK moved enormously (-96.2% Ir on the escape
+# payload, +35.1% on the classifier, 3.79x slower wall clock at depth 1). If metering ever
+# becomes a function of measured work rather than of charge sites, RE-DERIVE this cell.
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-039"
+surface = "N"
+commits = ["e93f0222", "0075ded5"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "LATENT"
+# ⚠ All seven NO *as landed*. This row would read V/B/P/H = MOVES if the `union` hardening
+#   were included, and that is precisely why it is not: it was REVERTED in `0075ded5` and the
+#   averted divergence landed as an executable test,
+#   `canonicalising_union_would_move_consensus_bytes` (18 B vs 21 B; produce hashes
+#   687a3de5... vs 700b1b17...). Residual: producer 2 of 2 is `set_bits_until`
+#   (substitute_combine.rs:63), production-reachable, feeding `union` at 11 sites — #196.
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
 id = "CBR-L01"
 surface = "L"
 commits = ["3ff1c98b", "f586e138", "ce887d0b"]

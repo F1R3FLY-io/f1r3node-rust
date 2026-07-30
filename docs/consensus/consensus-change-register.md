@@ -86,10 +86,10 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 51 consensus-visible changes** — 37 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
-Of these, **49 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **25** entries move bytes; on the protobuf lane **26**; **27** move a
-*verdict*; **36** move the *post-state hash*; **14** move *acceptance*; **3** move *metering*.
+**Result: 54 consensus-visible changes** — 40 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **52 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **25** entries move bytes; on the protobuf lane **26**; **28** move a
+*verdict*; **36** move the *post-state hash*; **16** move *acceptance*; **3** move *metering*.
 ⚠★★ **Only three of the ten figures in this paragraph are pinned by the gate, and the other seven had
 ALL drifted by 2026-07-30 — four of them wrongly.** The previous revision of this paragraph claimed *"Every
 figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no longer
@@ -612,6 +612,9 @@ is a *future* fork, not a present one).
 | [CBR-034](#cbr-034) | N | `TreeHashMap` `update`-after-`delete` **resurrected** the key — the updater tested the leaf, not the key | `7c0cfd0a` | ● | ● | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-035](#cbr-035) | N | A walk elimination in the generated `Clone` — behaviourally **byte-identical** | `87ee699c` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-036](#cbr-036) | N | The DESCEND BUDGET — one `descend` walks `k+1` cut-set levels; 5.91× fewer trampoline re-entries | `88ec2734`, `9442f76b` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
+| [CBR-037](#cbr-037) | N | The `EPathMap` tag-8 trie-key **reader** becomes total — the writer was unlimited by requirement | `063974c5` | ○ | ● | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
+| [CBR-038](#cbr-038) | N | The escape arm's prost encode was a remotely triggerable **abort** — and a second, unnamed recursion beside it | `d7818967`, `b75aa6a0` | ○ | ○ | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
+| [CBR-039](#cbr-039) | N | ∅ gets one spelling at the constructor; the `union` half was **reverted**, witness landed | `e93f0222`, `0075ded5` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -627,29 +630,29 @@ is a *future* fork, not a present one).
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 51 entries**, recounted from the rows above rather than adjusted: **37 on Surface N, 14 on
-Surface L**; **49 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **37 WITNESSED**, 3 MECHANISM-ONLY, **5 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **31 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 54 entries**, recounted from the rows above rather than adjusted: **40 on Surface N, 14 on
+Surface L**; **52 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **39 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **32 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 51 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 54 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 51 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 54 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**51**, which is the arithmetic check that no row was double-counted or dropped.
+**54**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -5099,6 +5102,298 @@ tables), `models/tests/clone_descend_budget.rs` (the counted-walk product agains
 
 ---
 
+### CBR-037
+
+**The `EPathMap` tag-8 trie-key READER becomes total — a writer that was unlimited by requirement had a reader capped at 32 collection levels, so both nodes could write bytes neither could read.**
+
+| | |
+|---|---|
+| Commit(s) | `063974c5` |
+| Status | LANDED |
+| Direction | PERMISSIVE |
+| Evidence grade | WITNESSED |
+| Files | `models/src/rust/rhoapi_ext.rs` (the tag-8 read arm at **:1069**), `models/src/rust/canonical_path.rs` (the deleted `COLLECTION_DEPTH_LIMIT` at **:151**, and `SCANNER_STACK_CEILING` with it) |
+
+★ **Attribution.** The analysis is the asymmetric-read work item's; filed substantially as given.
+
+#### (a) The issue
+
+`rhoapi_ext.rs` at **:1069** — the tag-8 read arm — called `decode_trie_path`, which was capped by
+`canonical_path.rs` at **:151** `COLLECTION_DEPTH_LIMIT = 32`. Its **writer**, `encode_trie_path`, is
+**total and unlimited by requirement (R3F-2)**. $`\Rightarrow`$ A producer that can emit what its consumer
+refuses.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — every previously-accepted byte string decodes bit-identically; the deep round trip is asserted a **byte-level fixed point at depths 33…384**. **MEASURED**. |
+| 2 · verdict | **MOVES** — accept/reject moves, `Err(DepthLimitExceeded)` $`\rightarrow`$ `Ok`. ★ This is the axis the change **exists** to move. |
+| 3 · bytes (Lane B, bincode) | **NO** — the encoder is untouched; `U(m)` framing, key grammar and arm selection unchanged. `serializer_par_byte_goldens` **13/13**. **MEASURED**. |
+| 3 · bytes (Lane P, prost) | **NO** — same reason. **MEASURED**. |
+| 4 · post-state hash | **NO** for previously-accepted inputs. ⚠ For *newly*-accepted ones a post-state now **exists** where a rejection stood, which belongs to the verdict axis and is counted there rather than twice. |
+| 5 · accepted programs | **MOVES** — programs are accepted that were refused: any contract whose ground map carries an entry deeper than **32** collection levels. |
+| 6 · metering | **NO** — the deleted work is one `u32` compare per level; no charge site and no price changed. **DERIVED**. |
+
+**The disagreement.** Validator *X* pre-`063974c5`, *Y* post. A deploy builds a ground `EPathMap` with a
+**40-level** nested-tuple entry; the produce's `Par` serialises through the field-8 arm and the bytes enter
+the block. *Y* decodes; *X* answers `DepthLimitExceeded`, `merge_field` propagates it, and *X* declares the
+block **invalid**. **Same block, opposite validity** $`\Rightarrow`$ a **safety fork**.
+
+★★ **And the pre-existing form is the more interesting half, so it is recorded rather than superseded:
+BOTH *X* and *Y* already wrote such bytes and NEITHER could read them.** The term was a node-local
+**liveness trap before it was a fork** — the asymmetry existed at every version, and the upgrade converts a
+shared inability into a disagreement.
+
+**Blast radius.** Any contract whose ground map nests beyond 32 collection levels — reachable by an ordinary
+deploy, and *writable* by every version.
+
+**Could live chain state have been produced under the old behaviour?** ⚠ Not settleable from inside the
+repository. Settling query: attempt `decode_trie_path` over every historical `EPathMap` trie key and count
+`DepthLimitExceeded`. **UNVERIFIED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** The 2026-07-29 ruling is that there is **no artificial depth cap
+for consensus**, so a writer able to emit what its reader refuses *is* the defect and the direction of
+repair is a **total reader**.
+
+★★ **The cap's own justification was MEASURED FALSE on this path, which is what makes deletion right rather
+than merely permitted.** It read *"today's effective prost envelope"* — i.e. that some lower prost ceiling
+would bind first. Tag 8 is `bytes`; `prost::encoding::bytes::merge` reads a length and copies, so the
+payload costs **zero** nested-message levels. At depth 400 the refusal came from the **trie** codec, while
+the identical depth through **tag 1** gave `RecursionLimitReached` — **same message type, two fields, two
+ceilings.** $`\Rightarrow`$ This is not a one-level shuffle of the binding constraint; **there was nothing
+behind the cap.**
+
+**Why this repair rather than the alternatives.**
+
+| alternative | why rejected |
+|---|---|
+| **Raise the cap.** | Any finite cap reproduces the asymmetry at a new depth, and R3F-2 makes the writer unlimited *by requirement*. |
+| **Cap the writer to match.** | It would make a required-total function partial, and would reject terms already on chain. |
+
+★ **Totality was achieved SUBTRACTIVELY — no new acceptance rule was added**, which is why permissiveness
+is *excluded* rather than hoped for: the refusals for **truncated runs**, **reserved tags** and **nested
+`0x0F` escapes** are each **re-asserted** at depths 33 and 64. The bound is now
+$`|\mathrm{frames}| \le |\mathrm{input}|/2`$ with the bomb-safe preallocation guard retained.
+
+★★ **Deleting the cap also deleted two things that had been resting on it**, and both are findings rather
+than tidying: `SCANNER_STACK_CEILING`, whose stated derivation **was a function of the cap** and so had no
+independent basis; and `DecMachine::depth`, which turned out to be a **duplicate** of
+`col_or_region_frames` differing only by a latent off-by-one that **refused an empty list at the boundary**.
+
+**Authority.** The 2026-07-29 ruling, that there is no artificial depth cap for consensus.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 4 on the axis of reader/writer depth asymmetries in the
+canonical path codec** — this is the **fourth and last**, which is why the entry's headline says *closed*
+rather than *fixed*. The axis is DERIVED: it is the set of `(writer, reader)` pairs over the trie-key
+grammar where the writer's domain exceeds the reader's.
+
+#### Evidence
+
+- Deep round trip a **byte-level fixed point at depths 33…384**; refusals re-asserted for truncated runs,
+  reserved tags and nested escapes at depths **33** and **64**. **MEASURED**.
+- The envelope claim refuted: at depth 400, tag 8 refused in the **trie** codec while tag 1 gave
+  `RecursionLimitReached` — two ceilings on two fields of one message type. **MEASURED**.
+- `serializer_par_byte_goldens` **13/13**. **MEASURED**.
+
+---
+
+### CBR-038
+
+**The escape arm's prost encode was a Θ(depth) native recursion inside a function required TOTAL — a remotely triggerable process abort — and an unnamed second recursion sat beside it on the same path.**
+
+| | |
+|---|---|
+| Commit(s) | `d7818967` (both repairs), `b75aa6a0` (the cost, measured) |
+| Status | LANDED |
+| Direction | PERMISSIVE |
+| Evidence grade | WITNESSED |
+| Files | `models/src/rust/canonical_path.rs` (**:623** and **:1078**, the two `encode_to_vec` sites), `models/src/rust/pathmap_crate_type_mapper.rs` (**:360**, `eval_stable_par` ⇄ `eval_stable_expr`) |
+
+★ **Attribution.** The analysis is the escape-arm work item's; filed substantially as given.
+
+#### (a) The issue
+
+Two unmet obligations on one path, not one.
+
+1. `canonical_path.rs` at **:623** and **:1078** used `prost::Message::encode_to_vec` — a **Θ(depth)
+   native-stack** traversal measured at **302 B/level** in release — **inside a function required total and
+   documented no-panics**. The escape arm's payload is an **arbitrary `Par`**; the arm exists precisely for
+   terms the grammar cannot describe, so **nothing bounded its depth**. A Θ(depth) traversal there is a
+   **remotely triggerable abort**.
+2. `pathmap_crate_type_mapper.rs` at **:360** — `eval_stable_par` ⇄ `eval_stable_expr` — was **mutually
+   recursive with no bound**, on the same path.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — `prost_encode` **calls** `prost::encoding::<module>::{encode, encoded_len}` and replaces only the recursion. **MEASURED** (`prost_encode_differential` 4/4, plus a test reconstructing the whole key as `0x0F ++ uv(len) ++ derived bytes`). |
+| 2 · verdict | **NO** — ⚠ **and the reason is worth stating rather than assuming.** What changes is that a term which previously **aborted the process** now completes, and **an abort is not a verdict**: no node ever produced a decision to disagree with. Same reading [CBR-023](#cbr-023)'s verdict cell takes. **DERIVED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — byte identity holds **by construction rather than by comparison**: the encoder calls prost's own field writers. **MEASURED** as well. |
+| 3 · bytes (Lane P, prost) | **NO** — same. **MEASURED**. |
+| 4 · post-state hash | **NO** — downstream of bytes that do not move. **DERIVED**. |
+| 5 · accepted programs | **MOVES** — ⚠ **filed `MOVES`; the incoming analysis said `NO` on all seven, and [CBR-023](#cbr-023) is the register's own precedent against that.** CBR-023's cell reads *"a deploy that killed the node is now processed"*, and [CBR-022](#cbr-022)'s *"a deploy at depth 21,782 previously killed the receiving node; now it is admitted or rejected on its merits."* This change is another member of CBR-023's Θ(depth) conversion programme, and a term that took `SIGSEGV` and now completes is on **this** axis. ★ Liveness lives on the acceptance axis in this register — which is also what makes the direction **PERMISSIVE** rather than NEUTRAL. |
+| 6 · metering | **NO** *by charge site* — no charge site and no price changed. ⚠★★ **But the WORK moved enormously**: $`-96.2\%`$ `Ir` on the escape payload, $`+35.1\%`$ on the classifier, and **3.79× slower wall clock at depth 1** (`b75aa6a0`). $`\Rightarrow`$ **CONDITION ON THIS CELL, recorded so it is not silently inherited: if metering ever becomes a function of measured work rather than of charge sites, this cell must be RE-DERIVED.** **DERIVED**. |
+
+**The disagreement — the one it removes.** *X* replays a block whose `EPathMap` carries a
+$`\neg`$`eval_stable` entry nested $`\approx 7{,}000`$ deep. Pre-change, `encode_trie_path` recursed
+through `encode_to_vec` on a required-total path and *X* took **`SIGSEGV`**, while *Y* on a larger worker
+stack completed. **Same block, one node dead and one fine.** ★★ That is a **liveness partition that
+produces no verdict at all and therefore cannot be adjudicated** — strictly worse than a rejection, because
+an `Err` is a decision every node reaches identically while a `SIGSEGV` is a liveness failure of whichever
+node was asked first.
+
+**Blast radius.** Every trie key with a non-ground entry — and, for the second recursion, **every segment
+of every trie key**.
+
+**Could live chain state have been produced under the old behaviour?** ⚠ Not settleable here. Settling
+query: search node crash logs for `SIGSEGV` with a `canonical_path` / `encode_trie_path` signature.
+**UNVERIFIED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** A remotely triggerable node abort on a required-total path. ★ **A
+crash is strictly worse than a rejection** — an `Err` is a decision every node reaches identically; a
+`SIGSEGV` is a liveness failure of whichever node was asked first.
+
+★★ **The second recursion was found by BISECTING A PROBE THAT STILL OVERFLOWED AFTER THE ENCODER WAS
+FIXED**, and what it turned out to be is the finding: it is the **ground-domain gate** — the predicate that
+selects field 8 versus the tag-1 walk — so it runs on **every segment of every trie key**, and it appeared
+in **no depth audit and no `TRIPWIRE_DEPTH`**. $`\Rightarrow`$ *A repair that does not fully work is
+evidence about the shape of the problem, and the residual overflow was the only thing pointing at a
+recursion nothing was watching.*
+
+**Why this repair rather than the alternatives.** Both repairs preserve bytes **by construction rather than
+by comparison**, which is why the byte cells are `NO` on a stronger footing than a differential alone: the
+encoder calls prost's own field writers, and the classifier is a **side-effect-free conjunction whose value
+cannot depend on evaluation order**.
+
+**Authority.** No owner ruling. ⚠ The **throughput** regression is recorded and *not* traded away: 3.79×
+slower at depth 1 is the price of removing an unbounded abort, and `b75aa6a0` exists to state it rather
+than to hide it.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 2 on the axis of unbounded native recursions reachable
+from `encode_trie_path`** — the `encode_to_vec` sites (one shape, two call sites) and the `eval_stable_*`
+mutual pair. ★ The second was **not** on the list when the work started; it entered by measurement, which
+is why the count is stated with its discovery method attached.
+
+#### Evidence
+
+- 302 B/level release on the escape arm pre-change; the probe overflowed **again** after the encoder repair,
+  which is what located the classifier. **MEASURED**.
+- `prost_encode_differential` **4/4**, plus whole-key reconstruction as `0x0F ++ uv(len) ++ derived bytes`.
+  **MEASURED**.
+- Cost, stated rather than buried: $`-96.2\%`$ `Ir` on the escape payload, $`+35.1\%`$ on the classifier,
+  **3.79×** slower wall clock at depth 1. **MEASURED** (`b75aa6a0`).
+
+---
+
+### CBR-039
+
+**∅ had two spellings; the constructor now has one — and the half that would have moved consensus bytes was REVERTED, with its witness landed executable.**
+
+| | |
+|---|---|
+| Commit(s) | `e93f0222` (the constructor), `0075ded5` (the revert of the `union` half) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | LATENT |
+| Files | `models/src/lib.rs` (`create_bit_vector` at **:97**), `models/src/rust/utils.rs` (`union` — hardened, then **reverted**), `models/tests/bit_vector_canonicity.rs` (new, carrying the witness) |
+
+★ **Attribution.** The analysis is the empty-set-spelling work item's; filed substantially as given.
+
+#### (a) The issue
+
+`models/src/lib.rs` at **:97** — `create_bit_vector(&[])` — answered `[0]`: a length-one, all-clear vector.
+In the byte-per-index representation that denotes ∅, **and so does `[]`**. Two spellings of one set,
+separated by the query production actually uses:
+
+```text
+  [].is_empty()   = true      ← length 0
+  [0].is_empty()  = false     ← length 1, all bits CLEAR
+```
+
+`locally_free.is_empty()` is read as a **set-emptiness** query at `matcher/fold_match.rs` at **:103** and
+three siblings, so the second spelling makes those four readers answer the wrong question.
+
+#### (b) How it (potentially) breaks consensus
+
+⚠ **All seven cells are `NO` AS LANDED, and the reason the row is not larger is the revert** — see the
+scenario below, which belongs to the reverted half and is filed rather than omitted.
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — the only input whose answer changes is `&[]`, and **no production site passes it**: the five reachable sites pass singletons, and every `&[]`-shaped site is inside `#[cfg(test)]`. For non-empty input the result is bit-identical **provably**: `bit_vector[max_index] = 1` executes, so the last byte is `1` and truncation is a no-op. **DERIVED** — a proof, not a survey. |
+| 2 · verdict | **NO** — no reachable input changes, so no decision does. **DERIVED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — as landed. **MEASURED**. |
+| 3 · bytes (Lane P, prost) | **NO** — as landed. **MEASURED**. |
+| 4 · post-state hash | **NO** — as landed. ★ **All 11 blessed contracts' normalized-term digest *and* length are unmoved, verified twice across this work** — the check that says the landed half moved nothing. **MEASURED**. |
+| 5 · accepted programs | **NO** — nothing in admission or validation reads this. **DERIVED**. |
+| 6 · metering | **NO** — no charge site changed. **DERIVED**. |
+
+⚠★★ **This row would read `V ● B ● P ● H ●` if the `union` hardening were included — and that is precisely
+why it is not.**
+
+**★★★ The two-node scenario belongs to the REVERTED half, and it is filed as such rather than omitted,
+because a scenario that was averted is evidence about the decision.** `e93f0222`'s own message claimed
+*"NO consensus movement, and that is a proof"* — ⚠ **false for half of that commit**: the proof was about
+`create_bit_vector` and was **carried across to a different function with a different argument**, and the
+falsifier was a test **not run before the claim**.
+
+*X* canonicalises in `union`, *Y* does not. A deploy substitutes into a `New` whose body carries
+`locally_free = [0]` and calls `toByteArray`. *X* produces **18** bytes, *Y* **21** — the extra
+`74, 1, 0` being tag 9, length 1, payload `[0]` — with two enclosing length prefixes differing (16/12
+against 19/15). ★ **The values compare `==`, because `<Par as PartialEq>::eq` ignores `locally_free`, so
+nothing local notices** — but the produce hashes differ (`687a3de5…` against `700b1b17…`), so RSpace
+channel state and the post-state hash diverge and the block is **invalid on exactly one side**. Reverted in
+`0075ded5`; the witness landed **executable** as `canonicalising_union_would_move_consensus_bytes`.
+
+**Blast radius.** As landed: empty. Averted: every block containing a non-canonical `locally_free`.
+
+**Could live chain state have been produced under the old behaviour?** **NO** for the landed half — no
+production site passes `&[]`, established by enumeration. **DERIVED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** ∅ keeps two spellings at a producer feeding four readers that ask a
+set-emptiness question. ★ **The law belongs at the producer, not at the four readers — this repository has
+measured what happens to one truth kept in four places** ([CBR-031](#cbr-031), [CBR-032](#cbr-032)).
+
+**★★ Stopping at the constructor is the correct SCOPE, not a scope-down**, and the difference is provable:
+`union` is canonical-**preserving** (proved, and verified over the lattice cross product), so repairing
+**producers** makes an accumulator rule **unnecessary**. Canonicalising the accumulator instead would change
+the state hash of **every block containing a non-canonical term** — a **coordinated protocol decision**,
+which now has its **witness attached** instead of a paragraph.
+
+**Authority.** No owner ruling; the revert was the work item's own call once the witness existed.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 2 on the axis of producers that can emit a non-canonical
+`locally_free` bitset.** The first is `create_bit_vector`, repaired here. ⚠ **The second is
+`substitute_combine.rs` at **:63**, `set_bits_until` — it is PRODUCTION-REACHABLE, it feeds `union` at
+**eleven** sites, and it carries the same decision.** Filed separately as work item **#196** and named here
+as the **residual**, so this entry is not read as closing the axis.
+
+**★ Where this entry claims something needed no change, the GUARD is named.**
+`models/tests/bit_vector_canonicity.rs`, whose `canonicalising_union_would_move_consensus_bytes` is the
+averted scenario **as an executable test** — so a future author who re-lands the accumulator change fails
+this file instead of discovering the divergence on chain.
+
+#### Evidence
+
+- The reachability enumeration: five production call sites, all passing singletons; every `&[]`-shaped site
+  under `#[cfg(test)]`. **DERIVED**.
+- Non-empty inputs bit-identical **by proof**: `bit_vector[max_index] = 1` executes, so the final byte is
+  set and truncation is a no-op. **DERIVED**.
+- The averted divergence, exact: 18 B against 21 B, extra `74, 1, 0`, enclosing prefixes 16/12 against
+  19/15, produce hashes `687a3de5…` against `700b1b17…`. **MEASURED**, and retained as an executable test.
+- All **11** blessed contracts' normalized-term digest **and** length unmoved, verified **twice** across
+  this work. **MEASURED**.
+
+---
+
 ## 4.4 Surface L — MeTTaIL's Rholang
 
 ⚠ **Read this section against a different clock.** MeTTaIL's Rholang does not run consensus today. A
@@ -6728,22 +7023,22 @@ unforgeable crypto **channels** rather than method-table entries. **MEASURED** (
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 51 |
+| Axis | Entries that move it | Share of the 54 |
 |---|---|---|
-| 1 · computed value | **22** | 43 % |
-| 2 · verdict | **27** | 53 % |
-| 3 · bytes — Lane B (bincode) | **25** | 49 % |
-| 3 · bytes — Lane P (prost) | **26** | 51 % |
-| 4 · post-state hash | **36** | 71 % |
-| 5 · accepted programs | **14** | 27 % |
+| 1 · computed value | **22** | 41 % |
+| 2 · verdict | **28** | 52 % |
+| 3 · bytes — Lane B (bincode) | **25** | 46 % |
+| 3 · bytes — Lane P (prost) | **26** | 48 % |
+| 4 · post-state hash | **36** | 67 % |
+| 5 · accepted programs | **16** | 30 % |
 | 6 · metering | **3** | 6 % |
 
-⚠ **Recounted 2026-07-30 from the 51 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
+⚠ **Recounted 2026-07-30 from the 54 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
 28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
 never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
 ★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 51 in every column, which is the check that no
+`●` counts per column, plus the `○` and `·` counts, sum to 54 in every column, which is the check that no
 row was skipped.
 
 **Reading.** The post-state hash is the most-touched axis at **71 %**, which is expected: it is downstream
@@ -6796,19 +7091,19 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-30 from the 51 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
+⚠ **Recounted 2026-07-30 from the 54 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **31** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
-| PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
+| CORRECTIVE | **32** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| PERMISSIVE | **11** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **51** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **54** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -7763,12 +8058,46 @@ falsifier in `register.toml`:
 
 | falsifier | the claim stays live while … |
 |---|---|
-| `SYMBOL_PRESENT` | `token` occurs within ±3 lines of `line` in `path` at `HEAD` |
+| `SYMBOL_PRESENT` | `token` occurs **anywhere in** `path` at `HEAD` |
 | `SYMBOL_ABSENT` | `token` does **not** occur there |
 
 A row whose `state` is `OPEN` / `RULED` / `UNVERIFIED` must have its falsifier **hold**; a row whose
 `state` is `CLOSED` must have it **fail**. $`\Rightarrow`$ The clause fires in *both* directions: a question answered by
 a change that never came back to the row, and a closure that never happened.
+
+⚠★★ **WIDENED 2026-07-30 from *"within ±3 lines of `line`"* to the whole file — and this is a FIX, not a
+relaxation. ★ It is also the one place where [rule 3](#775-the-five-drift-classes-and-the-clause-that-decides-each)
+must NOT be applied, which is worth stating because the symptom looks identical.**
+
+Question 10's falsifier reddened three clauses when `3fb4e21b` inserted 46 lines above its cited
+coordinate. The reported diagnosis was *"the twenty-first instance"* of the `at = "HEAD"` defect
+[§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) fixed in 20 citation rows.
+**It is not.** It is the same *symptom* arising from a mechanism with the **opposite** temporal requirement:
+
+| | a `[[citation]]` | an `[[open_question]]` falsifier |
+|---|---|---|
+| what it claims | a **past** state — *"when this was written, `token` was here"* | a **present** state — *"the question stays open **while** that type is still there"* |
+| correct pin | a **fixed SHA**, so it stays checkable forever | **`HEAD`**, by construction — its whole job is to move when the world moves |
+| effect of SHA-pinning it | ★ the intended fix | ⚠ **it would hold forever and the question could never close** |
+
+$`\Rightarrow`$ **The `[[open_question]]` schema has no `at` field on purpose**, and pinning a falsifier at a
+SHA would have silenced the warning by destroying the mechanism — the *"gate whose advertised coverage
+exceeds its real coverage"* failure of [§7.7.7](#777-what-the-gate-cannot-cover-stated-as-prominently-as-what-it-can),
+committed deliberately.
+
+★ **The real defect was the LINE, and the evidence is arithmetic:** question 10's token
+`HashMap<PublicKey, i64>` occurs at **four** lines of its file, so *any* single line was one arbitrary
+choice of four and the proposed re-pin would have picked another. [Rule 1](#775-the-five-drift-classes-and-the-clause-that-decides-each)
+already says *"the token, not the line number"*; for a falsifier that is the **whole** of it, because a
+falsifier asks *whether a symbol exists*, not *where*. `line` is retained in the schema as a
+**navigational hint for a reader** and is no longer part of the predicate.
+
+★★ **And the widening is conservative in the only direction that matters.** A `CLOSED` row must have its
+falsifier **fail**, so searching more text makes closure **harder** to justify and never easier — the
+opposite of a loophole. Verified before the change: questions 1 and 9 evaluate **identically** under both
+windows, and only question 10 differs, where the whole file correctly holds. $`\Rightarrow`$ **Removing the
+failure mode, rather than re-pinning or excepting it, is the same *shape* of fix as rule 3 applied to the
+right mechanism** — which is the general lesson and not a fact about this row.
 
 ⚠ **(b) alone would NOT have caught the witness, and saying otherwise would be the failure this gate
 exists to prevent.** CBR-L09 residual 3 *was* in §6.3, as row 7, and the row went stale together with the
@@ -8279,8 +8608,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **51** consensus-visible changes, derived from the campaign record: **37** on the
-   F1r3node node, **14** on MeTTaIL's Rholang. **49 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **54** consensus-visible changes, derived from the campaign record: **40** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **52 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

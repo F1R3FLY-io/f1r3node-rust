@@ -1933,10 +1933,31 @@ pub fn check_open_question_freshness(index: &Index) -> Result<(), DriftBreach> {
             continue;
         }
         let path = row.get("path").map(Val::as_str).unwrap_or("").to_string();
+        // ⚠ `line` is a NAVIGATIONAL HINT for a reader, NOT part of the predicate. See below.
         let line = row.get("line").map(Val::as_int).unwrap_or(i64::MIN);
         let token = row.get("token").map(Val::as_str).unwrap_or("").to_string();
         let state = row.get("state").map(Val::as_str).unwrap_or("");
-        let Some((holds, _found)) = token_near("HEAD", &path, line, &token) else {
+        // ★★ WHOLE-FILE, not a ±3 window around `line` — changed 2026-07-30, and it is a
+        // FIX rather than a relaxation. A CITATION records a claim about a PAST state and is
+        // pinned at a SHA so it stays checkable forever (register §7.7.5 rule 3). A
+        // FALSIFIER records a claim about the PRESENT state — "the question stays open WHILE
+        // that type is still there" — so it is evaluated at HEAD by construction, and the
+        // register's `[[open_question]]` schema has no `at` field precisely because pinning
+        // one at a SHA would make it hold forever and the question could never close.
+        //
+        // ⇒ Rule 3 cannot rescue a falsifier, and the LINE is the actual defect: it is
+        // spurious precision. Question 10's token `HashMap<PublicKey, i64>` occurs at FOUR
+        // lines of its file, so any single line was one arbitrary choice of four, and
+        // `3fb4e21b` inserting 46 lines above it reddened three clauses over a coordinate
+        // that was never load-bearing. §7.7.5 rule 1 already says the token is what makes a
+        // coordinate falsifiable; for a falsifier that is the WHOLE of it.
+        //
+        // ★ The widening is CONSERVATIVE in the only direction that matters: §7.7.6 requires
+        // a `CLOSED` row's falsifier to FAIL, so searching more text makes closure HARDER to
+        // justify and never easier. Verified at the time of the change: questions 1 and 9
+        // evaluate identically under both windows; only question 10 differs, and under the
+        // whole file it correctly holds.
+        let Some(body) = show("HEAD", &path) else {
             return Err(DriftBreach::OpenQuestionNoLongerOpen {
                 number,
                 path,
@@ -1944,6 +1965,7 @@ pub fn check_open_question_freshness(index: &Index) -> Result<(), DriftBreach> {
                 token: format!("{token} (the file itself does not resolve at HEAD)"),
             });
         };
+        let holds = body.lines().any(|l| l.contains(&token));
         let want = match kind {
             "SYMBOL_ABSENT" => !holds,
             _ => holds,
