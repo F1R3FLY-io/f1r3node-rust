@@ -30,7 +30,18 @@ permissions:
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
-  SYSTEM_INTEGRATION_REF: a50eeb198c6e542504af8db92389de5c02500422
+  # THIRD pin site. The other two — .github/oci-validation.env and
+  # _integration-pipeline.yml — are held identical by build_base's drift check;
+  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
+  # system-integration 81284fc, which added integration-tests/certs/validator4.
+  # compose.py bind-mounts that path, so with no host file Docker created a
+  # directory and every node start died on "Failed to read the X.509
+  # certificate: IO error: Is a directory (os error 21)" — the soak failed at
+  # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
+  # completed segments, the dashboard never published. Bump this whenever the
+  # other two move.
+  SYSTEM_INTEGRATION_REF: 29d7bd0ff1973f4ddee8a3af34c5a6224557f8ea
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
