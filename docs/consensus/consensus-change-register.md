@@ -86,13 +86,24 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 47 consensus-visible changes** — 34 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
-Of these, **43 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **23** entries move bytes; on the protobuf lane **23**; **23** move a
-*verdict*; **32** move the *post-state hash*; **13** move *acceptance*; **2** move *metering*.
-⚠ Every figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no
-longer recounted by hand: `casper/tests/consensus_change_register_gate.rs` fails naming any figure that
-disagrees. ★ They are written as **digits** for that reason — this paragraph previously spelled them
+**Result: 49 consensus-visible changes** — 36 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
+Of these, **47 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **24** entries move bytes; on the protobuf lane **25**; **26** move a
+*verdict*; **35** move the *post-state hash*; **13** move *acceptance*; **3** move *metering*.
+⚠★★ **Only three of the ten figures in this paragraph are pinned by the gate, and the other seven had
+ALL drifted by 2026-07-30 — four of them wrongly.** The previous revision of this paragraph claimed *"Every
+figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no longer
+recounted by hand: `casper/tests/consensus_change_register_gate.rs` fails naming any figure that
+disagrees."* ⚠ **That claim was false when written.** `STATED_FIGURES` anchors the entry count and the two
+surface counts here; it anchors **none** of the six axis counts and **not** the landed / in-flight split.
+Measured at `f78e169d`: the protobuf lane read 23 against a projection of 24, the verdict count 23 against
+24, the post-state hash 32 against 33, and *"43 are landed"* against 45 — while the bincode, acceptance and
+metering figures happened to still be right. ★ The gate's own §7.7.7 warns that *"a gate whose advertised
+coverage exceeds its real coverage is worse than no gate"*, and this paragraph was carrying exactly that
+defect **inside the register**. The remedy is sized in
+[§7.8.6](#786-the-two-drift-questions-answered): the six axis counts and the status split are structurally
+readable from §4.1 exactly as §5.1's and §5.3's tables already are, so the fix is to *read* them, not to
+anchor them. ★ They remain written as **digits** — this paragraph once spelled them
 (*"Twenty-three move bytes"*), and an English numeral is structurally uncheckable however careful the
 author. ★ **No entry is now a live
 divergence.** The one that was (**CBR-L09** — float division by zero answering `error` rather than
@@ -595,9 +606,11 @@ is a *future* fork, not a present one).
 | [CBR-028](#cbr-028) | N | **OPEN, UNREPAIRED** — write-unbounded / read-bounded on a consensus wire | *not repaired* | · | · | · | ● | ● | ● | · | — | **W** |
 | [CBR-029](#cbr-029) | N | The pretty printer renders a receive's `where` guard | `d8e95fb0` | · | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-030](#cbr-030) | N | `NonNegativeNumber.rho`'s overflow guard becomes **total** — the genesis term moves | `e3a4494b`, `719f2432` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
-| [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ? | ○ | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-032](#cbr-032) | N | The binder shift emitted the shifted **position** as the **value** | `084c93b5` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **M** |
 | [CBR-033](#cbr-033) | N | A resting send carries its reason — a diagnostic proven **off** the byte path | `8fc9afc9` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
+| [CBR-034](#cbr-034) | N | `TreeHashMap` `update`-after-`delete` **resurrected** the key — the updater tested the leaf, not the key | `7c0cfd0a` | ● | ● | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-035](#cbr-035) | N | A walk elimination in the generated `Clone` — behaviourally **byte-identical** | `87ee699c` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -612,27 +625,29 @@ is a *future* fork, not a present one).
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 
-**Totals — 47 entries**, recounted from the rows above rather than adjusted: **34 on Surface N, 13 on
-Surface L**; **45 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **35 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 2 NEUTRALITY-MEASURED. By direction: **29 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 3 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
-hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **2** — **CBR-L07** metering
-and **CBR-031** verdict.
+**Totals — 49 entries**, recounted from the rows above rather than adjusted: **36 on Surface N, 13 on
+Surface L**; **47 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **36 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 3 NEUTRALITY-MEASURED. By direction: **30 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 4 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
+⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
+[CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
+[CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 47 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 49 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 47 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 49 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**47**, which is the arithmetic check that no row was double-counted or dropped.
+**49**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -4007,15 +4022,66 @@ looking*, and that is the finding
 #### (b) How it (potentially) breaks consensus
 
 The differential term throughout is
-`for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }`. Every figure below is **MEASURED** on it.
+`for (@x <- @"c") { for (@y <- @"d") { @"o"!(10 matches =x) } }`. Every **byte count** below is
+**MEASURED** on it. ⚠ The verdict and post-state-hash cells are **mechanism**, not measurement, and say
+so in the cell — see the closure note that follows the table.
 
 | Axis | Verdict |
 |---|---|
 | 1 · computed value | **MOVES** — the bit escapes the inner binder. Pre-fix the inner `for` claimed to be *closed* while naming an index it does not bind. |
-| 2 · verdict | ⚠ **UNVERIFIED**, and deliberately not rounded to `NO`. `list_match` / `fold_match` gate a remainder on `locally_free(t, 0).is_empty()` over **targets**; a `matches` expression evaluates to a `GBool` before it can become a target, so **no reaching term was constructible** — but that argument is *not exhaustive*, and the register's "potentially" discipline ([§2.7](#27-evidence-grade--and-the-word-potentially)) exists for exactly this cell. |
+| 2 · verdict | **MOVES.** ★ **CLOSED 2026-07-30**; this cell read `UNVERIFIED` until [CBR-032](#cbr-032) named the two consumers, and the superseded text is quoted below so the closure stays deliberate. |
 | 3 · bytes (Lane B, bincode) | NO — **782 B = 782 B, byte-equal.** `serialize_as_empty_bytes` blanks `locally_free` on this lane, so the moved bits are not on it. |
 | 3 · bytes (Lane P, prost) | **MOVES — 63 B $`\rightarrow`$ 72 B.** `locally_free` is real `bytes` on the wire. |
-| 4 · post-state hash | NO — the event-hash preimage is **byte-equal at 830 B**. The preimage does not carry this field. |
+| 4 · post-state hash | **MOVES.** ★ **WIDENED 2026-07-30** from `NO`. The 830 B byte-equality below is still true and is still the whole truth *about the event-hash preimage*; it was never the whole truth about the axis. Two Lane-P consumers reach the post-state hash without passing through the preimage. |
+
+##### ★★ The two cells CLOSED on 2026-07-30 — and why this is not a corrected measurement
+
+⚠ **Both cells were superseded by [CBR-032](#cbr-032)'s (b), which named the mechanism this entry
+could not.** The superseded text is quoted verbatim, per the same discipline
+[§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5 applies to **CBR-006**, so that a
+later reader cannot restore either cell as a bug fix:
+
+> **2 · verdict** — ⚠ **UNVERIFIED**, and deliberately not rounded to `NO`. `list_match` / `fold_match`
+> gate a remainder on `locally_free(t, 0).is_empty()` over **targets**; a `matches` expression evaluates
+> to a `GBool` before it can become a target, so **no reaching term was constructible** — but that
+> argument is *not exhaustive*, and the register's "potentially" discipline exists for exactly this cell.
+>
+> **4 · post-state hash** — NO — the event-hash preimage is **byte-equal at 830 B**. The preimage does
+> not carry this field.
+
+**What closes them.** This entry moves `locally_free` on Lane P (**63 B $`\rightarrow`$ 72 B**, MEASURED
+above). [CBR-032](#cbr-032)'s (b) enumerates the consumers that decide *identity* from Lane-P bytes, and
+both apply verbatim to any change that moves this field:
+
+1. **The cost-accounting signature channel.** `cost_accounting/sig.rs` at **:252** signs
+   `ParSortMatcher::sort_match(&par).term.encode_to_vec()` — the **protobuf** encoding — as a principal's
+   canonical bytes, which `accounting::SignatureChannel::from_sig` turns into the supply channel
+   $`\Sigma[\![s]\!]`$. A quote principal `# P` whose `P` contains a `matches` pattern with `=x`
+   therefore names a **different RSpace channel** under the two readings. A channel is a *location*, so
+   this reaches the post-state hash without touching the event-hash preimage.
+2. **The pathmap trie key.** Trie entries are keyed by `encode_trie_path`, whose escape arm is the
+   entry's canonical prost bytes, which **include** `locally_free`. In `Par`'s protobuf field order
+   `locallyFree` is **tag 9** and therefore encodes *before* `bundles` (11) and `conditionals` (12), so
+   two entries agreeing on tags 1–8 and differing only under a bundle or a conditional have their key
+   comparison **decided at a `locally_free` byte**. Trie order $`\rightarrow`$ `ps` projection order
+   $`\rightarrow`$ the EPathMap's **Lane-B** bytes $`\rightarrow`$ the post-state hash.
+
+★★ **The defect class here is NOT the one the benchmark retraction records, and the difference is worth
+a reviewer's attention.** [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it)
+retracts figures whose *instrument* was broken. Nothing here was mis-measured: the 830 B preimage
+equality was correct when written and is correct now. What was wrong is the **inference** — one measured
+path was treated as the only path, so a sound measurement was generalised past its own scope.
+$`\Rightarrow`$ **A cell answered `NO` on the strength of one measured path should name the path in the
+cell**, which is why both closures above are written as *"this measurement, about this path"* rather than
+as a bare verdict. That is a sixth drift class, and it is recorded as one in
+[§7.8.6](#786-the-two-drift-questions-answered).
+
+⚠ **The grade stays WITNESSED, and that is a decision rather than an omission.** §2.7 grades an *entry*
+by whether a concrete term exhibiting its divergence is known, and one is: the differential term is
+exhibited and its Lane-P movement is MEASURED at 63 B $`\rightarrow`$ 72 B. The two cells closed above
+are **mechanism-grade**, and they carry that grade *in the cell* — which is what the axis table is for.
+Downgrading the whole entry would understate the byte movement that *is* witnessed, and upgrading the
+cells would overstate two mechanisms for which no program has been exhibited.
 | 5 · accepted programs | NO — `connective_used`, which gates sendability, is untouched **and guarded**. |
 | 6 · metering | NO — no charge site changed. |
 
@@ -4078,7 +4144,11 @@ as the **value**, discarding the bit — a porting error, because the Scala orig
 positions**, so nothing internal disagrees and no verdict moves today; but `locally_free` is on the prost
 wire, so correcting it **would move bytes**. Filed separately. **DERIVED**.
 ★ It is now filed and repaired: **[CBR-032](#cbr-032)**, which also *closes this entry's `UNVERIFIED`
-verdict cell as a mechanism* — see its (b).
+verdict cell as a mechanism* — see its (b). ★★ **That closure is now APPLIED here** rather than left as a
+forward reference: this entry's verdict cell reads `MOVES` and its post-state-hash cell reads `MOVES`, both
+as of 2026-07-30, with the superseded text quoted in (b). ⚠ A correction recorded only in the *other*
+entry is a correction a reader of *this* entry never sees — which is why the register's own
+[§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 exists.
 
 ---
 
@@ -4466,6 +4536,299 @@ concrete form of [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) fin
 - ⚠ **Two adoptions this entry does not make, because the files are not this work's.** One call in
   `rholang/src/rholang_cli.rs`'s `print_storage_contents`, and one in the genesis harness. Until they land,
   the capability exists and is exercised only by its own suite. **DERIVED**.
+
+---
+
+### CBR-034
+
+**`TreeHashMap!("update", …)` after `("delete", …)` RESURRECTED the deleted key — the updater tested the leaf's *carrier*, not the *key*.**
+
+| | |
+|---|---|
+| Commit(s) | `7c0cfd0a` |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `casper/src/main/resources/Registry.rho`, `casper/src/test/resources/TreeHashMapTest.rho`, `casper/tests/genesis/contracts/tree_hash_map_delete_restores_never_set.rs` (new), `casper/tests/genesis/contracts/blessed_contract_source_pins.rs` (new), `casper/tests/genesis/contracts/rho_spec_probe.rs` (new) |
+
+★ **Attribution.** The analysis below is the genesis work item's, handed over because that work item was
+fenced out of `docs/consensus/**`. It is filed substantially as given; the credit is its author's.
+
+#### (a) The issue
+
+`TreeHashMapUpdater` (`casper/src/main/resources/Registry.rho`, at **:288**) decides at the leaf with
+**:296** `if (val == 0)`. A leaf holds one of exactly two carriers:
+
+| leaf state | `val` | `val == 0` |
+|---|---|---|
+| created by `MakeNode` (**:76**), never written | `0` — an **`Int`** | true |
+| after any `set` (**:183**) | `{k: v, …}` — a **`Map`** | false |
+
+So `val == 0` asks *"has this leaf ever been written?"* where the question is *"is `suffix` **in** this
+leaf?"*. `TreeHashMapDeleter` writes `val.delete(suffix)` (**:393**) and **leaves the `Map` in place**, so
+after a delete the updater falls through to `update!(val.get(suffix), …)` = `update!(Nil, …)` (**:305**),
+and **:308** `val.set(suffix, newVal)` **writes the answer back**.
+
+$`\Rightarrow`$ **`update` after `delete` resurrects the deleted key.** ⚠ The `Nil + 1` raise previously
+filed as the defect was a *consequence*, not the defect: it appears only for callers whose update body
+cannot accept `Nil`. **Callers whose body can accept `Nil` were silently corrupted.** The raise was the
+messenger.
+
+Reachable by any deploy: **:486** publishes `bundle+{*TreeHashMap}` as `` `rho:lang:treeHashMap` ``.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — **MEASURED** `(true, 99)` $`\rightarrow`$ `(false, Nil)`: the update body ran and its return value became the value of a deleted key; after the repair the body does not run and `get` stays `Nil`. |
+| 2 · verdict | **MOVES** — the leaf branch at **:296** changes for **every** `Map`-carrier leaf that lacks `suffix`. Same axis [CBR-030](#cbr-030) moves, and for the same reason: a genesis contract's control flow is consensus control flow. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — `DeployData.term` is the **raw source text**, not a normalized term (`standard_deploys.rs` at **:129-137**; `compile_rholang_source.rs` at **:18** and **:33**). **MEASURED**: `6a465c6a…` / **25,733 B** $`\rightarrow`$ `5e9660ca…` / **27,707 B**. |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same two carriers, both on the wire, and the genesis deploy is **gossiped**. |
+| 4 · post-state hash | **MOVES** — ⚠ **magnitude UNVERIFIED and deliberately not quantified.** No genesis hash is blessed in `7c0cfd0a`, and [finding 1](#finding-1--no-artefact-of-the-genesis-build-is-currently-stable-enough-to-pin) is why: six builds produced six distinct `post_state_hash` values at byte-identical source, so a quantified movement would be a figure with no reproducible referent. The **direction** is certain; the number is withheld on purpose. |
+| 5 · accepted programs | **NO** — consistent with [CBR-027](#cbr-027): a raise makes a deploy **fail**, not **unaccepted**. Nothing in admission or validation consults this contract. |
+| 6 · metering | ⚠ **MOVES** — and this is the **first entry in the register to re-price an existing operation**. The repair adds a `val.contains(suffix)` evaluation on **every** update-path call (`method_call_cost()` $`=`$ `Cost::create(10, "method call")`, `accounting/costs.rs` at **:320**, plus `lookup_cost()` $`= 3`$, at **:226**) and **removes** an `update` dispatch, a `get` and a `set` on the absent-key path. **Direction certain, magnitude not measured — DERIVED.** See the note on §5.1 below. |
+
+**The disagreement.** Two, and they are of different evidentiary strength — which is why they are listed
+separately rather than merged.
+
+1. **Genesis divergence — CERTAIN.** A pre-`7c0cfd0a` node and a post-`7c0cfd0a` node compute **different
+   genesis post-state hashes from the same bonds and vaults files**, because `Registry.rho`'s bytes are
+   signed into a genesis deploy and re-normalized by every node. The ceremony never converges. Fault class:
+   a **safety fork at genesis**, and ⚠ **not slashable** — neither node is faulty; they are simply on
+   different chains.
+2. **Mid-chain divergence — ⚠ *potentially*, and UNWITNESSED.** Any deploy that looks up
+   `` `rho:lang:treeHashMap` `` and does `set(k,v)` $`\rightarrow`$ `delete(k)` $`\rightarrow`$
+   `update(k, f)` and then observes. Pre-fix, `f` runs with `Nil` and its answer becomes `k`'s value;
+   post-fix, `f` does not run. Mixed-version validators then get different tuplespace state **and**
+   different phlogiston, so replay validation fails — and because the disagreement is *deterministic per
+   version*, it presents to each side as the other having produced an **invalid block**, so it can escalate
+   to a **slashable** fault. ★ Labelled *potentially* and left there: the sequence was constructed
+   in-runtime, it has **not** been witnessed on chain, and historical deploy terms have not been searched.
+
+**Blast radius.** Any `TreeHashMap!("update", …)` on a key absent from an **existing** leaf — either
+deleted, or **never set into a leaf that another key already occupies**, which is the general case rather
+than a corner. ★ **Genesis behaviour itself is unaffected, and this is a scan rather than a hope:** a
+repo-wide search finds `!("update", …)` / `!("delete", …)` only in
+`casper/src/test/resources/TreeHashMapTest.rho`, and `vaults_generator.rs` at **:51** uses `"set"` only.
+$`\Rightarrow`$ **only the genesis *term* moves, not the genesis *behaviour*.**
+
+**Could live chain state have been produced under the old behaviour?** ⚠ Not settleable from inside the
+repository. Settling query: scan historical `ProcessedDeploy.deploy.data.term` for a term that resolves
+`` `rho:lang:treeHashMap` `` and sends `"update"`, and for each, replay to determine whether the key was
+absent from its leaf at that point. **UNVERIFIED**.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** A registry primitive published to every deploy silently
+resurrects deleted keys. The corruption is *invisible* to any caller whose update body accepts `Nil`,
+which is the class that does not raise and therefore the class nobody notices.
+
+**Why this repair rather than the alternatives.**
+
+| alternative | why rejected |
+|---|---|
+| **Deleter-side: write `0` back when the leaf `Map` is empty after `delete`.** | ★ **Refuted by a test, not by argument.** `update_in_a_leaf_a_sibling_still_occupies_does_not_resurrect`: at `depth = 0`, `2 * depth == 0` makes `ByteArrayToNybbleList` return `[]` for *every* key, so all keys share the single root leaf **by construction** — no hash-collision search needed. With a sibling present the leaf is **not empty**, an empty-leaf prune never fires, and the key resurrects anyway. A prune would additionally have to clear the parent's bitmask bit up the whole spine, and would *still* leave this case broken. |
+| **Raise earlier, on `Nil`.** | It treats the messenger as the message. The callers that raise are the ones already protected; the ones that do not raise are the ones being corrupted. |
+
+$`\Rightarrow`$ The defect is not *"delete leaves an empty `Map`"*; it is *"the updater tests the leaf's
+**carrier** where it must test the **key**"* — a **one-site** fix. The repair uses `val.contains(suffix)`,
+which `TreeHashMapContains` (**:259**) **already** asks of the same `Map`, so it reuses the contract's own
+idiom rather than inventing one; it sits **inside the lock** (mirroring `TreeHashMapSetter` at
+**:200-201**) and releases it unchanged on the absent-key path (mirroring **:221**).
+
+⚠ **It is NESTED, not `or`-ed, and that is load-bearing.** `or` is **not** short-circuit in this reducer
+(`reduce.rs` at **:2761** — *"both eager, NOT short-circuit"*), so `val == 0 or not val.contains(suffix)`
+would evaluate `0.contains(…)` on a never-written leaf and raise. The `or` form is precisely the
+"simplification" a future editor reaches for, so the contract carries the reason in a comment.
+
+**Authority.** **No owner ruling** exists on this defect. ⚠ Recorded explicitly so no ruling is inferred
+from the repair's confidence.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 1 on the axis of leaf-level `n == len` branches in
+`Registry.rho`.** The axis is DERIVED — it is the set of sites that decide, at a leaf, whether a key is
+present — and all five members are named with their disposition:
+
+| site | branch | disposition |
+|---|---|---|
+| `TreeHashMapGetter` (**:113**) | total over both carriers | correct |
+| `TreeHashMapContains` (**:259**) | `val.contains(suffix)` | ★ **already correct** — the idiom the repair adopts |
+| `TreeHashMapDeleter` (**:385**) | carrier test | correct *there*: a delete on a never-written leaf is a no-op either way |
+| `TreeHashMapToMapVisiter` (**:428**) | carrier test | correct **as** a carrier test — it asks what it means to ask |
+| `TreeHashMapUpdater` (**:296**) | carrier test used as a key test | ⚠ **the defect; repaired here** |
+
+#### Evidence
+
+- **RED, verbatim, before the repair:** *"update AFTER DELETE invoked the update body and/or changed the
+  stored value. expected `(false, Nil)` … actual `(true, 99)`."* ★ `(true, 99)` **is** the finding in four
+  characters: `true` — the body ran; `99` — its return value is now the value of a key that had been
+  deleted. **MEASURED**.
+- A **second** RED cell on the non-empty-leaf case, which is what refutes the deleter-side repair:
+  *"expected `(false, Nil, 7)` … actual `(true, 99, 7)`"* — the sibling `7` survives in both, so the leaf
+  was never empty. **MEASURED**.
+- **GREEN after: 4/4**, and ★ **invariant under reverting the change** — measured rather than asserted:
+  with `Registry.rho` restored to its pre-fix bytes (backed up and restored byte-identically, sha256
+  `3ef2e940b478…`), **3 of 8 cells go red and both controls stay green**. A suite that does not redden when
+  the fix is removed has not been shown to test the fix.
+- Both **controls PASSED throughout**: never-set key `(false, Nil)`, present key `(true, 99)`. The
+  never-set control is what makes the defect attributable to *delete* rather than to *update*.
+- Lane-B byte movement `6a465c6a…` / **25,733 B** $`\rightarrow`$ `5e9660ca…` / **27,707 B**.
+  **MEASURED**.
+- ⚠ **A SECOND, COUPLED DEFECT, without which the suite could not go green.**
+  `casper/src/test/resources/TreeHashMapTest.rho` at **:470** sent
+  `("getOrElse", thm, "k", "default_value", *geCh)`, but `getOrElse` (`Registry.rho` at **:349**) takes
+  **two channels** and no default *value*. `nilCh!()` sends **zero** arguments, so the fixture's
+  one-argument receive could never match: the send **RESTED SILENTLY**, nothing raised, and the whole
+  suite blocked there. This is the **third** instance of that shape in the genesis fixtures after
+  `PoSTest.rho` at **:704** and **:818**. **MEASURED**.
+
+★★ **A HYPOTHESIS with a named experiment, recorded rather than acted on.** A blessed contract's
+**normalized-term** digest moved at **constant length**: `NonNegativeNumber.rho`'s normalized `Par` was
+pinned at `a537547892a0…` / **2,652 B** and now computes `eb17e6a37e7e…` / **2,652 B**, with the source
+file unmodified. **Same length, different digest is a field-level value change in a fixed-width
+encoding** — which is the signature of a `locally_free` change, and `084c93b5`
+([CBR-032](#cbr-032)) changed exactly what `filter_and_adjust_bitset` emits: **values, not lengths**.
+
+$`\Rightarrow`$ **If the attribution holds, CBR-032 has a WITNESS** where it can today offer only
+*"mechanism, no witnessing program"*, and its post-state-hash and Lane-P cells would deserve upgrading.
+⚠ **The upgrade is NOT made here, and the reason is a method requirement rather than a shortage of
+effort.** It needs a clean-tree normalized-digest comparison at `084c93b5^` against `084c93b5`, and the
+worktree currently carries ~51 modified files including 23 normalizer files that are **not** this
+campaign's work — so any digest taken now measures the working tree, not the commit. ★ And the pin was
+deliberately **left RED**: re-blessing it now *"would launder an unlanded change through a consensus
+pin"*, which is the correct call and stands. **UNVERIFIED**, with the experiment named.
+
+---
+
+### CBR-035
+
+**A walk elimination in the generated `Clone` — 54.3 fewer instructions per node, and the emitted behaviour is byte-identical.**
+
+| | |
+|---|---|
+| Commit(s) | `87ee699c` |
+| Status | LANDED |
+| Direction | NEUTRAL |
+| Evidence grade | NEUTRALITY-MEASURED |
+| Files | `models/build/wire_schema.rs` (the generator), `models/benches/term_ops_bench.rs`, `models/tests/drive_step_width_gate.rs` |
+
+★ **Why an all-`NO` entry exists at all.** The claim *"nothing moves"* **is** the entry, which is what
+§2.7's **NEUTRALITY-MEASURED** grade is for; [CBR-019](#cbr-019) and [CBR-033](#cbr-033) are the
+precedents. This one is a **generated-code** change, so it reaches the obligation set through
+`models/build/wire_schema.rs` — the generator §3.4(4) names as a false-negative class of its own — and an
+exemption would have asserted non-visibility where what is true is *measured neutrality*.
+
+#### (a) The issue
+
+The generated `impl Clone` performed **three** structural walks per node over the 36-arm `ExprInstance`
+dispatch — `clone_push_children_*`, `clone_child_count_*`, `clone_rebuild_*` — where a post-order fold
+needs the child count only at `descend` time. `descend` now records `base = vals.len()` in the `Kont`, the
+recount becomes a `debug_assertions`-only cross-check, and a **leaf fast path** skips the `Combine`
+round-trip for the roughly four of six `Par` nodes in a depth-2 datum that have no cut-set child.
+
+⚠ **This change was previously recorded as REFUTED, by `b228545f`, on a wall-clock reading of −2.8%.**
+That refutation is **OVERTURNED**: the instrument that produced it measured its two arms in different time
+windows and scatters 13–27% run to run, so −2.8% was a factor of five inside its own spread. The full
+retraction, with the superseded text quoted verbatim, is
+[§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it).
+
+#### (b) How it (potentially) breaks consensus
+
+⚠ **Every cell below is `NO` rather than `N/A`, and the distinction is the entry.** `N/A` would claim the
+axis does not apply. It applies: `Clone` for `Par` is on the consensus path — the sorter clones, the
+encoders clone, and `ParSortMatcher::sort_match` is signed. The answer is not *"out of scope"* but
+*"measured not to move"*, which is the stronger claim and the one the evidence supports.
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — the cloned term is **byte-identical** to the retained derive oracle's output. `models/tests/clone_equivalence_corpus.rs` **4/4**, over **67 enumerated shapes on eight axes**, driven-against-oracle, where the oracle is the derive's own re-emitted body. **MEASURED**. |
+| 2 · verdict | **NO** — a clone is not a decision. No branch in `rho-pure-eval`, the spatial matcher or `where`-guard approval reads anything this change touches; the change is confined to *how* a node is copied. **DERIVED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — an identical term serializes identically. `par_codec_differential` **13/13**, `wire_encode_differential` **13/13**, `wire_encode_space` **9/9**. **MEASURED**. |
+| 3 · bytes (Lane P, prost) | **NO** — ★ and this lane is **explicitly included** in the equivalence corpus's eight axes rather than inferred from Lane B, which matters because the two lanes disagree about `locally_free` ([CBR-031](#cbr-031), [CBR-032](#cbr-032)). **MEASURED**. |
+| 4 · post-state hash | **NO** — downstream of value and bytes, both of which are byte-identical, so there is no path by which it could move. **DERIVED** from the two cells above. |
+| 5 · accepted programs | **NO** — no admission, normalization or validation predicate changed; nothing in the change can refuse a program that was accepted. **DERIVED**. |
+| 6 · metering | **NO** — ★ **stated precisely, because this is the cell most likely to be read wrongly.** The change removes **54.3 retired machine instructions per node**. Phlogiston is **not** a function of machine instructions: every charge in this system is a `Cost` from `accounting/costs.rs`, levied at named sites in the reducer. No charge site and no price changed. ⚠ Contrast [CBR-034](#cbr-034), which *does* move this axis — by adding a **Rholang method call**, which is a charged event. **DERIVED**. |
+
+**The disagreement.** ★ **None, and that is the entry's content.** Two nodes, one before and one after
+`87ee699c`, given any of the 67 enumerated shapes, produce **the same bytes on both lanes**. There is no
+input on which they disagree, and the corpus is enumerated from the generated `wire_schema::*_VARIANTS`
+tables rather than hand-listed, *"so a 37th arm fails this file instead of escaping it"* — which is what
+makes the absence of a disagreement a **measurement** rather than a survey.
+
+**Blast radius.** ★ Total in *reach* and empty in *effect*, and both halves should be said. `Clone` for the
+55 non-`Copy` types runs on every sort, every encode and every event hash, so a defect here would be
+unbounded — which is exactly why the neutrality is gated by an enumerated corpus rather than by a
+round-trip test. [§5.2](#52-the-three-highest-risk-entries-and-why)'s reasoning about
+[CBR-019](#cbr-019) applies verbatim: *neutrality claims are the ones that fail silently.*
+
+**Could live chain state have been produced under the old behaviour?** **N/A** — the question presupposes
+a behavioural difference, and there is none. ⚠ This is the one place in this entry where `N/A` is the
+honest answer rather than `NO`, and the contrast with the axis table above is deliberate.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** Nothing *correctness*-wise. The motivation is that the driven
+`Clone` retires **+427 instructions per node** against the derive it replaced, and this removes 54.3 of
+them — **12.7% of the instruction gap**, from $`+17.40\%`$ to $`+15.19\%`$. ★ Inefficiency is a form of
+brokenness, and less retired work is worth landing on its own.
+
+**Why this repair rather than the alternatives.**
+
+| alternative | why rejected |
+|---|---|
+| **Leave it: `b228545f` measured it slower.** | ⚠ That measurement is **OVERTURNED** — see [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it). The deterministic instrument says it does **less** work: `Ir` $`-54.3`$/node, `Dr` $`-16.5`$/node, `Dw` $`+0.1`$/node. |
+| **Re-land it "un-widened", with `base` in a parallel `Vec<u32>`.** | ★ **MOOT, measured rather than argued.** `size_of::<CloneKont>()` does double to 16 B, but `size_of::<Step<CloneTraversal>>()` is **UNCHANGED at 16 B** — rustc packs the discriminant into the `&Par` null niche — so form-B is already un-widened in the only place width costs anything, *per level*. The parallel-`Vec` variant would add a second stack and a second push/pop per node to buy a byte count that is already zero. |
+
+**Authority.** No owner ruling. ⚠ The **throughput** question is explicitly left open: the cycles ratio
+moved $`1.0549 \rightarrow 1.0644`$ ($`+0.90\%`$) across builds at different loads, which is inside what
+load does on this host, so wall-clock throughput is **UNRESOLVED at $`\pm 1\%`$ in either direction**. The
+entry lands as a **work reduction with no throughput claim attached**, and the axis table is unaffected
+either way because phlogiston is not wall clock.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 1 on the axis of per-node structural walks in the
+generated clone family that a post-order fold makes redundant.** The axis is DERIVED from the emitter's own
+family list: `clone_push_children_*`, `clone_child_count_*` and `clone_rebuild_*` are the three, and only
+the **count** walk is redundant — `push_children` and `rebuild` each produce something the fold consumes,
+while the count is recoverable from `vals.len()` at `descend` time. The other two are therefore not
+candidates, which is what makes the count 1 rather than 3.
+
+**★ The entry claims the emitted behaviour needed no change; here is the GUARD.**
+`models/tests/clone_equivalence_corpus.rs` fails if driven and oracle disagree on any of eight axes over
+any of 67 shapes, and its corpus is **derived** from the generated variant tables, so a new `ExprInstance`
+arm enters the corpus automatically. ★ And `models/tests/drive_step_width_gate.rs` — landed in `bb81b75f`
+one commit before this change needed it — **went RED on the first build** with
+*"`CloneKont` must be one word, for the same reason as `CloneNode`. It is 16 B."* A width pin doing its job
+on its first real change rather than on a synthetic one; the budget is now **two words with the reason
+attached**, and the load-bearing `Step == 16 B` pin is unchanged.
+
+#### Evidence
+
+- Per-node deterministic counts, `fixture`-subtracted, over **245,720 nodes** under
+  `valgrind --tool=cachegrind --cache-sim=yes`. The `derived` arm is the **unmoved control**:
+
+  ```text
+    arm                     Ir/node   Dr/node   Dw/node   D1miss/node
+    HEAD  derived            2456.1     662.8     555.6         33.92
+    HEAD  driven             2883.4     835.4     698.4         33.88
+    formB derived            2458.1     663.5     556.2         33.90   <- control, unmoved
+    formB driven             2829.1     818.9     698.5         33.85
+  ```
+
+  $`\Rightarrow`$ `Ir` $`-54.3`$/node ($`-1.88\%`$), `Dr` $`-16.5`$/node ($`-1.98\%`$), `Dw`
+  $`+0.1`$/node ($`+0.01\%`$). ★★ **Writes UNCHANGED is the whole claim**: a *walk* elimination should
+  remove walking, not copying, and the `Dw` column says it removed exactly that. **MEASURED**.
+- Corroborated independently by `perf stat`, normalised on the unchanged `derived` arm: instruction ratio
+  $`1.1742 \rightarrow 1.1466`$ ($`-2.35\%`$), agreeing with cachegrind's $`-1.88\%`$ to within 0.5%.
+  **MEASURED**.
+- `clone_equivalence_corpus` **4/4** — byte-identical on all eight axes over 67 shapes, **prost
+  included**. `drive_configuration_gate` **11/11** debug and **11/11** release,
+  `drive_step_width_gate` **5/5** both profiles, `wire_encode_space` **9/9**,
+  `par_codec_differential` **13/13**, `wire_encode_differential` **13/13**,
+  `test_target_registry_gate` **2/2**, `models --lib` **93/93**. **MEASURED**.
+- ⚠ **The acceptance criterion this change was judged against was itself replaced**, because a $`0.98\times`$
+  wall-clock threshold cannot be evaluated on a $`\pm 13\%`$ instrument. The primary is now the
+  deterministic `Ir` ratio with a ceiling of $`1.20`$ (measured $`1.1740`$, and $`1.1519`$ under this
+  change); wall clock is demoted to corroboration against a floor of $`0.90\times`$. See
+  [§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance). **CITED**.
 
 ---
 
@@ -5923,33 +6286,56 @@ to "design the literal", and that is a different work item with a different owne
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 47 |
+| Axis | Entries that move it | Share of the 49 |
 |---|---|---|
-| 1 · computed value | **20** | 43 % |
-| 2 · verdict | **24** | 51 % |
-| 3 · bytes — Lane B (bincode) | **23** | 49 % |
-| 3 · bytes — Lane P (prost) | **24** | 51 % |
-| 4 · post-state hash | **33** | 70 % |
-| 5 · accepted programs | **13** | 28 % |
-| 6 · metering | **2** | 4 % |
+| 1 · computed value | **21** | 43 % |
+| 2 · verdict | **26** | 53 % |
+| 3 · bytes — Lane B (bincode) | **24** | 49 % |
+| 3 · bytes — Lane P (prost) | **25** | 51 % |
+| 4 · post-state hash | **35** | 71 % |
+| 5 · accepted programs | **13** | 27 % |
+| 6 · metering | **3** | 6 % |
 
-⚠ **Recounted 2026-07-30 from the 47 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
+⚠ **Recounted 2026-07-30 from the 49 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
 28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
 never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
 ★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 47 in every column, which is the check that no
+`●` counts per column, plus the `○` and `·` counts, sum to 49 in every column, which is the check that no
 row was skipped.
 
-**Reading.** The post-state hash is the most-touched axis, which is expected: it is downstream of both
-value and verdict — and its share **rose** (70 % $`\rightarrow`$ 73 %) because all three new entries move it, which is
-what a register of *serialisation and genesis* changes should look like. The **metering** axis is still
-touched by exactly two entries (**CBR-024**, **CBR-025**), both of which add a *new* charge site for a
-*new* method and neither of which re-prices anything existing — the intended posture, since pricing is a
-consensus decision and budgets are F1r3node's. ★ **CBR-030** is worth noting as a near-miss on that axis:
-it substitutes a subtraction for an addition inside a genesis guard, and the cell is `NO` only because
-`sum_cost()` and `subtraction_cost()` are *numerically equal* (`Cost::create(3, …)`, `accounting/costs.rs:91`
-and `:93`). Had they differed, a comment-level rewrite of a `.rho` file would have moved phlogiston.
+**Reading.** The post-state hash is the most-touched axis at **71 %**, which is expected: it is downstream
+of both value and verdict, so a register of *serialisation and genesis* changes should look like this.
+⚠ **The previous revision of this paragraph read *"its share **rose** (70 % $`\rightarrow`$ 73 %) because
+all three new entries move it"*, and both halves went stale within a day.** The share is a *ratio*, so it
+falls whenever an entry lands that does **not** move the axis — which [CBR-033](#cbr-033) and
+[CBR-035](#cbr-035) both are — and it read 73 % only while the denominator was 45. ★ **A share is the one
+kind of projected figure that a NEUTRAL entry moves in the direction nobody expects**, and it is recorded
+here because "the share rose" is the sort of sentence that survives three recounts by sounding like a
+trend.
+
+⚠★★ **THE METERING CLAIM IN THIS PARAGRAPH WAS FALSIFIED BY [CBR-034](#cbr-034), and the superseded
+sentence is quoted rather than replaced:**
+
+> The **metering** axis is still touched by exactly two entries (**CBR-024**, **CBR-025**), both of which
+> add a *new* charge site for a *new* method and neither of which re-prices anything existing — the
+> intended posture, since pricing is a consensus decision and budgets are F1r3node's.
+
+The axis is now touched by **three** entries, and the third breaks the pattern the sentence described.
+[CBR-034](#cbr-034) adds a `val.contains(suffix)` evaluation to **every** `TreeHashMap` update-path call
+(`method_call_cost()` $`=`$ `Cost::create(10, …)` plus `lookup_cost()` $`= 3`$) and removes an `update`
+dispatch, a `get` and a `set` on the absent-key path. $`\Rightarrow`$ **It is the first entry in the
+register to re-price an EXISTING operation rather than price a new one**, its direction is certain and its
+magnitude is not measured, and the *intended posture* the old sentence described is therefore a posture the
+register no longer holds. ⚠ Pricing is still a consensus decision and budgets are still F1r3node's; what
+changed is that a *correctness* repair to a genesis contract moved a price as a side effect, which is a
+class the previous posture did not anticipate.
+
+★ **CBR-030** remains worth noting as a near-miss on the same axis: it substitutes a subtraction for an
+addition inside a genesis guard, and the cell is `NO` only because `sum_cost()` and `subtraction_cost()`
+are *numerically equal* (`Cost::create(3, …)`, `accounting/costs.rs:91` and `:93`). Had they differed, a
+comment-level rewrite of a `.rho` file would have moved phlogiston — and [CBR-034](#cbr-034) is that
+near-miss actually landing.
 
 ### 5.2 The three highest-risk entries, and why
 
@@ -5968,19 +6354,19 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-30 from the 47 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
+⚠ **Recounted 2026-07-30 from the 49 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **29** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| CORRECTIVE | **30** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
 | PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
-| NEUTRAL | **3** | **CBR-019**, **CBR-019b**, **CBR-033** — in the register because their neutrality is a measured claim. |
+| NEUTRAL | **4** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **47** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **49** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -6116,18 +6502,29 @@ who observed it.
 
 ### 6.4 UNVERIFIED budget
 
-The budget is **2**: **CBR-L07** metering and **CBR-031** verdict. Every other cell is answered. Twelve entries carry an **UNVERIFIED** chain-history answer, consolidated in §5.4 — these are
+The budget is **1**: **CBR-L07** metering. Every other cell is answered. Twelve entries carry an
+**UNVERIFIED** chain-history answer, consolidated in §5.4 — these are
 questions about *history*, not about the code, and are unanswerable from inside the repository by
 construction.
 
-★★ **The budget went $`1 \to 2 \to 1`$ in two days, and the round trip is better evidence for clause 6
-than the rise alone was.** The trajectory:
+★★ **The budget went $`1 \to 2 \to 1 \to 2 \to 1`$ in two days, and the round trips are better evidence
+for clause 6 than any single movement is.** The trajectory, extended rather than rewritten:
 
 | when | budget | why |
 |---|---|---|
 | first draft | **1** | **CBR-L07** metering only. |
 | `6ff46f8a` lands | **2** | **CBR-027**'s metering cell asserted `NO` on the strength of *"the charge is reserved before the arithmetic"*. That ordering could no longer be read from the code — both checked-arithmetic hunks had landed in the **wrong `match` arm** and the commit does not compile — so the cell became honest about being a *design claim* rather than a measurement. |
 | `fd5474ab` lands | **1** | The repair puts both hunks in their `GInt` arms, where `reserve_primitive(sum_cost())` at `:3397` demonstrably **precedes** `checked_add` at `:3398` (and the subtraction twin at `:3517` / `:3518`). The cell returns to `NO` **by measurement**, exactly as the previous revision of this section required. |
+| `0b270eca` enters as **CBR-031** | **2** | Its verdict cell was answered `UNVERIFIED` **deliberately**: `list_match` / `fold_match` gate a remainder over *targets*, and a `matches` expression becomes a `GBool` before it can be one — an argument the entry itself recorded as *"not exhaustive"*. |
+| **2026-07-30, this revision** | **1** | ★ **The evidence returned, and it came from another entry.** [CBR-032](#cbr-032) named two Lane-P consumers that decide *identity* from bytes containing `locally_free` — a signature-derived RSpace channel and a pathmap trie key. Both apply to **CBR-031**, whose Lane-P bytes move 63 B $`\rightarrow`$ 72 B, so the cell closes as `MOVES`. ⚠ **Closing it also widened CBR-031's post-state-hash cell from `NO` to `MOVES`**, which does *not* touch this budget and is recorded here so the two corrections are not confused: a `NO` becoming a `MOVES` is a **wider answer**, not a filled gap. |
+
+★ **A cell whose evidence arrives in a DIFFERENT entry is the case this budget is worst at signalling**,
+and it is worth stating because it is the only failure mode the count cannot express. The budget fell
+because a reader happened to carry CBR-032's mechanism back to CBR-031; nothing in the gate connects two
+entries that share a *field*. ⇒ The concrete remedy, sized and not built here: a clause asserting that no
+two entries naming the same wire field answer the same axis differently, which would have gone RED the
+moment CBR-032 landed with `H = MOVES` beside CBR-031's `H = NO`. Recorded in
+[§7.8.6](#786-the-two-drift-questions-answered) with the other two candidate clauses.
 
 ⚠ **The point of clause 6 of [§7.2](#72-the-design-and-why-this-one) is that this count is asserted
 *exactly*, so both movements are visible diffs.** A cell quietly retaining `NO` after its evidence
@@ -6988,8 +7385,8 @@ typed `Result<(), DriftBreach>` and every guard asserts on the value, following
 
 ## 8. Conclusions
 
-1. The register holds **47** consensus-visible changes, derived from the campaign record: **34** on the
-   F1r3node node, **13** on MeTTaIL's Rholang. **45 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **49** consensus-visible changes, derived from the campaign record: **36** on the
+   F1r3node node, **13** on MeTTaIL's Rholang. **47 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register
@@ -7262,7 +7659,17 @@ it.
 | 37 | `00c9ce6e` | the two pathmap ladders are capped by their FIXTURE, not by their traversal | `TESTS_ONLY` | `rholang/tests/stack_depth_gate.rs` and an audit record only. The ladders move to `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE` because building one is $`\Theta(d^2)`$ — *"a subject whose fixture costs more than its traversal cannot be put on a 1,000× ladder."* **CITED**. |
 | 38 | `80a4aff9` | the test genesis's vault order was RANDOM — and a SECOND unordered source | `TESTS_ONLY` | ★ Reaches the obligation set through `casper/src/rust/test_utils/util/genesis_builder.rs`, which is compiled only under the `test-utils` feature and invoked only by tests. **MEASURED RED**: 24 parameter builds $`\rightarrow`$ **14 distinct vault orders**; 6 genesis computations $`\rightarrow`$ **5 distinct `post_state_hash`**; `GENESIS_CACHE` 6 misses / 6 accesses. GREEN after: 1 order, 1 hash, 1 miss / 6. ⚠ **Directly relevant to open question 10** — it identifies the cause (`bonds`, a `HashMap`, rendered positionally into genesis Rholang) and fixes both copies in the *test* builder; whether production genesis shares the shape remains open. **CITED**. |
 
-⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031).
+| 39 | `1eb65221` | a single-argument `format!` in the emitter fails the workspace lint | `HYGIENE` | ★ **Byte-neutrality is DERIVED, not measured, and that is the stronger evidence class here.** The whole diff is one arm of `emit_clone_family_message`: `format!("// BOUNDED: …")` becomes `"// BOUNDED: …".to_string()`. `format!` with no interpolation arguments yields exactly its literal, so the emitted string is character-for-character identical **by a property of the language** rather than by a passing test. The motive is that `clippy::useless_format` under `-D warnings` fails the lint job for *every* crate, not just `models`. **DERIVED** (the diff is 7 insertions, 3 deletions, one file). |
+| 40 | `bb81b75f` | `Outcome::Tail` — resumption, and the TERMINATION bound | `DORMANT` | ⚠ **Substantial production code — and INERT, established mechanically.** It adds `Outcome`'s third arm plus its termination backstop to `models/src/rust/rholang/drive.rs`, and the arms `sort_drive.rs` and `rho-pure-eval/src/eval.rs` gained are the **exhaustiveness** arms the new variant forces. ★ **Nothing constructs a `Tail`**: a search of `models/src`, `rho-pure-eval/src`, `rholang/src` and `casper/src` finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` **pattern**, and the emitter mentions it only in prose. So no existing traversal can take the new path, which is [CBR-019b](#cbr-019b)'s and `699ee646`'s disposition on the same axis and in the same file. **DERIVED** (an enumeration of constructor sites, not an argument from intention). |
+| 41 | `9560a068` | the blocked-arm benchmark defect shipped TWICE — one shared paired harness | `HYGIENE` | Three of four files are `models/benches/` and excluded. ★ **The whole production diff is ONE LINE**: a `#[cfg(debug_assertions)]` attribute on `drive.rs`'s `tail_bound_message`, a `#[cold] #[inline(never)]` function that builds a panic string and was already reachable only under `debug_assertions`. Release builds stop compiling a function they never called; debug builds are unchanged. No value, no byte, no charge. **DERIVED** (1 insertion, 0 deletions in `models/src/`). ⚠ The *measurement* content of this commit — the instrument that scattered 13–27% — is retracted in [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it), which is where its consequences for eleven cited figures live. |
+
+⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031). Neither are `7c0cfd0a`
+([CBR-034](#cbr-034)) nor `87ee699c` ([CBR-035](#cbr-035)).
+
+★★ **All five of the frontier commits this table and §4.3 gained on 2026-07-30 were named by the gate,
+not by a reader** — and the gate had been **RED** while they were missing. See
+[§7.8.6](#786-the-two-drift-questions-answered) for what that says about routing, which is a different
+question from whether the assertion was strong enough. It was: it fired immediately and it named all five.
 
 ---
 

@@ -30,7 +30,7 @@ partition_head = "dc383ed1"
 # §6.4's budget, asserted EXACTLY so `UNVERIFIED` can neither creep up nor be
 # quietly retired after its evidence returns. ★ A budget that can only rise is a
 # ratchet, not a measurement.
-unverified_budget = 2
+unverified_budget = 1
 
 # The fuse on the living frontier, in COMMIT-DATE days between an unregistered
 # consensus-path commit and HEAD. Deterministic on any checkout — both dates are in
@@ -518,10 +518,16 @@ status = "LANDED"
 direction = "CORRECTIVE"
 grade = "WITNESSED"
 axis_value = "MOVES"
-axis_verdict = "UNVERIFIED"
+# ★ CLOSED 2026-07-30. Read "UNVERIFIED" until CBR-032 named the two Lane-P consumers that
+#   decide IDENTITY from bytes containing `locally_free`; both apply to this entry, whose
+#   Lane-P bytes move 63 B -> 72 B. The superseded cell is quoted verbatim in CBR-031 (b).
+axis_verdict = "MOVES"
 axis_bytes_bincode = "NO"
 axis_bytes_prost = "MOVES"
-axis_post_state_hash = "NO"
+# ★ WIDENED 2026-07-30 from "NO". The 830 B event-hash-preimage equality is still true; it
+#   was never the whole axis. A signature-derived RSpace channel and a pathmap trie key both
+#   place prost bytes into a LOCATION, reaching the post-state hash without the preimage.
+axis_post_state_hash = "MOVES"
 axis_acceptance = "NO"
 axis_metering = "NO"
 
@@ -547,6 +553,44 @@ commits = ["8fc9afc9"]
 status = "LANDED"
 direction = "NEUTRAL"
 grade = "NEUTRALITY_MEASURED"
+axis_value = "NO"
+axis_verdict = "NO"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "NO"
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-034"
+surface = "N"
+commits = ["7c0cfd0a"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+# MOVES with the MAGNITUDE deliberately unquantified: no genesis hash is blessed in
+# `7c0cfd0a`, and finding 1 records six builds producing six distinct post_state_hash
+# values at byte-identical source. The cell is a direction, not a number.
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+# ★ The FIRST entry in the register to RE-PRICE an existing operation, rather than add a
+#   charge site for a new method. Direction certain, magnitude not measured (DERIVED).
+axis_metering = "MOVES"
+
+[[entry]]
+id = "CBR-035"
+surface = "N"
+commits = ["87ee699c"]
+status = "LANDED"
+direction = "NEUTRAL"
+grade = "NEUTRALITY_MEASURED"
+# ⚠ Every cell is NO, not N/A. `Clone` for `Par` IS on the consensus path; the claim is
+#   "measured not to move", which is stronger than "does not apply".
+#   clone_equivalence_corpus 4/4 — byte-identical on 8 axes over 67 shapes, prost included.
 axis_value = "NO"
 axis_verdict = "NO"
 axis_bytes_bincode = "NO"
@@ -1010,6 +1054,24 @@ commit = "80a4aff9"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
 evidence = "Appendix B.3 row 38 — Reaches the obligation set through `casper/src/rust/test_utils/util/genesis_builder.rs`, which is compiled only under the `test-utils` feature and invoked only by tests. MEASURED RED: 24 parameter builds → 14 distinct vault orders; 6 genesis computations → 5 … [CITED]"
+
+[[exempt]]
+commit = "1eb65221"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 39 — one arm of `emit_clone_family_message` in `models/build/wire_schema.rs`: `format!(\"// BOUNDED: …\")` becomes `\"// BOUNDED: …\".to_string()`. A `format!` with no interpolation arguments yields EXACTLY its literal, so the emitted string is character-for-character identical by a property of the language rather than by a passing test. 7 insertions, 3 deletions, one file. [DERIVED]"
+
+[[exempt]]
+commit = "bb81b75f"
+window = "FRONTIER"
+reason = "DORMANT"
+evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
+
+[[exempt]]
+commit = "9560a068"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` and excluded. The whole production diff is ONE LINE: a `#[cfg(debug_assertions)]` attribute on `drive.rs`'s `tail_bound_message`, a `#[cold] #[inline(never)]` panic-string builder already reachable only under debug_assertions. Release stops compiling a function it never called; debug is unchanged. 1 insertion, 0 deletions in models/src/. The measurement content of this commit is retracted in section 7.8. [DERIVED]"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
