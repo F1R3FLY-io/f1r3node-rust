@@ -6587,18 +6587,19 @@ otherwise as its author wrote it and the credit is theirs.
    function is added, altered or bypassed. $`\Rightarrow`$ *"Measured not to move"* is `NO`; `N/A` is
    *"the axis does not apply"*, and it would have been the weaker claim as well as the wrong one. ⚠ This
    is the same slip corrected in [CBR-035](#cbr-035), whose cells are `NO` for the same reason.
-2. **Upstream and cross-repository coordinates are written with the line number OUTSIDE the code span:**
+2. **Upstream and cross-repository coordinates are written with the line number OUTSIDE the code span** —
+   the path in a span, then the word *at*, then the line as prose, so the extractor's *"extension
+   immediately followed by a colon and digits, all inside one span"* pattern never matches.
 
-   ```text
-   used here:      `reduce.rs` at :3435          ← the line is prose, so the scan skips it
-   NOT used here:  `reduce.rs:3435`              ← a joined span IS a corpus member
-   ```
-
-   ⚠ **The contrast above is inside a fenced block for the same reason it is the rule**, and this was
-   found by the check rather than foreseen: spelled inline, the *illustration* of the wrong form is
-   itself matched by the extractor and demanded a `[[citation]]` row — a coordinate invented by a
-   sentence explaining why not to invent coordinates. That is
-   [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 1 recurring inside its own
+   ⚠★★ **The wrong form is deliberately NOT spelled anywhere in this section, and the first two attempts
+   to spell it both failed.** Attempt 1 wrote it inline as a contrasting example: the extractor matched
+   the *illustration* and demanded a `[[citation]]` row — a coordinate invented by a sentence explaining
+   why not to invent coordinates. Attempt 2 moved the contrast into a fenced block, which the local
+   checker accepted and **the gate did not**: the gate's `fenced()` counts backticks from **column 0**,
+   the block was indented inside this list item, and an indented fence is therefore **invisible to it**.
+   $`\Rightarrow`$ **A hazard's illustration must not instantiate the hazard**, and the only spelling
+   robust to every fence semantics is to describe the shape rather than exhibit it. That is
+   [§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run) finding 1 recurring twice inside its own
    remedy. This spelling is
    used here for a substantive reason rather than for convenience: the citation corpus is **derived** from
    the `` `path:line` `` form, and these nine coordinates are *upstream reads* and *foreign-repository*
@@ -7701,6 +7702,48 @@ SHA**. Three decisions inside that sentence:
    checkable against `f5b2e820` forever. ★ And a citation of a **pre-change** state must be pinned
    deliberately: CBR-027's evidence cited *working-tree* coordinates, which have no object to read them
    from, and are now pinned at `61a53157` — the commit that wrote the claim.
+
+##### ⚠★★ Rule 3 was STATED and not APPLIED — 20 rows, measured 2026-07-30
+
+**The rule above was written and then violated by every entry-owned row added after it.** Measured:
+**46 of 80** `[[citation]]` rows carried `at = "HEAD"`, of which **20** were entry-owned *and* checkable —
+that is, twenty coordinates whose verdict was a function of whatever an unrelated agent had most recently
+done to the file. Two had already gone red: [CBR-032](#cbr-032)'s `models/src/lib.rs` and
+`models/src/rust/utils.rs` coordinates, whose tokens sat at **exactly** the pinned lines 97 and 440 when
+the claim was written and at lines **188** and **464** by the time it was read, because a concurrent
+`models/` rewrite inserted 101 and 24 lines above them.
+
+$`\Rightarrow`$ ★ **The fix is not to re-pin the lines**, which is the treadmill this section already warns
+about, and it is not to declare an exception for files under active revision, which is the exception list
+[rule 2](#775-the-five-drift-classes-and-the-clause-that-decides-each) exists to avoid. **A coordinate
+pinned at a fixed SHA cannot go stale at all** — the failure mode is removed rather than classified, and no
+falsifiability is lost, which distinguishes this from the line-outside spelling that removes the coordinate
+from the corpus entirely.
+
+**★ Which SHA, DERIVED as two rules rather than chosen per row** — and the split is not arbitrary, it
+follows from what makes the claim checkable at all:
+
+| owner | correct pin | why | rows | verified |
+|---|---|---|---|---|
+| **Surface N** | the **entry's own commit** | The claim is *about* that change, so the change is the object that exhibits it. | **12** | ✅ all, at offset $`0`$ |
+| **Surface L** | the **register commit that introduced the entry** | Its own commits are `mettail-rust` SHAs that do not resolve here, so there is no local object for them; what the coordinate records is a read of *this* tree made when the claim was written. | **8** | ✅ all, within $`\pm 3`$ |
+| **`(doc)`** | `HEAD`, unchanged | ★ **Correct by the schema** — [Appendix C](#appendix-c--registertoml-the-machine-index) reserves `"HEAD"` for *document-level* citations, which are claims about the tree **now** and are supposed to move with it. | 9 | n/a by design |
+
+★★ **The Surface-L rule lands on `61a53157` — the same commit rule 3 already names for CBR-027.** The
+precedent was not merely analogous; it was the identical remedy applied to the identical defect, one column
+of the index away. ⇒ *A rule that has been stated once and applied once is not yet a rule; it is a
+precedent waiting to be generalised.*
+
+⚠ **And the reason nobody noticed is a defect in the CHECKER, not in the register.** The local
+build-free verifier used to validate docs-only edits had two divergences from the gate, both in the
+permissive direction — it did not evaluate the token-at-SHA clause at all, and its fence detector
+**stripped indentation** where the gate's `fenced()` counts backticks from **column 0**, so an *indented*
+fence hid a live coordinate from the checker while the gate saw it. $`\Rightarrow`$ **A checker looser than
+the gate it stands in for produces false green, which is worse than no checker**, and it is the same
+finding as [§7.8.6](#786-the-two-drift-questions-answered)'s: advertised coverage exceeding real coverage.
+Both divergences are closed, and the verifier now also honours `frontier_grace_days` rather than asserting
+coverage with no grace window — which it had been doing since `cba740da` made the gate's own floor
+non-vacuity-only.
 
 #### 7.7.6 Drift class 4 — the answer, and why not the other two
 

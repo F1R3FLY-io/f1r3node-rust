@@ -1,6 +1,6 @@
 //! ★★ **The consensus-change register's DRIFT GATE.**
 //!
-//! @watches: docs/consensus/ casper/src/ models/src/ models/build.rs rholang/src/ rspace++/src/ node/src/ crypto/src/ .github/workflows/
+//! @watches: docs/consensus/ Cargo.lock Cargo.toml block-storage/ casper/ comm/ crypto/ graphz/ models/ rho-pure-eval/ rholang/ rspace++/ shared/ .github/workflows/
 //!
 //! ★ **The `@watches:` line above is a ROUTING declaration, not documentation.** This gate
 //! went red *correctly and immediately* three times and nobody was told, because no delivery
@@ -11,15 +11,53 @@
 //! mechanism, because every concurrent agent commits under the same git identity, so
 //! `%an`/`%cn` carries no routing information at all.
 //!
-//! ⚠ **The path set is DERIVED, not chosen.** It is the union of (a) `docs/consensus/`, the
-//! prose and index this gate parses, and (b) the top-level prefixes of every `path =` in
-//! [`register.toml`]'s citation rows — i.e. exactly the files the citation clause opens at
-//! `HEAD`. Re-derive it, do not extend it by hand:
+//! ⚠ **The path set is DERIVED, not chosen** — and it was RE-DERIVED on 2026-07-30, because
+//! the previous derivation was faithful to its own recipe and the recipe covered only one of
+//! this gate's two path-sensitive clauses. It is now the union of THREE sources:
+//!
+//! * **(a) `docs/consensus/`** — the prose and index this gate parses.
+//! * **(b) the top-level prefixes of `path =` rows still pinned at `at = "HEAD"`.** ★ This
+//!   set SHRANK from eight prefixes to four: 20 entry-owned citation rows were repinned to
+//!   fixed SHAs (register §7.7.5's rule 3, which had been stated and not applied), and **a
+//!   SHA-pinned coordinate cannot go stale**, so watching its file is noise. Only the nine
+//!   `(doc)`-owned rows still open a file at `HEAD` — by design, since a document-level
+//!   citation is a claim about the tree *now*.
+//! * **(c) ★★ THE OBLIGATION SET — which the previous derivation OMITTED ENTIRELY.** The
+//!   frontier and coverage clauses fire on any commit touching the `path =` closure of
+//!   `casper` (ten crates), minus `tests/`, `benches/` and `src/test/`, plus `Cargo.lock`.
+//!   Those commits *owe a register row*, so their committer is exactly who should be told.
+//!   `Cargo.toml` is included because [`workspace_members`] and [`path_dependencies`] derive
+//!   the closure FROM it, so a `members` or `path =` edit silently moves the obligation set.
+//!
+//! ⚠ **Why the omission mattered, measured rather than argued.** Of the six obligation-set
+//! commits on the living frontier during the 2026-07-30 session, **three would NOT have been
+//! routed** by the previous set — `87ee699c`, `1eb65221` and `88ec2734`, every one of them
+//! because they touch `models/build/wire_schema.rs` while the declaration listed the *file*
+//! `models/build.rs` and no prefix covering the *directory* `models/build/`. ★ That is the
+//! "too narrow" failure the routing brief warned about, and it was invisible because the
+//! recipe that produced the line never mentioned the clause it left uncovered.
+//!
+//! ⚠ **Crate ROOTS, not `<crate>/src/`** — the same reason [`obligation_pathspec`] is
+//! crate-rooted: a `src`-rooted prefix loses `models/build/`, the GENERATOR that emits the
+//! wire tables, which is precisely the path all three unrouted commits touched.
+//!
+//! Re-derive it, do not extend it by hand:
 //!
 //! ```text
-//! grep -oE '^path = "[^"]+"' docs/consensus/register.toml \
-//!   | sed 's/path = "//;s/"//' | cut -d/ -f1-2 | sort -u
+//! # (a)
+//! echo docs/consensus/
+//! # (b) — only rows still opened at HEAD
+//! awk '/^\[\[citation\]\]/{a="";p=""} /^at = /{a=$3} /^path = /{p=$3} \
+//!      /^$/{if(a=="\"HEAD\"" && p!="") print p}' docs/consensus/register.toml \
+//!   | tr -d '"' | cut -d/ -f1-2 | sort -u
+//! # (c) — the closure of `casper` along `path =`, crate-rooted, plus Cargo.lock/Cargo.toml
+//! #       (the authoritative computation is `obligation_pathspec()` in this file)
 //! ```
+//!
+//! ★ **A path in (c) but not in (b) still belongs here**, and the distinction is worth
+//! keeping in mind when trimming: (b) says *"a claim in the register points into this file"*,
+//! (c) says *"a commit to this file owes the register a claim"*. The second is the larger
+//! obligation and the one that had no routing at all.
 //!
 //! `docs/consensus/consensus-change-register.md` §7.1 states the requirement this file
 //! discharges:
