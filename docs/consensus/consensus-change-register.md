@@ -2517,9 +2517,26 @@ spliced emitter (`spliced_event_bytes`), which reuses cached bytes at filled-cel
      full suite).
 - **Performance**, because the first factoring was measured and **rejected**: `WireNode::wire_field(i)`
   interpreted by a hand-written driver ran at **0.594×** the derived `Serialize` on a
-  production-weighted mix (1,773 datums instrumented from five interpreter suites). After four root
-  fixes: **1.19–1.58× faster**. **MEASURED** (`903cefb3`). Heap: **923× less allocation churn**, by
-  massif heap profile. **CITED** (`decda6dd`).
+  production-weighted mix (1,773 datums instrumented from five interpreter suites). ★ **This figure
+  STANDS**, and [§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance) is
+  why: $`1/0.594 = 1.684`$, a **68 %** effect against an instrument whose measured peak-to-peak spread is
+  **27 %**, so reversing its sign would take **2.5× the instrument's entire scatter**. It is the figure
+  this programme's design rests on — *"a per-field table is $`1.7\times`$ slower, therefore `descend`
+  takes a whole node"* — and it is the one that most needed checking. **MEASURED** (`903cefb3`).
+  ⚠★ **After four root fixes: the sign is UNAFFECTED and the MAGNITUDE is NOW UNKNOWN.** This bullet
+  previously read *"After four root fixes: **1.19–1.58× faster**"*, quoted verbatim so it is not restored.
+  The figure came from `wire_encode_bench`'s blocked-arm `measure()` — the same defect
+  [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it)
+  retracts — which reported the weighted owned-`Vec` ratio as $`1.261\times`$, $`1.471\times`$ and
+  $`1.154\times`$ on three consecutive runs of one binary. The *direction* survives on the same
+  effect-size argument that saves $`0.594\times`$: a factoring that went from 0.594× to faster-than-derived
+  crossed unity by a wide margin, and no 27 % window closes that gap. **What is not recoverable is the
+  interval** — $`1.19`$ to $`1.58`$ is a spread of 33 %, which is the instrument's own scatter and not the
+  encoder's. **A range narrower than the instrument that produced it is not a range.** Paired, the same
+  comparison reads $`1.073\times`$–$`1.092\times`$ at *higher* load, so if a bracket is wanted it is
+  **$`1.07\times`$–$`1.58\times`$**, and the honest disposition is **NOW UNKNOWN inside it**.
+  Heap: **923× less allocation churn**, by massif heap profile — ★ **unaffected**, because a massif block
+  count is deterministic and is not a wall clock. **CITED** (`decda6dd`).
 - ⚠ **A build-correctness defect found in passing, and it is a consensus hazard in its own right**:
   emitting any `cargo:rerun-if-changed` switches cargo to watching only those paths, so editing
   `build/wire_schema.rs` left a **stale table in `OUT_DIR` while the build reported success** — *"a
@@ -7383,6 +7400,341 @@ typed `Result<(), DriftBreach>` and every guard asserts on the value, following
 
 ---
 
+### 7.8 ★★ RETRACTED 2026-07-30 — the benchmark instrument was BLOCKED, and eleven conclusions rested on it
+
+⚠ **Two of this register's rows cite an experiment that was not performed the way its own instrument
+claimed to perform it.** The instrument is `measure()`, a private helper that timed a two-arm throughput
+comparison. Its module header stated, verbatim:
+
+> **Interleaved A/B.** One repetition measures A then B, and the loop is repeated `REPS` times. Any drift
+> in clock, thermals or cache state moves both arms together.
+
+**The code never did that.** It ran *all* `REPS` repetitions of arm A, returned, and was then called again
+for arm B. The two arms were therefore timed in **different time windows** on a workstation that routinely
+runs six concurrent build jobs.
+
+⚠ **And it shipped twice.** `models/benches/term_ops_bench.rs` and `models/benches/wire_encode_bench.rs`
+carried the identical helper behind the identical false sentence, and the second is **worse** for a
+structural reason: it has three arms, so the drift window between the first and the last is twice as long.
+The repair is one shared harness, `models/benches/paired.rs`, in `9560a068` and `87ee699c`.
+
+This section is placed in §7 rather than beside the rows it corrects because it is a **maintenance**
+finding: it is about what a citation of a number is worth, and it answers the two drift questions
+[§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) and
+[§7.7.7](#777-what-the-gate-cannot-cover-stated-as-prominently-as-what-it-can) left open for figures that
+come from outside the gate's reach.
+
+#### 7.8.1 Vocabulary, defined before use
+
+A reviewer of this register is not assumed to share a benchmarking vocabulary, and three of the terms below
+carry the whole argument.
+
+| term | definition |
+|---|---|
+| **arm** | One of the implementations being compared. Here: `derived` (the `#[derive(Clone)]` body, re-emitted) against `driven` (the same function over an explicit worklist). |
+| **repetition** | One timed pass of one arm over the whole workload. `REPS` $`= 60`$ are retained after 10 warm-up passes. |
+| **BLOCKED design** | All repetitions of arm A are run, *then* all repetitions of arm B. The arms occupy **disjoint** intervals of wall-clock time. This is what the code did. |
+| **PAIRED design** | Within *each* repetition, both arms are timed, and the order is alternated by repetition parity. Every arm sees the same interval of wall-clock time as every other. This is what the header claimed and what `paired.rs` now does. |
+| **drift** | Any change in the machine's state between one interval and another — competing load, clock/thermal excursion, cache residency. It is a property of the *window*, not of the code under test. |
+| **verdict** (this register's axis 2) | Whether a `where` guard's approval, or whether a COMM fires, changes. ⚠ **Not** the benchmark's pass/fail; §2.4 owns this word and it is used only in that sense outside this section. |
+| **post-state hash** (axis 4) | The Merkle root of the tuplespace after a block's deploys are applied [[Merkle1988]](#references). Unrelated to anything measured here, and named only to say so. |
+
+#### 7.8.2 Why a blocked design cannot be rescued by more repetitions — and why Welch's $`t`$ INFLATES
+
+Model one repetition's time as an effect, a window term and independent noise:
+
+```math
+t_{X,i} \;=\; \mu_X \;+\; \delta(w_i) \;+\; \varepsilon_{X,i},
+\qquad \varepsilon_{X,i} \sim \mathcal{N}\!\left(0, \sigma_\varepsilon^2\right),
+\qquad \operatorname{Var}\big(\delta\big) = \sigma_\delta^2
+```
+
+where $`\mu_X`$ is arm $`X`$'s true mean, $`w_i`$ is the time window repetition $`i`$ falls in, and
+$`\delta`$ is drift. The two designs then estimate the difference as:
+
+```math
+\widehat{\Delta}_{\text{blocked}}
+\;=\; \bar t_A - \bar t_B
+\;=\; \underbrace{\left(\mu_A - \mu_B\right)}_{\text{the effect}}
+\;+\; \underbrace{\left(\bar\delta_A - \bar\delta_B\right)}_{\text{window offset — NEVER cancels}}
+\;+\; O\!\left(\sigma_\varepsilon \big/ \sqrt{n}\right)
+```
+
+```math
+\widehat{\Delta}_{\text{paired}}
+\;=\; \frac{1}{n}\sum_{i=1}^{n}\left(t_{A,i} - t_{B,i}\right)
+\;=\; \left(\mu_A - \mu_B\right)
+\;+\; \underbrace{\frac{1}{n}\sum_{i=1}^{n}\big(\delta(w_i) - \delta(w_i)\big)}_{\textstyle =\;0\ \text{identically}}
+\;+\; O\!\left(\sigma_\varepsilon\sqrt{2}\big/\sqrt{n}\right)
+```
+
+★★ **The consequence is the whole finding**, and it is an algebraic one rather than an empirical one:
+
+```math
+\operatorname{Var}\big(\widehat{\Delta}_{\text{blocked}}\big) \;=\; \frac{2\sigma_\varepsilon^2}{n} \;+\; 2\sigma_\delta^2,
+\qquad\qquad
+\operatorname{Var}\big(\widehat{\Delta}_{\text{paired}}\big) \;=\; \frac{2\sigma_\varepsilon^2}{n}
+```
+
+⚠ **The term $`2\sigma_\delta^2`$ has no $`n`$ in it.** Running 60 repetitions instead of 6 shrinks the
+noise term tenfold and does **nothing** to the window term. So a blocked design produces a *tight-looking*
+result — small within-window scatter — whose dominant error is not estimated at all.
+
+★★★ **And this is why a Welch statistic of $`-307`$ was possible on a measurement that was wrong.** Welch's
+unequal-variances $`t`$ [[Welch1947]](#references), as the harness computes it, is
+
+```math
+t_{\text{Welch}} \;=\; \frac{\bar t_A - \bar t_B}{\sqrt{\dfrac{s_A^2}{n} + \dfrac{s_B^2}{n}}}
+```
+
+whose denominator is built from the **within-arm** sample variances $`s_A^2, s_B^2`$ — that is, from
+$`\sigma_\varepsilon`$ alone. The window offset appears in the **numerator** and nowhere in the
+denominator. $`\Rightarrow`$ **As $`n`$ grows, $`|t| \to \infty`$ for any non-zero window offset.** A large
+$`|t|`$ on a blocked design is therefore not evidence of a large effect; it is evidence of a *quiet
+window*. The paired statistic [[Student1908]](#references) is the one that is valid here, because pairing
+removes $`\delta`$ before the test sees the data rather than trying to model it afterwards.
+
+This is a known measurement-bias class rather than a novel observation: Mytkowicz *et al.* demonstrate
+conclusions reversing under bias that the experimenter had no reason to suspect
+[[Mytkowicz2009]](#references), and Georges *et al.* set out the design discipline
+[[Georges2007]](#references). ⚠ **What is novel here is only the confession**: the header described the
+correct design and the body implemented the incorrect one, so every reader who checked the *method* found
+it sound.
+
+**Measured, on this host.** Both instruments, blocked against paired:
+
+| instrument | blocked arms | spread | paired | spread |
+|---|---|---|---|---|
+| `term_ops_bench`, production-weighted | $`1.0748\times`$ (PASS) then $`0.9461\times`$ (FAIL), same binary minutes apart | **13 %** at loadavg 15.7 | $`0.962`$, $`0.956`$, $`0.954`$ | **0.8 %** at loadavg 19.8–23.8 |
+| `wire_encode_bench`, production-weighted, owned `Vec` | $`1.261\times`$, $`1.471\times`$, $`1.154\times`$, three consecutive runs | **27 %** at loadavg 16.7 | $`1.092`$, $`1.078`$, $`1.073`$ | **1.9 %** at loadavg **31–37** |
+
+★★ **A 14× reduction in run-to-run spread at roughly double the load.** That is the cleanest available
+demonstration that the *defect*, not the host, was the dominant term — a quieter machine would have
+narrowed both columns, and only one narrowed.
+
+#### 7.8.3 The two retracted citations, quoted verbatim
+
+Both cite `b228545f` and both are **OVERTURNED**. The superseded text is reproduced in full, following the
+precedent of `0d05986d` in the sibling repository — *"a ruling supersedes a design note, and both are
+written down here so a future reader does not 'restore' the [old form] as a bug fix"* — and following this
+register's own treatment of [CBR-006](#cbr-006) §(c).
+
+**(i) [Appendix B.3](#appendix-b3--the-living-frontier) row 36**, and **(ii) the matching
+`[[exempt]]` row in `register.toml`**, both read:
+
+> 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the driven clone at
+> **0.678×** the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint
+> at $`\alpha = 0.01`$. The emitted table is unchanged. **CITED**.
+
+⚠ **What is retracted is not the exemption.** `b228545f` really is 68 insertions and 0 deletions inside one
+doc block, the emitted table really is unchanged, and `DOCS_ONLY` is still the correct typed reason. **What
+is retracted is the figure the evidence string quotes to discharge it.** $`0.678\times`$ is not a
+measurement, $`t = -65`$ is not a test statistic about the world, and the $`0.98\times`$ threshold they were
+judged against could not be evaluated by the instrument that produced them.
+
+**What the paired instrument says instead**, recorded so the corrected figure does not silently replace the
+old one: the production-weighted mix reads **$`0.948\times`$–$`0.962\times`$** — a **5 % deficit, not 32 %**.
+And the **acceptance criterion itself was replaced**, because a $`0.98\times`$ threshold has to resolve 2 %
+of an instrument that scatters by 13–27 %:
+
+| rank | instrument | criterion |
+|---|---|---|
+| **primary** | `TERM_OPS_ARM` under `valgrind --tool=cachegrind --cache-sim=yes`, `fixture`-subtracted, per `Par` node | $`\mathrm{Ir}(\text{driven}) / \mathrm{Ir}(\text{derived}) \le 1.20`$ (measured $`1.1740`$) |
+| corroboration | the bench's paired median-of-repetition ratio | $`\ge 0.90\times`$, a band the host can actually resolve |
+| corroboration | `perf stat -e instructions,cycles`, normalised on the **derived** arm | agrees with the primary to within 0.5 % |
+
+★ Cachegrind is **deterministic** — no sampling, no skid, byte-reproducible — and the primary and the
+hardware counter agreed to four significant figures on the question wall clock could not call:
+$`\mathrm{Ir}`$ ratio $`1.1740`$ against $`1.1742`$. ⚠ The wall-clock floor is deliberately **looser** than
+$`0.98\times`$. That is not a relaxation of standards; it is the refusal to state a precision the instrument
+does not have. **Quoting $`0.98\times`$ on a $`\pm 13\%`$ instrument is the stronger-sounding and the weaker
+statement.**
+
+#### 7.8.4 ★★ Two Welch statistics for ONE experiment — and NEITHER was transcribed
+
+⚠ **This is a defect independent of the instrument, and it is the more interesting of the two.**
+`models/build/wire_schema.rs` records the same measurement at **$`0.674\times`$** with
+**Welch $`t = -307`$** (in the file, at **:3252** and **:3258**); this register's row 36 records it at
+**$`0.678\times`$** with **Welch $`t = -65`$**. Two ratios and two test statistics for what both texts call
+*the* measurement.
+
+★ **The obvious hypothesis is that one was transcribed rather than derived, and it is WRONG.** The
+provenance is decidable from the git record, and it acquits both:
+
+| citation | ratio | Welch $`t`$ | written by | source |
+|---|---|---|---|---|
+| `models/build/wire_schema.rs`, at **:3252**/**:3258** | $`0.674\times`$ | $`-307`$ | `b228545f` | the file, as committed |
+| this register's row 36 + `register.toml` | $`0.678\times`$ | $`-65`$ | `b228545f` | that commit's **own message** |
+
+`b228545f` wrote $`0.674\times`$ / $`t = -307`$ into the code and $`0.678\times`$ / $`t = -65`$ into its own
+commit message, **in the same act**; the register faithfully transcribed the message. $`\Rightarrow`$ **The
+register did not drift.** This campaign's standing finding that *every transcribed figure has drifted* does
+**not** hold here, and saying so is worth more than confirming it would have been.
+
+★★ **What the two figures actually are: two DIFFERENT RUNS, both real, of an instrument whose spread the
+commit read as reproduction.** `b228545f`'s message says so in passing — *"Reproduced across three runs
+(0.674x, 0.678x)"* — and treats a 0.6 % agreement between two draws as corroboration.
+
+**And the two $`t`$ values refute that reading arithmetically, with no new measurement required.** With
+$`n = 60`$ retained repetitions per arm fixed by the harness, invert the Welch formula for the pooled
+relative standard deviation $`s`$ each citation implies. Writing $`r`$ for the throughput ratio, the arm
+times normalised on `derived` are $`1`$ and $`1/r`$, so:
+
+```math
+|t| \;=\; \frac{\left(1/r\right) - 1}{s \cdot \sqrt{\dfrac{1 + \left(1/r\right)^{2}}{n}}}
+\qquad\Longrightarrow\qquad
+s \;=\; \frac{\left(1/r\right) - 1}{|t| \cdot \sqrt{\dfrac{1 + \left(1/r\right)^{2}}{n}}}
+```
+
+| citation | $`r`$ | $`|t|`$ | implied $`s`$, equal relative sd | implied $`s`$, equal absolute sd |
+|---|---|---|---|---|
+| `wire_schema.rs` | $`0.674`$ | $`307`$ | **0.68 %** | **0.86 %** |
+| row 36 | $`0.678`$ | $`65`$ | **3.18 %** | **4.00 %** |
+| | | **ratio** | **4.66×** | **4.64×** |
+
+★★★ **The conclusions, and they are decidable by arithmetic a reviewer can redo:**
+
+1. **The two citations describe runs whose pooled noise differed by $`\approx 4.6\times`$.** No pair of
+   consecutive runs of one binary on one host can differ that much in $`\sigma_\varepsilon`$ — but they can
+   differ that much in $`\sigma_\delta`$, which is precisely the term
+   [§7.8.2](#782-why-a-blocked-design-cannot-be-rescued-by-more-repetitions--and-why-welchs-t-inflates)
+   shows a blocked design folds into the numerator and omits from the denominator. **The discrepancy is the
+   blocked-arm defect, visible in the commit's own two numbers.**
+2. **Only one of the two is consistent with the standard deviation the same commit states.** `b228545f`
+   reports *"a 0.5-0.9% standard deviation"*. The $`t = -307`$ run implies 0.68–0.86 % — inside that band.
+   The $`t = -65`$ run implies 3.18–4.00 %, **3.5–4.4× above its upper bound.** At the stated band, the
+   $`0.678\times`$ run should have produced $`|t| \approx 229`$–$`413`$, not $`65`$.
+3. $`\Rightarrow`$ **The instrument's own output contained the refutation of the claim it was used to
+   support.** A $`t`$-statistic is an effect divided by a standard error; if the effect were stable to
+   0.6 % across "three runs", $`|t|`$ could not move by $`4.7\times`$. The evidence that the measurement was
+   invalid was printed alongside it and read as agreement.
+
+⚠ **A third Welch statistic exists and is a different subject — recorded so the three are not merged.**
+`88e492d7` reports that at **depth 2** the paired $`t`$ is $`+219.55`$ *"where Welch gave $`-103`$"*. That
+$`-103`$ is a **depth-2** figure from a *later re-run*; $`-307`$ and $`-65`$ are both **weighted-mix**
+figures from `b228545f`. ★ The sign flip between $`-103`$ and $`+219.55`$ is on the same data, and it is the
+sharpest single demonstration in the record that the blocked statistic was not merely imprecise but pointed
+the wrong way.
+
+$`\Rightarrow`$ **The durable lesson, stated as a rule the next author can apply:** a figure must carry the
+*identity of the run that produced it*, not merely its value. Two citations of "the measurement" that name
+no run are two citations of nothing in particular, and the register cannot tell them apart. ⚠ **The needed
+correction to `models/build/wire_schema.rs` is REPORTED, not made** — that file is another work item's, and
+§7.7.1's rule about the gate living where it can read the tree does not license editing across a fence.
+
+#### 7.8.5 ★ The one figure that STANDS, and why effect size decides, not provenance
+
+⚠ **The instrument produced one figure that this whole programme's design rests on, and it survives.** The
+claim is that *a per-field table interpreted by a hand-written driver is $`1.7\times`$ slower than the
+derive it replaced, therefore `descend` takes a whole node rather than a field*. `drive.rs` calls it *"the
+binding design constraint of the whole program"*, and it is cited at six code sites.
+
+★ **It is UNAFFECTED, and the reason is arithmetic rather than provenance.** The figure's other form is
+`0.594×` throughput, cited in [CBR-019](#cbr-019)'s evidence, and $`1 / 0.594 = 1.684`$ — a **68.4 %**
+increase in time.
+
+```math
+\frac{\text{effect}}{\text{instrument spread}} \;=\; \frac{68.4\,\%}{27.5\,\%} \;\approx\; 2.5
+```
+
+To reverse the *sign* of that comparison the instrument would have to err by the entire 68 %, which is
+**2.5× its whole measured peak-to-peak spread**. Even at the worst corner of the observed window the
+conclusion is *"substantially slower"*. $`\Rightarrow`$ **The sign and the order of magnitude survive; only
+the third significant digit was ever real.** The design constraint holds.
+
+★★ **The general rule this establishes, which is the part worth keeping:** whether a figure from a bad
+instrument survives is decided by **effect size against instrument spread**, not by how the figure was
+obtained. A 70 % effect measured badly is still a 70 % effect. A 2.75 % effect measured badly is **not a
+measurement at all** — which is why the `NO_RESUME` figure of that size, from the same instrument, is
+disposed of as **NOW UNKNOWN** rather than retained. ⚠ Provenance-based triage — *"it came from the broken
+bench, so retract it"* — would have thrown away the one figure the design depends on, and keeping
+everything would have retained six figures that mean nothing. Neither is right; the ratio decides.
+
+#### 7.8.6 The two drift questions, answered
+
+Two questions were put, and neither is answered by building a large new gate. Both are answered
+concretely, in the manner
+[§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) established: with a decision and a
+reason, including where the answer is *"nothing, and here is what would have"*.
+
+**Q1 — Is there any mechanism today that would have caught a benchmark helper whose header contradicted its
+body?**
+
+⚠ **No. None. The defect was found by a person reading the code**, and every automated surface it passed
+through was structurally incapable of seeing it:
+
+| surface | why it could not see this |
+|---|---|
+| the compiler and `clippy` | `measure(label, workload, arm)` is well-typed and idiomatic. Nothing in it is a lint. |
+| the bench's own acceptance test | It consumed `measure`'s output. A verdict computed *from* the broken estimator cannot detect that the estimator is broken. |
+| the test suite | ★ **The instrument has no test at all** — and *"an unfalsified refusal is an unproven refusal"* ([§7.4](#74-anti-vacuity--the-gate-must-be-shown-red)) applies to instruments exactly as it applies to gates. |
+| the drift gate of this section | Out of scope by construction: it reads this document and `register.toml`, never `models/benches/`. |
+| code review | ★★ **The header made review WORSE, not neutral.** A reviewer checking the method found a correct description of a paired design. The prose was a *decoy*, and it had been one for months. |
+
+$`\Rightarrow`$ **Recommendation, and it is small.** The one mechanism that would have caught it is an
+**invariant control**: a third arm that runs a workload *known* to be identical to another arm, asserted to
+measure the same time within the instrument's claimed resolution. A blocked estimator fails it immediately,
+because the two identical arms occupy different windows. ★ This is not hypothetical — a third agent's
+invariant control on this host moved **+55 %** while the criterion reported $`p < 0.05`$, which is the same
+observation arrived at independently. **An instrument that cannot measure "no difference" as no difference
+should not be trusted to measure a difference.** ⚠ The general form is worth stating because it is not
+specific to benchmarks: *a measuring device needs a calibration subject whose answer is known
+independently of the device.*
+
+**Q2 — The register is a hand-maintained mirror of a derived fact. Does it have the guard-tier golden's
+shape?**
+
+The precedent: that golden's cross-check turned out to be an **implementation-consistency fence, not a
+staleness fence** — both sides were regenerated from the same source, so they always agreed and it could
+never have caught its own drift. Its real pathology was different and worse: **a red fence not routed to the
+committer**, twice — red for 12 commits once and for 27 commits once.
+
+★ **The answer is: NO on the first half, YES on the second, and the distinction is the actionable part.**
+
+**Not an implementation-consistency fence.** `register.toml` is a **projection** of the prose, and the gate
+re-derives every field *from the prose* rather than comparing two generated artefacts. A hand edit to the
+index that the prose does not support fails; so does the reverse. The two sides do **not** move together,
+which is exactly what the golden's cross-check could not say. ★ Evidence rather than assertion: the clause
+found nine defects on its first run ([§7.7.8](#778--nine-defects-the-gate-found-on-its-first-run)), and on
+2026-07-30 it named five unregistered frontier commits that no reader had noticed.
+
+**But the same routing pathology, and this is its THIRD instance.** The frontier clause was **RED** while
+those five commits were unregistered, and it stayed red until an agent happened to run it. ⚠ **And the red
+was not even the fuse.** `check_frontier_fuse` implements `frontier_grace_days` $`= 2`$ faithfully and all
+five commits were 0–1 days old, so the fuse was **green**. What failed is the *floor* assertion at the top
+of the test that watches it — `unregistered.is_empty()` — which has **no grace window at all**:
+
+$`\Rightarrow`$ ★★ **The fuse is a fuse in the function and a TRIPWIRE in its own guard.** The test's own
+comment names the thing it then defeats: *"the difference between a ratchet with a fuse and a tripwire that
+fires on whoever commits next."* §7.7.3 and Appendix B.3 both promise a fuse **in prose**. A design decision
+was implemented and then negated by the guard written to watch it, and neither the prose nor the guard
+records the contradiction. That is drift class 5 — *a justification that was wrong when written* — inside
+the gate's own documentation.
+
+⚠ **The root, stated as a claim rather than a hunch: this is work item #68, and #68 is more important than
+its priority suggests.** *No git hook has ever run in the f1r3node worktree — every local gate is inert.* A
+gate that is only consulted when somebody chooses to consult it is not a gate; it is a document that
+compiles. All three recorded instances share that single cause, and none of them shares a cause with the
+*content* of the fence that went red. $`\Rightarrow`$ **Fixing fences one at a time cannot fix this, and
+three instances is enough evidence to stop trying.** The remedy is routing, and it is one hook.
+
+**★ Three candidate clauses, sized and NOT built here, in descending value per line:**
+
+| # | clause | what it would have caught | cost |
+|---|---|---|---|
+| 1 | **Read the Abstract's six axis counts and its status split structurally**, exactly as §5.1's and §5.3's tables already are. | ⚠ **Four stale figures live at `f78e169d`**: protobuf 23 against 24, verdict 23 against 24, post-state hash 32 against 33, and *"43 are landed"* against 45 — in the one paragraph that claimed *"every figure … is PROJECTED … by a test"*. | ~20 lines. The projection already exists; only the *reading* is missing. ★ **Cheapest and highest value.** |
+| 2 | **No two entries naming the same wire field may answer the same axis differently** without one of them citing the other. | [CBR-032](#cbr-032) landing with `H = MOVES` beside [CBR-031](#cbr-031)'s `H = NO`, both about `locally_free`. Instead the disagreement sat green for a day and was closed by a reader carrying one entry's mechanism to the other. | Moderate: it needs a per-entry *field* attribute, which is new data. |
+| 3 | **Every quoted figure names the run that produced it** — a `[[measurement]]` row with an instrument, a load average and a repetition count. | Both defects in [§7.8.4](#784--two-welch-statistics-for-one-experiment--and-neither-was-transcribed): the same experiment cited with two statistics, and a spread read as reproduction. | ⚠ **Largest, and it is the one to be most sceptical of.** It cannot check that a figure is *true*, only that it is *attributed* — and §7.7.7's rule applies to it: a clause whose advertised coverage exceeds its real coverage is worse than none. |
+
+⚠ **What none of the three can do**, said as prominently as what they can: no clause over these two
+documents can detect that a *benchmark* is measuring the wrong thing. Clause 3 would have made the
+$`-307`$/$`-65`$ disagreement mechanical rather than requiring a reader — a real gain — and it would still
+have recorded both figures as faithfully attributed measurements, because both *were*. **The instrument's
+correctness is not a property this register can hold**, which is why Q1's answer is an invariant control in
+the bench and not a clause here.
+
+---
+
 ## 8. Conclusions
 
 1. The register holds **49** consensus-visible changes, derived from the campaign record: **36** on the
@@ -7472,6 +7824,26 @@ three RED cells before the gate is trusted.
   CRYPTO '87, LNCS 293, 369–378. DOI:
   [10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32). — the post-state hash's tree
   structure.
+- [Student1908] "Student" (W. S. Gosset). *The Probable Error of a Mean.* Biometrika 6(1), 1908, 1–25.
+  DOI: [10.2307/2331554](https://doi.org/10.2307/2331554). — the **paired** $`t`$-test, which is the valid
+  statistic for [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it)'s
+  two-arm comparison, because pairing removes the window term *before* the test sees the data.
+- [Welch1947] B. L. Welch. *The generalization of "Student's" problem when several different population
+  variances are involved.* Biometrika 34(1–2), 1947, 28–35. DOI:
+  [10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28). — the **unpaired** test the
+  retracted figures used. ⚠ Sound for its own assumptions; those assumptions are violated by a blocked
+  design, which is [§7.8.2](#782-why-a-blocked-design-cannot-be-rescued-by-more-repetitions--and-why-welchs-t-inflates)'s
+  subject.
+- [Georges2007] A. Georges, D. Buytaert, L. Eeckhout. *Statistically Rigorous Java Performance
+  Evaluation.* OOPSLA '07, 57–76. DOI:
+  [10.1145/1297027.1297033](https://doi.org/10.1145/1297027.1297033). — the design discipline
+  ([§7.8.1](#781-vocabulary-defined-before-use)'s blocked/paired distinction and the requirement that an
+  interval be reported with its method rather than as a bare $`\pm`$).
+- [Mytkowicz2009] T. Mytkowicz, A. Diwan, M. Hauswirth, P. F. Sweeney. *Producing wrong data without doing
+  anything obviously wrong!* ASPLOS '09, 265–276. DOI:
+  [10.1145/1508244.1508275](https://doi.org/10.1145/1508244.1508275). — ★ the class this retraction belongs
+  to: measurement bias that **reverses a conclusion** while every visible part of the method looks correct.
+  The title is the finding.
 
 **In-repository sources.** `casper/src/rust/validate.rs`, `casper/src/rust/block_status.rs`,
 `casper/src/rust/rholang/replay_runtime.rs`, `rspace++/src/rspace/hashing/stable_hash_provider.rs`,
@@ -7655,7 +8027,7 @@ it.
 | 33 | `c709fbfa` | the CLONE EQUIVALENCE CORPUS — enumerated, eight axes | `TESTS_ONLY` | 67 terms enumerated from the generated `wire_schema::*_VARIANTS` tables rather than hand-listed, *"so a 37th arm fails this file instead of escaping it."* `models/tests/` plus its `[[test]]` declaration. **CITED**. |
 | 34 | `a36cb019` | the four RhoSpec suites that go red CLASSIFIED | `TESTS_ONLY` | Reaches the obligation set only through `casper/src/test/resources/*.rho` — test fixtures under the `src/test` exclusion's own subject. 49 tests, 45 pass, 4 classified; two repaired corpus-locally. **CITED**. |
 | 35 | `0eac9c3a` | `clone` leaves the tripwire by being CONVERTED | `TESTS_ONLY` | `clone` moves from `TRIPWIRE_DEPTH` to `CONVERTED_DEPTH` in `rholang/tests/stack_depth_gate.rs`, its ceiling assertion **deleted rather than relaxed**. Other files are `models/benches/`, `models/Cargo.toml` and an audit record. **CITED**. |
-| 36 | `b228545f` | the walk-elimination optimization is REFUTED | `DOCS_ONLY` | 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the driven clone at **0.678×** the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint at $`\alpha = 0.01`$. The emitted table is unchanged. **CITED**. |
+| 36 | `b228545f` | the walk-elimination optimization is REFUTED | `DOCS_ONLY` | ⚠★★ **THE EXEMPTION STANDS; THE FIGURE IT QUOTED IS RETRACTED — see [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it).** Still true, and still what discharges the row: 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block, and **the emitted table is unchanged** — so `DOCS_ONLY` remains the correct typed reason. ⚠ This cell previously read *"the driven clone at **0.678×** the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint at $`\alpha = 0.01`$"*, quoted here verbatim so it cannot be restored as a bug fix. **Every part of that sentence is OVERTURNED**: the instrument timed its two arms in **different time windows** while its own header claimed per-repetition interleaving, so it scatters **13–27 %** run to run; the paired figure is $`0.948\times`$–$`0.962\times`$ (a **5 %** deficit, not 32 %); the $`0.98\times`$ threshold was **replaced** by a deterministic instruction-count criterion; and the Welch $`t`$ is not a statistic about the world, because a blocked design puts drift in the numerator and omits it from the denominator. ★ **And the walk elimination itself is NOT refuted** — it lands as [CBR-035](#cbr-035), removing 54.3 instructions per node with writes unchanged. **DERIVED** (the diff) + **RETRACTED** (the figure). |
 | 37 | `00c9ce6e` | the two pathmap ladders are capped by their FIXTURE, not by their traversal | `TESTS_ONLY` | `rholang/tests/stack_depth_gate.rs` and an audit record only. The ladders move to `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE` because building one is $`\Theta(d^2)`$ — *"a subject whose fixture costs more than its traversal cannot be put on a 1,000× ladder."* **CITED**. |
 | 38 | `80a4aff9` | the test genesis's vault order was RANDOM — and a SECOND unordered source | `TESTS_ONLY` | ★ Reaches the obligation set through `casper/src/rust/test_utils/util/genesis_builder.rs`, which is compiled only under the `test-utils` feature and invoked only by tests. **MEASURED RED**: 24 parameter builds $`\rightarrow`$ **14 distinct vault orders**; 6 genesis computations $`\rightarrow`$ **5 distinct `post_state_hash`**; `GENESIS_CACHE` 6 misses / 6 accesses. GREEN after: 1 order, 1 hash, 1 miss / 6. ⚠ **Directly relevant to open question 10** — it identifies the cause (`bonds`, a `HashMap`, rendered positionally into genesis Rholang) and fixes both copies in the *test* builder; whether production genesis shares the shape remains open. **CITED**. |
 

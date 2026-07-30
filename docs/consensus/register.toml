@@ -1041,7 +1041,20 @@ evidence = "Appendix B.3 row 35 — `clone` moves from `TRIPWIRE_DEPTH` to `CONV
 commit = "b228545f"
 window = "FRONTIER"
 reason = "DOCS_ONLY"
-evidence = "Appendix B.3 row 36 — 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block: the driven clone at 0.678× the derived form's throughput against a 0.98× threshold, Welch $`t = -65`$, intervals disjoint at $`/alpha = 0.01`$. The emitted table is unchanged. … [CITED]"
+# ⚠★★ RETRACTED 2026-07-30 — see section 7.8 of the register. The EXEMPTION stands (the diff
+#   really is 68 insertions / 0 deletions in one doc block and the emitted table really is
+#   unchanged, so DOCS_ONLY is still correct); the FIGURE the old evidence string quoted to
+#   discharge it does not. The superseded string, verbatim, so it cannot be restored:
+#
+#     "the driven clone at 0.678× the derived form's throughput against a 0.98× threshold,
+#      Welch t = -65, intervals disjoint at alpha = 0.01"
+#
+#   The instrument timed its two arms in DIFFERENT TIME WINDOWS while its own header claimed
+#   per-repetition interleaving; it scatters 13-27% run to run. Paired: 0.948x-0.962x, a 5%
+#   deficit rather than 32%. The 0.98x threshold was replaced by a deterministic Ir-ratio
+#   criterion. And `wire_schema.rs` cites this SAME measurement as t = -307 — two runs of a
+#   blocked instrument, both real, neither transcribed; section 7.8.4 derives which is which.
+evidence = "Appendix B.3 row 36 — 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block, and the emitted table is unchanged: that is what discharges DOCS_ONLY and it is unaffected. The throughput figure the previous evidence string quoted (0.678× / Welch t = -65) is RETRACTED — blocked arms, 13-27% run-to-run spread; paired reads 0.948×-0.962×. The walk elimination itself is NOT refuted: it lands as CBR-035. [DERIVED + RETRACTED]"
 
 [[exempt]]
 commit = "00c9ce6e"
