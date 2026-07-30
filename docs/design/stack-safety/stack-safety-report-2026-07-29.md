@@ -63,6 +63,13 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-G2** | generator | mettail | nine generated `*_iterative` drivers (`Hash`, `Ord`, `Drop`, `Debug`, `Display`, …) | **flat on a pure chain; 1,215–10,592 debug on an alternating one** | ⚠ **only within one category** — ★ **now HISTORICAL, see SS-G4** | [5.10.10](#51010--the-gap-is-now-closed-by-measurement--and-eight-of-the-nine-drivers-are-sloped) |
 | **SS-G4** | `fab6de24`, `6e4abbd8`, `a21b0bf9`, `dc104aa3`, `4ee48db9` (#162); `844364d2` (#189) | mettail | ★★ **ALL ELEVEN generated `ast_*` drivers** — the `CollectionLiteral` arm divergence repaired at the classifier | `ast_cmp` 10,590 · `ast_debug` 10,542 · `ast_eq` 6,144 · `ast_match_pattern` 6,136 · `ast_term_depth` 3,408 · `ast_is_ground` 2,225 $`\rightarrow`$ **0, every one, both profiles** | **yes** — ⚠ **but see SS-Y1** | [8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
 | **SS-Y1** | `fab6de24` | mettail | ⚠★★ **A live, unrepaired defect INSIDE `SS-G4`'s OWN COMMIT** — the optional-collection shape: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ⛔ **blocks `--all-targets` repo-wide** | [8.6.1a](#861a--197--the-defect-inside-162s-own-commit-live-at-head) |
+| **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
+| **SS-G6** | `3276c1ee` | mettail | **#174's hash-keyed collection cost, ATTRIBUTED** — `par_hash` / `par_hashmap` isolate `models`' `impl Hash for Par`; a subtraction control pins the attribution | 625 / 113 recorded with ceilings; ⚠ **both filed figures withdrawn** — `map_pair_lower` 10,491 $`\rightarrow`$ **227**, `list_pair_lower` 950 $`\rightarrow`$ **0** | **no** — a residue is *named*, not converted | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
+| **SS-Y2** | `3276c1ee` | f1r3node | ⚠★★ **A live, unrepaired defect NAMED by `SS-G6`** — `impl Hash for Par` (`models/src/lib.rs:284`) and `impl PartialEq for Par` (`:265`) are **hand-written host-recursive** traversals on a **consensus-adjacent** path (`SortedParMap` feeds the canonical sort `cost_accounting/sig.rs` signs) | 625 debug / 113 release B/level | ⛔ **open**; invisible to **both** existing censuses | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
+
+⚠ **`SS-G6` and `SS-Y2` are the mandatory pair required by [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4**, in its *revealed-by* rather than *introduced-by* form: `SS-G6`'s commit does not create the defect, it **names** one that was already live and unattributed. Each cross-references the other; `SS-Y2` is discharged only by a commit that repairs it.
+
+★ **`SS-Y2` is the strongest available argument for the derived call-graph census**, and it arrived before the census was built. `DERIVE_DISPOSITIONS` closes over derive **tokens** and these impls are hand-written; `GENERATED_FILE_CENSUS` closes over generated **files** and these are not generated. Neither could ever have seen them — which is exactly the three-way split [§5.7.8](#578-the-read-ceiling-registry) argues the third leg of. `models/build.rs`'s own fail-on-`None` message already carries the lesson in one line: *"a hand-picked list of four missed `Hash` entirely."*
 
 **Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate).
 
@@ -1271,6 +1278,127 @@ the `reproducer` subject and the `lower_depth` subject agree to within measureme
 **An inert remedy retired (`73c774a3`).** Every run line in a demo run-sheet carried `RUST_MIN_STACK=134217728`, and a gate asserted the prefix was **present**. **MEASURED (q)**: all thirteen committed demos run to their documented exit status with **no `RUST_MIN_STACK` set**, at the default `ulimit -s`. ★ **And the prefix was never a correct remedy here**: `RUST_MIN_STACK` is read only by `std::thread`'s spawn path, so **it cannot resize a main thread** — and the binary is `#[tokio::main] async fn main`, which is where parsing and lowering run. *A sheet that recommends an inert knob teaches a presenter to mis-diagnose, which is worse than silence.* The gate was **inverted** rather than deleted, so that restoring the prefix under presentation pressure fails the build and points at the real gate.
 
 **A gate that was red because it did not finish (`21c51d10`).** One test bisected four residue subjects at depths 512 and 4,096; at ~20 child processes per bisection it ran ~500 s and `cargo nextest` **terminated it at its 300 s per-test cap**. *A gate that is red because it did not finish is worse than no gate: it reports failure without having measured anything, and the natural response under pressure is to delete it.* Split one-per-test: 3.3 s, 3.4 s, 171 s, 206 s.
+
+#### 5.6.5 ★ The twelfth generated driver, and the seven numerals beside it (`ed44c429`)
+
+##### 5.6.5.1 The defect
+
+**MEASURED.** `macros/src/gen/native/eval.rs` emitted `Some(__b) => Some(__b.as_ref().try_eval()?)` inside the `Visit` arm for a same-category optional child. The branch `continue`s before any Reduce frame is built, so the descent ran on the **host stack in both the recursive form and the PDA form** — a $`\Theta(\text{depth})`$ path inside a driver that advertised itself as converted. A user input reaching it is any term nesting through such a field; the workspace's one instance is `optsmoke::Int::IfElse`'s `*opt(e:Int)`.
+
+**DERIVED.** A classifier-side census of the emitter — not of the generated artefacts — finds only **four** rules workspace-wide that put anything in a term-context `*opt(...)`: one same-category, two `Vec(Proc)` (no `native_type`, so the emitter `continue`s), one wrapping `?g:Guard`. Reading the classifier rather than `target/generated/` is what makes this total: it sees grammars whose output never reaches the tree.
+
+##### 5.6.5.2 The architecture of the repair, and why THIS shape
+
+**Shape: representation change** (a presence flag) **plus a refusal**, not a driver conversion.
+
+`CrossKind::OptionalSameCat` replaces the recursive child with a `bool`, because the arm needs to know only *whether* the optional was present — the child's value is already reachable through the worklist. A Reduce frame would have been the alternative and was rejected: it widens `Step` for one instance of one shape in one language.
+
+★ **The alternatives, and why each was rejected.** *Convert the arm to a worklist frame* — costs a `Step` widening for a single site. *Leave it and record a residual* — the residual is a live overflow path, not a cap. *Refuse the whole optional-same-category shape* — too broad; the shape is legitimate when the child is not a term.
+
+The **capture-rule refusal** is a different judgement: a capture rule whose syntax binds token text *and* carries a same-category `Term` field would be $`\Theta(\text{depth})`$ with no way to express the presence flag. ⚠ **Its blast radius is provably zero** — the refused shape **fails to compile in the baseline too** (`E0061`, wrong arity from `term_generation.rs:68` / `random_generation.rs:101`). It never compiled. The refusal replaces an incomprehensible generated-code error with a named one.
+
+**Invariant that keeps the stacks in step:** the presence flag is consumed in the same arm that would have consumed the recursive result, so the worklist's push/pop balance is unchanged.
+
+##### 5.6.5.3 How the fix was made
+
+VERBATIM, the discriminator (`macros/src/gen/native/eval.rs`):
+
+```rust
+fn capture_term_field_is_same_category(ty: &TypeExpr, category: &syn::Ident) -> bool {
+    matches!(ty, TypeExpr::Base(base) if base == category)
+}
+```
+
+The `CrossKind` variant and its three arms (`quote!{ #n: bool }`, `quote!{}`, `None`) are ELIDED; the refusal emits `compile_error!` via `quote_spanned!` on the rule label's span.
+
+##### 5.6.5.4 Results
+
+| metric | before | after | provenance |
+|---|---|---|---|
+| B/level, release | host recursion, unbounded | **0** | gate `ast_try_eval`, `ast_try_eval_cast` |
+| B/level, debug | host recursion, unbounded | **0** | same |
+| max depth, 2 MiB worker | overflow | no overflow | RED-then-GREEN, below |
+| wall clock | **NOT MEASURED — no throughput claim is made** | | |
+| heap: peak / blocks | **n/a — not a ser/de conversion** | | |
+| where the allocations moved | nowhere; a `bool` replaces a recursive call | | |
+
+**Byte-identity control CLEAN**: two detached worktrees, empty `target/` in both so `write_if_changed` could skip nothing, 2,281 files × 54 languages each — **exactly one generated file differs**, the intended target.
+
+##### 5.6.5.5 What it cost
+
+Throughput: unmeasured, and no claim is made. Allocation: none. Complexity: one enum variant and one refusal arm. Intercept: unchanged. ★ **A stack-safety fix that is slower is still correct — here the number simply does not exist, and saying so is the point.**
+
+##### 5.6.5.6 What is still recursive
+
+⚠⚠ **The cast lattice, and its bound is RHOLANG-SCOPED AND MEASURED — not a property of the generator.** Rholang's twelve `try_eval` sites are all cast arms, so its residue is bounded at five host frames (`BigRat ▸ BigInt ▸ Int ▸ UInt32 ▸ Bool`) for a term of any depth. **Workspace-wide the same census finds 63 eager non-cast sites** — `calculator` 59, `ledtest` 4, `optsmoke` 1 — including two live **cross-category** cycles (`Int::BoolToInt` ⇄ `Bool::EqInt`; `Num::PredToNum` ⇄ `Pred::EqNum`). The generator-wide repair is a category-dependency **graph refusing on any cycle**, and ⚠ it must be built over the **post-auto-injection** rule set: `Num::PredToNum` is synthesised by `ast/src/auto_inject.rs:321` and appears in no grammar source.
+
+##### 5.6.5.7 Anti-vacuity
+
+**The checker must reject the old emitter, and it was shown doing so.** The new test run against the pre-change emitter aborts with `fatal runtime error: stack overflow`, exit **101**. Against the new emitter: 18/18.
+
+★ **A second anti-vacuity result, on the register itself.** `flat_generated_drivers_are_depth_independent` was a hand-written 26-name array beside a 33-row table that already knew the answer; `ast_try_eval` and `ast_try_eval_cast` reached the table and not the array, so both were held to an **8× looser bar** (≈32 vs ≈4 B/level) with no slope printed. The array is **deleted and derived**. ⚠ The predicate is *"the shape asserts depth-independence"*, **not** `Shape::Flat` — `FlatAndItsEqFreeTwinAgrees` is a flat assertion carrying an extra obligation, so matching `Shape::Flat` alone would have silently **dropped** `ast_subst` and `ast_normalize`: a narrowing disguised as a derivation. Measured: 30 + 2 = **32** checked against the array's 26; six gained, none lost. Its floor is derived from `MIN_DRIVER_SUBJECTS` minus the sloped rows, and its message prints count **and** membership.
+
+★ Six further stale numerals in the same file were the same failure — *a transcribed count beside a table that can compute it* — and are repaired as one mechanism rather than six edits. Superseded readings are **annotated, never overwritten**.
+
+#### 5.6.6 ★★ #174 attributed to `models`' `impl Hash for Par` (`3276c1ee`)
+
+##### 5.6.6.1 The defect
+
+#174 stood as *"hash-keyed collection literals cost 11.0× a list literal, and the figure matches no driver measured in isolation."* **Both halves were wrong**, and the second was the clue: it matched no driver because **it is not a driver**.
+
+⚠ **Both filed figures are WITHDRAWN.** Re-measured on this build, on the very ladder the old numbers were taken on ($`16 \rightarrow 1{,}024`$): `map_pair_lower` **10,491 → 227** B/level (a 46× reduction) and `list_pair_lower` **950 → 0**. #162 and #189 converted the drivers stacked on top of the hash. ★ **A ratio against a control that now reads zero is not a number** — the 11.0× is withdrawn, not restated. The superseded values are kept here, named as superseded, per [Appendix G.4](#appendix-g--keeping-this-document-current) rule 2.
+
+**It was never a parse-phase cost.** `list_pair_parse` / `map_pair_parse` / `set_pair_parse` read **0 / 1 / 0** debug and **−1 / −1 / 1** release. The whole residue is in the LOWER phase.
+
+##### 5.6.6.2 The architecture of the repair, and why THIS shape
+
+**Shape: measurement, not conversion.** The deliverable is an *attribution* plus a ceiling, because the traversal is not mettail's to convert — it is `models`'. DERIVED, following the one structural difference between an `EList` and an `EMap`/`ESet`:
+
+```text
+rholang_ast.rs:2460 new_emap_par → utils.rs:715 new_emap_expr
+  → ParMapTypeMapper::par_map_to_emap(ParMap::new(…))
+  → par_map.rs:18 ParMap::new → sorted_par_map.rs:30 SortedParMap::create_from_vec
+        let map: HashMap<Par, Par> = vec.into_iter().collect();
+  → models/src/lib.rs:284  impl Hash for Par     ← HAND-WRITTEN, HOST-RECURSIVE
+```
+
+`EList` takes the other branch — `EListBody(EList { ps: Vec<Par>, … })`, a plain vector: no hash, no sort, no `Ord`.
+
+★ **The alternatives, and why each was rejected.** *Apportion the measured total across candidate sub-traversals* — refused; [§5.7](#57-family-e--the-instrument-and-what-it-caught-in-itself) records apportionment as the move that manufactures false zeros. *Convert the lowering* — wrong subject; the lowering is already flat. *Leave it unattributed* — it was, for as long as the figure stood.
+
+##### 5.6.6.3 How the fix was made
+
+Four probe subjects and a `lower_depth` control were added, plus two ceilinged gate rows and one **subtraction** assertion. ELIDED.
+
+##### 5.6.6.4 Results
+
+Discriminating window $`512 \rightarrow 4{,}096`$, where the parser's depth-independent ~483 KB floor no longer compresses the slope. B/level, debug / release:
+
+| subject | what it runs | debug | release | provenance |
+|---|---|---:|---:|---|
+| `list_pair_lower` | parse + lower, **no hash** (the control) | 0 | −1 | gate |
+| `par_hash` | `lower_depth` + `Hash for Par`, alone | **625** | **113** | gate |
+| `par_hashmap` | the `HashMap<Par,Par>` collect | **636** | **113** | gate |
+| `map_pair_lower` | the original #174 rung | 597 | 144 | gate |
+| `set_pair_lower` | the #174 rung, plus the sort | 572 | 144 | gate |
+| `lower_depth` | the identical pipeline, hash removed | 1 | 0 | gate |
+
+Four subjects that share **only** that impl agree inside **±5.3 %** in debug.
+wall clock: **NOT MEASURED — no throughput claim.** heap: **NOT MEASURED — n/a, no allocation moved.**
+
+##### 5.6.6.5 What it cost
+
+Nothing in production: the commit adds probe subjects and assertions only.
+
+##### 5.6.6.6 What is still recursive
+
+⛔ **`impl Hash for Par` and `impl PartialEq for Par` — see `SS-Y2`. Owner: `models`.** They are **consensus-adjacent**: `SortedParMap` feeds the canonical sort that `cost_accounting/sig.rs` signs. Same class as `par_drop` — an impl in `models`, not a `macros/src/gen/` traversal, which is exactly why no MeTTaIL driver measured in isolation ever matched the figure.
+
+##### 5.6.6.7 Anti-vacuity
+
+★★ **A SUBTRACTION control, not merely an invariant one.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope` asserts `lower_depth` stays flat, so the two ceilinged rows **cannot go on passing while their attribution quietly becomes false**. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash` 339,968 → 2,580,480 against `lower_depth` flat at ~73,728 ⇒ the excess **is** the whole slope, and it is the hash's.
+
+⚠ `par_hash` and `par_hashmap` are kept as **two** rows rather than folded into one, because **the pair is the attribution**: `par_hash` runs the hash alone, `par_hashmap` runs it plus `Eq for Par` on collision. Their agreement (625 vs 636 debug; 113 vs 113 release) is what says the collect adds nothing of its own. **If they diverge, the `Eq` half has started to matter and the attribution needs revisiting.** This is [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish)'s *"an invariant control is not sufficient"* satisfied in code.
 
 ---
 
