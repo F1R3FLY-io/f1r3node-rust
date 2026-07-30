@@ -30,33 +30,49 @@
 //! and the block hash — it is only the *post-state* that comments cannot reach. Pinning the bytes is
 //! consequently the strictest of the three and the one with no false negatives.
 //!
-//! # ⚠ Why the NORMALIZED TERM is NOT pinned here, and what was measured instead
+//! # ★★ The NORMALIZED TERM is now pinned too — and the drift that blocked it is ATTRIBUTED
 //!
-//! It should be, and it will be — but not in this commit, because the tree cannot currently certify
-//! a value. Measured 2026-07-30:
+//! An earlier revision of this module declined to pin the normalized `Par`, because
+//! `NonNegativeNumber.rho`'s pinned digest had moved (`a537547892a0…` → `eb17e6a37e7e…`) at
+//! **identical length, 2652 both**, with the contract file unmodified — and the tree could not then
+//! certify which of three changes had moved it. Re-blessing under that uncertainty would have
+//! laundered possibly-unlanded work through a consensus pin. That refusal was right, and it is now
+//! **discharged by measurement rather than by waiting**.
 //!
-//! | | pinned by `719f2432` | measured now | length |
-//! |---|---|---|---|
-//! | `NonNegativeNumber.rho` normalized `Par` | `a537547892a0006b…` | `eb17e6a37e7e3ccb…` | **2652 both** |
+//! Identical length with a different digest is a **field-level value change in a fixed-width
+//! encoding**. Three candidates carried that signature; the experiment separated all three.
 //!
-//! `NonNegativeNumber.rho` is **unmodified** — `git status` shows `Registry.rho` as the only dirty
-//! file under `casper/src/main/resources/` — so this drift is not a contract edit. Identical length
-//! with a different digest means the *bytes* of the encoded term moved, not its size, which is the
-//! signature of a field-level change rather than a structural one. The two candidate causes, neither
-//! excluded without a clean-tree build:
+//! ```text
+//!    git archive <ref> | tar -x  ⇒  clean tree      ⚠ + restore the held-local root [patch],
+//!             │                                        parser paths rewritten to ABSOLUTE, or
+//!             ▼                                        the export DOES NOT COMPILE and the
+//!    blake2b256(source_to_adt(src).encode_to_vec())     baseline measures nothing
 //!
-//! 1. the `models/` wire-schema work landed since `719f2432` (`959a123a`, `b162440b`, `c709fbfa`,
-//!    `0eac9c3a`, `b228545f`, `1eb65221`, `88e492d7`, `bb81b75f`, `d630af54`), which generates the
-//!    prost encoding the digest is taken over; and
-//! 2. the **uncommitted** normalizer work in `rholang/src/rust/interpreter/compiler/` — 23 files,
-//!    735 insertions, of which 25 diff lines touch `locally_free` / `connective_used`, exactly the
-//!    `Par` fields that would change bytes without changing length.
+//!    084c93b5^  ──▶  a537547892a0…  2652   ═══ the OLD pin, reproduced exactly
+//!    084c93b5   ──▶  eb17e6a37e7e…  2652   ═══ the NEW value, reproduced exactly
+//!    HEAD clean ──▶  eb17e6a37e7e…  2652
+//!    HEAD dirty ──▶  eb17e6a37e7e…  2652   ═══ 51 dirty files change NOTHING
+//! ```
 //!
-//! ⇒ **Re-blessing that digest here would launder an unlanded change through a consensus pin**, so it
-//! is deliberately not done. `genesis_overflow_guard_shape.rs`'s single normalized-term cell is left
-//! RED so the drift keeps announcing itself, and it is reported to the owner as a finding of its own.
-//! When the normalizer work lands, that cell should be re-derived and this file should grow a
-//! `NormalizedTerm` column beside the byte pins.
+//! | candidate | verdict | the evidence that settles it |
+//! |---|---|---|
+//! | `084c93b5` — `util::filter_and_adjust_bitset` emitted the shifted *position* where a one-byte-per-index bitset requires the *suffix*, so every non-empty `locally_free` carried wrong VALUES at the right LENGTH | ★ **THE CAUSE** | the digest moves *exactly* across this one commit |
+//! | the landed `models/` wire-schema work — five commits touching `models/build/wire_schema.rs`, `models/build.rs`, `drive.rs`, `sort_drive.rs` before it, and `9560a068` / `87ee699c` after | **EXCLUDED** | `084c93b5^` reproduces the OLD pin and `084c93b5` the NEW value, so no `models/` commit on either side is visible in this term |
+//! | the then-uncommitted normalizer work in `rholang/src/rust/interpreter/compiler/` — 23 files, +735 lines, 25 of them touching `locally_free` / `connective_used` | **EXCLUDED TWICE** | the clean `HEAD` export equals the dirty tree byte for byte; and independently, 17 of the 23 files are **token-identical** to `HEAD` (pure `rustfmt` reflow), among them all four files that carry those 25 lines, while the other 6 differ only by brace-vs-expression forms and one `use` reorder |
+//!
+//! ⇒ the whole delta traces to **landed commits**, so the pins below encode no phantom work.
+//!
+//! ★★ **And the reach was ELEVEN, not one — which is why this file, not a single cell, is where the
+//! normalized terms belong.** `084c93b5` changes what every binder emits for the indices its body
+//! names but does not own, so it moves every blessed contract that has one. Measured across all
+//! thirteen embedded contracts at `084c93b5^` → `084c93b5`: **11 of the 11 that normalize moved
+//! their digest, and every one of the 11 at IDENTICAL length.** A one-contract guard would have
+//! announced 1 of 11 consensus-visible moves and stayed green on the other 10.
+//!
+//! The one row whose *length* also moved across `084c93b5^` → `HEAD` is `REGISTRY`
+//! (28068 → 28455), and that is the control: `7c0cfd0a` edited `Registry.rho` itself. A source edit
+//! moves the length; a field-value change inside the encoder cannot. The two kinds of change are
+//! therefore distinguishable in the table below without consulting anything else.
 //!
 //! # ⚠ And why NOT the genesis post-state hash — MEASURED, and it is the stronger warning
 //!
@@ -84,6 +100,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use casper::rust::genesis::contracts::embedded_rho;
 use crypto::rust::hash::blake2b256::Blake2b256;
+use prost::Message;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 
 /// `embedded_rho.rs` as TEXT, so the derived completeness check reads the same file the constants
@@ -91,7 +108,21 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 const EMBEDDED_RHO_SOURCE: &str =
     include_str!("../../../src/rust/genesis/contracts/embedded_rho.rs");
 
-/// One row of the pin table: a blessed contract, and the digest of the bytes genesis signs.
+/// The NORMALIZED-TERM coordinates of a blessed contract.
+///
+/// One struct rather than two `Option` fields, so "digest pinned but length not" is **unspellable**
+/// instead of merely wrong: the two coordinates are always both present or both absent.
+struct NormalizedPin {
+    /// `blake2b256` of `Compiler::source_to_adt(source).encode_to_vec()`, hex.
+    digest: &'static str,
+    /// That encoding's length. It is the coordinate that **discriminates the kind of change**: a
+    /// source edit moves the length (see `REGISTRY` at `7c0cfd0a`, 28068 → 28455), whereas a
+    /// field-level value change inside the encoder cannot (see all eleven rows at `084c93b5`).
+    length: usize,
+}
+
+/// One row of the pin table: a blessed contract, the digest of the bytes genesis signs, and the
+/// digest of the term those bytes normalize to.
 struct Pin {
     /// The `embedded_rho` constant's name — the key the derived completeness check matches on.
     constant: &'static str,
@@ -104,6 +135,14 @@ struct Pin {
     /// a blake2b collision, but a digest transcribed into the wrong row is an ordinary mistake, and
     /// the length catches that.
     length: usize,
+    /// The normalized `Par`, or `None` for a source that does not normalize UNSUBSTITUTED.
+    ///
+    /// ⚠ `None` is not a free choice and not a place to hide a row. Which contracts are in which
+    /// state is asserted against reality by [`every_blessed_normalized_term_is_pinned`]: a template
+    /// that *starts* normalizing fails there until it is measured and pinned, and a `.rho` that
+    /// *stops* normalizing fails there too. `None` is therefore a **typed, checked exception**,
+    /// not an omission.
+    normalized: Option<NormalizedPin>,
 }
 
 /// ★ THE PIN TABLE. Its completeness is enforced by
@@ -118,6 +157,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::REGISTRY,
             digest: "5e9660ca03b041d20b4a6b33e15c89f6885cce5ffbefeb6bfa73d3c2dd0f7726",
             length: 27707,
+            normalized: Some(NormalizedPin {
+                digest: "6117f1e344275d7047e1c32cf32621136edd949c71f4b69efafa3595f40d88bb",
+                length: 28455,
+            }),
         },
         Pin {
             constant: "LIST_OPS",
@@ -125,6 +168,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::LIST_OPS,
             digest: "ed72b1408de9a48491b3eac532466d5a1ddca8b2103fc71158c41be86fbe9571",
             length: 16922,
+            normalized: Some(NormalizedPin {
+                digest: "7a4b5c1352b437101c69e282e2c936c31130c6f12fb9a74ba9e52fb160dfd334",
+                length: 18349,
+            }),
         },
         Pin {
             constant: "EITHER",
@@ -132,6 +179,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::EITHER,
             digest: "c3883297da1b71bbb48f086cea518f915c1b08eb01144e115fc5bfb86cf5a151",
             length: 12034,
+            normalized: Some(NormalizedPin {
+                digest: "9f8ba7518d578d0558063e2c6a4288f4b9a49b80f299a2a38be2efb2c0b0e248",
+                length: 11048,
+            }),
         },
         Pin {
             constant: "NON_NEGATIVE_NUMBER",
@@ -139,6 +190,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::NON_NEGATIVE_NUMBER,
             digest: "1df954a04ce64b6a350338653ea1f147dbe5100b95a63831a23a77e4bc33c862",
             length: 4567,
+            normalized: Some(NormalizedPin {
+                digest: "eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92",
+                length: 2652,
+            }),
         },
         Pin {
             constant: "MAKE_MINT",
@@ -146,6 +201,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::MAKE_MINT,
             digest: "7ac55f98be1fb6360b3a4a97ec56380d692ffc0bef7058e61c65f400e750a5d3",
             length: 11187,
+            normalized: Some(NormalizedPin {
+                digest: "86116e7200aeae3fbc0d66a4099e83ce243e25496a5b9ac696039fb8c7b89a7b",
+                length: 8178,
+            }),
         },
         Pin {
             constant: "AUTH_KEY",
@@ -153,6 +212,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::AUTH_KEY,
             digest: "155f6db44ae9a2aa98c66227d5b3ae79508797e88ef497fe1eaadb838bbbf565",
             length: 4439,
+            normalized: Some(NormalizedPin {
+                digest: "5a0f1bcfb601ac2b2a7d56d6e0a20d965a034ad1fc601f0bd1535550882dcbc6",
+                length: 1200,
+            }),
         },
         Pin {
             constant: "SYSTEM_VAULT",
@@ -160,6 +223,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::SYSTEM_VAULT,
             digest: "5767bf0cb35a70c4e776ae0554a42fc17ff219612c91e08fba47bec30c2ece3b",
             length: 15023,
+            normalized: Some(NormalizedPin {
+                digest: "7bb242be6a4c95a8467898a4abe1947c200b6cd6b834c604a4ed25eec33951a7",
+                length: 13102,
+            }),
         },
         Pin {
             constant: "MULTI_SIG_SYSTEM_VAULT",
@@ -167,6 +234,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::MULTI_SIG_SYSTEM_VAULT,
             digest: "f114b243acd7524f21eed93fe0046943763f1a88dabb6da4613a2dd5f86a8b1b",
             length: 14594,
+            normalized: Some(NormalizedPin {
+                digest: "660e9fe12788d10e8712c38af0b94df1c5bb75471980c07c913c507df58785b8",
+                length: 14299,
+            }),
         },
         Pin {
             constant: "STACK",
@@ -174,6 +245,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::STACK,
             digest: "1840b1204bd1e06393c5db659ee79fa0802d5839cc5ec591254347960f4d2649",
             length: 3866,
+            normalized: Some(NormalizedPin {
+                digest: "a99f1355d6961509f9d97d78b977c66863b7f5e5174166ec82dbd06be0e6ae2a",
+                length: 3686,
+            }),
         },
         Pin {
             constant: "TOKEN_METADATA",
@@ -181,6 +256,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::TOKEN_METADATA,
             digest: "7a7f3ca311fcfd4d5e51c772e079900a9c25502aabe6bd67ade073922ed8af4c",
             length: 2915,
+            // `$$macro$$` holes land where the grammar rejects them, so this template does
+            // not normalize until substitution. Checked, not assumed —
+            // `every_blessed_normalized_term_is_pinned` fails if it starts normalizing.
+            normalized: None,
         },
         Pin {
             constant: "POS",
@@ -188,6 +267,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::POS,
             digest: "60dd2ac79373406065ef58731d2859e41cd2cffcc94181254b8f40e43086827e",
             length: 94081,
+            // `$$macro$$` holes land where the grammar rejects them, so this template does
+            // not normalize until substitution. Checked, not assumed —
+            // `every_blessed_normalized_term_is_pinned` fails if it starts normalizing.
+            normalized: None,
         },
         Pin {
             constant: "CAPABILITIES_REGISTRY",
@@ -195,6 +278,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::CAPABILITIES_REGISTRY,
             digest: "1577390b7abb4e61afc8558683da5efa230e30f41a5439167a4471e3bfbdab69",
             length: 9769,
+            normalized: Some(NormalizedPin {
+                digest: "9d7a65b8e0bc93f1d917fd508ff692da3acd50de92ccf15196b305403b68f3bf",
+                length: 6246,
+            }),
         },
         Pin {
             constant: "EXCHANGE",
@@ -202,6 +289,10 @@ fn pins() -> Vec<Pin> {
             source: embedded_rho::EXCHANGE,
             digest: "d367e84f3c7b46b3d8c373ca9370a8344bec1332b99e4b345ae8d44b47b10a53",
             length: 5423,
+            normalized: Some(NormalizedPin {
+                digest: "c1e843a86fa8f9b49641bdfc6fa4a39609b967c84c1da0c0db4f4900b72e335a",
+                length: 521,
+            }),
         },
     ]
 }
@@ -399,5 +490,117 @@ fn every_blessed_contract_source_is_pinned() {
          `docs/consensus/consensus-change-register.md` entry.\n\n{}",
         drifted.len(),
         drifted.join("\n"),
+    );
+}
+
+/// ★★ **Every blessed contract's NORMALIZED TERM still matches — all eleven that have one.**
+///
+/// The companion to [`every_blessed_contract_source_is_pinned`], and it catches a strictly different
+/// class of change. The source pin catches edits to the *text*; this catches changes to what the
+/// text *means* — a normalizer or encoder change that moves the term while every byte of every
+/// resource file stays put. Neither implies the other:
+///
+/// | change | source pin | this pin |
+/// |---|---|---|
+/// | a comment added to `Either.rho` | RED (the text is signed) | green (comments do not survive normalization) |
+/// | `filter_and_adjust_bitset` fixed (`084c93b5`) | green (no file touched) | **RED for 11 of 11** |
+/// | `Registry.rho`'s updater fixed (`7c0cfd0a`) | RED | RED, *and the length moves too* |
+///
+/// ⚠ **The third row is the one that motivated this cell.** `084c93b5` moved eleven blessed
+/// contracts' normalized terms at identical length while every source pin stayed green, and the only
+/// instrument that noticed was a single hand-written cell for `NonNegativeNumber.rho`. Ten
+/// consensus-visible moves went unannounced. The set is derived here from the same `pins()` table
+/// whose completeness `the_pin_table_covers_exactly_the_embedded_contracts` already enforces against
+/// `embedded_rho.rs`, so a contract cannot be added to genesis without acquiring a normalized pin —
+/// the gap cannot reopen by omission.
+///
+/// ⚠ **`None` is CHECKED, not trusted.** A row may decline a normalized pin only by actually failing
+/// to normalize. If a `$$macro$$` template starts normalizing unsubstituted, or a `.rho` stops, this
+/// cell fails and says which — so `None` cannot be used to silence a row.
+#[test]
+fn every_blessed_normalized_term_is_pinned() {
+    /// The floor: how many rows must carry a normalized pin. Eleven of the thirteen embedded
+    /// contracts normalize unsubstituted (measured), so a run in which fewer are *pinned* means
+    /// rows were quietly demoted to `None` and this cell has stopped guarding them.
+    const MIN_PINNED: usize = 11;
+
+    let mut drifted: Vec<String> = Vec::new();
+    let mut status_changed: Vec<String> = Vec::new();
+    let mut pinned = 0usize;
+
+    for pin in pins() {
+        match (Compiler::source_to_adt(pin.source), &pin.normalized) {
+            (Ok(par), Some(expected)) => {
+                pinned += 1;
+                let bytes = par.encode_to_vec();
+                let digest = hex::encode(Blake2b256::hash(bytes.clone()));
+                if (digest.as_str(), bytes.len()) != (expected.digest, expected.length) {
+                    drifted.push(format!(
+                        "  {} ({})\n    was    {} / {}\n    is     {} / {}\n\
+                         \n            normalized: Some(NormalizedPin {{\n\
+                         \x20               digest: \"{}\",\n\
+                         \x20               length: {},\n\
+                         \x20           }}),\n",
+                        pin.constant,
+                        pin.resource,
+                        expected.digest,
+                        expected.length,
+                        digest,
+                        bytes.len(),
+                        digest,
+                        bytes.len(),
+                    ));
+                }
+            }
+            // A template that has started normalizing is a real event: it now HAS a consensus-visible
+            // term, and nothing is watching it.
+            (Ok(par), None) => status_changed.push(format!(
+                "  {} now NORMALIZES unsubstituted, so it HAS a consensus-visible term and carries \
+                 no pin for it. Measure and add one:\n\
+                 \x20           normalized: Some(NormalizedPin {{\n\
+                 \x20               digest: \"{}\",\n\
+                 \x20               length: {},\n\
+                 \x20           }}),",
+                pin.resource,
+                hex::encode(Blake2b256::hash(par.encode_to_vec())),
+                par.encode_to_vec().len(),
+            )),
+            (Err(e), Some(_)) => status_changed.push(format!(
+                "  {} carries a normalized pin but NO LONGER NORMALIZES — for a `.rho` that is a \
+                 genesis FAILURE, not a hash change: {e:?}",
+                pin.resource,
+            )),
+            (Err(_), None) => {}
+        }
+    }
+
+    assert!(
+        status_changed.is_empty(),
+        "★★ a blessed contract's NORMALIZATION STATUS changed, so the set of terms this cell \
+         guards is no longer the set it was derived for:\n{}",
+        status_changed.join("\n"),
+    );
+
+    assert!(
+        drifted.is_empty(),
+        "★★ {} blessed contract(s) NORMALIZED TERM changed, so the genesis post-state changed. \
+         That is the strongest consensus signal there is, and it owes a \
+         `docs/consensus/consensus-change-register.md` entry.\n\
+         ⚠ Read the LENGTH before concluding anything: a length that moved with the digest means a \
+         SOURCE edit (cross-check `every_blessed_contract_source_is_pinned`, which must then be red \
+         too); a digest that moved at CONSTANT length with every source pin green means the \
+         normalizer or the encoder changed, and the change reaches every contract of that shape \
+         rather than the one row someone happened to look at.\n\
+         Paste the printed block into the matching row IN THE SAME COMMIT.\n\n{}",
+        drifted.len(),
+        drifted.join("\n"),
+    );
+
+    assert!(
+        pinned >= MIN_PINNED,
+        "★ FLOOR: only {pinned} of the blessed contracts carry a normalized-term pin, but \
+         {MIN_PINNED} normalize unsubstituted and therefore have a consensus-visible term. Rows \
+         were demoted to `normalized: None` without losing the property that makes them \
+         consensus-visible, which makes this cell quieter than it looks.",
     );
 }

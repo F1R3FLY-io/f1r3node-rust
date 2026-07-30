@@ -367,6 +367,42 @@ fn makemint_deposit_delegates_its_overflow_check_and_adds_in_no_condition() {
 /// twelve added comment lines are NOT consensus-visible: comments do not survive normalization, so
 /// only the guard expression moved.
 ///
+/// # ★★ RE-BLESSED at `084c93b5`, and the attribution is MEASURED, not argued
+///
+/// This cell went RED with the contract file **unmodified**: `a537547892a0…` / 2652 became
+/// `eb17e6a37e7e…` / 2652. Identical length with a different digest is a **field-level value
+/// change in a fixed-width encoding**, not a structural one, so a contract edit was never a
+/// candidate. Three were, and all three were separated by experiment rather than by argument:
+///
+/// | candidate | verdict | how |
+/// |---|---|---|
+/// | `084c93b5` — `util::filter_and_adjust_bitset` emitted the shifted POSITION where the byte-per-index representation requires the SUFFIX | ★ **CAUSE** | the digest moves *exactly* at this commit |
+/// | the landed `models/` wire-schema work (`959a123a`, `b228545f`, `1eb65221`, `bb81b75f`, and after: `9560a068`, `87ee699c`) | **EXCLUDED** | `084c93b5^` reproduces the OLD pin exactly, and `084c93b5` reproduces the NEW value exactly, so every `models/` commit on either side is inert for this term |
+/// | the then-uncommitted normalizer work in `rholang/src/rust/interpreter/compiler/` (23 files, +735) | **EXCLUDED** | a clean `git archive HEAD` export computes `eb17e6a37e7e…` — byte-identical to the dirty tree; and 17 of the 23 files are token-identical to `HEAD`, including all four that carry the 25 `locally_free`/`connective_used` diff lines |
+///
+/// The experiment, reproducible: `git archive <ref> | tar -x` into a scratch dir, restore the
+/// held-local root `[patch]` with its three relative parser paths rewritten to absolute, and
+/// compute `blake2b256(Compiler::source_to_adt(src).encode_to_vec())`.
+///
+/// | export | ref | digest | length |
+/// |---|---|---|---|
+/// | `pre`  | `084c93b5^` (`d630af54`) | `a537547892a0006becf965d755dacce71eccae56c49ff2e05b40df0b648751a2` | 2652 |
+/// | `fix`  | `084c93b5`               | `eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92` | 2652 |
+/// | `head` | `a3b3aa65` (clean)       | `eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92` | 2652 |
+/// | the working tree | `a3b3aa65` + 51 dirty files | `eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92` | 2652 |
+///
+/// ⇒ the whole delta traces to ONE landed commit, which is the only condition under which
+/// re-blessing does not launder unlanded work through a consensus pin.
+///
+/// ★★ **And the reach is ELEVEN, not one.** `084c93b5` changes what `filter_and_adjust_bitset`
+/// emits for every binder whose body names an index it does not own, so it moves every blessed
+/// contract that has one. Measured across all thirteen embedded contracts at `084c93b5^` → `084c93b5`:
+/// **11 of the 11 that normalize moved their digest, and all 11 at IDENTICAL length**
+/// (`TokenMetadata.rhox` and `PoS.rhox` do not parse unsubstituted, in both arms alike). The
+/// per-contract values are pinned in
+/// [`super::blessed_contract_source_pins`], which is where the sibling-blindness of a
+/// one-contract cell is repaired. This cell stays because it is where the derivation is written.
+///
 /// ⚠ **This pin is EXPECTED to go red on any future body edit — that is its job.** When it does,
 /// the failure prints the new hash: update the constant in the same commit that changes the
 /// contract, and file the consensus-change-register entry that such a change owes.
@@ -375,8 +411,13 @@ fn nonnegativenumber_normalized_term_is_pinned_because_it_is_consensus_visible()
     use crypto::rust::hash::blake2b256::Blake2b256;
     use prost::Message;
 
-    /// blake2b256 of the protobuf encoding of the normalized `Par`, as of `e3a4494b`.
-    const EXPECTED: &str = "a537547892a0006becf965d755dacce71eccae56c49ff2e05b40df0b648751a2";
+    /// blake2b256 of the protobuf encoding of the normalized `Par`.
+    ///
+    /// Blessed at `e3a4494b` as `a537547892a0…`; RE-BLESSED at `084c93b5`, whose binder-shift fix
+    /// changed the VALUE of every non-empty `locally_free` byte vector in the term without
+    /// changing its length. See the attribution table above — the move is attributed entirely to
+    /// landed commits, with the uncommitted normalizer work excluded by a clean-export build.
+    const EXPECTED: &str = "eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92";
     const EXPECTED_LEN: usize = 2652;
 
     let par = rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
