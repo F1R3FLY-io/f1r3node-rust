@@ -281,6 +281,79 @@ fn pathmap_of(ps: Vec<Par>) -> EPathMap {
     EPathMap::new(ps, Vec::new(), false, None)
 }
 
+/// A set of two distinct scalars — the innermost rung of the nesting fixtures.
+fn set_of(ps: Vec<Par>) -> Par {
+    expr_par(ExprInstance::ESetBody(ESet {
+        ps,
+        locally_free: vec![],
+        connective_used: false,
+        remainder: None,
+    }))
+}
+
+fn kv(key: Par, value: Par) -> KeyValuePair {
+    KeyValuePair {
+        key: Some(key),
+        value: Some(value),
+    }
+}
+
+/// ★★ **The depth-≥2 discriminator: a set inside a map inside a set.**
+///
+/// ⚠ Why this exists. `combine_eset` / `combine_emap` / `combine_epathmap` are the
+/// three arms that re-enter [`ParSortMatcher::sort_match`] **once per nesting
+/// level** — they are precisely what stack-safety Phase 3b converts. Until this
+/// fixture the corpus never made them re-enter **even once**: every collection in it
+/// was depth 1 and scalar-only (`ESet [9,3,"m"]`, `EMap [9→90, 3→30]`,
+/// `EPathmap [9,3]`, none of whose elements is itself a collection).
+///
+/// ⇒ A conversion of those arms could have been wrong at every level below the first
+/// and this golden would have been byte- **and** score-identical. A one-element — or
+/// one-level — collection has exactly one permutation, so it cannot separate any
+/// ordering hypothesis from any other.
+///
+/// ★ The middle map nests on **both** sides: one pair carries a collection as its
+/// KEY, the other carries one as its VALUE, so the key path and the value path are
+/// each exercised. Every collection here carries ≥ 2 elements with distinct scores,
+/// per this module's determinism rule.
+fn nested_set_in_map_in_set() -> ExprInstance {
+    let middle = expr_par(ExprInstance::EMapBody(EMap {
+        kvs: vec![
+            kv(set_of(vec![gint(1), gint(2)]), gint(5)),
+            kv(gint(7), set_of(vec![gint(4), gint(6)])),
+        ],
+        locally_free: vec![],
+        connective_used: false,
+        remainder: None,
+    }));
+    ExprInstance::ESetBody(ESet {
+        ps: vec![middle, gint(3)],
+        locally_free: vec![],
+        connective_used: false,
+        remainder: None,
+    })
+}
+
+/// ★ **The ANTI-MONOTONE map — `3 → 90`, `9 → 30`.**
+///
+/// ⚠ The corpus's existing `EMapBody` row is **monotone** (`9→90, 3→30`), so
+/// key-order and key⊕value-order agree on it. `sort_key_value_pair`
+/// (`sort_combine.rs:1442-1450`) keeps only the **key's** score and DISCARDS the
+/// value's; a converted arm has both scores on the value stack, where combining them
+/// is the natural thing to write and is wrong. On a monotone fixture that defect
+/// still produces the same order and is invisible.
+///
+/// ⇒ Anti-monotone pairing is what separates the two hypotheses by ORDER, rather
+/// than relying solely on the recorded score column.
+fn anti_monotone_map() -> ExprInstance {
+    ExprInstance::EMapBody(EMap {
+        kvs: vec![kv(gint(3), gint(90)), kv(gint(9), gint(30))],
+        locally_free: vec![],
+        connective_used: false,
+        remainder: None,
+    })
+}
+
 /// One representative per `ExprInstance` variant. Collections carry ≥ 2
 /// elements with **distinct** scores (see the module docs on determinism).
 fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
@@ -416,6 +489,21 @@ fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
         (
             "EPathmapBody",
             ExprInstance::EPathmapBody(pathmap_of(vec![gint(9), gint(3)])),
+        ),
+        // ★★ The three depth-≥2 rows. See the helpers' docs: the arms these exercise
+        // are the ones Phase 3b converts, and before these rows the corpus never made
+        // any of them re-enter `sort_match` even once.
+        (
+            "ESetBody-nested-set-in-map-in-set",
+            nested_set_in_map_in_set(),
+        ),
+        ("EMapBody-anti-monotone", anti_monotone_map()),
+        (
+            "EPathmapBody-nested",
+            ExprInstance::EPathmapBody(pathmap_of(vec![
+                set_of(vec![gint(1), gint(2)]),
+                gint(8),
+            ])),
         ),
         (
             "EZipperBody",
@@ -815,16 +903,45 @@ fn sorter_canonical_forms_match_the_golden_fixture() {
 }
 
 /// An arm that is never exercised is an arm whose transcription is unchecked.
+///
+/// ★ Asserted as the number of **distinct** `ExprInstance` variants the corpus reaches, not
+/// as `len() == COUNT + <allowance>`.
+///
+/// ⚠ The previous form was `expr_instance_corpus().len() == EXPR_INSTANCE_VARIANT_COUNT + 1`,
+/// where the `+ 1` was a hand-written allowance for `EVarBody` appearing twice (bound / free).
+/// That is this campaign's most-repeated defect — a transcribed numeral standing beside a
+/// table that can compute it — and here it had a second cost: **it punished added coverage.**
+/// The three depth-≥2 rows this file gained for stack-safety Phase 3b are deliberate second
+/// representatives of `ESetBody` / `EMapBody` / `EPathmapBody`, and under the old form each
+/// would have had to be paid for by editing the constant. A coverage guard that must be
+/// re-transcribed every time coverage improves is on its way to becoming a coverage *ceiling*.
+///
+/// ⇒ Counting distinct discriminants states what the test actually means — every variant is
+/// reached — and is indifferent to how many representatives each variant has.
 #[test]
 fn corpus_covers_every_expr_instance_variant() {
-    // `EVarBody` deliberately appears twice (bound / free), so the corpus is one
-    // longer than the variant count.
+    let corpus = expr_instance_corpus();
+    let distinct: std::collections::HashSet<std::mem::Discriminant<ExprInstance>> = corpus
+        .iter()
+        .map(|(_, ei)| std::mem::discriminant(ei))
+        .collect();
+
     assert_eq!(
-        expr_instance_corpus().len(),
-        EXPR_INSTANCE_VARIANT_COUNT + 1,
-        "the ExprInstance corpus no longer covers every variant in RhoTypes.proto — a \
-         variant was added to the schema but not to this fixture, so its sorter arm is \
-         unpinned and a transcription error in it would pass silently"
+        distinct.len(),
+        EXPR_INSTANCE_VARIANT_COUNT,
+        "the ExprInstance corpus reaches {} distinct variants; RhoTypes.proto defines {}. \
+         ({} corpus entries in total, so {} are additional representatives of a variant \
+         already covered — those are fine and deliberate.)\n\n\
+         FEWER than the variant count: a variant was added to the schema but not to this \
+         fixture, so its sorter arm is unpinned and a transcription error in it would pass \
+         silently.\n\
+         MORE than the variant count: impossible by construction — a discriminant set cannot \
+         exceed the number of variants — so this direction means \
+         `EXPR_INSTANCE_VARIANT_COUNT` is now understated and is itself the stale figure.",
+        distinct.len(),
+        EXPR_INSTANCE_VARIANT_COUNT,
+        corpus.len(),
+        corpus.len() - distinct.len()
     );
 }
 
