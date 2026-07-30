@@ -110,6 +110,9 @@ use crate::rhoapi::{
 /// intern-aware when the datum contains a filled-cell EPathMap, the
 /// TRAMPOLINED direct path otherwise.
 pub fn event_hash_bytes_list_par_with_random(datum: &ListParWithRandom) -> Vec<u8> {
+    // ★ The memo is valid only inside this call — see `contains_par`. Constructing the
+    // scope clears it on entry, and its `Drop` clears it again on every exit path.
+    let _memo_scope = MemoScope::new();
     if !datum.pars.iter().any(contains_par) {
         return datum.cold_encode();
     }
@@ -121,6 +124,9 @@ pub fn event_hash_bytes_list_par_with_random(datum: &ListParWithRandom) -> Vec<u
 
 /// bincode-of-`BindPattern` for `hash_consume`'s per-pattern leg.
 pub fn event_hash_bytes_bind_pattern(pattern: &BindPattern) -> Vec<u8> {
+    // ★ The memo is valid only inside this call — see `contains_par`. Constructing the
+    // scope clears it on entry, and its `Drop` clears it again on every exit path.
+    let _memo_scope = MemoScope::new();
     if !pattern.patterns.iter().any(contains_par) {
         return pattern.cold_encode();
     }
@@ -133,6 +139,9 @@ pub fn event_hash_bytes_bind_pattern(pattern: &BindPattern) -> Vec<u8> {
 
 /// bincode-of-`TaggedContinuation` for `hash_consume`'s continuation leg.
 pub fn event_hash_bytes_tagged_continuation(continuation: &TaggedContinuation) -> Vec<u8> {
+    // ★ The memo is valid only inside this call — see `contains_par`. Constructing the
+    // scope clears it on entry, and its `Drop` clears it again on every exit path.
+    let _memo_scope = MemoScope::new();
     if !contains_tagged_continuation(continuation) {
         return continuation.cold_encode();
     }
@@ -314,12 +323,122 @@ const CONTAINS_WORKLIST_CAPACITY: usize = 32;
 /// gated as if it could be, because "cannot matter" is a bad reason to skip a
 /// differential on an event-hash path.
 ///
-/// ⚠ NOT FIXED HERE, and not a regression introduced here: this scan is still
-/// Θ(term size) in TIME per call, and `emit_vec`/`emit_option` re-invoke it once
-/// per level of the spliced walk, making the SPLICED path Θ(depth²) in time. That
-/// is a separate finding with its own correctness argument (memoising or hoisting
-/// the scan); it is recorded on the module header and deliberately left alone.
+/// ★★ **FIXED — the Θ(depth²) is MEMOISED away.** The scan is Θ(term size) per call and
+/// `emit_vec`/`emit_option` re-invoke it once per level of the spliced walk — 22 and 25 call
+/// sites respectively — so the spliced path cost `Σ_v |subtree(v)|`, which is Θ(depth²) on a
+/// chain. Fitted exponent **1.94**.
+///
+/// [`contains_par`] is now a thin memoising wrapper over [`contains_par_uncached`]. **The walk
+/// is untouched**, so the ANSWER is unchanged by construction and only the number of times it
+/// is computed differs — which is the property that makes this safe on an event-hash path.
+///
+/// # Why a pointer key is sound, and why the memo is SCOPED
+///
+/// The key is the node's ADDRESS. That is sound only because, for the duration of one
+/// `event_hash_bytes_*` call, the term is **borrowed and immutable** — nothing can free a node
+/// and allocate a different one at the same address while the walk holds a `&Par` to it.
+///
+/// ⚠ It would NOT be sound across calls, so [`MemoScope`] clears the table at every public
+/// entry point. A memo outliving its borrow would answer for an address that now holds a
+/// different term — the one failure mode a pointer-keyed cache has, and it is closed by
+/// construction rather than by remembering to clear.
+///
+/// ⚠⚠ **GATED BY `contains_par_equivalence`, NOT BY THE BYTE DIFFERENTIALS.** `69e67043`
+/// proved the byte gates are structurally blind here: with the `bundles` push deleted from
+/// this very walk, **all 30 byte-gate tests stayed green**. The frozen oracle — the
+/// pre-conversion recursion held verbatim from `42d5082a`, 34 container positions × both
+/// polarities, depth 4,096, with an explicit `VACUOUS at {label}` floor — compares the
+/// PREDICATE rather than the bytes the predicate selects, and is the only check that can see
+/// a wrong answer here.
+/// ⚠⚠★★★ **THE MEMO IS CONSULTED ONLY INSIDE AN ACTIVE [`MemoScope`], AND THE ORACLE IS WHY.**
+///
+/// The first draft consulted it unconditionally, on the argument that [`MemoScope`] clears the
+/// table at every public entry point. **`contains_par_equivalence` refuted that on the first
+/// run:**
+///
+/// > `PREDICATE DIVERGENCE at 'elist' with a UNFILLED cell: the worklist said true and the
+/// > frozen recursive oracle said false.`
+///
+/// The oracle calls `contains_par` **directly**, outside any entry point — as any future
+/// caller might. Across iterations a fresh `Par` landed at an address a previous one had
+/// occupied, and the memo answered for the dead term. ⇒ *"The entry points clear it"* is not a
+/// proof: it is a claim about who the callers are, not about what the type permits.
+///
+/// So the scope now carries a **depth counter**, and the memo is read and written only while
+/// that depth is non-zero. Outside a scope `contains_par` simply recomputes — correct, merely
+/// not fast. **The unsound configuration is no longer expressible**, rather than documented as
+/// something to avoid.
+///
+/// ★★ And note which gate caught it: the byte differentials stayed **green** throughout —
+/// `epathmap_spliced_event_bytes` 11/11, `event_hash_leg_cold_encode_identity` 6/6 — exactly
+/// as `69e67043` established when it deleted the `bundles` push from this walk and all 30
+/// byte-gate tests passed anyway. **The predicate oracle is the only instrument that can see a
+/// wrong answer here.**
 fn contains_par(root: &Par) -> bool {
+    if MEMO_DEPTH.with(|d| d.get()) == 0 {
+        return contains_par_uncached(root);
+    }
+    let key = root as *const Par as usize;
+    if let Some(hit) = CONTAINS_MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return hit;
+    }
+    let answer = contains_par_uncached(root);
+    CONTAINS_MEMO.with(|m| {
+        // `try_borrow_mut`, not `borrow_mut`: a future nested call must degrade to
+        // "recompute" rather than panic on an event-hash path.
+        if let Ok(mut memo) = m.try_borrow_mut() {
+            memo.insert(key, answer);
+        }
+    });
+    answer
+}
+
+thread_local! {
+    /// Address → answer. Read and written **only** while [`MEMO_DEPTH`] is non-zero.
+    static CONTAINS_MEMO: std::cell::RefCell<std::collections::HashMap<usize, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// Live [`MemoScope`] count on this thread. Zero ⇒ the memo is not consulted, which is
+    /// what makes the pointer key sound for EVERY caller rather than for the callers we
+    /// happen to have today.
+    static MEMO_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Opens the window in which the address key is meaningful: for the duration of one
+/// `event_hash_bytes_*` call the term is borrowed and immutable, so no node can be freed and
+/// another allocated at the same address.
+///
+/// Clears the table on construction **and** on drop. ★ Both, deliberately — clearing only on
+/// entry leaves it populated afterwards; clearing only on exit leaves it dirty if a previous
+/// call unwound. Doing both makes *"the memo is empty outside a scope"* hold on every path,
+/// including a panic.
+struct MemoScope;
+
+impl MemoScope {
+    fn new() -> Self {
+        clear_memo();
+        MEMO_DEPTH.with(|d| d.set(d.get() + 1));
+        MemoScope
+    }
+}
+
+fn clear_memo() {
+    CONTAINS_MEMO.with(|m| {
+        if let Ok(mut memo) = m.try_borrow_mut() {
+            memo.clear();
+        }
+    });
+}
+
+impl Drop for MemoScope {
+    fn drop(&mut self) {
+        MEMO_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        clear_memo();
+    }
+}
+
+/// The walk itself, **unchanged**. [`contains_par`] memoises around it.
+fn contains_par_uncached(root: &Par) -> bool {
     let mut worklist: Vec<&Par> = Vec::with_capacity(CONTAINS_WORKLIST_CAPACITY);
     worklist.push(root);
 

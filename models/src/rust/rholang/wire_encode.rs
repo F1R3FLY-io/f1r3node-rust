@@ -198,12 +198,12 @@ const MAX_POOLED_OPS: usize = 4096;
 // omission IS the 3.79× shallow regression. Declaring it through the macro is what makes it
 // findable.
 crate::pooled_stack! {
-    /// The pooled op-stack **allocation** for the bincode encoder.
-    ///
-    /// ★ This is the last per-encode allocation. The output buffer is already reused;
-    /// without this, every `hash_produce` would still pay one `Vec::with_capacity(64)`
-    /// malloc/free pair — small, but per produce, and "zero allocation in the steady state"
-    /// is a stated acceptance criterion rather than an aspiration.
+    // The pooled op-stack **allocation** for the bincode encoder.
+    // 
+    // ★ This is the last per-encode allocation. The output buffer is already reused;
+    // without this, every `hash_produce` would still pay one `Vec::with_capacity(64)`
+    // malloc/free pair — small, but per produce, and "zero allocation in the steady state"
+    // is a stated acceptance criterion rather than an aspiration.
     pool OPS for Op, capacity = OP_STACK_CAPACITY, max = MAX_POOLED_OPS,
     take = take_ops, give = give_ops,
 }

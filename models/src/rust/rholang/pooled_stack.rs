@@ -76,11 +76,13 @@ macro_rules! pooled_stack {
         pool $slot:ident for $elem:ident, capacity = $cap:expr, max = $max:expr,
         take = $take:ident, give = $give:ident $(,)?
     ) => {
-        $(#[$meta])*
-        ///
-        /// ⚠ The parked type is `'static` because a thread-local cannot be generic over a
-        /// caller's lifetime. It is **always empty while parked**, so no `'static` value of
-        /// the element type ever exists — see this module's header for the full argument.
+        // ⚠ The parked type is `'static` because a thread-local cannot be generic over a
+        // caller's lifetime. It is ALWAYS EMPTY WHILE PARKED, so no `'static` value of the
+        // element type ever exists — see this module's header for the full argument.
+        //
+        // ⚠ `$(#[$meta])*` is deliberately NOT forwarded here: a `///` at the call site
+        // cannot document an item a macro produces, and attaching it would only earn an
+        // `unused_doc_comments` warning. Call sites use `//` comments instead.
         thread_local! {
             static $slot: ::std::cell::RefCell<::std::vec::Vec<$elem<'static>>> =
                 ::std::cell::RefCell::new(::std::vec::Vec::with_capacity($cap));
