@@ -86,7 +86,7 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 45 consensus-visible changes** — 32 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
+**Result: 46 consensus-visible changes** — 33 on the F1r3node node itself, 13 on MeTTaIL's Rholang.
 Of these, **43 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
 lost. On the bincode lane **23** entries move bytes; on the protobuf lane **23**; **23** move a
 *verdict*; **32** move the *post-state hash*; **13** move *acceptance*; **2** move *metering*.
@@ -596,6 +596,7 @@ is a *future* fork, not a present one).
 | [CBR-029](#cbr-029) | N | The pretty printer renders a receive's `where` guard | `d8e95fb0` | · | ○ | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-030](#cbr-030) | N | `NonNegativeNumber.rho`'s overflow guard becomes **total** — the genesis term moves | `e3a4494b`, `719f2432` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-031](#cbr-031) | N | A `matches` pattern's `=x` reaches the enclosing `locally_free` | `0b270eca` | ● | ? | ○ | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-032](#cbr-032) | N | The binder shift emitted the shifted **position** as the **value** | `084c93b5` | ● | ● | ○ | ● | ● | ○ | ○ | CORRECTIVE | **M** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -610,27 +611,27 @@ is a *future* fork, not a present one).
 | [CBR-L12](#cbr-l12) | L | A pathmap's `EMap` pair order stops being a function of the **process's hash seed** | `f5b2e820` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 
-**Totals — 45 entries**, recounted from the rows above rather than adjusted: **32 on Surface N, 13 on
-Surface L**; **43 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **35 WITNESSED**, 3 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction: **28 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 46 entries**, recounted from the rows above rather than adjusted: **33 on Surface N, 13 on
+Surface L**; **44 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **35 WITNESSED**, 4 MECHANISM-ONLY, **4 LATENT**, 2 DORMANT, 1 NEUTRALITY-MEASURED. By direction: **29 CORRECTIVE**, 9 PERMISSIVE, 4 REGRESSIVE, 2 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **2** — **CBR-L07** metering
 and **CBR-031** verdict.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 45 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 46 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 44 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 46 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**44**, which is the arithmetic check that no row was double-counted or dropped.
+**46**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -4075,6 +4076,219 @@ as the **value**, discarding the bit — a porting error, because the Scala orig
 *members* while the Rust port models one byte per index. It is **identical across all three pattern
 positions**, so nothing internal disagrees and no verdict moves today; but `locally_free` is on the prost
 wire, so correcting it **would move bytes**. Filed separately. **DERIVED**.
+★ It is now filed and repaired: **[CBR-032](#cbr-032)**, which also *closes this entry's `UNVERIFIED`
+verdict cell as a mechanism* — see its (b).
+
+---
+
+### CBR-032
+
+**The binder shift emitted the shifted POSITION as the VALUE — a `BitSet` operation transliterated onto a
+representation that is not a `BitSet`.**
+
+| | |
+|---|---|
+| Commit(s) | `084c93b5` — *fix(interpreter): the binder shift emitted the shifted POSITION as the VALUE — one function, eight call sites* |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | **MECHANISM-ONLY** |
+| Files | `rholang/src/rust/interpreter/util/mod.rs` (the function and its new law tests), `rholang/tests/locally_free_binder_shift.rs` (new), `rholang/tests/matches_pattern_locally_free.rs` (the pin it carried) |
+
+#### (a) The issue
+
+`util::filter_and_adjust_bitset` computes a binder's **escape**: of the de Bruijn indices its body names,
+which ones does this binder not own, and what are they called in the parent's index space. Four normalizers
+call it — `p_new`, `p_input`, `p_contr`, `p_match` — and the `#[cfg(test)]` recursive oracle calls it four
+more times, eight sites in all. Every call site cites the same Scala:
+
+```scala
+bodyResult.par.locallyFree.from(boundCount).map(x => x - boundCount)
+```
+
+`locallyFree` there is a `scala.collection.immutable.BitSet`, a **set of indices**: `from(n)` keeps the
+**members** `>= n` and `map(_ - n)` renumbers them.
+
+★ **This port does not represent the bitset as a set of indices.** It is **one byte per index** —
+`models::create_bit_vector` (`models/src/lib.rs:97`) is `vec![0; max_index + 1]` followed by
+`bit_vector[index] = 1`, and `models::rust::utils::union` (`models/src/rust/utils.rs:440`) is the
+element-wise `OR` that representation requires. A member's identity **is** its position.
+
+The function had been transliterated as if the `Vec<u8>` held indices
+(`rholang/src/rust/interpreter/util/mod.rs:132`, as of `88e492d7`):
+
+```rust
+bitset.into_iter().enumerate().filter_map(|(i, _)| {
+    if i >= bound_count { Some(i as u8 - bound_count as u8) } else { None }
+})
+```
+
+It **discards the bit** (`_`) and emits `i - bound_count` — the shifted *position* — as the *value*. For
+the input `[0, 1]` at `bound_count = 1` it answers `[0]`, which reads "index 0 is **not** free" and is the
+empty set carrying a trailing zero, where the well-formed answer is `[1]`, "index 0 **is** free". In
+general, for a bitset of length `L` it answers `[0, 1, 2, …, L - n - 1]` **whatever the input bits were**:
+after one binder, index 0 of the parent scope is reported free if and only if the body's length exceeded
+`n + 1`, which is a statement about the body's *deepest* index and not about the index being asked after.
+
+★ **Why it survived.** The wrong reading is **length-preserving**: both readings return
+`max(0, L - n)` bytes, and every length in this algebra is a function of the term's structure rather than
+of the bits (`create_bit_vector`'s length is `index + 1`; `union`'s is the max of its operands'). So every
+`locally_free.is_empty()` reader — `rholang/src/rust/interpreter/matcher/fold_match.rs:103` and the three
+siblings in `fold_match`/`list_match` — receives the *same answer under both readings*. Nothing inside the
+interpreter disagreed with anything else, which is exactly why a whole-workspace test suite of 296 unit
+tests plus 13 rows specifically about `locally_free` had never gone red on it.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — the normalized `Par` a deploy produces differs: a nested `Receive`/`New`/`Match` carries `[1]` where it carried `[0]`. **MEASURED** (below). |
+| 2 · verdict | **MOVES** — ★ and this cell **closes [CBR-031](#cbr-031)'s `UNVERIFIED`**. Two consumers decide *identity* from bytes that include `locally_free`, and both are named below; neither is exercised by a known program, hence the entry's grade. |
+| 3 · bytes (Lane B, bincode) | **NO** — `models/build.rs:165` injects `serialize_with = serialize_as_empty_bytes` on **every** `locally_free` declaration and cross-checks its own rewrite count against the wire-schema generator's `EmptyBytes` count, so the blanking is total rather than per-message. **MEASURED** (byte-equal, below). |
+| 3 · bytes (Lane P, prost) | **MOVES** — prost retains the field. **MEASURED** (unequal, below). |
+| 4 · post-state hash | **MOVES** — not through the event-hash preimage, which is Lane B and is blanked, but through the two Lane-P consumers of axis 2, both of which place prost bytes into a *location*: an RSpace channel and a pathmap trie key. **Mechanism, unwitnessed.** ⚠ This is a **wider answer than [CBR-031](#cbr-031)'s `NO`** — see the disagreement. |
+| 5 · accepted programs | **NO** — nothing in normalization, admission or validation reads `locally_free` to decide acceptance; the field is written and cached, never consulted as a well-formedness condition. **DERIVED.** |
+| 6 · metering | **NO** — no charge site changed and no price changed. `locally_free` is not an input to any `Cost`. ⚠ Stated precisely, because a *funding channel* does move (below): what moves is *which channel* is charged, not *how much*, and this axis is the price. **DERIVED.** |
+
+**The disagreement.** Two nodes, one before and one after `084c93b5`, given the identical deploy, agree on
+every reduction and on every RSpace event hash — and disagree on the bytes of the normalized term. The
+disagreement becomes a state disagreement through exactly two paths, and both are prost-byte consumers:
+
+1. **The cost-accounting signature channel.** `cost_accounting/sig.rs:252` and its sibling
+   `combine_canon_quote` compute `ParSortMatcher::sort_match(&par).term.encode_to_vec()` — the **protobuf**
+   encoding of the sort-canonical form — as the canonical bytes of a principal, which
+   `accounting::SignatureChannel::from_sig` turns into the supply channel `Σ⟦s⟧`. A quote principal
+   `# P` whose `P` contains a **nested** binder therefore hashes to a different channel under the two
+   readings. Two nodes would then draw funding from two different RSpace locations: a **safety fork**, and a
+   silent one, because both histories are internally consistent.
+2. **The pathmap trie key.** `models/src/rust/rhoapi_ext.rs` states the rule verbatim — *"entries are keyed
+   by `encode_trie_path`, whose escape arm is the entry's canonical prost bytes, which INCLUDE
+   `locally_free`. Two entries that are AlwaysEqual but differ in `locally_free` are therefore distinct trie
+   keys."* The escape arm applies to every entry outside the codec's ground domain, and trie order is
+   lexicographic on those keys. In `Par`'s protobuf field order `locallyFree` is tag 9 and therefore encodes
+   **before** `bundles` (11) and `conditionals` (12), so two entries agreeing on tags 1–8 and differing only
+   under a bundle or a conditional have their key comparison **decided at a `locally_free` byte**. Their
+   relative trie order, hence the `ps` projection order, hence the EPathMap's **Lane B** bytes, hence the
+   post-state hash, is a function of this value. **Mechanism, unwitnessed** — no program exhibiting the flip
+   has been constructed.
+
+★ **Three verdict paths were CLOSED rather than left open, and the closures are what make the two above
+the whole list.** (i) The four `Vec::is_empty()` readers are length queries and the two readings agree on
+every length — a *proof*, not a survey, because length is value-independent throughout the algebra.
+(ii) `<Par as PartialEq>::eq` and `<Par as Hash>::hash` are hand-written AlwaysEqual and exclude the field
+(`models/build.rs` records the reason it cannot be derived), so the matcher's `guard(t == p)` cannot read
+it, and [CBR-031](#cbr-031)'s own **MEASURED** enumeration found no `BTreeMap<Par, _>`, no
+`BTreeSet<Par>` and no bare `.sort()` over `Vec<Par>`, so the *derived* `Ord` that does include the field
+has no consumer. (iii) RSpace candidate order — the mechanism [CBR-001](#cbr-001) is about — hashes
+`bincode::serialize(candidate)` (`rspace++/src/rspace/candidate_order.rs:61`), which is Lane B and
+therefore blanked. `substitute.rs` contains no occurrence of `locally_free` at all.
+
+**Blast radius.** *Byte-level:* every program containing a binder nested inside another binder whose inner
+body names an index the inner binder does not own — `for (@x <- c) { for (@y <- d) { … x … } }` and its
+`new` / `contract` / `match` spellings. That is ordinary Rholang and it is extremely common. *State-level:*
+the intersection of that class with the two paths above — a `# P` quote principal, or a pathmap entry
+outside the ground domain. Reachable by an ordinary deploy: **byte-level yes, state-level yes in principle,
+unwitnessed.**
+
+**Could live chain state have been produced under the old behaviour?** ⚠ **Not settleable from inside the
+repository**, and the two paths need two different queries. For path 1: scan the chain's
+`ProcessedDeploy` deploy logs for any deploy whose source contains a section signature `#` applied to a
+process containing a `for`, `new`, `contract` or `match` — concretely, for each block `b` and each
+`ProcessedDeploy p` in `b`, parse `p.deploy.data.term` and report a `Signature::Hash` whose principal's AST
+contains a binder. For path 2: report any historical `EPathMap` in a post-state holding two or more entries
+outside `eval_stable_par`. **UNVERIFIED** here.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** `locally_free` answers *"which enclosing binders does this subterm
+name?"*, and the answer was wrong in a way no internal consumer could detect. That is the worst shape a
+cached analysis can take: correct in *length*, wrong in *content*, and read only through the one projection
+that is insensitive to content. Leaving it means (i) the field is published on the protobuf wire and into a
+signed preimage while being *not the value it claims to be*, so any future reader that starts consulting the
+content — a new optimisation that skips a subtree with an empty bitset, a debugger, an external tool
+decoding a `Par` — inherits a silent wrong answer rather than an obvious one; and (ii) the repair grows more
+expensive with every byte of history written under it, because it is consensus-visible on Lane P.
+
+**Why this repair rather than the alternatives.** Three were available:
+
+1. *Keep the positional map and change the representation to a real index set.* Rejected: `union`,
+   `create_bit_vector`, `set_bits_until`, the four `is_empty()` readers, the `.proto` field type and both
+   wire tables all assume one byte per index. Changing the representation is a change to `models/**` and to
+   the bincode alphabet — a strictly larger consensus surface for the same repair.
+2. *Also canonicalise trailing zeros, making the operation total.* Rejected as a **separate** change and
+   recorded as a named residual: it is unnecessary, because the no-trailing-zero invariant is preserved by
+   every production producer and is now asserted; and it would move Lane-P bytes for inputs that cannot
+   occur, which is a second axis table for no repair.
+3. *Spell the escape at each of the four call sites, where the arity is in scope.* Rejected: the three
+   pattern positions the defect report named are **not three copies of a law** — they are three call sites
+   of one function, and this campaign's `a1feb437` is the standing example of what happens when a
+   composition law does live in three copies. The law was already spelled once; the correct repair is to
+   spell it once *correctly*, and to say in the doc comment which representation it is spelled in, so the
+   next transliteration cannot be written.
+
+**Authority.** No owner ruling. The defect was found by [CBR-031](#cbr-031)'s work (`0b270eca`) and
+deliberately **not** repaired there, on the stated ground that it is a separate consensus-visible change;
+that entry's closing paragraph is the referral. **CITED**.
+
+**★ Sibling enumeration, ON A NAMED AXIS. Count: 3 on the axis of *whole-bitset operations over the
+byte-per-index `locally_free` representation*, of which 1 was defective — this one.** The axis is derived,
+not surveyed: the members are exactly the functions in the workspace whose parameter or return type is a
+`locally_free` bitset, which is a decidable question about signatures.
+
+| sibling | reads Scala as | correct? |
+|---|---|---|
+| `models::create_bit_vector` (`models/src/lib.rs:97`) | `BitSet(indices)` — index list **in**, bitmap out; writes at `bit_vector[index]` | ✔ |
+| `models::rust::utils::union` (`models/src/rust/utils.rs:440`) | `a ∪ b` — element-wise `OR`, zero-extending | ✔ |
+| `substitute_combine::set_bits_until` (`rholang/src/rust/interpreter/substitute_combine.rs:63`) | `BitSet.until(n)` — the members `< n`, i.e. the **prefix**; its own comment says *"preserving bit positions"* | ✔ |
+| `util::filter_and_adjust_bitset` | `BitSet.from(n).map(_ - n)` — the members `>= n` renumbered, i.e. the **suffix** | ✘ **this entry** |
+
+★ `set_bits_until` is the in-repo **proof** of the representation, and the two are now pinned *together*:
+prefix and suffix must **partition** their input, which is one statement that cannot hold if either half
+changes its reading. ⚠ On a *different* axis — *bitset spellings of the empty set* — the count is **2**
+(`[]`, and `create_bit_vector(&[])` which is `[0]`); that second spelling has test-only call sites and is
+recorded here rather than repaired, because repairing it is a `models/**` change.
+
+**★ The entry claims two things needed no change; both have a GUARD.** (i) *"The `is_empty()` readers were
+never wrong"* — `binder_shift_law::the_shift_never_produces_a_trailing_zero` fails if this function ever
+emits a bitset whose last byte is zero, which is the only way `[]` stops being the unique spelling of the
+empty set and the only way a length query stops being a set-emptiness query. (ii) *"`set_bits_until` was
+already right"* — `binder_shift_law::the_prefix_and_the_suffix_partition_the_bitset` fails if **either**
+half drifts, so the claim is falsifiable from the side that was not changed.
+
+#### Evidence
+
+- **RED, verbatim, before the fix** (`cargo test -p rholang --lib binder_shift_law`, 5 of 6 failing):
+  `assertion left == right failed: members [0] escaping 0 binder(s): from(0).map(_ - 0) = [0] / left: [0]
+  / right: [1]`. The oracle is `from(n).map(_ - n)` transliterated over `&[usize]` index sets and only then
+  rendered, so it never names a byte position and cannot share the defect. 80-row lattice — every member
+  set over indices `0..=3` against every arity `0..=4` — with a **non-vacuity floor of 30** non-empty
+  expectations. **MEASURED**.
+- **RED, verbatim, end-to-end** (`cargo test -p rholang --test locally_free_binder_shift`):
+  `assertion left == right failed: `new y in { @"o"!(x) }` under `for (@x <- @"c")`: the body reports
+  [0, 1] (members {1}); 1 binder(s) are discharged here, so the node must report members {0} — got
+  members {}`. Four rows, one per call site (`new`, `for`, `contract`, `match`), each wrapped in an outer
+  binder so its body names an index that must survive, each asserting that the node's *other* contributions
+  are closed so the equality is exact rather than slack, and each required to exercise the surviving case.
+  **MEASURED**.
+- **The two lanes, measured rather than asserted.** With one nested `Receive`'s bitset perturbed from the
+  well-formed `[1]` to the pre-fix `[0]` and nothing else touched:
+  `ParSortMatcher::sort_match(&par).term.encode_to_vec()` **differs** (Lane P), and
+  `bincode::serialize(&par)` is **byte-equal** (Lane B). Both are assertions in
+  `locally_free_binder_shift.rs`, so the lane split is a standing gate and not a note. **MEASURED**.
+- **Green after.** `cargo test -p rholang --lib` **296 passed, 0 failed**;
+  `--test locally_free_binder_shift` **5/5**; `--test matches_pattern_locally_free` **13/13**. ★ That the
+  296 include every normalizer unit test and the normalizer's own recursive-oracle differential, and that
+  **none** of them changed expectation, is the measurement behind axis 5's `NO` and behind (a)'s
+  length-preservation argument. **MEASURED**.
+- **The pin that had to move.** `matches_pattern_locally_free.rs` carried the defective value as a named
+  constant, `ADJUSTED_PAST_ONE_BINDER = &[0]`, precisely so that [CBR-031](#cbr-031) could compare the three
+  pattern positions without endorsing it. It is now the alias `= IDX_0`, and that identity is this entry's
+  statement. **MEASURED**.
+- ⚠ **A recommended amendment this entry does not make.** [CBR-031](#cbr-031) answers `NO` on the post-state
+  hash and `UNVERIFIED` on the verdict, on the strength of an event-hash-preimage byte-equality
+  measurement. That measurement is sound and it covers Lane B only; the two Lane-P consumers named in (b)
+  apply to `EMatches::pattern`'s bitset exactly as they do to this one. Amending a reviewed row moves three
+  projected figures and the `UNVERIFIED` budget, so it is left as a **reviewed edit to be made**, not made
+  here. **DERIVED**.
 
 ---
 
@@ -5532,22 +5746,22 @@ to "design the literal", and that is a different work item with a different owne
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 45 |
+| Axis | Entries that move it | Share of the 46 |
 |---|---|---|
-| 1 · computed value | **19** | 42 % |
-| 2 · verdict | **23** | 51 % |
-| 3 · bytes — Lane B (bincode) | **23** | 51 % |
-| 3 · bytes — Lane P (prost) | **23** | 51 % |
-| 4 · post-state hash | **32** | 71 % |
-| 5 · accepted programs | **13** | 29 % |
+| 1 · computed value | **20** | 43 % |
+| 2 · verdict | **24** | 52 % |
+| 3 · bytes — Lane B (bincode) | **23** | 50 % |
+| 3 · bytes — Lane P (prost) | **24** | 52 % |
+| 4 · post-state hash | **33** | 72 % |
+| 5 · accepted programs | **13** | 28 % |
 | 6 · metering | **2** | 4 % |
 
-⚠ **Recounted 2026-07-29 from the 44 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
+⚠ **Recounted 2026-07-30 from the 46 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
 The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
 28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
 never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
 ★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 44 in every column, which is the check that no
+`●` counts per column, plus the `○` and `·` counts, sum to 46 in every column, which is the check that no
 row was skipped.
 
 **Reading.** The post-state hash is the most-touched axis, which is expected: it is downstream of both
@@ -5577,19 +5791,19 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-29 from the 44 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
+⚠ **Recounted 2026-07-30 from the 46 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **28** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| CORRECTIVE | **29** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
 | PERMISSIVE | **9** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **2** | **CBR-019**, **CBR-019b** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **45** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **46** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -6597,8 +6811,8 @@ typed `Result<(), DriftBreach>` and every guard asserts on the value, following
 
 ## 8. Conclusions
 
-1. The register holds **45** consensus-visible changes, derived from the campaign record: **32** on the
-   F1r3node node, **13** on MeTTaIL's Rholang. **43 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **46** consensus-visible changes, derived from the campaign record: **33** on the
+   F1r3node node, **13** on MeTTaIL's Rholang. **44 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

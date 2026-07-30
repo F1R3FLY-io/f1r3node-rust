@@ -41,7 +41,7 @@ unverified_budget = 2
 frontier_grace_days = 2
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
-# ENTRIES — 44. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
+# ENTRIES — 46. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
 # the gate re-projects §4.1's ●/○/·/? glyphs and asserts agreement cell by cell.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -522,6 +522,21 @@ axis_verdict = "UNVERIFIED"
 axis_bytes_bincode = "NO"
 axis_bytes_prost = "MOVES"
 axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
+id = "CBR-032"
+surface = "N"
+commits = ["084c93b5"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "MECHANISM_ONLY"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "NO"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
 axis_acceptance = "NO"
 axis_metering = "NO"
 
@@ -1262,6 +1277,70 @@ line = 132
 at = "0b270eca"
 path = "rholang/src/rust/interpreter/util/mod.rs"
 token = "filter_and_adjust_bitset"
+
+[[citation]]
+owner = "CBR-032"
+cited = "rholang/src/rust/interpreter/util/mod.rs"
+line = 132
+at = "88e492d7"
+path = "rholang/src/rust/interpreter/util/mod.rs"
+token = "filter_and_adjust_bitset"
+
+[[citation]]
+owner = "CBR-032"
+cited = "models/src/lib.rs"
+line = 97
+at = "HEAD"
+path = "models/src/lib.rs"
+token = "pub fn create_bit_vector"
+
+[[citation]]
+owner = "CBR-032"
+cited = "models/src/rust/utils.rs"
+line = 440
+at = "HEAD"
+path = "models/src/rust/utils.rs"
+token = "pub fn union"
+
+[[citation]]
+owner = "CBR-032"
+cited = "rholang/src/rust/interpreter/substitute_combine.rs"
+line = 63
+at = "HEAD"
+path = "rholang/src/rust/interpreter/substitute_combine.rs"
+token = "set_bits_until"
+
+[[citation]]
+owner = "CBR-032"
+cited = "models/build.rs"
+line = 165
+at = "HEAD"
+path = "models/build.rs"
+token = "LOCALLY_FREE_DECL"
+
+[[citation]]
+owner = "CBR-032"
+cited = "cost_accounting/sig.rs"
+line = 252
+at = "HEAD"
+path = "rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/sig.rs"
+token = "encode_to_vec"
+
+[[citation]]
+owner = "CBR-032"
+cited = "rspace++/src/rspace/candidate_order.rs"
+line = 61
+at = "HEAD"
+path = "rspace++/src/rspace/candidate_order.rs"
+token = "bincode::serialize"
+
+[[citation]]
+owner = "CBR-032"
+cited = "rholang/src/rust/interpreter/matcher/fold_match.rs"
+line = 103
+at = "HEAD"
+path = "rholang/src/rust/interpreter/matcher/fold_match.rs"
+token = "locally_free.is_empty"
 
 [[citation]]
 owner = "CBR-L02"
