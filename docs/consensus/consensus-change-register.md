@@ -7733,6 +7733,41 @@ have recorded both figures as faithfully attributed measurements, because both *
 correctness is not a property this register can hold**, which is why Q1's answer is an invariant control in
 the bench and not a clause here.
 
+#### 7.8.7 All eleven cited conclusions, with their sites and dispositions
+
+★ **This table is the durable record**, and it is kept in the register rather than in a commit message for
+one reason: **six of the eleven sites are code comments in files this work item does not own**, so the
+register is the only place a reader can find all eleven together. Every row states its **disposition as a
+value** — `UNAFFECTED`, `OVERTURNED` or `NOW UNKNOWN with a bracket` — because an absent disposition is
+indistinguishable from an unexamined one.
+
+| # | conclusion | instrument | disposition | site status |
+|---|---|---|---|---|
+| 1 | `b228545f`'s weighted clone at $`0.678\times`$ ($`-48\%`$) | `term_ops` | ⚠ **OVERTURNED** — paired: $`0.948\times`$–$`0.962\times`$, a 5 % deficit | ★ **CORRECTED** — [Appendix B.3](#appendix-b3--the-living-frontier) row 36 and its `[[exempt]]` row, superseded text quoted |
+| 2 | per depth $`0.648\times`$ at 1, $`0.665\times`$ at 2 | `term_ops` | ⚠ **OVERTURNED as stated** — the *shape* is real; the magnitude is fixture cache-residency, not mechanism | ⚠ `models/build/wire_schema.rs` — **REPORTED, NOT EDITED** |
+| 3 | the $`-2.8\%`$ that "refuted" the walk elimination | `term_ops` | ⚠ **NOW UNKNOWN** — five times inside the spread. **REOPENED and RULED**: the change does *less* work and lands | ★ **CORRECTED** — it is [CBR-035](#cbr-035) |
+| 4 | Welch $`t = -307`$ | `term_ops` | ⚠ **OVERTURNED** — an unpaired $`t`$ on drift-contaminated arms | ⚠ `models/build/wire_schema.rs` — **REPORTED, NOT EDITED** |
+| 5 | ★ this register's row 36 cites the same measurement as Welch $`t = -65`$ | `term_ops` | ⚠ **OVERTURNED, and the two citations DISAGREE.** [§7.8.4](#784--two-welch-statistics-for-one-experiment--and-neither-was-transcribed) establishes that **neither was transcribed** — they are two runs, and the pooled noise they imply differs by $`4.6\times`$ | ★ **CORRECTED** |
+| 6 | `register.toml`'s matching evidence string | `term_ops` | ⚠ **OVERTURNED** (the same figure) | ★ **CORRECTED**. ⚠ The coordinate reported for it, `register.toml`:970, had **already drifted to :1000** by the time it was acted on — six `[[exempt]]` rows were inserted above it in four days. Drift class 2, live, inside the report of a drift defect |
+| 7 | `903cefb3`'s *"1.19–1.58× faster, from 1.7× slower"* | `wire_encode` | sign **UNAFFECTED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.58\times`$. ⚠ A $`1.19`$–$`1.58`$ interval is a 33 % spread — the *instrument's* scatter, not the encoder's | ★ **CORRECTED** — [CBR-019](#cbr-019)'s evidence |
+| 8 | ★★ the **$`1.7\times`$ slower** per-field-table interpretation | `wire_encode` | ★ **UNAFFECTED** — a 68 % effect against a 27 % spread, margin $`2.5\times`$. [§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance) | ★ **AFFIRMED** in [CBR-019](#cbr-019)'s evidence, with the margin arithmetic. ⚠ Its five code sites are **REPORTED, NOT EDITED** and need no change |
+| 9 | the **2.75 %** `NO_RESUME` figure | `wire_encode` | ⚠ **NOW UNKNOWN** — 2.75 % is a **tenth** of the instrument's spread, so it is not a measurement at all rather than an imprecise one | ⚠ **REPORTED, NOT EDITED** — it exists at exactly three sites, all code comments: `models/src/rust/rholang/drive.rs` at **:73**, `wire_encode.rs` at **:413**, `wire.rs` at **:219**. ★ It appears in **no** document, so nothing in the doc suite cites it |
+| 10 | the stack-safety report's $`1.194 \pm 0.005\times`$ | `wire_encode` | sign **UNAFFECTED**; the **$`\pm 0.005`$ is OVERTURNED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.19\times`$ | ★ **CORRECTED** at all three sites (§1, §5.4.1, §5.10) **plus four more the original report of this defect did not name** — §Method's *"Statistics"* clause, the §A instrument table, §Method's *"Overlap rule"*, and §5.4.2's profile provenance, each of which asserted the **false interleaving** or an invalid criterion |
+| 11 | the audit's $`1.190\times`$ / $`1.245\times`$ | `wire_encode` | as row 10, bracketed $`1.07\times`$–$`1.19\times`$ and $`1.07\times`$–$`1.25\times`$ | ★ **CORRECTED**. ⚠ Reported as being in `mettail-rust`; it is in **this** repository, `docs/design/audits/theta-depth-traversals-2026-07-26.md`. `mettail-rust` cites **none** of the eleven figures |
+
+★★ **Two findings from working the table that are worth more than any single row.**
+
+1. **The count was 11 and the *site* count was larger.** Row 10 was reported as three sites and is
+   **seven**, and the four extra ones are the more dangerous kind: they assert the **method** rather than a
+   number. A figure is retracted by editing a number; a *method* claim is retracted by noticing that a
+   sentence describing a design is describing a design that was never implemented. $`\Rightarrow`$ **Search
+   for the method, not only for the magnitude.** Grepping `1.194` found three sites; grepping
+   `interleaved` and `Welch` found four more.
+2. **The disposition is not a function of the instrument.** Rows 8 and 9 come from the *same* bench, the
+   *same* defect and the *same* run, and their dispositions are opposite: `UNAFFECTED` and
+   `NOW UNKNOWN`. What separates them is the ratio of effect size to instrument spread — $`2.5\times`$
+   against $`0.1\times`$. ⚠ Any triage rule keyed on *provenance* gets both wrong, in opposite directions.
+
 ---
 
 ## 8. Conclusions
