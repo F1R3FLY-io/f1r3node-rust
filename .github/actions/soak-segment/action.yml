@@ -44,6 +44,15 @@ inputs:
   kind:
     required: true
     description: weekend | daily — selects the published series.
+  retry_attempt:
+    required: true
+    description: Restart counter from the gate; >0 marks a restarted run.
+  window_seconds:
+    required: true
+    description: >-
+      The series' nominal window span (79200 daily / 216000 weekend), as
+      opposed to this run's duration budget, which for a restarted run is
+      only the window's remainder.
   node_repo_dir:
     required: true
     description: Checkout of the node under test.
@@ -90,6 +99,8 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_ATTEMPT: ${{ github.run_attempt }}
         DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+        WINDOW_SECONDS: ${{ inputs.window_seconds }}
       shell: bash -euo pipefail {0}
       run: |
         # in_progress suppresses the verdict: a partial run has fewer

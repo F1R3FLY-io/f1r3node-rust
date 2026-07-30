@@ -65,6 +65,22 @@ daily | weekend | unknown) ;;
 	;;
 esac
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
+# Restart provenance. A run restarted mid-window covers only part of its
+# series' nominal span; the run object records both spans so the report and
+# dashboard can say "restarted; covered Nh of Mh" instead of presenting a
+# partial weekend as a full one. WINDOW_SECONDS is the series' nominal
+# window (79200 daily / 216000 weekend); 0 means unknown and falls back to
+# the requested duration, which is exact for non-restarted runs.
+RETRY_ATTEMPT="${RETRY_ATTEMPT:-0}"
+if ! [[ "$RETRY_ATTEMPT" =~ ^[0-9]+$ ]]; then
+	echo "RETRY_ATTEMPT must be a non-negative integer" >&2
+	exit 2
+fi
+WINDOW_SECONDS="${WINDOW_SECONDS:-0}"
+if ! [[ "$WINDOW_SECONDS" =~ ^[0-9]+$ ]]; then
+	echo "WINDOW_SECONDS must be a non-negative integer" >&2
+	exit 2
+fi
 DASHBOARD_URL="${DASHBOARD_URL:-https://f1r3fly-io.github.io/f1r3node-rust/}"
 
 command -v jq >/dev/null || {
@@ -97,6 +113,8 @@ jq -n \
 	--argjson run_attempt "$RUN_ATTEMPT" \
 	--arg kind "$SOAK_KIND" \
 	--argjson duration "$DURATION_SECONDS" \
+	--argjson retry_attempt "$RETRY_ATTEMPT" \
+	--argjson window "$WINDOW_SECONDS" \
 	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 	--arg status "$SOAK_STATUS" \
 	'
@@ -114,6 +132,11 @@ jq -n \
         started_at: ($passive.started_at // null),
         finished_at: ($passive.finished_at // null),
         duration_seconds: $duration,
+        # The series nominal span vs this run budget: equal for a normal
+        # run, window > duration for one restarted mid-window.
+        window_seconds: (if $window > 0 then $window else $duration end),
+        restarted: ($retry_attempt > 0),
+        retry_attempt: $retry_attempt,
         status: $status,
         # Seconds actually soaked so far, against the run
         # budget — lets the dashboard show progress on a checkpoint.
@@ -204,11 +227,14 @@ jq -r \
   def fmt: if . == null then "-" else tostring end;
   ($baseline.passive // {}) as $bp
   | ($baseline.active // {}) as $ba
-  | "# Weekend Soak Benchmark Report",
+  | "# \(if .run.kind == "daily" then "Daily" elif .run.kind == "weekend" then "Weekend" else "Soak" end) Soak Benchmark Report",
   "",
   "- **Date:** \(.run.date)",
   "- **Target:** `\(.run.target_ref)` @ `\(.run.target_sha[0:12])`",
-  "- **Run:** \(.run.run_id), \(.run.duration_seconds)s soak",
+  ("- **Run:** \(.run.run_id), \(.run.duration_seconds)s soak"
+    + (if .run.restarted
+       then " — restarted; covered \((.run.elapsed_seconds // 0) / 3600 | floor)h of the \(.run.window_seconds / 3600 | floor)h window"
+       else "" end)),
   "- **Baseline:** \($verdict.baseline_run.date // "none (bootstrap)")",
   "- **Dashboard:** \($dashboard)",
   "",

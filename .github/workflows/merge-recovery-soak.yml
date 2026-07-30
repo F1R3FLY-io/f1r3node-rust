@@ -631,6 +631,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -653,6 +655,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -675,6 +679,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -697,6 +703,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -719,6 +727,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -744,6 +754,8 @@ jobs:
           # completion for its numbers to be comparable week over week.
           merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
           kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
           node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -763,6 +775,8 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          WINDOW_SECONDS: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
           # Non-empty value must be the truthy branch: GitHub treats '' as
           # false, so `kind == 'weekend' && '' || '-daily'` would yield
@@ -785,8 +799,13 @@ jobs:
           case "$base_code" in
             200)
               if jq -e 'type == "array"' /tmp/soak-history.json >/dev/null 2>&1; then
+                # Restarted runs are excluded from baseline duty: they cover
+                # a partial span, so their lower iteration count and peak RSS
+                # would make the next full-window run look like a regression
+                # purely because the spans differ.
                 jq --arg run_id "$RUN_ID" \
                   '[.[] | select((.run.status // "complete") != "in_progress")
+                        | select((.run.restarted // false) | not)
                         | select((.run.run_id // "" | tostring) != $run_id)]
                    | sort_by(.run.date // "") | last // empty' \
                   /tmp/soak-history.json > /tmp/soak-baseline.json
