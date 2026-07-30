@@ -55,7 +55,7 @@
 //!   the identical binary reported **1.0748× (PASS)** and **0.9461× (FAIL)** on
 //!   the weighted mix. Every ratio quoted from the old instrument — 0.678×,
 //!   0.665×, and the −2.8% that "refuted" the walk elimination — carries that
-//!   uncertainty. See [`measure_paired`].
+//!   uncertainty. See the shared [`paired`] module.
 //! * **The paired t-test** on the per-repetition difference at α = 0.01, plus the
 //!   **median per-repetition ratio** as the load-robust point estimate. Welch's
 //!   unpaired t (with Welch–Satterthwaite df) is still printed for continuity
@@ -97,6 +97,13 @@ use std::time::Instant;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, ETuple, Expr, Par, Send};
+// ★ The SHARED paired-measurement harness — ONE implementation for this bench
+// and `wire_encode_bench`, both of which carried the same all-A-then-all-B defect
+// behind the same false "interleaved A/B" claim. See `paired.rs`.
+#[path = "paired.rs"]
+mod paired;
+use paired::{loadavg, measure_arms, welch, Arms, Pair};
+
 use models::rust::rholang::drive::{Outcome, Step};
 use models::rust::rholang::par_children::dismantle_all;
 use models::rust::rholang::term_ops::{oracle_clone_par, CloneKont, CloneNode, CloneTraversal, CloneVal};
@@ -303,229 +310,30 @@ fn count_par_nodes(p: &Par) -> usize {
 // Statistics
 // ---------------------------------------------------------------------------
 
-struct Sample {
-    times_ns: Vec<f64>,
+/// The two clone arms, measured in the same repetitions and order-alternated:
+/// the derived oracle and the driven `<Par as Clone>::clone`.
+///
+/// ⚠ The release closure is load-bearing and UNTIMED: both arms produce owned
+/// `Par`s, and `drop_in_place::<Par>` is itself Θ(depth) (gate subject
+/// `par_drop`), so timing the teardown would add the same large term to both arms
+/// and dilute the difference the experiment exists to measure.
+fn clone_arms(workload: &[Par]) -> Arms<2> {
+    let mut derived = |p: &Par| oracle_clone_par(p);
+    let mut driven = <Par as Clone>::clone;
+    measure_arms(
+        ["derived", "driven"],
+        workload,
+        &mut [&mut derived, &mut driven],
+        &mut |drain| dismantle_all(drain),
+    )
 }
 
-impl Sample {
-    fn mean(&self) -> f64 {
-        self.times_ns.iter().sum::<f64>() / self.times_ns.len() as f64
-    }
-    fn variance(&self) -> f64 {
-        let m = self.mean();
-        self.times_ns.iter().map(|t| (t - m).powi(2)).sum::<f64>()
-            / (self.times_ns.len() as f64 - 1.0)
-    }
-    fn sd(&self) -> f64 {
-        self.variance().sqrt()
-    }
-    /// The half-width of the α = 0.01 two-sided interval around the mean, by the
-    /// normal approximation. Used for the "ranges non-overlapping" clause.
-    fn half_width(&self) -> f64 {
-        2.576 * self.sd() / (self.times_ns.len() as f64).sqrt()
-    }
-}
-
-/// Welch's t, its Welch–Satterthwaite degrees of freedom, and a two-sided
-/// significance verdict at α = 0.01 by the normal approximation (`REPS` is large
-/// enough that `t` and `z` agree to three decimals).
-fn welch(a: &Sample, b: &Sample) -> (f64, f64, bool) {
-    let (na, nb) = (a.times_ns.len() as f64, b.times_ns.len() as f64);
-    let (va, vb) = (a.variance(), b.variance());
-    let se = (va / na + vb / nb).sqrt();
-    if se == 0.0 {
-        return (0.0, na + nb - 2.0, false);
-    }
-    let t = (a.mean() - b.mean()) / se;
-    let df = (va / na + vb / nb).powi(2)
-        / ((va / na).powi(2) / (na - 1.0) + (vb / nb).powi(2) / (nb - 1.0));
-    (t, df, t.abs() > 2.576)
-}
-
-/// Repetitions per arm.
-const REPS: usize = 60;
-/// Discarded leading repetitions: the thread-local stack pool reaches its steady
-/// state within a handful of passes, and including the cold ones would measure
-/// warm-up rather than throughput.
-const WARMUP: usize = 10;
-
-/// Time one arm over `workload` once, releasing the pass's clones OUTSIDE the
-/// timer. Returns nanoseconds.
-///
-/// ⚠ UNTIMED teardown. `drop_in_place::<Par>` is Θ(depth) (gate subject
-/// `par_drop`), so timing the release would add the same large term to both arms.
-fn one_pass(
-    workload: &[Par],
-    sink: &mut Vec<Par>,
-    clone_one: &mut impl FnMut(&Par) -> Par,
-) -> f64 {
-    let start = Instant::now();
-    for value in workload {
-        sink.push(black_box(clone_one(black_box(value))));
-    }
-    let elapsed = start.elapsed();
-    dismantle_all(sink.drain(..));
-    elapsed.as_nanos() as f64
-}
-
-/// Two arms, and the **per-repetition difference** between them.
-struct Paired {
-    a: Sample,
-    b: Sample,
-    /// `b_i − a_i`, one entry per retained repetition. The paired statistic.
-    diffs: Vec<f64>,
-    /// `b_i / a_i`, one per repetition — reported as a **median**, which is the
-    /// load-robust estimator of the ratio.
-    ratios: Vec<f64>,
-}
-
-impl Paired {
-    fn diff_mean(&self) -> f64 {
-        self.diffs.iter().sum::<f64>() / self.diffs.len() as f64
-    }
-    fn diff_sd(&self) -> f64 {
-        let m = self.diff_mean();
-        (self.diffs.iter().map(|d| (d - m).powi(2)).sum::<f64>()
-            / (self.diffs.len() as f64 - 1.0))
-            .sqrt()
-    }
-    /// The paired α = 0.01 two-sided half-width around the mean difference.
-    fn diff_half_width(&self) -> f64 {
-        2.576 * self.diff_sd() / (self.diffs.len() as f64).sqrt()
-    }
-    /// Paired `t` and whether the α = 0.01 interval on the mean difference
-    /// **excludes zero**.
-    fn paired_t(&self) -> (f64, bool) {
-        let sd = self.diff_sd();
-        if sd == 0.0 {
-            return (0.0, false);
-        }
-        let t = self.diff_mean() / (sd / (self.diffs.len() as f64).sqrt());
-        (t, t.abs() > 2.576)
-    }
-    /// The median of the per-repetition ratios `b_i / a_i`.
-    fn median_ratio(&self) -> f64 {
-        let mut r = self.ratios.clone();
-        r.sort_by(|x, y| x.partial_cmp(y).expect("term_ops_bench: NaN ratio"));
-        let n = r.len();
-        if n % 2 == 1 {
-            r[n / 2]
-        } else {
-            0.5 * (r[n / 2 - 1] + r[n / 2])
-        }
-    }
-}
-
-/// ★★★ **THE PAIRED MEASUREMENT — and the instrument defect it repairs.**
-///
-/// The previous `measure(label, workload, arm)` ran **every** repetition of one
-/// arm and was then called again for the other, while this module's header
-/// claimed *"one repetition measures A then B, and the loop repeats `REPS`
-/// times, so drift in clock, thermals or cache state moves both arms
-/// together."* **The code did not do that**, and the consequence is not
-/// theoretical: two back-to-back runs of the identical binary on this host at
-/// load average 15.7 produced
-///
-/// ```text
-///   run 1   weighted 1.0748×  (PASS)      depth 6  0.856×
-///   run 2   weighted 0.9461×  (FAIL)      depth 6  1.056×
-/// ```
-///
-/// — a verdict flip, from unpaired arms measured in **different time windows** on
-/// a machine whose competing load moves on a ten-second scale. Every ratio the
-/// two prior reports quote (0.678×, 0.665×, and the −2.8% that "refuted" the
-/// walk elimination) came from this instrument, so **none of them is resolved to
-/// better than about ±0.1** and the "third component" inferred from a
-/// mid-range fit residual may be nothing but this.
-///
-/// The repair is the method the header already promised, plus two things it did
-/// not:
-///
-/// 1. **Genuine pairing.** Each repetition times arm A and arm B back to back,
-///    so a load excursion lands inside one repetition and cancels in the
-///    difference.
-/// 2. **Order alternation.** Within a repetition the *first* arm pays the cold
-///    walk over the workload and the second finds it warm. Alternating A-B /
-///    B-A by repetition parity makes that bias cancel instead of accumulating on
-///    one arm.
-/// 3. **Paired statistics.** The t-test is on the per-repetition difference
-///    (`n − 1` df, one series), which is both the correct test for a paired
-///    design and far more powerful: the between-repetition variance that
-///    dominates Welch's denominator here is common-mode and differences out.
-///    The **median per-repetition ratio** is reported alongside as the
-///    load-robust point estimate.
-fn measure_paired(
-    label_a: &str,
-    label_b: &str,
-    workload: &[Par],
-    mut arm_a: impl FnMut(&Par) -> Par,
-    mut arm_b: impl FnMut(&Par) -> Par,
-) -> Paired {
-    let mut ta = Vec::with_capacity(REPS);
-    let mut tb = Vec::with_capacity(REPS);
-    let mut diffs = Vec::with_capacity(REPS);
-    let mut ratios = Vec::with_capacity(REPS);
-    // Preallocated once and drained (not dropped) each pass, so no pass after the
-    // first pays a reallocation.
-    let mut sink: Vec<Par> = Vec::with_capacity(workload.len());
-    for rep in 0..(REPS + WARMUP) {
-        let (x, y) = if rep % 2 == 0 {
-            let x = one_pass(workload, &mut sink, &mut arm_a);
-            let y = one_pass(workload, &mut sink, &mut arm_b);
-            (x, y)
-        } else {
-            let y = one_pass(workload, &mut sink, &mut arm_b);
-            let x = one_pass(workload, &mut sink, &mut arm_a);
-            (x, y)
-        };
-        if rep >= WARMUP {
-            ta.push(x);
-            tb.push(y);
-            diffs.push(y - x);
-            ratios.push(y / x);
-        }
-    }
-    let p = Paired {
-        a: Sample { times_ns: ta },
-        b: Sample { times_ns: tb },
-        diffs,
-        ratios,
-    };
-    for (label, s) in [(label_a, &p.a), (label_b, &p.b)] {
-        println!(
-            "  {label:10} mean {:>12.1} ns   sd {:>10.1} ns   ({:.2}%)   ±{:.1} ns @ α=0.01",
-            s.mean(),
-            s.sd(),
-            100.0 * s.sd() / s.mean(),
-            s.half_width()
-        );
-    }
-    let (t, significant) = p.paired_t();
-    println!(
-        "  {:10} PAIRED Δ {:>+12.1} ns   ±{:.1} ns @ α=0.01   t = {t:.2} (df {})   \
-         excludes 0: {significant}",
-        "",
-        p.diff_mean(),
-        p.diff_half_width(),
-        p.diffs.len() - 1
-    );
-    p
-}
-
-/// Reports the ratio **two ways**: from the means, and as the median of the
-/// per-repetition ratios. ★ When the two disagree the measurement is
-/// load-contaminated and the median is the one to believe — that disagreement is
-/// itself a datum and is printed rather than hidden.
-///
-/// The unpaired Welch statistic is still printed, because it is the statistic the
-/// prior reports used and the reader needs to see how much weaker it is than the
-/// paired one on the same data.
-fn report(name: &str, p: &Paired) -> f64 {
+fn report(name: &str, p: &Pair<'_>) -> f64 {
     let (derived, driven) = (&p.a, &p.b);
     let (wt, df, w_significant) = welch(derived, driven);
     let (pt, p_significant) = p.paired_t();
     let speedup = derived.mean() / driven.mean();
-    let median_speedup = 1.0 / p.median_ratio();
+    let median_speedup = p.median_speedup();
     let delta = 100.0 * (driven.mean() - derived.mean()) / derived.mean();
     println!(
         "  ── {name}: {speedup:.3}× of-means ({delta:+.2}%), {median_speedup:.3}× median-of-rep \
@@ -553,9 +361,9 @@ fn report(name: &str, p: &Paired) -> f64 {
 /// contains zero means the arms are *indistinguishable*, which satisfies the
 /// criterion as surely as a measured win does — the criterion is "not slower",
 /// not "faster".
-fn verdict(name: &str, p: &Paired) {
+fn verdict(name: &str, p: &Pair<'_>) {
     let (derived, driven) = (&p.a, &p.b);
-    let speedup = 1.0 / p.median_ratio();
+    let speedup = p.median_speedup();
     let of_means = derived.mean() / driven.mean();
     let (_, resolved) = p.paired_t();
     let pass = speedup >= THRESHOLD;
@@ -588,14 +396,6 @@ fn verdict(name: &str, p: &Paired) {
     }
     println!("  ╚══");
     println!();
-}
-
-/// ⚠ Read `/proc/loadavg` — the one number without which no wall-time figure in
-/// this file means anything on a shared workstation.
-fn loadavg() -> String {
-    std::fs::read_to_string("/proc/loadavg")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unavailable".into())
 }
 
 fn environment() {
@@ -871,8 +671,9 @@ fn constant_footprint_sweep() {
              independent variable would not be the node count"
         );
         println!("  n = {n:>3} node(s)/call, {calls:>4} calls/pass:");
-        let paired =
-            measure_paired("derived", "driven", &one, oracle_clone_par, <Par as Clone>::clone);
+        let arms = clone_arms(&one);
+        arms.print();
+        let paired = arms.pair(0, 1);
         let (dc, mc) = (
             paired.a.mean() / calls as f64,
             paired.b.mean() / calls as f64,
@@ -973,13 +774,9 @@ fn main() {
          (95.43% at depth 2, nothing deeper than 6)",
         workload.len()
     );
-    let weighted = measure_paired(
-        "derived",
-        "driven",
-        &workload,
-        oracle_clone_par,
-        <Par as Clone>::clone,
-    );
+    let arms = clone_arms(&workload);
+    arms.print();
+    let weighted = arms.pair(0, 1);
     report("weighted", &weighted);
     verdict("the production-weighted mix", &weighted);
 
@@ -1003,7 +800,9 @@ fn main() {
              intercept it is supposed to measure would be A + {nodes}·B instead of A + B"
         );
         println!("  n = 1 node/call, 512 calls/pass:");
-        let paired = measure_paired("derived", "driven", &one, oracle_clone_par, <Par as Clone>::clone);
+        let arms = clone_arms(&one);
+        arms.print();
+        let paired = arms.pair(0, 1);
         report("n=1", &paired);
         println!(
             "     per-call: derived {:.2} ns, driven {:.2} ns, gap {:+.2} ns ±{:.2} \
@@ -1024,7 +823,9 @@ fn main() {
         let one = uniform_workload(depth, 512);
         let nodes = count_par_nodes(&one[0]);
         println!("  depth {depth} (n = {nodes} Par nodes/call):");
-        let paired = measure_paired("derived", "driven", &one, oracle_clone_par, <Par as Clone>::clone);
+        let arms = clone_arms(&one);
+        arms.print();
+        let paired = arms.pair(0, 1);
         report(&format!("depth {depth}"), &paired);
         println!(
             "     per-call: derived {:.2} ns, driven {:.2} ns, gap {:+.2} ns ±{:.2}   \
@@ -1054,8 +855,9 @@ fn main() {
             .spawn(move || {
                 let one = uniform_workload(depth, 4);
                 println!("  depth {depth}:");
-                let paired =
-                    measure_paired("derived", "driven", &one, oracle_clone_par, <Par as Clone>::clone);
+                let arms = clone_arms(&one);
+                arms.print();
+                let paired = arms.pair(0, 1);
                 let speedup = report(&format!("depth {depth}"), &paired);
                 dismantle_all(one);
                 speedup

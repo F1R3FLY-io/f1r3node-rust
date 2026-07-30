@@ -34,11 +34,21 @@
 //!
 //! ## Method
 //!
-//! * **Interleaved A/B.** One repetition measures A then B, and the loop is
-//!   repeated `REPS` times. Any drift in clock, thermals or cache state moves
-//!   both arms together, so a paired design is not needed to be honest about
-//!   the comparison — and it is not used as one either: the statistic below is
-//!   the conservative unpaired Welch test.
+//! * **★ GENUINELY interleaved, PAIRED, and rotated — via the SHARED
+//!   [`paired`] harness.** ⚠ This bullet used to claim *"one repetition measures
+//!   A then B, and the loop is repeated `REPS` times. Any drift in clock,
+//!   thermals or cache state moves both arms together"* — and the private
+//!   `measure()` it described ran **every** repetition of one arm before
+//!   starting the next, so the three arms were measured in three different time
+//!   windows. On this host, three consecutive runs of the identical binary at
+//!   loadavg 16.7 reported the weighted owned-`Vec` ratio as **1.261×, 1.471×
+//!   and 1.154×** — 27% peak-to-peak. The `1.194 ± 0.005×` that
+//!   `docs/design/stack-safety/stack-safety-report-2026-07-29.md` §5.4.1 records
+//!   from `n = 3` runs of this instrument was three draws that happened to land
+//!   close together, not a precision. ★ `term_ops_bench` had the identical
+//!   defect and the identical false claim; both now share ONE implementation, in
+//!   `models/benches/paired.rs`, because a fix applied twice is a fix that
+//!   drifts apart.
 //! * **Welch's t-test.** Two numbers are not a throughput claim. Reported with
 //!   the Welch–Satterthwaite degrees of freedom and the effect size, so the
 //!   verdict is legible.
@@ -59,11 +69,17 @@
 //! reported separately because it changes the *contract*, and folding a
 //! contract change into a throughput number would overstate the result.
 
-use std::hint::black_box;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, ETuple, Expr, KeyValuePair, ListParWithRandom, Par, Send};
+// ★ The SHARED paired-measurement harness. One implementation for this bench and
+// `term_ops_bench`, because both carried the same defect and a fix applied twice
+// is a fix that drifts apart. See `paired.rs`'s module docs.
+#[path = "paired.rs"]
+mod paired;
+use paired::{loadavg, measure_arms};
+
 use models::rust::rholang::wire_encode::{encode, with_encoded};
 
 // ---------------------------------------------------------------------------
@@ -196,87 +212,54 @@ fn weighted_workload() -> Vec<ListParWithRandom> {
 // Statistics
 // ---------------------------------------------------------------------------
 
-struct Sample {
-    times_ns: Vec<f64>,
+
+
+/// The three arms, measured in the same repetitions and rotated: the derived
+/// `bincode::serialize` oracle, the machine returning an owned `Vec`, and the
+/// machine writing into a reused thread-local buffer.
+///
+/// ⚠ All three produce a `usize` (the byte length), so the sink is trivial and
+/// `release` only has to consume it — unlike `term_ops_bench`, where the products
+/// are owned terms and the untimed release is load-bearing.
+fn three_arms(workload: &[ListParWithRandom]) -> paired::Arms<3> {
+    let mut a = |v: &ListParWithRandom| bincode::serialize(v).expect("oracle").len();
+    let mut b = |v: &ListParWithRandom| encode(v).len();
+    let mut c = |v: &ListParWithRandom| with_encoded(v, <[u8]>::len);
+    measure_arms(
+        ["derived", "machine", "machine_reused"],
+        workload,
+        &mut [&mut a, &mut b, &mut c],
+        &mut |drain| {
+            for n in drain {
+                std::hint::black_box(n);
+            }
+        },
+    )
 }
 
-impl Sample {
-    fn mean(&self) -> f64 {
-        self.times_ns.iter().sum::<f64>() / self.times_ns.len() as f64
-    }
-    fn variance(&self) -> f64 {
-        let m = self.mean();
-        self.times_ns.iter().map(|t| (t - m).powi(2)).sum::<f64>()
-            / (self.times_ns.len() as f64 - 1.0)
-    }
-    fn sd(&self) -> f64 {
-        self.variance().sqrt()
-    }
-}
-
-/// Welch's t, its Welch–Satterthwaite degrees of freedom, and a two-sided
-/// significance verdict at α = 0.01 by the normal approximation (`REPS` is
-/// large enough that `t` and `z` agree to three decimals).
-fn welch(a: &Sample, b: &Sample) -> (f64, f64, bool) {
-    let (na, nb) = (a.times_ns.len() as f64, b.times_ns.len() as f64);
-    let (va, vb) = (a.variance(), b.variance());
-    let se = (va / na + vb / nb).sqrt();
-    if se == 0.0 {
-        return (0.0, na + nb - 2.0, false);
-    }
-    let t = (a.mean() - b.mean()) / se;
-    let df = (va / na + vb / nb).powi(2)
-        / ((va / na).powi(2) / (na - 1.0) + (vb / nb).powi(2) / (nb - 1.0));
-    (t, df, t.abs() > 2.576)
-}
-
-/// Repetitions per arm. Large enough that the Welch statistic is stable and the
-/// normal approximation to `t` is sound.
-const REPS: usize = 60;
-/// Discarded leading repetitions: caches, the thread-local buffer and the
-/// op-stack pool all reach their steady state within a handful of passes, and
-/// including the cold ones would measure warm-up rather than throughput.
-const WARMUP: usize = 10;
-
-fn measure(label: &str, workload: &[ListParWithRandom], mut body: impl FnMut(&ListParWithRandom) -> usize) -> Sample {
-    let mut times = Vec::with_capacity(REPS);
-    for rep in 0..(REPS + WARMUP) {
-        let start = Instant::now();
-        let mut acc = 0usize;
-        for value in workload {
-            acc = acc.wrapping_add(body(value));
-        }
-        let elapsed = start.elapsed();
-        black_box(acc);
-        if rep >= WARMUP {
-            times.push(elapsed.as_nanos() as f64);
-        }
-    }
-    let s = Sample { times_ns: times };
-    println!(
-        "  {label:16} mean {:>12.1} ns   sd {:>10.1} ns   ({:.2}%)",
-        s.mean(),
-        s.sd(),
-        100.0 * s.sd() / s.mean()
-    );
-    s
-}
-
-fn report(name: &str, derived: &Sample, machine: &Sample) {
-    let (t, df, significant) = welch(derived, machine);
-    let speedup = derived.mean() / machine.mean();
-    let delta = 100.0 * (machine.mean() - derived.mean()) / derived.mean();
-    println!(
-        "  ── {name}: {speedup:.3}× ({delta:+.2}%)  Welch t = {t:.2}, df = {df:.1}, \
-         significant at α=0.01: {significant}"
-    );
-    if !significant {
-        println!("     (no significant difference — the arms are indistinguishable)");
-    }
+/// The two arms the shapes-and-tail cells use: the derived oracle and the machine
+/// returning an owned `Vec`.
+fn two_arms(workload: &[ListParWithRandom]) -> paired::Arms<2> {
+    let mut a = |v: &ListParWithRandom| bincode::serialize(v).expect("oracle").len();
+    let mut b = |v: &ListParWithRandom| encode(v).len();
+    measure_arms(
+        ["derived", "machine"],
+        workload,
+        &mut [&mut a, &mut b],
+        &mut |drain| {
+            for n in drain {
+                std::hint::black_box(n);
+            }
+        },
+    )
 }
 
 fn environment() {
     println!("ENVIRONMENT");
+    println!(
+        "  loadavg    {}   ◀── every ns below is conditional on this",
+        loadavg()
+    );
     for (label, path) in [
         ("governor", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
         ("cur_freq", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"),
@@ -313,13 +296,10 @@ fn main() {
         bytes,
         bytes as f64 / workload.len() as f64
     );
-    let derived = measure("derived", &workload, |v| {
-        bincode::serialize(v).expect("oracle").len()
-    });
-    let machine = measure("machine", &workload, |v| encode(v).len());
-    let reused = measure("machine_reused", &workload, |v| with_encoded(v, <[u8]>::len));
-    report("weighted, owned Vec", &derived, &machine);
-    report("weighted, reused buffer", &derived, &reused);
+    let arms = three_arms(&workload);
+    arms.print();
+    arms.report("weighted, owned Vec", 0, 1);
+    arms.report("weighted, reused buffer", 0, 2);
     println!();
 
     // -------------------------------------------------------------------
@@ -330,11 +310,10 @@ fn main() {
     for depth in [1usize, 2, 3, 4, 6, 16, 64] {
         let one = vec![datum(depth); 512];
         println!("  depth {depth}:");
-        let d = measure("derived", &one, |v| bincode::serialize(v).expect("o").len());
-        let m = measure("machine", &one, |v| encode(v).len());
-        let r = measure("machine_reused", &one, |v| with_encoded(v, <[u8]>::len));
-        report(&format!("depth {depth}, owned"), &d, &m);
-        report(&format!("depth {depth}, reused"), &d, &r);
+        let arms = three_arms(&one);
+        arms.print();
+        arms.report(&format!("depth {depth}, owned"), 0, 1);
+        arms.report(&format!("depth {depth}, reused"), 0, 2);
     }
     println!();
 
@@ -357,9 +336,9 @@ fn main() {
         ),
     ] {
         println!("  {label}:");
-        let d = measure("derived", &one, |v| bincode::serialize(v).expect("o").len());
-        let m = measure("machine", &one, |v| encode(v).len());
-        report(label, &d, &m);
+        let arms = two_arms(&one);
+        arms.print();
+        arms.report(label, 0, 1);
     }
 
     // -------------------------------------------------------------------
@@ -371,9 +350,9 @@ fn main() {
     for depth in [256usize, 1024] {
         let one = vec![datum(depth); 4];
         println!("  depth {depth}:");
-        let d = measure("derived", &one, |v| bincode::serialize(v).expect("o").len());
-        let m = measure("machine", &one, |v| encode(v).len());
-        report(&format!("depth {depth}"), &d, &m);
+        let arms = two_arms(&one);
+        arms.print();
+        arms.report(&format!("depth {depth}"), 0, 1);
         // Release without a Θ(depth) recursive `Drop` on this thread.
         std::mem::forget(one);
     }

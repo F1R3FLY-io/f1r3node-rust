@@ -1139,6 +1139,7 @@ fn nonempty_entry_message(work_len: usize, vals_len: usize) -> String {
 /// `debug_assertions` in the first place.
 #[cold]
 #[inline(never)]
+#[cfg(debug_assertions)]
 fn tail_bound_message(tails: usize, max_per_descent: usize, original_descents: usize) -> String {
     let mut m = String::with_capacity(1024);
     let _ = write!(
