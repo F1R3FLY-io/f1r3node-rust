@@ -6,7 +6,11 @@ name: CI Runner Reaper
 # June 2026 ~209 such zombies burned ~$1,084/day for 9 days (~$6k excess)
 # before anyone noticed. No pipeline job runs longer than 60 minutes
 # (_integration-pipeline.yml timeout-minutes), so any ci-eph instance older
-# than MAX_AGE_HOURS is a leak, busy or not.
+# than MAX_AGE_HOURS is a leak, busy or not — with one exception: soak
+# runners (merge-recovery-soak.yml) run 22h (daily) or 60h (weekend) and
+# carry a soak-deadline-epoch freeform tag naming the second after which
+# they may be reaped. The tag is an exemption with an expiry, not a bypass:
+# a leaked soak VM still dies, at most a grace period after its window.
 #
 # NOTE: the schedule trigger only fires from the default branch (master).
 # Until this file reaches master, run it manually via workflow_dispatch.
@@ -96,13 +100,21 @@ jobs:
           cutoff=$(date -u -d "-${MAX_AGE_HOURS} hours" +%Y-%m-%dT%H:%M:%S)
           echo "Reaping ci-eph-* instances created before ${cutoff}Z (max age ${MAX_AGE_HOURS}h)"
 
+          now_epoch=$(date -u +%s)
           oci compute instance list \
             --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json \
-            | jq -r --arg cutoff "$cutoff" '
+            | jq -r --arg cutoff "$cutoff" --argjson now "$now_epoch" '
                 .data[]
                 | select(."lifecycle-state" == "RUNNING" or ."lifecycle-state" == "STOPPED")
                 | select(."display-name" | startswith("ci-eph-"))
                 | select(."time-created" < $cutoff)
+                # Soak runners outlive any CI age bound (22h daily, 60h
+                # weekend). merge-recovery-soak.yml tags its instance with the
+                # epoch second after which reaping is allowed (window end +
+                # grace); skip until then. Untagged instances — every normal
+                # CI runner — keep the age rule, and an expired or unparseable
+                # tag is reaped like any other leak.
+                | select(((."freeform-tags"["soak-deadline-epoch"] // "0") | tonumber? // 0) < $now)
                 | "\(.id) \(."display-name") \(."time-created")"' \
             > /tmp/zombies.txt
 

@@ -78,6 +78,27 @@ BENCH_FAILURES="${BENCH_FAILURES:-0}"
 MERGE_EXIT_MIN_SECONDS="${SOAK_MERGE_EXIT_MIN_SECONDS:-0}"
 EARLY_EXIT_REASON=""
 
+# Total-node-RSS watchdog ceiling passed to the harness (--rss-ceiling-mb).
+# The harness default is 5000MB — sized for laptops, not the 32GB soak VM:
+# the 6-node shard legitimately peaks ~10GB under test_load, and the default
+# killed every iteration of run 30516534214 ~130s in. Size to the host
+# instead, leaving 8GB for OS/Docker/harness, so the watchdog stays on to
+# catch a real leak before swap-thrash freezes the VM without ever firing on
+# normal load. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+RSS_CEILING_MB="${SOAK_RSS_CEILING_MB:-}"
+if [ -n "$RSS_CEILING_MB" ]; then
+  if ! [[ "$RSS_CEILING_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_RSS_CEILING_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  RSS_CEILING_MB="$((mem_total_kb / 1024 - 8192))"
+  if [ "$RSS_CEILING_MB" -lt 5000 ]; then
+    RSS_CEILING_MB=5000
+  fi
+fi
+
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
   exit 2
@@ -245,6 +266,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       integration-tests/test/tests/custom/test_load.py \
       --provider="$PROVIDER" \
       --monitor \
+      --rss-ceiling-mb "$RSS_CEILING_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"

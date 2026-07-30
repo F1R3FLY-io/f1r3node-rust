@@ -41,7 +41,10 @@ env:
   # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
   # completed segments, the dashboard never published. Bump this whenever the
   # other two move.
-  SYSTEM_INTEGRATION_REF: 29d7bd0ff1973f4ddee8a3af34c5a6224557f8ea
+  # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
+  # adds the test_load.py drain-snapshot convergence fix and registry pull
+  # retries on top of the validator4 certs.
+  SYSTEM_INTEGRATION_REF: 9ebdde01e414f4c013cb83e828b625990504f082
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -322,8 +325,40 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
+
+      - name: Exempt runner from the CI reaper until the window ends
+        env:
+          # Same pinned compartment as ci-runner-reaper.yml; not a secret.
+          CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
+          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          # ci-runner-reaper.yml terminates ci-eph-* instances older than 2h;
+          # a 22h/60h soak must outlive that. Tag the instance with the epoch
+          # second after which reaping is allowed again — window end + 2h
+          # grace for final aggregation and artifact upload. Fail closed: an
+          # untagged soak runner dies at the 2h mark, so a tagging failure
+          # must fail the launch now, not the soak two hours in.
+          case "$DURATION_SECONDS" in
+            ''|*[!0-9]*) echo "::error::bad duration_seconds: $DURATION_SECONDS"; exit 1 ;;
+          esac
+          name="$(tail -1 /tmp/soak-runner-name)"
+          test -n "$name"
+          iid="$(oci compute instance list \
+            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" \
+            --display-name "$name" \
+            --query 'data[0].id' --raw-output)"
+          test -n "$iid" && [ "$iid" != "null" ]
+          deadline="$(( $(date -u +%s) + DURATION_SECONDS + 7200 ))"
+          oci compute instance update --instance-id "$iid" --force \
+            --freeform-tags "{\"purpose\":\"soak\",\"series\":\"${KIND}\",\"soak-deadline-epoch\":\"${deadline}\"}" \
+            >/dev/null
+          echo "tagged ${name} (${iid}): reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Remove OCI credentials
         if: always()
