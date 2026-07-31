@@ -410,18 +410,33 @@ impl EntryTrie {
                 .val()
                 .expect("to_next_val stops only at positions holding a value");
 
-            self.entries_stable &= eval_stable_par(par);
-            self.any_connective_used |= par.connective_used;
-            self.union_locally_free = crate::rust::utils::union(
-                std::mem::take(&mut self.union_locally_free),
-                par.locally_free.clone(),
-            );
-
             // ★ `rz.path()` is the key `other` stores this entry under — no re-encode.
             if self.trie.insert(rz.path(), par.clone()).is_none() {
                 self.len += 1;
             }
         }
+
+        // ★★ The three metadata folds COMBINE from `other`'s aggregates — O(1) each, not
+        // O(Σ entries). They used to be re-derived per entry inside the loop above, which meant
+        // `eval_stable_par(par)` — a full walk of the entry — on every element, while the source
+        // trie was already holding the answer as a maintained fold.
+        //
+        // ⚠ Exactness under OVERLAP is the property to check, and it holds because all three are
+        // **monotone and idempotent**: `&&`, `||` and bitset union each absorb a repeated
+        // operand (`x ∧ x = x`, `x ∨ x = x`, `S ∪ S = S`). An entry present in both tries
+        // therefore contributes the same value whether folded once or twice — which is what
+        // per-entry folding relied on as well; it simply paid to rediscover it.
+        //
+        // ⚠ `len` is the ONE fold that cannot combine this way, and is left in the loop above:
+        // the union may overlap, so `self.len + other.len` would over-count. Only the insert's
+        // return value distinguishes a new key from a replaced one.
+        self.entries_stable &= other.entries_stable;
+        self.any_connective_used |= other.any_connective_used;
+        self.union_locally_free = crate::rust::utils::union(
+            std::mem::take(&mut self.union_locally_free),
+            other.union_locally_free.clone(),
+        );
+
         self.view.take();
     }
 
