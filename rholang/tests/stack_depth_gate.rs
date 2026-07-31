@@ -2401,7 +2401,11 @@ fn clone_send_chain_body(depth: usize) {
 /// the exact trap that once made the score-tree subjects report the SORTER's
 /// 78,573 B/level instead of the comparator's 1,329. So the term is **forgotten**
 /// rather than dismantled, and the teardown is measured separately by
-/// `pathmap_chain_drop`, which is in [`TRIPWIRE_DEPTH`] where it belongs.
+/// `pathmap_chain_drop`, which is in [`CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`] —
+/// **neither** register list, per its own doc at `:898-921`. ⛔ This line previously read
+/// `TRIPWIRE_DEPTH`, and `:2515` previously read `CONVERTED_DEPTH`; the file asserted
+/// three mutually exclusive memberships for one subject. Corrected 2026-07-30 against
+/// the list itself rather than against either claim.
 ///
 /// ⚠ Leaking is correct HERE and nowhere else: every subject runs in its own
 /// child process, which exits immediately afterwards. `models/benches/wire_encode_bench.rs`
@@ -2512,12 +2516,55 @@ fn clone_oracle_body(depth: usize) {
 /// [`TRIPWIRE_DEPTH`] as `encode`. The ladder was measuring the ENCODER through a
 /// constructor.
 ///
-/// ⇒ **`par_children::dismantle` handles the `EPathMap` shape FLAT.** Its
-/// `EPathmapBody` arm clones the entries out of the trie and pushes them onto the
-/// worklist; the residual trie holds `Par`s that were *moved out*, so its drop is
-/// O(1) per node. That is a genuine property and this subject is its first
-/// measurement, which is why it is in [`CONVERTED_DEPTH`] rather than in the
-/// tripwire list.
+/// ⛔ **CORRECTED 2026-07-30. The paragraph that stood here carried TWO falsehoods,
+/// and the flat measurement it explained is true for a different reason that does
+/// NOT generalise.** It read: *"`par_children::dismantle` handles the `EPathMap`
+/// shape FLAT. Its `EPathmapBody` arm clones the entries out of the trie and pushes
+/// them onto the worklist; the residual trie holds `Par`s that were moved out, so its
+/// drop is O(1) per node. … which is why it is in `CONVERTED_DEPTH` rather than in the
+/// tripwire list."*
+///
+/// **Falsehood 1 — nothing is moved out.** `par_children.rs:395` is
+/// `out.extend(x.ps().iter().cloned())`, a **copy**. Read it beside its own siblings,
+/// which is where it becomes unmistakable: `EListBody`, `ETupleBody`, `ESetBody` and
+/// `EMapBody` all write `out.extend(x.ps)`, *consuming*; only `EPathmapBody` and
+/// `EZipperBody` clone. The arm **owns** the `EPathMap`, so the originals are still in
+/// it when the arm ends and they fall to the recursive derived destructor.
+///
+/// ⚠ Worse than one stray copy: `x.ps()` is `EntryTrie::view()`, a **memoised** `Vec`
+/// built by `entries_in_trie_order`, which clones every value — and a freshly built map's
+/// memo is always cold. So the teardown path *materialises a full second copy in order to
+/// destroy the first*: up to **2N** deep clones, and **2N** `Par`s left to the recursive
+/// destructor. (`EPathMap` in fact retains the entries **three** ways — `trie`, this
+/// memo, and `intern`, whose `map` is a third clone of the same trie.)
+///
+/// **Falsehood 2 — the list membership.** `pathmap_chain_drop` is in **neither**
+/// register: it is in [`CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`], documented at `:898-921`
+/// as *"deliberately in NEITHER register list"*. ⚠ `:2404` states the opposite of this
+/// sentence (`TRIPWIRE_DEPTH`), so the file contradicted itself twice over.
+///
+/// ⇒ ★ **Why the ladder nonetheless reads flat, which is the part worth keeping.**
+/// `EPathMap::clone` is O(1) — a refcount bump on the trie root plus an `Arc` bump on the
+/// memo. `nested_pathmap_chain` nests a pathmap **at every level**, so the entry the arm
+/// clones is a *shallow alias* sharing the level-below trie; when the original drops, that
+/// refcount is still `≥ 1` and the recursion **stops one level down**. **The sharing breaks
+/// the chain — the dismantling does not.**
+///
+/// ⇒ ⛔ **This fixture is precisely the one shape that cannot see the defect.** Any payload
+/// that is not immediately re-entrant into another `EPathMap` — an `EList`, `Send` or `ESet`
+/// chain — is deep-copied by `Par::clone` while the original drops at **full depth**.
+/// `pathmap_entry_drop` (one `EPathMap`, one deep non-pathmap entry) is the discriminating
+/// subject and is expected RED. ⇒ **A flat reading here must never again be read as
+/// coverage.**
+///
+/// ⚠ `move_and_borrow_tables_agree` (`par_children.rs:1034-1051`) cannot catch this either:
+/// it compares `locally_free[0]` **tag bytes**, so a clone passes identically to a move —
+/// and the by-*reference* table (`:181`) reports the same memo projection, so **both tables
+/// are wrong identically**. The guard meant to keep them in step is blind to the very class
+/// that separates them.
+///
+/// ⇒ Tracked as stack-safety **§3d-0**, which must land **before** any integration of
+/// `dismantle`: integrating it as-is would ship a false claim of coverage.
 ///
 /// ⚠ The `EPathmapBody` exclusion `par_children.rs` calls *"a real gap, not a
 /// formality"* is about **matching and substitution descent**, not about
