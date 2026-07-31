@@ -1712,6 +1712,68 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
             "nested-pathmap",
             EPathMap::new(vec![nested, make_int_par(5)], Vec::new(), false, None),
         ),
+        // ⚠ These two exist so the metadata-fold lemma is not vacuous: without them both folds
+        // sit at their identity element (`false` / `[]`) across the whole corpus, and a
+        // constant implementation would pass. The anti-vacuity assertion in
+        // `the_metadata_folds_agree_with_a_fold_over_the_entries` fires if they are removed.
+        (
+            "carries-a-connective",
+            EPathMap::new(
+                vec![
+                    Par {
+                        connective_used: true,
+                        ..make_int_par(11)
+                    },
+                    make_int_par(12),
+                ],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        (
+            "carries-a-free-variable",
+            EPathMap::new(
+                vec![
+                    Par {
+                        locally_free: vec![0x01],
+                        ..make_int_par(13)
+                    },
+                    Par {
+                        locally_free: vec![0x02],
+                        ..make_int_par(14)
+                    },
+                ],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        // ★★ Built via `extend_entries`, NOT `EPathMap::new`. Without this the corpus never
+        // exercises that spelling of the folds — and `extend_entries` is the NEWEST of the five
+        // (626cf42d duplicated them inline when insert_entry left that path) and the one that
+        // had no coverage at all. Verified by mutation: perturbing extend_entries' fold left the
+        // lemma GREEN until this case existed.
+        ("built-by-extend-entries", {
+            let mut base = EPathMap::new(vec![make_int_par(21)], Vec::new(), false, None);
+            let other = EPathMap::new(
+                vec![
+                    Par {
+                        connective_used: true,
+                        ..make_int_par(22)
+                    },
+                    Par {
+                        locally_free: vec![0x04],
+                        ..make_int_par(23)
+                    },
+                ],
+                Vec::new(),
+                false,
+                None,
+            );
+            base.extend_entries(&other);
+            base
+        }),
         (
             "duplicate-entries-dedup",
             EPathMap::new(
@@ -1722,4 +1784,71 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
             ),
         ),
     ]
+}
+
+/// ★★ **The two folds that reach emitted bytes and had NO agreement test.**
+///
+/// `union_locally_free` and `any_connective_used` are maintained folds with **five independent
+/// spellings each** — `insert_entry`, `extend_entries` (added by `626cf42d`, which duplicated
+/// them inline because `insert_entry` left that path), `recompute_folds`, `adopt_trie`, and
+/// `pathmap_integration::create_pathmap_from_elements`. Until this test there was **nothing**
+/// pinning any of them.
+///
+/// ⚠ **They reach emitted bytes.** Both feed `InternedEPathMap.locally_free` / `.connective_used`
+/// and `PathMapCreationResult`, and the latter is written back into freshly constructed
+/// `EPathMap`s' **proto fields 3 and 4** across ~36 conversion sites in `reduce.rs`. So a fold
+/// that drifts from the entries it summarises does not produce a wrong number — it produces
+/// **wrong bytes**.
+///
+/// ★ This is the same hazard class as
+/// [`entry_trie_len_agrees_with_the_materialised_projection`], and a strictly larger exposure:
+/// `len` had four spellings and one test; these have five each and had none.
+///
+/// The oracle is the definition — a fold recomputed directly over the entries.
+#[test]
+fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
+    let cases = pathmap_len_lemma_corpus();
+    assert!(!cases.is_empty(), "VACUOUS: empty corpus.");
+
+    let mut saw_connective = false;
+    let mut saw_nonempty_free = false;
+
+    for (name, map) in &cases {
+        let entries = map.ps();
+
+        // The oracle: recompute both folds from the entries, by definition.
+        let expected_connective = entries.iter().any(|p| p.connective_used);
+        let expected_free = entries.iter().fold(Vec::new(), |acc, p| {
+            models::rust::utils::union(acc, p.locally_free.clone())
+        });
+
+        assert_eq!(
+            map.entry_trie().any_connective_used(),
+            expected_connective,
+            "'{name}': `any_connective_used` says {} but folding over the entries says {}.\n\n\
+             This fold has FIVE independent spellings and feeds proto field 4 through \
+             InternedEPathMap / PathMapCreationResult, so a drift here emits WRONG BYTES, not a \
+             wrong number.",
+            map.entry_trie().any_connective_used(),
+            expected_connective
+        );
+        assert_eq!(
+            map.entry_trie().union_locally_free(),
+            expected_free.as_slice(),
+            "'{name}': `union_locally_free` disagrees with the union over the entries.\n\n\
+             Five spellings, and it feeds proto field 3 on ~36 reduce.rs conversion sites."
+        );
+
+        saw_connective |= expected_connective;
+        saw_nonempty_free |= !expected_free.is_empty();
+    }
+
+    // ⚠ Anti-vacuity: a corpus of only ground, connective-free, closed terms would satisfy every
+    // assertion above with both folds stuck at their identity values (`false` / `[]`).
+    assert!(
+        saw_connective || saw_nonempty_free,
+        "VACUOUS: every corpus entry has `connective_used == false` AND empty `locally_free`, so \
+         both folds sat at their identity element throughout. An implementation that returned a \
+         constant would pass. Add an entry carrying a connective or a free variable."
+    );
 }
