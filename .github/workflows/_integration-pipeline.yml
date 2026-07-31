@@ -579,54 +579,10 @@ jobs:
 
       - name: Check node host ports
         shell: bash -e {0}
-        # Docker smoke tests bind 14400-14455 below the kernel ephemeral range.
-        # Fail for active holders; allow TIME_WAIT sockets up to 60s to clear.
-        run: |
-          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is below the
-          # kernel ephemeral floor of 32768, so nothing can be auto-assigned
-          # into it and no reservation is needed. Verify the range is available
-          # before starting containers, waiting only for TIME_WAIT sockets.
-          #
-          # It used to reserve and wait on 40400-40455, inside the ephemeral
-          # range, and that is the whole reason the heavy pipeline had to be
-          # re-run so often. The Actions agent opens its control connections to
-          # GitHub before the job exists and can source them from that range:
-          #
-          #   ESTAB 10.1.0.54:40418 -> 20.85.130.105:443  (("Runner.Listener",pid=2060))
-          #   ESTAB 10.1.0.32:40422 -> 140.82.112.24:443  (("hosted-compute-",pid=2034))
-          #
-          # Those are ESTAB for the life of the job. They never drain, so the
-          # 90s wait could not have helped -- it only delayed the failure. A
-          # re-run passed because a fresh runner's agent picked different source
-          # ports, which is exactly why this read as an intermittent flake.
-          #
-          # TIME_WAIT is still worth waiting out: it genuinely clears in ~60s,
-          # and a previous job on the same runner can leave some behind. So the
-          # two cases are separated -- wait for what drains, fail immediately
-          # and name the holder for what does not.
-          range='sport >= :14400 and sport <= :14455'
-          # 13 samples at t=0,5,...,60 -- the last sample IS the decision, so
-          # the loop never sleeps past a check it does not then act on.
-          for i in $(seq 1 13); do
-            snapshot="$(sudo ss -Htanp "$range" 2>/dev/null || true)"
-            busy="$(printf '%s' "$snapshot" | grep -c . || true)"
-            [ "$busy" -eq 0 ] && exit 0
-            stuck="$(printf '%s\n' "$snapshot" | grep -v '^TIME-WAIT' || true)"
-            if [ -n "$stuck" ]; then
-              echo "FAIL: port(s) in 14400-14455 held by a socket that will not drain:"
-              printf '%s\n' "$stuck"
-              echo "Not TIME_WAIT, so waiting cannot clear these. If the holder is the"
-              echo "Actions agent, the CI range now overlaps the ephemeral range again --"
-              echo "check net.ipv4.ip_local_port_range on this runner."
-              exit 1
-            fi
-            [ "$i" -eq 13 ] && break
-            echo "  [${i}] ${busy} TIME_WAIT socket(s) in 14400-14455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: ${busy} TIME_WAIT socket(s) still holding 14400-14455 after 60s:"
-          printf '%s\n' "$snapshot"
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start standalone node
         shell: bash -ex {0}
@@ -731,54 +687,10 @@ jobs:
 
       - name: Check node host ports
         shell: bash -e {0}
-        # Docker smoke tests bind 14400-14455 below the kernel ephemeral range.
-        # Fail for active holders; allow TIME_WAIT sockets up to 60s to clear.
-        run: |
-          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is below the
-          # kernel ephemeral floor of 32768, so nothing can be auto-assigned
-          # into it and no reservation is needed. Verify the range is available
-          # before starting containers, waiting only for TIME_WAIT sockets.
-          #
-          # It used to reserve and wait on 40400-40455, inside the ephemeral
-          # range, and that is the whole reason the heavy pipeline had to be
-          # re-run so often. The Actions agent opens its control connections to
-          # GitHub before the job exists and can source them from that range:
-          #
-          #   ESTAB 10.1.0.54:40418 -> 20.85.130.105:443  (("Runner.Listener",pid=2060))
-          #   ESTAB 10.1.0.32:40422 -> 140.82.112.24:443  (("hosted-compute-",pid=2034))
-          #
-          # Those are ESTAB for the life of the job. They never drain, so the
-          # 90s wait could not have helped -- it only delayed the failure. A
-          # re-run passed because a fresh runner's agent picked different source
-          # ports, which is exactly why this read as an intermittent flake.
-          #
-          # TIME_WAIT is still worth waiting out: it genuinely clears in ~60s,
-          # and a previous job on the same runner can leave some behind. So the
-          # two cases are separated -- wait for what drains, fail immediately
-          # and name the holder for what does not.
-          range='sport >= :14400 and sport <= :14455'
-          # 13 samples at t=0,5,...,60 -- the last sample IS the decision, so
-          # the loop never sleeps past a check it does not then act on.
-          for i in $(seq 1 13); do
-            snapshot="$(sudo ss -Htanp "$range" 2>/dev/null || true)"
-            busy="$(printf '%s' "$snapshot" | grep -c . || true)"
-            [ "$busy" -eq 0 ] && exit 0
-            stuck="$(printf '%s\n' "$snapshot" | grep -v '^TIME-WAIT' || true)"
-            if [ -n "$stuck" ]; then
-              echo "FAIL: port(s) in 14400-14455 held by a socket that will not drain:"
-              printf '%s\n' "$stuck"
-              echo "Not TIME_WAIT, so waiting cannot clear these. If the holder is the"
-              echo "Actions agent, the CI range now overlaps the ephemeral range again --"
-              echo "check net.ipv4.ip_local_port_range on this runner."
-              exit 1
-            fi
-            [ "$i" -eq 13 ] && break
-            echo "  [${i}] ${busy} TIME_WAIT socket(s) in 14400-14455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: ${busy} TIME_WAIT socket(s) still holding 14400-14455 after 60s:"
-          printf '%s\n' "$snapshot"
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start shard
         shell: bash -ex {0}
@@ -902,55 +814,10 @@ jobs:
 
       - name: Check node host ports
         shell: bash -e {0}
-        # The local smoke binds 14400-14455 through node CLI flags, below the
-        # kernel ephemeral range. Fail for active holders; allow TIME_WAIT
-        # sockets up to 60s to clear.
-        run: |
-          # The local smoke binds 14400-14455 below the kernel ephemeral floor
-          # of 32768, so nothing can be auto-assigned into it and no reservation
-          # is needed. Verify the range is available before starting the node,
-          # waiting only for TIME_WAIT sockets.
-          #
-          # It used to reserve and wait on 40400-40455, inside the ephemeral
-          # range, and that is the whole reason the heavy pipeline had to be
-          # re-run so often. The Actions agent opens its control connections to
-          # GitHub before the job exists and can source them from that range:
-          #
-          #   ESTAB 10.1.0.54:40418 -> 20.85.130.105:443  (("Runner.Listener",pid=2060))
-          #   ESTAB 10.1.0.32:40422 -> 140.82.112.24:443  (("hosted-compute-",pid=2034))
-          #
-          # Those are ESTAB for the life of the job. They never drain, so the
-          # 90s wait could not have helped -- it only delayed the failure. A
-          # re-run passed because a fresh runner's agent picked different source
-          # ports, which is exactly why this read as an intermittent flake.
-          #
-          # TIME_WAIT is still worth waiting out: it genuinely clears in ~60s,
-          # and a previous job on the same runner can leave some behind. So the
-          # two cases are separated -- wait for what drains, fail immediately
-          # and name the holder for what does not.
-          range='sport >= :14400 and sport <= :14455'
-          # 13 samples at t=0,5,...,60 -- the last sample IS the decision, so
-          # the loop never sleeps past a check it does not then act on.
-          for i in $(seq 1 13); do
-            snapshot="$(sudo ss -Htanp "$range" 2>/dev/null || true)"
-            busy="$(printf '%s' "$snapshot" | grep -c . || true)"
-            [ "$busy" -eq 0 ] && exit 0
-            stuck="$(printf '%s\n' "$snapshot" | grep -v '^TIME-WAIT' || true)"
-            if [ -n "$stuck" ]; then
-              echo "FAIL: port(s) in 14400-14455 held by a socket that will not drain:"
-              printf '%s\n' "$stuck"
-              echo "Not TIME_WAIT, so waiting cannot clear these. If the holder is the"
-              echo "Actions agent, the CI range now overlaps the ephemeral range again --"
-              echo "check net.ipv4.ip_local_port_range on this runner."
-              exit 1
-            fi
-            [ "$i" -eq 13 ] && break
-            echo "  [${i}] ${busy} TIME_WAIT socket(s) in 14400-14455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: ${busy} TIME_WAIT socket(s) still holding 14400-14455 after 60s:"
-          printf '%s\n' "$snapshot"
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start standalone node
         shell: bash -ex {0}
