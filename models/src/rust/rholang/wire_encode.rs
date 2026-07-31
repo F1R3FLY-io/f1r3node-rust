@@ -167,6 +167,33 @@ enum Op<'a> {
     /// Emit the remaining entries of the `BTreeMap` iterator on top of
     /// `map_iters`: one key, then descend into its value.
     MapEntries,
+    // ── PARKED, not deleted: the trie cursor. ────────────────────────────────
+    //
+    // /// Emit the remaining entries of the trie read-zipper on top of
+    // /// `entry_zippers` — one `Par` per step, each an arbitrarily deep node.
+    // ///
+    // /// ★ The exact shape of [`Op::MapEntries`], and for the same reason: the cursor is
+    // /// too big to live in a four-word `Op`, so it lives in the machine and the op is a
+    // /// bare tag. That is what lets an `EPathMap` be emitted **without materialising its
+    // /// entries** — `to_next_get_val` hands back `&'trie Par`, a borrow that outlives the
+    // /// call, so no `Vec<Par>` has to exist for `&dyn WireNode` to point into.
+    // EntryPaths,
+    //
+    // WHY IT IS PARKED. It works and is byte-identical (`wire_encode_differential`
+    // 13/13, every golden unmoved), but it costs 3 allocations / 1408 B on a warm
+    // encode where `wire_encode_space::the_steady_state_allocation_table` requires
+    // ZERO — one for the cursor `Vec`, two inside `read_zipper()` itself, which
+    // cannot be pooled away. It only pays for itself as a step toward emitting
+    // `U(m)` at this seam, which would need no cursor at all.
+    //
+    // ⚠ That destination is currently unreachable, and it was MEASURED rather than
+    // assumed: `rholang/tests/pathmap_escape_depth_reachability.rs` shows the escape
+    // arm's read ceiling is 32 while ordinary Rholang compiles a ¬eval_stable pathmap
+    // entry at depth 40. The bincode cold store is iterative and depth-unlimited in
+    // BOTH directions today, so moving its READER onto trie keys would break
+    // round-trip for terms a deploy can write. Until that reader is unbounded, this
+    // seam must keep emitting entries — and while it emits entries, the borrow in
+    // `open_pathmap` beats the cursor on the one axis the space gate measures.
 }
 
 // ===========================================================================
@@ -212,6 +239,9 @@ struct Machine<'a> {
     ops: Vec<Op<'a>>,
     /// One live iterator per ancestor `New` (the `injections` map).
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
+    // Parked with `Op::EntryPaths` — see the note at its definition.
+    // /// Live trie cursors, one per open `EPathMap`.
+    // entry_zippers: Vec<pathmap::zipper::ReadZipperUntracked<'a, 'static, Par>>,
     /// Op-stack high-water mark, tracked only when `TRACK` is on.
     high_water: usize,
 }
@@ -232,6 +262,7 @@ impl<'a> Machine<'a> {
         Machine {
             ops: take_ops(),
             map_iters: Vec::new(),
+            // entry_zippers: Vec::new(),
             high_water: 0,
         }
     }
@@ -297,6 +328,28 @@ impl<'a> Machine<'a> {
                         }
                     }
                 }
+                // Parked with `Op::EntryPaths` — see the note at its definition.
+                //
+                // Op::EntryPaths => {
+                //     use pathmap::zipper::ZipperReadOnlyIteration;
+                //     let next = self
+                //         .entry_zippers
+                //         .last_mut()
+                //         .expect("wire_encode: EntryPaths with no live zipper")
+                //         .to_next_get_val();
+                //     match next {
+                //         Some(par) => {
+                //             self.ops.push(Op::EntryPaths);
+                //             self.ops.push(Op::Node {
+                //                 node: par,
+                //                 field: 0,
+                //             });
+                //         }
+                //         None => {
+                //             self.entry_zippers.pop();
+                //         }
+                //     }
+                // }
             }
         }
     }
@@ -387,6 +440,26 @@ impl<'a> Machine<'a> {
     /// changes the event-hash preimage silently. `WireNode::wire_emit` refuses
     /// field 0 for exactly that reason.
     fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, map: &'a EPathMap) {
+        // ⚠ THIS SEAM IS NOT YET TRIE-NATIVE, and the reason is measured.
+        //
+        // The mandate is that a pathmap serializes as its own byte array on every
+        // surface. Here that would mean emitting `U(m)` — `map.entry_trie().path_stream()`,
+        // one `put_bytes` — with no count, no cursor and no entry walk at all.
+        //
+        // It cannot land until the bincode READER can read it back. Reconstructing
+        // entries from `U(m)` means `decode_trie_path` per key, whose escape arm re-decodes
+        // a ¬eval_stable entry through prost's recursion-limited decoder.
+        // `rholang/tests/pathmap_escape_depth_reachability.rs` measures that ceiling at
+        // depth 32 — and measures ordinary Rholang compiling such an entry at depth 40.
+        // The cold store is iterative and depth-unlimited in BOTH directions today, so
+        // moving this pair onto keys would break round-trip for terms a deploy can write.
+        // The unbounded prost reader (Phase 4 S2) is what unblocks it.
+        //
+        // Until then the seam emits entries, and it does so through the projection memo's
+        // BORROW rather than a live trie cursor: `WireSeq` is index-based and
+        // borrow-returning, and the borrow costs zero allocations on a warm encode where
+        // the cursor costs three. See the parked `Op::EntryPaths` for the cursor and why
+        // it is not the answer while this still emits a sequence.
         let PathmapPs::Stored(ps) = pathmap_ps(map);
         put_u64(out, ps.len() as u64);
         self.suspend(node, 1);
