@@ -312,10 +312,6 @@ fn shape_3_epathmap_is_four_wire_fields_with_a_transparent_ps() {
     let decoded = both(&par_of(ExprInstance::EPathmapBody(map)));
     match decoded.exprs[0].expr_instance.as_ref() {
         Some(ExprInstance::EPathmapBody(m)) => {
-            assert!(
-                m.shadow_cell_for_test().is_none(),
-                "a decoded EPathMap must leave `intern` at OnceLock::default()"
-            );
         }
         _ => panic!("expected EPathmapBody"),
     }

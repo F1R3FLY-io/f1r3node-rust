@@ -26,7 +26,7 @@ use models::rhoapi::{
     New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
     connective::ConnectiveInstance, var::VarInstance,
 };
-use models::rust::pathmap_crate_type_mapper::{clear_intern_store_for_test, eval_stable_epathmap};
+use models::rust::pathmap_crate_type_mapper::eval_stable_epathmap;
 use models::rust::spliced_event_bytes::{
     event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
     event_hash_bytes_tagged_continuation,
@@ -43,8 +43,6 @@ use fixtures::{e6a_index_epathmap, epathmap_par, gstring_par, nested_epathmap_va
 /// shadow cell; clones propagate it).
 fn interned_map() -> EPathMap {
     let map = e6a_index_epathmap();
-    let _ = map.intern();
-    assert!(map.interned_handle().is_some(), "intern() must fill the cell");
     map
 }
 
@@ -392,17 +390,14 @@ fn ground_string_map(labels: &[&str]) -> EPathMap {
 /// (producer-independence — the real consensus property).
 #[test]
 fn permuted_ground_family_splices_to_identical_event_hash() {
-    clear_intern_store_for_test();
 
     let m1 = ground_string_map(&["a", "b", "c"]);
-    let _ = m1.intern(); // the shared entry; its serde_bytes fill on first hash
     let d1 = datum(vec![epathmap_par(m1)]);
     // Hashing d1 first fills the entry's serde_bytes cache with m1's order.
     let h1 = event_hash_bytes_list_par_with_random(&d1);
     assert_spliced_eq_direct_datum("permuted-family-m1", &d1);
 
     let m2 = ground_string_map(&["c", "b", "a"]); // same SET, permuted order
-    let _ = m2.intern(); // shares m1's entry (order-insensitive U(m))
     let d2 = datum(vec![epathmap_par(m2)]);
 
     // emit==direct for the permuted twin sharing the foreign-order-filled cache.
@@ -420,15 +415,12 @@ fn permuted_ground_family_splices_to_identical_event_hash() {
 /// canonical (deduped) serde bytes — emit==direct for both.
 #[test]
 fn duplicate_entry_ground_map_splices_to_deduped_event_hash() {
-    clear_intern_store_for_test();
 
     let with_dup = ground_string_map(&["a", "a", "b"]);
-    let _ = with_dup.intern();
     let d_dup = datum(vec![epathmap_par(with_dup)]);
     assert_spliced_eq_direct_datum("dup-entries", &d_dup);
 
     let deduped = ground_string_map(&["a", "b"]);
-    let _ = deduped.intern();
     let d_dedup = datum(vec![epathmap_par(deduped)]);
     assert_spliced_eq_direct_datum("deduped-entries", &d_dedup);
 
@@ -446,10 +438,8 @@ fn duplicate_entry_ground_map_splices_to_deduped_event_hash() {
 /// — emit==direct for both, with the inner interned so the SPLICE path fires.
 #[test]
 fn nested_ground_submap_inside_non_ground_outer_splices_identically() {
-    clear_intern_store_for_test();
 
     let inner_fwd = ground_string_map(&["x", "y", "z"]);
-    let _ = inner_fwd.intern();
     let outer_fwd = EPathMap::new(vec![epathmap_par(inner_fwd)], Vec::new(), true, None);
     assert!(
         !eval_stable_epathmap(&outer_fwd),
@@ -459,7 +449,6 @@ fn nested_ground_submap_inside_non_ground_outer_splices_identically() {
     assert_spliced_eq_direct_datum("nested-inner-fwd", &d_fwd);
 
     let inner_bwd = ground_string_map(&["z", "y", "x"]); // shares inner_fwd's entry
-    let _ = inner_bwd.intern();
     let outer_bwd = EPathMap::new(vec![epathmap_par(inner_bwd)], Vec::new(), true, None);
     let d_bwd = datum(vec![epathmap_par(outer_bwd)]);
     assert_spliced_eq_direct_datum("nested-inner-bwd", &d_bwd);
@@ -493,7 +482,6 @@ fn leaf_par_strategy() -> impl Strategy<Value = Par> {
                     None,
                 );
                 if interned {
-                    let _ = map.intern();
                 }
                 epathmap_par(map)
             }
@@ -546,7 +534,6 @@ fn par_strategy() -> impl Strategy<Value = Par> {
                 |(ps, interned)| {
                     let map = EPathMap::new(ps, Vec::new(), false, None);
                     if interned {
-                        let _ = map.intern();
                     }
                     epathmap_par(map)
                 }
@@ -713,13 +700,11 @@ fn the_recorded_epathmap_entries_migrated_from_a_vec_to_a_deduplicating_trie() {
 /// `cc 11cdd43bc682c5868b68a4b70d85766bd99be3bfe9b19f8d90aa4b3215ef01fb` — the DUPLICATE.
 #[test]
 fn the_recorded_duplicate_epathmap_entry_passes_the_pm1_gate() {
-    clear_intern_store_for_test();
     pm1_gate(&recorded_epathmap_par(2), Vec::new(), 0);
 }
 
 /// `cc 9511857581c23949e5f8620affddb87bce7a8edba290c80d3f4a2647a73b0895` — the control.
 #[test]
 fn the_recorded_single_entry_epathmap_passes_the_pm1_gate() {
-    clear_intern_store_for_test();
     pm1_gate(&recorded_epathmap_par(1), Vec::new(), 0);
 }

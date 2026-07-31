@@ -125,10 +125,6 @@ name = "epathmap_identity_is_the_path_stream"
 path = "tests/epathmap_identity_is_the_path_stream.rs"
 
 [[test]]
-name = "epathmap_intern_store"
-path = "tests/epathmap_intern_store.rs"
-
-[[test]]
 name = "epathmap_spliced_event_bytes"
 path = "tests/epathmap_spliced_event_bytes.rs"
 

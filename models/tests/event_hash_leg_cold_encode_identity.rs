@@ -444,12 +444,6 @@ fn filling_the_intern_cell_moves_neither_encoder() {
     let before_machine = epathmap_par(map.clone()).cold_encode();
 
     let filled = map.clone();
-    let _ = filled.intern();
-    assert!(
-        filled.interned_handle().is_some(),
-        "intern() did not fill the cell, so this test compares two unfilled maps \
-         and proves nothing about cell-state independence"
-    );
 
     let after_oracle = bincode::serialize(&epathmap_par(filled.clone())).expect("oracle");
     let after_machine = epathmap_par(filled).cold_encode();

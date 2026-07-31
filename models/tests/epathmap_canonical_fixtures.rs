@@ -447,11 +447,6 @@ fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
     let rs1 = fixture_random_state();
 
     let interned_map = e6a_index_epathmap();
-    let _ = interned_map.intern();
-    assert!(
-        interned_map.interned_handle().is_some(),
-        "intern() must fill the shadow cell for the spliced path"
-    );
 
     let datum = ListParWithRandom {
         pars: vec![epathmap_par(interned_map)],
@@ -484,7 +479,6 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
     let channel = gstring_par("e6a:idx:site0");
 
     let interned_map = e6a_index_epathmap();
-    let _ = interned_map.intern();
 
     // First: the EXACT P0 consume (map-free) must still pin — the direct
     // path through the new trait plumbing.

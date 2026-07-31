@@ -52,15 +52,6 @@ use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{EPathMap, Expr, Par, Var};
 use super::rhoapi_ext::EntryTrie;
 
-/// Bound on the number of digest buckets retained at once (the landed
-/// 84a0fbe4 capacity, unchanged — one mechanism, one capacity).
-///
-/// The interpreter's PathMap query workloads (e.g. the rho_net set-automaton
-/// index) issue many method calls against a small number of distinct EPathMap
-/// values — typically one large index plus a handful of small transients — so
-/// a small bound captures essentially all reuse while keeping worst-case
-/// retained memory at `INTERN_CAPACITY × (canonical prost bytes + trie)`.
-const INTERN_CAPACITY: usize = 64;
 
 /// Fixed staging-chunk size for the streaming encode adapter. prost writes
 /// through `BufMut::put_u8`/`put_slice`, whose `bytes` default impls loop
@@ -68,66 +59,8 @@ const INTERN_CAPACITY: usize = 64;
 /// chunk size is contract-correct; 256 keeps the whole adapter on the stack.
 const ENCODE_STREAM_CHUNK: usize = 256;
 
-/// One interned EPathMap→trie conversion (the store entry, shared by `Arc`).
-///
-/// `map` is retained as a live `PathMap<Par>`; handing it to a caller is an
-/// O(1) `clone()` (the pathmap crate bumps the refcount on the root
-/// `TrieNodeODRc`). Callers that mutate their clone go through the crate's
-/// `make_mut` copy-on-write path, so an interned trie can never be corrupted
-/// by a caller (test-pinned since 84a0fbe4).
-pub struct InternedEPathMap {
-    /// The built trie (an O(1)-clonable handle).
-    pub map: RholangPathMap,
-    /// `connective_used` as computed by `create_pathmap_from_elements`
-    /// (OR over entries; forced `true` by a `Some` remainder) — NOT the
-    /// EPathMap's own field (landed semantics, value-identical).
-    pub connective_used: bool,
-    /// `locally_free` as computed by `create_pathmap_from_elements`
-    /// (union over entries) — NOT the EPathMap's own field (landed
-    /// semantics, value-identical).
-    pub locally_free: Vec<u8>,
-    /// U(m) — the GROUND-arm value serialization: the UNCOMPRESSED,
-    /// trie-ordered, length-framed key stream `repeat( u32-LE keylen ++
-    /// trie_key )`, produced ONCE by a PathMap read-zipper walk over `map`
-    /// (no sort; trie order = canonical order). EMPTY for non-ground maps.
-    /// The wire payload of proto field 8 (`serialized_paths`) and, for ground
-    /// maps, the sole content of [`Self::canonical_prost`] / the digest
-    /// preimage. NEVER deflated.
-    pub path_stream: Vec<u8>,
-    /// The canonical prost encoding of the source EPathMap — the digest
-    /// preimage + K2 verify reference. For a GROUND map this is the field-8
-    /// message (just `serialized_paths` = U(m); `locally_free`/
-    /// `connective_used`/`remainder` are at prost defaults and omitted). For a
-    /// non-ground map it is the pre-wire field walk (`ps` at tag 1 + 3/4/5).
-    pub canonical_prost: Vec<u8>,
-    /// `Message::encoded_len()` of the source EPathMap
-    /// (`== canonical_prost.len()`), computed ONCE (amendment PM-7).
-    pub encoded_len: usize,
-    /// Blake2b-256 of `canonical_prost` — the store key.
-    pub digest: [u8; 32],
-    /// `ps.len()` of the source EPathMap.
-    pub entry_count: usize,
-    /// The PM-4(c) ground-normal-form classifier verdict: `true` iff the
-    /// interpreter's EPathMap re-evaluation (reduce.rs:2687-2707) is
-    /// PROVABLY the byte-exact identity on this map. Consumed by P2's
-    /// method-chain fusion gate; conservative (anything unrecognized is
-    /// `false` ⇒ fallback to today's path). See [`eval_stable_epathmap`].
-    pub eval_stable: bool,
-    /// Lazily-filled bincode-of-EPathMap serde bytes for P4's spliced event
-    /// hashing. UNPOPULATED in P1 (P4 is the lazy consumer).
-    pub serde_bytes: OnceLock<Vec<u8>>,
-}
 
-/// One digest bucket: the LRU last-use tick plus the K2 collision list
-/// (pairwise byte-distinct entries sharing one digest — a ~2^-128 event;
-/// the list is length 1 in every non-adversarial execution).
-type InternBucket = (u64, Vec<Arc<InternedEPathMap>>);
 
-/// Process-wide intern store. `std::sync::OnceLock` + `Mutex` matches the
-/// interpreter's existing std-sync concurrency idiom (cf. the `OnceLock`
-/// reducer cell in `rholang`'s `reduce.rs`) and introduces no new
-/// dependencies.
-static TRIE_INTERN: OnceLock<Mutex<HashMap<[u8; 32], InternBucket>>> = OnceLock::new();
 
 /// Monotonic LRU tick source. Incremented only while the store mutex is
 /// held, so bucket last-use ticks are strictly ordered by lock acquisition.
@@ -139,26 +72,6 @@ static INTERN_TICK: AtomicU64 = AtomicU64::new(0);
 /// diagnostic log line.
 static DIGEST_COLLISION_EVENTS: AtomicU64 = AtomicU64::new(0);
 
-fn intern_store() -> &'static Mutex<HashMap<[u8; 32], InternBucket>> {
-    TRIE_INTERN.get_or_init(|| Mutex::new(HashMap::with_capacity(INTERN_CAPACITY)))
-}
-
-fn next_intern_tick() -> u64 {
-    INTERN_TICK.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-fn note_digest_collision() {
-    let prior = DIGEST_COLLISION_EVENTS.fetch_add(1, Ordering::Relaxed);
-    if prior == 0 {
-        tracing::error!(
-            target: "models::epathmap_intern",
-            "Blake2b-256 digest collision in the EPathMap intern store: a digest bucket was hit \
-             but the full-prost-fidelity byte verify matched no stored candidate (probability \
-             ~2^-128 per pair). The store disambiguated via the bucket's collision list and \
-             continued value-correctly; preserve this log line as evidence of the event."
-        );
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Streaming encode adapter (zero-allocation digest + K2 byte verify)
@@ -545,137 +458,10 @@ fn stable_children<'p>(children: &'p [Par], budget: u32, deferred: &mut Vec<&'p 
 // The intern store
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Intern an EPathMap: return the shared [`InternedEPathMap`] for its
-/// canonical prost bytes.
-///
-/// P3: the instance's SHADOW CELL is consulted FIRST (`EPathMap::intern`) —
-/// filled ⇒ an O(1) `Arc` clone with NO digest walk, NO store lock, NO K2
-/// verify (the post-P2 profile's #1 residual was exactly this rendezvous
-/// re-walking the map per call). Unfilled ⇒ one [`intern_epathmap_via_store`]
-/// pass fills the cell (store hit or build), and the handle then travels
-/// with every later `Clone` of the instance. All 56 P1 call sites and P2's
-/// fused-chain rendezvous inherit the O(1) path through this one function.
-pub fn interned_epathmap(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
-    e_pathmap.intern()
-}
-
-/// The store rendezvous behind the shadow cell (P1's intern body, unchanged
-/// in substance): build (trie + canonical encoding + classifier) on first
-/// sight, dedup by content otherwise.
-///
-/// Called ONLY from `EPathMap::intern`'s `OnceLock::get_or_init` (the cell
-/// is empty for the whole call, so every `encode_raw` below is the field
-/// walk; nested entry-level EPathMaps may still serve their own filled
-/// cells, which is byte-correct under the cell invariant).
-///
-/// Lookup path (zero heap allocation): one streamed digest walk selects the
-/// bucket; each candidate in the bucket's collision list is certified by the
-/// K2 re-streamed byte verify before being returned.
-///
-/// Miss path: `encoded_len()` is computed ONCE and the encoding written via
-/// `encode_raw` into a `Vec` of exactly that capacity (amendment PM-7 —
-/// `Message::encode` would re-walk `encoded_len` for its capacity check);
-/// the trie is built OUTSIDE the lock (the landed double-insert-benign
-/// discipline, upgraded to REUSE: the re-lock re-scan returns a racing
-/// winner's `Arc`, keeping every collision list pairwise byte-distinct).
-pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
-    // GROUND fast-path (non-empty eval_stable map): content-address by U(m).
-    // ★ The trie is no longer BUILT here — `e_pathmap` is holding it. What the
-    // store still provides is the canonical BYTES (and, on a hit, one shared
-    // `Arc` for every equal map in the process), which is a genuinely different
-    // artifact and still costs a walk to produce.
-    if eval_stable_epathmap(e_pathmap) && !e_pathmap.entry_trie().is_empty() {
-        let path_stream = e_pathmap.path_stream();
-        let canonical_prost = ground_canonical_prost(&path_stream);
-        let digest = blake2b_256(&canonical_prost);
-        {
-            let mut store = intern_store()
-                .lock()
-                .expect("EPathMap intern store mutex poisoned");
-            if let Some((last_use, bucket)) = store.get_mut(&digest) {
-                for entry in bucket.iter() {
-                    if entry.canonical_prost == canonical_prost {
-                        *last_use = next_intern_tick();
-                        return Arc::clone(entry);
-                    }
-                }
-                note_digest_collision();
-            }
-        }
-        let encoded_len = canonical_prost.len();
-        return store_insert(Arc::new(InternedEPathMap {
-            map: e_pathmap.entry_trie().trie().clone(),
-            connective_used: e_pathmap.entry_trie().any_connective_used(),
-            locally_free: e_pathmap.entry_trie().union_locally_free().to_vec(),
-            path_stream,
-            canonical_prost,
-            encoded_len,
-            digest,
-            entry_count: e_pathmap.entry_trie().len(),
-            eval_stable: true,
-            serde_bytes: OnceLock::new(),
-        }));
-    }
-
-    // NON-GROUND (or empty) map: the pre-wire field walk (`ps` at tag 1 + the
-    // 3/4/5 metadata fields), unchanged — zero-alloc streamed-digest lookup,
-    // build + insert on miss.
-    let digest = canonical_prost_digest(e_pathmap);
-
-    {
-        let mut store = intern_store()
-            .lock()
-            .expect("EPathMap intern store mutex poisoned");
-        if let Some((last_use, bucket)) = store.get_mut(&digest) {
-            for entry in bucket.iter() {
-                if matches_canonical_prost(e_pathmap, &entry.canonical_prost) {
-                    *last_use = next_intern_tick();
-                    return Arc::clone(entry);
-                }
-            }
-            // Digest hit but no byte match: a ~2^-128 collision. Treat as a
-            // miss (build + insert into this bucket's list below).
-            note_digest_collision();
-        }
-    }
-
-    // Build outside the lock so a slow rebuild never serializes unrelated
-    // conversions (landed discipline).
-    let encoded_len = e_pathmap.encoded_len();
-    let mut canonical_prost = Vec::with_capacity(encoded_len);
-    e_pathmap.encode_raw(&mut canonical_prost);
-    debug_assert_eq!(
-        canonical_prost.len(),
-        encoded_len,
-        "prost encode_raw must write exactly encoded_len bytes"
-    );
-    let entry = Arc::new(InternedEPathMap {
-        map: e_pathmap.entry_trie().trie().clone(),
-        connective_used: e_pathmap.entry_trie().any_connective_used()
-            || e_pathmap.remainder.is_some(),
-        locally_free: e_pathmap.entry_trie().union_locally_free().to_vec(),
-        path_stream: Vec::new(),
-        canonical_prost,
-        encoded_len,
-        digest,
-        entry_count: e_pathmap.entry_trie().len(),
-        eval_stable: eval_stable_epathmap(e_pathmap),
-        serde_bytes: OnceLock::new(),
-    });
-
-    store_insert(entry)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // U(m) helpers + the shared store rendezvous (EPathMap native byte-array wire)
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Blake2b-256 of raw bytes — the digest of a `canonical_prost` preimage.
-fn blake2b_256(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Blake2b::<U32>::new();
-    hasher.update(bytes);
-    hasher.finalize().into()
-}
 
 /// U(m) from a built trie: a read-zipper walk yielding, in trie order (NO
 /// sort), `repeat( u32-LE keylen ++ trie_key )`. This is the uncompressed twin
@@ -705,15 +491,6 @@ pub(crate) fn ground_field8_len(path_stream: &[u8]) -> usize {
     prost::encoding::key_len(8u32)
         + prost::encoding::encoded_len_varint(path_stream.len() as u64)
         + path_stream.len()
-}
-
-/// A ground map's canonical prost bytes: JUST field 8 (`serialized_paths` =
-/// U(m)). `locally_free`/`connective_used`/`remainder` are at prost defaults
-/// (eval_stable ⇒ empty) and omitted.
-pub(crate) fn ground_canonical_prost(path_stream: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(ground_field8_len(path_stream));
-    encode_ground_field8(path_stream, &mut buf);
-    buf
 }
 
 /// The KEY-side reading of a trie's contents: every key decoded through
@@ -748,40 +525,6 @@ pub(crate) fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
     ps
 }
 
-/// The shared store rendezvous: re-scan the digest bucket (a racing thread may
-/// have interned the same bytes while we built) and reuse its `Arc`, else
-/// insert (LRU-evicting a bucket when the store is at capacity). Keeps every
-/// collision list pairwise byte-distinct.
-fn store_insert(entry: Arc<InternedEPathMap>) -> Arc<InternedEPathMap> {
-    let digest = entry.digest;
-    let mut store = intern_store()
-        .lock()
-        .expect("EPathMap intern store mutex poisoned");
-    let tick = next_intern_tick();
-    if let Some((last_use, bucket)) = store.get_mut(&digest) {
-        for existing in bucket.iter() {
-            if existing.canonical_prost == entry.canonical_prost {
-                *last_use = tick;
-                return Arc::clone(existing);
-            }
-        }
-        *last_use = tick;
-        bucket.push(Arc::clone(&entry));
-    } else {
-        if store.len() >= INTERN_CAPACITY {
-            if let Some(lru_digest) = store
-                .iter()
-                .min_by_key(|(_, (last_use, _))| *last_use)
-                .map(|(bucket_digest, _)| *bucket_digest)
-            {
-                store.remove(&lru_digest);
-            }
-        }
-        store.insert(digest, (tick, vec![Arc::clone(&entry)]));
-    }
-    entry
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Test seams (hidden pub: integration tests cannot see `cfg(test)` items)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -794,94 +537,9 @@ pub fn eval_stable_par_for_test(par: &Par) -> bool {
     eval_stable_par(par)
 }
 
-/// TEST SEAM: number of digest buckets currently in the store.
-///
-/// ⚠ This is an ABSOLUTE reading of process-global state. A test may compare it
-/// against a constant only when it has just called [`clear_intern_store_for_test`]
-/// and holds exclusive access against every other store-touching test in its
-/// binary. To ask the weaker, far more common question *"did this call touch the
-/// store?"* use [`intern_store_touches_for_test`] instead — a bucket count
-/// cannot answer it (see that function's note on LRU eviction).
-#[doc(hidden)]
-pub fn intern_store_len_for_test() -> usize {
-    intern_store()
-        .lock()
-        .expect("EPathMap intern store mutex poisoned")
-        .len()
-}
 
-/// TEST SEAM: the monotone count of STORE TOUCHES this process has performed —
-/// the LRU tick, which is bumped exactly once per store hit and once per insert.
-///
-/// # Why this and not the bucket count
-///
-/// The question *"did this call reach the store?"* has three plausible
-/// observables and two of them are unsound:
-///
-/// * **`intern_store_len_for_test() == 0`** is an absolute over process-global
-///   state. It answers "has *anything in this process* ever interned", which is
-///   a property of the test binary's schedule, not of the call under test. It is
-///   the assertion this seam was introduced to replace.
-/// * **the DELTA of `intern_store_len_for_test()`** is unsound twice over. A
-///   concurrent thread may intern inside the measurement window; and — the
-///   sharper failure — once the store reaches [`INTERN_CAPACITY`] every insert
-///   LRU-evicts one bucket and adds one, so the length delta is **zero for a
-///   call that did touch the store**. A full test binary drives the store to
-///   capacity routinely, so that assertion would read green precisely where it
-///   was supposed to read red.
-/// * **this counter's delta** is immune to both. [`next_intern_tick`] is called
-///   on every hit (`*last_use = next_intern_tick()`) and unconditionally by
-///   [`store_insert`], always while the store mutex is held, and it is
-///   monotone — eviction cannot mask it. So *store touched ⟺ this value
-///   advanced*, and a zero delta over a window in which no other thread may
-///   intern is exactly "the call did not reach the store".
-///
-/// The window still has to be exclusive: this is a process-global too, and the
-/// delta is only attributable to the measured call if nothing else interns
-/// while it runs. Under `cargo test` that means every store-touching test in
-/// the same binary must be excluded for the duration (each `tests/*.rs` is its
-/// own process, so the obligation is file-local).
-#[doc(hidden)]
-pub fn intern_store_touches_for_test() -> u64 {
-    INTERN_TICK.load(Ordering::Relaxed)
-}
 
-/// TEST SEAM: drop every bucket (the LRU tick keeps advancing).
-#[doc(hidden)]
-pub fn clear_intern_store_for_test() {
-    intern_store()
-        .lock()
-        .expect("EPathMap intern store mutex poisoned")
-        .clear();
-}
 
-/// TEST SEAM: insert an entry under `entry.digest`, pushing into the
-/// bucket's collision list (production insert discipline, minus the
-/// byte-distinctness re-scan — forced-collision tests inject deliberately
-/// mismatching entries).
-#[doc(hidden)]
-pub fn inject_intern_entry_for_test(entry: Arc<InternedEPathMap>) {
-    let mut store = intern_store()
-        .lock()
-        .expect("EPathMap intern store mutex poisoned");
-    let tick = next_intern_tick();
-    if let Some((last_use, bucket)) = store.get_mut(&entry.digest) {
-        *last_use = tick;
-        bucket.push(entry);
-    } else {
-        if store.len() >= INTERN_CAPACITY {
-            if let Some(lru_digest) = store
-                .iter()
-                .min_by_key(|(_, (last_use, _))| *last_use)
-                .map(|(bucket_digest, _)| *bucket_digest)
-            {
-                store.remove(&lru_digest);
-            }
-        }
-        let digest = entry.digest;
-        store.insert(digest, (tick, vec![entry]));
-    }
-}
 
 /// TEST SEAM: total digest-collision events observed by this process (the
 /// first event also emitted the once-per-process diagnostic log line).

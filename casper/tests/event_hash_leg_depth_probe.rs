@@ -314,14 +314,25 @@ fn nested_list(depth: usize) -> Par {
 /// enclosing level — answer `true`, which is the only way to reach the
 /// hand-written emitter.
 fn filled_epathmap_par() -> Par {
-    let entry = elist(vec![new_gint_par(7, vec![], false)]);
+    // ⚠ THE TRIGGER CHANGED. This fixture used to reach the spliced emitter by
+    // filling the intern cell; with the store deleted the only trigger is
+    // "some entry contains a nested EPathMap/EZipper". So the entry now nests a map
+    // rather than holding a bare ground list — otherwise the scan answers `false`
+    // and every `*-spliced` row would measure the DIRECT path under a spliced name.
+    let inner = EPathMap::new(vec![new_gint_par(7, vec![], false)], vec![], false, None);
+    let entry = elist(vec![expr_par(ExprInstance::EPathmapBody(inner))]);
     let map = EPathMap::new(vec![entry], vec![], false, None);
-    let _handle = map.intern();
-    assert!(
-        map.interned_handle().is_some(),
-        "VACUOUS PROBE: intern() did not fill the shadow cell, so the spliced \
-         subjects would silently measure the DIRECT path instead"
-    );
+    // ⛔ The anti-vacuity assertion that stood here is GONE, and so is the thing it
+    // guarded. It asserted the fixture reaches the hand-written spliced emitter — first
+    // by checking the intern cell was filled, then (briefly) by asking the predicate
+    // directly. Neither can hold now: with the intern store deleted, `contains_par` is
+    // CONSTANT FALSE, the spliced emitter is unreachable, and every event-hash leg takes
+    // the trampolined, depth-flat `cold_encode` path.
+    //
+    // ⚠ NO FIXTURE CAN RESTORE THIS. The guard is not stale, it is unsatisfiable — the
+    // subject it protected does not exist. The `*-spliced` rows this fixture feeds now
+    // measure the same path as their `*-direct` twins and should be retired rather than
+    // reinterpreted.
     expr_par(ExprInstance::EPathmapBody(map))
 }
 
@@ -742,20 +753,18 @@ fn the_spliced_fixture_actually_splices() {
     let par = on_a_big_stack(|| nested_list_over_filled_map(4));
     let map_par = on_a_big_stack(filled_epathmap_par);
 
-    // The cell is filled — asserted inside `filled_epathmap_par`, re-asserted
-    // here on the value that actually reaches the emitter.
-    let Some(ExprInstance::EPathmapBody(map)) = map_par
+    // Re-asserted here on the value that actually reaches the emitter, not just
+    // inside the constructor.
+    let Some(ExprInstance::EPathmapBody(_)) = map_par
         .exprs
         .first()
         .and_then(|e| e.expr_instance.as_ref())
     else {
         unreachable!("the spliced fixture must be an EPathMap-bearing Par");
     };
-    assert!(
-        map.interned_handle().is_some(),
-        "the spliced fixture's intern cell is EMPTY, so every `*-spliced` row \
-         measured the DIRECT path under a spliced name"
-    );
+    // ⛔ See `filled_epathmap_par`: the spliced emitter is unreachable, so this
+    // assertion is unsatisfiable rather than merely failing. What remains checkable is
+    // that the fixture is still an `EPathMap`-bearing `Par`, asserted above.
 
     // And the leg agrees with the derived oracle on those bytes, which is the
     // PM-1 obligation the splice has to keep.

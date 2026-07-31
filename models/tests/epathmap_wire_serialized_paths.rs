@@ -58,7 +58,7 @@ fn ground_map_serializes_as_field8_u_m() {
         bytes[0], FIELD8_KEY,
         "a non-empty ground map is the VALUE arm (field 8 serialized_paths)"
     );
-    assert!(!m.intern().path_stream.is_empty(), "U(m) is non-empty");
+    assert!(!m.path_stream().is_empty(), "U(m) is non-empty");
 }
 
 #[test]
@@ -69,10 +69,7 @@ fn permuted_construction_yields_identical_wire_and_digest() {
     // (the trie/zipper walk is insertion-order-independent) and identical
     // Blake2b digest.
     assert_eq!(forward.encode_to_vec(), backward.encode_to_vec());
-    assert_eq!(forward.intern().path_stream, backward.intern().path_stream);
-    assert_eq!(forward.intern().digest, backward.intern().digest);
-    // ...and they intern to the SAME shared entry.
-    assert!(std::sync::Arc::ptr_eq(&forward.intern(), &backward.intern()));
+    assert_eq!(forward.path_stream(), backward.path_stream());
 }
 
 #[test]
@@ -81,7 +78,6 @@ fn duplicated_entries_dedup_in_the_wire() {
     let deduped = ground(vec![gint(1), gint(2)]);
     // Idempotent trie insertion dedups ⇒ identical U(m) + digest.
     assert_eq!(with_dup.encode_to_vec(), deduped.encode_to_vec());
-    assert_eq!(with_dup.intern().digest, deduped.intern().digest);
 }
 
 #[test]
@@ -92,7 +88,6 @@ fn nested_map_of_map_wire_is_canonical() {
     let forward = ground(vec![gmap(vec![gint(1), gint(2)])]);
     let backward = ground(vec![gmap(vec![gint(2), gint(1)])]);
     assert_eq!(forward.encode_to_vec(), backward.encode_to_vec());
-    assert_eq!(forward.intern().digest, backward.intern().digest);
 }
 
 #[test]
@@ -120,7 +115,10 @@ fn injective_distinct_maps_have_distinct_digests() {
         ground(vec![gstr("1")]),
         ground(vec![gmap(vec![gint(1)])]),
     ];
-    let mut digests: Vec<[u8; 32]> = maps.iter().map(|m| m.intern().digest).collect();
+    // ★ Was `m.intern().digest`. The digest was Blake2b-256 OVER `canonical_prost`,
+    // so the encoding carries the same injectivity this test asserts — the property
+    // survives the intern store's deletion; only the vehicle changed.
+    let mut digests: Vec<Vec<u8>> = maps.iter().map(|m| m.encode_to_vec()).collect();
     let count = digests.len();
     digests.sort();
     digests.dedup();
@@ -154,7 +152,11 @@ fn non_ground_map_stays_on_the_term_arm() {
         bytes[0], FIELD1_KEY,
         "a non-ground map serializes on the term arm (field 1 ps), never field 8"
     );
-    assert!(m.intern().path_stream.is_empty(), "no U(m) for a non-ground map");
+    // ⛔ Was `assert!(m.intern().path_stream.is_empty())`. That asserted a property of
+    // the INTERN STORE — it computed `path_stream` only for ground maps — not of the
+    // trie. `EPathMap::path_stream()` walks the keys unconditionally, so a non-ground
+    // map has a perfectly good key stream; it simply is not what gets EMITTED. The
+    // assertion that still carries that meaning is the field-1-not-field-8 check above.
     let decoded = EPathMap::decode(&bytes[..]).expect("decode term arm");
     assert_eq!(decoded.encode_to_vec(), bytes);
 }
@@ -164,7 +166,7 @@ fn empty_map_is_all_defaults_not_field8() {
     let m = ground(vec![]);
     let bytes = m.encode_to_vec();
     assert!(bytes.is_empty(), "the canonical empty map is the all-defaults message");
-    assert!(m.intern().path_stream.is_empty());
+    assert!(m.path_stream().is_empty());
     let decoded = EPathMap::decode(&bytes[..]).expect("decode empty");
     assert!(decoded.ps().is_empty());
 }

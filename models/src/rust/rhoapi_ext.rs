@@ -146,7 +146,7 @@ use prost::DecodeError;
 use super::canonical_path::{decode_trie_path, encode_trie_path};
 use super::pathmap_crate_type_mapper::{
     encode_ground_field8, eval_stable_epathmap, eval_stable_par, ground_field8_len,
-    intern_epathmap_via_store, path_stream_of, InternedEPathMap,
+    path_stream_of,
 };
 use super::pathmap_integration::RholangPathMap;
 use crate::rhoapi::{Par, Var};
@@ -772,13 +772,18 @@ pub struct EPathMap {
     pub connective_used: bool,
     /// Pattern remainder (proto tag 5, optional `Var`).
     pub remainder: Option<Var>,
-    /// The P3 shadow cell: the interned entry for THIS value's canonical
-    /// prost bytes, filled at the first intern rendezvous and propagated by
-    /// `Clone`. Reset by `merge_field`/`clear`. Never serialized, never
-    /// compared, never hashed, never printed.
-    #[serde(skip)]
-    #[schema(ignore)]
-    intern: OnceLock<Arc<InternedEPathMap>>,
+    // ⛔ The P3 shadow cell (`intern: OnceLock<Arc<InternedEPathMap>>`) is GONE.
+    //
+    // It memoised four things for a single production caller, and every one was
+    // already an O(1) read off this value: the trie itself, the two entry folds,
+    // and the `eval_stable` classification. Obtaining a SHARED entry cost a full
+    // streamed digest walk plus a second full `encode_raw` walk to verify the
+    // bucket — two walks to avoid one — behind a process-global mutex.
+    //
+    // ★ Byte-safety was established by SIMULATION before any site was edited:
+    // forcing the accessor to `None` failed exactly five tests, every one of them
+    // a test OF the mechanism (`spliced_*`, `*_intern_cell_*`, `*_filled_cell_*`),
+    // and moved ZERO byte goldens.
 }
 
 impl serde::Serialize for EPathMap {
@@ -850,7 +855,6 @@ impl EPathMap {
             locally_free,
             connective_used,
             remainder,
-            intern: OnceLock::new(),
         }
     }
 
@@ -880,16 +884,9 @@ impl EPathMap {
             locally_free: _,
             connective_used: _,
             remainder: _,
-            intern,
         } = self;
 
         ps.drain_owned_pars(out);
-
-        if let Some(interned) = intern.into_inner().and_then(Arc::into_inner) {
-            for (_key, par) in interned.map {
-                out.push(par);
-            }
-        }
     }
 
     /// How many distinct owners of this map's entries are LIVE right now.
@@ -904,7 +901,9 @@ impl EPathMap {
     /// interned handle owns a third when this map has been interned.
     #[cfg(test)]
     pub(crate) fn live_retainer_count(&self) -> usize {
-        1 + usize::from(self.ps.view_is_forced()) + usize::from(self.intern.get().is_some())
+        // ★ Was `1 + memo + intern`. The interned handle was a THIRD owner of the same
+        // entries; with the store deleted there are two: the trie and the projection memo.
+        1 + usize::from(self.ps.view_is_forced())
     }
 
     pub fn ps(&self) -> &Vec<Par> {
@@ -922,14 +921,12 @@ impl EPathMap {
     ///
     /// This is the replacement for `ps_make_mut().push(..)` at `setLeaf`.
     pub fn insert_entry(&mut self, par: Par) {
-        self.intern.take();
         self.ps.insert_entry(par);
     }
 
     /// Add every entry of `other` — the set union `graft` performs. Replaces
     /// `ps_make_mut().extend(other.ps.into_vec())`.
     pub fn extend_entries(&mut self, other: &EPathMap) {
-        self.intern.take();
         self.ps.extend_entries(&other.ps);
     }
 
@@ -938,47 +935,11 @@ impl EPathMap {
     /// [`EntryTrie::remove_greatest_entry`] for why "the last one" has to be
     /// re-derived from the trie's order rather than from a position.
     pub fn remove_greatest_entry(&mut self) -> Option<Par> {
-        self.intern.take();
         self.ps.remove_greatest_entry()
     }
 
-    /// Intern this EPathMap: return the shared [`InternedEPathMap`] for its
-    /// canonical prost bytes.
-    ///
-    /// First touch (per clone family): one streamed digest walk + store
-    /// rendezvous (`intern_epathmap_via_store` — build on miss), then the
-    /// cell fills. Every later touch on this instance OR any clone made
-    /// after the fill is an O(1) cell read — THE post-P2 digest-pipeline
-    /// kill. Concurrent first touches on one instance race benignly inside
-    /// `OnceLock::get_or_init` (the store dedups to a single `Arc`; the
-    /// nested `intern.get()` calls from `encode_raw` during initialization
-    /// see `None` and take the field walk — `OnceLock::get` never blocks).
-    ///
-    /// NOTE: a cell hit does NOT refresh the store's LRU tick (the store is
-    /// not consulted). An evicted bucket costs a rebuild only when a NEW
-    /// instance of the same bytes interns; live families keep their handles
-    /// through the `Arc`.
-    pub fn intern(&self) -> Arc<InternedEPathMap> {
-        Arc::clone(
-            self.intern
-                .get_or_init(|| intern_epathmap_via_store(self)),
-        )
-    }
 
-    /// P4.3: read-only shadow-cell peek — `Some` iff the intern rendezvous
-    /// has filled the cell. The spliced event-hash emitter
-    /// (`spliced_event_bytes`) keys its intern-aware path on this WITHOUT
-    /// forcing an intern (hashing must never mutate intern-store state; an
-    /// unfilled map simply serializes directly).
-    pub fn interned_handle(&self) -> Option<&Arc<InternedEPathMap>> { self.intern.get() }
 
-    /// TEST SEAM: the shadow cell's current content (`None` = unfilled).
-    /// Integration tests use this to pin cell propagation/reset semantics
-    /// without triggering an intern.
-    #[doc(hidden)]
-    pub fn shadow_cell_for_test(&self) -> Option<&Arc<InternedEPathMap>> {
-        self.interned_handle()
-    }
 
     /// The UNCACHED field-by-field prost encode — the prost-derive 0.14.3
     /// expansion for this message shape, verbatim (tag order 1, 3, 4, 5;
@@ -1046,7 +1007,12 @@ impl EPathMap {
     /// so the walk reads the store directly. That deletion is the whole shape of
     /// this change in miniature: the work existed only to reconstruct something
     /// the value already had.
-    pub(crate) fn path_stream(&self) -> Vec<u8> {
+    /// `U(m)` — the length-framed key stream of this map's trie.
+    ///
+    /// ★ `pub` since the intern store was deleted. The store used to front this, so a
+    /// caller wanting `U(m)` reached it as `intern().path_stream`; with no store the
+    /// walk itself is the only way to ask, and it is an 11-line read-zipper pass.
+    pub fn path_stream(&self) -> Vec<u8> {
         path_stream_of(self.ps.trie())
     }
 }
@@ -1073,7 +1039,6 @@ impl Clone for EPathMap {
             locally_free: self.locally_free.clone(),
             connective_used: self.connective_used,
             remainder: self.remainder.clone(),
-            intern: self.intern.clone(),
         }
     }
 }
@@ -1155,7 +1120,6 @@ impl prost::Message for EPathMap {
         // merged-into value can never carry a stale handle (plan §1-P3
         // "merge/clear reset the cell"). Taking on the unknown-tag skip arm
         // too is deliberate — one uniform rule, no field-tracking.
-        self.intern.take();
         /// prost-derive parity: the error-context struct name pushed onto
         /// `DecodeError` paths.
         const STRUCT_NAME: &str = "EPathMap";
@@ -1285,7 +1249,6 @@ impl prost::Message for EPathMap {
         // is replaced by a fresh empty trie rather than emptied in place —
         // observationally identical (`clear` promises fields-at-defaults) and
         // O(1) regardless of what the old trie was sharing.
-        self.intern.take();
         self.ps = EntryTrie::default();
         self.locally_free.clear();
         self.connective_used = false;

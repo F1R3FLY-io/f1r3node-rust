@@ -798,11 +798,12 @@ fn decoded_epathmaps_carry_no_intern_handle() {
     };
     let bytes = bincode::serialize(&source).expect("serialize");
     let decoded = Par::cold_decode(&bytes).expect("machine");
+    // ⛔ Was: assert the decoded map carries no intern handle. With the store gone
+    // there is no handle to carry, so the assertion is unspellable rather than
+    // weakened. What still matters — that the decode produced an `EPathmapBody` at
+    // all — is kept.
     match decoded.exprs[0].expr_instance.as_ref() {
-        Some(ExprInstance::EPathmapBody(map)) => assert!(
-            map.shadow_cell_for_test().is_none(),
-            "a decoded EPathMap must not carry an intern handle"
-        ),
+        Some(ExprInstance::EPathmapBody(_)) => {}
         other => panic!("expected EPathmapBody, got {:?}", other.is_some()),
     }
 }
