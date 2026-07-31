@@ -85,12 +85,38 @@ env:
   #     the RSS/floor guardian names the ceiling that killed it instead of
   #     surfacing a raw gRPC traceback — without which the tightened limits
   #     below would be self-obscuring. Plus their reaper's soak guards.
-  # On their `dev` and heading to `main`; a SHA is immutable either way.
-  SYSTEM_INTEGRATION_REF: 7b6c9dd9674b19732923ed49feee758829b2c27a
+  # 2026-07-31: bumped to system-integration main (PR #76 merge). This is the
+  # bump that makes every bump above it mean anything.
+  #
+  # Until now this pin did not bind. launch-runner.sh registered every VM with
+  # one shared label set, so GitHub routed the soak job to whichever runner
+  # claimed it first -- frequently a VM some CI run had launched, carrying the
+  # cloud-init THAT workflow pinned. Run 30606130771 executed the pre-fix idle
+  # watchdog while this variable named the commit that fixed it; the console
+  # history has no pgrep and no Runner.Worker anywhere in 2410 lines. A pin that
+  # does not bind is worse than no pin, because it reads as a guarantee and
+  # stops people re-checking.
+  #
+  # This ref carries the RUNNER_LABELS override, so the soak now registers its
+  # runner under a label nothing else requests and therefore runs on the VM it
+  # launched. Verified on main by ancestry (git merge-base --is-ancestor), not
+  # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
+  # template placeholder, long before the override existed. Grepping would have
+  # said yes against a launcher that ignores the variable.
+  SYSTEM_INTEGRATION_REF: 5b3144e4e567e985fa36cc8c69ee70ee63d599ac
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  # OCI compartment "ci-runner". The soak tags itself by the OCID the metadata
+  # service reports and so needs no compartment to run; capture_diagnostics
+  # does, because it runs GitHub-hosted after the soak runner is gone and has
+  # to FIND the instance rather than be it. Literal for the same reason as in
+  # ci-runner-reaper.yml — an Actions variable would let anyone with repo admin
+  # repoint the search. check-workflow-invariants.sh already treats this file
+  # as an optional pin site and fails CI if the two ever name different
+  # compartments.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
 
 jobs:
   schedule_gate:
@@ -393,7 +419,12 @@ jobs:
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: oci-credentials
-    timeout-minutes: 10
+    # 60, not 25: this job waits for the runner to register before relabelling
+    # it (cloud-init 3-5 min, bounded at 15), and on a lost registration race it
+    # abandons the poached VM and launches another, up to three times. Worst
+    # case is three full 15-minute waits plus boots. The soak window absorbs
+    # this; a hung launch job would not.
+    timeout-minutes: 60
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
@@ -455,8 +486,228 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          # launch-runner.sh appends the name it generated when this is set.
+          # The next step needs it to find this exact runner among all the
+          # ci-eph-* runners registered at any moment.
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # Register under the exclusive label from the start rather than
+          # relabelling afterwards. Relabelling cannot revoke a job already
+          # assigned, so it always left a window; this closes it.
+          #
+          # The whole set, not just the pool label: RUNNER_LABELS replaces
+          # DEFAULT_LABELS outright. launch-runner.sh requires self-hosted,
+          # linux, the arch and oracle-cloud, and refuses to launch without
+          # them -- an omission here is a hard failure at launch, not a VM that
+          # boots healthy and never matches a runs-on. oracle-cloud in
+          # particular is the one whose absence actually breaks routing, and it
+          # must stay in step with the soak job's runs-on below.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
+
+      # Without this, the soak and CI compete for one undifferentiated pool.
+      # launch-runner.sh registers every VM with the same labels, so GitHub
+      # hands each queued job to whichever runner claims it first, regardless
+      # of which workflow paid to launch it. Run 30606130771 is the worked
+      # example: the soak ran on a VM launched by a PR CI run, its own VM took
+      # a CI job, and the soak died when the CI side finished with the runner
+      # it thought it owned.
+      #
+      # The damage is not only a lost night. The VM that runs the soak carries
+      # whatever cloud-init the OTHER workflow pinned, so SYSTEM_INTEGRATION_REF
+      # above silently stops describing the runner the soak actually runs on --
+      # 30606130771 ran the pre-fix idle watchdog despite the pin naming a
+      # commit that fixed it. A pin that does not bind is worse than no pin,
+      # because it reads like a guarantee.
+      #
+      # So: give this runner a label nothing else requests, and take away the
+      # shared one so nothing else can take it. Both directions, or the soak
+      # merely loses its runner instead of stealing one.
+      #
+      # Fails closed. A soak that cannot get an exclusive runner must not fall
+      # back to the shared pool -- that is the bug.
+      - name: Bind the soak runner to a dedicated label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
+          # Same file the launch step wrote to. launch-runner.sh APPENDS, so on
+          # a relaunch below the newest name is the last line.
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # MUST match the launch step. This step relaunches on a lost race, and
+          # without it the replacement VM would register under the shared label
+          # set -- so the retry that exists to escape the race would re-enter it,
+          # and the soak would then wait on an exclusive label its own
+          # replacement does not carry. Silent, and only on the retry path.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+        shell: bash -e {0}
+        run: |
+          # Bounded reclaim loop. Losing the registration race is recoverable:
+          # abandon the poached VM to the job that took it, launch another and
+          # try again. Three launches, because a pool busy enough to take three
+          # in a row is not a race any longer -- it is CI saturation, and
+          # burning more 16-OCPU VMs against it is waste, not persistence.
+          #
+          # See the abandon-rather-than-terminate note below for why we do not
+          # simply take the VM back. Once launch-runner.sh takes RUNNER_LABELS
+          # this loop stops firing, because there is no window left to lose.
+          MAX_LAUNCHES=3
+          bound=""
+          for launch in $(seq 1 "$MAX_LAUNCHES"); do
+          name="$(tail -n 1 /tmp/soak-runner-name 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "$name" ]; then
+            echo "::error::launch-runner.sh wrote no runner name; cannot bind a dedicated label"
+            exit 1
+          fi
+          echo "=== launch $launch/$MAX_LAUNCHES: waiting for $name to register (cloud-init takes ~3-5 min) ==="
+          rid=""
+          api_fail=0
+          for attempt in $(seq 1 60); do
+            # --arg, not string interpolation: the name must reach jq as DATA.
+            # Interpolated into the filter text, a name containing a quote or
+            # pipe would be parsed as jq code. launch-runner.sh controls the
+            # name today, so this is hygiene rather than a live hole -- but the
+            # whole point of this step is that what launch-runner.sh does is
+            # not under this repository's control.
+            if listing="$(gh api "repos/$GH_REPO/actions/runners" --paginate 2>&1)"; then
+              api_fail=0
+              # A jq failure here is a THIRD fact, distinct from both "API is
+              # broken" and "not registered yet": the call succeeded and
+              # returned something that is not the JSON we expect. Swallowed, it
+              # spends the full 15 minutes and then reports "never registered",
+              # naming slow cloud-init for what is a malformed API response --
+              # the exact conflation the api_fail counter below exists to stop.
+              if ! matched="$(printf '%s' "$listing" \
+                   | jq -r --arg name "$name" \
+                       '.runners[] | select(.name == $name) | .id' 2>&1)"; then
+                printf '%s\n' "$matched" | tail -5
+                echo "::error::the runner listing came back as unparseable JSON; this is an API fault, not a slow boot"
+                exit 1
+              fi
+              rid="$(printf '%s' "$matched" | head -1)"
+            else
+              # An empty runner list and a broken API call are different facts.
+              # Swallowing both makes an auth or permission regression look
+              # like slow cloud-init for a full 15 minutes, then fail with a
+              # message naming the wrong cause.
+              api_fail=$((api_fail + 1))
+              if [ "$api_fail" -eq 1 ] || [ "$((api_fail % 10))" -eq 0 ]; then
+                printf 'attempt %s: runner listing failed (%s consecutive)\n' "$attempt" "$api_fail"
+                printf '%s\n' "$listing" | tail -3
+              fi
+              if [ "$api_fail" -ge 20 ]; then
+                printf '%s\n' "$listing" | tail -20
+                echo "::error::runner listing has failed $api_fail times in a row; this is an API or permissions fault, not a slow boot"
+                exit 1
+              fi
+            fi
+            [ -n "$rid" ] && break
+            sleep 15
+          done
+          if [ -z "$rid" ]; then
+            echo "::error::$name never registered after 15 minutes; refusing to run the soak on the shared pool"
+            exit 1
+          fi
+          echo "registered as runner id $rid"
+          # Add the exclusive label before removing the shared one. The reverse
+          # order would leave a window where the runner matches nothing and a
+          # job queued in between waits forever.
+          # Explicit JSON body rather than the -f "labels[]=..." shorthand:
+          # this endpoint requires labels to be an ARRAY, and the shorthand is
+          # easy to get subtly wrong. Since this step fails closed, a malformed
+          # body would not merely mislabel a runner -- it would block every
+          # soak. Be unambiguous here.
+          printf '{"labels":["f1r3fly-rust-soak"]}' \
+            | gh api -X POST "repos/$GH_REPO/actions/runners/$rid/labels" \
+                --input - >/dev/null
+          # Best-effort, and NOT because failures do not matter -- the
+          # verification below is the gate, and it is stricter than this call.
+          #
+          # Removing a label the runner does not have returns 404, and gh exits
+          # non-zero on 404, which under `bash -e` kills the step. That is
+          # exactly the state we are driving toward: once launch-runner.sh
+          # honours RUNNER_LABELS, the VM registers as f1r3fly-rust-soak and
+          # never carries the shared label at all. Left strict, this line would
+          # fail every soak the day the pin moves -- a fix breaking on success.
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-ci-ephemeral" \
+            >/dev/null 2>&1 || true
+          have="$(gh api "repos/$GH_REPO/actions/runners/$rid/labels" \
+            --jq '[.labels[].name] | sort | join(",")')"
+          echo "labels now: $have"
+          case "$have" in
+            *f1r3fly-rust-soak*) ;;
+            *) echo "::error::dedicated label missing after update: $have"; exit 1 ;;
+          esac
+          case "$have" in
+            *f1r3fly-rust-ci-ephemeral*)
+              echo "::error::shared CI label still present after removal: $have"
+              exit 1
+              ;;
+          esac
+          # Correct labels are not the same as an available runner. A busy
+          # runner accepts label edits happily, so every check above passes on a
+          # VM that a CI job claimed during the registration window -- and the
+          # runner is --ephemeral, so it exits after that job and deregisters.
+          # The soak would then wait against timeout-minutes: 1440 for a runner
+          # that no longer exists: a 24h hang that burns the window exactly as
+          # a crash would, reported as a timeout with no cause attached.
+          #
+          # Checking busy is what makes the reclaim below possible at all: a
+          # correctly labelled runner and an available one are different facts,
+          # and only the second one can run a soak.
+          busy="$(gh api "repos/$GH_REPO/actions/runners/$rid" --jq '.busy' 2>/dev/null || echo unknown)"
+          if [ "$busy" = "false" ]; then
+            bound="$name"
+            break
+          fi
+          echo "::warning::$name was claimed by another workflow before the exclusive label landed (busy=$busy); abandoning it and launching a replacement"
+          # ABANDON, do not terminate. The VM is ours and terminating it would
+          # free the money sooner, but it would kill the job that claimed it --
+          # producing a runner-loss failure in that workflow, which is the exact
+          # signature we have spent two days learning to read as a bug. Three
+          # separate mechanisms already present identically from outside (the
+          # idle watchdog killing a live job, this label race, and whatever is
+          # still killing segments). A deliberate fourth producer of that signal
+          # means the next person debugging one has to first rule out that we
+          # did it on purpose, and nothing in the failed run would tell them.
+          #
+          # Abandoning costs the same money -- the runner is --ephemeral, so it
+          # exits after the stolen job and the VM self-terminates -- and buys a
+          # slightly slower retry. That is the right trade: the diagnostic
+          # channel is worth more than the minutes.
+          #
+          # Credit where due: this was system-integration's call, not mine. I
+          # had weighed only cost and soak windows, where it is genuinely close.
+          #
+          # Take the exclusive label back off it, though. We added
+          # f1r3fly-rust-soak before discovering it was busy, and leaving it
+          # there means an abandoned runner still advertises the label this
+          # soak routes on. Best effort: if it fails the runner is about to
+          # deregister anyway.
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-soak" \
+            >/dev/null 2>&1 || true
+          if [ "$launch" -lt "$MAX_LAUNCHES" ]; then
+            echo "launching a replacement soak runner"
+            system-integration/ci/oci-runners/launch-runner.sh amd64
+          fi
+          done
+          if [ -z "$bound" ]; then
+            echo "::error::could not obtain an exclusive soak runner in $MAX_LAUNCHES launches; every VM was claimed by another workflow during the registration window. CI is saturating the shared pool. Re-run when it is quiet, or land the launch-runner.sh RUNNER_LABELS override that removes the window entirely."
+            exit 1
+          fi
+          # The window between registering and the DELETE landing still exists;
+          # this loop makes losing it recoverable rather than fatal. Closing it
+          # needs launch-runner.sh to register under the exclusive label from the
+          # start, which it cannot do while LABELS is hardcoded with no override.
+          # That override is being added upstream. This repository deliberately
+          # does not patch the launcher in its checkout to force the issue: the
+          # step that fetches it is called "Clone trusted runner launcher" and
+          # pins SYSTEM_INTEGRATION_REF, and rewriting it between checkout and
+          # execution would mean the pinned SHA no longer describes what ran --
+          # which is the exact defect this branch exists to fix.
+          echo "soak runner $bound is registered, exclusive, and idle"
 
       - name: Remove OCI credentials
         if: always()
@@ -535,7 +786,11 @@ jobs:
     name: Merge Recovery Soak
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+    # f1r3fly-rust-soak, not the shared f1r3fly-rust-ci-ephemeral: only the
+    # runner launched by launch_runner above carries it, so this job cannot
+    # land on a CI-launched VM. See "Bind the soak runner to a dedicated
+    # label" for why that matters beyond scheduling.
+    runs-on: [self-hosted, linux, x64, f1r3fly-rust-soak, oracle-cloud]
     outputs:
       # Set by the job's last step. Empty means the VM died mid-run — the
       # signal retry_within_window keys on to tell infrastructure death from
@@ -628,10 +883,38 @@ jobs:
               if [ "$attempt" -lt 12 ]; then sleep 15; fi
               continue
             fi
+            # Empty or null is OCI genuinely reporting no tags -- a real answer,
+            # and {} is the correct starting point for it.
             case "$existing" in ''|null) existing='{}' ;; esac
-            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            # Anything else that does not parse is NOT an answer, and must be
+            # handled exactly like the read failure above: retry, never write.
+            # This previously fell back to {}, which -- since --freeform-tags
+            # replaces the whole map -- erased every existing tag, including the
+            # cost-tracking metadata the comment above is about. The loop
+            # defended against erasure-by-read-failure and then erased on the
+            # parse failure four lines later.
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/12: current tags did not parse as a JSON object; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | head -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
+            # github-run-key is what lets capture_diagnostics find this VM after
+            # the fact. When the runner is LOST rather than failing, the job
+            # never completes, so nothing it wrote to $GITHUB_OUTPUT is ever
+            # published — steps.selftag.outputs.instance_id is empty in exactly
+            # the case the post-mortem exists for. A tag lives on the instance
+            # instead of in the job, so it survives the job dying.
+            #
+            # run_id ALONE is not unique. GitHub keeps the same run id across
+            # re-runs and increments run_attempt instead, so attempt 2 that dies
+            # before self-tagging would resolve attempt 1's VM and publish its
+            # console history as the current failure's post-mortem. A confidently
+            # wrong post-mortem is worse than none: the whole point of this path
+            # is that what it reports can be trusted. Key on both.
             merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
+              --arg k "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d, "github-run-key": $k}')"
             if update_err="$(oci --auth instance_principal compute instance update \
                  --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
               tagged=1
@@ -1171,12 +1454,21 @@ jobs:
     # That evidence was then lost when the instance was terminated during
     # cleanup. Console history is captured as a SEPARATE OCI resource with its
     # own lifecycle, so it outlives the instance and can be read the next day.
+    #
+    # This job previously also required needs.soak.outputs.instance_id != '',
+    # which made it dead code. A lost runner never completes its job, so its
+    # outputs are never published — the ID is empty precisely when the runner
+    # vanishes, which is the only condition this job runs under. Run
+    # 30606130771 proved it: the soak died 18 minutes in with every step after
+    # "Install integration dependencies" left at a null conclusion and no log,
+    # the self-tag step had already succeeded so the OCID was known on the VM,
+    # and this job still skipped. The instance is now located by tag instead;
+    # see "Resolve the soak instance" below.
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.soak.result == 'failure' &&
-      needs.soak.outputs.completed != 'true' &&
-      needs.soak.outputs.instance_id != ''
+      needs.soak.outputs.completed != 'true'
     runs-on: ubuntu-latest
     environment: oci-credentials
     timeout-minutes: 15
@@ -1210,35 +1502,178 @@ jobs:
           key_file=$HOME/.oci/oci_api_key.pem
           EOF
 
-      - name: Capture console history
+      # Two sources, in order of authority. The job output is exact when it
+      # exists, but exists only when the soak job completed normally — rare
+      # here, since this job runs when it did not. The tag is written by the
+      # soak runner itself, from the OCID the metadata service reported, and
+      # lives on the instance rather than in the job, so it survives the runner
+      # being lost. Neither is a guess: both trace back to IMDSv2 on the VM.
+      #
+      # Terminated instances are deliberately NOT filtered out. A terminated
+      # VM is still worth resolving, because console history is a separate OCI
+      # resource with its own lifecycle and can be read after the instance is
+      # gone — recovering that evidence is the entire point of this job.
+      - name: Resolve the soak instance
+        id: resolve
         env:
-          IID: ${{ needs.soak.outputs.instance_id }}
+          OUTPUT_IID: ${{ needs.soak.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          iid="$OUTPUT_IID"
+          if [ -n "$iid" ]; then
+            echo "instance from soak job output: $iid"
+          else
+            key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "soak job published no instance_id (runner lost); searching by github-run-key=$key"
+            # The list and the filter are separated deliberately. Piping the
+            # CLI straight into jq under 2>/dev/null || true makes four very
+            # different facts indistinguishable -- expired credentials, a
+            # missing IAM policy, an OCI outage, and a genuine no-match all
+            # yield the empty string, and the job then reports the benign
+            # "died before self-tagging" warning and exits green.
+            #
+            # That is the same defect as the instance-console-history typo
+            # this file already carries a note about: an error swallowed into
+            # a plausible-looking negative result. A post-mortem that cannot
+            # distinguish "nothing to find" from "could not look" is not a
+            # post-mortem. Fail loudly on the second, stay quiet on the first.
+            #
+            # --all: the compartment accumulates terminated instances, and the
+            # match may be well past the first page.
+            if ! listing="$(oci compute instance list \
+                 --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>&1)"; then
+              printf '%s\n' "$listing" | tail -20
+              echo "::error::could not list instances in the ci-runner compartment; the post-mortem cannot tell a missing VM from an unreadable one"
+              exit 1
+            fi
+            if ! found="$(printf '%s' "$listing" \
+                 | jq -r --arg key "$key" '
+                     [ .data[]
+                       | select(."display-name" | startswith("ci-eph-"))
+                       | select((."freeform-tags"["github-run-key"] // "") == $key)
+                     ]
+                     | sort_by(."time-created")
+                     | last
+                     | .id // empty' 2>&1)"; then
+              printf '%s\n' "$found" | tail -10
+              echo "::error::could not parse the instance listing; treating this as a lookup failure rather than an absent instance"
+              exit 1
+            fi
+            if [ -n "$found" ]; then
+              iid="$found"
+              echo "resolved by tag: $iid"
+            else
+              echo "listing read cleanly; no ci-eph-* instance carries github-run-key=$key"
+            fi
+          fi
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *)
+              # Not a failure. The soak can die before the self-tag step runs,
+              # in which case no tagged VM ever existed and there is nothing to
+              # capture. Say so plainly rather than failing a diagnostic job
+              # and burying the real failure under a second red mark.
+              echo "::warning::no soak instance found for run $GITHUB_RUN_ID; it likely died before the self-tag step, so no console history exists to capture"
+              iid=""
+              ;;
+          esac
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
+
+      - name: Capture console history
+        if: steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
           SUPPRESS_LABEL_WARNING: "True"
         shell: bash -e {0}
         run: |
           mkdir -p /tmp/postmortem
-          printf 'instance: %s\nrun: %s\n' "$IID" "$GITHUB_RUN_ID" > /tmp/postmortem/instance.txt
-          oci compute instance get --instance-id "$IID" > /tmp/postmortem/instance.json 2>&1 || true
-          state="$(jq -r '.data."lifecycle-state" // "unknown"' /tmp/postmortem/instance.json 2>/dev/null || echo unknown)"
+          printf 'instance: %s\nrun: %s attempt %s\n' \
+            "$IID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > /tmp/postmortem/instance.txt
+          # The lifecycle state is load-bearing below: it is the ONLY thing that
+          # makes a capture failure benign. Read it properly rather than
+          # defaulting to "unknown" on error, or every capture failure becomes
+          # excusable by an unreadable state.
+          if ! inst="$(oci compute instance get --instance-id "$IID" 2>&1)"; then
+            printf '%s\n' "$inst" | tail -20 | tee /tmp/postmortem/instance.json
+            echo "::error::could not read instance $IID; the OCID resolved but the API call failed, so this is a credentials, permissions or outage fault, not a missing VM"
+            exit 1
+          fi
+          printf '%s' "$inst" > /tmp/postmortem/instance.json
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json)"
+          if [ -z "$state" ]; then
+            echo "::error::instance $IID returned no lifecycle-state; refusing to guess whether a capture failure is expected"
+            exit 1
+          fi
           echo "instance lifecycle-state: $state"
           # Capture is asynchronous: request it, then poll until SUCCEEDED
           # before fetching. A terminated instance cannot be captured, which is
           # itself the finding — record it rather than failing the job.
-          hid="$(oci compute instance-console-history capture --instance-id "$IID" \
-            --query 'data.id' --raw-output 2>/dev/null || true)"
-          if [ -z "$hid" ]; then
-            echo "::warning::could not start console-history capture (instance state: $state); the VM was likely already terminated"
+          #
+          # But ONLY a terminated instance. Until now every call here was
+          # wrapped in `|| true` and 2>/dev/null, so expired credentials, a
+          # missing console-history IAM policy, an OCI outage and a rate limit
+          # all surfaced as "the VM was likely already terminated" — the exact
+          # error-as-plausible-negative this job was rewritten to stop doing one
+          # step earlier, left in place one step later. The lifecycle state read
+          # above is what tells the two apart: if the VM is RUNNING and capture
+          # fails, something is wrong with us, and saying so is the entire job.
+          #
+          # The subcommand is "console-history", NOT "instance-console-history"
+          # (which is what "instance-console-connection" is called, and what
+          # this originally said). Because every call here is wrapped in
+          # `|| true` and 2>/dev/null so a terminated VM does not fail the job,
+          # the wrong name produced no error at all — just "(no console content
+          # captured)", indistinguishable from a VM that was already gone.
+          # Verified against oci-cli 3.82.0: `oci compute console-history` has
+          # capture / get / get-content; `instance-console-history` does not
+          # exist. Confirmed by capturing 2410 lines from the run 30606130771
+          # runner by hand.
+          if hid="$(oci compute console-history capture --instance-id "$IID" \
+               --query 'data.id' --raw-output 2>&1)"; then
+            captured=1
           else
+            captured=""
+            case "$state" in
+              TERMINATED|TERMINATING)
+                echo "::notice::instance is $state, so no console history can be captured; that is the expected outcome, not a fault"
+                ;;
+              *)
+                printf '%s\n' "$hid" | tail -20
+                echo "::error::console-history capture failed while the instance is $state; this is a credentials, permissions, quota or outage fault and NOT an absent VM"
+                exit 1
+                ;;
+            esac
+            hid=""
+          fi
+          if [ -n "$captured" ]; then
+            st=""
             for _ in $(seq 1 20); do
-              st="$(oci compute instance-console-history get --instance-console-history-id "$hid" \
-                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo REQUESTED)"
+              st="$(oci compute console-history get --instance-console-history-id "$hid" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo UNREADABLE)"
               [ "$st" = "SUCCEEDED" ] && break
-              [ "$st" = "FAILED" ] && { echo "::warning::console history capture FAILED"; break; }
+              [ "$st" = "FAILED" ] && break
               sleep 15
             done
-            oci compute instance-console-history get-content \
-              --instance-console-history-id "$hid" --file /tmp/postmortem/console.log \
-              --length 1048576 >/dev/null 2>&1 || true
+            case "$st" in
+              SUCCEEDED)
+                # A SUCCEEDED capture that will not download is a fault, not an
+                # empty log. Say which.
+                if ! err="$(oci compute console-history get-content \
+                     --instance-console-history-id "$hid" \
+                     --file /tmp/postmortem/console.log --length 1048576 2>&1)"; then
+                  printf '%s\n' "$err" | tail -20
+                  echo "::error::console history captured successfully but could not be downloaded; the evidence exists in OCI as $hid and is not lost, but this job could not retrieve it"
+                  exit 1
+                fi
+                ;;
+              FAILED)
+                echo "::warning::OCI reported the console-history capture as FAILED for $hid; nothing to download"
+                ;;
+              *)
+                echo "::warning::console-history capture did not reach SUCCEEDED within 5 minutes (last state: ${st:-none}); it may still complete -- history $hid outlives this job and can be fetched by hand"
+                ;;
+            esac
           fi
           echo "--- last 60 lines of console output ---"
           tail -60 /tmp/postmortem/console.log 2>/dev/null || echo "(no console content captured)"
