@@ -4,10 +4,18 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.36] - 2026-07-31
+
+### Bug Fixes
+
+- seed grey badges so the README stops showing 'resource not found'
+
+
 ## [0.4.34] - 2026-07-31
 
 ### Bug Fixes
 
+- repair the reaper syntax error and gate the whole class
 - pin system-integration past the idle-watchdog fix
 - make the memory guards fire before the kernel OOM killer
 - tag the runner the job actually runs on, not the one we launched
