@@ -447,6 +447,32 @@ impl EntryTrie {
         self.view.get().is_some()
     }
 
+    /// Visit every entry **by reference**, in trie order, without materialising anything.
+    ///
+    /// ★ The borrowing counterpart to [`Self::drain_owned_pars`], and the reason it exists:
+    /// a caller that only wants to LOOK at each entry had no way to say so. The available
+    /// surface was `EPathMap::ps()`, a memoised `Vec<Par>` whose materialisation
+    /// **deep-clones every entry** — so a read-only loop paid N clones for the privilege of
+    /// borrowing.
+    ///
+    /// ⚠ A callback rather than an `impl Iterator`: the zipper borrows the trie and would
+    /// have to be owned by the iterator, which cannot be expressed without a self-referential
+    /// struct. The callback keeps the zipper's lifetime inside this frame, where it is trivial.
+    ///
+    /// ⚠ It lives here rather than at the call site because `pathmap` is a dependency of
+    /// `models` and not of its consumers; exporting the walk is cheaper than exporting the
+    /// crate.
+    pub fn for_each_entry(&self, mut visit: impl FnMut(&Par)) {
+        use pathmap::zipper::{ZipperIteration, ZipperValues};
+        let mut rz = self.trie.read_zipper();
+        while rz.to_next_val() {
+            visit(
+                rz.val()
+                    .expect("to_next_val stops only at positions holding a value"),
+            );
+        }
+    }
+
     /// Hand every `Par` this value owns to `out`, **BY MOVE**, leaving none behind.
     ///
     /// ★ For iterative teardown ([`crate::rust::rholang::par_children::dismantle`]). `Drop` for

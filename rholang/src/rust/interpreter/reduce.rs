@@ -5330,9 +5330,29 @@ impl DebruijnInterpreter {
                         // change); non-terminated keys preserve the pre-codec
                         // prefix-restriction. `other_rmap` metadata is unused here
                         // (the result carries base's connective/locally_free).
+                        // ★ Walks `other`'s TRIE rather than `other_pathmap.ps()`. That
+                        // projection is a memoised `Vec<Par>` whose materialisation
+                        // DEEP-CLONES every entry, and this loop only ever borrows each
+                        // one — so forcing it bought N clones and nothing else.
+                        //
+                        // ⚠ WHY THE KEY IS STILL RE-DERIVED PER ENTRY rather than read off
+                        // the zipper. It is tempting to take `rz.path()` and strip the
+                        // trailing `tag::TERM`, since `segments_to_key`'s two forms differ
+                        // by exactly that byte. **That is wrong**, and
+                        // `pathmap_integration.rs` documents why: the stored key is
+                        // `encode_trie_path(entry)`, whereas the key wanted here is
+                        // `segments_to_key(par_to_path(entry), false)` — and for a BARE
+                        // (non-list) entry those are DIFFERENT ENCODINGS. The segments form
+                        // yields the key of the SINGLETON LIST, *"a valid canonical key
+                        // naming a DIFFERENT element"*, pinned by
+                        // `bare_and_singleton_list_are_distinct_entries`. Deriving one from
+                        // the other would need a decode, which is not total.
+                        //
+                        // ⇒ Only the memo materialisation goes; the re-encode stays, and
+                        // stays deliberately.
                         let mut other_prefix_map =
                             models::rust::pathmap_integration::RholangPathMap::new();
-                        for entry in other_pathmap.ps() {
+                        other_pathmap.entry_trie().for_each_entry(|entry| {
                             other_prefix_map.insert(
                                 segments_to_key(
                                     &models::rust::pathmap_integration::par_to_path(entry),
@@ -5340,7 +5360,7 @@ impl DebruijnInterpreter {
                                 ),
                                 entry.clone(),
                             );
-                        }
+                        });
 
                         self.outer
                             .metering
