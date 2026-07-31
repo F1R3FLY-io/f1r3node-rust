@@ -178,10 +178,14 @@ pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>)
                 out.extend(kv.value.iter());
             }
         }
-        ExprInstance::EPathmapBody(x) => out.extend(x.ps().iter()),
+        // ★ Read the TRIE, not the projection. `x.ps()` forces `EntryTrie::view`, whose
+        // materialisation deep-clones every entry and then retains a full second copy —
+        // paid here only to hand out borrows the trie can hand out itself, through
+        // `to_next_get_val`'s `&'trie Par`.
+        ExprInstance::EPathmapBody(x) => x.entry_trie().extend_entry_refs(out),
         ExprInstance::EZipperBody(x) => {
             for pm in x.pathmap.iter() {
-                out.extend(pm.ps().iter());
+                pm.entry_trie().extend_entry_refs(out);
             }
         }
 

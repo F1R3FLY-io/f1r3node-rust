@@ -521,6 +521,26 @@ impl EntryTrie {
     /// ⚠ It lives here rather than at the call site because `pathmap` is a dependency of
     /// `models` and not of its consumers; exporting the walk is cheaper than exporting the
     /// crate.
+    /// Push every entry onto `out` as a borrow with the **TRIE's** lifetime.
+    ///
+    /// ★ Why this exists alongside [`EntryTrie::for_each_entry`]. That one hands the
+    /// visitor a `&Par` borrowed for the duration of the *call*, which is right for a
+    /// visitor and useless for a collector: a `Vec<&'a Par>` needs borrows that outlive
+    /// the walk. `ZipperReadOnlyIteration::to_next_get_val` returns `&'trie Par` — a
+    /// borrow with the trie's lifetime rather than the method call's — so the entries
+    /// can be pointed at directly.
+    ///
+    /// ⇒ a child walk no longer forces [`EntryTrie::view`], whose materialisation
+    /// **deep-clones every entry** and then retains a full second copy for the life of
+    /// the value. The trie is read where it stands.
+    pub fn extend_entry_refs<'trie>(&'trie self, out: &mut Vec<&'trie Par>) {
+        use pathmap::zipper::ZipperReadOnlyIteration;
+        let mut rz = self.trie.read_zipper();
+        while let Some(par) = rz.to_next_get_val() {
+            out.push(par);
+        }
+    }
+
     pub fn for_each_entry(&self, mut visit: impl FnMut(&Par)) {
         use pathmap::zipper::{ZipperIteration, ZipperValues};
         let mut rz = self.trie.read_zipper();
