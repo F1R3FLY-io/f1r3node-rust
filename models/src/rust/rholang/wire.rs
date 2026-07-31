@@ -392,10 +392,20 @@ pub enum PathmapPs<'a> {
     /// A `&Vec<Par>` rather than a `&[Par]` because only a *sized* type can be
     /// coerced to `&dyn WireSeq`.
     Stored {
-        /// The trie's own length-framed key stream, memoized
-        /// (`EntryTrie::path_stream`). Emitted verbatim as one `put_bytes`.
+        /// The length-framed key stream of the entries **this surface writes**,
+        /// memoized (`EntryTrie::wire_path_stream`). Emitted verbatim as one
+        /// `put_bytes`.
+        ///
+        /// ⚠ `wire_path_stream`, NOT `path_stream`: `entries` below is written
+        /// with every `locally_free` blanked, so the keys must be the keys of
+        /// the blanked entries. `path_stream` is the PROST surface's stream —
+        /// prost retains the bitset and writes the entries as stored.
         path_stream: &'a [u8],
-        /// The entries, in trie order.
+        /// The entries, in the order the key stream above frames them.
+        ///
+        /// ⚠ `wire_view()`, NOT `ps()` — the two agree except when blanking
+        /// reorders the trie, and there the stored order would pair key `i` with
+        /// value `j`.
         entries: &'a Vec<Par>,
     },
 }
@@ -451,14 +461,14 @@ impl WireNode for EPathMap {
 /// What an `EPathMap` serializes for its entries — the same two things its
 /// `Serialize` impl emits, read through the same two accessors.
 ///
-/// `EPathMap::path_stream()` and `EPathMap::ps()` are the *same two methods*
-/// the `Serialize` impl calls (`models/src/rust/rhoapi_ext.rs`), both memoized
-/// on the value, so this cannot drift into a second opinion about what a map's
-/// entries are.
+/// `EPathMap::wire_path_stream()` and `EPathMap::wire_view()` are the *same two
+/// methods* the `Serialize` impl calls (`models/src/rust/rhoapi_ext.rs`) — and
+/// they are two projections of ONE memoized trie, so the key half and the value
+/// half cannot drift apart.
 pub fn pathmap_ps(map: &EPathMap) -> PathmapPs<'_> {
     PathmapPs::Stored {
-        path_stream: map.path_stream(),
-        entries: map.ps(),
+        path_stream: map.wire_path_stream(),
+        entries: map.wire_view(),
     }
 }
 

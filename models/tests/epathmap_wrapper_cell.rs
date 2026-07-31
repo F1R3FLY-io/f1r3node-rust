@@ -223,9 +223,16 @@ struct DerivedTwin {
 
 fn derived_twin(map: &EPathMap) -> DerivedTwin {
     DerivedTwin {
-        // The twin keeps plain owned values (it IS the layout oracle): `U(m)`
-        // and a copy of the map's canonical projection.
-        ps: (map.path_stream().to_vec(), map.ps().clone()),
+        // The twin keeps plain owned values (it IS the layout oracle): the key
+        // stream of the entries THIS SURFACE WRITES, and a copy of the map's
+        // canonical projection.
+        //
+        // ⚠ `wire_path_stream()`, not `path_stream()` (CBR-043). The `Vec<Par>`
+        // beside it is serialized with every `locally_free` blanked, so the
+        // oracle's key half must be the keys of the blanked entries — otherwise
+        // the ORACLE would be asserting the defect and the wrapper would be
+        // failing for being correct.
+        ps: (map.wire_path_stream().to_vec(), map.ps().clone()),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
         remainder: map.remainder.clone(),

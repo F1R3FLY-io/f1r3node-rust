@@ -273,6 +273,25 @@ pub struct EntryTrie {
     /// ⚠ It walks KEYS and never decodes, which is what makes it total where
     /// [`EntryTrie::view`]'s key-side twin would not be.
     path_stream: OnceLock<Arc<Vec<u8>>>,
+    /// ★★ **The trie the serde/bincode surface writes** — this trie's entries
+    /// with every `locally_free` blanked, re-filed under their own keys. See
+    /// [`EntryTrie::wire_trie`] for the whole argument.
+    ///
+    /// `Some(trie)` when that differs from `self`; **`None` when the two
+    /// coincide**, which is the common case and is why this is not simply a
+    /// second `EntryTrie`: an unconditional second copy would double the
+    /// resident cost of every map in the store to serve the minority that
+    /// carries a bitset.
+    ///
+    /// ⚠ It is the whole TRIE and not merely its key stream, because blanking
+    /// can **reorder**: a tagged entry keys under the `0x0F` escape arm and its
+    /// blanked twin under the structural arm, and those sort differently. A memo
+    /// holding only the keys would emit them beside values in the *stored*
+    /// order — two halves of one tuple disagreeing about which entry is which.
+    ///
+    /// ⚠ Never forced for an `entries_stable` trie — that case is answered O(1)
+    /// without touching this cell at all.
+    wire_trie: OnceLock<Option<Arc<EntryTrie>>>,
 }
 
 /// ★ **THE reader.** The entries of a trie, in trie order (a read-zipper walk,
@@ -343,10 +362,16 @@ impl EntryTrie {
 
     /// ★ `U(m)` — the trie's own length-framed key stream, memoized.
     ///
-    /// The byte string every serialization surface emits: prost field 8, serde,
-    /// and the bincode event-hash preimage all hand *this slice* to their host
-    /// format's byte-string primitive. Computed once per value and shared by
-    /// every later clone, so the hot encode is a `memcpy` and allocates nothing.
+    /// The keys of the entries **as this value stores them**. That is what proto
+    /// field 8 emits, because prost RETAINS `locally_free` and therefore writes
+    /// the stored entries verbatim. Computed once per value and shared by every
+    /// later clone, so the hot encode is a `memcpy` and allocates nothing.
+    ///
+    /// ⚠ **Not what the serde/bincode surface emits** — that surface writes
+    /// lf-BLANKED entries, so it writes the key stream *of those*
+    /// ([`EntryTrie::wire_path_stream`]). The two coincide on every map with no
+    /// `locally_free` anywhere, which is most of them; where they differ, using
+    /// this one on the serde surface is the defect CBR-043 repairs.
     ///
     /// # Why it is canonical without sorting anything
     ///
@@ -359,6 +384,191 @@ impl EntryTrie {
     pub fn path_stream(&self) -> &[u8] {
         self.path_stream
             .get_or_init(|| Arc::new(path_stream_of(&self.trie)))
+    }
+
+    /// ★★ **`U` applied to the value the serde/bincode surface writes.**
+    ///
+    /// There is one function `U` — [`path_stream_of`], a read-zipper walk over a
+    /// trie. [`EntryTrie::path_stream`] is `U` of the entries this value
+    /// *stores*. This is `U` of the entries the serde surface *writes*. Same
+    /// `U`, different argument; not a second key stream and not a second
+    /// canonical form.
+    ///
+    /// # The argument, in one line
+    ///
+    /// The serde surface has ALWAYS written `locally_free`-blanked entries — the
+    /// twelve `serialize_as_empty_bytes` sites `models/build.rs` injects, plus
+    /// `EPathMap`'s own hand-written equivalent — because, in
+    /// [`crate::rust::rholang::wire`]'s words, *"`locally_free` is transient
+    /// analysis data that must not reach an RSpace channel hash"*. A surface
+    /// that writes `blank(e)` must write the keys of `blank(e)`. Writing
+    /// `U(stored)` beside `blank(stored)` puts a quantity DERIVED from the
+    /// unblanked entries next to the blanked ones, and the derivation is exactly
+    /// what carries `locally_free` back onto the wire: `encode_trie_path`'s
+    /// `0x0F` escape arm files a ¬`eval_stable` entry as its canonical **prost**
+    /// bytes, and prost retains the bitset.
+    ///
+    /// ⇒ before this, two maps differing only in an entry's `locally_free`
+    /// produced different bincode, hence different **event hashes**, and a map
+    /// hashed differently after a cold-store round trip than before it. That is
+    /// a play/replay divergence. This is what closes it.
+    ///
+    /// # ★ The O(1) discriminator, and why it is `entries_stable`
+    ///
+    /// `union_locally_free` is the obvious guard and it is **UNSOUND**, measured:
+    /// it folds the entries' TOP-LEVEL `Par::locally_free` only, so a bitset one
+    /// level down is invisible to it. Two counterexamples, both with
+    /// `union_locally_free == []` and both with a key stream that moves under
+    /// blanking (`models/tests/epathmap_bincode_is_the_path_stream.rs`,
+    /// [the fold is not hereditary]): an entry wrapping a nested `EPathMap`
+    /// whose OWN entries carry lf (31 B → 28 B), and an entry whose ground
+    /// `EList` carries lf (22 B → 7 B — blanking makes it `eval_stable`, so the
+    /// key changes ARM).
+    ///
+    /// `entries_stable` **is** sound, and hereditarily so by construction rather
+    /// than by inspection: [`eval_stable_par`] demands `locally_free.is_empty()`
+    /// at EVERY level of the stable alphabet — the `Par` itself
+    /// (`pathmap_crate_type_mapper.rs`, the eight-way disqualifier), `EList`,
+    /// `ETuple`, and a nested `EPathMap` through `eval_stable_epathmap`, which
+    /// checks the map's own bitset and then recurses into that map's
+    /// `entries_stable()`. So
+    ///
+    /// ```text
+    ///   entries_stable  ⟹  every entry has NO locally_free anywhere
+    ///                   ⟹  blank(e) = e  for every entry
+    ///                   ⟹  U(blanked) = U(stored)
+    /// ```
+    ///
+    /// which is answered in O(1) off a fold that is already maintained exactly.
+    /// It is CONSERVATIVE, never wrong: an entry unstable for some other reason
+    /// (an `EVar`, a `Send`) takes the memo path and, if blanking turns out to
+    /// be the identity there too, the memo records `None` and this still returns
+    /// the borrow. Warm allocations therefore stay at **zero for every shape** —
+    /// which `models/tests/wire_encode_space.rs` requires and measures.
+    pub fn wire_path_stream(&self) -> &[u8] {
+        self.wire_trie().path_stream()
+    }
+
+    /// The ENTRIES the serde/bincode surface writes, in the order it writes
+    /// them — the value half of the same tuple whose key half is
+    /// [`EntryTrie::wire_path_stream`].
+    ///
+    /// ⚠⚠ **Both halves must come from ONE trie, and this is why the memo holds
+    /// a trie rather than a byte string.** Blanking can REORDER: a `locally_free`
+    /// bit makes an otherwise-`eval_stable` entry take `encode_trie_path`'s
+    /// `0x0F` escape arm, and an escape key sorts nowhere near the structural key
+    /// its blanked twin gets. Emitting `U(blanked)` beside `view()` — the entries
+    /// in the STORED order — pairs key `i` with value `j`, and the two halves of
+    /// one tuple then disagree about which entry is which.
+    ///
+    /// ⚠ Measured, not anticipated: an earlier form of this repair memoized only
+    /// the key stream, and `epathmap_canonical_fixtures`'s ENTRY-LEVEL event-hash
+    /// leg is what caught it.
+    ///
+    /// The values themselves are lf-blanked either way — `Par`'s `Serialize`
+    /// blanks as it writes — so the only thing this changes relative to
+    /// [`EntryTrie::view`] is the ORDER, and it changes it exactly when the order
+    /// would otherwise be wrong.
+    pub fn wire_view(&self) -> &Vec<Par> {
+        self.wire_trie().view()
+    }
+
+    /// ★★ The trie this surface writes: `self`'s entries with every
+    /// `locally_free` blanked, re-filed under their own keys.
+    ///
+    /// Returns `self` — no allocation, no copy — whenever blanking is the
+    /// identity, which is the common case and is decided in O(1) for every
+    /// `entries_stable` trie.
+    fn wire_trie(&self) -> &EntryTrie {
+        // ★ THE O(1) ARM. Stability is hereditary over `locally_free`, so
+        // blanking is the identity here and there is nothing to compute.
+        if self.entries_stable {
+            return self;
+        }
+        match self.wire_trie.get_or_init(|| self.blanked_trie()) {
+            Some(trie) => trie,
+            // Blanking turned out to be the identity anyway — the entries were
+            // unstable for a reason other than `locally_free`. One borrow, and
+            // no second copy retained.
+            None => self,
+        }
+    }
+
+    /// The blanked trie, or `None` when it is `self`.
+    ///
+    /// # ★★ The blanking function IS the surface
+    ///
+    /// `blank` is not spelled out here as a hand-written "clear every
+    /// `locally_free`" walk, and that is deliberate. Such a walk would be a
+    /// SECOND opinion about what this surface writes — it would have to
+    /// enumerate the twelve injected sites, and it would go stale the moment a
+    /// thirteenth appeared, silently, because a stale blanker still produces a
+    /// key stream that *looks* well-formed. Instead each entry is run through the
+    /// surface itself: [`crate::rust::rholang::wire_encode::encode_into`] writes
+    /// exactly what serde writes (pinned byte-for-byte by
+    /// `models/tests/wire_encode_differential.rs`) and `Par::cold_decode` reads
+    /// it back (pinned by `models/tests/par_codec_differential.rs`). The
+    /// composite is, by construction, *the value this surface writes* — so a
+    /// thirteenth blanking site is followed automatically and cannot drift.
+    ///
+    /// ⚠ Both halves are the **trampolined** codecs, not the derived ones: the
+    /// derived `Serialize`/`Deserialize` are Θ(depth) on the native stack, and
+    /// this runs on entries of unbounded depth. Re-entrancy is safe — neither
+    /// machine holds a thread-local across a nested encode
+    /// (`wire_encode::with_encoded` and `pooled_stack!` each fall back to a
+    /// private buffer when the slot is already borrowed), and `encode_into`
+    /// takes the caller's buffer and touches no pool-external state at all.
+    ///
+    /// ⚠ Termination is by the term being finite: blanking an entry re-enters
+    /// this function only for a map NESTED INSIDE that entry, which is a proper
+    /// subterm.
+    ///
+    /// # ★ Why equal key streams is the right test for `None`
+    ///
+    /// `encode_trie_path` is injective, so equal key streams mean the blanked
+    /// entry sequence and the stored one are the SAME `Par`s in the SAME order —
+    /// bitsets included, since the escape arm keys by prost bytes which retain
+    /// them and the structural arm is reachable only when they are empty. So
+    /// there is nothing left for a second copy to hold, and `None` is exact
+    /// rather than approximate.
+    ///
+    /// ⚠ Comparing the VIEWS instead would be wrong: `<Par as PartialEq>` is
+    /// AlwaysEqual and ignores `locally_free` outright, so it would report
+    /// "identical" on precisely the pairs this function exists to distinguish.
+    fn blanked_trie(&self) -> Option<Arc<EntryTrie>> {
+        use crate::rust::rholang::par_children::dismantle_all;
+        use crate::rust::rholang::wire_encode::encode_into;
+        use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
+
+        let entries = self.view();
+        // ONE buffer for the whole fold — the entries are re-encoded in turn and
+        // the high-water capacity is reached on the first large one.
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut blanked: Vec<Par> = Vec::with_capacity(entries.len());
+        for entry in entries.iter() {
+            buffer.clear();
+            encode_into(entry, &mut buffer);
+            blanked.push(Par::cold_decode(&buffer).expect(
+                "the cold-store reader must accept the cold-store writer's own bytes — \
+                 `wire_encode_differential` and `par_codec_differential` pin that pair \
+                 byte-for-byte, so a failure here is those two codecs having diverged, \
+                 not a property of the entry",
+            ));
+        }
+
+        let wire = EntryTrie::from(blanked);
+        if wire.path_stream() == self.path_stream() {
+            // ⚠ Torn down with the worklist, never dropped. `<Par as Drop>` is a
+            // Θ(depth) recursive traversal and these entries are of unbounded
+            // depth, so letting `wire` fall out of scope would put the one
+            // recursion this whole codec exists to avoid back on the native
+            // stack.
+            let mut owned = Vec::new();
+            wire.drain_owned_pars(&mut owned);
+            dismantle_all(owned);
+            return None;
+        }
+        Some(Arc::new(wire))
     }
 
     /// The trie itself — the store, handed out for the O(1) `clone()` that
@@ -454,6 +664,7 @@ impl EntryTrie {
         }
         self.view.take();
         self.path_stream.take();
+        self.wire_trie.take();
     }
 
     /// Add every entry of `other` — the set union that `graft` performs.
@@ -521,6 +732,7 @@ impl EntryTrie {
 
         self.view.take();
         self.path_stream.take();
+        self.wire_trie.take();
     }
 
     /// `true` iff the projection memo has been forced, i.e. a second full copy of the entries
@@ -657,6 +869,11 @@ impl EntryTrie {
             // rather than elided because the `..`-free form is the guard: a
             // future field that DOES retain entries must fail to compile here.
             path_stream: _,
+            // ⚠★ A RETAINER — this one really does hold `Par`s, and drained
+            // below. It is the whole reason the `..`-free form is worth its
+            // verbosity: this field was added after that comment was written,
+            // and the compiler is what made it impossible to forget.
+            wire_trie,
         } = self;
 
         if let Some(entries) = view.into_inner().and_then(Arc::into_inner) {
@@ -664,6 +881,17 @@ impl EntryTrie {
         }
         for (_key, par) in trie {
             out.push(par);
+        }
+        // ★ The blanked twin, if it was ever forced and if we hold the last
+        // handle to it.
+        //
+        // ⚠ The recursion is bounded at ONE level, and not by inspection: a
+        // blanked trie's own `blanked_trie()` is the identity (blanking is
+        // idempotent), so it would memoize `None` and hold no third copy — and
+        // nothing forces it in the first place, because `wire_trie()` is reached
+        // only from the two accessors and neither is called on the twin.
+        if let Some(twin) = wire_trie.into_inner().flatten().and_then(Arc::into_inner) {
+            twin.drain_owned_pars(out);
         }
     }
 
@@ -690,6 +918,7 @@ impl EntryTrie {
             self.len -= 1;
             self.view.take();
             self.path_stream.take();
+            self.wire_trie.take();
             // The folds are not invertible, so they are recomputed rather than
             // decremented. `entries_stable` in particular MUST stay exact: a
             // conservative `false` would move a now-ground map off proto field
@@ -716,6 +945,7 @@ impl EntryTrie {
         // than recomputed: the folds have to be eager (they are read O(1)), the
         // key stream does not.
         self.path_stream.take();
+        self.wire_trie.take();
     }
 }
 
@@ -784,6 +1014,7 @@ impl EntryTrie {
             any_connective_used,
             view: OnceLock::from(Arc::new(entries)),
             path_stream: OnceLock::new(),
+            wire_trie: OnceLock::new(),
         }
     }
 }
@@ -965,6 +1196,7 @@ impl Clone for EntryTrie {
             any_connective_used: self.any_connective_used,
             view: self.view.clone(),
             path_stream: self.path_stream.clone(),
+            wire_trie: self.wire_trie.clone(),
         }
     }
 }
@@ -981,6 +1213,7 @@ impl Default for EntryTrie {
             any_connective_used: false,
             view: OnceLock::new(),
             path_stream: OnceLock::new(),
+            wire_trie: OnceLock::new(),
         }
     }
 }
@@ -1160,6 +1393,16 @@ impl serde::Serialize for EntryTrie {
     /// surface pays `8 + |U(m)|` extra bytes per map to serialize the trie as a
     /// trie **without** capping a reader that is uncapped today. Dropping the
     /// values awaits the unbounded prost reader.
+    ///
+    /// # ⚠⚠ The key stream is `U` of the entries THIS SURFACE WRITES
+    ///
+    /// [`EntryTrie::wire_path_stream`], never [`EntryTrie::path_stream`]. The
+    /// second element below writes lf-BLANKED entries — it always has — so the
+    /// first must write their keys. Emitting `U(stored)` here put a quantity
+    /// derived from the unblanked entries beside the blanked ones, which carried
+    /// an entry's `locally_free` onto the event-hash preimage through the
+    /// escape arm's prost payload. **CBR-043** repairs that; `path_stream()` on
+    /// this line is the defect, not a shorter spelling of the same thing.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeTuple;
 
@@ -1168,8 +1411,14 @@ impl serde::Serialize for EntryTrie {
         // `serialize_bytes` writes in bincode — serde has no `Vec<u8>`
         // specialisation, so the two spellings coincide on this format
         // (`par_codec`'s shape-2 note says the same thing from the read side).
-        state.serialize_element(self.path_stream())?;
-        state.serialize_element(self.view().as_slice())?;
+        // ⚠ BOTH halves off ONE trie ([`EntryTrie::wire_trie`]). Mixing
+        // `wire_path_stream()` with `view()` would pair the blanked KEYS with
+        // the STORED order, and blanking can reorder — an lf bit moves an entry
+        // from the structural arm to the `0x0F` escape arm, and those sort
+        // nowhere near each other.
+        let wire = self.wire_trie();
+        state.serialize_element(wire.path_stream())?;
+        state.serialize_element(wire.view().as_slice())?;
         state.end()
     }
 }
@@ -1440,10 +1689,30 @@ impl EPathMap {
     /// ★ `pub` since the intern store was deleted. The store used to front this, so a
     /// caller wanting `U(m)` reached it as `intern().path_stream`; with no store the
     /// walk itself is the only way to ask — and it is now **memoized on the trie**
-    /// ([`EntryTrie::path_stream`]) rather than re-walked per call, because every
-    /// serialization surface reads it.
+    /// ([`EntryTrie::path_stream`]) rather than re-walked per call.
+    ///
+    /// ⚠ This is the PROST surface's key stream — the keys of the entries as
+    /// stored. The serde/bincode surface writes lf-blanked entries and therefore
+    /// [`EPathMap::wire_path_stream`].
     pub fn path_stream(&self) -> &[u8] {
         self.ps.path_stream()
+    }
+
+    /// `U` applied to the entries the **serde/bincode** surface writes — see
+    /// [`EntryTrie::wire_trie`], which carries the whole argument.
+    pub fn wire_path_stream(&self) -> &[u8] {
+        self.ps.wire_path_stream()
+    }
+
+    /// The entries the **serde/bincode** surface writes, in the order it writes
+    /// them — the value half of the tuple whose key half is
+    /// [`EPathMap::wire_path_stream`].
+    ///
+    /// ⚠ Must be read TOGETHER with `wire_path_stream()`. Blanking can reorder,
+    /// so pairing that key stream with [`EPathMap::ps`] mismatches key and
+    /// value; see [`EntryTrie::wire_view`].
+    pub fn wire_view(&self) -> &Vec<Par> {
+        self.ps.wire_view()
     }
 }
 

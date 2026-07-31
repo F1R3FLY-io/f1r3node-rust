@@ -236,6 +236,7 @@ static ALLOC: counting_alloc::Counting = counting_alloc::Counting;
 /// | shape | machine | derived |
 /// |---|---|---|
 /// | ordinary terms (`gint`, wide, deep, non-ground `EPathMap`) | **0** | 1 every call, forever |
+/// | lf-bearing `EPathMap` (the CBR-043 memo path) | **0** | 1 every call, forever |
 /// | ground `EPathMap` | 40 | 77 |
 ///
 /// The zero is not an approximation: the output buffer is `clear()`ed and
@@ -256,6 +257,22 @@ fn the_steady_state_allocation_table() {
         ("wide(64)", wide(64)),
         ("deep(16)", deep(16)),
         ("nonground_pathmap", pathmap_par(corpus::nonground_pathmap())),
+        // ★★ THE CBR-043 ROW, and it is not a duplicate of the one above it.
+        //
+        // `nonground_pathmap`'s entries are `GInt`s — `entries_stable`, so
+        // `EntryTrie::wire_path_stream` answers O(1) off the fold and the memo
+        // cell is never touched. This shape's entry is lf-bearing and NOT
+        // `eval_stable`, which is the only route into `blanked_stream()`: the
+        // blanked entries are built through the cold-store codec pair, a
+        // throwaway trie is filed, its key stream is compared, and the result is
+        // memoized.
+        //
+        // ⚠ That work is real and it allocates — ONCE. What this row measures is
+        // that it stays BEHIND the memo: a warm encode of an lf-bearing map must
+        // still borrow, exactly like every other shape. An implementation that
+        // recomputed the blanked stream per encode would pass every correctness
+        // test in the tree and fail here, which is what this file is for.
+        ("lf_bearing_pathmap", pathmap_par(lf_bearing_pathmap())),
     ];
     for (name, par) in &ordinary {
         warm(par);
@@ -337,6 +354,29 @@ fn the_steady_state_allocation_table() {
          single-walk emitter must not cost MORE than the two-walk one on the shape where \
          both must canonicalize"
     );
+}
+
+/// An `EPathMap` whose single entry is `¬eval_stable` **and** carries
+/// `locally_free` — the one shape that reaches `EntryTrie::blanked_stream`.
+///
+/// A bound-variable `EVar` is non-ground by CONTENT, so the entry takes
+/// `encode_trie_path`'s `0x0F` escape arm, whose payload is canonical prost
+/// bytes — and prost retains the bitset. That is the exact route by which an
+/// entry's `locally_free` used to reach the bincode wire, and therefore the
+/// exact route the memo now covers.
+fn lf_bearing_pathmap() -> models::rust::rhoapi_ext::EPathMap {
+    let entry = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
+                v: Some(models::rhoapi::Var {
+                    var_instance: Some(models::rhoapi::var::VarInstance::BoundVar(0)),
+                }),
+            })),
+        }],
+        locally_free: models::create_bit_vector(&[0]),
+        ..Default::default()
+    };
+    models::rust::rhoapi_ext::EPathMap::new(vec![entry], Vec::new(), false, None)
 }
 
 /// One node holding one `EPathMap`.

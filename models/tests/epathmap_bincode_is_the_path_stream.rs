@@ -29,13 +29,34 @@
 //! [`the_cold_store_has_no_depth_ceiling`] measures at depths **34** and **64**,
 //! both past the escape arm's 32.
 //!
-//! ## The three claims
+//! ## ★★ WHICH key stream — the CBR-043 correction
+//!
+//! There is one function `U` (`path_stream_of`, a read-zipper walk over a trie),
+//! and this surface applies it to **the value this surface writes**. FORM ②
+//! applied it to the value the map *stores*, and the two differ exactly when an
+//! entry carries `locally_free`: the serde surface has always written lf-BLANKED
+//! entries (`serialize_as_empty_bytes`), while `encode_trie_path`'s `0x0F`
+//! escape arm keys a ¬`eval_stable` entry by its canonical **prost** bytes,
+//! which retain the bitset.
+//!
+//! So the key stream FORM ② emitted was derived from entries that are not the
+//! ones beside it — and that carried `locally_free` onto the event hash, in
+//! breach of `models/src/rust/rholang/wire.rs`'s standing rule that it *"must
+//! not reach an RSpace channel hash"*. §4 is the repair, measured.
+//!
+//! ⚠ Prost is unaffected and must stay so: it writes the entries as stored, so
+//! it reads `EPathMap::path_stream`. Both streams exist, each on the surface
+//! whose argument it is.
+//!
+//! ## The claims
 //!
 //! | § | claim | why a weaker test would miss it |
 //! |---|---|---|
-//! | 1 | `bincode(EPathMap)` contains `U(m)` as a **contiguous substring** | an interleaved key/value form round-trips perfectly and is not the trie's byte array |
+//! | 1 | `bincode(EPathMap)` contains the key stream as a **contiguous substring** | an interleaved key/value form round-trips perfectly and is not the trie's byte array |
 //! | 2 | `cold_decode ∘ cold_encode` is a byte-level fixed point past depth 32 | a ceiling introduced here is invisible on the shallow fixtures every other suite uses |
 //! | 3 | a peer stream whose key disagrees with its value **RE-FILES** | rejecting narrows the accepted language relative to peers, which is a fork |
+//! | 4 | `locally_free` reaches neither these bytes nor the **event hash**, and both survive a cold-store round trip | the VALUE half was already blind to it — only the KEY half moved, and only on maps nobody fixtures |
+//! | 5 | the size delta is exactly the framed key stream | a form that dropped or duplicated a key would still round-trip |
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
@@ -533,36 +554,32 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 // ===========================================================================
-// §4  ⚠ The one thing FORM ② changed that is NOT about pathmap ordering
+// §4  ★★ THE ACCEPTANCE PROPERTIES — `locally_free` does not reach this wire
 // ===========================================================================
+//
+// FORM ② (`3a32cf07`, CBR-042) put `U(m)` — the key stream of the entries as
+// STORED — on the bincode wire, beside values this surface has always written
+// lf-BLANKED. A key derived from the unblanked entries, emitted next to the
+// blanked ones, carries the bitset: `encode_trie_path`'s `0x0F` escape arm files
+// a ¬`eval_stable` entry as its canonical prost bytes, and prost retains
+// `locally_free`.
+//
+// That breached a standing rule stated in `models/src/rust/rholang/wire.rs`:
+//
+//   > `locally_free` is transient analysis data that must not reach an RSpace
+//   > channel hash.
+//
+// **CBR-043** applies one function `U` to the value this surface writes
+// (`EntryTrie::wire_path_stream`). The five properties below are what that buys,
+// each with a control so none of them can pass vacuously.
 
-/// ⚠⚠ **MEASURED AND FILED, not papered over.** An entry's `locally_free`
-/// reaches the bincode wire — through the trie KEY, never through the value.
+/// A `Par` whose `locally_free` is set, and its cleared twin — the minimal pair
+/// that differs in nothing else.
 ///
-/// The serialize-only normalization (`serialize_as_empty_bytes`, twelve `.rhoapi`
-/// sites plus `EPathMap`'s own) blanks every `locally_free` *field*. But an entry
-/// is KEYED by `encode_trie_path`, whose `0x0F` escape arm files a ¬`eval_stable`
-/// entry as its canonical **prost** bytes — and prost RETAINS `locally_free`. So
-/// once `U(m)` is on this wire, two maps differing only in an entry's
-/// `locally_free` serialize DIFFERENTLY.
-///
-/// ★ **This is a convergence, and the direction matters.** `b73af1d2` (C8) moved
-/// `==`, `Hash` and `Ord` onto the keys for exactly this reason: the old relation
-/// was *strictly coarser* than the key set, so two maps could compare EQUAL while
-/// emitting different bytes. `1b576c90` (CBR-041) put the keys on the prost wire.
-/// Before FORM ②, bincode was the last surface still coarser than the value —
-/// two `!=` maps produced identical bincode, hence identical event hashes. It no
-/// longer does.
-///
-/// ⚠ The cost is stated as plainly as the gain, and is pinned by
-/// [`the_encoding_is_a_fixed_point_after_one_normalisation_round`]: the entries
-/// this surface *writes* are lf-blanked, so a decoded map re-keys them, and
-/// `cold_encode` is a fixed point only from the second application on such a
-/// map. Every other map — every map whose entries are ground, which is every map
-/// this suite's other fixtures build — reaches the fixed point immediately, and
-/// [`the_cold_store_has_no_depth_ceiling`] is the measurement of that.
-#[test]
-fn an_entrys_locally_free_reaches_the_wire_through_the_key() {
+/// A bound-variable `EVar` is non-ground BY CONTENT, so clearing the bitset does
+/// not flip the entry to `eval_stable`: both twins take the same `0x0F` escape
+/// arm, and the ONLY difference between their keys is the bitset itself.
+fn lf_pair() -> (Par, Par) {
     let free = Par {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
@@ -571,23 +588,74 @@ fn an_entrys_locally_free_reaches_the_wire_through_the_key() {
                 }),
             })),
         }],
-        locally_free: models::create_bit_vector(&vec![0]),
+        locally_free: models::create_bit_vector(&[0]),
         ..Default::default()
     };
     let cleared = Par {
         locally_free: Vec::new(),
         ..free.clone()
     };
-    // ⚠ NOT `assert_ne!(free, cleared)`. `Par`'s `PartialEq` is **AlwaysEqual**
-    // and ignores `locally_free` outright — that is the very asymmetry this test
-    // is about, and using `==` here would have compared the two entries by the
-    // one relation that cannot see the difference. The honest control is the
-    // relation the wire uses: prost bytes.
+    (free, cleared)
+}
+
+/// The map the acceptance properties are carried on: one lf-bearing,
+/// ¬`eval_stable` entry.
+fn lf_bearing_map() -> EPathMap {
+    EPathMap::new(vec![lf_pair().0], Vec::new(), false, None)
+}
+
+/// A produce hash over a datum holding one `Par`. The event hash is blake2b over
+/// the bincode preimage, so this is the *consensus-visible* reading of "what did
+/// this surface write".
+fn produce_hash(par: Par) -> Vec<u8> {
+    use models::rhoapi::ListParWithRandom;
+    use rspace_plus_plus::rspace::trace::event::Produce;
+
+    let channel = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GString("cbr-043".into())),
+        }],
+        ..Default::default()
+    };
+    let datum = ListParWithRandom {
+        pars: vec![par],
+        random_state: vec![7u8; 32],
+    };
+    Produce::create(&channel, &datum, true)
+        .hash
+        .bytes()
+        .to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// §4.1  Property 1 — the event hash does not see entry-level `locally_free`
+// ---------------------------------------------------------------------------
+
+/// Two maps differing ONLY in an entry's `locally_free` must produce the SAME
+/// produce hash.
+///
+/// ⚠ Read through `Produce::create`, not through `bincode::serialize`, on
+/// purpose: the claim that matters is about the consensus artifact, and a test
+/// that stopped at the preimage would still pass if the hashing leg started
+/// reading something else.
+///
+/// ★ The control is `path_stream()`: the two maps' STORED key streams must still
+/// DIFFER. They are what prost writes, and prost retains the bitset — so if this
+/// control ever goes equal, the fixture has stopped exercising the mechanism and
+/// the assertion above is comparing a map with itself.
+#[test]
+fn the_event_hash_does_not_see_an_entrys_locally_free() {
+    let (free, cleared) = lf_pair();
+
+    // ⚠ NOT `assert_ne!(free, cleared)`. `Par`'s `PartialEq` is AlwaysEqual and
+    // ignores `locally_free` outright — that is the very asymmetry this file is
+    // about, and using `==` here would compare the two entries by the one
+    // relation that cannot see the difference. The honest control is the
+    // relation the KEY uses: prost bytes.
     assert_ne!(
         prost::Message::encode_to_vec(&free),
         prost::Message::encode_to_vec(&cleared),
-        "the two entries must differ ON THE PROST WIRE, or the comparison below is a \
-         tautology"
+        "the two entries must differ ON THE PROST WIRE, or everything below is a tautology"
     );
 
     let with_lf = EPathMap::new(vec![free], Vec::new(), false, None);
@@ -596,91 +664,339 @@ fn an_entrys_locally_free_reaches_the_wire_through_the_key() {
     assert_ne!(
         with_lf.path_stream(),
         without_lf.path_stream(),
-        "the escape arm files a ¬eval_stable entry as its canonical PROST bytes, and \
-         prost retains locally_free — so the two maps must hold different keys"
+        "★ THE CONTROL IS INERT. The two maps must hold different STORED keys — the \
+         escape arm files a ¬eval_stable entry as its canonical prost bytes, which \
+         retain locally_free. That difference is what the wire must NOT propagate; if \
+         it is absent, there is nothing to propagate and this test proves nothing."
     );
-    assert_ne!(
+    assert_eq!(
+        with_lf.wire_path_stream(),
+        without_lf.wire_path_stream(),
+        "★ THE REPAIR, at the seam: the surface writes lf-blanked entries, so the key \
+         stream it writes must be the keys of those entries — and blanking maps both \
+         fixtures onto one entry set."
+    );
+    assert_eq!(
         bincode::serialize(&with_lf).expect("with"),
         bincode::serialize(&without_lf).expect("without"),
-        "⚠ MEASURED: an entry's locally_free now reaches the bincode wire through U(m). \
-         This is filed as CBR-042's residual, not an accident."
+        "…hence identical bincode preimages"
     );
+    assert_eq!(
+        produce_hash(pathmap_par(with_lf)),
+        produce_hash(pathmap_par(without_lf)),
+        "★★ PROPERTY 1. An entry's locally_free must NOT reach an RSpace channel hash \
+         (`wire.rs`: transient analysis data). A difference here is two nodes disagreeing \
+         about the identity of one event."
+    );
+}
 
-    // …and the VALUE half of the normalization is untouched: the entries
-    // themselves are still written with an empty bitset.
-    let round: EPathMap =
-        bincode::deserialize(&bincode::serialize(&with_lf).expect("ser")).expect("de");
-    assert!(
-        round.locally_free.is_empty(),
-        "the map-level locally_free normalization is unchanged"
+/// ★★ ANTI-VACUITY for Property 1: `produce_hash` must be able to tell two
+/// genuinely different maps apart.
+///
+/// Without this, a `produce_hash` that answered one constant — or a fixture pair
+/// that had collapsed to one value — would be indistinguishable from a pass.
+#[test]
+fn the_produce_hash_can_still_tell_two_maps_apart() {
+    let one = EPathMap::new(vec![gint(1)], Vec::new(), false, None);
+    let two = EPathMap::new(vec![gint(2)], Vec::new(), false, None);
+    assert_ne!(
+        produce_hash(pathmap_par(one)),
+        produce_hash(pathmap_par(two)),
+        "★ THE RED IS INERT: two maps with different entry SETS must hash differently, \
+         or Property 1 is measuring a constant function"
     );
-    for entry in round.ps() {
-        assert!(
-            entry.locally_free.is_empty(),
-            "the entry-level locally_free normalization is unchanged — it is the KEY, \
-             not the value, that carries the bitset"
+}
+
+// ---------------------------------------------------------------------------
+// §4.2  Property 2 — the event hash survives a cold-store round trip
+// ---------------------------------------------------------------------------
+
+/// `hash(m) == hash(cold_decode(cold_encode(m)))` for the lf-bearing fixture.
+///
+/// ★★ This is the play/replay property. A map that hashed one way in play and
+/// another way after coming back off the cold store would make replay disagree
+/// with play about the same event — which is a consensus fault, not a
+/// serialization curiosity. FORM ② had exactly that: `e48b249c…` before the trip
+/// and `7259192343…` after it.
+///
+/// ★ The ground control below is what stops this passing for the wrong reason: a
+/// round trip that had become the identity on EVERYTHING (say, by the reader
+/// adopting the wire's keys) would pass this leg while destroying the property
+/// the reader exists for.
+#[test]
+fn the_event_hash_is_invariant_under_a_cold_store_round_trip() {
+    for (label, map) in [
+        ("lf-bearing", lf_bearing_map()),
+        ("ground (control)", EPathMap::new(vec![gint(1), gint(2)], Vec::new(), false, None)),
+    ] {
+        let before = produce_hash(pathmap_par(map.clone()));
+        let round: EPathMap =
+            bincode::deserialize(&bincode::serialize(&map).expect("ser")).expect("de");
+        let after = produce_hash(pathmap_par(round));
+        assert_eq!(
+            before, after,
+            "★★ PROPERTY 2 (`{label}`): the produce hash must be INVARIANT under a \
+             cold-store round trip. A difference is a play/replay divergence — the same \
+             map hashing differently depending on whether it has been through the store."
         );
     }
 }
 
-/// The precise, measured statement of the cost above: on a map whose entries
-/// carry `locally_free`, `cold_encode` is a fixed point from the **second**
-/// application, not the first.
+// ---------------------------------------------------------------------------
+// §4.3  Property 3 — `cold_encode` is a fixed point on the FIRST application
+// ---------------------------------------------------------------------------
+
+/// The lf-bearing map reaches its byte-level fixed point IMMEDIATELY, like every
+/// other map.
 ///
-/// ★ Written as a *measurement with a control* rather than as an apology. The
-/// control is the ground map, which reaches the fixed point immediately — so a
-/// regression that made EVERY map take two rounds would fail here rather than
-/// hide behind this one's expected behaviour.
+/// ⚠ This test previously asserted the OPPOSITE — `assert_ne!(first, second)`,
+/// "the lf-bearing map is the case that takes two rounds" — and filed the second
+/// round as a stated cost. It was not a cost; it was the defect's signature. A
+/// stream that moves on re-encoding means the writer wrote something that is not
+/// a function of what it wrote, and here that something was the trie key.
+///
+/// ★ The ground control is retained unchanged: it settled on the first
+/// application before and must still, so a change that made EVERY map settle
+/// immediately for some unrelated reason (a reader that ignored keys entirely,
+/// say) cannot be mistaken for this repair.
 #[test]
-fn the_encoding_is_a_fixed_point_after_one_normalisation_round() {
-    let lf_bearing = pathmap_par(EPathMap::new(
+fn the_encoding_is_a_fixed_point_on_the_first_application() {
+    for (label, map) in [
+        ("lf-bearing", lf_bearing_map()),
+        ("ground (control)", map_at_depth(4)),
+    ] {
+        let par = pathmap_par(map);
+        let once = par.cold_encode();
+        let decoded = Par::cold_decode(&once)
+            .unwrap_or_else(|e| panic!("`{label}`: cold_decode refused its own bytes: {e:?}"));
+        let twice = decoded.cold_encode();
+        assert_eq!(
+            once, twice,
+            "★★ PROPERTY 3 (`{label}`): `cold_encode` must be a byte-level fixed point on \
+             the FIRST application. A stream that still moved on the second would mean the \
+             writer emitted a quantity derived from something other than what it wrote."
+        );
+
+        // …and the derived oracle agrees, so the property is about the FORMAT
+        // rather than about one emitter.
+        let oracle = bincode::serialize(&par).expect("oracle");
+        assert_eq!(once, oracle, "`{label}`: machine and derived `Serialize` must agree");
+        dismantle(decoded);
+        dismantle(par);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §4.4  ⚠ The NON-GOAL, measured — prost is NOT a round-trip fixed point
+// ---------------------------------------------------------------------------
+
+/// ⚠⚠ **`prost(cold_decode(cold_encode(m))) == prost(m)` is NOT a property of
+/// this surface, and CBR-043 does not make it one.** Measured, so nobody
+/// re-opens it as a bug.
+///
+/// The reason has nothing to do with keys. `EPathMap`'s **map-level**
+/// `locally_free` (proto tag 3) is blanked by serde independently of anything
+/// this file is about — the hand-written `Serialize` writes it as empty bytes,
+/// the same normalization the twelve injected `.rhoapi` sites provide — while
+/// prost RETAINS it. So a map that carries a map-level bitset comes back off the
+/// cold store without one, and its prost encoding is shorter by exactly that
+/// field. That is the serialize-only asymmetry working as designed, and it
+/// predates FORM ② entirely.
+///
+/// ⇒ the two halves are separated here rather than argued about:
+///
+/// | quantity | round-trip stable? | why |
+/// |---|---|---|
+/// | the bincode encoding | **YES** (Property 3) | what CBR-043 repaired |
+/// | the map's ENTRIES | **YES** | blanking is idempotent |
+/// | `prost(m)` | **NO** | map-level `locally_free` is blanked by serde, retained by prost |
+#[test]
+fn prost_is_not_round_trip_stable_and_the_cause_is_key_independent() {
+    use prost::Message as _;
+
+    // The named fixture: a map-level bitset AND entry-level ones.
+    let fixture = {
+        use models::rust::utils::{new_boundvar_par, new_elist_par, new_gstring_par};
+        let plain = new_elist_par(
+            vec![new_gstring_par("plain".to_string(), Vec::new(), false)],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let var_entry = new_boundvar_par(1, models::create_bit_vector(&[1]), false);
+        EPathMap::new(
+            vec![plain, var_entry],
+            models::create_bit_vector(&[0]),
+            false,
+            None,
+        )
+    };
+    assert!(
+        !fixture.locally_free.is_empty(),
+        "the fixture must carry a MAP-level bitset, or the non-goal below is not exercised"
+    );
+
+    let round: EPathMap =
+        bincode::deserialize(&bincode::serialize(&fixture).expect("ser")).expect("de");
+    assert!(
+        round.locally_free.is_empty(),
+        "the map-level normalization is unchanged: serialize writes it EMPTY"
+    );
+    assert_ne!(
+        fixture.encode_to_vec(),
+        round.encode_to_vec(),
+        "⚠ THE NON-GOAL, MEASURED. prost is not a round-trip fixed point here, and the \
+         cause is the map-level locally_free normalization — NOT the trie key. If this \
+         ever goes equal, the serialize-only asymmetry has been dropped, which is a \
+         consensus-visible change that must be filed rather than discovered here."
+    );
+
+    // ★★ THE ISOLATION — the whole gap is the `locally_free` NORMALIZATION, and
+    // nothing about keys, entries, or order.
+    //
+    // Build the fixture's fully lf-cleared twin by hand (map level and entry
+    // level — the two places this fixture carries a bitset) and assert that the
+    // ROUND TRIP's prost image is EXACTLY that twin's. If any part of the gap
+    // came from the key stream or from a re-ordering, these would differ.
+    let cleared_twin = EPathMap::new(
+        fixture
+            .ps()
+            .iter()
+            .map(|entry| Par {
+                locally_free: Vec::new(),
+                ..entry.clone()
+            })
+            .collect::<Vec<_>>(),
+        Vec::new(),
+        fixture.connective_used,
+        fixture.remainder.clone(),
+    );
+    assert_eq!(
+        round.encode_to_vec(),
+        cleared_twin.encode_to_vec(),
+        "★ THE ISOLATION. A round trip's prost image must be exactly the prost image of \
+         the lf-CLEARED fixture — i.e. dropping `locally_free` is the ONLY thing the trip \
+         does. That is what makes the inequality above a property of the serialize-only \
+         normalization rather than a residue of the trie key, and it is why CBR-043 files \
+         it as a NON-GOAL instead of a bug."
+    );
+    // …and the map-level field really is one of the two places, so the two legs
+    // are not restating each other.
+    assert_ne!(
+        fixture.locally_free,
+        cleared_twin.locally_free,
+        "★ the twin must actually differ from the fixture at the MAP level (prost tag 3)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §4.5  ★★ Why the O(1) discriminator is `entries_stable` — MEASURED
+// ---------------------------------------------------------------------------
+
+/// `EntryTrie::wire_path_stream` answers in O(1) when the trie is
+/// `entries_stable`, and the obvious alternative — `union_locally_free.is_empty()`
+/// — is **UNSOUND**. This is the measurement, not the argument.
+///
+/// # Why it matters
+///
+/// The O(1) arm is what keeps `wire_encode_space`'s zero-allocation gate at zero
+/// for the shapes that dominate. An unsound discriminator would take that arm on
+/// a map whose blanked key stream DIFFERS, and would therefore re-introduce the
+/// exact defect CBR-043 repairs — silently, on precisely the maps nobody
+/// fixtures.
+///
+/// # The two properties, and the difference between them
+///
+/// `union_locally_free` folds the entries' **top-level** `Par::locally_free`
+/// only. It is not hereditary: a bitset one level down — inside a nested
+/// `EPathMap`, or inside a plain `EList` — never reaches it.
+///
+/// `eval_stable_par` demands `locally_free.is_empty()` at EVERY level of the
+/// stable alphabet: the `Par` itself, `EList`, `ETuple`, and a nested `EPathMap`
+/// through `eval_stable_epathmap`, which checks that map's own bitset and then
+/// recurses into its `entries_stable()`. So `entries_stable` ⟹ no `locally_free`
+/// anywhere ⟹ blanking is the identity ⟹ the two streams coincide.
+#[test]
+fn the_o1_discriminator_is_entries_stable_because_the_lf_fold_is_not_hereditary() {
+    // A bitset one map-nesting level down: the OUTER entry's own lf is empty.
+    let nested = {
+        let inner = EPathMap::new(vec![lf_pair().0], Vec::new(), false, None);
+        let entry = pathmap_par(inner);
+        assert!(
+            entry.locally_free.is_empty(),
+            "the nested fixture is only interesting if the OUTER entry's own lf is empty"
+        );
+        EPathMap::new(vec![entry], Vec::new(), false, None)
+    };
+
+    // A bitset inside a plain `EList` — not even a map, and still invisible to
+    // the top-level fold. Blanking makes this entry `eval_stable`, so its key
+    // changes ARM (escape `0x0F` → structural).
+    let list_lf = EPathMap::new(
         vec![Par {
             exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
-                    v: Some(Var {
-                        var_instance: Some(VarInstance::BoundVar(0)),
-                    }),
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![gint(9)],
+                    locally_free: models::create_bit_vector(&[2]),
+                    connective_used: false,
+                    remainder: None,
                 })),
             }],
-            locally_free: models::create_bit_vector(&vec![0]),
             ..Default::default()
         }],
         Vec::new(),
         false,
         None,
-    ));
-
-    let first = lf_bearing.cold_encode();
-    let second = Par::cold_decode(&first)
-        .expect("decode round 1")
-        .cold_encode();
-    let third = Par::cold_decode(&second)
-        .expect("decode round 2")
-        .cold_encode();
-    assert_ne!(
-        first, second,
-        "⚠ the lf-bearing map is the case that takes two rounds; if it stopped moving, \
-         either the escape arm stopped carrying locally_free or the value stopped being \
-         blanked, and BOTH are consensus-visible changes that must be filed rather than \
-         discovered here"
-    );
-    assert_eq!(
-        second, third,
-        "…and it must settle after exactly ONE normalisation round — a stream that kept \
-         moving would be a non-terminating canonicalisation, which is a different and \
-         far worse defect"
     );
 
-    // ★ THE CONTROL: a ground map settles IMMEDIATELY. Without it, a change that
-    // made every map take two rounds would be invisible here.
-    let ground = pathmap_par(map_at_depth(4));
-    let once = ground.cold_encode();
-    let twice = Par::cold_decode(&once).expect("decode").cold_encode();
+    let mut union_guard_was_wrong = 0usize;
+    for (label, map) in [
+        ("ground", EPathMap::new(vec![gint(1), gint(2)], Vec::new(), false, None)),
+        ("flat lf entry", lf_bearing_map()),
+        ("NESTED lf entry", nested),
+        ("lf inside a plain EList", list_lf),
+    ] {
+        let trie = map.entry_trie();
+        let stored = map.path_stream();
+        let wire = map.wire_path_stream();
+        let differs = stored != wire;
+
+        println!(
+            "  {label:24} union_lf={:5} entries_stable={:5} |U(stored)|={:3} \
+             |U(wire)|={:3} differ={differs}",
+            trie.union_locally_free().is_empty(),
+            trie.entries_stable(),
+            stored.len(),
+            wire.len()
+        );
+
+        // ★★ THE SOUNDNESS PROPERTY. A discriminator may only take the O(1) arm
+        // when the two streams really do coincide.
+        assert!(
+            !(trie.entries_stable() && differs),
+            "★★ `{label}`: `entries_stable` is UNSOUND as the O(1) discriminator — it \
+             answered `true` on a map whose blanked key stream DIFFERS. \
+             `EntryTrie::wire_path_stream` takes that arm without computing anything, so \
+             this is the defect CBR-043 repaired, back again and silent."
+        );
+        if trie.union_locally_free().is_empty() && differs {
+            union_guard_was_wrong += 1;
+        }
+    }
+
+    // ⚠ THE COUNTER-MEASUREMENT, asserted rather than printed: the rejected
+    // guard is not merely unproven, it is WRONG — on two of the four shapes.
+    // Pinned as a count so a future refactor that made `union_locally_free`
+    // hereditary would fail here and force this file to be re-read, rather than
+    // leaving prose claiming an unsoundness that no longer exists.
     assert_eq!(
-        once, twice,
-        "★ THE CONTROL IS INERT: a GROUND map must be a fixed point on the FIRST \
-         application. If it is not, the two-round behaviour above is not specific to \
-         locally_free and this file is describing the wrong mechanism."
+        union_guard_was_wrong, 2,
+        "⚠ `union_locally_free.is_empty()` must be WRONG on exactly the two non-top-level \
+         shapes (the nested map and the lf-bearing EList). If this count moved, either the \
+         fold became hereditary — in which case `wire_path_stream`'s doc comment is now \
+         false — or a fixture stopped exercising the case."
     );
 }
 
@@ -692,6 +1008,11 @@ fn the_encoding_is_a_fixed_point_after_one_normalisation_round() {
 /// pinned only as an INEQUALITY — the exact figure is a property of the
 /// fixtures, and a test that pinned it would fail on every unrelated corpus
 /// edit.
+///
+/// ⚠ Measured against `wire_path_stream()`, which is the stream this surface
+/// actually writes. On every fixture here the two coincide (all are
+/// `entries_stable`); using the stored one would make the arithmetic accidental
+/// rather than derived.
 #[test]
 fn the_size_delta_is_exactly_the_framed_path_stream() {
     for (label, map) in [
@@ -699,9 +1020,10 @@ fn the_size_delta_is_exactly_the_framed_path_stream() {
         ("8 ground entries", EPathMap::new((0..8).map(gint).collect::<Vec<_>>(), Vec::new(), false, None)),
         ("deep(34)", map_at_depth(34)),
         ("empty", EPathMap::new(Vec::new(), Vec::new(), false, None)),
+        ("lf-bearing", lf_bearing_map()),
     ] {
         let encoded = bincode::serialize(&map).expect("serialize");
-        let path_stream = map.path_stream().len();
+        let path_stream = map.wire_path_stream().len();
         // What the list form would have written: everything except the framed
         // key stream.
         let list_form = encoded.len() - 8 - path_stream;

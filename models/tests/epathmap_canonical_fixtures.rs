@@ -306,28 +306,27 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
 /// `locally_free` **field** is written as empty bytes, so a round trip loses the
 /// bits and the *value* half of an encoding never carries them.
 ///
-/// # ⚠⚠ RE-STATED, and NARROWED, by FORM ② — read this before trusting the name
+/// # ⚠⚠ RE-STATED TWICE — read this before trusting the name
 ///
-/// This test used to assert something strictly stronger: that serde output is
-/// byte-**identical** whether the bitsets are populated or empty, hence *"event
-/// hashes therefore never see `locally_free`"*. That claim is **now false for an
-/// `EPathMap`'s entries**, and it is false for a reason that has nothing to do
-/// with the `serialize_with` normalization:
+/// **FORM ② (`3a32cf07`, CBR-042) broke it; CBR-043 restores it.** The history is
+/// kept because the mechanism is the part worth knowing:
 ///
 /// * an entry is **KEYED** by `encode_trie_path`, whose `0x0F` escape arm files a
 ///   ¬`eval_stable` entry as its canonical **prost** bytes, and prost RETAINS
 ///   `locally_free` (`b73af1d2` / C8 named exactly this);
-/// * `1b576c90` (CBR-041) put that key stream `U(m)` on the **prost** wire;
-/// * FORM ② (CBR-042) puts it on the **bincode** wire.
+/// * `1b576c90` (CBR-041) put that key stream on the **prost** wire, where it
+///   belongs — prost writes the entries as stored, bitsets and all;
+/// * FORM ② put **the same stream** on the **bincode** wire, where the entries
+///   beside it are written *blanked*. A key derived from the unblanked entries,
+///   emitted next to the blanked ones, carried the bitset onto the event-hash
+///   preimage. Two maps differing only in an entry's `locally_free` produced
+///   different bincode, hence different produce hashes.
+/// * **CBR-043** makes the bincode surface write `U` of the entries *it writes*
+///   (`EPathMap::wire_path_stream`). One function `U`, the surface's own
+///   argument.
 ///
-/// ⇒ two maps differing only in an entry's `locally_free` now hold different
-/// keys, hence different `U(m)`, hence different bincode. The normalization
-/// still governs every `locally_free` FIELD; it never governed the trie KEY, and
-/// bincode was simply the last surface that could not see the difference.
-///
-/// ★ Filed as CBR-042, not discovered here — and the direction is a
-/// **convergence**: before FORM ② two `!=` maps produced identical bincode, so
-/// the event hash was not injective on the value. It now is.
+/// ⇒ the property this test is named for holds again, END TO END: no
+/// `locally_free` — field or key, map level or entry level — reaches this wire.
 ///
 /// Both `tagged` and its FULLY-cleared twin are NON-ground: the tagged entry is
 /// a bound-variable `EVar` — non-ground BY CONTENT, not by its lf bits (see
@@ -338,7 +337,7 @@ fn serde_normalizes_locally_free_to_empty() {
     let tagged = epathmap_locally_free_entries();
     let cleared = clear_locally_free(&tagged);
 
-    // ── What the normalization still guarantees: the VALUE half ─────────────
+    // ── The VALUE half ──────────────────────────────────────────────────────
     //
     // Strip the leading `u64-LE |U(m)| ‖ U(m)` and the two encodings are
     // identical — i.e. every `locally_free` FIELD really is written empty.
@@ -353,20 +352,39 @@ fn serde_normalizes_locally_free_to_empty() {
          identical bytes"
     );
 
-    // ── What FORM ② added: the KEY half DOES carry it ───────────────────────
+    // ── ★★ THE CONTROL, and it is what stops the KEY leg below being vacuous ─
+    //
+    // The two maps really do hold DIFFERENT STORED keys: the escape arm files a
+    // ¬eval_stable entry as its canonical prost bytes, which retain
+    // locally_free. `path_stream()` is that stored stream, and it still
+    // differs — which is correct, because it is what PROST emits and prost
+    // writes the entries as stored.
+    //
+    // ⚠ Without this, the KEY assertion below would be comparing a map with
+    // itself: if the two maps' stored keys agreed, "their wire keys agree" would
+    // be a tautology rather than the repair.
     assert_ne!(
         tagged.path_stream(),
         cleared.path_stream(),
-        "★ THE CONTROL. The two maps must hold DIFFERENT keys — the escape arm files a \
-         ¬eval_stable entry as its canonical prost bytes, which retain locally_free. If \
-         they were equal, the assertion above would be comparing a map with itself and \
-         would be vacuous."
+        "★ THE CONTROL IS INERT. The two maps must hold DIFFERENT STORED keys, or the \
+         wire-key assertion below proves nothing. If this ever goes equal, either the \
+         escape arm stopped carrying locally_free or the fixture stopped bearing it."
     );
-    assert_ne!(
+
+    // ── ★★ THE KEY half: it must NOT carry locally_free (CBR-043) ───────────
+    assert_eq!(
+        tagged.wire_path_stream(),
+        cleared.wire_path_stream(),
+        "★ THE REPAIR. The bincode surface writes lf-BLANKED entries, so it must write \
+         the keys of THOSE entries — and blanking maps the two fixtures onto the same \
+         entry set. A difference here is `locally_free` back on an RSpace channel hash \
+         through the trie key, which is the play/replay divergence CBR-043 closed."
+    );
+    assert_eq!(
         tagged_bytes, cleared_bytes,
-        "⚠ MEASURED AND FILED (CBR-042): once U(m) is on the bincode wire, an entry's \
-         locally_free reaches it through the KEY. This is the cost stated as plainly as \
-         the gain — not an accident, and not a test that was loosened."
+        "…and therefore the WHOLE encoding agrees: two maps differing only in an entry's \
+         locally_free must be byte-identical on this wire, because the event hash is \
+         blake2b over exactly these bytes."
     );
 
     // JSON: the same split, expressed structurally rather than by byte offset.
@@ -378,9 +396,9 @@ fn serde_normalizes_locally_free_to_empty() {
         tagged_json["ps"][1], cleared_json["ps"][1],
         "serde_json's VALUE half must not see locally_free either"
     );
-    assert_ne!(
+    assert_eq!(
         tagged_json["ps"][0], cleared_json["ps"][0],
-        "…and its KEY half must, for the same reason bincode's does"
+        "…and neither must its KEY half, for the same reason bincode's does not"
     );
 
     // A round trip drops every bitset (map level and entry level) — the
@@ -476,19 +494,72 @@ fn event_hash_goldens_produce() {
     let produce_nonpersist = Produce::create(&channel, &datum1, false);
     assert_ne!(produce1.hash, produce_nonpersist.hash);
 
-    // END-TO-END locally_free invisibility: bit-tagging the datum's Par must
-    // NOT change the produce hash (the serde normalization composed through
-    // bincode → Blake2b256).
-    let mut tagged_par = epathmap_par(e6a_index_epathmap());
-    tagged_par.locally_free = create_bit_vector(&[0]);
-    let datum_tagged = ListParWithRandom {
-        pars: vec![tagged_par],
-        random_state: rs1,
-    };
-    let produce_tagged = Produce::create(&channel, &datum_tagged, true);
+    // ── END-TO-END `locally_free` invisibility, at BOTH levels ──────────────
+    //
+    // ⚠⚠ This leg used to tag only the WRAPPING `Par`'s own bitset — the MAP
+    // level — and passed throughout the entire window in which FORM ② was
+    // putting an ENTRY's `locally_free` on this very hash. A map-level tag is
+    // blanked by `serialize_as_empty_bytes` on the `Par` field directly and
+    // never reaches a trie key at all, so the one place the defect lived was
+    // the one place this assertion did not look. Both levels are tagged now,
+    // and each is a separate `Produce` so a failure names which level moved.
+    let mut map_tagged_par = epathmap_par(e6a_index_epathmap());
+    map_tagged_par.locally_free = create_bit_vector(&[0]);
+    let produce_map_tagged = Produce::create(
+        &channel,
+        &ListParWithRandom {
+            pars: vec![map_tagged_par],
+            random_state: rs1.clone(),
+        },
+        true,
+    );
     assert_eq!(
-        produce1.hash, produce_tagged.hash,
-        "locally_free must be invisible to event hashes (serialize_as_empty_bytes)"
+        produce1.hash, produce_map_tagged.hash,
+        "MAP-level locally_free must be invisible to event hashes \
+         (serialize_as_empty_bytes on the Par's own field)"
+    );
+
+    // ★ THE ENTRY-LEVEL SIBLING — the case the map-level tag never covered.
+    //
+    // Tagging an ENTRY reaches the hash only through the trie KEY, which is
+    // precisely the path CBR-043 repaired. `eval_stable_par` requires
+    // `locally_free.is_empty()` at every level, so tagging a hitherto-stable
+    // entry moves its key from the structural arm to the `0x0F` escape arm —
+    // whose payload is canonical prost bytes, which RETAIN the bitset. Either
+    // way the stored key moves, and the control below insists that it did.
+    //
+    // A regression that put entry-level `locally_free` back on the wire fails
+    // HERE and nowhere else in this file.
+    let entry_tagged_map = {
+        let mut entries = e6a_index_epathmap().ps().clone();
+        entries
+            .first_mut()
+            .expect("the e6a index fixture must have at least one entry")
+            .locally_free = create_bit_vector(&[3]);
+        EPathMap::new(entries, Vec::new(), false, None)
+    };
+    // The anti-vacuity control: the tag must really have changed the STORED key
+    // stream, or "the hash did not move" says nothing.
+    assert_ne!(
+        entry_tagged_map.path_stream(),
+        e6a_index_epathmap().path_stream(),
+        "★ THE CONTROL IS INERT: tagging an entry must change the map's STORED key \
+         stream, or the hash comparison below is comparing a map with itself"
+    );
+    let produce_entry_tagged = Produce::create(
+        &channel,
+        &ListParWithRandom {
+            pars: vec![epathmap_par(entry_tagged_map)],
+            random_state: rs1,
+        },
+        true,
+    );
+    assert_eq!(
+        produce1.hash, produce_entry_tagged.hash,
+        "★ ENTRY-level locally_free must be invisible to event hashes too (CBR-043). \
+         This is `wire.rs`'s standing rule — locally_free is transient analysis data \
+         that must not reach an RSpace channel hash — measured at the level FORM ② \
+         breached."
     );
 }
 
