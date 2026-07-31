@@ -570,12 +570,35 @@ jobs:
               exit 1
               ;;
           esac
-          # Residual race: between the runner registering and the DELETE above
-          # landing, a queued CI job can still claim it. Narrow, but real. The
-          # complete fix is upstream -- launch-runner.sh hardcodes LABELS with
-          # no override, so it cannot register correctly in the first place.
-          # Worth a one-line RUNNER_LABELS env override there.
-          echo "soak runner $name is now exclusive to this workflow"
+          # Correct labels are not the same as an available runner. A busy
+          # runner accepts label edits happily, so every check above passes on a
+          # VM that a CI job claimed during the registration window -- and the
+          # runner is --ephemeral, so it exits after that job and deregisters.
+          # The soak would then wait against timeout-minutes: 1440 for a runner
+          # that no longer exists: a 24h hang that burns the window exactly as
+          # a crash would, reported as a timeout with no cause attached.
+          #
+          # Checking busy converts that into a two-minute failure that names
+          # what happened. It does not prevent the poach -- only registering
+          # under the exclusive label from the start does that, which
+          # launch-runner.sh cannot yet do -- but a soak that fails immediately
+          # and says why is strictly better than one that hangs overnight.
+          busy="$(gh api "repos/$GH_REPO/actions/runners/$rid" --jq '.busy')"
+          if [ "$busy" != "false" ]; then
+            echo "::error::$name was claimed by another workflow before the exclusive label landed (busy=$busy). It is ephemeral, so it will exit after that job and never run this soak. Re-run once CI is idle, or wait for the launch-runner.sh RUNNER_LABELS override that removes this window."
+            exit 1
+          fi
+          # Residual race, now detected rather than merely documented: the
+          # window between registering and the DELETE landing still exists, and
+          # the busy check above is what turns losing that race into a fast,
+          # attributed failure instead of an overnight hang. Closing the window
+          # itself needs launch-runner.sh to register under the exclusive label
+          # from the start, which it cannot do while LABELS is hardcoded with no
+          # override. That override is being added upstream; this repository
+          # cannot patch it here without breaking the property that makes
+          # SYSTEM_INTEGRATION_REF worth pinning -- a SHA that no longer
+          # describes what ran is the bug this whole branch exists to fix.
+          echo "soak runner $name is registered, exclusive, and idle"
 
       - name: Remove OCI credentials
         if: always()
