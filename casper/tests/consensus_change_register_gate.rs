@@ -219,6 +219,11 @@ pub enum DriftBreach {
     UnverifiedBudget { stated: i64, counted: usize },
     /// The prose headings and the index ids disagree.
     ProseIndexDivergence { prose_only: Vec<String>, index_only: Vec<String> },
+    /// ★ **§4.1's ROW SET and the index's entry set disagree.** Distinct from
+    /// [`Self::ProseIndexDivergence`], which compares the *headings*: an entry can have a
+    /// heading, a body and an index row and still be missing from the glyph table — which is
+    /// exactly what happened to **CBR-040**, undetected until a human read the table.
+    SummaryTableDivergence { summary_only: Vec<String>, index_only: Vec<String> },
     /// An entry's index row disagrees with the §4.1 row that displays it.
     SummaryRowDisagrees { id: String, field: &'static str, prose: String, index: String },
     /// A typed path exclusion excludes nothing, so the row is dead weight.
@@ -395,6 +400,18 @@ impl fmt::Display for DriftBreach {
                 f,
                 "prose/index divergence.\n  headings with no index row: {prose_only:?}\n  index \
                  rows with no heading: {index_only:?}"
+            ),
+            Self::SummaryTableDivergence { summary_only, index_only } => write!(
+                f,
+                "§4.1 GLYPH-ROW divergence — the summary table and `register.toml` do not hold \
+                 the same entries.\n  §4.1 rows with no index entry: {summary_only:?}\n  index \
+                 entries with NO §4.1 GLYPH ROW: {index_only:?}\n\
+                 ★ The second list is the one CBR-040 was on. An entry can have a heading, a \
+                 full body and an index row and still be invisible in the one table §5's \
+                 figures are projected from — so every share, every count and every percentage \
+                 computed over §4.1 would be short by exactly these entries, silently. Add the \
+                 missing row to §4.1 (or the missing `[[entry]]` to `register.toml`); do not \
+                 relax this clause."
             ),
             Self::SummaryRowDisagrees { id, field, prose, index } => write!(
                 f,
@@ -2063,6 +2080,42 @@ pub fn check_unverified_budget(index: &Index, p: &Projection) -> Result<(), Drif
     Ok(())
 }
 
+/// ★★ **§7.2 clause 7b — the §4.1 ROW SET is the index's entry set.**
+///
+/// # The blind spot this closes
+///
+/// [`check_prose_index_agreement`] compares the entry **HEADINGS** (`### CBR-…`) with the
+/// index, and then walks §4.1's rows comparing fields. Both halves are *conditional on a row
+/// existing*: an entry with a heading, a body and an index row but **no glyph row in §4.1**
+/// satisfies the heading-set test (its heading is present) and is simply never visited by the
+/// field loop (there is no row to visit).
+///
+/// That is not hypothetical. **CBR-040 had no §4.1 row for an entire commit**, and nothing in
+/// this gate could see it; it was found by a human reading the table. The failure is worse than
+/// a missing line of prose, because §4.1 is *the single authoritative table* — [`project`]
+/// derives every §5 count, share and percentage from these rows, so a missing row makes every
+/// one of those figures quietly short, and the figure clause then *confirms* the wrong totals
+/// because it is comparing the prose against the same deficient projection.
+///
+/// ⇒ the two sets must be **equal**, and the message must name the ids on each side.
+pub fn check_summary_table_coverage(
+    index: &Index,
+    rows: &[SummaryRow],
+) -> Result<(), DriftBreach> {
+    let ids: BTreeSet<String> = index
+        .rows("entry")
+        .iter()
+        .map(|r| r.get("id").map(Val::as_str).unwrap_or("").to_string())
+        .collect();
+    let summary: BTreeSet<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let summary_only: Vec<String> = summary.difference(&ids).cloned().collect();
+    let index_only: Vec<String> = ids.difference(&summary).cloned().collect();
+    if !summary_only.is_empty() || !index_only.is_empty() {
+        return Err(DriftBreach::SummaryTableDivergence { summary_only, index_only });
+    }
+    Ok(())
+}
+
 /// **§7.2 clause 7 — prose ↔ index agreement**, strengthened.
 ///
 /// §7.2 specified heading-set equality. That is necessary and **not sufficient**: an index row
@@ -2070,7 +2123,12 @@ pub fn check_unverified_budget(index: &Index, p: &Projection) -> Result<(), Drif
 /// with §4.1's row — surface, direction, grade, and all seven axis cells — is compared too.
 ///
 /// ★ This is the clause that makes the axis glyphs and the axis vocabulary one fact instead of
-/// two: 45 rows × 7 cells of agreement, asserted rather than assumed.
+/// two: **57** rows × 7 cells of agreement, asserted rather than assumed.
+///
+/// ⚠ The row COUNT is not checked here and must not be inferred from this sentence — it is a
+/// projection of §4.1 and is asserted by [`check_summary_table_coverage`] as a SET equality,
+/// which is the checkable form. The figure above is prose and was stale at `45` for twelve
+/// entries; it is corrected rather than deleted so the two clauses read as the pair they are.
 pub fn check_prose_index_agreement(
     index: &Index,
     headings: &[String],
@@ -2338,6 +2396,11 @@ fn the_register_as_committed_passes_every_clause() {
     assert_eq!(
         check_prose_index_agreement(&f.index, &f.headings, &f.rows),
         Ok(())
+    );
+    assert_eq!(
+        check_summary_table_coverage(&f.index, &f.rows),
+        Ok(()),
+        "clause 7b — every index entry must have a §4.1 GLYPH ROW and vice versa"
     );
     assert_eq!(check_foreign_rows(&f.index), Ok(()));
 }
@@ -3150,6 +3213,67 @@ fn the_prose_index_clause_refuses_a_row_that_lies_about_its_entry() {
         Err(DriftBreach::SummaryRowDisagrees { field: "axis", .. })
     ));
     assert_eq!(check_prose_index_agreement(&f.index, &f.headings, &f.rows), Ok(()));
+}
+
+/// ★★ RED for clause 7b — **the missing GLYPH ROW**, which is the shape CBR-040 shipped in.
+///
+/// The mutation is deliberately the *narrow* one: the entry keeps its heading, its body and its
+/// `[[entry]]` row, and loses only its line in §4.1. That is precisely what
+/// [`check_prose_index_agreement`] cannot see — its heading-set test passes (the heading is
+/// still there) and its field loop never visits a row that does not exist — so this test also
+/// asserts that the OLD clause stays green on the same input. Without that second half, a
+/// future refactor could fold 7b back into 7 and nobody would learn that 7 alone was blind.
+#[test]
+fn the_summary_table_clause_names_the_glyph_row_it_lost() {
+    let f = fixture();
+
+    // ── The mutation: drop ONE glyph row, change nothing else. ──────────────────────────
+    let mut rows_without = f.rows.clone();
+    rows_without.retain(|r| r.id != "CBR-013");
+    assert_eq!(
+        rows_without.len() + 1,
+        f.rows.len(),
+        "★ the mutation must actually remove exactly one row, or the RED below is vacuous"
+    );
+
+    let breach = check_summary_table_coverage(&f.index, &rows_without)
+        .expect_err("★ an index entry with no §4.1 glyph row must be REFUSED");
+    assert_eq!(
+        breach,
+        DriftBreach::SummaryTableDivergence {
+            summary_only: Vec::new(),
+            index_only: vec!["CBR-013".to_string()],
+        },
+        "the message must NAME the id that lost its row — CBR-040 was found by a human \
+         precisely because nothing named it"
+    );
+
+    // ★★ THE SECOND HALF: clause 7 is BLIND to this exact mutation. This is the evidence
+    // that 7b earns its place rather than restating its neighbour.
+    assert_eq!(
+        check_prose_index_agreement(&f.index, &f.headings, &rows_without),
+        Ok(()),
+        "★ clause 7 must PASS on the very input clause 7b refuses. If it ever starts failing \
+         here, the two clauses have converged and this one can be reconsidered — until then, \
+         removing 7b re-opens the CBR-040 hole."
+    );
+
+    // …and the OTHER direction: a §4.1 row for an entry the index does not have.
+    let mut rows_extra = f.rows.clone();
+    let mut ghost = f.rows[0].clone();
+    ghost.id = "CBR-999".to_string();
+    rows_extra.push(ghost);
+    assert_eq!(
+        check_summary_table_coverage(&f.index, &rows_extra),
+        Err(DriftBreach::SummaryTableDivergence {
+            summary_only: vec!["CBR-999".to_string()],
+            index_only: Vec::new(),
+        }),
+        "★ the clause is a SET EQUALITY, so a glyph row with no `[[entry]]` must be refused too"
+    );
+
+    // ★ ACCEPT: the register as committed satisfies it.
+    assert_eq!(check_summary_table_coverage(&f.index, &f.rows), Ok(()));
 }
 
 /// ★ RED on the cross-repository limit, asserted positively: a Surface-L row whose SHA

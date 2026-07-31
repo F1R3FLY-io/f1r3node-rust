@@ -1039,6 +1039,144 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 
 [[entry]]
+id = "CBR-043"
+surface = "N"
+commits = ["8cf0b770"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+# The entry SET is untouched and so is every decoded value. The reader is not modified at
+# all: `from_path_stream_and_values` always re-filed from the VALUES, so the map a peer's
+# stream denotes is byte-for-byte the map it denoted before. What changed is which entries
+# the WRITER derives its key stream from — the ones it writes (lf-blanked) rather than the
+# ones it stores. models/tests/epathmap_wrapper_cell.rs's round-trip proptest
+# (`de.ps() == map.ps()`) and rholang's epathmap_replay_equivalence_spec 1/1 both hold.
+axis_value = "NO"
+# MEASURED, and it is CBR-042's own control re-read. Bincode reaches a verdict only through
+# the RSpace store's channel HASHES, which select a bucket rather than an order; spatial
+# matching is structural; ScoredTerm::sort_vec reads Ord, which reads the trie KEYS —
+# `path_stream()`, which this change does not touch. models/tests/golden/
+# sorter_canonical_forms.txt came back UNMOVED and its last change is still 1b576c90, the
+# same direct control CBR-042 used: that golden moved on 2 of 120 entries when CBR-041
+# touched this relation, so it is sensitive to exactly the thing being claimed unmoved.
+axis_verdict = "NO"
+# ★ THE AXIS. The serde/bincode surface emits `U` of the entries IT WRITES
+# (EntryTrie::wire_trie) rather than of the entries the map stores. EXACTLY 2 of 10 serde
+# goldens moved — locally_free.bincode.bin (356 -> 352 B) and locally_free.json
+# (2155 -> 2117 B) — and they are the only fixture carrying `locally_free`. The other eight
+# (e6a_index, ezipper, nested, remainder_connective x bincode/json) came back UNMOVED by
+# SHA-256, which confines the blast radius to lf-bearing maps. The -4 B is DERIVED: the
+# removed field is the entry Par's locally_free, prost tag 9 wiretype 2, on the wire as
+# `4a 02 00 01`, inside the escape-arm key payload; |U(m)| falls 31 -> 27.
+axis_bytes_bincode = "MOVES"
+# MEASURED BY SHA-256, not by length: all five prost goldens byte-for-byte UNMOVED and all
+# five prost encoded_len pins unchanged (335/30/40/36/19). Structural, not incidental —
+# EPathMap::encode_raw still reads path_stream(), the STORED key stream, because prost
+# retains locally_free and therefore writes the entries as stored. The two streams are
+# separate accessors on purpose; neither surface can pick up the other's by reflex.
+axis_bytes_prost = "NO"
+# Event hashes are Blake2b256 over bincode preimages, so a moved encoding is a moved
+# post-state hash for any datum carrying an lf-bearing EPathMap. MEASURED DIRECTLY: the
+# produce hash of a map with one lf-tagged entry moves e48b249c... -> 7259192343..., landing
+# on the value its lf-CLEARED twin already had.
+# ⚠ The four PINNED hashes did NOT move (PRODUCE_INDEX_RS1/RS2, INDEX_CHANNEL_HASH,
+# CONSUME_DISCOVERY_HASH) — the e6a fixture carries no ENTRY-level locally_free, so it could
+# not exercise the path. That is stated rather than read as evidence of neutrality: it is
+# why the end-to-end leg in epathmap_canonical_fixtures.rs was widened to tag an ENTRY.
+axis_post_state_hash = "MOVES"
+# The READER is not modified. `from_path_stream_and_values` is unchanged, decode_trie_path is
+# still never called on this surface, and a stream whose keys disagree with its values is
+# still RE-FILED rather than rejected — so no byte string that decoded before stops decoding,
+# and the accepted language is neither narrowed nor widened. Re-measured green at depths
+# 4/34/64/4096 with the escape arm's refusal at 34 and 64 re-measured in the same file.
+axis_acceptance = "NO"
+# Metering reads prost Message::encoded_len (rholang accounting/costs.rs:67,98,99,298). Prost
+# is on the unmoved axis above and all five encoded_len pins are unchanged. No cost in the
+# tree is computed from a bincode length.
+axis_metering = "NO"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CBR-043 — written LAST, from the landed tree at 8cf0b770, each verified to sit
+# within the +/-3-line window the gate enforces.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ★ THE MEMO, and the reason it holds a TRIE rather than a byte string: blanking
+# can reorder, so the key half and the value half must come off one value.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 294
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "wire_trie"
+
+# ★ THE O(1) DISCRIMINATOR — `entries_stable`, not `union_locally_free`.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 482
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "wire_trie"
+
+# ★ The blanking function, which IS the surface: encode_into then cold_decode.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 538
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "blanked_trie"
+
+# ★ THE SEAM: both halves of the serde tuple read off ONE trie.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 1419
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "wire_trie"
+
+# The trampolined encoder's twin of that seam — `pathmap_ps` now reads wire_view().
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rholang/wire.rs"
+line = 471
+at = "HEAD"
+path = "models/src/rust/rholang/wire.rs"
+token = "wire_view"
+
+# ⚠ THE UNMOVED AXIS, cited positively: prost still reads the STORED key stream,
+# which is what keeps all five prost goldens byte-identical.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 1845
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "encode_ground_field8"
+
+# The rule this repairs, in the words the tree already carried.
+[[citation]]
+owner = "CBR-043"
+cited = "models/src/rust/rholang/wire.rs"
+line = 75
+at = "HEAD"
+path = "models/src/rust/rholang/wire.rs"
+token = "locally_free"
+
+# The metering cell's evidence, unchanged from CBR-042: the charge reads prost
+# `encoded_len`, not a serde length.
+[[citation]]
+owner = "CBR-043"
+cited = "rholang/src/rust/interpreter/accounting/costs.rs"
+line = 67
+at = "HEAD"
+path = "rholang/src/rust/interpreter/accounting/costs.rs"
+token = "encoded_len"
+
+
+[[entry]]
 id = "CBR-L14"
 surface = "L"
 commits = ["713e0364", "5a9efa00", "93155150", "3aea562f"]
@@ -1536,10 +1674,12 @@ path = "models/src/rust/rholang/par_codec.rs"
 token = "byte_slice"
 
 # ★ THE one reader both decode paths call — the anti-"two bulk readers" claim.
+# ⚠ RE-PINNED at 8cf0b770: the coordinate was 875 and CBR-043's insertions moved the
+# function down. The token is unchanged and so is the claim; only the line moved.
 [[citation]]
 owner = "CBR-042"
 cited = "models/src/rust/rhoapi_ext.rs"
-line = 875
+line = 1106
 at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "from_path_stream_and_values"
