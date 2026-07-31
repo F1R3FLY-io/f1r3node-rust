@@ -5461,7 +5461,33 @@ impl DebruijnInterpreter {
                         let n = n as usize;
                         let mut result_elements = Vec::with_capacity(base_pathmap.entry_trie().len());
 
-                        for par in base_pathmap.ps() {
+                        // ★ Borrows the trie instead of forcing `ps()`. That projection
+                        // deep-clones every entry, and this loop then clones AGAIN into
+                        // `result_elements` — so the identity case `dropHead(0)` was paying
+                        // two full copies of the map to return a copy of the map.
+                        //
+                        // ⛔ AND THE CRATE'S `drop_head` CANNOT SERVE THIS — a named negative
+                        // result, recorded so it is not attempted a second time.
+                        // `ZipperWriting::join_k_path_into` is aliased `drop_head` and looks
+                        // like an exact match. It is not, on two independent grounds:
+                        //
+                        //   1. UNIT MISMATCH. It removes a fixed BYTE count from each path;
+                        //      `dropHead(n)` removes `n` codec SEGMENTS, and segments are
+                        //      variable-length (`enc("a")` is 3 bytes, `enc(1)` is 2). A byte
+                        //      count is correct only when the first `n` segments happen to be
+                        //      equal-length across every entry.
+                        //   2. ⚠ IT WOULD SILENTLY BECOME A NO-OP. It rewrites KEYS and leaves
+                        //      VALUES untouched, so every entry would violate the trie's
+                        //      invariant `∀(k,v). encode_trie_path(v) = k`. On the way back
+                        //      out, `EntryTrie::adopt_trie` detects exactly that and RE-FILES
+                        //      FROM THE VALUES — reconstructing the original, untruncated
+                        //      keys. `dropHead` would compile, run, pass a smoke test, and do
+                        //      nothing, in release builds.
+                        //
+                        // ⇒ The rebuild stays. The value here is a function of the entry, not
+                        // of its key, so the key must be recomputed and the crate op cannot
+                        // help. Only the double-clone goes.
+                        base_pathmap.entry_trie().for_each_entry(|par| {
                             let elements = path_elements(par);
                             match n {
                                 // Dropping NOTHING is the identity — on both
@@ -5486,7 +5512,9 @@ impl DebruijnInterpreter {
                                 // rule to both arms. The bare entry `5` is a
                                 // path of length 1, so it survives `dropHead(0)`
                                 // and no other.
-                                _ if elements.len() <= n => continue,
+                                // (was `continue`; inside the closure the empty arm is the
+                                // same thing — the entry is simply not pushed)
+                                _ if elements.len() <= n => {}
                                 // Only a split-arm entry can reach here (a
                                 // one-element path was taken by the arm above),
                                 // so the tail is a ground list: the carrier's
@@ -5509,7 +5537,7 @@ impl DebruijnInterpreter {
                                     ..Default::default()
                                 }),
                             }
-                        }
+                        });
                         Ok(Expr {
                             // EPathMap fix P3 (PM-2): constructor instead of
                             // a struct literal (private shadow cell).
