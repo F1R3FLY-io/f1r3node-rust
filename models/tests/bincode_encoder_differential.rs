@@ -14,7 +14,7 @@
 //! ```
 //!
 //! ★ The derived `Serialize` therefore **stays compiled and callable**. It is
-//! the encode oracle for exactly the reason `par_codec_differential` keeps the
+//! the encode oracle for exactly the reason `bincode_decoder_differential` keeps the
 //! derived `Deserialize` as the decode oracle: it is compiler-generated from
 //! the same struct definitions the table is generated from, and is therefore
 //! *undriftable* in a way a second hand-written implementation could never be.
@@ -46,8 +46,8 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::rholang::bincode_encoder::{encode, ColdStoreEncode};
 use models::rust::rholang::wire::WireNode;
-use models::rust::rholang::wire_encode::{encode, ColdStoreEncode};
 use models::rust::rholang::wire_schema::{
     CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANT_COUNT,
 };
@@ -56,8 +56,8 @@ use proptest::prelude::*;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::{Deserialize, Serialize};
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 // ===========================================================================
 // §0  The VERDICT, separated from the subject

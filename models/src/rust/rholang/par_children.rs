@@ -725,8 +725,8 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
 /// The match is exhaustive with no `_` arm — guard 1 of this module — so a
 /// variant added to `RhoTypes.proto` fails to compile here rather than being
 /// silently assigned an index by omission. The decoder in
-/// `models/src/rust/rholang/par_codec.rs` reconstructs arms from indices and is
-/// gated against THIS function by `par_codec_variant_indices_agree`, so the
+/// `models/src/rust/rholang/bincode_decoder.rs` reconstructs arms from indices and is
+/// gated against THIS function by `bincode_decoder_variant_indices_agree`, so the
 /// numbering exists in exactly one place.
 pub fn expr_instance_variant_index(e: &ExprInstance) -> u32 {
     match e {

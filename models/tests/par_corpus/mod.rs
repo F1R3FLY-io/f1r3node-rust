@@ -1,4 +1,4 @@
-//! # The shared corpus for the `par_codec` differential
+//! # The shared corpus for the `bincode_decoder` differential
 //!
 //! ## Why a CONSTRUCTED corpus and not just `generate_par`
 //!
@@ -42,8 +42,8 @@
 //! `rholang/tests/stack_depth_gate.rs`, which probes the machine alone out to
 //! depth 4,096.
 
-// Three test binaries share this module (`par_codec_differential`,
-// `par_codec_malformed`, `par_codec_wire_shapes`) and each uses a different
+// Three test binaries share this module (`bincode_decoder_differential`,
+// `bincode_decoder_malformed`, `bincode_decoder_wire_shapes`) and each uses a different
 // subset of the builders. Rust's dead-code analysis is per-binary, so without
 // this every binary warns about the builders the *other* two use.
 #![allow(dead_code)]

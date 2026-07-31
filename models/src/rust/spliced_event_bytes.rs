@@ -48,7 +48,7 @@
 //! `casper/tests/event_hash_leg_depth_probe.rs`, i.e. a deep enough datum
 //! overflows a node worker's stack while computing an EVENT HASH — during
 //! `hash_produce`, after the deploy has been accepted. `cold_encode` is the
-//! single-walk trampolined encoder from `rust::rholang::wire_encode`, flat in
+//! single-walk trampolined encoder from `rust::rholang::bincode_encoder`, flat in
 //! native stack, and **byte-identical by contract**.
 //!
 //! ⚠ Byte identity here is a CONSENSUS obligation, not a nicety: these bytes
@@ -89,7 +89,7 @@
 //! program (rholang).
 
 
-use crate::rust::rholang::wire_encode::ColdStoreEncode;
+use crate::rust::rholang::bincode_encoder::ColdStoreEncode;
 
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, ParWithRandom, TaggedContinuation};
 
@@ -197,7 +197,7 @@ impl StableHashSerialize for TaggedContinuation {
 /// ⚠ The trait's contract is exact and is quoted here because it is the whole
 /// safety argument: *"An override may ONLY be a byte-identical faster
 /// construction."* That obligation is discharged by
-/// `models/tests/wire_encode_differential.rs`, which asserts BYTE IDENTITY
+/// `models/tests/bincode_encoder_differential.rs`, which asserts BYTE IDENTITY
 /// against the derived `Serialize` over every `ExprInstance` arm, every
 /// `ConnectiveInstance` arm, the full variant × arity × awkward-combination
 /// cross product, every awkward ground literal, both `EPathMap` serialize
@@ -210,7 +210,7 @@ impl StableHashSerialize for TaggedContinuation {
 /// deliberately untouched.
 impl StableHashSerialize for Par {
     fn stable_hash_bytes(&self) -> Vec<u8> {
-        crate::rust::rholang::wire_encode::encode(self)
+        crate::rust::rholang::bincode_encoder::encode(self)
     }
 }
 

@@ -20,13 +20,13 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par, Send};
-use models::rust::rholang::wire::WireNode;
-use models::rust::rholang::wire_encode::{
+use models::rust::rholang::bincode_encoder::{
     encode, encode_into, op_size, op_stack_high_water, program_address, with_encoded,
 };
+use models::rust::rholang::wire::WireNode;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 // ---------------------------------------------------------------------------
 // term shapes, built ITERATIVELY so construction is never the constraint
@@ -155,7 +155,7 @@ fn the_op_stack_entry_stays_small() {
         op_size() <= 4 * std::mem::size_of::<usize>(),
         "`Op` grew to {} B ({} words). Every entry is multiplied by the term's DEPTH, so an \
          arm that started carrying a large payload should move to a side stack — the \
-         discipline `par_codec`'s `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
+         discipline `bincode_decoder`'s `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
         op_size(),
         op_size() / std::mem::size_of::<usize>()
     );

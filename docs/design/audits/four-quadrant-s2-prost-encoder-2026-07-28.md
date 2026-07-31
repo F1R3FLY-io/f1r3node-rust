@@ -4,7 +4,7 @@
 `feature/mettail`, on top of S0 (`44535d75`) and S1 (`7c74260d`).
 
 > **This document records RESULTS.** The design lives in the code it describes —
-> `models/src/rust/rholang/prost_encode.rs` (the machine, §1-4),
+> `models/src/rust/rholang/protobuf_encoder.rs` (the machine, §1-4),
 > `models/src/rust/rholang/prost_wire.rs` (the alphabet and the two asymmetries),
 > and `models/build/wire_schema.rs` (the one walk, the two sort keys). Restating
 > it here would create a second copy, and this campaign has watched four prose
@@ -16,12 +16,12 @@
 
 | landed | not landed (later stages) |
 |---|---|
-| `prost_encode::{encode_to_vec, encode_into, encoded_len}` | any production call site |
+| `protobuf_encoder::{encode_to_vec, encode_into, encoded_len}` | any production call site |
 | generated `impl ProstNode` / `impl ProstOneof` | the protobuf DECODER (`Message::merge_field`) |
 | the differential + the mutation proof | the term ops (`Clone`, `Ord`, `Debug`, `clear`) |
 | the space introspection | `impl Drop for Par`, `DepthBudget`, any version bump |
 
-★ **The encoder is DORMANT.** Verified mechanically: `prost_encode::` appears in
+★ **The encoder is DORMANT.** Verified mechanically: `protobuf_encoder::` appears in
 no `src/` tree of `models`, `rholang`, `rspace++`, `casper`, `node`, `comm` or
 `shared`. The only reference outside its own file is the `pub mod` declaration.
 
@@ -125,7 +125,7 @@ equal the number of bytes it wrote).
 
 The harness is a throwaway (`/tmp`), by construction: a permanent test may not
 patch the generator it tests. What is permanent is the differential it drives —
-`models/tests/prost_encode_differential.rs` — whose own
+`models/tests/protobuf_encoder_differential.rs` — whose own
 `the_prost_differential_can_go_red` reproduces all three mutations at the byte
 level, each asserting it applied, with a control that passes before and after.
 
@@ -264,7 +264,7 @@ nested through an `EPathMap` recurses inside `EPathMap::encode_raw` exactly as
 the derived path does. The bytes are identical — `deep_mixed_par` cycles through
 an `EPathMap` every eighth level and is in the differential out to depth 256 —
 and the native stack is **not** bounded through that one shape. It is named here,
-in `prost_wire.rs` §D and in `prost_encode.rs` §4, rather than left for a stack
+in `prost_wire.rs` §D and in `protobuf_encoder.rs` §4, rather than left for a stack
 trace to report.
 
 ---
@@ -275,10 +275,10 @@ trace to report.
 |---|---|
 | `rhoapi_wire.rs` byte-identical | ★ md5 `0296fc17f2ef33897e7fd2ca9b68c524`, unchanged |
 | `cargo test --release -p models` (what CI runs) | **485 passed, 0 failed** across 32 binaries |
-| `models/tests/prost_encode_differential.rs` | 13 passed |
+| `models/tests/protobuf_encoder_differential.rs` | 13 passed |
 | `models/tests/schema_meta_conformance.rs` | 10 passed |
 | `cargo nextest run -p models` (both new binaries) | 23 passed |
-| production call sites of `prost_encode::` | **zero** |
+| production call sites of `protobuf_encoder::` | **zero** |
 | generator-level mutation proof | 3/3 applied and rejected |
 
 ### 6.1 Runner discipline
@@ -289,7 +289,7 @@ does not affect**. f1r3node CI runs `cargo test --release -p models` only.
 
 Every deep body in the new test therefore runs inside an explicit
 `std::thread::Builder::new().stack_size(N)` — the precedent is
-`par_codec_wire_shapes.rs:639-660` and `wire_encode_differential.rs:646-661` —
+`bincode_decoder_wire_shapes.rs:639-660` and `bincode_encoder_differential.rs:646-661` —
 and each such test's doc comment states the stack it passes on under **both**
 runners (`deep_terms_encode_identically`: 256 MiB;
 `the_length_table_holds_exactly_one_entry_per_message_node`: 64 MiB). Both were

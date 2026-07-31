@@ -48,7 +48,7 @@
 //!    so bincode writes eight zero bytes and the bincode alphabet has a
 //!    dedicated `FieldKind::EmptyBytes` for it. That is a **serde-only**
 //!    normalization: prost RETAINS the field, which
-//!    `models/tests/wire_encode_differential.rs` pins by requiring a ground and
+//!    `models/tests/bincode_encoder_differential.rs` pins by requiring a ground and
 //!    a non-ground `EPathMap` twin to differ under `prost::Message::encode_to_vec`
 //!    and agree entry-for-entry otherwise. There is therefore no `EmptyBytes` in
 //!    [`ProstKind`], and the generator maps those fields to [`ProstKind::Bytes`].
@@ -293,7 +293,7 @@ pub trait ProstNode {
     /// address, for the reason that cost a `SIGSEGV` on the bincode side:
     /// `&'static` slices with identical contents are **merged by the linker**,
     /// so program addresses do not identify a type.
-    /// `wire_encode_space::program_addresses_do_not_identify_a_type` keeps that
+    /// `bincode_encoder_space::program_addresses_do_not_identify_a_type` keeps that
     /// fact executable.
     #[inline]
     fn prost_opaque(&self) -> Option<&dyn ProstOpaque> {

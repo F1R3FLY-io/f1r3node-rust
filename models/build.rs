@@ -9,8 +9,8 @@ use std::{env, fs};
 use prost::Message as _;
 
 /// The wire-schema generator: ONE table, emitted from the protobuf descriptor,
-/// consumed by BOTH the serializer (`wire_encode`) and the deserializer
-/// (`par_codec`). See its module docs for why this is a build-script pass and
+/// consumed by BOTH the serializer (`bincode_encoder`) and the deserializer
+/// (`bincode_decoder`). See its module docs for why this is a build-script pass and
 /// not a proc-macro.
 #[path = "build/wire_schema.rs"]
 mod wire_schema;

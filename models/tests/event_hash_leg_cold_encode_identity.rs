@@ -43,7 +43,7 @@
 //!
 //! | existing gate | what it covers | why it is not sufficient here |
 //! |---|---|---|
-//! | `wire_encode_differential` | `encode()` vs derived, exhaustive over `ExprInstance` / `ConnectiveInstance` arms | its roots are exercised through a corpus built for the **cold store**; it never asks the question at the *leg* boundary, and carries no **unfilled-cell** `EPathMap` at the three roots |
+//! | `bincode_encoder_differential` | `encode()` vs derived, exhaustive over `ExprInstance` / `ConnectiveInstance` arms | its roots are exercised through a corpus built for the **cold store**; it never asks the question at the *leg* boundary, and carries no **unfilled-cell** `EPathMap` at the three roots |
 //! | `epathmap_spliced_event_bytes` | leg output vs derived, over filled/unfilled `EPathMap` shapes | it pins the **spliced** emitter; before the conversion its map-free arms exercise `direct()` = the oracle, so it is *vacuous* as evidence about `cold_encode` |
 //!
 //! ★ The gap both leave is the same one: **the value that actually reaches
@@ -63,7 +63,7 @@
 //! built around exactly that value class, and §5 refuses to let it be dropped.
 
 mod fixtures;
-mod par_codec_corpus;
+mod par_corpus;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -71,13 +71,13 @@ use models::rhoapi::{
     BindPattern, EList, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
     var::VarInstance,
 };
-use models::rust::rholang::wire_encode::ColdStoreEncode;
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use models::rust::spliced_event_bytes::{
     event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
     event_hash_bytes_tagged_continuation,
 };
 use models::rust::test_utils::test_utils::generate_par;
-use par_codec_corpus as corpus;
+use par_corpus as corpus;
 use proptest::prelude::*;
 use serde::Serialize;
 

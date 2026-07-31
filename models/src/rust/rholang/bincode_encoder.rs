@@ -1,6 +1,6 @@
-//! # `wire_encode` — the O(1)-native-stack, single-walk cold-store ENCODER
+//! # `bincode_encoder` — the O(1)-native-stack, single-walk cold-store ENCODER
 //!
-//! The write-side twin of [`crate::rust::rholang::par_codec`]. Same
+//! The write-side twin of [`crate::rust::rholang::bincode_decoder`]. Same
 //! trampolining discipline, same generated table
 //! ([`crate::rust::rholang::wire_schema`]), opposite direction — and one
 //! structural asymmetry, spelled out in §2.
@@ -40,7 +40,7 @@
 //! ## 2. ⚠ The asymmetry with the decoder
 //!
 //! The decoder reassembles **bottom-up**, so a child's value must be parked
-//! until its parent is ready to take it — hence `par_codec`'s eighteen
+//! until its parent is ready to take it — hence `bincode_decoder`'s eighteen
 //! per-type value stacks, and hence its `Drop`-time `dismantle_all` salvage (a
 //! deep partial result must not abort the process while being *released*).
 //!
@@ -80,7 +80,7 @@
 //!   with `index + 1` and exactly one child, so a 1,000,000-element sequence
 //!   costs **one** entry, not a million. ★ This is the difference between an op
 //!   stack that is Θ(term DEPTH) and one that is Θ(term SIZE), and it is
-//!   asserted by *measurement* (`models/tests/wire_encode_space.rs`), because a
+//!   asserted by *measurement* (`models/tests/bincode_encoder_space.rs`), because a
 //!   bug that pushed children eagerly would pass every correctness test.
 //!
 //! * **A spent program is a tail call.** [`Machine::suspend`] pushes nothing
@@ -112,7 +112,7 @@
 //! prefixes**; structs are positional in declaration order and enums are a
 //! `u32` declaration-order index then the payload. Emission order is therefore
 //! exactly pre-order, which is exactly what an explicit stack yields. The
-//! differential suite (`models/tests/wire_encode_differential.rs`) *confirms*
+//! differential suite (`models/tests/bincode_encoder_differential.rs`) *confirms*
 //! this against the derived `Serialize`; it does not establish it.
 
 use std::cell::RefCell;
@@ -144,7 +144,7 @@ use crate::rust::rholang::wire::{
 /// One suspended obligation.
 ///
 /// `Copy` and small — `&dyn` is two words, so the widest arm is four.
-/// `wire_encode_space::the_op_stack_entry_stays_small` pins the size, because
+/// `bincode_encoder_space::the_op_stack_entry_stays_small` pins the size, because
 /// an op that quietly grew would multiply the only per-call heap here.
 #[derive(Clone, Copy)]
 enum Op<'a> {
@@ -180,9 +180,9 @@ enum Op<'a> {
     // EntryPaths,
     //
     // WHY IT IS PARKED. It works and is byte-identical to the entry walk it replaced
-    // (`wire_encode_differential` 13/13, every golden unmoved at the time), but it
+    // (`bincode_encoder_differential` 13/13, every golden unmoved at the time), but it
     // costs 3 allocations / 1408 B on a warm encode where
-    // `wire_encode_space::the_steady_state_allocation_table` requires ZERO — one for
+    // `bincode_encoder_space::the_steady_state_allocation_table` requires ZERO — one for
     // the cursor `Vec`, two inside `read_zipper()` itself, which cannot be pooled
     // away. It only ever paid for itself as a step toward emitting `U(m)` at this
     // seam, which needs no cursor at all.
@@ -228,7 +228,7 @@ const OUT_CAPACITY: usize = 4096;
 const MAX_POOLED_OPS: usize = 4096;
 
 // ★★ The pooling discipline and its soundness argument live ONCE, in
-// `super::pooled_stack`. `prost_encode` allocates three fresh `Vec`s per encoder because
+// `super::pooled_stack`. `protobuf_encoder` allocates three fresh `Vec`s per encoder because
 // this code was written here, in one file, and the next codec did not find it — that
 // omission IS the 3.79× shallow regression. Declaring it through the macro is what makes it
 // findable.
@@ -318,7 +318,7 @@ impl<'a> Machine<'a> {
                     let next = self
                         .map_iters
                         .last_mut()
-                        .expect("wire_encode: MapEntries with no live iterator")
+                        .expect("bincode_encoder: MapEntries with no live iterator")
                         .next();
                     match next {
                         Some((key, value)) => {
@@ -343,7 +343,7 @@ impl<'a> Machine<'a> {
                 //     let next = self
                 //         .entry_zippers
                 //         .last_mut()
-                //         .expect("wire_encode: EntryPaths with no live zipper")
+                //         .expect("bincode_encoder: EntryPaths with no live zipper")
                 //         .to_next_get_val();
                 //     match next {
                 //         Some(par) => {
@@ -408,7 +408,7 @@ impl<'a> Machine<'a> {
     fn open_seq(&mut self, seq: &'a dyn WireSeq, len: usize) {
         assert!(
             len <= u32::MAX as usize,
-            "wire_encode: a sequence of {len} elements exceeds the u32 cursor. The count \
+            "bincode_encoder: a sequence of {len} elements exceeds the u32 cursor. The count \
              prefix has already been written, so truncating here would emit fewer elements \
              than the stream promises — a corrupt encoding, not a slow one."
         );
@@ -465,7 +465,7 @@ impl<'a> Machine<'a> {
         // calls `decode_trie_path`), so nothing that round-trips today stops.
         //
         // ⚠ SPLIT, never interleaved. Interleaving would need a live trie cursor here
-        // — built, measured at 3 allocations / 1408 B against `wire_encode_space::
+        // — built, measured at 3 allocations / 1408 B against `bincode_encoder_space::
         // the_steady_state_allocation_table`'s required ZERO, and parked as
         // `Op::EntryPaths` — and would stop `U(m)` from appearing contiguously.
         // Split, the encoder emits one borrowed memo plus the projection it was
@@ -501,7 +501,7 @@ thread_local! {
 /// Chosen so the buffer absorbs every ordinary datum without a single
 /// reallocation, while a one-off multi-megabyte term cannot pin that memory for
 /// the life of the thread. Both halves are measured by
-/// `wire_encode_space::the_reused_buffer_does_not_pin_a_pathological_high_water`.
+/// `bincode_encoder_space::the_reused_buffer_does_not_pin_a_pathological_high_water`.
 const SHRINK_THRESHOLD: usize = 1 << 20; // 1 MiB
 
 /// Encode `value`, **appending** to `out`.
@@ -517,7 +517,7 @@ pub fn encode_into<T: WireNode>(value: &T, out: &mut Vec<u8>) {
     m.run::<false>(out);
     debug_assert!(
         m.map_iters.is_empty(),
-        "wire_encode: a map iterator outlived its field"
+        "bincode_encoder: a map iterator outlived its field"
     );
 }
 
@@ -568,7 +568,7 @@ where
 //
 // C, P, A, K of `RSpace<Par, BindPattern, ListParWithRandom,
 // TaggedContinuation>` — the Rholang instantiation, and exactly the set
-// `par_codec` decodes. Every other schema type is reachable only as a child of
+// `bincode_decoder` decodes. Every other schema type is reachable only as a child of
 // one of these.
 
 /// Encode a channel / pattern / datum / continuation byte-identically to
@@ -600,7 +600,7 @@ cold_store_encode!(Par, BindPattern, ListParWithRandom, TaggedContinuation);
 /// ★ Exists because "the op stack is Θ(term DEPTH), not Θ(term SIZE)" is a
 /// claim about a *mechanism*: a bug that pushed children eagerly would turn a
 /// 10-deep, 1,000,000-node term into a 1,000,000-entry stack while every
-/// correctness test still passed. `models/tests/wire_encode_space.rs` measures
+/// correctness test still passed. `models/tests/bincode_encoder_space.rs` measures
 /// it on both shapes.
 ///
 /// The measurement runs the production loop with `TRACK = true`, so it cannot
@@ -623,7 +623,7 @@ pub const fn op_size() -> usize {
 
 /// The ADDRESS of `node`'s program, as an opaque integer.
 ///
-/// ⚠ Exposed so `wire_encode_space` can demonstrate that program addresses do
+/// ⚠ Exposed so `bincode_encoder_space` can demonstrate that program addresses do
 /// **not** identify a type: `&'static` slices with identical contents are
 /// merged by the linker, and `EPATHMAP_PROGRAM` is byte-for-byte
 /// `ELIST_PROGRAM`. A downcast built on address identity therefore

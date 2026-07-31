@@ -18,9 +18,9 @@ title <b>One term, two wire formats</b>\nonly the cold-store pair was trampoline
 rectangle "  **`models::rhoapi::Par`**  —  the in-memory term  \n37-member recursive SCC; <latex>\{\mathtt{Par}\}</latex> is a feedback vertex set of size 1" as PAR #ECEFF1
 
 package "**(1) COLD STORE**  —  bincode over serde, LMDB, node-local" as COLD #E8F5E9 {
-  rectangle "**writer**  `wire_encode::encode`\nsingle-walk op-stack machine\n**CONVERTED (Stage H)**\n<latex>0</latex> B/level native" as CW #A5D6A7
+  rectangle "**writer**  `bincode_encoder::encode`\nsingle-walk op-stack machine\n**CONVERTED (Stage H)**\n<latex>0</latex> B/level native" as CW #A5D6A7
   rectangle "bytes\n(non-self-describing;\nserde declaration order)" as CB #E1BEE7
-  rectangle "**reader**  `par_codec::cold_decode`\nobligation stack + 18 value stacks\n**CONVERTED (Stage F)**\n<latex>0</latex> B/level native" as CR #A5D6A7
+  rectangle "**reader**  `bincode_decoder::cold_decode`\nobligation stack + 18 value stacks\n**CONVERTED (Stage F)**\n<latex>0</latex> B/level native" as CR #A5D6A7
   CW -[#6A1B9A,thickness=2]right-> CB
   CB -[#6A1B9A,thickness=2]right-> CR
 }

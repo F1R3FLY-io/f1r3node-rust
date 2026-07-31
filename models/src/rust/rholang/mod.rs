@@ -3,13 +3,13 @@ pub mod grpc_client;
 pub mod implicits;
 pub mod par_children;
 pub mod pooled_stack;
-pub mod par_codec;
-pub mod prost_encode;
+pub mod bincode_decoder;
+pub mod protobuf_encoder;
 pub mod prost_wire;
 pub mod schema_meta;
 pub mod sorter;
 pub mod wire;
-pub mod wire_encode;
+pub mod bincode_encoder;
 
 // ---------------------------------------------------------------------------
 // ★ THE FOUR GENERATED MODULES — ONE build-script pass, four outputs
@@ -32,8 +32,8 @@ pub mod wire_encode;
 /// The GENERATED **bincode** wire-schema table — one `impl WireNode` per
 /// message, one `impl WireOneof` per oneof, and the oneof index tables.
 ///
-/// ★ ONE table, BOTH directions: [`wire_encode`] drives the serializer from
-/// it and [`par_codec`] drives the deserializer from it. The variant counts
+/// ★ ONE table, BOTH directions: [`bincode_encoder`] drives the serializer from
+/// it and [`bincode_decoder`] drives the deserializer from it. The variant counts
 /// here are `.len()` of the generated tables, never literals, so a new oneof
 /// arm cannot leave an assertion passing while it goes untested.
 ///

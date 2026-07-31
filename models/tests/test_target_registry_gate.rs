@@ -60,7 +60,7 @@ fn files_on_disk() -> BTreeSet<String> {
     for entry in std::fs::read_dir(&dir).expect("models/tests must exist") {
         let path = entry.expect("readable dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue; // fixtures/, golden/, par_codec_corpus/, .proptest-regressions
+            continue; // fixtures/, golden/, par_corpus/, .proptest-regressions
         }
         let stem = path
             .file_stem()

@@ -641,7 +641,7 @@ fn run_probe(what: &str, depth: usize) {
         // bincode 1.3.3 — which, unlike `prost`, has NO recursion limit.
         // ★ CONVERTED (Stage H). `bincode_ser` now measures what the node
         // actually runs on the cold-store WRITE path:
-        // `models/src/rust/rholang/wire_encode.rs`, the single-walk trampolined
+        // `models/src/rust/rholang/bincode_encoder.rs`, the single-walk trampolined
         // encoder driven by the same generated table as the decoder. Leaving
         // this arm on `bincode::serialize` would have been a quiet trap — a
         // later re-measurement would report the PRE-conversion 3,052 B/level
@@ -650,7 +650,7 @@ fn run_probe(what: &str, depth: usize) {
         // `bincode_ser_derived` retains the old body as the CONTROL, so the
         // before/after comparison stays available in one run.
         "bincode_ser" | "bincode_ser_derived" => {
-            use models::rust::rholang::wire_encode::ColdStoreEncode;
+            use models::rust::rholang::bincode_encoder::ColdStoreEncode;
             let t = nested_list(depth);
             let bytes = if what == "bincode_ser_derived" {
                 bincode::serialize(&t).expect("stack_depth_probe: the derived control failed")
@@ -663,7 +663,7 @@ fn run_probe(what: &str, depth: usize) {
         }
         // ★ CONVERTED (Stage F). `bincode_de` now measures what the node
         // actually runs on the cold-store read path: `Par::cold_decode`
-        // (`models/src/rust/rholang/par_codec.rs`). Leaving this arm on
+        // (`models/src/rust/rholang/bincode_decoder.rs`). Leaving this arm on
         // `bincode::deserialize` would have been a quiet trap — a later
         // re-measurement would report the PRE-conversion 28,362 B/level and
         // read as "nothing changed".

@@ -15,7 +15,7 @@
 //! ## What these goldens are for
 //!
 //! They are the **pre-change baseline** for the iterative cold-store decoder
-//! (`models/src/rust/rholang/par_codec.rs`). That decoder's obligation is
+//! (`models/src/rust/rholang/bincode_decoder.rs`). That decoder's obligation is
 //! *language identity* — for every byte string `b`,
 //! `T::cold_decode(b)` and `bincode::deserialize::<T>(b)` agree — and the
 //! encoder is deliberately untouched. Blessing these constants BEFORE the
@@ -32,7 +32,7 @@
 //! A hand-written decoder cannot be reviewed against "the derive"; it has to be
 //! reviewed against the four places where the derive does something a reader
 //! would not guess. Every fixture below carries all four, and each has a named
-//! assertion of its own in `models/tests/par_codec_wire_shapes.rs`:
+//! assertion of its own in `models/tests/bincode_decoder_wire_shapes.rs`:
 //!
 //! | # | shape | what surprises |
 //! |---|-------|----------------|
@@ -116,7 +116,7 @@ fn nonground_pathmap() -> EPathMap {
 /// lost the reordering would move. Note this arm makes
 /// `decode(encode(x)) == x` false for `x` — by design, and identically for the
 /// derived decoder; see the round-trip test's documentation in
-/// `models/tests/par_codec_differential.rs`.
+/// `models/tests/bincode_decoder_differential.rs`.
 fn ground_pathmap() -> EPathMap {
     EPathMap::new(vec![gint(9), gint(2), gint(5)], Vec::new(), false, None)
 }
@@ -449,7 +449,7 @@ mod pinned {
 
     /// `encode_datum(fixture_datum())` — the models-typed cold-store leaf.
     /// Captured 2026-07-27 at `18419514` on the DERIVED encoder, before any
-    /// line of `par_codec.rs` existed; re-pinned 4,153 → 4,199 by CBR-042.
+    /// line of `bincode_decoder.rs` existed; re-pinned 4,153 → 4,199 by CBR-042.
     pub const PAR_DATUM_LEN: usize = 4199;
     pub const PAR_DATUM_DIGEST_HEX: &str =
         "e56abdc5614046cad47458adc5b2a3ac74165c70a09304c86ab77c1545f3f0b9";

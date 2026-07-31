@@ -59,7 +59,7 @@ use models::rust::rholang::term_ops::{
 // ---------------------------------------------------------------------------
 
 /// The measured produce-depth distribution: `(depth, datums)` over the 1,773
-/// instrumented datums `models/benches/wire_encode_bench.rs` established.
+/// instrumented datums `models/benches/bincode_encoder_bench.rs` established.
 ///
 /// ⚠ Copied in the same form the bench holds it, and the two are joined by
 /// [`the_weighted_mix_is_the_one_the_benchmark_measures`], which checks the

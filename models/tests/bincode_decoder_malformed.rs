@@ -22,7 +22,7 @@
 //! and pinning that text would be pinning an implementation detail of a third-
 //! party crate rather than the property that matters. The error *kinds* are
 //! documented as a correspondence table in
-//! `models/src/rust/rholang/par_codec.rs` §6.
+//! `models/src/rust/rholang/bincode_decoder.rs` §6.
 //!
 //! ## The mutation families
 //!
@@ -56,8 +56,8 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Deserialize;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 /// The one assertion this file makes, everywhere.
 ///
@@ -278,7 +278,7 @@ fn out_of_range_variant_indices_agree() {
 /// enormous counts.
 ///
 /// ⚠ **This is the family that catches an out-of-memory abort.** Without
-/// serde's `size_hint::cautious` cap (reproduced by `par_codec`'s
+/// serde's `size_hint::cautious` cap (reproduced by `bincode_decoder`'s
 /// `cautious_capacity`, and made unnecessary for `Par`-bearing sequences by the
 /// counted-repeat design), a length near `usize::MAX` would make one side try
 /// to pre-allocate and die while the other returns `Err` — a divergence that no

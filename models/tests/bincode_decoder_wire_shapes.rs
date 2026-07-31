@@ -1,6 +1,6 @@
 //! # The four wire shapes, each named and pinned at the BYTE level
 //!
-//! The differential (`par_codec_differential.rs`) proves the machine and the
+//! The differential (`bincode_decoder_differential.rs`) proves the machine and the
 //! derive agree. That is the property that matters, but on its own it is a
 //! *black-box* statement: it would still pass if both sides happened to be
 //! wrong about the same thing, and it does not tell a reviewer *why* the four
@@ -29,8 +29,8 @@ use models::rust::rholang::par_children::{
 };
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 fn par_of(instance: ExprInstance) -> Par {
     Par {
@@ -429,10 +429,10 @@ fn shape_4_oneofs_are_an_option_tag_then_a_u32_variant_index() {
 
 /// The machine's index→arm dispatch must be the inverse of `par_children`'s
 /// canonical index table, for **every** index in range. This is the gate that
-/// stops `par_codec` from becoming a fifth, independent enumeration of the
+/// stops `bincode_decoder` from becoming a fifth, independent enumeration of the
 /// schema.
 #[test]
-fn par_codec_variant_indices_agree() {
+fn bincode_decoder_variant_indices_agree() {
     let mut seen: Vec<u32> = Vec::with_capacity(EXPR_INSTANCE_VARIANT_COUNT);
     for (name, instance) in corpus::every_expr_instance() {
         let index = expr_instance_variant_index(&instance);
@@ -543,7 +543,7 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
 /// Two compile-time guards, not a count in a doc string:
 ///
 /// 1. **A new FIELD on any machine type is a compile error.** Every `*Build` op
-///    in `par_codec.rs` constructs its type with a **complete struct literal** —
+///    in `bincode_decoder.rs` constructs its type with a **complete struct literal** —
 ///    no `..Default::default()` anywhere in a decode path. Add a field to
 ///    `Send`, and `Op::SendBuild` stops compiling.
 ///
@@ -556,7 +556,7 @@ fn shape_4_tagged_cont_absent_is_not_variant_zero() {
 ///
 /// The arithmetic below is the ledger those guards protect.
 #[test]
-fn par_codec_type_partition() {
+fn bincode_decoder_type_partition() {
     /// Transitively contains `Par`; decoded by the machine.
     const MACHINE_TYPES: [&str; 47] = [
         // the `Par` SCC (41)
@@ -611,7 +611,7 @@ fn par_codec_type_partition() {
     ];
 
     /// Outside the `Par` SCC: fixed maximum nesting, hence fixed maximum stack.
-    /// Decoded by the bounded leaf readers in `par_codec::Reader`.
+    /// Decoded by the bounded leaf readers in `bincode_decoder::Reader`.
     const BOUNDED_TYPES: [&str; 16] = [
         "Var",
         "VarInstance",

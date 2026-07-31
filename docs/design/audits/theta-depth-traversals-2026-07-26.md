@@ -1583,7 +1583,7 @@ subject still exists.
 | 6 | `6714a128` | **Stage E, width axis.** `FoldMatch::free_check` recursed on the slice tail; it is now a `for` loop. Deliberately a loop and not a driver: it is a fold with early exit, so there is no post-order reassembly for a `Combine` to do. | 483 → **0** B/sibling debug; O(1) at 44 KiB from width 4 to width 65,536. At the old constant, width 65,536 would have needed ~31 MiB. Gated in **debug** as well as release precisely because `-O2` already turned the tail call into a loop, so a release-only gate would have certified the optimiser's discretion rather than the code. |
 | 7 | `a3fd6fe4` | **Stage E, depth axis.** `eval_with` was already a loop over `par.exprs`; the recursion lived in `eval_expr_to_par`, which re-entered `eval_with` at **eleven** sites. Now an explicit worklist with an `Extract` continuation that reproduces the operand-checking **interleaving** (a binop checks `p1` before touching `p2`, so a naive post-order would report the wrong operand's error). | `eval_with_nots` 21,584 → **0** debug, 3,359 → **0** release. 20,000 nested negations evaluate on an ordinary test thread; the recursive form would have needed ~412 MiB. |
 | 8 | `be6c90f3` | **Step A.** Par-typed cold-store byte goldens, blessed on the untouched **derived** encoder, covering the four wire shapes where a hand-written codec drifts (`BTreeMap` field, all 12 `serialize_as_empty_bytes` sites, both `EPathMap` arms, all three oneofs at high indices). | The pre-change baseline. Blessed *before* the decoder changed, because a golden captured afterwards pins the new behaviour and is evidence of nothing. |
-| 9 | `9a5521a2` | **Step B.** `models/src/rust/rholang/par_codec.rs` — an O(1)-native-stack cold-store **decoder**: an obligation stack of bounded opcodes plus per-type value stacks, 47 types on the machine and 16 retained as bounded leaf calls. The encoder is **not** touched, so byte identity holds by construction. | Removes the family's **shallowest** member ($`D_{\max}`$ 73 debug / 161 release on a 2 MiB worker) and the only one whose failure is *permanent and replicated*: `rspace_importer` writes peer bytes to LMDB without deep-decoding them, so a too-deep datum aborted the node on every read-back, on every restart, on every peer. Depth 4,096 decodes on a 256 KiB stack; a truncated depth-4,096 term is *rejected* on a 256 KiB stack, so the error path is proved too. |
+| 9 | `9a5521a2` | **Step B.** `models/src/rust/rholang/bincode_decoder.rs` — an O(1)-native-stack cold-store **decoder**: an obligation stack of bounded opcodes plus per-type value stacks, 47 types on the machine and 16 retained as bounded leaf calls. The encoder is **not** touched, so byte identity holds by construction. | Removes the family's **shallowest** member ($`D_{\max}`$ 73 debug / 161 release on a 2 MiB worker) and the only one whose failure is *permanent and replicated*: `rspace_importer` writes peer bytes to LMDB without deep-decoding them, so a too-deep datum aborted the node on every read-back, on every restart, on every peer. Depth 4,096 decodes on a 256 KiB stack; a truncated depth-4,096 term is *rejected* on a 256 KiB stack, so the error path is proved too. |
 | 10 | `2bcfaf87` | **Steps C+D.** The cold-store read path becomes fallible and heap-bounded: 53 bound sites in 8 files move from `for<'a> Deserialize<'a>` to `ColdStoreDecode`, the four `decode_*` return `Result` instead of `.expect(..)`, and `HistoryError::DecodeError` is added as a distinct condition from `ActionError`. The derived twins are retained as `#[cfg(test)]` oracles. | 26,793 record truncations agree with the oracle on the **production** instantiation `RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>`; a depth-4,096 datum reads back through `decode_datums` on a 256 KiB stack where the derived path needed ~110 MiB. |
 | 11 | `000b95d7` | The decoder's teardown early-outs on the success path, where every value stack is already empty. | Eighteen `is_empty` reads replace two allocations per cold-store read. The error path is unchanged and still pinned by `machine_rejects_a_truncated_deep_term_without_overflowing`. |
 | 12 | `af1a426b` | **Stage F.** `bincode_de` leaves the tripwire for the converted list, and `stack_depth_probe.rs`'s `bincode_de` arm is flipped to the machine with `bincode_de_derived` retained as the control. | Bisected on this very subject immediately before and after: **28,331 → 0** B/level debug and **12,971 → 0** release, flat 4 → 4,096. The before-figures reproduce §11.1 F3's independently measured 28,362 / 12,894 to **0.11 %** and **0.6 %**. |
@@ -2280,7 +2280,7 @@ injected into one arm: the `ETuple` decoder was made to read a `remainder` field
 that `ETuple` does not have. This is the smallest realistic hand-written-codec
 defect — an arm whose field list has drifted by one from the type it decodes.
 
-**The result.** `models/tests/par_codec_differential.rs` carries 11 tests. Six
+**The result.** `models/tests/bincode_decoder_differential.rs` carries 11 tests. Six
 went red; five stayed green; **all three `generate_par` proptests were among the
 green**.
 
@@ -3652,12 +3652,12 @@ stays compiled as the oracle, instead of by *being* the derive.
 
 ### The subject
 
-`models/src/rust/rholang/wire_encode.rs` — a single-walk, O(1)-native-stack
+`models/src/rust/rholang/bincode_encoder.rs` — a single-walk, O(1)-native-stack
 emitter driven by the same generated table as the decoder
 (`models/build/wire_schema.rs`, emitted from the protobuf
 `FileDescriptorSet`). One obligation stack of `(&'a dyn WireNode, field)`; no
 value stacks, no clones, no `Drop` obligation, and therefore no teardown
-problem — the asymmetry with `par_codec`, which must reassemble bottom-up.
+problem — the asymmetry with `bincode_decoder`, which must reassemble bottom-up.
 
 ### The measurement
 
@@ -3715,7 +3715,7 @@ not.** This paragraph previously read:
 quoted verbatim so it cannot be restored as a bug fix. Three things in that
 sentence are wrong, and the reason is one defect:
 
-* **`models/benches/wire_encode_bench.rs`'s `measure()` did not interleave its
+* **`models/benches/bincode_encoder_bench.rs`'s `measure()` did not interleave its
   arms**, although its own module header said, in these words, *"Interleaved A/B.
   One repetition measures A then B, and the loop is repeated `REPS` times. Any
   drift in clock, thermals or cache state moves both arms together."* It ran all

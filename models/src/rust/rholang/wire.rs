@@ -279,7 +279,7 @@ pub trait WireNode {
     /// the same as `ELIST_PROGRAM`, `ESET_PROGRAM` and `EMAP_PROGRAM`. Program
     /// addresses therefore do **not** identify a type, and any downcast built
     /// on them silently reinterprets an `EList` as an `EPathMap`.
-    /// `wire_encode_space::program_addresses_do_not_identify_a_type` pins that
+    /// `bincode_encoder_space::program_addresses_do_not_identify_a_type` pins that
     /// fact so the trick cannot be reintroduced as an "optimization".
     #[inline]
     fn wire_as_pathmap(&self) -> Option<&EPathMap> {

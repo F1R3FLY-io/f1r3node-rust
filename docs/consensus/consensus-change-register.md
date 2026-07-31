@@ -1947,14 +1947,14 @@ deliberate act rather than an accident. **CITED**.
 | Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
-| Files | `models/src/main/protobuf/RhoTypes.proto`, `models/src/rust/rhoapi_ext.rs`, `models/src/rust/rholang/wire.rs`, `wire_encode.rs`, `sorter/sort_combine.rs`, `models/src/rust/spliced_event_bytes.rs`, `models/src/rust/canonical_path.rs`, `rholang/src/rust/interpreter/reduce.rs` (and five more) |
+| Files | `models/src/main/protobuf/RhoTypes.proto`, `models/src/rust/rhoapi_ext.rs`, `models/src/rust/rholang/wire.rs`, `bincode_encoder.rs`, `sorter/sort_combine.rs`, `models/src/rust/spliced_event_bytes.rs`, `models/src/rust/canonical_path.rs`, `rholang/src/rust/interpreter/reduce.rs` (and five more) |
 
 #### (a) The issue
 
 **CBR-011** made the comparators read the trie. This deletes the `Vec` itself, so there is no second
 order left to read. With it go the canonicalisation fork (four consumers each carrying an "if this map is
 ground, read the entries off a trie instead" branch), the `ps_make_mut` bypass and its `debug_assert`
-policing, the cached-bytes validity checks, and a raw-pointer arena in `wire_encode` that existed only
+policing, the cached-bytes validity checks, and a raw-pointer arena in `bincode_encoder` that existed only
 because a ground map's canonical `ps` was *constructed* at serialize time.
 
 #### (b) How it (potentially) breaks consensus
@@ -2012,7 +2012,7 @@ env var and no dual path anywhere in this change."* **CITED**.
 - A measured finding that **contradicted the plan** is recorded in the commit rather than smoothed over:
   `decode_trie_path` **is partial** on `encode_trie_path`'s image. **MEASURED** — and it is the reason
   **CBR-028** exists.
-- `wire_encode_space` measures the consequence of deleting the arena: a ground map's steady-state encode
+- `bincode_encoder_space` measures the consequence of deleting the arena: a ground map's steady-state encode
   allocates **zero** bytes, down from one allocation. **MEASURED**.
 
 ---
@@ -2465,7 +2465,7 @@ refactor neutral against them, then move them in a reviewable commit of its own.
 | Status | LANDED |
 | Direction | NEUTRAL |
 | Evidence grade | NEUTRALITY-MEASURED |
-| Files | `models/src/rust/rholang/wire.rs`, `wire_encode.rs`, `par_codec.rs`, `par_children.rs`, `models/build/wire_schema.rs`, `rspace++/src/rspace/hashing/stable_hash_provider.rs`, and every rspace++ event-hash call site |
+| Files | `models/src/rust/rholang/wire.rs`, `bincode_encoder.rs`, `bincode_decoder.rs`, `par_children.rs`, `models/build/wire_schema.rs`, `rspace++/src/rspace/hashing/stable_hash_provider.rs`, and every rspace++ event-hash call site |
 
 #### (a) The issue
 
@@ -2526,9 +2526,9 @@ spliced emitter (`spliced_event_bytes`), which reuses cached bytes at filled-cel
   `ConnectiveInstance` arm, the full variant × arity × awkward-combination cross product, every awkward
   ground literal (`+0.0`, `-0.0`, NaN payloads, `GBigRat`, `GFixedPoint`, multibyte UTF-8), **both**
   `EPathMap` serialize arms, deep terms past every old ceiling, and proptest — *"with an executed proof
-  that the differential can go RED"*. **CITED** (`models/tests/wire_encode_differential.rs`).
+  that the differential can go RED"*. **CITED** (`models/tests/bincode_encoder_differential.rs`).
 - Consensus-visible goldens re-verified after the wiring: `epathmap_canonical_fixtures` 13/13 (the 13
-  bincode + prost + event-hash goldens), `par_codec_differential` 13/13, `serializer_par_byte_goldens`
+  bincode + prost + event-hash goldens), `bincode_decoder_differential` 13/13, `serializer_par_byte_goldens`
   7/7, `epathmap_spliced_event_bytes` 8/8, `reduce_spec` 128/128, `interpreter_spec` 5/5,
   `stack_depth_gate` 8/8. **CITED**.
 - **Anti-vacuity executed, not asserted**: `the_encode_differential_can_go_red` perturbs two field
@@ -2553,7 +2553,7 @@ spliced emitter (`spliced_event_bytes`), which reuses cached bytes at filled-cel
   takes a whole node"* — and it is the one that most needed checking. **MEASURED** (`903cefb3`).
   ⚠★ **After four root fixes: the sign is UNAFFECTED and the MAGNITUDE is NOW UNKNOWN.** This bullet
   previously read *"After four root fixes: **1.19–1.58× faster**"*, quoted verbatim so it is not restored.
-  The figure came from `wire_encode_bench`'s blocked-arm `measure()` — the same defect
+  The figure came from `bincode_encoder_bench`'s blocked-arm `measure()` — the same defect
   [§7.8](#78--retracted-2026-07-30--the-benchmark-instrument-was-blocked-and-eleven-conclusions-rested-on-it)
   retracts — which reported the weighted owned-`Vec` ratio as $`1.261\times`$, $`1.471\times`$ and
   $`1.154\times`$ on three consecutive runs of one binary. The *direction* survives on the same
@@ -2583,7 +2583,7 @@ spliced emitter (`spliced_event_bytes`), which reuses cached bytes at filled-cel
 | Status | LANDED, **DORMANT** |
 | Direction | NEUTRAL |
 | Evidence grade | DORMANT |
-| Files | `models/src/rust/rholang/prost_wire.rs`, `prost_encode.rs`, `schema_meta.rs`, `models/build/wire_schema.rs` |
+| Files | `models/src/rust/rholang/prost_wire.rs`, `protobuf_encoder.rs`, `schema_meta.rs`, `models/build/wire_schema.rs` |
 
 #### (a) The issue
 
@@ -2603,7 +2603,7 @@ A trampolined replacement was generated from the same single schema walk that pr
 | 5 · accepted programs | NO — prost places **no** limit on the write side, asserted by `models/tests/par_prost_depth_ceiling.rs` stage 2, *"and fails loudly if one appears"*. **CITED**. |
 | 6 · metering | N/A |
 
-**Dormancy is established mechanically, not by intention**: *"`prost_encode::` appears in no `src/` tree
+**Dormancy is established mechanically, not by intention**: *"`protobuf_encoder::` appears in no `src/` tree
 of models / rholang / rspace++ / casper / node / comm / shared — verified mechanically."* **CITED**.
 
 #### (c) Why the change was necessary or correct
@@ -2637,8 +2637,8 @@ separate statements."* **CITED**.
   suite is a flake"*): the length table must grow linearly across $`d \in \{4,8,16,32\}`$. The same
   test pins $`\Theta(\mathrm{depth})`$ ops beside a $`\Theta(n)`$ table on one value: 4,096 siblings
   put fewer than 16 entries on either op stack while the table holds at least 4,096. **CITED**.
-- `wire_schema_conformance.rs`, `serializer_par_byte_goldens.rs`, `wire_encode_differential.rs`,
-  `par_codec_differential.rs` and `wire_encode_space.rs` are green **unmodified** (git reports no change
+- `wire_schema_conformance.rs`, `serializer_par_byte_goldens.rs`, `bincode_encoder_differential.rs`,
+  `bincode_decoder_differential.rs` and `bincode_encoder_space.rs` are green **unmodified** (git reports no change
   to any of them). **CITED**.
 
 ---
@@ -2653,7 +2653,7 @@ separate statements."* **CITED**.
 | Status | LANDED |
 | Direction | PERMISSIVE |
 | Evidence grade | WITNESSED |
-| Files | `models/src/rust/rholang/par_codec.rs`, `rspace++/src/rspace/serializers/cold_store_decode.rs`, `serializers.rs`, `rspace++/src/rspace/errors.rs`, `history/*`, `merger/state_change.rs`, `casper/src/rust/merging/deploy_chain_index.rs` |
+| Files | `models/src/rust/rholang/bincode_decoder.rs`, `rspace++/src/rspace/serializers/cold_store_decode.rs`, `serializers.rs`, `rspace++/src/rspace/errors.rs`, `history/*`, `merger/state_change.rs`, `casper/src/rust/merging/deploy_chain_index.rs` |
 
 #### (a) The issue
 
@@ -4891,7 +4891,7 @@ encoders clone, and `ParSortMatcher::sort_match` is signed. The answer is not *"
 |---|---|
 | 1 · computed value | **NO** — the cloned term is **byte-identical** to the retained derive oracle's output. `models/tests/clone_equivalence_corpus.rs` **4/4**, over **67 enumerated shapes on eight axes**, driven-against-oracle, where the oracle is the derive's own re-emitted body. **MEASURED**. |
 | 2 · verdict | **NO** — a clone is not a decision. No branch in `rho-pure-eval`, the spatial matcher or `where`-guard approval reads anything this change touches; the change is confined to *how* a node is copied. **DERIVED**. |
-| 3 · bytes (Lane B, bincode) | **NO** — an identical term serializes identically. `par_codec_differential` **13/13**, `wire_encode_differential` **13/13**, `wire_encode_space` **9/9**. **MEASURED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — an identical term serializes identically. `bincode_decoder_differential` **13/13**, `bincode_encoder_differential` **13/13**, `bincode_encoder_space` **9/9**. **MEASURED**. |
 | 3 · bytes (Lane P, prost) | **NO** — ★ and this lane is **explicitly included** in the equivalence corpus's eight axes rather than inferred from Lane B, which matters because the two lanes disagree about `locally_free` ([CBR-031](#cbr-031), [CBR-032](#cbr-032)). **MEASURED**. |
 | 4 · post-state hash | **NO** — downstream of value and bytes, both of which are byte-identical, so there is no path by which it could move. **DERIVED** from the two cells above. |
 | 5 · accepted programs | **NO** — no admission, normalization or validation predicate changed; nothing in the change can refuse a program that was accepted. **DERIVED**. |
@@ -4970,8 +4970,8 @@ attached**, and the load-bearing `Step == 16 B` pin is unchanged.
   **MEASURED**.
 - `clone_equivalence_corpus` **4/4** — byte-identical on all eight axes over 67 shapes, **prost
   included**. `drive_configuration_gate` **11/11** debug and **11/11** release,
-  `drive_step_width_gate` **5/5** both profiles, `wire_encode_space` **9/9**,
-  `par_codec_differential` **13/13**, `wire_encode_differential` **13/13**,
+  `drive_step_width_gate` **5/5** both profiles, `bincode_encoder_space` **9/9**,
+  `bincode_decoder_differential` **13/13**, `bincode_encoder_differential` **13/13**,
   `test_target_registry_gate` **2/2**, `models --lib` **93/93**. **MEASURED**.
 - ⚠ **The acceptance criterion this change was judged against was itself replaced**, because a $`0.98\times`$
   wall-clock threshold cannot be evaluated on a $`\pm 13\%`$ instrument. The primary is now the
@@ -5020,8 +5020,8 @@ is *measured not to move*, which is the stronger claim. Only [CBR-019b](#cbr-019
 |---|---|
 | 1 · computed value | **NO** — `clone_equivalence_corpus` **4/4**, `driven == derived` on **8 axes over 67 shapes**. ★ `models` **475/475 in DEBUG**, so `drive.rs`'s Invariant 1, the deficit invariant and the `clone_child_count_*` recount ran on **every** clone rather than on a sample. `clone_descend_budget` compares the counted walk against `oracle_clone_par` over the whole 2,001-datum mix and chains to **4,096** levels. **MEASURED**. |
 | 2 · verdict | **NO** — ⚠ **this cell was not in the incoming table and is DERIVED here rather than invented**, on the same ground [CBR-035](#cbr-035) uses: a clone is not a decision, and a structurally identical product cannot change one. Nothing in `rho-pure-eval`, the spatial matcher or `where`-guard approval reads anything this change touches. **DERIVED**. |
-| 3 · bytes (Lane B, bincode) | **NO** — the product is structurally identical, so any function of it is too. `cold_store_records`, `par_codec_differential`, `par_codec_wire_shapes`, `serializer_par_byte_goldens`, `sorter_canonical_golden`, `wire_encode_differential` all green. **MEASURED**. |
-| 3 · bytes (Lane P, prost) | **NO** — `prost_encode_differential` (including `deep_terms_encode_identically`), `par_prost_depth_ceiling`, `epathmap_*` all green. **MEASURED**. |
+| 3 · bytes (Lane B, bincode) | **NO** — the product is structurally identical, so any function of it is too. `cold_store_records`, `bincode_decoder_differential`, `bincode_decoder_wire_shapes`, `serializer_par_byte_goldens`, `sorter_canonical_golden`, `bincode_encoder_differential` all green. **MEASURED**. |
+| 3 · bytes (Lane P, prost) | **NO** — `protobuf_encoder_differential` (including `deep_terms_encode_identically`), `par_prost_depth_ceiling`, `epathmap_*` all green. **MEASURED**. |
 | 4 · post-state hash | **NO** — `blessed_contract_source_pins` **5/5** including `every_blessed_normalized_term_is_pinned`: **all 11** blessed contracts' normalized `Par` **digest *and* length** unmoved. ⚠ **Scope stated: a CORPUS result over the blessed contracts, not a proof over all terms.** ★ And the diagnostic that makes it load-bearing — *same length, different digest ⇒ an encoder field-value change*, the discriminator [CBR-032](#cbr-032)'s witness rests on — **did not fire**. **MEASURED**. |
 | 5 · accepted programs | **NO** — adds and removes no failure mode. Native recursion is bounded by $`\texttt{CLONE\_DESCEND\_BUDGET} \times \texttt{CLONE\_RESIDUAL\_HEIGHT} + O(1)`$ — a constant of the **schema and the budget, with no term in it**. `stack_depth_gate` subject `clone` reads **0 B/level from depth 4 to 4,096**, identical to the pre-change bound. **MEASURED**. |
 | 6 · metering | **NO** — ⚠ **filed as `NO`; the incoming table said `N/A`, and the correction is a CONVENTION argument rather than a disagreement about the facts.** The facts are agreed: `Clone` carries no `Cost`, no charge site changed, and the 3.74 %/node instruction reduction is not a consensus quantity — *that last clause is itself the `NO` evidence*, since it says the axis was evaluated and what moved was not what the axis measures. The register reserves `·` (`N/A`) for the **dormant or unreachable** — [CBR-019b](#cbr-019b) — and uses `○` (`NO`) for **live code whose charges do not move, including live code that carries no charge**: [CBR-019](#cbr-019) (an encoder), [CBR-033](#cbr-033) (a diagnostic) and [CBR-035](#cbr-035) (this same generated clone family) are all `NO`. ★ **If the owner prefers `N/A` here, all four must move together** — four entries disagreeing about one relationship is the defect, not the letter chosen. **DERIVED**. |
@@ -5110,8 +5110,8 @@ tables), `models/tests/clone_descend_budget.rs` (the counted-walk product agains
 - `stack_depth_gate` subject `clone`: **0 B/level, depth 4 to 4,096**, identical to the pre-change bound.
   **MEASURED**.
 - The acceptance matrix: `clone_equivalence_corpus` 4/4; `models` **475/475 in debug**;
-  `cold_store_records`, `par_codec_differential`, `par_codec_wire_shapes`, `serializer_par_byte_goldens`,
-  `sorter_canonical_golden`, `wire_encode_differential`, `prost_encode_differential`,
+  `cold_store_records`, `bincode_decoder_differential`, `bincode_decoder_wire_shapes`, `serializer_par_byte_goldens`,
+  `sorter_canonical_golden`, `bincode_encoder_differential`, `protobuf_encoder_differential`,
   `par_prost_depth_ceiling`, `epathmap_*` all green; `blessed_contract_source_pins` 5/5 with all 11
   normalized digests **and** lengths unmoved. **MEASURED**.
 - ⚠★★ **NO THROUGHPUT CLAIM IS ATTACHED, and `9442f76b` is why.** The invariant control — a third arm that
@@ -5253,7 +5253,7 @@ Two unmet obligations on one path, not one.
 
 | Axis | Verdict |
 |---|---|
-| 1 · computed value | **NO** — `prost_encode` **calls** `prost::encoding::<module>::{encode, encoded_len}` and replaces only the recursion. **MEASURED** (`prost_encode_differential` 4/4, plus a test reconstructing the whole key as `0x0F ++ uv(len) ++ derived bytes`). |
+| 1 · computed value | **NO** — `protobuf_encoder` **calls** `prost::encoding::<module>::{encode, encoded_len}` and replaces only the recursion. **MEASURED** (`protobuf_encoder_differential` 4/4, plus a test reconstructing the whole key as `0x0F ++ uv(len) ++ derived bytes`). |
 | 2 · verdict | **NO** — ⚠ **and the reason is worth stating rather than assuming.** What changes is that a term which previously **aborted the process** now completes, and **an abort is not a verdict**: no node ever produced a decision to disagree with. Same reading [CBR-023](#cbr-023)'s verdict cell takes. **DERIVED**. |
 | 3 · bytes (Lane B, bincode) | **NO** — byte identity holds **by construction rather than by comparison**: the encoder calls prost's own field writers. **MEASURED** as well. |
 | 3 · bytes (Lane P, prost) | **NO** — same. **MEASURED**. |
@@ -5307,7 +5307,7 @@ is why the count is stated with its discovery method attached.
 
 - 302 B/level release on the escape arm pre-change; the probe overflowed **again** after the encoder repair,
   which is what located the classifier. **MEASURED**.
-- `prost_encode_differential` **4/4**, plus whole-key reconstruction as `0x0F ++ uv(len) ++ derived bytes`.
+- `protobuf_encoder_differential` **4/4**, plus whole-key reconstruction as `0x0F ++ uv(len) ++ derived bytes`.
   **MEASURED**.
 - Cost, stated rather than buried: $`-96.2\%`$ `Ir` on the escape payload, $`+35.1\%`$ on the classifier,
   **3.79×** slower wall clock at depth 1. **MEASURED** (`b75aa6a0`).
@@ -5389,7 +5389,7 @@ The signed bytes (`cost_accounting/sig.rs:255`), the normalized deploy term, spa
 | seeded — 40 processes, one term | **20 / 20** split | ★ **40 / 40 identical** |
 | deterministic — `{3:30} \| {3:90}` vs `{3:90} \| {3:30}` | different bytes | ★ **byte-identical** |
 | `sorter_canonical_golden` (tie-free by construction) | — | **UNMOVED**, both term and score columns |
-| `par_codec_differential` · `wire_encode_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7** |
+| `bincode_decoder_differential` · `bincode_encoder_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7** |
 | `models --lib` · `models_tests` | — | **99/99 · 55/55** |
 
 ★ **The golden being unmoved is by construction, not luck.** The tie-break **refines and never reorders** — it is consulted only where `compare_score` returns `Equal` — so byte-neutrality on any tie-free corpus holds structurally. The golden's collections carry pairwise-distinct scores *by construction* (`sorter_canonical_golden.rs:90`), so a move there would have been a bug in the implementation rather than a legitimate canonical-form change.
@@ -5441,7 +5441,7 @@ A node on the old code and a node on the new code emit different prost bytes for
 |---|---|---|
 | Value | `NO` | `encode_trie_path` is injective and trie order is byte-lexicographic by construction, so `U(m)` and the entry set determine each other. Nothing a program can observe moves. |
 | Verdict | `MOVES` | Ordering reaches spatial matching via `ScoredTerm::sort_vec`; 2 of 120 sorter golden entries moved. ⚠ Their **score trees are identical** in want and got — what moved is the tie-break *input*, not the comparator. |
-| Bytes (bincode) | `NO` | `wire_encode`/`par_codec` still emit `u64 n ‖ n × Par`; every bincode golden unmoved. **This is the half of the mandate still owed** — see (i). |
+| Bytes (bincode) | `NO` | `bincode_encoder`/`bincode_decoder` still emit `u64 n ‖ n × Par`; every bincode golden unmoved. **This is the half of the mandate still owed** — see (i). |
 | Bytes (prost) | `MOVES` | The axis. Ground maps are **byte-identical** (they emitted field 8 alone already, and still do). |
 | Post-state hash | `MOVES` | The prost encoding is the signed preimage. |
 | Acceptance | `NO` | Strictly permissive — see (e). |
@@ -5481,7 +5481,7 @@ Owner ruling, 2026-07-31, verbatim: *"I mean serialization of pathmap should use
    > **★ The bincode surface is NOT yet trie-native, and the reason is measured, not preference.** Emitting `U(m)` there makes `decode_trie_path` the reader. `pathmap_escape_depth_reachability.rs` measures its ceiling at depth 32 — and measures ordinary Rholang compiling a ¬`eval_stable` pathmap entry at depth **40**. The cold store is iterative and depth-unlimited in **both** directions today, so moving its reader onto keys would break round-trip for terms a deploy can write: a **regression**, not a narrowing. It unblocks with Phase 4 S2's unbounded prost reader, after which the bincode encoding measures **6.2×–13.6×** smaller on these same fixtures.
 
    ★ **The measurement is unchallenged; the inference from it was too strong.** *"Emitting `U(m)` there makes `decode_trie_path` the reader"* holds only for a `U(m)`-**ONLY** encoding. **FORM ②** carries `U(m)` **and** the values — so `U(m)` reaches the wire verbatim and contiguously while the entries still come from the value sequence, `decode_trie_path` is never called, and the ceiling is never inherited. Measured green at depths 4, 34, 64 and 4,096, the middle two being past the very ceiling this residual names. ⇒ **the bincode surface IS trie-native as of `3a32cf07`.** What remains owed is `U(m)` **alone**, i.e. the size win: the **6.2×–13.6×** figure is a property of the values-free encoding and is unaffected — FORM ② is *larger* (`8 + |U(m)|` per map), and that is the cost the ruling accepted.
-2. **The trie cursor in `wire_encode` is parked, not deleted** (`9478ffca`), with its reason in place. It is byte-identical but costs 3 allocations / 1408 B against `wire_encode_space`'s required zero. ★ **CBR-042 settles it: the cursor is not merely unpaid for, it is UNNECESSARY.** FORM ② emits `U(m)` as one `put_bytes` of a memoized slice plus the sequence the encoder was already emitting, so the seam is trie-native at **zero** warm allocations (`wire_encode_space` 9/9, unchanged). Only an *interleaved* key/value form would need a cursor — and interleaving is exactly what would stop `U(m)` appearing contiguously.
+2. **The trie cursor in `bincode_encoder` is parked, not deleted** (`9478ffca`), with its reason in place. It is byte-identical but costs 3 allocations / 1408 B against `bincode_encoder_space`'s required zero. ★ **CBR-042 settles it: the cursor is not merely unpaid for, it is UNNECESSARY.** FORM ② emits `U(m)` as one `put_bytes` of a memoized slice plus the sequence the encoder was already emitting, so the seam is trie-native at **zero** warm allocations (`bincode_encoder_space` 9/9, unchanged). Only an *interleaved* key/value form would need a cursor — and interleaving is exactly what would stop `U(m)` appearing contiguously.
 3. **`eval_stable_epathmap` survives as a fold, not a discriminant.** It is no longer imported by `rhoapi_ext` — that is what makes reintroducing the fork by reflex impossible — but it remains `canonical_path`'s recursion cut and `entries_stable()`'s own consumer, and is still computed **exactly**, because it comes free from the encoder's verdict rather than from a second walk that could form a second opinion.
 4. **The network-version constant is deliberately not bumped in the code commit**, per the standing convention; coordinating it is a separate act.
 
@@ -5495,7 +5495,7 @@ Owner ruling, 2026-07-31, verbatim: *"I mean serialization of pathmap should use
 | Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
-| Files | `models/src/rust/rhoapi_ext.rs` (`EntryTrie`'s `Serialize`/`Deserialize`, `from_path_stream_and_values`, `insert_encoded`, the tag-8 arm), `models/src/rust/pathmap_crate_type_mapper.rs` (`PathFrames`, `PathFrameError`), `models/src/rust/rholang/wire.rs` (`EPATHMAP_PROGRAM`, `PathmapPs`, `pathmap_ps`), `models/src/rust/rholang/wire_encode.rs` (`open_pathmap`), `models/src/rust/rholang/par_codec.rs` (`Op::Pathmap{Start,Build}`, `Reader::byte_slice`), `models/tests/epathmap_bincode_is_the_path_stream.rs` (the new gate) |
+| Files | `models/src/rust/rhoapi_ext.rs` (`EntryTrie`'s `Serialize`/`Deserialize`, `from_path_stream_and_values`, `insert_encoded`, the tag-8 arm), `models/src/rust/pathmap_crate_type_mapper.rs` (`PathFrames`, `PathFrameError`), `models/src/rust/rholang/wire.rs` (`EPATHMAP_PROGRAM`, `PathmapPs`, `pathmap_ps`), `models/src/rust/rholang/bincode_encoder.rs` (`open_pathmap`), `models/src/rust/rholang/bincode_decoder.rs` (`Op::Pathmap{Start,Build}`, `Reader::byte_slice`), `models/tests/epathmap_bincode_is_the_path_stream.rs` (the new gate) |
 
 #### (a) The issue
 
@@ -5517,9 +5517,9 @@ EPathMap serde/bincode ::= u64-LE |U(m)| ‖ U(m)      ← the trie's byte array
 
 ★ **The naive move — `U(m)` ALONE — is what CBR-041 (i)-1 correctly refused, and FORM ② is not that move.** A `U(m)`-only encoding must reconstruct entries by `decode_trie_path` per key, whose `0x0F` escape arm re-decodes a ¬`eval_stable` entry through prost's recursion-limited decoder. Carrying the values keeps the reader on the existing iterative, depth-**unlimited** machinery, so `decode_trie_path` is **never called on this surface** and no ceiling is inherited. The price is `8 + |U(m)|` bytes per map, and it is the price the ruling accepted.
 
-⚠ **SPLIT, never interleaved**, and that is measured rather than stylistic. An interleaved key/value form needs a live trie read-zipper in the encoder — built, and parked as `Op::EntryPaths` at **3 allocations / 1408 B** on a warm encode where `wire_encode_space::the_steady_state_allocation_table` requires **zero**, two of them inside `read_zipper()` where they cannot be pooled away. Split, the encoder emits one **memoized** slice (`EntryTrie::path_stream`, a `memcpy`) plus the projection it was already emitting: the space gate stays **9/9**. And an interleaved form would destroy the property that makes this *the trie's byte array* at all — `U(m)` would no longer appear contiguously.
+⚠ **SPLIT, never interleaved**, and that is measured rather than stylistic. An interleaved key/value form needs a live trie read-zipper in the encoder — built, and parked as `Op::EntryPaths` at **3 allocations / 1408 B** on a warm encode where `bincode_encoder_space::the_steady_state_allocation_table` requires **zero**, two of them inside `read_zipper()` where they cannot be pooled away. Split, the encoder emits one **memoized** slice (`EntryTrie::path_stream`, a `memcpy`) plus the projection it was already emitting: the space gate stays **9/9**. And an interleaved form would destroy the property that makes this *the trie's byte array* at all — `U(m)` would no longer appear contiguously.
 
-★ **ONE reader, not two.** `EntryTrie::from_path_stream_and_values` serves both the derived `Deserialize` and `par_codec`'s `Op::PathmapBuild`. Two hand-written bulk readers of one wire shape is the defect `c705776c` closed. The **framing** is single-sourced too: `PathFrames` is the read twin of `path_stream_of`, and proto field 8's tag-8 arm now reads through it as well, at identical dispositions — one definition of `U(m)`'s framing in the tree, two policies over it.
+★ **ONE reader, not two.** `EntryTrie::from_path_stream_and_values` serves both the derived `Deserialize` and `bincode_decoder`'s `Op::PathmapBuild`. Two hand-written bulk readers of one wire shape is the defect `c705776c` closed. The **framing** is single-sourced too: `PathFrames` is the read twin of `path_stream_of`, and proto field 8's tag-8 arm now reads through it as well, at identical dispositions — one definition of `U(m)`'s framing in the tree, two policies over it.
 
 ⚠ **A disagreeing peer stream is RE-FILED, never rejected.** That is `adopt_trie`'s policy and tag-8's, and it is an *acceptance* decision rather than a taste: a node that refuses a byte string its peers accept has forked. Malformed framing, a key that is not `encode_trie_path` of its value, a frame count that disagrees with the value count — every one yields the trie built from the values.
 
@@ -5535,7 +5535,7 @@ EPathMap serde/bincode ::= u64-LE |U(m)| ‖ U(m)      ← the trie's byte array
 | Acceptance | `NO` | `decode_trie_path` is never called, so no depth ceiling is introduced — see (e). And a disagreeing stream re-files rather than being refused. |
 | Metering | `NO` | Metering reads prost `Message::encoded_len` (`rholang/src/rust/interpreter/accounting/costs.rs:67`), which this does not touch. No cost in the tree is computed from a bincode length. |
 
-★ **The four surfaces, pinned to the landed tree.** `models/src/rust/rholang/wire.rs:366` is the `FieldKind::Bytes` that opens `EPATHMAP_PROGRAM`; `models/src/rust/rholang/wire_encode.rs:477` is the single `put_bytes` that emits `U(m)`; `models/src/rust/rholang/par_codec.rs:1642` is the zero-copy `byte_slice` that reads it back; `models/src/rust/rhoapi_ext.rs:1106` is the one shared reader both decode paths call; and `models/src/rust/pathmap_crate_type_mapper.rs:525` is the one splitter all three readers of `U(m)`'s framing go through.
+★ **The four surfaces, pinned to the landed tree.** `models/src/rust/rholang/wire.rs:366` is the `FieldKind::Bytes` that opens `EPATHMAP_PROGRAM`; `models/src/rust/rholang/bincode_encoder.rs:477` is the single `put_bytes` that emits `U(m)`; `models/src/rust/rholang/bincode_decoder.rs:1642` is the zero-copy `byte_slice` that reads it back; `models/src/rust/rhoapi_ext.rs:1106` is the one shared reader both decode paths call; and `models/src/rust/pathmap_crate_type_mapper.rs:525` is the one splitter all three readers of `U(m)`'s framing go through.
 
 #### (e) Acceptance is unchanged, and the ceiling it avoids is re-measured rather than cited
 
@@ -5575,7 +5575,7 @@ Reachable by any finalised deploy containing a pathmap. Settled under the owner'
 
 **A third, arithmetic.** The three cold-store leaf pins moved by exactly **+46 B** each (`PAR_DATUM` 4,153 → 4,199; `PAR_DATUMS` 4,285 → 4,331; `PAR_CONTS` 4,529 → 4,575). The fixture holds two maps — a bare `EPathmapBody` and one inside an `EZipper` — whose framed key streams are `8 + 12` and `8 + 18` bytes. $`(8+12) + (8+18) = 46`$. The delta is derived, not observed.
 
-**Test totals.** `models` **469 passed / 0 failed** (baseline **459**, plus the 10 assertions of the new file); `wire_encode_space` **9/9** with the warm allocation count still **0**; `wire_encode_differential` 13/13 and `par_codec_differential` 13/13, whose oracles are the derived `Serialize` and the derived `Deserialize` respectively — which is why all four surfaces had to land in one commit; `rspace_plus_plus` 336/336; `rholang` `epathmap_replay_equivalence_spec` 1/1 and `trie_entry_invariant_spec` 8/8.
+**Test totals.** `models` **469 passed / 0 failed** (baseline **459**, plus the 10 assertions of the new file); `bincode_encoder_space` **9/9** with the warm allocation count still **0**; `bincode_encoder_differential` 13/13 and `bincode_decoder_differential` 13/13, whose oracles are the derived `Serialize` and the derived `Deserialize` respectively — which is why all four surfaces had to land in one commit; `rspace_plus_plus` 336/336; `rholang` `epathmap_replay_equivalence_spec` 1/1 and `trie_entry_invariant_spec` 8/8.
 
 #### (h) Authority
 
@@ -5619,7 +5619,7 @@ The same standing owner ruling [CBR-041](#cbr-041) (h) quotes, whose scope is *"
 | Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
-| Files | `models/src/rust/rhoapi_ext.rs` (`EntryTrie::{wire_trie, wire_view, wire_path_stream, blanked_trie}`, the `wire_trie` memo cell and its four invalidations, `Serialize`, `drain_owned_pars`), `models/src/rust/rholang/wire.rs` (`pathmap_ps`, `PathmapPs::Stored`), `models/tests/epathmap_bincode_is_the_path_stream.rs` (§4, the acceptance properties), `models/tests/epathmap_canonical_fixtures.rs` (the entry-level widening), `models/tests/epathmap_wrapper_cell.rs` (the layout oracle), `models/tests/wire_encode_space.rs` (the lf-bearing allocation row) |
+| Files | `models/src/rust/rhoapi_ext.rs` (`EntryTrie::{wire_trie, wire_view, wire_path_stream, blanked_trie}`, the `wire_trie` memo cell and its four invalidations, `Serialize`, `drain_owned_pars`), `models/src/rust/rholang/wire.rs` (`pathmap_ps`, `PathmapPs::Stored`), `models/tests/epathmap_bincode_is_the_path_stream.rs` (§4, the acceptance properties), `models/tests/epathmap_canonical_fixtures.rs` (the entry-level widening), `models/tests/epathmap_wrapper_cell.rs` (the layout oracle), `models/tests/bincode_encoder_space.rs` (the lf-bearing allocation row) |
 
 #### (a) The issue
 
@@ -5664,13 +5664,13 @@ It is why `models/build.rs` injects `serialize_with = serialize_as_empty_bytes` 
 
 **⚠⚠ The memo holds the whole TRIE, not the key stream — and that was measured, not anticipated.** Blanking can **reorder**: `eval_stable_par` requires `locally_free.is_empty()` at every level, so an lf bit moves an otherwise-stable entry from the structural arm to the `0x0F` escape arm, and an escape key sorts nowhere near the structural key its blanked twin gets. A memo holding only the keys therefore emits blanked key `i` beside stored value `j` — two halves of one tuple disagreeing about which entry is which. The first form of this repair did exactly that, and the entry-level event-hash leg described under (e) is what caught it.
 
-**★ The blanking function IS the surface.** `blank` is not a hand-written "clear every `locally_free`" walk. Such a walk would be a *second opinion* about what this surface writes: it would have to enumerate the twelve injected sites, and it would go stale the moment a thirteenth appeared — **silently**, because a stale blanker still produces a well-formed key stream. Instead each entry is run through the surface itself, `wire_encode::encode_into` then `Par::cold_decode`, whose byte-for-byte agreement with the derived `Serialize`/`Deserialize` is pinned by `wire_encode_differential` and `par_codec_differential`. A thirteenth site is followed automatically and cannot drift.
+**★ The blanking function IS the surface.** `blank` is not a hand-written "clear every `locally_free`" walk. Such a walk would be a *second opinion* about what this surface writes: it would have to enumerate the twelve injected sites, and it would go stale the moment a thirteenth appeared — **silently**, because a stale blanker still produces a well-formed key stream. Instead each entry is run through the surface itself, `bincode_encoder::encode_into` then `Par::cold_decode`, whose byte-for-byte agreement with the derived `Serialize`/`Deserialize` is pinned by `bincode_encoder_differential` and `bincode_decoder_differential`. A thirteenth site is followed automatically and cannot drift.
 
 ⚠ Both halves are the **trampolined** codecs. The derived pair is Θ(depth) on the native stack and this runs on entries of unbounded depth; the temporary trie is torn down with `drain_owned_pars` + `dismantle_all` for the same reason, since `<Par as Drop>` is itself a recursive traversal.
 
 #### (d) ★ The O(1) discriminator, and the guard that is UNSOUND
 
-`wire_trie()` must answer *"is blanking the identity here?"* without walking anything, or `wire_encode_space`'s zero-allocation requirement fails. The obvious guard is `EntryTrie::union_locally_free` — a fold that is already maintained — and it is **wrong**:
+`wire_trie()` must answer *"is blanking the identity here?"* without walking anything, or `bincode_encoder_space`'s zero-allocation requirement fails. The obvious guard is `EntryTrie::union_locally_free` — a fold that is already maintained — and it is **wrong**:
 
 | shape | `union_lf` empty? | `entries_stable` | `\|U(stored)\|` | `\|U(blanked)\|` |
 |---|---|---|---|---|
@@ -5730,13 +5730,13 @@ It is **conservative, never wrong**: an entry unstable for some other reason (an
 
 ⚠ **The unmoved axis, cited positively rather than left as an absence.** `models/src/rust/rhoapi_ext.rs:1845` is `encode_ground_field8(self.path_stream(), …)` — proto field 8 still reading the **stored** key stream, which is *why* the five prost goldens are byte-identical. And `models/src/rust/rholang/wire.rs:75` is the rule itself, in words the tree already carried before any of this: `locally_free` is transient analysis data that must not reach an RSpace channel hash. `rholang/src/rust/interpreter/accounting/costs.rs:67` is the metering cell's evidence, unchanged from [CBR-042](#cbr-042): the charge reads prost `encoded_len`, never a serde length.
 
-**Space.** `wire_encode_space::the_steady_state_allocation_table` **9/9**, and it gained a row that `nonground_pathmap` could not have covered — that fixture's entries are `GInt`s, so it takes the O(1) arm and never touches the memo:
+**Space.** `bincode_encoder_space::the_steady_state_allocation_table` **9/9**, and it gained a row that `nonground_pathmap` could not have covered — that fixture's entries are `GInt`s, so it takes the O(1) arm and never touches the memo:
 
 ```text
   lf_bearing_pathmap   223 B | machine 0 allocs 0 B | derived 1 allocs 223 B
 ```
 
-**Test totals.** `models` **473 passed / 2 ignored across 37 targets** (baseline **469 / 2 / 37**); `wire_encode_differential` 13/13 and `par_codec_differential` 13/13; `prost_encode_differential` 13/13; `serializer_par_byte_goldens` 7/7; `epathmap_spliced_event_bytes` 11/11; `rholang` `epathmap_replay_equivalence_spec` 1/1, `trie_entry_invariant_spec` 8/8, `epathmap_charge_trace_spec` 9/9; `cargo check -p casper -p rholang --tests` clean.
+**Test totals.** `models` **473 passed / 2 ignored across 37 targets** (baseline **469 / 2 / 37**); `bincode_encoder_differential` 13/13 and `bincode_decoder_differential` 13/13; `protobuf_encoder_differential` 13/13; `serializer_par_byte_goldens` 7/7; `epathmap_spliced_event_bytes` 11/11; `rholang` `epathmap_replay_equivalence_spec` 1/1, `trie_entry_invariant_spec` 8/8, `epathmap_charge_trace_spec` 9/9; `cargo check -p casper -p rholang --tests` clean.
 
 #### (h) Authority
 
@@ -8710,7 +8710,7 @@ comparison. Its module header stated, verbatim:
 for arm B. The two arms were therefore timed in **different time windows** on a workstation that routinely
 runs six concurrent build jobs.
 
-⚠ **And it shipped twice.** `models/benches/term_ops_bench.rs` and `models/benches/wire_encode_bench.rs`
+⚠ **And it shipped twice.** `models/benches/term_ops_bench.rs` and `models/benches/bincode_encoder_bench.rs`
 carried the identical helper behind the identical false sentence, and the second is **worse** for a
 structural reason: it has three arms, so the drift window between the first and the last is twice as long.
 The repair is one shared harness, `models/benches/paired.rs`, in `9560a068` and `87ee699c`.
@@ -8815,7 +8815,7 @@ it sound.
 | instrument | blocked arms | spread | paired | spread |
 |---|---|---|---|---|
 | `term_ops_bench`, production-weighted | $`1.0748\times`$ (PASS) then $`0.9461\times`$ (FAIL), same binary minutes apart | **13 %** at loadavg 15.7 | $`0.962`$, $`0.956`$, $`0.954`$ | **0.8 %** at loadavg 19.8–23.8 |
-| `wire_encode_bench`, production-weighted, owned `Vec` | $`1.261\times`$, $`1.471\times`$, $`1.154\times`$, three consecutive runs | **27 %** at loadavg 16.7 | $`1.092`$, $`1.078`$, $`1.073`$ | **1.9 %** at loadavg **31–37** |
+| `bincode_encoder_bench`, production-weighted, owned `Vec` | $`1.261\times`$, $`1.471\times`$, $`1.154\times`$, three consecutive runs | **27 %** at loadavg 16.7 | $`1.092`$, $`1.078`$, $`1.073`$ | **1.9 %** at loadavg **31–37** |
 
 ★★ **A 14× reduction in run-to-run spread at roughly double the load.** That is the cleanest available
 demonstration that the *defect*, not the host, was the dominant term — a quieter machine would have
@@ -9086,11 +9086,11 @@ indistinguishable from an unexamined one.
 | 4 | Welch $`t = -307`$ | `term_ops` | ⚠ **OVERTURNED** — an unpaired $`t`$ on drift-contaminated arms | ⚠ `models/build/wire_schema.rs` — **REPORTED, NOT EDITED** |
 | 5 | ★ this register's row 36 cites the same measurement as Welch $`t = -65`$ | `term_ops` | ⚠ **OVERTURNED, and the two citations DISAGREE.** [§7.8.4](#784--two-welch-statistics-for-one-experiment--and-neither-was-transcribed) establishes that **neither was transcribed** — they are two runs, and the pooled noise they imply differs by $`4.6\times`$ | ★ **CORRECTED** |
 | 6 | `register.toml`'s matching evidence string | `term_ops` | ⚠ **OVERTURNED** (the same figure) | ★ **CORRECTED**. ⚠ The coordinate reported for it, `register.toml`:970, had **already drifted to :1000** by the time it was acted on — six `[[exempt]]` rows were inserted above it in four days. Drift class 2, live, inside the report of a drift defect |
-| 7 | `903cefb3`'s *"1.19–1.58× faster, from 1.7× slower"* | `wire_encode` | sign **UNAFFECTED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.58\times`$. ⚠ A $`1.19`$–$`1.58`$ interval is a 33 % spread — the *instrument's* scatter, not the encoder's | ★ **CORRECTED** — [CBR-019](#cbr-019)'s evidence |
-| 8 | ★★ the **$`1.7\times`$ slower** per-field-table interpretation | `wire_encode` | ★ **UNAFFECTED** — a 68 % effect against a 27 % spread, margin $`2.5\times`$. [§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance) | ★ **AFFIRMED** in [CBR-019](#cbr-019)'s evidence, with the margin arithmetic. ⚠ Its five code sites are **REPORTED, NOT EDITED** and need no change |
-| 9 | the **2.75 %** `NO_RESUME` figure | `wire_encode` | ⚠ **NOW UNKNOWN** — 2.75 % is a **tenth** of the instrument's spread, so it is not a measurement at all rather than an imprecise one | ⚠ **REPORTED, NOT EDITED** — it exists at exactly three sites, all code comments: `models/src/rust/rholang/drive.rs` at **:73**, `wire_encode.rs` at **:413**, `wire.rs` at **:219**. ★ It appears in **no** document, so nothing in the doc suite cites it |
-| 10 | the stack-safety report's $`1.194 \pm 0.005\times`$ | `wire_encode` | sign **UNAFFECTED**; the **$`\pm 0.005`$ is OVERTURNED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.19\times`$ | ★ **CORRECTED** at all three sites (§1, §5.4.1, §5.10) **plus four more the original report of this defect did not name** — §Method's *"Statistics"* clause, the §A instrument table, §Method's *"Overlap rule"*, and §5.4.2's profile provenance, each of which asserted the **false interleaving** or an invalid criterion |
-| 11 | the audit's $`1.190\times`$ / $`1.245\times`$ | `wire_encode` | as row 10, bracketed $`1.07\times`$–$`1.19\times`$ and $`1.07\times`$–$`1.25\times`$ | ★ **CORRECTED**. ⚠ Reported as being in `mettail-rust`; it is in **this** repository, `docs/design/audits/theta-depth-traversals-2026-07-26.md`. `mettail-rust` cites **none** of the eleven figures |
+| 7 | `903cefb3`'s *"1.19–1.58× faster, from 1.7× slower"* | `bincode_encoder` | sign **UNAFFECTED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.58\times`$. ⚠ A $`1.19`$–$`1.58`$ interval is a 33 % spread — the *instrument's* scatter, not the encoder's | ★ **CORRECTED** — [CBR-019](#cbr-019)'s evidence |
+| 8 | ★★ the **$`1.7\times`$ slower** per-field-table interpretation | `bincode_encoder` | ★ **UNAFFECTED** — a 68 % effect against a 27 % spread, margin $`2.5\times`$. [§7.8.5](#785--the-one-figure-that-stands-and-why-effect-size-decides-not-provenance) | ★ **AFFIRMED** in [CBR-019](#cbr-019)'s evidence, with the margin arithmetic. ⚠ Its five code sites are **REPORTED, NOT EDITED** and need no change |
+| 9 | the **2.75 %** `NO_RESUME` figure | `bincode_encoder` | ⚠ **NOW UNKNOWN** — 2.75 % is a **tenth** of the instrument's spread, so it is not a measurement at all rather than an imprecise one | ⚠ **REPORTED, NOT EDITED** — it exists at exactly three sites, all code comments: `models/src/rust/rholang/drive.rs` at **:73**, `bincode_encoder.rs` at **:413**, `wire.rs` at **:219**. ★ It appears in **no** document, so nothing in the doc suite cites it |
+| 10 | the stack-safety report's $`1.194 \pm 0.005\times`$ | `bincode_encoder` | sign **UNAFFECTED**; the **$`\pm 0.005`$ is OVERTURNED**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.19\times`$ | ★ **CORRECTED** at all three sites (§1, §5.4.1, §5.10) **plus four more the original report of this defect did not name** — §Method's *"Statistics"* clause, the §A instrument table, §Method's *"Overlap rule"*, and §5.4.2's profile provenance, each of which asserted the **false interleaving** or an invalid criterion |
+| 11 | the audit's $`1.190\times`$ / $`1.245\times`$ | `bincode_encoder` | as row 10, bracketed $`1.07\times`$–$`1.19\times`$ and $`1.07\times`$–$`1.25\times`$ | ★ **CORRECTED**. ⚠ Reported as being in `mettail-rust`; it is in **this** repository, `docs/design/audits/theta-depth-traversals-2026-07-26.md`. `mettail-rust` cites **none** of the eleven figures |
 
 ★★ **Two findings from working the table that are worth more than any single row.**
 
@@ -9316,7 +9316,7 @@ axes     = { value = "MOVES", verdict = "MOVES", bytes_bincode = "NO",
 [[exempt]]
 commit   = "sha"
 reason   = "BYTE_NEUTRAL_MEASURED"  # closed enum — see §3.2
-evidence = "models/tests/wire_encode_differential.rs, 13/13, goldens unchanged"
+evidence = "models/tests/bincode_encoder_differential.rs, 13/13, goldens unchanged"
 ```
 
 ---
@@ -9393,7 +9393,7 @@ it.
 | 27 | `16090241` | the driver's three configuration checks are watched RED | `TESTS_ONLY` | Five arms over a 64-long summed chain, each in a **child process** with the parent reading exit status *and* diagnostic text — no `#[should_panic]` anywhere. `models/tests/` plus its declaration. **CITED**. |
 | 28 | `53e78427` | stage F-2 — the SORTER moves onto the shared driver | `BYTE_NEUTRAL_MEASURED` | ⚠ Self-declared **CONSENSUS-CRITICAL**: `cost_accounting/sig.rs` signs `ParSortMatcher::sort_match(&par).term.encode_to_vec()`, so *"a one-element reordering is a fork."* Every `descend_*` and `combine_*_k` is byte-for-byte the code that produced the canonical form before the move; only the loop, the two stacks and the invariants moved. Byte identity is **GATED**, not assumed — four gates green, **three of the four watched RED first**. **CITED**. |
 | 29 | `dc4e165c` | the guard controls are shown able to REJECT | `DOCS_ONLY` | The only hunk outside `rholang/tests/` is a **single doc-comment table cell** in `pretty_printer.rs` (`3 witnesses` $`\rightarrow`$ `4 witnesses`), recounted from the executed table rather than incremented. **DERIVED** (1 insertion, 1 deletion, both on a `//!` line). |
-| 30 | `3deacce0` | F-3 does NOT land — the four things ser/de needs from the driver | `DOCS_ONLY` | Records the refutation in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. **CITED**. |
+| 30 | `3deacce0` | F-3 does NOT land — the four things ser/de needs from the driver | `DOCS_ONLY` | Records the refutation in `drive.rs` rather than in a report file: `bincode_decoder::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. **CITED**. |
 | 31 | `699ee646` | `drive_with` — bring-your-own-stacks | `DORMANT` | Adds a bring-your-own-stacks entry point to `models/src/rust/rholang/drive.rs` with **no caller in this commit** (the diff is that one file). Both stacks are asserted empty on entry and on every return path. **DERIVED** (file list) + **CITED**. |
 | 32 | `959a123a` | F-4 — `Clone` GENERATED through the shared driver | `BYTE_NEUTRAL_MEASURED` | `Clone` for the 55 non-`Copy` types is generated through the shared driver, the cut set **DERIVED** at a feedback vertex set of the child relation and cross-checked as SETS in both directions. Equivalence is asserted by `models/tests/clone_equivalence_corpus.rs` over **67 enumerated terms on eight axes**, driven-vs-oracle, where the oracle is the derive's own re-emitted body. **CITED**. |
 | 33 | `c709fbfa` | the CLONE EQUIVALENCE CORPUS — enumerated, eight axes | `TESTS_ONLY` | 67 terms enumerated from the generated `wire_schema::*_VARIANTS` tables rather than hand-listed, *"so a 37th arm fails this file instead of escaping it."* `models/tests/` plus its `[[test]]` declaration. **CITED**. |

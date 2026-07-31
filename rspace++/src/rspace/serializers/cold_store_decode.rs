@@ -33,7 +33,7 @@
 //! `rspace++` cannot name `Par`. `models` depends on `rspace_plus_plus`
 //! (`models/Cargo.toml`), so the reverse edge would be a cycle. The
 //! cold-store decode sites live here, in `rspace++`; the decoder lives in
-//! `models` (`models/src/rust/rholang/par_codec.rs`). A trait declared on this
+//! `models` (`models/src/rust/rholang/bincode_decoder.rs`). A trait declared on this
 //! side and implemented on the other is the only shape that respects that edge.
 //!
 //! ## ⚠ Why there is deliberately NO blanket impl
@@ -105,7 +105,7 @@
 //!
 //! agree — the same `Ok` value, or both `Err`. The `Err` half is not a
 //! formality: the **rejection set is consensus-visible**. A node that accepts a
-//! byte string another node rejects forks. `models/tests/par_codec_malformed.rs`
+//! byte string another node rejects forks. `models/tests/bincode_decoder_malformed.rs`
 //! pins that half by truncating every corpus encoding at every byte offset,
 //! flipping bool bytes, pushing `Option` tags and variant indices out of range,
 //! and setting lengths to `usize::MAX`, asserting `Ok`/`Err` **agreement**
@@ -342,7 +342,7 @@ pub fn read_len_prefix(bytes: &[u8]) -> Result<(usize, usize), ColdStoreDecodeEr
 /// derived path does not have, because serde caps its pre-allocation and then
 /// fails on the first element that runs out of input. Diverging on the
 /// *disposition* of a malformed input is the consensus-visible half of a
-/// decoder; see `models/tests/par_codec_malformed.rs`.
+/// decoder; see `models/tests/bincode_decoder_malformed.rs`.
 ///
 /// (Historical note: older serde used a flat 4,096-element cap. 1.0.228 uses
 /// the byte-budget form above; the form reproduced here is the one in the

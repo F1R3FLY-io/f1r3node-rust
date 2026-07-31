@@ -630,11 +630,11 @@ impl<'p> EncMachine<'p> {
             // grammar bounds that depth: the escape arm exists precisely because
             // the payload is an arbitrary `Par`.
             //
-            // `prost_encode::encode_to_vec` keeps its obligation stack on the
+            // `protobuf_encoder::encode_to_vec` keeps its obligation stack on the
             // heap and is byte-identical to the derived path by construction —
             // it CALLS `prost::encoding::<module>::{encode, encoded_len}` and
             // replaces only the recursion. The identity is gated by
-            // `models/tests/prost_encode_differential.rs`, and the escape arm's
+            // `models/tests/protobuf_encoder_differential.rs`, and the escape arm's
             // own bytes are gated by `escape_arm_roundtrip_ordering_and_rejections`
             // and by every trie-key golden.
             //
@@ -643,7 +643,7 @@ impl<'p> EncMachine<'p> {
             // has three arms of which only one is a field walk), so the native
             // stack is not bounded THROUGH that one shape. Byte-identical, not
             // depth-independent; the two are separate statements.
-            let prost_bytes = crate::rust::rholang::prost_encode::encode_to_vec(par);
+            let prost_bytes = crate::rust::rholang::protobuf_encoder::encode_to_vec(par);
             self.emit_byte(tag::ESCAPE)?;
             self.emit_uv(prost_bytes.len() as u64)?;
             return self.emit(&prost_bytes);
@@ -1164,7 +1164,7 @@ impl<'b> DecMachine<'b> {
                 // this `!=` differently on the first byte they disagreed about.
                 // That is why the two sites are converted TOGETHER; converting
                 // only the writer would have been the more dangerous half-change.
-                if crate::rust::rholang::prost_encode::encode_to_vec(&par) != payload {
+                if crate::rust::rholang::protobuf_encoder::encode_to_vec(&par) != payload {
                     return Err(CodecError::EscapePayloadNonCanonical);
                 }
                 if eval_stable_par(&par) {
@@ -2334,7 +2334,7 @@ mod tests {
     ///
     /// * `EntryTrie::view` — the projection every consumer of an `EPathMap`
     ///   reads — walks the trie's **VALUES** rather than decoding its keys. The
-    ///   key-decoding version panicked on the `par_codec_differential` corpus.
+    ///   key-decoding version panicked on the `bincode_decoder_differential` corpus.
     /// * `EntryTrie::adopt_trie` and `pathmap_integration::trie_entry_divergences`
     ///   state the trie entry invariant in the **ENCODE** direction
     ///   (`encode_trie_path(value) == key`) for the same reason: a check written

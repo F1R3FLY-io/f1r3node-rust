@@ -334,7 +334,7 @@ impl EntryTrie {
     /// deeper than that encodes to a key that will not decode
     /// (`DecodeError::RecursionLimitReached`), and the projection panics on a
     /// trie the system itself built. It was measured, not reasoned about: the
-    /// `par_codec_differential` corpus contains such a term.
+    /// `bincode_decoder_differential` corpus contains such a term.
     ///
     /// Reading the values sidesteps it completely, because the codec is then
     /// used **in the encode direction only** on every path that has to be total.
@@ -444,7 +444,7 @@ impl EntryTrie {
     /// (an `EVar`, a `Send`) takes the memo path and, if blanking turns out to
     /// be the identity there too, the memo records `None` and this still returns
     /// the borrow. Warm allocations therefore stay at **zero for every shape** —
-    /// which `models/tests/wire_encode_space.rs` requires and measures.
+    /// which `models/tests/bincode_encoder_space.rs` requires and measures.
     pub fn wire_path_stream(&self) -> &[u8] {
         self.wire_trie().path_stream()
     }
@@ -504,10 +504,10 @@ impl EntryTrie {
     /// enumerate the twelve injected sites, and it would go stale the moment a
     /// thirteenth appeared, silently, because a stale blanker still produces a
     /// key stream that *looks* well-formed. Instead each entry is run through the
-    /// surface itself: [`crate::rust::rholang::wire_encode::encode_into`] writes
+    /// surface itself: [`crate::rust::rholang::bincode_encoder::encode_into`] writes
     /// exactly what serde writes (pinned byte-for-byte by
-    /// `models/tests/wire_encode_differential.rs`) and `Par::cold_decode` reads
-    /// it back (pinned by `models/tests/par_codec_differential.rs`). The
+    /// `models/tests/bincode_encoder_differential.rs`) and `Par::cold_decode` reads
+    /// it back (pinned by `models/tests/bincode_decoder_differential.rs`). The
     /// composite is, by construction, *the value this surface writes* — so a
     /// thirteenth blanking site is followed automatically and cannot drift.
     ///
@@ -515,7 +515,7 @@ impl EntryTrie {
     /// derived `Serialize`/`Deserialize` are Θ(depth) on the native stack, and
     /// this runs on entries of unbounded depth. Re-entrancy is safe — neither
     /// machine holds a thread-local across a nested encode
-    /// (`wire_encode::with_encoded` and `pooled_stack!` each fall back to a
+    /// (`bincode_encoder::with_encoded` and `pooled_stack!` each fall back to a
     /// private buffer when the slot is already borrowed), and `encode_into`
     /// takes the caller's buffer and touches no pool-external state at all.
     ///
@@ -537,7 +537,7 @@ impl EntryTrie {
     /// "identical" on precisely the pairs this function exists to distinguish.
     fn blanked_trie(&self) -> Option<Arc<EntryTrie>> {
         use crate::rust::rholang::par_children::dismantle_all;
-        use crate::rust::rholang::wire_encode::encode_into;
+        use crate::rust::rholang::bincode_encoder::encode_into;
         use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
         let entries = self.view();
@@ -550,7 +550,7 @@ impl EntryTrie {
             encode_into(entry, &mut buffer);
             blanked.push(Par::cold_decode(&buffer).expect(
                 "the cold-store reader must accept the cold-store writer's own bytes — \
-                 `wire_encode_differential` and `par_codec_differential` pin that pair \
+                 `bincode_encoder_differential` and `bincode_decoder_differential` pin that pair \
                  byte-for-byte, so a failure here is those two codecs having diverged, \
                  not a property of the entry",
             ));
@@ -1061,7 +1061,7 @@ impl EntryTrie {
     /// The bincode surface serializes an `EPathMap`'s entries as the trie's own
     /// byte array `U(m)` **followed by** the values, and this is the one place
     /// that reads the pair back. Both surfaces that carry that encoding — the
-    /// `serde::Deserialize` impl below and `par_codec`'s `Op::PathmapBuild` —
+    /// `serde::Deserialize` impl below and `bincode_decoder`'s `Op::PathmapBuild` —
     /// call it, because two hand-written bulk readers of one wire shape is the
     /// defect `c705776c` closed and it does not get to come back.
     ///
@@ -1377,9 +1377,9 @@ impl serde::Serialize for EntryTrie {
     /// # ★ Why SPLIT and not interleaved
     ///
     /// Interleaving key with value would need a live trie cursor in the encoder.
-    /// That was built, measured, and parked (`wire_encode.rs`, `Op::EntryPaths`):
+    /// That was built, measured, and parked (`bincode_encoder.rs`, `Op::EntryPaths`):
     /// it costs 3 allocations / 1408 B on a warm encode where
-    /// `wire_encode_space::the_steady_state_allocation_table` requires **zero**,
+    /// `bincode_encoder_space::the_steady_state_allocation_table` requires **zero**,
     /// two of them inside `read_zipper()` where they cannot be pooled away. Split,
     /// the encoder emits one memoized slice ([`EntryTrie::path_stream`], a
     /// `memcpy`) plus the projection it was already emitting — and `U(m)` stays
@@ -1410,7 +1410,7 @@ impl serde::Serialize for EntryTrie {
         // `&[u8]` serializes as a seq of `u8`, which is byte-for-byte what
         // `serialize_bytes` writes in bincode — serde has no `Vec<u8>`
         // specialisation, so the two spellings coincide on this format
-        // (`par_codec`'s shape-2 note says the same thing from the read side).
+        // (`bincode_decoder`'s shape-2 note says the same thing from the read side).
         // ⚠ BOTH halves off ONE trie ([`EntryTrie::wire_trie`]). Mixing
         // `wire_path_stream()` with `view()` would pair the blanked KEYS with
         // the STORED order, and blanking can reorder — an lf bit moves an entry

@@ -144,7 +144,7 @@ path = "tests/epathmap_spliced_event_bytes.rs"
 # question it settles is a CONSENSUS one (event hashes enter the block Merkle
 # log), so it is asked at the leg boundary and over the value class that
 # actually reaches `direct()` — including `EPathMap`s whose intern cell is
-# UNFILLED, which neither `wire_encode_differential` nor
+# UNFILLED, which neither `bincode_encoder_differential` nor
 # `epathmap_spliced_event_bytes` compares against the trampolined encoder.
 [[test]]
 name = "event_hash_leg_cold_encode_identity"
@@ -179,16 +179,16 @@ name = "mixed_algorithm_cosigned_test"
 path = "tests/mixed_algorithm_cosigned_test.rs"
 
 [[test]]
-name = "par_codec_differential"
-path = "tests/par_codec_differential.rs"
+name = "bincode_decoder_differential"
+path = "tests/bincode_decoder_differential.rs"
 
 [[test]]
-name = "par_codec_malformed"
-path = "tests/par_codec_malformed.rs"
+name = "bincode_decoder_malformed"
+path = "tests/bincode_decoder_malformed.rs"
 
 [[test]]
-name = "par_codec_wire_shapes"
-path = "tests/par_codec_wire_shapes.rs"
+name = "bincode_decoder_wire_shapes"
+path = "tests/bincode_decoder_wire_shapes.rs"
 
 [[test]]
 name = "par_prost_depth_ceiling"
@@ -203,8 +203,8 @@ name = "pathmap_native_query_walk"
 path = "tests/pathmap_native_query_walk.rs"
 
 [[test]]
-name = "prost_encode_differential"
-path = "tests/prost_encode_differential.rs"
+name = "protobuf_encoder_differential"
+path = "tests/protobuf_encoder_differential.rs"
 
 [[test]]
 name = "schema_meta_conformance"
@@ -227,19 +227,19 @@ name = "variant_exhaustiveness_gate"
 path = "tests/variant_exhaustiveness_gate.rs"
 
 [[test]]
-name = "wire_encode_differential"
-path = "tests/wire_encode_differential.rs"
+name = "bincode_encoder_differential"
+path = "tests/bincode_encoder_differential.rs"
 
 [[test]]
-name = "wire_encode_space"
-path = "tests/wire_encode_space.rs"
+name = "bincode_encoder_space"
+path = "tests/bincode_encoder_space.rs"
 
 [[test]]
-# The prost encoder's space gate. `prost_encode.rs`'s §3 header claimed this file already
+# The prost encoder's space gate. `protobuf_encoder.rs`'s §3 header claimed this file already
 # pinned its four space quantities; it did not exist, and `op_size`/`frame_size` had zero
 # references workspace-wide. Phase 4 names it as the gate blocking its start.
-name = "prost_encode_space"
-path = "tests/prost_encode_space.rs"
+name = "protobuf_encoder_space"
+path = "tests/protobuf_encoder_space.rs"
 
 [[test]]
 name = "wire_schema_conformance"
@@ -265,8 +265,8 @@ path = "benches/term_ops_bench.rs"
 harness = false
 
 [[bench]]
-name = "wire_encode_bench"
-path = "benches/wire_encode_bench.rs"
+name = "bincode_encoder_bench"
+path = "benches/bincode_encoder_bench.rs"
 harness = false
 
 # ★ The two trie-key write-path conversions. `harness = false` because the
@@ -281,8 +281,8 @@ harness = false
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
 # snapshots describe ONE mechanism instead of superimposing three.
 [[bench]]
-name = "wire_encode_massif"
-path = "benches/wire_encode_massif.rs"
+name = "bincode_encoder_massif"
+path = "benches/bincode_encoder_massif.rs"
 harness = false
 
 [build-dependencies]

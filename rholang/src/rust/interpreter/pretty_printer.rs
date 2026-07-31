@@ -3711,7 +3711,7 @@ mod differential {
     //
     // 1. **The wire type admits it.** `New::bind_count` is protobuf `int32` — see
     //    `models/src/lib.rs` and the `self.r.i32()?` reads in
-    //    `models/src/rust/rholang/par_codec.rs`. A peer can put any `i32` on the wire, so
+    //    `models/src/rust/rholang/bincode_decoder.rs`. A peer can put any `i32` on the wire, so
     //    the printer's domain is `i32`, not `0..`. Totality over the wire type is a
     //    consensus obligation, not a nicety.
     // 2. **The generator draws it deliberately.** `generate_new` in
@@ -3725,7 +3725,7 @@ mod differential {
     //    count means: zero names printed, `new  in { .. }` rendered, and one recorded
     //    interval carrying the RAW count and reporting `is_empty()`.
     //
-    // The sibling `models/tests/par_codec_corpus/mod.rs` pins `bind_count: i32::MIN` on
+    // The sibling `models/tests/par_corpus/mod.rs` pins `bind_count: i32::MIN` on
     // purpose for the same reason. So this entry is not a bug report; it is the historical
     // record of the input that drove the handling, and promoting it keeps that record
     // executable. **No defect is filed.**

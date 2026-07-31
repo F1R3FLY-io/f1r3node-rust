@@ -2,11 +2,11 @@
 //!
 //! # Why this exists
 //!
-//! `wire_encode` reaches **zero allocations and zero bytes per encode** in the steady state,
+//! `bincode_encoder` reaches **zero allocations and zero bytes per encode** in the steady state,
 //! measured and held after an 18,800,104-byte encode. It does that with a thread-local pool:
 //! borrow the op-stack allocation, use it, clear it, park it again.
 //!
-//! `prost_encode` **did not copy that**. It allocates three fresh `Vec`s per encoder — `ops`,
+//! `protobuf_encoder` **did not copy that**. It allocates three fresh `Vec`s per encoder — `ops`,
 //! `frames`, and a 256-entry `lens` — and that omission **is** the 3.79× shallow regression
 //! (~96 → ~363 ns at depth 1, crossover at depth 8, 233.9× faster at 1024). The discipline
 //! was written once, in one file, and the next codec did not find it.

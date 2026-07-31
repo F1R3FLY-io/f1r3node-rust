@@ -11,7 +11,7 @@
 //!
 //! ## ★ Why a gate and not a comment
 //!
-//! `models/tests/wire_encode_space.rs` already pins the encoder's op at
+//! `models/tests/bincode_encoder_space.rs` already pins the encoder's op at
 //! `size_of::<Op>() <= 4 * size_of::<usize>()`, and that assertion is the reason
 //! anybody knows the encoder has **zero** headroom. The driver's `Step` had no
 //! such statement, so *"`Outcome::Tail` does not widen `Step`"* — the claim that
@@ -206,7 +206,7 @@ fn one_work_stack_cell_is_two_words_and_tail_did_not_change_that() {
          walk per node (-54.3 Ir/node, measured). A THIRD word is NOT free: two words fit \
          because rustc packs `Step`'s discriminant into the `&Par` null niche (see \
          `niche_packing`), and a third would grow `Step` — which multiplies by DEPTH. If a \
-         `Kont` needs more state, put it in `Traversal::State`, the discipline `par_codec`'s \
+         `Kont` needs more state, put it in `Traversal::State`, the discipline `bincode_decoder`'s \
          `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
         std::mem::size_of::<CloneKont<'_>>()
     );

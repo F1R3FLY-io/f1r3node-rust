@@ -771,9 +771,9 @@ const CONVERTED_DEPTH: &[&str] = &[
     "tree_clone",
     // Stage E — rho-pure-eval's own SCC
     "eval_with_nots",
-    // Stage F — the cold-store DECODER (par_codec)
+    // Stage F — the cold-store DECODER (bincode_decoder)
     "bincode_de",
-    // Stage H — the cold-store ENCODER (wire_encode). It LEFT the tripwire
+    // Stage H — the cold-store ENCODER (bincode_encoder). It LEFT the tripwire
     // list below by being CONVERTED, never by having its ceiling raised: the
     // derived `Serialize` is Θ(depth) at 3,052 / 329 B per level (debug /
     // release, measured 2026-07-26) and the single-walk machine holds its
@@ -2408,7 +2408,7 @@ fn clone_send_chain_body(depth: usize) {
 /// the list itself rather than against either claim.
 ///
 /// ⚠ Leaking is correct HERE and nowhere else: every subject runs in its own
-/// child process, which exits immediately afterwards. `models/benches/wire_encode_bench.rs`
+/// child process, which exits immediately afterwards. `models/benches/bincode_encoder_bench.rs`
 /// uses `std::mem::forget` for the same reason.
 fn clone_pathmap_chain_body(depth: usize) {
     // ⚠★ THE FIXTURE IS BUILT ON A BIG STACK, and that is the second measured
@@ -3024,7 +3024,7 @@ fn printed_bracket_depth(s: &str) -> usize { s.chars().take_while(|c| *c == '[')
 /// Measured 2026-07-26: encode 3,052 / 329 B/level (debug / release), decode
 /// 28,362 / 12,894.
 fn bincode_ser_body(depth: usize) {
-    use models::rust::rholang::wire_encode::ColdStoreEncode;
+    use models::rust::rholang::bincode_encoder::ColdStoreEncode;
     let term = nested_list(depth);
     assert_carries("the bincode_ser input's nesting", par_depth(&term), depth);
     let bytes = term.cold_encode();
@@ -3043,7 +3043,7 @@ fn bincode_ser_body(depth: usize) {
 /// before/after comparison is available in ONE run instead of requiring a
 /// checkout of an older commit — and because the derive is the ENCODE ORACLE
 /// the differential is measured against (`models/tests/
-/// wire_encode_differential.rs`). It is no longer what the node runs.
+/// bincode_encoder_differential.rs`). It is no longer what the node runs.
 fn bincode_ser_derived_body(depth: usize) {
     let term = nested_list(depth);
     assert_carries("the control's nesting", par_depth(&term), depth);
@@ -3055,15 +3055,15 @@ fn bincode_ser_derived_body(depth: usize) {
 /// The DECODE side. See [`bincode_ser_body`] for why this member matters.
 ///
 /// ★ CONVERTED. This subject now exercises `Par::cold_decode`
-/// (`models/src/rust/rholang/par_codec.rs`), the explicit-worklist decoder that
+/// (`models/src/rust/rholang/bincode_decoder.rs`), the explicit-worklist decoder that
 /// replaced the derived `Deserialize` on the cold-store read path. The derived
 /// impl is retained as a `#[cfg(test)]` oracle and is differentially compared
 /// against the machine over ~1.9M inputs, including every truncation of every
-/// corpus encoding (`models/tests/par_codec_malformed.rs`) — but it is no
+/// corpus encoding (`models/tests/bincode_decoder_malformed.rs`) — but it is no
 /// longer what the node runs, so it is no longer what this gate measures.
 ///
 /// ★ `bincode_ser` has since been converted too (Stage H,
-/// `models/src/rust/rholang/wire_encode.rs`), so BOTH halves of the RSpace
+/// `models/src/rust/rholang/bincode_encoder.rs`), so BOTH halves of the RSpace
 /// codec are now depth-independent and the isolation below is belt-and-braces
 /// rather than load-bearing. It is kept because the point of isolating the
 /// decoder is to measure the DECODER: a probe that silently became
@@ -3674,9 +3674,9 @@ fn theta_depth_tripwire() {
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
     // ⚠ THE RSpace CODEC HAS LEFT THIS LIST ENTIRELY — both halves.
     //
-    // `bincode_de` left first (Stage F: `models/src/rust/rholang/par_codec.rs`,
+    // `bincode_de` left first (Stage F: `models/src/rust/rholang/bincode_decoder.rs`,
     // an explicit obligation-stack decoder). `bincode_ser` has now followed
-    // (Stage H: `models/src/rust/rholang/wire_encode.rs`, the single-walk
+    // (Stage H: `models/src/rust/rholang/bincode_encoder.rs`, the single-walk
     // trampolined encoder driven by the same generated table). Both are in
     // `converted_traversals_are_depth_independent`.
     //

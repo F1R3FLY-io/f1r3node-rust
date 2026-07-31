@@ -73,7 +73,7 @@ end note
 
 note bottom of RP #C8E6C9
   <b><color:#1B5E20>MEASURED on this host — the repair, on the harder case</color></b>
-  `wire_encode_bench`, weighted owned `Vec`, three runs of one binary:
+  `bincode_encoder_bench`, weighted owned `Vec`, three runs of one binary:
   blocked  1.261× · 1.471× · 1.154×   →  <b>27%</b>  at loadavg 16.7
   paired   1.092× · 1.078× · 1.073×   →  <b>1.9%</b> at loadavg <b>31–37</b>
   <b>14× less spread at roughly DOUBLE the load.</b>

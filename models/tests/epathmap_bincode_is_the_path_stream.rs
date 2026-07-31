@@ -62,8 +62,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EList, EPathMap, ESet, ETuple, Expr, Par, Var};
 use models::rust::rhoapi_ext::{EntryTrie, PathStreamDisagreement, PathStreamVerdict};
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use models::rust::rholang::par_children::dismantle;
-use models::rust::rholang::wire_encode::ColdStoreEncode;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 // ---------------------------------------------------------------------------
@@ -901,7 +901,7 @@ fn prost_is_not_round_trip_stable_and_the_cause_is_key_independent() {
 ///
 /// # Why it matters
 ///
-/// The O(1) arm is what keeps `wire_encode_space`'s zero-allocation gate at zero
+/// The O(1) arm is what keeps `bincode_encoder_space`'s zero-allocation gate at zero
 /// for the shapes that dominate. An unsound discriminator would take that arm on
 /// a map whose blanked key stream DIFFERS, and would therefore re-introduce the
 /// exact defect CBR-043 repairs — silently, on precisely the maps nobody

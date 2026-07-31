@@ -1,4 +1,4 @@
-//! # The `par_codec` DIFFERENTIAL — machine vs. the retained derived oracle
+//! # The `bincode_decoder` DIFFERENTIAL — machine vs. the retained derived oracle
 //!
 //! ## What is being proved
 //!
@@ -10,7 +10,7 @@
 //! ```
 //!
 //! agree — same `Ok` value, or both `Err`. This file proves the `Ok` half over
-//! well-formed inputs; `models/tests/par_codec_malformed.rs` proves the `Err`
+//! well-formed inputs; `models/tests/bincode_decoder_malformed.rs` proves the `Err`
 //! half, which is the consensus-visible one.
 //!
 //! ## Why the oracle is the DERIVE itself
@@ -33,7 +33,7 @@
 //! which is the stronger statement anyway: it holds whatever the encoder does.
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::rholang::par_codec::{
+use models::rust::rholang::bincode_decoder::{
     cold_decode_list_bind_patterns_for_test, cold_decode_par_with_random_for_test,
 };
 use models::rust::test_utils::test_utils::generate_par;
@@ -41,8 +41,8 @@ use proptest::prelude::*;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Deserialize;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 /// **The differential's VERDICT**, as a pure function of one observation.
 ///
@@ -149,7 +149,7 @@ use models::rust::rholang::par_children::{
 /// Derived from `corpus::every_expr_instance()` rather than written out here, so
 /// that a new `rhoapi` arm becomes a *failure to cover* the moment the corpus
 /// gains its representative — and, if the corpus is not updated, a failure of
-/// `models/tests/par_codec_wire_shapes.rs`'s exhaustiveness instead. Either way
+/// `models/tests/bincode_decoder_wire_shapes.rs`'s exhaustiveness instead. Either way
 /// no arm can be added silently.
 fn expr_alphabet() -> BTreeMap<u32, &'static str> {
     corpus::every_expr_instance()
@@ -356,7 +356,7 @@ fn non_root_machine_types_agree() {
 
 /// The production machine with a **single-arm field-list drift** injected.
 ///
-/// The falsification experiment of audit §12.8 made `par_codec.rs`'s `ETuple`
+/// The falsification experiment of audit §12.8 made `bincode_decoder.rs`'s `ETuple`
 /// decoder read a `remainder` field that `ETuple` does not have — the smallest
 /// realistic hand-written-codec defect, an arm whose field list has drifted by
 /// one from the type it decodes. That mutation was performed by hand, observed,

@@ -2,7 +2,7 @@
 //!
 //! ## ⚠⚠ Why this module exists: an instrument defect that shipped TWICE
 //!
-//! `models/benches/term_ops_bench.rs` and `models/benches/wire_encode_bench.rs`
+//! `models/benches/term_ops_bench.rs` and `models/benches/bincode_encoder_bench.rs`
 //! each carried a private `measure(label, workload, arm) -> Sample` that ran
 //! **every** repetition of one arm and was then called again for the next. Both
 //! files' module headers said the opposite, in nearly the same words:
@@ -18,11 +18,11 @@
 //!
 //! ```text
 //!   term_ops_bench   weighted mix   1.0748×  then  0.9461×      (PASS then FAIL)
-//!   wire_encode_bench weighted mix  1.261×  1.471×  1.154×      (27% peak-to-peak)
+//!   bincode_encoder_bench weighted mix  1.261×  1.471×  1.154×      (27% peak-to-peak)
 //! ```
 //!
 //! ★ The second row is the reason this is a *shared* module and not two repairs.
-//! `term_ops_bench` was fixed first; `wire_encode_bench` had the identical defect
+//! `term_ops_bench` was fixed first; `bincode_encoder_bench` had the identical defect
 //! and the identical false claim, and a fix applied twice is a fix that drifts
 //! apart. There is now **one** implementation, and a benchmark that wants an
 //! A/B verdict has to come here to get one.
@@ -37,7 +37,7 @@
 //!    over the workload and the later ones find it warm. Rotating the starting
 //!    arm by `rep % N` spreads that bias evenly over all `N` arms instead of
 //!    accumulating it on one. ★ For `N = 2` this is order alternation; the
-//!    generalization is what lets `wire_encode_bench`'s **three** arms use the
+//!    generalization is what lets `bincode_encoder_bench`'s **three** arms use the
 //!    same code.
 //! 3. **Paired statistics.** The t-test is on the per-repetition *difference* —
 //!    one series, `n − 1` degrees of freedom — which is both the correct test for

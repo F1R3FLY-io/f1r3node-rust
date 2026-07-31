@@ -1,12 +1,12 @@
-//! # `prost_encode` — the Θ(depth)-native-stack, Θ(n)-work protobuf encoder
+//! # `protobuf_encoder` — the Θ(depth)-native-stack, Θ(n)-work protobuf encoder
 //!
-//! The protobuf twin of [`crate::rust::rholang::wire_encode`]. Same op-stack
+//! The protobuf twin of [`crate::rust::rholang::bincode_encoder`]. Same op-stack
 //! discipline, same generated-table split, same tail-call rule — and one
 //! structural difference that changes the *complexity class*, not merely the
 //! stack shape.
 //!
 //! ⚠ **Nothing in production calls this yet.** It is byte-for-byte equivalent to
-//! the derived path (`models/tests/prost_encode_differential.rs`) and is not
+//! the derived path (`models/tests/protobuf_encoder_differential.rs`) and is not
 //! wired into any call site; migrating them is a later stage's deliverable.
 //!
 //! ---
@@ -16,7 +16,7 @@
 //! bincode legacy has **no length prefixes**: a struct is its fields,
 //! positionally, and a nested value is written in place. So emission order is
 //! exactly pre-order and a single walk suffices — which is what makes
-//! `wire_encode` one pass.
+//! `bincode_encoder` one pass.
 //!
 //! Protobuf prefixes **every** nested message with its own length. Writing a
 //! child's key therefore requires knowing the child's encoded size *before*
@@ -102,8 +102,8 @@
 //! `lens` is the price of the `` $\Theta(d^2) \to \Theta(n)$ `` trade and it is
 //! `` $\Theta(n)$ `` **space** where prost's is `` $O(1)$ ``. That is the whole
 //! trade: 4 bytes per message node buys the elimination of a quadratic. All four
-//! quantities are pinned by `models/tests/prost_encode_space.rs`, mirroring
-//! `wire_encode_space.rs`.
+//! quantities are pinned by `models/tests/protobuf_encoder_space.rs`, mirroring
+//! `bincode_encoder_space.rs`.
 //!
 //! ## 4. ⚠ `EPathMap` is an OPAQUE LEAF, and that is a NAMED RESIDUAL
 //!
@@ -184,7 +184,7 @@ struct Frame {
 /// convention.
 const ROOT_TAG: u32 = 0;
 
-/// Preallocated op-stack capacity, matching `wire_encode`'s.
+/// Preallocated op-stack capacity, matching `bincode_encoder`'s.
 const OP_STACK_CAPACITY: usize = 64;
 
 /// Preallocated `lens` capacity. ⚠ A *starting point*, not a bound: the table is
@@ -237,7 +237,7 @@ impl<'a> LenMachine<'a> {
         let id = self.lens.len();
         assert!(
             id <= u32::MAX as usize,
-            "prost_encode: more than {} message nodes in one term. The length table is indexed \
+            "protobuf_encoder: more than {} message nodes in one term. The length table is indexed \
              by a u32; refusing is correct because a truncated index would silently attach one \
              node's length to another.",
             u32::MAX
@@ -304,10 +304,10 @@ impl<'a> LenMachine<'a> {
         let frame = self
             .frames
             .pop()
-            .expect("prost_encode: Op::Close with no open frame");
+            .expect("protobuf_encoder: Op::Close with no open frame");
         assert!(
             frame.sum <= u32::MAX as u64,
-            "prost_encode: a message node encodes to {} bytes, which exceeds the u32 length \
+            "protobuf_encoder: a message node encodes to {} bytes, which exceeds the u32 length \
              table. Refusing is correct: a truncated length would be written as a varint \
              prefix that does not match the body.",
             frame.sum
@@ -324,7 +324,7 @@ impl<'a> LenMachine<'a> {
             // no key and no length prefix. `encode_to_vec` writes exactly that.
             debug_assert_eq!(
                 frame.tag, ROOT_TAG,
-                "prost_encode: the outermost frame must carry the root sentinel tag"
+                "protobuf_encoder: the outermost frame must carry the root sentinel tag"
             );
         }
     }
@@ -332,7 +332,7 @@ impl<'a> LenMachine<'a> {
     fn open_seq(&mut self, seq: &'a dyn ProstSeq, len: usize, tag: u32) {
         assert!(
             len <= u32::MAX as usize,
-            "prost_encode: a repeated field of {len} elements exceeds the u32 cursor. Each \
+            "protobuf_encoder: a repeated field of {len} elements exceeds the u32 cursor. Each \
              element carries its own key and length prefix, so a truncated cursor emits fewer \
              elements than the term contains — a corrupt encoding, not a slow one."
         );
@@ -368,7 +368,7 @@ impl<'a> LenMachine<'a> {
                         if let Some(opaque) = node.prost_opaque() {
                             self.frames
                                 .last_mut()
-                                .expect("prost_encode: an opaque node with no open frame")
+                                .expect("protobuf_encoder: an opaque node with no open frame")
                                 .sum += opaque.opaque_encoded_len() as u64;
                             continue;
                         }
@@ -376,7 +376,7 @@ impl<'a> LenMachine<'a> {
                     let (bounded, descent) = node.prost_len_step(field as usize);
                     self.frames
                         .last_mut()
-                        .expect("prost_encode: a measured node with no open frame")
+                        .expect("protobuf_encoder: a measured node with no open frame")
                         .sum += bounded;
                     match descent {
                         ProstDescent::Done => {}
@@ -430,7 +430,7 @@ impl<'a> LenMachine<'a> {
                     let next = self
                         .map_iters
                         .last_mut()
-                        .expect("prost_encode: MapEntries with no live iterator")
+                        .expect("protobuf_encoder: MapEntries with no live iterator")
                         .next();
                     match next {
                         Some((key, value)) => {
@@ -455,13 +455,13 @@ impl<'a> LenMachine<'a> {
         self.run::<TRACK>();
         assert!(
             self.frames.is_empty(),
-            "prost_encode: {} frame(s) outlived the length pass — a node was opened and never \
+            "protobuf_encoder: {} frame(s) outlived the length pass — a node was opened and never \
              closed, so its length was never written and pass 2 would read a zero",
             self.frames.len()
         );
         assert!(
             self.map_iters.is_empty(),
-            "prost_encode: a map iterator outlived its field"
+            "protobuf_encoder: a map iterator outlived its field"
         );
         LenTable {
             lens: self.lens,
@@ -513,7 +513,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
     fn open_child(&mut self, out: &mut Vec<u8>, tag: u32) {
         let len = *self.lens.get(self.cursor).unwrap_or_else(|| {
             panic!(
-                "prost_encode: the emit pass asked for length slot {} of {}. The two passes \
+                "protobuf_encoder: the emit pass asked for length slot {} of {}. The two passes \
                  have visited nodes in DIFFERENT ORDERS, which means one of them walked a \
                  field, a sequence or a map differently from the other — and every length \
                  prefix from here on would belong to the wrong node.",
@@ -617,7 +617,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                     let next = self
                         .map_iters
                         .last_mut()
-                        .expect("prost_encode: MapEntries with no live iterator")
+                        .expect("protobuf_encoder: MapEntries with no live iterator")
                         .next();
                     match next {
                         Some((key, value)) => {
@@ -642,7 +642,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                     }
                 }
                 Op::Close => unreachable!(
-                    "prost_encode: `Op::Close` is a PASS-1 opcode. The emit pass needs no \
+                    "protobuf_encoder: `Op::Close` is a PASS-1 opcode. The emit pass needs no \
                      frame stack — it reads finished lengths from the table."
                 ),
             }
@@ -660,7 +660,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
         assert_eq!(
             self.cursor,
             self.lens.len(),
-            "prost_encode: the emit pass consumed {} of {} length slots. The length pass \
+            "protobuf_encoder: the emit pass consumed {} of {} length slots. The length pass \
              visited nodes the emit pass did not, so the output is a well-formed protobuf \
              message with a field missing — which every decoder accepts.",
             self.cursor,
@@ -668,7 +668,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
         );
         assert!(
             self.map_iters.is_empty(),
-            "prost_encode: a map iterator outlived its field"
+            "protobuf_encoder: a map iterator outlived its field"
         );
     }
 }

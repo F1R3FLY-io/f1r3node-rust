@@ -80,7 +80,7 @@ use models::rhoapi::{EList, ETuple, Expr, KeyValuePair, ListParWithRandom, Par, 
 mod paired;
 use paired::{loadavg, measure_arms};
 
-use models::rust::rholang::wire_encode::{encode, with_encoded};
+use models::rust::rholang::bincode_encoder::{encode, with_encoded};
 
 // ---------------------------------------------------------------------------
 // The measured distribution

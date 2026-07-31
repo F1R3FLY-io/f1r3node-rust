@@ -263,8 +263,8 @@ corrections:
    │  Message::encoded_len ↗                                                            │
    │  Message::merge_field → prost_de                                                   │
    │  Message::clear                                                                    │
-   │  Serialize::serialize     ✅ CONVERTED (wire_encode, Stage H)                       │
-   │  Deserialize::deserialize ✅ CONVERTED (par_codec,  Stage F)                        │
+   │  Serialize::serialize     ✅ CONVERTED (bincode_encoder, Stage H)                       │
+   │  Deserialize::deserialize ✅ CONVERTED (bincode_decoder,  Stage F)                        │
    └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -334,7 +334,7 @@ The probe left no residue. Nothing about `Drop` is landed by S0-S2.
 | `models/src/rust/par_to_sexpr.rs` | 5 |
 | `models/src/rust/canonical_path.rs` | 4 |
 | `models/src/rust/rholang/par_children.rs` | 3 |
-| `models/src/rust/rholang/par_codec.rs` | 1 |
+| `models/src/rust/rholang/bincode_decoder.rs` | 1 |
 | `models/src/rust/par_set.rs` | 1 |
 | **total** | **61** |
 

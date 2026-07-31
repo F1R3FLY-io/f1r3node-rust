@@ -1,12 +1,12 @@
 //! # The PROTOBUF encoder differential — two properties, and a mutation proof
 //!
 //! ```text
-//!   ∀t. prost_encode::encode_to_vec(&t) == t.encode_to_vec()   BYTE IDENTITY
-//!   ∀t. prost_encode::encoded_len(&t)   == t.encoded_len()     LENGTH IDENTITY
+//!   ∀t. protobuf_encoder::encode_to_vec(&t) == t.encode_to_vec()   BYTE IDENTITY
+//!   ∀t. protobuf_encoder::encoded_len(&t)   == t.encoded_len()     LENGTH IDENTITY
 //! ```
 //!
 //! ★ The derived `impl prost::Message` therefore **stays compiled and callable**.
-//! It is the oracle for exactly the reason `wire_encode_differential.rs` keeps
+//! It is the oracle for exactly the reason `bincode_encoder_differential.rs` keeps
 //! the derived `Serialize`: it is compiler-generated from the same struct
 //! definitions the table is generated from, and is therefore *undriftable* in a
 //! way a second hand-written implementation could never be.
@@ -22,7 +22,7 @@
 //! exchanged" in this campaign, and it was the write differential that caught it.
 //!
 //! Length identity earns its place separately: it is the property of
-//! [`prost_encode::encoded_len`] *on its own*, which is the `` $\Theta(n)$ ``
+//! [`protobuf_encoder::encoded_len`] *on its own*, which is the `` $\Theta(n)$ ``
 //! twin of prost's `` $\Theta(d^2)$ `` `Message::encoded_len` and is valuable
 //! wherever a size is needed without the bytes.
 //!
@@ -56,8 +56,8 @@
 //! which `RUST_MIN_STACK` does not affect**. f1r3node CI runs
 //! `cargo test --release -p models` only. Every deep body here therefore runs
 //! inside an explicit `std::thread::Builder::new().stack_size(N)` — the
-//! precedent is `par_codec_wire_shapes.rs:639-660` and
-//! `wire_encode_differential.rs:646-661` — and each such test's doc comment
+//! precedent is `bincode_decoder_wire_shapes.rs:639-660` and
+//! `bincode_encoder_differential.rs:646-661` — and each such test's doc comment
 //! states the stack it passes on **under both runners**.
 
 use std::collections::BTreeMap;
@@ -68,18 +68,18 @@ use models::rhoapi::{
     BindPattern, Connective, Expr, ListParWithRandom, New, Par, ParWithRandom, Send,
     TaggedContinuation,
 };
-use models::rust::rholang::prost_encode;
 use models::rust::rholang::prost_wire::ProstNode;
 use models::rust::rholang::prost_wire_schema::{
     PAR_PROST_PROGRAM, PROST_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROST_PROGRAM,
 };
-use models::rust::test_utils::test_utils::generate_par;
+use models::rust::rholang::protobuf_encoder;
 use models::rust::rholang::wire_schema::EXPR_INSTANCE_VARIANT_COUNT;
+use models::rust::test_utils::test_utils::generate_par;
 use proptest::prelude::*;
 use prost::Message;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 // ===========================================================================
 // §0  The VERDICTS, separated from the subject
@@ -140,11 +140,11 @@ where
     T: ProstNode + Message,
 {
     let oracle_bytes = value.encode_to_vec();
-    let machine_bytes = prost_encode::encode_to_vec(value);
+    let machine_bytes = protobuf_encoder::encode_to_vec(value);
     if let Err(why) = byte_identity_verdict(label, &machine_bytes, &oracle_bytes) {
         panic!("{why}");
     }
-    if let Err(why) = length_identity_verdict(label, prost_encode::encoded_len(value), value.encoded_len())
+    if let Err(why) = length_identity_verdict(label, protobuf_encoder::encoded_len(value), value.encoded_len())
     {
         panic!("{why}");
     }
@@ -153,11 +153,11 @@ where
     // number of bytes would satisfy both verdicts above and still be broken.
     assert_eq!(
         machine_bytes.len(),
-        prost_encode::encoded_len(value),
+        protobuf_encoder::encoded_len(value),
         "`{label}`: the machine wrote {} bytes but reports an encoded length of {}. Its two \
          passes disagree with EACH OTHER, which no comparison against the oracle can see.",
         machine_bytes.len(),
-        prost_encode::encoded_len(value)
+        protobuf_encoder::encoded_len(value)
     );
 }
 
@@ -169,7 +169,7 @@ where
 {
     const PREFIX: &[u8] = b"\xDE\xAD\xBE\xEF";
     let mut buffer = PREFIX.to_vec();
-    prost_encode::encode_into(value, &mut buffer);
+    protobuf_encoder::encode_into(value, &mut buffer);
     assert_eq!(
         &buffer[..PREFIX.len()],
         PREFIX,
@@ -234,7 +234,7 @@ fn every_unforgeable_and_opt_var_encodes_identically() {
 
 /// The whole shared corpus, through every cold-store root.
 ///
-/// ★ Reused AS IS from `models/tests/par_codec_corpus/mod.rs` — the same
+/// ★ Reused AS IS from `models/tests/par_corpus/mod.rs` — the same
 /// `par_corpus()`, `all_par_fields()`, `deep_par`, `deep_mixed_par` and both
 /// `EPathMap` arms the bincode differential runs on. A protobuf direction tested
 /// on a corpus the serde direction never sees would be a second corpus to keep
@@ -436,7 +436,7 @@ fn the_prost_differential_can_go_red() {
 
     // CONTROL: the real encoder, judged by the real verdict.
     assert!(
-        byte_identity_verdict("control", &prost_encode::encode_to_vec(&par), &truth).is_ok(),
+        byte_identity_verdict("control", &protobuf_encoder::encode_to_vec(&par), &truth).is_ok(),
         "the CONTROL must pass, or every rejection below is a statement about the judge \
          rather than about the mutation"
     );
@@ -524,7 +524,12 @@ fn the_prost_differential_can_go_red() {
     };
     let tc_truth = tc.encode_to_vec();
     assert!(
-        byte_identity_verdict("control-tc", &prost_encode::encode_to_vec(&tc), &tc_truth).is_ok(),
+        byte_identity_verdict(
+            "control-tc",
+            &protobuf_encoder::encode_to_vec(&tc),
+            &tc_truth
+        )
+        .is_ok(),
         "the TaggedContinuation control must pass"
     );
     let generated_tc: Vec<&str> = TAGGEDCONTINUATION_PROST_PROGRAM.iter().map(|f| f.name).collect();
@@ -578,7 +583,7 @@ fn the_prost_differential_can_go_red() {
     let send = Send { chan: Some(corpus::gint(4)), persistent: false, ..Default::default() };
     let send_truth = send.encode_to_vec();
     assert!(
-        byte_identity_verdict("control-send", &prost_encode::encode_to_vec(&send), &send_truth).is_ok(),
+        byte_identity_verdict("control-send", &protobuf_encoder::encode_to_vec(&send), &send_truth).is_ok(),
         "the Send control must pass"
     );
     // Build the unskipped bytes with prost's OWN encoder, so the mutation is
@@ -610,9 +615,9 @@ fn the_prost_differential_can_go_red() {
     // ── the controls again, AFTER all three, so a verdict that latched into
     //    rejecting cannot pass this test ──
     for (label, value, truth) in [
-        ("control-after/Par", prost_encode::encode_to_vec(&par), truth),
-        ("control-after/TC", prost_encode::encode_to_vec(&tc), tc_truth),
-        ("control-after/Send", prost_encode::encode_to_vec(&send), send_truth),
+        ("control-after/Par", protobuf_encoder::encode_to_vec(&par), truth),
+        ("control-after/TC", protobuf_encoder::encode_to_vec(&tc), tc_truth),
+        ("control-after/Send", protobuf_encoder::encode_to_vec(&send), send_truth),
     ] {
         assert!(
             byte_identity_verdict(label, &value, &truth).is_ok(),
@@ -654,12 +659,12 @@ proptest! {
     #[test]
     fn generated_pars_encode_identically(par in generate_par(3)) {
         let oracle = par.encode_to_vec();
-        let machine = prost_encode::encode_to_vec(&par);
+        let machine = protobuf_encoder::encode_to_vec(&par);
         prop_assert!(
             byte_identity_verdict("generated", &machine, &oracle).is_ok(),
             "{}", byte_identity_verdict("generated", &machine, &oracle).unwrap_err()
         );
-        prop_assert_eq!(prost_encode::encoded_len(&par), par.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encoded_len(&par), par.encoded_len());
     }
 
     /// Both properties through every cold-store root.
@@ -671,11 +676,11 @@ proptest! {
             guard: Some(par.clone()),
             tagged_cont: Some(TaggedCont::ScalaBodyRef(7)),
         };
-        prop_assert_eq!(prost_encode::encode_to_vec(&par), par.encode_to_vec());
-        prop_assert_eq!(prost_encode::encode_to_vec(&datum), datum.encode_to_vec());
-        prop_assert_eq!(prost_encode::encode_to_vec(&pattern), pattern.encode_to_vec());
-        prop_assert_eq!(prost_encode::encode_to_vec(&cont), cont.encode_to_vec());
-        prop_assert_eq!(prost_encode::encoded_len(&cont), cont.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&datum), datum.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&pattern), pattern.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&cont), cont.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encoded_len(&cont), cont.encoded_len());
     }
 
     /// Wide sequences: the counted-repeat path past its first iteration, where
@@ -687,7 +692,7 @@ proptest! {
             sends: (0..n).map(|i| Send { chan: Some(corpus::gint(i as i64)), ..Default::default() }).collect(),
             ..Default::default()
         };
-        prop_assert_eq!(prost_encode::encode_to_vec(&par), par.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
     }
 
     /// Maps: keys and values independently at or off their defaults.
@@ -702,8 +707,8 @@ proptest! {
             news: vec![New { bind_count: 1, p: None, uri: vec![], injections, locally_free: vec![] }],
             ..Default::default()
         };
-        prop_assert_eq!(prost_encode::encode_to_vec(&par), par.encode_to_vec());
-        prop_assert_eq!(prost_encode::encoded_len(&par), par.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encoded_len(&par), par.encoded_len());
     }
 }
 
@@ -772,7 +777,7 @@ fn the_length_table_holds_exactly_one_entry_per_message_node() {
             let mut sizes = Vec::new();
             for depth in [4usize, 8, 16, 32] {
                 let par = corpus::deep_par(depth);
-                sizes.push((depth, prost_encode::len_table_size(&par)));
+                sizes.push((depth, protobuf_encoder::len_table_size(&par)));
                 std::mem::forget(par);
             }
             let per_level: Vec<usize> = sizes
@@ -799,7 +804,7 @@ fn the_length_table_holds_exactly_one_entry_per_message_node() {
                     .collect(),
                 ..Default::default()
             };
-            let (len_hw, emit_hw) = prost_encode::op_stack_high_water(&wide);
+            let (len_hw, emit_hw) = protobuf_encoder::op_stack_high_water(&wide);
             assert!(
                 len_hw < 16 && emit_hw < 16,
                 "a 4,096-sibling term must not put 4,096 entries on either op stack — the \
@@ -807,7 +812,7 @@ fn the_length_table_holds_exactly_one_entry_per_message_node() {
                  (len {len_hw}, emit {emit_hw})."
             );
             assert!(
-                prost_encode::len_table_size(&wide) >= 4096,
+                protobuf_encoder::len_table_size(&wide) >= 4096,
                 "…while the LENGTH TABLE is Θ(nodes) and must hold one entry per sibling"
             );
         })

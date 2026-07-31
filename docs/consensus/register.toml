@@ -957,7 +957,7 @@ axis_value = "NO"
 # tie-break input, not the comparator. A pathmap-bearing pattern can select a
 # different branch on a tie-carrying term.
 axis_verdict = "MOVES"
-# NOT moved by this commit. wire_encode/par_codec still emit `u64 n ‖ n × Par`;
+# NOT moved by this commit. bincode_encoder/bincode_decoder still emit `u64 n ‖ n × Par`;
 # every bincode golden came back UNMOVED. ⚠ This is the HALF OF THE MANDATE STILL
 # OWED, blocked on Phase 4 S2 — see (i).
 axis_bytes_bincode = "NO"
@@ -1390,7 +1390,7 @@ evidence = "Appendix B.3 row 29 — The only hunk outside `rholang/tests/` is a 
 commit = "3deacce0"
 window = "FRONTIER"
 reason = "DOCS_ONLY"
-evidence = "Appendix B.3 row 30 — Records the refutation in `drive.rs` rather than in a report file: `par_codec::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. CITED. [CITED]"
+evidence = "Appendix B.3 row 30 — Records the refutation in `drive.rs` rather than in a report file: `bincode_decoder::Machine::step` has 50 `self.ops.push` sites against a post-order fold's one region push. Comment-only. CITED. [CITED]"
 
 [[exempt]]
 commit = "699ee646"
@@ -1475,13 +1475,13 @@ evidence = "Appendix B.3 row 54 — C3. setSubtrie step 3's linear scan over pat
 commit = "f351e74c"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13. [DERIVED]"
+evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13. [DERIVED]"
 
 [[exempt]]
 commit = "b73af1d2"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 60 — C8, owner-ruled a REPAIR. EntryTrie's == compared projected entries under Par's AlwaysEqual ==, which IGNORES locally_free, while entries are KEYED by encode_trie_path whose escape arm includes it. So == was strictly COARSER than the key set and therefore coarser than U(m): two maps could compare EQUAL while emitting DIFFERENT proto field 8. The old doc named this and dismissed it as impossible in a well-formed term — a claim about callers, not about what the type permits. THE WITNESS CONSTRUCTS IT IN FOUR LINES and is pinned by map_equality_agrees_with_the_emitted_key_stream; reverting to the projection comparison fails it naming the witness. BYTE-NEUTRAL BECAUSE OF AN EARLIER REPAIR, not an argument: Hash reaches emitted bytes only via HashSet<Par>/HashMap<Par,Par> iteration order in SortedParHashSet::create_from_vec and SortedParMap, and both funnel into ScoredTerm::sort_vec, which SS-Y4 made a TOTAL order — a total sort's output does not depend on input order. Before SS-Y4 this would have needed a seven-axis entry. Hash moved with eq because a HashMap keyed on this type silently loses entries if they disagree. Byte set unmoved: models --lib 95/95, epathmap_canonical_fixtures 13/13, epathmap_wrapper_cell 7/7, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, epathmap_canonicalization 7/7, epathmap_spliced_event_bytes 11/11, pathmap_integration_tests 61/61. [DERIVED]"
+evidence = "Appendix B.3 row 60 — C8, owner-ruled a REPAIR. EntryTrie's == compared projected entries under Par's AlwaysEqual ==, which IGNORES locally_free, while entries are KEYED by encode_trie_path whose escape arm includes it. So == was strictly COARSER than the key set and therefore coarser than U(m): two maps could compare EQUAL while emitting DIFFERENT proto field 8. The old doc named this and dismissed it as impossible in a well-formed term — a claim about callers, not about what the type permits. THE WITNESS CONSTRUCTS IT IN FOUR LINES and is pinned by map_equality_agrees_with_the_emitted_key_stream; reverting to the projection comparison fails it naming the witness. BYTE-NEUTRAL BECAUSE OF AN EARLIER REPAIR, not an argument: Hash reaches emitted bytes only via HashSet<Par>/HashMap<Par,Par> iteration order in SortedParHashSet::create_from_vec and SortedParMap, and both funnel into ScoredTerm::sort_vec, which SS-Y4 made a TOTAL order — a total sort's output does not depend on input order. Before SS-Y4 this would have needed a seven-axis entry. Hash moved with eq because a HashMap keyed on this type silently loses entries if they disagree. Byte set unmoved: models --lib 95/95, epathmap_canonical_fixtures 13/13, epathmap_wrapper_cell 7/7, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, epathmap_canonicalization 7/7, epathmap_spliced_event_bytes 11/11, pathmap_integration_tests 61/61. [DERIVED]"
 
 [[exempt]]
 commit = "8e155334"
@@ -1511,13 +1511,13 @@ evidence = "Appendix B.3 row 56 — C6. encode_trie_path's EPathmapBody arm push
 commit = "c0385b79"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 55 — C7c. Deletes TRIE_INTERN, InternedEPathMap, InternBucket, INTERN_CAPACITY, intern_store, blake2b_256, ground_canonical_prost, store_insert, note_digest_collision, the four *_for_test seams, EPathMap::{intern, interned_handle, shadow_cell_for_test} and the intern field, plus 36 symbols of the now-unreachable spliced emitter and the 954-line epathmap_intern_store suite. BYTE-SAFETY WAS ESTABLISHED BY SIMULATION BEFORE ANY OF 124 REFERENCES WAS EDITED: forcing interned_handle() to return None failed exactly five tests, every one a test OF the mechanism (spliced_equals_direct_*, spliced_serde_bytes_shared_across_family, filling_the_intern_cell_moves_neither_encoder, event_hash_goldens_produce_with_filled_cell_splices_identically), and moved ZERO byte goldens. The emitter is unreachable because contains_par became CONSTANT FALSE: the intern-cell check was the sole true-producing arm in the predicate, and its OR partner recursed back into the same predicate, so removing the cell left no base case that can answer yes. The surviving branch is cold_encode, the trampolined depth-flat encoder, so the event-hash leg improves from Theta(depth) on ~95% of traffic to flat on all of it. Byte set unmoved: models --lib 95/95, epathmap_spliced_event_bytes 11/11, event_hash_leg_cold_encode_identity 6/6, epathmap_canonical_fixtures 13/13, epathmap_wire_serialized_paths 9/9, epathmap_wrapper_cell 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, par_codec_wire_shapes 13/13, epathmap_identity_is_the_path_stream 4/4, pathmap_integration_tests 60/60, epathmap_canonicalization 7/7. [DERIVED]"
+evidence = "Appendix B.3 row 55 — C7c. Deletes TRIE_INTERN, InternedEPathMap, InternBucket, INTERN_CAPACITY, intern_store, blake2b_256, ground_canonical_prost, store_insert, note_digest_collision, the four *_for_test seams, EPathMap::{intern, interned_handle, shadow_cell_for_test} and the intern field, plus 36 symbols of the now-unreachable spliced emitter and the 954-line epathmap_intern_store suite. BYTE-SAFETY WAS ESTABLISHED BY SIMULATION BEFORE ANY OF 124 REFERENCES WAS EDITED: forcing interned_handle() to return None failed exactly five tests, every one a test OF the mechanism (spliced_equals_direct_*, spliced_serde_bytes_shared_across_family, filling_the_intern_cell_moves_neither_encoder, event_hash_goldens_produce_with_filled_cell_splices_identically), and moved ZERO byte goldens. The emitter is unreachable because contains_par became CONSTANT FALSE: the intern-cell check was the sole true-producing arm in the predicate, and its OR partner recursed back into the same predicate, so removing the cell left no base case that can answer yes. The surviving branch is cold_encode, the trampolined depth-flat encoder, so the event-hash leg improves from Theta(depth) on ~95% of traffic to flat on all of it. Byte set unmoved: models --lib 95/95, epathmap_spliced_event_bytes 11/11, event_hash_leg_cold_encode_identity 6/6, epathmap_canonical_fixtures 13/13, epathmap_wire_serialized_paths 9/9, epathmap_wrapper_cell 7/7, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, bincode_decoder_wire_shapes 13/13, epathmap_identity_is_the_path_stream 4/4, pathmap_integration_tests 60/60, epathmap_canonicalization 7/7. [DERIVED]"
 
 [[exempt]]
 commit = "5dade74c"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 52 — C1 of the EPathMap convergence. extend_entries' three per-entry metadata re-derivations (including eval_stable_par, a full walk of every entry) become O(1) combines from the source trie's maintained folds. LICENSED BY IDEMPOTENCE: all three combiners are monotone and idempotent (&&, ||, bitset union each absorb a repeated operand), so an entry present in both tries contributes the same value whether folded once or twice — exactness under overlap, which is the only case where per-entry and aggregate folding could differ. `len` is deliberately NOT combined (the union may overlap, so self.len + other.len over-counts) and stays per-insert. SHOWN RED: perturbing the any_connective_used combine failed the_metadata_folds_agree_with_a_fold_over_the_entries naming the 'built-by-extend-entries' case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, models --lib 99/99, pathmap_integration_tests 60/60. [DERIVED]"
+evidence = "Appendix B.3 row 52 — C1 of the EPathMap convergence. extend_entries' three per-entry metadata re-derivations (including eval_stable_par, a full walk of every entry) become O(1) combines from the source trie's maintained folds. LICENSED BY IDEMPOTENCE: all three combiners are monotone and idempotent (&&, ||, bitset union each absorb a repeated operand), so an entry present in both tries contributes the same value whether folded once or twice — exactness under overlap, which is the only case where per-entry and aggregate folding could differ. `len` is deliberately NOT combined (the union may overlap, so self.len + other.len over-counts) and stays per-insert. SHOWN RED: perturbing the any_connective_used combine failed the_metadata_folds_agree_with_a_fold_over_the_entries naming the 'built-by-extend-entries' case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, models --lib 99/99, pathmap_integration_tests 60/60. [DERIVED]"
 
 [[exempt]]
 commit = "975e35fd"
@@ -1529,13 +1529,13 @@ evidence = "Appendix B.3 row 51 — doc comments only, no executable line, emitt
 commit = "626cf42d"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 50 — extend_entries (the set union graft performs) becomes a read-zipper walk over other.trie instead of materialising other.view() and re-encoding every key. BYTE-NEUTRAL BY INJECTIVITY: encode_trie_path is capless, prefix-free and total, so rz.path() equals what encode_trie_path(rz.val()) would have produced; the invariant is checked in RELEASE builds by adopt_trie, which re-files on divergence rather than trusting it. Equal keys imply equal entries, so keep-vs-replace is immaterial. Live callers confirmed before landing (three graft sites in reduce.rs plus epathmap_wrapper_cell). Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, pathmap_integration_tests 59/59, models --lib 99/99. [DERIVED]"
+evidence = "Appendix B.3 row 50 — extend_entries (the set union graft performs) becomes a read-zipper walk over other.trie instead of materialising other.view() and re-encoding every key. BYTE-NEUTRAL BY INJECTIVITY: encode_trie_path is capless, prefix-free and total, so rz.path() equals what encode_trie_path(rz.val()) would have produced; the invariant is checked in RELEASE builds by adopt_trie, which re-files on divergence rather than trusting it. Equal keys imply equal entries, so keep-vs-replace is immaterial. Live callers confirmed before landing (three graft sites in reduce.rs plus epathmap_wrapper_cell). Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, pathmap_integration_tests 59/59, models --lib 99/99. [DERIVED]"
 
 [[exempt]]
 commit = "7c26f2f2"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 49 — 17 sites replaced map.ps().len()/.is_empty() with entry_trie().len()/.is_empty(). MECHANICAL NEUTRALITY: len returns usize and is_empty returns bool; neither type reaches any emitter, so no byte can move by construction. The soundness condition is that EntryTrie::len agrees with the projection's length, and len is a MAINTAINED FOLD, so it is pinned as a TEST (entry_trie_len_agrees_with_the_materialised_projection) rather than argued: corpus spans empty and >1 entry, the two boundaries the consensus selectors branch on, with anti-vacuity assertions. SHOWN RED by perturbing self.len += 1 to += 0 at rhoapi_ext.rs:372, which failed naming the case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, epathmap_canonicalization 7/7. [DERIVED]"
+evidence = "Appendix B.3 row 49 — 17 sites replaced map.ps().len()/.is_empty() with entry_trie().len()/.is_empty(). MECHANICAL NEUTRALITY: len returns usize and is_empty returns bool; neither type reaches any emitter, so no byte can move by construction. The soundness condition is that EntryTrie::len agrees with the projection's length, and len is a MAINTAINED FOLD, so it is pinned as a TEST (entry_trie_len_agrees_with_the_materialised_projection) rather than argued: corpus spans empty and >1 entry, the two boundaries the consensus selectors branch on, with anti-vacuity assertions. SHOWN RED by perturbing self.len += 1 to += 0 at rhoapi_ext.rs:372, which failed naming the case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, epathmap_canonicalization 7/7. [DERIVED]"
 
 [[exempt]]
 commit = "9c164559"
@@ -1658,19 +1658,19 @@ token = "FieldKind::Bytes"
 # Surface 3 — the WHOLE of the encoder-side change: one put_bytes of a memoized slice.
 [[citation]]
 owner = "CBR-042"
-cited = "models/src/rust/rholang/wire_encode.rs"
+cited = "models/src/rust/rholang/bincode_encoder.rs"
 line = 477
 at = "HEAD"
-path = "models/src/rust/rholang/wire_encode.rs"
+path = "models/src/rust/rholang/bincode_encoder.rs"
 token = "put_bytes"
 
 # Surface 4 — U(m) is BORROWED out of the input buffer, never copied.
 [[citation]]
 owner = "CBR-042"
-cited = "models/src/rust/rholang/par_codec.rs"
+cited = "models/src/rust/rholang/bincode_decoder.rs"
 line = 1642
 at = "HEAD"
-path = "models/src/rust/rholang/par_codec.rs"
+path = "models/src/rust/rholang/bincode_decoder.rs"
 token = "byte_slice"
 
 # ★ THE one reader both decode paths call — the anti-"two bulk readers" claim.

@@ -607,7 +607,7 @@ pub(crate) fn ground_field8_len(path_stream: &[u8]) -> usize {
 /// as its canonical prost bytes, prost's decoder caps recursion at 100 levels
 /// and prost's encoder caps nothing, so a sufficiently deep entry produces a key
 /// that this function cannot decode (`RecursionLimitReached`) even though the
-/// trie is perfectly well-formed. The `par_codec_differential` corpus contains
+/// trie is perfectly well-formed. The `bincode_decoder_differential` corpus contains
 /// such a term; it is not a hypothetical.
 ///
 /// What the key side is still good for is stating the trie ENTRY INVARIANT

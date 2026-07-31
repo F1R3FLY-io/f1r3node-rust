@@ -1,9 +1,9 @@
-//! # The prost encoder's SPACE gate — the file `prost_encode.rs` said already pinned it
+//! # The prost encoder's SPACE gate — the file `protobuf_encoder.rs` said already pinned it
 //!
-//! `prost_encode.rs`'s §3 header carries this sentence:
+//! `protobuf_encoder.rs`'s §3 header carries this sentence:
 //!
-//! > *"All four quantities are pinned by `models/tests/prost_encode_space.rs`, mirroring
-//! > `wire_encode_space.rs`."*
+//! > *"All four quantities are pinned by `models/tests/protobuf_encoder_space.rs`, mirroring
+//! > `bincode_encoder_space.rs`."*
 //!
 //! ⛔ **That file did not exist.** `op_size`, `frame_size` and `len_table_size` are `pub`,
 //! each documented as *"exposed so the space gate can pin it"*, and a repository-wide search
@@ -11,7 +11,7 @@
 //! encoder's per-call space was unpinned while its header asserted the opposite.
 //!
 //! ⚠ Phase 4 of the stack-safety consolidation names this as the **gate blocking its start**,
-//! and the reason is not tidiness: S5 converts `prost_encode` to the pooled stack to close a
+//! and the reason is not tidiness: S5 converts `protobuf_encoder` to the pooled stack to close a
 //! measured 3.79× shallow regression, and a pooling change is exactly the kind that alters
 //! per-call space while leaving every byte identical. Without this file that change would have
 //! had no instrument.
@@ -24,13 +24,13 @@
 //! | an op-stack entry is four words | an `Op` that silently grew multiplies the only per-call heap there is |
 //! | `lens` is Θ(message **nodes**) | the Θ(d²)→Θ(n) trade is a space *cost*; nothing about the output records it |
 //!
-//! ★ This mirrors `wire_encode_space.rs`, deliberately: the two encoders are the pair whose
+//! ★ This mirrors `bincode_encoder_space.rs`, deliberately: the two encoders are the pair whose
 //! divergence produced the regression, and a claim measured for one and not the other is how
 //! that divergence survived.
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
-use models::rust::rholang::prost_encode::{frame_size, len_table_size, op_size};
+use models::rust::rholang::protobuf_encoder::{frame_size, len_table_size, op_size};
 
 /// `[[[…[0]…]]]` — a chain of `depth` nested `EList`s, one message node per level.
 fn nested_list(depth: usize) -> Par {
@@ -50,9 +50,9 @@ fn nested_list(depth: usize) -> Par {
 
 /// ★★ **The op-stack entry is FOUR WORDS, and that ceiling is load-bearing.**
 ///
-/// `prost_encode::Op`'s widest arm is `Seq { &dyn, u32, u32, u32 }` — a fat pointer (16 B)
+/// `protobuf_encoder::Op`'s widest arm is `Seq { &dyn, u32, u32, u32 }` — a fat pointer (16 B)
 /// plus three `u32`s = 28 B of payload, with the discriminant in the 4 spare bytes of the
-/// 32-byte slot. **Four spare bytes**, against `wire_encode::Op`'s eight.
+/// 32-byte slot. **Four spare bytes**, against `bincode_encoder::Op`'s eight.
 ///
 /// ⚠ This is the number the `drive.rs` codec exemption rests on. A `Node`+`Kont` split needs
 /// two tags at the same offset, which cannot overlay, so a *shared* `Step` is predicted at
@@ -165,13 +165,13 @@ fn every_quantity_the_header_claims_is_actually_pinned() {
     for (name, value) in claimed.iter().zip(measured.iter()) {
         assert!(
             *value > 0,
-            "`prost_encode::{name}` measured 0. `prost_encode.rs`'s §3 header asserts all \
+            "`protobuf_encoder::{name}` measured 0. `protobuf_encoder.rs`'s §3 header asserts all \
              four space quantities are pinned by THIS file; a zero means the quantity is not \
              being measured and the header's claim is false again."
         );
     }
     println!(
-        "  prost_encode space: op {} B, frame {} B, len-table {} entries @ depth 8",
+        "  protobuf_encoder space: op {} B, frame {} B, len-table {} entries @ depth 8",
         measured[0], measured[1], measured[2]
     );
 }

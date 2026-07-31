@@ -12,7 +12,7 @@
 //!
 //! Every other conversion in this campaign could leave the derive compiled beside
 //! its replacement, because the replacement was a new *function*:
-//! `wire_encode::encode` sits next to a still-derived `Serialize`, and
+//! `bincode_encoder::encode` sits next to a still-derived `Serialize`, and
 //! `rholang/tests/stack_depth_gate.rs` carries both as `bincode_ser` and
 //! `bincode_ser_derived`.
 //!
@@ -34,7 +34,7 @@
 //! |---|---|
 //! | `PartialEq` | a structural difference in the fields `eq` compares |
 //! | **bincode bytes** | the COLD STORE's fixed point — the cold store already holds byte strings written by this encoding |
-//! | `wire_encode` bytes | the production encoder, driven by a different table than serde's derive |
+//! | `bincode_encoder` bytes | the production encoder, driven by a different table than serde's derive |
 //! | **prost bytes** | the protobuf wire, whose field ORDER is ascending-tag and therefore differs from serde's declaration order for `Par` and `TaggedContinuation` — and, ★ measured below, the ONLY byte axis that can see `locally_free` at all |
 //! | Blake2b-256 of the bincode bytes | the channel / post-state hash's input, stated separately because that is the value consensus actually compares |
 //! | `Debug` | field order *and* `locally_free`, in a form a human can read in the failure |
@@ -110,11 +110,11 @@ use models::rhoapi::{
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 use models::rust::rhoapi_ext::EPathMap;
+use models::rust::rholang::bincode_encoder::encode;
 use models::rust::rholang::term_ops::{
     oracle_clone_par, CLONE_CUT_SET, CLONE_DESCEND_SET, CLONE_EXTERN_BOUNDED,
     CLONE_RESIDUAL_HEIGHT, EMITTED_TRAVERSALS,
 };
-use models::rust::rholang::wire_encode::encode;
 use models::rust::rholang::wire_schema::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
@@ -158,7 +158,7 @@ impl Axes {
             return Some("bincode bytes (THE COLD STORE'S FIXED POINT)");
         }
         if self.wire != other.wire {
-            return Some("wire_encode bytes (the production encoder)");
+            return Some("bincode_encoder bytes (the production encoder)");
         }
         if self.prost != other.prost {
             return Some("prost bytes (the protobuf wire)");
@@ -1055,7 +1055,7 @@ fn every_enumerated_shape_clones_identically_on_every_axis() {
     }
     println!(
         "  {} corpus terms; each clone identical to its oracle and its source on bincode, \
-         wire_encode, prost, Blake2b-256, Debug, Hash, PartialEq and Ord",
+         bincode_encoder, prost, Blake2b-256, Debug, Hash, PartialEq and Ord",
         corpus.len()
     );
 }

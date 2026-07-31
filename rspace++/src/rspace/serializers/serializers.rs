@@ -48,7 +48,7 @@ struct DatumSer<'a, A> {
 ///
 /// ⚠ **Retained as a `#[cfg(test)]` ORACLE only.** Production decoding goes
 /// through [`decode_datum`], which reads `a` with the O(1)-native-stack machine
-/// (`models/src/rust/rholang/par_codec.rs`) and the bounded tail with bincode.
+/// (`models/src/rust/rholang/bincode_decoder.rs`) and the bounded tail with bincode.
 /// This twin is what the differential in this file's `mod tests` compares
 /// against; the `Par`-typed half lives in `models/tests/cold_store_records.rs`,
 /// on the far side of the `models -> rspace_plus_plus` dependency edge.
@@ -330,7 +330,7 @@ fn compare_byte_vectors(a: &Vec<u8>, b: &Vec<u8>) -> Ordering {
 // ═════════════════════════════════════════════════════════════════════════════
 // THE RECORD-LEVEL DIFFERENTIAL
 //
-// `models/tests/par_codec_differential.rs` proves the machine and the derive
+// `models/tests/bincode_decoder_differential.rs` proves the machine and the derive
 // agree on `Par`, `ListParWithRandom`, `BindPattern` and `TaggedContinuation`.
 // What it cannot reach from over there is the COMPOSITION performed here: a
 // `Datum<A>` decode is "machine prefix, then bincode tuple tail", and the claim

@@ -54,7 +54,7 @@ impl StableHashSerialize for Blake2b256Hash {}
 // IS `bincode::serialize`, so every implementor is byte-identical by
 // definition unless it overrides, and an override may ONLY be a byte-identical
 // faster construction. `models` overrides `Par` with the single-walk
-// trampolined encoder (`models::rust::rholang::wire_encode`), which is gated
+// trampolined encoder (`models::rust::rholang::bincode_encoder`), which is gated
 // byte-identical against the derived `Serialize` over an exhaustive structural
 // corpus plus proptest, with an executed mutation proof.
 pub fn hash<C: StableHashSerialize>(channel: &C) -> Blake2b256Hash {

@@ -100,7 +100,7 @@
 //!              hand-written, mutually recursive       still measured below
 //! ```
 //!
-//! `ColdStoreEncode::cold_encode` (`models::rust::rholang::wire_encode`) is a
+//! `ColdStoreEncode::cold_encode` (`models::rust::rholang::bincode_encoder`) is a
 //! single-walk trampolined encoder, byte-identical to `bincode::serialize` with
 //! O(1) native stack, implemented for exactly `Par`, `BindPattern`,
 //! `ListParWithRandom` and `TaggedContinuation` — i.e. for **all three legs' root
@@ -170,7 +170,7 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, EList, EPathMap, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
-use models::rust::rholang::wire_encode::ColdStoreEncode;
+use models::rust::rholang::bincode_encoder::ColdStoreEncode;
 use models::rust::spliced_event_bytes::{
     event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
     event_hash_bytes_tagged_continuation,

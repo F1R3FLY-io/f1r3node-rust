@@ -27,7 +27,7 @@
 //! ## The repair
 //!
 //! The two escape-arm sites now call
-//! [`models::rust::rholang::prost_encode::encode_to_vec`] — the iterative protobuf
+//! [`models::rust::rholang::protobuf_encoder::encode_to_vec`] — the iterative protobuf
 //! encoder whose obligation stack lives on the heap and which **calls**
 //! `prost::encoding::<module>::{encode, encoded_len}` rather than restating any
 //! byte format, so only the recursion is replaced.
@@ -80,7 +80,7 @@
 //!
 //! With the escape arm converted, the 256 KiB probe **still overflowed** — and the
 //! encoder was not the frame that ran out. Bisection
-//! ([`the_stability_classifier_is_flat`], [`the_iterative_prost_encoder_is_flat`])
+//! ([`the_stability_classifier_is_flat`], [`the_iterative_protobuf_encoder_is_flat`])
 //! separated the components and located a **second** Θ(depth) native-stack
 //! traversal on the same required-total path:
 //! `models/src/rust/pathmap_crate_type_mapper.rs`'s `eval_stable_par` ⇄
@@ -118,7 +118,7 @@ use std::thread;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Connective, ETuple, Expr, Par};
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path, tag};
-use models::rust::rholang::prost_encode;
+use models::rust::rholang::protobuf_encoder;
 use prost::Message;
 
 /// The thread stack every measurement here runs on.
@@ -338,14 +338,14 @@ fn the_stability_classifier_is_flat() {
 
 /// The iterative protobuf encoder, isolated from the trie codec around it.
 #[test]
-fn the_iterative_prost_encoder_is_flat() {
+fn the_iterative_protobuf_encoder_is_flat() {
     for &wrappers in DEPTH_LADDER {
         let deep = Arc::new(deep_unstable(wrappers));
         let len = on_small_stack("prost-encode", &deep, |term| {
-            let bytes = prost_encode::encode_to_vec(&*term);
+            let bytes = protobuf_encoder::encode_to_vec(&*term);
             assert_eq!(
                 bytes.len(),
-                prost_encode::encoded_len(&*term),
+                protobuf_encoder::encoded_len(&*term),
                 "the encoder's two passes disagree about the length"
             );
             bytes.len()
@@ -421,7 +421,7 @@ fn the_escape_payload_is_byte_identical_to_the_derived_encoding() {
     for wrappers in [0usize, 1, 8, 33, 34, 64, 128] {
         let par = deep_unstable(wrappers);
         let derived = Message::encode_to_vec(&par);
-        let iterative = prost_encode::encode_to_vec(&par);
+        let iterative = protobuf_encoder::encode_to_vec(&par);
         assert_eq!(
             iterative, derived,
             "depth {wrappers}: the iterative prost encoder disagrees with the derived one. \
@@ -521,7 +521,7 @@ fn the_epathmap_residual_is_real() {
     };
 
     assert_eq!(
-        prost_encode::encode_to_vec(&par),
+        protobuf_encoder::encode_to_vec(&par),
         Message::encode_to_vec(&par),
         "★ the opaque-leaf interception must be BYTE-EXACT parity with \
          `prost::encoding::message::encode` at that position; it is the one place the \

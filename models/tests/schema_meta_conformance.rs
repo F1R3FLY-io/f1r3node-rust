@@ -296,7 +296,7 @@ fn locally_free_is_ordinary_bytes_on_the_protobuf_wire() {
                     ProstKind::Bytes,
                     "`{name}.locally_free` is {:?} in the prost table. It must be ordinary \
                      `Bytes`: the eight-zero-bytes normalization is serde-only, and \
-                     `wire_encode_differential.rs` pins that prost keeps the real value.",
+                     `bincode_encoder_differential.rs` pins that prost keeps the real value.",
                     field.kind
                 );
                 seen += 1;
@@ -694,9 +694,9 @@ fn the_converted_surfaces_are_the_three_this_campaign_has_landed() {
     assert_eq!(
         converted.iter().copied().collect::<Vec<_>>(),
         vec![
-            // Stage F — the cold-store DECODER (`par_codec`).
+            // Stage F — the cold-store DECODER (`bincode_decoder`).
             "Deserialize::deserialize",
-            // Stage H — the cold-store ENCODER (`wire_encode`).
+            // Stage H — the cold-store ENCODER (`bincode_encoder`).
             "Serialize::serialize",
             // ★ Stage F-4 — `term_ops::clone`, `drive_with` over the CLONE CUT
             // SET. Gate subject `clone`, in `CONVERTED_DEPTH`.
@@ -707,7 +707,7 @@ fn the_converted_surfaces_are_the_three_this_campaign_has_landed() {
         .into_iter()
         .collect::<Vec<_>>(),
         "three derive surfaces have been converted: the bincode decoder (Stage F, \
-         `par_codec`), the bincode encoder (Stage H, `wire_encode`), and `Clone` (Stage F-4, \
+         `bincode_decoder`), the bincode encoder (Stage H, `bincode_encoder`), and `Clone` (Stage F-4, \
          `term_ops::clone`)"
     );
     assert!(

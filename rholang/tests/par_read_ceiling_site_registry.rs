@@ -23,7 +23,7 @@
 //!
 //! Both halves matter. An encoder and decoder that are *both* unbounded are not
 //! in the class, and this is not hypothetical: the **bincode** wire
-//! (`models::rust::rholang::wire_encode` out, `par_codec` back) is iterative and
+//! (`models::rust::rholang::bincode_encoder` out, `bincode_decoder` back) is iterative and
 //! depth-unlimited in *both* directions, measured flat from depth 4 to 4,096.
 //! ★ That is why the cold store never appears below: the codec campaign
 //! (#46/#119/#121) already closed it, on both sides, from one generated table.

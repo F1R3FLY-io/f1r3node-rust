@@ -9,7 +9,7 @@
 //!
 //! *"2× faster at depth 6,000 and 20% slower at depth 3 is a NET LOSS."* The
 //! distribution is **measured, not assumed**, and it is the same one
-//! `models/benches/wire_encode_bench.rs` established:
+//! `models/benches/bincode_encoder_bench.rs` established:
 //! `ListParWithRandom::stable_hash_bytes` — the datum leg of `hash_produce`, which
 //! runs once per produce — was instrumented and five interpreter suites were run,
 //! giving **1,773 datums**:
@@ -86,7 +86,7 @@
 //! | evidence | spread |
 //! |---|---|
 //! | this bench, blocked arms, same binary minutes apart | 1.0748× then 0.9461× (**13%**) |
-//! | `wire_encode_bench`, blocked arms, three consecutive runs | 1.261×, 1.471×, 1.154× (**27%**) |
+//! | `bincode_encoder_bench`, blocked arms, three consecutive runs | 1.261×, 1.471×, 1.154× (**27%**) |
 //! | a second agent's independent reading | sd **10–14%** against a 2% criterion |
 //! | a third agent's **invariant control** — a benchmark touching no production code | moved **+55%**, criterion reporting `p < 0.05` |
 //!
@@ -163,7 +163,7 @@ use std::time::Instant;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, ETuple, Expr, Par, Send};
 // ★ The SHARED paired-measurement harness — ONE implementation for this bench
-// and `wire_encode_bench`, both of which carried the same all-A-then-all-B defect
+// and `bincode_encoder_bench`, both of which carried the same all-A-then-all-B defect
 // behind the same false "interleaved A/B" claim. See `paired.rs`.
 #[path = "paired.rs"]
 mod paired;
@@ -294,7 +294,7 @@ fn gstr(s: &str) -> Par {
 /// averages (3.20 nodes, 661 B per datum) rather than being a bare spine — a spine
 /// would understate the per-node cost the shallow case is meant to expose.
 ///
-/// ★ Identical in shape to `wire_encode_bench.rs`'s `datum`, so the two
+/// ★ Identical in shape to `bincode_encoder_bench.rs`'s `datum`, so the two
 /// benchmarks' shallow readings are about the same terms. Returns the `Par`
 /// directly rather than a `ListParWithRandom`, because `Clone` is the subject.
 fn datum(depth: usize) -> Par {

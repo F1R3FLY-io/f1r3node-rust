@@ -1,4 +1,4 @@
-//! # `par_codec` — the O(1)-native-stack cold-store DECODER for the `Par` family
+//! # `bincode_decoder` — the O(1)-native-stack cold-store DECODER for the `Par` family
 //!
 //! Decode only. The encoder is **not touched**: `Serialize` stays derived and
 //! `CandidateOrderingBytes` (replay-visible COMM selection) is encode-only and
@@ -114,12 +114,12 @@
 //! That partition is **principled, not a scope-down**: a type outside the `Par`
 //! strongly-connected component has a fixed maximum nesting, hence a fixed
 //! maximum stack, hence no depth-dependent frame. The counts are checked
-//! against the generated schema by `par_codec_type_partition` in
-//! `models/tests/par_codec_wire_shapes.rs`.
+//! against the generated schema by `bincode_decoder_type_partition` in
+//! `models/tests/bincode_decoder_wire_shapes.rs`.
 //!
 //! ## 5. ⚠ The four wire shapes where a hand-written codec drifts
 //!
-//! Each has a named test in `models/tests/par_codec_wire_shapes.rs`.
+//! Each has a named test in `models/tests/bincode_decoder_wire_shapes.rs`.
 //!
 //! 1. **`New.injections: BTreeMap<String, Par>`** — the only `btree_map` field
 //!    in `RhoTypes.proto`. serde emits a **map**: an 8-byte count, then
@@ -164,7 +164,7 @@
 //!    serde's **declaration order**, not the proto tag: `EPathmapBody` is proto
 //!    tag 32 but serde index 25. The numbering lives in exactly one place,
 //!    [`crate::rust::rholang::par_children::expr_instance_variant_index`], and
-//!    this module is gated against it by `par_codec_variant_indices_agree`.
+//!    this module is gated against it by `bincode_decoder_variant_indices_agree`.
 //!
 //! ## 6. ⚠ The rejection set is consensus-visible
 //!
@@ -245,7 +245,7 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 // ★ ONE TABLE, BOTH DIRECTIONS. These indices are no longer transcribed here:
 // they are `pub const`s emitted by `models/build/wire_schema.rs` from the same
 // protobuf `FileDescriptorSet` that drives the serializer
-// (`crate::rust::rholang::wire_encode`). Thirty-six hand-written `EX_*`
+// (`crate::rust::rholang::bincode_encoder`). Thirty-six hand-written `EX_*`
 // literals and nine `CN_*` literals used to live in this block; a 37th oneof
 // arm would have left every one of them correct and every assertion about them
 // passing, while the new arm went untested. Generation removes that failure

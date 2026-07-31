@@ -53,8 +53,8 @@ use rspace_plus_plus::rspace::serializers::serializers::{
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use serde::Deserialize;
 
-mod par_codec_corpus;
-use par_codec_corpus as corpus;
+mod par_corpus;
+use par_corpus as corpus;
 
 // ---------------------------------------------------------------------------
 // The oracles — the pre-conversion derived layouts, field for field

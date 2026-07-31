@@ -17,8 +17,8 @@ title <b>Where the allocations moved</b>  —  cold-store codec, MEASURED\nmassi
 
 package "**A.  Production shape** (depth 2 = 95.43 % of measured produces), 20,000 encodes" as A #E3F2FD {
   rectangle "**derived** `bincode::serialize`\ntotal **12,828,259 B** in **20,022** blocks\n= **1.001 blocks / call**\npeak **6,187 B** in 15 blocks\nheap **writes** 12.83 MB" as A1 #FFCDD2
-  rectangle "**machine** `wire_encode::encode`\ntotal **12,834,467 B** in **20,026** blocks\n= **1.001 blocks / call**\npeak **12,395 B** in 19 blocks\nheap **writes** 41.65 MB" as A2 #BBDEFB
-  rectangle "**reused** `wire_encode::with_encoded`\ntotal **14,466 B** in **26** blocks\n= **0.0013 blocks / call**\npeak **12,394 B** in 19 blocks\nheap **writes** 28.83 MB" as A3 #A5D6A7
+  rectangle "**machine** `bincode_encoder::encode`\ntotal **12,834,467 B** in **20,026** blocks\n= **1.001 blocks / call**\npeak **12,395 B** in 19 blocks\nheap **writes** 41.65 MB" as A2 #BBDEFB
+  rectangle "**reused** `bincode_encoder::with_encoded`\ntotal **14,466 B** in **26** blocks\n= **0.0013 blocks / call**\npeak **12,394 B** in 19 blocks\nheap **writes** 28.83 MB" as A3 #A5D6A7
 
   A1 -[#455A64,thickness=2]right-> A2 : **+6,208 B total** (the two thread-local\narenas, allocated **once**);\npeak **2.00<latex>\times</latex>** because the arenas are **retained**
   A2 -[#2E7D32,thickness=2]right-> A3 : **770<latex>\times</latex> fewer blocks**, **887<latex>\times</latex> fewer bytes\nwhen the caller does not need ownership

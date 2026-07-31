@@ -4,7 +4,7 @@
 //! workspace has had to convert away from native recursion has converged on the
 //! *same* machine: a value stack, a work stack of defunctionalized
 //! continuations, and one LIFO loop. `rho-pure-eval`'s `eval_drive`, the
-//! sorter's `sort_drive` and the decoder's `par_codec` each wrote that loop out
+//! sorter's `sort_drive` and the decoder's `bincode_decoder` each wrote that loop out
 //! by hand, with its own copy of the same two invariants. This module is that
 //! loop, written once.
 //!
@@ -216,14 +216,14 @@
 //! nodes and it does not show up. For a traversal whose input is **shallow and
 //! frequent** it is the dominant cost, and the number is measured rather than
 //! feared: the production produce-depth distribution
-//! (`models/benches/wire_encode_bench.rs`, 1,773 instrumented datums) puts
+//! (`models/benches/bincode_encoder_bench.rs`, 1,773 instrumented datums) puts
 //! **95.43% of terms at depth 2**, where a `Par` clone touches a handful of
 //! nodes and two extra allocations are a double-digit regression.
 //!
 //! So [`drive_with`] takes both stacks by `&mut` and [`drive`] is the owning
 //! convenience wrapper over it. A caller that clones on a hot path parks the two
 //! allocations in a thread-local and hands them in — the shape
-//! [`crate::rust::rholang::wire_encode`]'s `take_ops` / `give_ops` already uses,
+//! [`crate::rust::rholang::bincode_encoder`]'s `take_ops` / `give_ops` already uses,
 //! whose measured steady state is 0 allocations per encode.
 //!
 //! ⚠ **[`drive_with`] leaves both stacks EMPTY on every return path**, including
@@ -239,8 +239,8 @@
 //!
 //! ## ★★ SER/DE: what this trait cannot host yet, and exactly what it needs
 //!
-//! [`crate::rust::rholang::wire_encode`] (the bincode encoder) and
-//! [`crate::rust::rholang::par_codec`] (the decoder) are the remaining members,
+//! [`crate::rust::rholang::bincode_encoder`] (the bincode encoder) and
+//! [`crate::rust::rholang::bincode_decoder`] (the decoder) are the remaining members,
 //! and they are **not** hosted here. This section exists so that the next
 //! attempt starts from the measurements rather than rediscovering them; every
 //! number below was taken from the code or from a gate, not estimated.
@@ -252,8 +252,8 @@
 //! bytes sit *between* the children, so the next obligation is discovered only
 //! after the previous child's subtree is complete. Both machines are therefore
 //! **resumable coroutines**, and the phenomenon is visible as a count —
-//! `par_codec`'s `Machine::step` has **50** `self.ops.push` sites and **14**
-//! `self.repeat(` sites; `wire_encode`'s loop re-pushes whenever
+//! `bincode_decoder`'s `Machine::step` has **50** `self.ops.push` sites and **14**
+//! `self.repeat(` sites; `bincode_encoder`'s loop re-pushes whenever
 //! `resume != NO_RESUME`.
 //!
 //! ⚠ [`Traversal::combine`] is deliberately **not** handed the work stack —
@@ -326,7 +326,7 @@
 //! ### The four blockers, measured
 //!
 //! **1. The encoder's op is at its pinned ceiling with ZERO headroom.**
-//! `models/tests/wire_encode_space.rs` asserts `size_of::<Op>() <= 4 *
+//! `models/tests/bincode_encoder_space.rs` asserts `size_of::<Op>() <= 4 *
 //! size_of::<usize>()` and the measured value is **exactly 32 B**. The op stack
 //! grows at a measured **2.000 entries per level** (8,193 entries = 262,176 B at
 //! depth 4,096), so one extra word is +65 KB there. Splitting one four-arm enum
@@ -335,7 +335,7 @@
 //! and the gate must be watched RED on a deliberately widened op first.
 //!
 //! **2. `drive` owns its stacks, so the encoder's zero-allocation steady state
-//! is unreachable through it.** `wire_encode`'s `take_ops`/`give_ops` carry a
+//! is unreachable through it.** `bincode_encoder`'s `take_ops`/`give_ops` carry a
 //! **thread-local pooled allocation** across calls; the measured steady state is
 //! `0 allocations / 0 B` per encode for all five shapes in
 //! `the_steady_state_allocation_table` (the derived path costs 1 allocation
@@ -360,7 +360,7 @@
 //! and parked in `ParFrame` / `ReceiveTail` / `NewFrame` rather than being a
 //! function of the `Kont`. The decoder's arity guard is and remains
 //! `take_n`'s length check returning `MachineInvariant`, plus
-//! `models/tests/par_codec_differential.rs` and the malformed-input corpus.
+//! `models/tests/bincode_decoder_differential.rs` and the malformed-input corpus.
 //! ⇒ a decoder instance must not be described as getting the sorter's
 //! cross-check. It does not.
 //!
@@ -401,7 +401,7 @@
 //!
 //! `Outcome` is a **return value**: it lives in a register pair or an `sret` slot
 //! for the length of the `match` that consumes it. The 32-byte ceiling
-//! `models/tests/wire_encode_space.rs` pins is a ceiling on a **per-level stack
+//! `models/tests/bincode_encoder_space.rs` pins is a ceiling on a **per-level stack
 //! cell**, because the op stack grows at a measured 2.000 entries per level and
 //! one extra word there is +65 kB at depth 4,096. `Tail` adds an arm to `Outcome`
 //! and **does not touch [`Step`]**, so it multiplies by nothing. Measured on the
@@ -422,8 +422,8 @@
 //!
 //! | codec | widest `Op` arm | payload | with tag |
 //! |---|---|---:|---:|
-//! | `wire_encode` | `&dyn`(16) + u32 + u32 | 24 B | **32 B** |
-//! | `prost_encode` | `&dyn`(16) + u32 + u32 + u32 | 28 B | **32 B**, 4 spare |
+//! | `bincode_encoder` | `&dyn`(16) + u32 + u32 | 24 B | **32 B** |
+//! | `protobuf_encoder` | `&dyn`(16) + u32 + u32 + u32 | 28 B | **32 B**, 4 spare |
 //!
 //! A `Node` + `Kont` split needs **two tags at the same offset**, and two tags cannot overlay.
 //! ⇒ A shared `Step` is predicted at **40 B = 5 words against a pinned 4-word ceiling**,
@@ -448,7 +448,7 @@
 //! ## What IS shared, and it is not nothing
 //!
 //! * The **pooling discipline** and its soundness argument — [`super::pooled_stack`], extracted
-//!   precisely because `prost_encode` did **not** copy it and that omission is the measured
+//!   precisely because `protobuf_encoder` did **not** copy it and that omission is the measured
 //!   3.79× shallow regression (~96 → ~363 ns at depth 1, crossover at depth 8).
 //! * The **generated schema table** — one schema pass, both formats, both directions.
 //! * This driver's two production instances (`SortTraversal`, `EvalTraversal`) plus the
@@ -479,8 +479,8 @@
 //! rustc packs the discriminant into the non-null `&Par` niche), which was measured
 //! on 2026-07-29 and refutes half of an earlier attribution that charged a
 //! regression to "`Step` 16 → 24 B". Nothing in F-1 or F-2 changed the ser/de lanes — confirmed byte-for-byte
-//! by `par_codec_differential` (13/13), `wire_encode_differential` (13/13),
-//! `serializer_par_byte_goldens` (7/7), `wire_encode_space` (8/8) and the
+//! by `bincode_decoder_differential` (13/13), `bincode_encoder_differential` (13/13),
+//! `serializer_par_byte_goldens` (7/7), `bincode_encoder_space` (8/8) and the
 //! `bincode_ser` / `bincode_de` depth subjects in
 //! `rholang/tests/stack_depth_gate.rs`.
 //!
@@ -1050,9 +1050,9 @@ pub fn drive<'t, T: Traversal + 't>(
 /// ★ The entry point a **hot, shallow** traversal needs: [`drive`]'s two
 /// `Vec::with_capacity` calls are one malloc/free pair each, which disappears
 /// against a deep input and dominates a shallow one. 95.43% of production terms
-/// are at depth 2 (`models/benches/wire_encode_bench.rs`), so the generated
+/// are at depth 2 (`models/benches/bincode_encoder_bench.rs`), so the generated
 /// `Clone` traversal parks both allocations in a thread-local and hands them in
-/// — the shape [`crate::rust::rholang::wire_encode`]'s `take_ops` / `give_ops`
+/// — the shape [`crate::rust::rholang::bincode_encoder`]'s `take_ops` / `give_ops`
 /// already uses, whose measured steady state is 0 allocations per call.
 ///
 /// # Preconditions
@@ -1138,7 +1138,7 @@ pub fn drive_with<'t, T: Traversal + 't>(
                         // ★ Abandon the pending obligations. The stacks belong
                         // to the CALLER now, so this clear is observable and
                         // load-bearing rather than cosmetic: a pooled work
-                        // stack — the shape `wire_encode`'s `give_ops` already
+                        // stack — the shape `bincode_encoder`'s `give_ops` already
                         // uses — must be parked EMPTY.
                         work.clear();
                         vals.clear();

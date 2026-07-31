@@ -219,7 +219,7 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("the escape arm; see the prost/bincode differentials"),
     ),
     (
-        "models/src/rust/rholang/prost_encode.rs",
+        "models/src/rust/rholang/protobuf_encoder.rs",
         Disposition::Measured("gate subject `encode`"),
     ),
     (

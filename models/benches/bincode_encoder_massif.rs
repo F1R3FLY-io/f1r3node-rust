@@ -1,6 +1,6 @@
 //! # The steady-state HEAP profile — one arm per run, for `massif`
 //!
-//! `models/tests/wire_encode_space.rs` counts allocations exactly, per call,
+//! `models/tests/bincode_encoder_space.rs` counts allocations exactly, per call,
 //! with a per-thread counting allocator. That answers *"does a warm encode
 //! allocate?"*. This binary answers the other half — *"how much heap is live
 //! while it runs, and does the high-water mark come back down?"* — because a
@@ -21,7 +21,7 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, ListParWithRandom, Par, Send};
-use models::rust::rholang::wire_encode::{encode, with_encoded};
+use models::rust::rholang::bincode_encoder::{encode, with_encoded};
 
 fn gint(n: i64) -> Par {
     Par {
@@ -107,7 +107,7 @@ fn main() {
         }
         // ⚠ THE DECODER'S VALUE STACKS, measured SEPARATELY.
         //
-        // The encoder's op stack and `par_codec`'s eighteen per-type value
+        // The encoder's op stack and `bincode_decoder`'s eighteen per-type value
         // stacks are different mechanisms with different growth: the encoder
         // walks top-down over borrows and builds nothing, while the decoder
         // reassembles bottom-up and must park every completed child until its

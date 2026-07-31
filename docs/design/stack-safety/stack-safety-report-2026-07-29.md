@@ -48,8 +48,8 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
-| **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`par_codec`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
-| **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`wire_encode`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
+| **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`bincode_decoder`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
+| **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`bincode_encoder`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C3** | `7c74260d` | f1r3node | wire-schema generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C4** | `56fb1fd0` | f1r3node | prost encoder: $`\Theta(d^2) \rightarrow \Theta(n)`$ **work** | 302 $`\rightarrow`$ 302 | ⚠ **no** — and **dormant** | [5.3.5](#535-the-prost-network-encoder-56fb1fd0--converted-in-work-not-in-stack-and-dormant) |
 | **SS-C5** | `1b576c90` | f1r3node | prost `EPathMap`: the tag-1 **entry walk is DELETED**, not converted — every map emits the trie's own byte array `U(m)` at field 8 | — (traversal removed) | **yes** — by deletion | [5.3.6](#536-the-prost-epathmap-arm-1b576c90--the-traversal-is-deleted-not-converted) |
@@ -255,8 +255,8 @@ A `Par` is serialised **two different ways**, by two different codecs, for two d
 |---|---|---|
 | codec | `bincode` 1.3.3 over `serde` | protobuf via `prost` 0.13.5 |
 | direction of travel | node-local, into LMDB (lightning memory-mapped database) | between nodes, and into blocks |
-| writer | `wire_encode::encode` — **CONVERTED** | `<Par as Message>::encode_raw` — recursive |
-| reader | `par_codec::cold_decode` — **CONVERTED** | `<Par as Message>::merge_field` — recursive |
+| writer | `bincode_encoder::encode` — **CONVERTED** | `<Par as Message>::encode_raw` — recursive |
+| reader | `bincode_decoder::cold_decode` — **CONVERTED** | `<Par as Message>::merge_field` — recursive |
 | writer depth limit | none | none |
 | reader depth limit | none | **`RECURSION_LIMIT = 100`** |
 
@@ -399,7 +399,7 @@ The transformation applied throughout §5 is not novel and was not treated as su
 | `rholang/tests/deploy_depth_ceiling.rs` | the **end-to-end** deploy ceilings, from source text through the real runtime on an explicit 2 MiB `tokio` worker | §A.3 |
 | `valgrind --tool=massif --time-unit=B` | **peak heap** and the heap-over-time series of §5.3.4 | §A.4 |
 | `valgrind --tool=dhat` | **allocation counts**, total bytes, and heap read/write traffic | §A.5 |
-| `models/benches/wire_encode_bench.rs` | wall-clock throughput, 60 reps after 10 warm-up. ⚠ **This cell read *"with Welch's $`t`$-test, interleaved A/B"* and BOTH halves were wrong**: the arms were **blocked**, not interleaved, and an unpaired $`t`$ is invalid on blocked arms. Now the shared paired harness (`models/benches/paired.rs`), paired $`t`$ + median-of-repetition ratio, order rotated by repetition parity | §A.6, §5.4.1 |
+| `models/benches/bincode_encoder_bench.rs` | wall-clock throughput, 60 reps after 10 warm-up. ⚠ **This cell read *"with Welch's $`t`$-test, interleaved A/B"* and BOTH halves were wrong**: the arms were **blocked**, not interleaved, and an unpaired $`t`$ is invalid on blocked arms. Now the shared paired harness (`models/benches/paired.rs`), paired $`t`$ + median-of-repetition ratio, order rotated by repetition parity | §A.6, §5.4.1 |
 | `perf record -e cpu-clock --call-graph dwarf` | the CPU profile of §5.4.2 | §A.7 |
 
 ⚠ **`perf record --call-graph lbr` could not be used.** The observed failure was:
@@ -792,7 +792,7 @@ Three facts the table makes visible:
 **The architecture: a pre-order op stack over borrows, with no value stack at all.**
 
 ```rust
-// VERBATIM — models/src/rust/rholang/wire_encode.rs:150-170 (comments elided).
+// VERBATIM — models/src/rust/rholang/bincode_encoder.rs:150-170 (comments elided).
 #[derive(Clone, Copy)]
 enum Op<'a> {
     Node { node: &'a dyn WireNode, field: u16 },
@@ -811,7 +811,7 @@ enum Op<'a> {
 2. **`&'static` slices with identical contents are merged by the linker.** `EPATHMAP_PROGRAM` is byte-for-byte `ELIST_PROGRAM`, so a downcast keyed on the program's *address* reinterpreted an `EList` as an `EPathMap` — **SIGSEGV (the segmentation-fault signal)**. Replaced by an explicit `WireNode::wire_as_pathmap`; the merge is now an asserted fact.
 3. **A global allocation counter counts other test threads.** Made per-thread — the assertion had passed at `--test-threads=1` and failed in the suite.
 
-**Why round-trip is not the property.** *A codec that encodes differently but decodes its own output round-trips — and forks.* The derived `Serialize` therefore **stays compiled** as the encode oracle, for the same reason `par_codec_differential` keeps the derived `Deserialize`: it is generated by the compiler and **cannot drift**. Anti-vacuity is executed, not asserted: `the_encode_differential_can_go_red` perturbs two field emissions and one variant index and requires the verdict to **reject**, naming the clause, with a control passing before and after.
+**Why round-trip is not the property.** *A codec that encodes differently but decodes its own output round-trips — and forks.* The derived `Serialize` therefore **stays compiled** as the encode oracle, for the same reason `bincode_decoder_differential` keeps the derived `Deserialize`: it is generated by the compiler and **cannot drift**. Anti-vacuity is executed, not asserted: `the_encode_differential_can_go_red` perturbs two field emissions and one variant index and requires the verdict to **reject**, naming the clause, with a control passing before and after.
 
 **Results — space. MEASURED (q)**, `a169cc61`, release, by bisection with the pre-conversion body in the **same binary**:
 
@@ -823,7 +823,7 @@ enum Op<'a> {
 
 **MEASURED (f)**: `bincode_ser` and `bincode_de` both flat at **12 KiB** at depth 4 and depth 4,096, release.
 
-**MEASURED (q)**, `c28f4cf6`, `models/tests/wire_encode_space.rs`: the op stack is $`\Theta(\text{depth})`$ **not** $`\Theta(\text{size})`$ — **5 entries at width 4 and at width 65,536**; **2.000 entries per nesting level** (down from 4.000, because *a sequence's last element is a tail call, exactly as a node's last field is*); `size_of::<Op>() = 32` B.
+**MEASURED (q)**, `c28f4cf6`, `models/tests/bincode_encoder_space.rs`: the op stack is $`\Theta(\text{depth})`$ **not** $`\Theta(\text{size})`$ — **5 entries at width 4 and at width 65,536**; **2.000 entries per nesting level** (down from 4.000, because *a sequence's last element is a tail call, exactly as a node's last field is*); `size_of::<Op>() = 32` B.
 
 ★ **Independently confirmed for this report.** §5.3.4's massif series gives the op stack at depth 4,096 as **524,288 B** = 16,384 entries $`\times`$ 32 B for a high-water of ~8,194 entries — i.e. **2.00 entries per level**, arrived at by a completely different instrument.
 
@@ -883,19 +883,19 @@ Line 14 is the hostile-input defence and deserves its own sentence. A counted re
 
 **Figure 5** — *`figures/heap-where-allocations-moved.puml`*. The heap result, from massif and DHAT.
 
-All figures in this section are **MEASURED (f)**, 2026-07-29, one arm per process, pinned, via `models/benches/wire_encode_massif.rs`. Raw data in Appendix B.
+All figures in this section are **MEASURED (f)**, 2026-07-29, one arm per process, pinned, via `models/benches/bincode_encoder_massif.rs`. Raw data in Appendix B.
 
-**(a) Production shape** — the datum is depth 2, which is **95.43 %** of measured produces (**MEASURED (q)**, the distribution instrumented over five interpreter suites, 1,773 datums, `models/benches/wire_encode_bench.rs`). 20,000 encodes per arm.
+**(a) Production shape** — the datum is depth 2, which is **95.43 %** of measured produces (**MEASURED (q)**, the distribution instrumented over five interpreter suites, 1,773 datums, `models/benches/bincode_encoder_bench.rs`). 20,000 encodes per arm.
 
 | arm | total bytes | total blocks | blocks / call | peak heap (`t-gmax`) | heap **reads** | heap **writes** |
 |---|---:|---:|---:|---|---:|---:|
 | `derived` = `bincode::serialize` | 12,828,259 | 20,022 | **1.0011** | 6,187 B in 15 blocks | 39.88 MB | 12.83 MB |
-| `machine` = `wire_encode::encode` | 12,834,467 | 20,026 | **1.0013** | **12,395 B** in 19 blocks | 45.74 MB | **41.65 MB** |
-| `reused` = `wire_encode::with_encoded` | **14,466** | **26** | **0.0013** | 12,394 B in 19 blocks | 32.92 MB | 28.83 MB |
+| `machine` = `bincode_encoder::encode` | 12,834,467 | 20,026 | **1.0013** | **12,395 B** in 19 blocks | 45.74 MB | **41.65 MB** |
+| `reused` = `bincode_encoder::with_encoded` | **14,466** | **26** | **0.0013** | 12,394 B in 19 blocks | 32.92 MB | 28.83 MB |
 
 Reading the table:
 
-* **Block count per call is *identical* between the derive and the like-for-like replacement — one allocation each.** `bincode::serialize` sizes then writes into a single exactly-sized `Vec`; `wire_encode::encode` writes into a pooled buffer and hands back one `to_vec`. The conversion is **malloc-neutral** in the like-for-like form.
+* **Block count per call is *identical* between the derive and the like-for-like replacement — one allocation each.** `bincode::serialize` sizes then writes into a single exactly-sized `Vec`; `bincode_encoder::encode` writes into a pooled buffer and hands back one `to_vec`. The conversion is **malloc-neutral** in the like-for-like form.
 * **Total bytes differ by exactly +6,208 B over the whole run** — the two thread-local arenas (`OUT` at 4,096 B and `OPS` at 2,048 B), allocated **once**, plus 64 B. Not per call.
 * ★ **The peak heap doubles, 6,187 $`\rightarrow`$ 12,395 B, and that is deliberate.** The arenas are *retained*, which is the mechanism that makes the third row possible.
 * ★★ **The third row is the actual malloc result.** Where the caller does not need ownership, 20,000 encodes cost **26 blocks and 14,466 bytes in total** — $`770\times`$ fewer blocks and $`887\times`$ fewer bytes than the derive. The pooling policy is bounded on purpose: `MAX_POOLED_OPS = 4096` entries (128 KiB, covering a 2,048-deep term), so *a single pathological encode cannot pin its high-water mark for the life of the thread*.
@@ -909,7 +909,7 @@ The encoder's working set decomposes **exactly**:
 \underbrace{4{,}133{,}992}_{\text{peak}} \;-\; \underbrace{3{,}347{,}560}_{\text{term alone}} \;=\; \underbrace{786{,}432}_{768\ \mathrm{KiB}} \;=\; \underbrace{524{,}288}_{\text{op stack}} \;+\; \underbrace{262{,}144}_{\text{output buffer}}
 ```
 
-* **op stack 524,288 B** = 16,384 `Op` entries $`\times`$ 32 B, for a high-water of ~8,194 entries — **2.00 entries per level**, confirming `wire_encode_space.rs` by an independent instrument;
+* **op stack 524,288 B** = 16,384 `Op` entries $`\times`$ 32 B, for a high-water of ~8,194 entries — **2.00 entries per level**, confirming `bincode_encoder_space.rs` by an independent instrument;
 * **output buffer 262,144 B**, holding an encoding of **148,546 B** (from the arm's own printed `sink`, $`9{,}506{,}944 / 64`$) — a `Vec` doubling from 4,096 reaches 262,144 at that size, exactly;
 * and the massif series shows a **524,288 B sawtooth** thereafter, which is the op-stack allocation being *freed and reallocated* every iteration — the `MAX_POOLED_OPS` policy working as designed, because 16,384 entries exceeds the 4,096-entry pooling cap.
 
@@ -942,7 +942,7 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 
 ⚠ **Both passes are still $`\Theta(\text{depth})`$ in native stack.** No stack-safety claim is made and none should be read.
 
-⚠ **It is dormant.** `prost_encode::` appears in **no `src/` tree** of `models`, `rholang`, `rspace++`, `casper`, `node`, `comm` or `shared` — verified mechanically, not by intention (**DERIVED**, `56fb1fd0`).
+⚠ **It is dormant.** `protobuf_encoder::` appears in **no `src/` tree** of `models`, `rholang`, `rspace++`, `casper`, `node`, `comm` or `shared` — verified mechanically, not by intention (**DERIVED**, `56fb1fd0`).
 
 ⚠⚠ **A named residual inside the fix.** `EPathMap` is an **opaque leaf**: its `encode_raw` has three arms — memcpy of interned canonical bytes, ground field-8, or the field walk — and *which* fires depends on a `OnceLock` another thread may fill. Both passes intercept it at exact parity with `prost::encoding::message::encode`. **Correct** and **not depth-independent** are two separate statements, and only the first is claimed.
 
@@ -954,7 +954,7 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 | M2 sort key `(is_oneof, min_tag)` | 10 | **REJECTED** | `TaggedContinuation::par_body` differs at byte 0 — **both 1,140 bytes, same byte multiset, halves exchanged**. ⚠⚠ The mirror of the serde defect of §5.3.2(1) — and for protobuf the correct order is **the opposite** of that fix. |
 | M3 skip-if-default $`\rightarrow`$ `if true` for `bool` | 68 | **REJECTED** | lengths 18 vs 14, 11 vs 9, 17 vs 11, 8 vs 6 across the corpus. |
 
-⚠ **The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally, never by timing** — a timing assertion in a test suite is a flake. The length table must grow **linearly** across $`d \in \{4, 8, 16, 32\}`$, i.e. constant entries per level; a growing per-level cost **is** the quadratic. **NOT MEASURED**: no wall-clock benchmark of `prost_encode` against `prost`'s own encoder exists, and none was constructed for this report, because the code is dormant and benchmarking a dormant path would report a number nobody can collect (§5.9).
+⚠ **The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally, never by timing** — a timing assertion in a test suite is a flake. The length table must grow **linearly** across $`d \in \{4, 8, 16, 32\}`$, i.e. constant entries per level; a growing per-level cost **is** the quadratic. **NOT MEASURED**: no wall-clock benchmark of `protobuf_encoder` against `prost`'s own encoder exists, and none was constructed for this report, because the code is dormant and benchmarking a dormant path would report a number nobody can collect (§5.9).
 
 ---
 
@@ -1001,16 +1001,16 @@ EPathMap serde/bincode ::= u64-LE |U(m)| ‖ U(m)      ← the trie's byte array
 
 so the trie **is** serialized as its own byte array, while the entries still arrive through the existing iterative, depth-unlimited value machinery. `EntryTrie::from_path_stream_and_values` splits the frames by **pure byte slicing** and never calls `decode_trie_path` — so no ceiling is inherited, and `models/tests/epathmap_bincode_is_the_path_stream.rs` measures the round trip green at depths **4, 34, 64 and 4,096**, re-measuring the refusal at 34 and 64 in the same file so the ladder is known to span a real cliff.
 
-⇒ **precisely what FORM ② achieves:** the bincode surface is **trie-native**, at **zero** warm allocations (`wire_encode_space` still 9/9), with **no** new depth ceiling and **no** term that round-tripped before ceasing to.
+⇒ **precisely what FORM ② achieves:** the bincode surface is **trie-native**, at **zero** warm allocations (`bincode_encoder_space` still 9/9), with **no** new depth ceiling and **no** term that round-tripped before ceasing to.
 
 ⇒ ⚠⚠ **and precisely what it got WRONG, repaired by `8cf0b770` (SS-C8, CBR-043).** FORM ② emitted $`U(m)`$ — the key stream of the entries the map **stores** — beside values this surface writes `locally_free`-**blanked**. A key derived from the unblanked entries, sitting next to the blanked ones, carries the bitset onto the event hash: `encode_trie_path`'s `0x0F` escape arm keys a ¬`eval_stable` entry by its canonical *prost* bytes, and prost retains `locally_free`. Measured, the same map hashed `e48b249c…` in play and `7259192343…` after a cold-store round trip — **a play/replay divergence**, in breach of `models/src/rust/rholang/wire.rs`'s standing rule that `locally_free` *"must not reach an RSpace channel hash"*.
 
   The repair is one function $`U`$ applied to the value **this surface writes** (`EntryTrie::wire_trie`), and it is a *stack-safety* row rather than merely a consensus one for two reasons:
 
-  * **the blanking function is the trampolined codec pair itself** — `wire_encode::encode_into` then `Par::cold_decode`, both iterative and depth-unbounded. A hand-written "clear every `locally_free`" walk would have been a new Θ(depth) native traversal over the term family, i.e. exactly what [§8](#8-open-defects) exists to prevent, *and* a second opinion about what this surface writes;
+  * **the blanking function is the trampolined codec pair itself** — `bincode_encoder::encode_into` then `Par::cold_decode`, both iterative and depth-unbounded. A hand-written "clear every `locally_free`" walk would have been a new Θ(depth) native traversal over the term family, i.e. exactly what [§8](#8-open-defects) exists to prevent, *and* a second opinion about what this surface writes;
   * **the throwaway trie is torn down with the worklist** (`drain_owned_pars` + `dismantle_all`), because `<Par as Drop>` is itself a recursive traversal and these entries are of unbounded depth. Letting it fall out of scope would have put the one recursion this codec exists to avoid back on the native stack — a leak of the kind [§5.3](#53-family-c--serialisation) rows are audited for.
 
-  ⚠ The blanked trie is **memoized** (`OnceLock<Option<Arc<EntryTrie>>>`, `None` when blanking is the identity), and the identity case is decided in **O(1)** off the already-maintained `entries_stable` fold — so `wire_encode_space::the_steady_state_allocation_table` still reports **zero** warm allocations, now including a row for an lf-bearing map that the pre-existing `nonground_pathmap` row could not have covered.
+  ⚠ The blanked trie is **memoized** (`OnceLock<Option<Arc<EntryTrie>>>`, `None` when blanking is the identity), and the identity case is decided in **O(1)** off the already-maintained `entries_stable` fold — so `bincode_encoder_space::the_steady_state_allocation_table` still reports **zero** warm allocations, now including a row for an lf-bearing map that the pre-existing `nonground_pathmap` row could not have covered.
 
 ⇒ **precisely what it does not:** $`U(m)`$ **alone**, i.e. the size win. FORM ② is *larger* than the list form by $`8 + |U(m)|`$ per map (measured: +340, +62, +38, +39, +19 B on the five golden fixtures). Dropping the values is what still requires the entries to be reconstructed from keys, and therefore still waits on [§8.6.5](#865-119120-the-prost-read-ceiling)'s unbounded prost reader. **The dependency edge is narrowed, not removed** — it now points from a *size optimisation* rather than from the mandate itself.
 
@@ -1148,7 +1148,7 @@ the direction. A 2 % criterion against the same spread is not a criterion at all
 
 **MEASURED (f)** — `perf record -e cpu-clock -F 9999 --call-graph dwarf,16384` over the bench (⚠ described here as *"the interleaved A/B bench"*; it was **blocked** — see §5.4.1), 29,436 samples, 0 lost. Full flat profile at `/tmp/sd_perf/report.flat.txt`. ★ **A flat profile is a SHARE-of-samples attribution within one arm, so the blocking defect does not reach it**: it says where an arm spends its time, not how two arms compare, and the window term cancels in a ratio taken inside a single run.
 
-⚠ **The gross per-arm totals are *not* a valid A/B comparison** and are not presented as one: the bench runs `derived` once but `machine` **and** `machine_reused`, so the `wire_encode` bucket covers two arms. The wall clock of §5.4.1 is the comparison. What the profile *does* establish is the **internal structure of the derived arm**, which no timing can show:
+⚠ **The gross per-arm totals are *not* a valid A/B comparison** and are not presented as one: the bench runs `derived` once but `machine` **and** `machine_reused`, so the `bincode_encoder` bucket covers two arms. The wall clock of §5.4.1 is the comparison. What the profile *does* establish is the **internal structure of the derived arm**, which no timing can show:
 
 | bucket within the derived arm | % of total samples |
 |---|---:|
@@ -1609,7 +1609,7 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 | seeded — 40 processes, one term | **20 / 20** split | ★ **40 / 40 identical** |
 | deterministic — `{3:30} \| {3:90}` vs `{3:90} \| {3:30}` | different bytes | ★ **byte-identical** |
 | `sorter_canonical_golden` (tie-free by construction) | — | **UNMOVED**, both columns |
-| `par_codec_differential` · `wire_encode_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7**, unmoved |
+| `bincode_decoder_differential` · `bincode_encoder_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7**, unmoved |
 
 ★ The golden being unmoved is not a happy accident — the tie-break **refines and never reorders**, being consulted only where `compare_score` returns `Equal`, so byte-neutrality on any tie-free corpus holds *by construction*. A move there would have been a bug in the implementation, not a legitimate change.
 
@@ -1773,7 +1773,7 @@ Seven, each with its reason. None is estimated.
 | # | what | why not |
 |---|---|---|
 | 1 | **`spawn_detached` per-spawn overhead** (`catch_unwind`, the atomic, the `Arc` clone) | No isolated micro-benchmark exists in the tree and none was constructed. The end-to-end CPU figure of §5.2.2 includes it but cannot separate it. |
-| 2 | **`prost_encode` wall-clock vs `prost`'s own encoder** | The code is **dormant** (§5.3.5); a number from a path production does not execute would be misleading. The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally instead. |
+| 2 | **`protobuf_encoder` wall-clock vs `prost`'s own encoder** | The code is **dormant** (§5.3.5); a number from a path production does not execute would be misleading. The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally instead. |
 | 3 | **massif/DHAT profiles for the substitution, sorter, normaliser and evaluator conversions** | No heap-profiling harness exists for those subjects. Building four correct ones — each needing an off-thread $`\Theta(d)`$ set-up so the harness does not measure itself, per §5.7 — was out of scope for this report. Their heap costs are therefore **unquantified**; only their native-stack slopes are measured. |
 | 4 | **`perf record --call-graph lbr`** | ⚠ **The stated reason was wrong — corrected in §4.4.** `--call-graph lbr` does fail on this part, but *not* because "the PMU refused every cycles event": plain `cycles` always counted, and what failed was the **precise** modifier `cycles:P`, whose Intel implementation (PEBS) **does not exist on this AMD Zen 3 host**. Substituted with software `cpu-clock` + DWARF, which remains a recorded deviation. ★ `perf record --call-graph dwarf -e cycles:P` now works (`perf_event_paranoid = 0`), and for byte-movement questions `valgrind --tool=cachegrind` is the better instrument because it is deterministic. |
 | 5 | **A cycle-accurate CPU profile of the decoder** | ⚠ The "same PMU limitation" is likewise misattributed — see §4.4; a cycle-accurate profile IS available on this host (plain `cycles`, and `cycles:P` since `perf_event_paranoid = 0`). What genuinely blocks this row is the second clause: **no decode benchmark harness exists** (only the massif arm). |
@@ -2264,7 +2264,7 @@ $`\Rightarrow`$ **The list of $`\Theta(d)`$ traversals in this system should be 
 Named, as required:
 
 1. **Consensus neutrality of the ingress repair** (§5.5.3(a)) rests on three *read* arguments — signature over source, storage of source, re-normalisation by the proposer. Individually sufficient, jointly strong, **not executed** as an end-to-end differential.
-2. **`prost_encode`'s dormancy** (§5.3.5) is a mechanical `grep` over `src/` trees at one commit; it is DERIVED, and a future wiring would silently invalidate the "no stack-safety regression" reading.
+2. **`protobuf_encoder`'s dormancy** (§5.3.5) is a mechanical `grep` over `src/` trees at one commit; it is DERIVED, and a future wiring would silently invalidate the "no stack-safety regression" reading.
 3. **`RECURSION_LIMIT = 100`** is read from `prost-0.13.5/src/lib.rs:30`. The workspace `Cargo.lock` lists prost 0.12.6, 0.13.5 **and** 0.14.3; the *effective* version for `models` was not separately confirmed for this report, though the derived $`D_{\max}`$ values (33/32/31) **were** measured end-to-end by the gate and agree with the formula.
 4. **The 87-member lowering component** (§5.6.1) is a Tarjan result from a script, not re-run for this report.
 5. **The claim that no `codegen-backend = "cranelift"` is configured** is a grep over three file classes; a workspace-external `~/.cargo/config.toml` override was **not** checked.
@@ -2941,7 +2941,7 @@ systemd-run --user --scope -p MemoryMax=28G --quiet taskset -c 24-27 "$DDC" \
 **A.4 — massif heap profiles**, one arm per process, in parallel on distinct cores.
 
 ```bash
-BIN=target/release/deps/wire_encode_massif-*        # the built bench binary
+BIN=target/release/deps/bincode_encoder_massif-*        # the built bench binary
 for i in 0 1 2 3 4; do
   arm=$(echo "derived machine reused deep decode" | cut -d' ' -f$((i+1)))
   MASSIF_ARM=$arm taskset -c $((4+i)) valgrind --tool=massif --time-unit=B \
@@ -2968,7 +2968,7 @@ grep -E 'Total:|At t-gmax:|At t-end:|Reads:|Writes:' /tmp/sd_dhat/summary.*.txt
 **A.6 — the throughput bench**, three whole-bench runs pinned to one core.
 
 ```bash
-BENCH=target/release/deps/wire_encode_bench-*
+BENCH=target/release/deps/bincode_encoder_bench-*
 for run in 1 2 3; do
   echo "### RUN $run ($(date -Is), load $(cut -d' ' -f1 /proc/loadavg))"
   systemd-run --user --scope -p MemoryMax=28G --quiet taskset -c 8 "$BENCH"
@@ -3050,8 +3050,8 @@ done
 | B1 | `a929a2d6` | f1r3node | 6-member expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ **OK at 50,000** |
 | B2 | `29856679`, `55b97f84`, `a0a50473` | f1r3node | `DriveState`/`LiveGuard`/`spawn_detached`; 5 join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** |
 | B3 | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | dependency removed |
-| C1 | `9a5521a2` | f1r3node | cold-store **decoder** (`par_codec`) | 28,362 / 12,894 $`\rightarrow`$ **0 / 0** |
-| C2 | `c28f4cf6` + `a169cc61` | f1r3node | cold-store **encoder** (`wire_encode`), single walk | ~224 $`\rightarrow`$ **0** (release control) |
+| C1 | `9a5521a2` | f1r3node | cold-store **decoder** (`bincode_decoder`) | 28,362 / 12,894 $`\rightarrow`$ **0 / 0** |
+| C2 | `c28f4cf6` + `a169cc61` | f1r3node | cold-store **encoder** (`bincode_encoder`), single walk | ~224 $`\rightarrow`$ **0** (release control) |
 | C3 | `7c74260d` | f1r3node | the wire-schema generator: one walk, four outputs | enabling infrastructure |
 | C4 | `56fb1fd0` | f1r3node | prost encoder: $`\Theta(d^2) \rightarrow \Theta(n)`$ work | ⚠ stack unchanged; **dormant** |
 | D1 | `d2591fa1` | f1r3node | per-branch `Par` deep clone at the task-spawn boundary | the binding worker-side member |

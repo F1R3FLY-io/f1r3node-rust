@@ -8,7 +8,7 @@
 //!
 //! | cell | arm A (before) | arm B (after) |
 //! |---|---|---|
-//! | **escape payload** | `<Par as prost::Message>::encode_to_vec` — prost's derived encoder, still present | `prost_encode::encode_to_vec` — the iterative one the escape arm now calls |
+//! | **escape payload** | `<Par as prost::Message>::encode_to_vec` — prost's derived encoder, still present | `protobuf_encoder::encode_to_vec` — the iterative one the escape arm now calls |
 //! | **ground-domain gate** | [`recursive_stable_par`], the pre-change body transcribed in full below | `eval_stable_par_for_test` — the budgeted one |
 //!
 //! ⚠★ The "before" arm of the second cell is a **transcription**, and that is a
@@ -91,7 +91,7 @@
 //! ### ⚠⚠ THE CROSSOVER — the iterative encoder is SLOWER at depth 1, measured
 //!
 //! The `` $\Theta(d^2) \to \Theta(n)$ `` trade is not free at the shallow end.
-//! `prost_encode` runs **two** passes and materialises a `lens` table; the derived
+//! `protobuf_encoder` runs **two** passes and materialises a `lens` table; the derived
 //! encoder runs one pass and allocates nothing extra. Wall clock,
 //! `taskset -c 8`, release, 60 reps, 2026-07-30:
 //!
@@ -117,7 +117,7 @@
 //!
 //! ⚠ It is a **named residual all the same**, and the mitigation is *not* a
 //! shallow/deep dispatch — two encoders selected at run time is a dual path whose
-//! bytes must agree forever. The place to spend the effort is `prost_encode`'s
+//! bytes must agree forever. The place to spend the effort is `protobuf_encoder`'s
 //! fixed cost (the `lens` table's first allocation, `LEN_TABLE_CAPACITY = 256`
 //! entries for a term with one node).
 //!
@@ -134,7 +134,7 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{Connective, ETuple, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::{eval_stable_epathmap, eval_stable_par_for_test};
-use models::rust::rholang::prost_encode;
+use models::rust::rholang::protobuf_encoder;
 use paired::{loadavg, measure_arms};
 use prost::Message;
 
@@ -306,7 +306,7 @@ fn the_two_classifiers_agree(workload: &[Par]) {
         );
         assert_eq!(
             Message::encode_to_vec(par),
-            prost_encode::encode_to_vec(par),
+            protobuf_encoder::encode_to_vec(par),
             "workload[{i}]: the derived and iterative prost encoders disagree. These bytes are \
              an escape payload inside a trie key inside proto field 8 — a difference is a \
              consensus fork, not a benchmark artefact."
@@ -320,7 +320,7 @@ fn the_two_classifiers_agree(workload: &[Par]) {
 
 fn encoder_arms(workload: &[Par]) -> paired::Arms<2> {
     let mut a = |p: &Par| Message::encode_to_vec(p).len();
-    let mut b = |p: &Par| prost_encode::encode_to_vec(p).len();
+    let mut b = |p: &Par| protobuf_encoder::encode_to_vec(p).len();
     measure_arms(
         ["prost_derived", "prost_iterative"],
         workload,
@@ -390,7 +390,7 @@ fn deterministic_arm(name: &str) {
         for par in &workload {
             checksum += match name {
                 "prost_derived" => Message::encode_to_vec(par).len(),
-                "prost_iterative" => prost_encode::encode_to_vec(par).len(),
+                "prost_iterative" => protobuf_encoder::encode_to_vec(par).len(),
                 "stable_recursive" => usize::from(recursive_stable_par(par)),
                 "stable_budgeted" => usize::from(eval_stable_par_for_test(par)),
                 "encode_trie_path" => encode_trie_path(par).len(),
