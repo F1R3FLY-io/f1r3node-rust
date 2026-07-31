@@ -289,3 +289,7 @@ tonic-prost-build = { workspace = true }
 prost = { workspace = true }
 prost-types = "0.14"
 heck = "0.5"
+
+[[test]]
+name = "canonical_form_is_a_function_of_the_term"
+path = "tests/canonical_form_is_a_function_of_the_term.rs"
