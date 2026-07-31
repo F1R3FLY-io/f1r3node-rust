@@ -584,7 +584,7 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
     // store still provides is the canonical BYTES (and, on a hit, one shared
     // `Arc` for every equal map in the process), which is a genuinely different
     // artifact and still costs a walk to produce.
-    if eval_stable_epathmap(e_pathmap) && !e_pathmap.ps().is_empty() {
+    if eval_stable_epathmap(e_pathmap) && !e_pathmap.entry_trie().is_empty() {
         let path_stream = e_pathmap.path_stream();
         let canonical_prost = ground_canonical_prost(&path_stream);
         let digest = blake2b_256(&canonical_prost);

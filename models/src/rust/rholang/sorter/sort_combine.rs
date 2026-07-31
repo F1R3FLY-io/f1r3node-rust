@@ -1732,7 +1732,7 @@ fn combine_epathmap(pathmap: &EPathMap) -> ScoredTerm<Expr> {
 // ⚠ Consensus-visible: this arm used to PRESERVE ENTRY ORDER
 // (`401ed168` measured it). It no longer can — there is no
 // order to preserve.
-let canonical = if eval_stable_epathmap(pathmap) && !pathmap.ps().is_empty() {
+let canonical = if eval_stable_epathmap(pathmap) && !pathmap.entry_trie().is_empty() {
     pathmap.clone()
 } else {
     EPathMap::new(

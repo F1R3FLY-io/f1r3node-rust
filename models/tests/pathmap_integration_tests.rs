@@ -1602,3 +1602,124 @@ fn test_drophead_mixed_survivability() {
         "Surviving paths should have elements"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ★ THE LEMMA THAT LICENSES ASKING AN O(1) QUESTION THE O(1) WAY
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/// `EntryTrie::len` agrees with the length of the materialised projection.
+///
+/// ⚠ **Why this is a test and not a comment.** Seventeen sites used to ask *"how many
+/// entries?"* and *"is it empty?"* as `map.ps().len()` / `map.ps().is_empty()` — which
+/// **materialises the whole entry set**, deep-cloning every `Par`, to answer a question the
+/// trie already holds in a `usize`. They now read `entry_trie().len()` / `.is_empty()`, which
+/// are O(1).
+///
+/// That substitution is only sound if the two agree, and **two of those seventeen sites were
+/// consensus selectors**: `pathmap_crate_type_mapper.rs:587` and `sort_combine.rs:1735` both
+/// spell `eval_stable_epathmap(..) && !..is_empty()`, which chooses between emitting a ground
+/// map as **proto field 8** (the trie's own key stream) and walking the tag-1 fields. Getting
+/// that wrong is a consensus-visible byte change, not a performance regression.
+///
+/// ⇒ The agreement is pinned here rather than argued in a comment. `len` is a **maintained
+/// fold** (incremented in `insert_entry`, recomputed on removal), so it is exactly the kind of
+/// value that can silently drift from the thing it counts.
+#[test]
+fn entry_trie_len_agrees_with_the_materialised_projection() {
+    let cases = pathmap_len_lemma_corpus();
+    assert!(
+        !cases.is_empty(),
+        "VACUOUS: the corpus is empty, so this lemma checks nothing."
+    );
+
+    let mut saw_empty = false;
+    let mut saw_multi = false;
+
+    for (name, map) in &cases {
+        let counted = map.entry_trie().len();
+        let materialised = map.ps().len();
+        assert_eq!(
+            counted, materialised,
+            "'{name}': EntryTrie::len says {counted} but the projection holds {materialised}.\n\n\
+             `len` is a MAINTAINED FOLD, so it can drift from what it counts. Seventeen call \
+             sites read it instead of materialising, and TWO of them are consensus selectors \
+             (pathmap_crate_type_mapper.rs and sort_combine.rs both gate the ground wire arm on \
+             `!is_empty()`), so a drift here moves emitted bytes."
+        );
+        assert_eq!(
+            map.entry_trie().is_empty(),
+            map.ps().is_empty(),
+            "'{name}': is_empty disagrees with the projection — same hazard as above."
+        );
+
+        saw_empty |= counted == 0;
+        saw_multi |= counted > 1;
+    }
+
+    // ⚠ Anti-vacuity: a corpus of only single-entry maps would satisfy every assertion above
+    // while exercising neither boundary the selectors care about.
+    assert!(
+        saw_empty,
+        "VACUOUS: no EMPTY map in the corpus, yet `!is_empty()` is exactly what the two \
+         consensus selectors branch on. Add one."
+    );
+    assert!(
+        saw_multi,
+        "VACUOUS: no map with MORE THAN ONE entry, so a `len` that always returned 1 would pass."
+    );
+}
+
+/// The corpus for [`entry_trie_len_agrees_with_the_materialised_projection`].
+///
+/// ★ Spans the two boundaries the consensus selectors branch on — **empty** and
+/// **more than one entry** — plus a nested map, because `encode_trie_path`'s nested arm is
+/// where the projection is forced hereditarily.
+fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
+    let nested = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+            vec![make_int_par(1), make_int_par(2)],
+            Vec::new(),
+            false,
+            None,
+        ))),
+    }]);
+
+    vec![
+        ("empty", EPathMap::new(vec![], Vec::new(), false, None)),
+        (
+            "single",
+            EPathMap::new(vec![make_int_par(7)], Vec::new(), false, None),
+        ),
+        (
+            "many-ground",
+            EPathMap::new(
+                vec![make_int_par(3), make_int_par(1), make_int_par(2)],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        (
+            "mixed-kinds",
+            EPathMap::new(
+                vec![make_string_par("b"), make_int_par(9), make_list_par(vec!["x"])],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        (
+            "nested-pathmap",
+            EPathMap::new(vec![nested, make_int_par(5)], Vec::new(), false, None),
+        ),
+        (
+            "duplicate-entries-dedup",
+            EPathMap::new(
+                vec![make_int_par(4), make_int_par(4), make_int_par(6)],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+    ]
+}

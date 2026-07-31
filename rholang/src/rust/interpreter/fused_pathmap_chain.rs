@@ -412,7 +412,9 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
         // A zipper whose embedded map is `None` would make today's methods
         // panic on their `.expect("zipper pathmap was None")` — fall back so
         // the behavior (panic included) stays today's.
-        ExprInstance::EZipperBody(zipper) => (FusedBase::LitZipper(zipper), zipper.pathmap.as_ref()?),
+        ExprInstance::EZipperBody(zipper) => {
+            (FusedBase::LitZipper(zipper), zipper.pathmap.as_ref()?)
+        }
         ExprInstance::EVarBody(evar) => {
             let var = evar.v.as_ref()?;
             match &var.var_instance {
@@ -643,7 +645,9 @@ impl DebruijnInterpreter {
             // re-evaluation is the byte-identity under the gate, the zipper
             // arm returns as-is — both charge-free.
             if matches!(mode, ViewMode::Nil) {
-                return Err(InterpreterError::ReduceError(NIL_MID_CHAIN_ERROR.to_string()));
+                return Err(InterpreterError::ReduceError(
+                    NIL_MID_CHAIN_ERROR.to_string(),
+                ));
             }
 
             // (d) Position-B argument re-evaluation for arity-1 links
@@ -659,9 +663,9 @@ impl DebruijnInterpreter {
 
             // (e) the link constant (PM-4(b) — same entry point, same Cost).
             match kind.charge() {
-                LinkCharge::IncrementalUnion => self
-                    .metering
-                    .reserve_incremental_primitive(union_cost(1))?,
+                LinkCharge::IncrementalUnion => {
+                    self.metering.reserve_incremental_primitive(union_cost(1))?
+                }
                 LinkCharge::Lookup => self.metering.reserve_primitive(lookup_cost())?,
             }
 
@@ -695,8 +699,9 @@ impl DebruijnInterpreter {
                 // ── readZipperAt (:3639-3707) ───────────────────────────
                 LinkKind::ReadZipperAt => match &mode {
                     ViewMode::Map => {
-                        let path_par =
-                            arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                        let path_par = arg_b
+                            .as_ref()
+                            .expect("arity-1 link must have a Position-B argument");
                         // :3650 par_to_path on the Position-B argument;
                         // :3661-3671 — locally_free/connective_used copied
                         // from the map MESSAGE (empty/false under the gate,
@@ -722,8 +727,9 @@ impl DebruijnInterpreter {
                 // ── descendTo (:3843-3892) ──────────────────────────────
                 LinkKind::DescendTo => match &mut mode {
                     ViewMode::Zipper { focus, kind, .. } => {
-                        let path_par =
-                            arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                        let path_par = arg_b
+                            .as_ref()
+                            .expect("arity-1 link must have a Position-B argument");
                         // ★ The composed cursor's arm, by the ONE composition
                         // law — the ARGUMENT's arm at the root, `Split` below
                         // it (#108). Read BEFORE the extend, exactly as the
@@ -775,8 +781,9 @@ impl DebruijnInterpreter {
 
                 // ── descendIndexedBranch (:5578-5648) ───────────────────
                 LinkKind::DescendIndexedBranch => {
-                    let idx_par =
-                        arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                    let idx_par = arg_b
+                        .as_ref()
+                        .expect("arity-1 link must have a Position-B argument");
                     // :5584-5594 — the integer extraction precedes the base
                     // match…
                     let idx = match idx_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
@@ -833,8 +840,9 @@ impl DebruijnInterpreter {
 
                 // ── ascend (:5341-5410) ─────────────────────────────────
                 LinkKind::Ascend => {
-                    let steps_par =
-                        arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                    let steps_par = arg_b
+                        .as_ref()
+                        .expect("arity-1 link must have a Position-B argument");
                     // :5343-5355 — extraction precedes the base match.
                     let steps = match steps_par
                         .exprs
@@ -920,15 +928,11 @@ impl DebruijnInterpreter {
                                     .last()
                                     .expect("non-empty focus has a last segment")
                                     .clone();
-                                let parent_key =
-                                    segments_to_key(&focus[..focus.len() - 1], false);
+                                let parent_key = segments_to_key(&focus[..focus.len() - 1], false);
                                 // :5713/:5803 — all siblings, ascending
                                 // byte-lex, deduplicated.
-                                let siblings = collect_child_segments(
-                                    &chain.interned.map,
-                                    &parent_key,
-                                    None,
-                                );
+                                let siblings =
+                                    collect_child_segments(&chain.interned.map, &parent_key, None);
                                 match siblings.iter().position(|s| s == &current_segment) {
                                     Some(current_idx) => {
                                         let target_idx = if kind == LinkKind::ToNextSibling {
@@ -997,14 +1001,14 @@ impl DebruijnInterpreter {
                                 // message is non-empty; the embedded message
                                 // is the source message (carried through
                                 // navigation unchanged).
-                                !chain.source_map.ps().is_empty()
+                                !chain.source_map.entry_trie().is_empty()
                             } else {
                                 // :5019 — native trie-path lookup.
                                 path_prefix_exists(&chain.interned.map, &key)
                             }
                         }
                         // :5022-5024 — a raw map exists iff non-empty.
-                        ViewMode::Map => !chain.source_map.ps().is_empty(),
+                        ViewMode::Map => !chain.source_map.entry_trie().is_empty(),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :5055-5057.
@@ -1054,8 +1058,10 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, .. } => {
                             // :3999-4013 — native subtrie descent below the
                             // focus prefix.
-                            let elements =
-                                collect_subtrie_values(&chain.interned.map, &segments_to_key(focus, false));
+                            let elements = collect_subtrie_values(
+                                &chain.interned.map,
+                                &segments_to_key(focus, false),
+                            );
                             // :4016-4023 — locally_free/connective_used from
                             // the CONVERSION result (the interned entry),
                             // remainder None.
@@ -1085,8 +1091,12 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, .. } => {
                             // :5428-5444 — distinct immediate children below
                             // the focus.
-                            collect_child_segments(&chain.interned.map, &segments_to_key(focus, false), None)
-                                .len() as i64
+                            collect_child_segments(
+                                &chain.interned.map,
+                                &segments_to_key(focus, false),
+                                None,
+                            )
+                            .len() as i64
                         }
                         ViewMode::Map => {
                             // :5446-5457 — distinct first segments.
@@ -1100,8 +1110,9 @@ impl DebruijnInterpreter {
 
                 // ── atPath (:4895-4977) — TERMINAL ──────────────────────
                 LinkKind::AtPath => {
-                    let path_par =
-                        arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                    let path_par = arg_b
+                        .as_ref()
+                        .expect("arity-1 link must have a Position-B argument");
                     // :4906-4919 / :4935-4943 — the ENTRY key of the argument
                     // path reached from this view's cursor. Both arms go
                     // through `entry_key_at`, the ONE place that spends the
@@ -1179,19 +1190,13 @@ pub mod fusion_test_support {
 
     /// Force the recognizer to decline every chain (the differential
     /// harness's "unfused" mode). Test-build-only by construction.
-    pub fn set_force_disabled(disabled: bool) {
-        FORCE_DISABLED.store(disabled, Ordering::SeqCst);
-    }
+    pub fn set_force_disabled(disabled: bool) { FORCE_DISABLED.store(disabled, Ordering::SeqCst); }
 
-    pub fn force_disabled() -> bool {
-        FORCE_DISABLED.load(Ordering::SeqCst)
-    }
+    pub fn force_disabled() -> bool { FORCE_DISABLED.load(Ordering::SeqCst) }
 
     /// Total fused-chain evaluations since process start (or the last
     /// [`reset_counters`]).
-    pub fn total_fusion_hits() -> u64 {
-        TOTAL_HITS.load(Ordering::SeqCst)
-    }
+    pub fn total_fusion_hits() -> u64 { TOTAL_HITS.load(Ordering::SeqCst) }
 
     /// Per-shape hit counts, keyed `{base}:{innermost.….outermost}` (e.g.
     /// `var-map:readZipperAt.getSubtrie`).
