@@ -100,10 +100,21 @@ const GUARD_DEFINITION: &str = "fn store_guard(";
 const MIN_TEST_FILES_SCANNED: usize = 15;
 /// Those files hold several hundred `#[test]` functions between them.
 const MIN_TEST_FUNCTIONS_FOUND: usize = 80;
-/// The two store suites alone contribute well over a dozen store-reaching
-/// tests. If this floor is not met, the token list has stopped matching and
-/// the policy would be exempting everything it is supposed to police.
-const MIN_STORE_REACHING_TESTS: usize = 10;
+/// ⚠ **PARKED, not deleted, because the policy is inverted.** This was the third
+/// vacuity floor: *"the two store suites alone contribute well over a dozen
+/// store-reaching tests; if this floor is not met, the token list has stopped
+/// matching and the policy would be exempting everything it is supposed to
+/// police."* It was **correct**, and its failure is what surfaced that the store
+/// had been deleted — a vacuity floor cannot tell "the detector broke" from "the
+/// subject was removed", which is the reader's job.
+///
+/// With the policy inverted (`the_intern_store_stays_deleted`) the live assertion
+/// is `store_reaching == 0`, so this floor has no role. It is kept verbatim so
+/// that inverting the policy BACK — if a store is ever reintroduced with an
+/// argument for it — restores the discipline rather than reinventing it.
+///
+/// `const MIN_STORE_REACHING_TESTS: usize = 10;`
+const _PARKED_MIN_STORE_REACHING_TESTS: usize = 10;
 
 // ---------------------------------------------------------------------------
 // Source scanning
@@ -348,8 +359,35 @@ fn test_sources() -> Vec<PathBuf> {
 // The policy test
 // ---------------------------------------------------------------------------
 
+/// ★★ **THE POLICY IS INVERTED, because its subject was deleted.**
+///
+/// This test used to be `every_store_reaching_test_in_a_guarded_file_holds_a_guard`:
+/// under `cargo test` every test in a binary shares one process, so an unguarded
+/// intern made the store's contents depend on the schedule, and any neighbour
+/// observing store state read its neighbours instead of itself.
+///
+/// **The process-wide `EPathMap` intern store no longer exists** (deleted earlier in
+/// this campaign — the store's rendezvous cost two full walks to avoid one, behind a
+/// global mutex, in a 64-entry LRU whose eviction dropped a deep `Par` through the
+/// recursive destructor *inside that lock*). With no store there is nothing to reach
+/// and nothing to guard, and the old test failed on its own third floor:
+/// *"found only 0 store-reaching tests (floor 10) — `STORE_REACHING_TOKENS` has
+/// stopped matching, so this policy is exempting everything."*
+///
+/// ⚠ **That floor was CORRECT and the failure was the instrument working.** A
+/// vacuity floor cannot distinguish "the detector broke" from "the subject was
+/// removed" — that is the reader's job, and the answer here is the second.
+///
+/// So the policy is inverted rather than retired. The detector, its scanner, and
+/// its self-test are all still live and still earn their keep; what changes is the
+/// verdict they serve. **The store stays dead**, and reintroducing it must be a
+/// visible act that turns this red — not something that slips back in behind a
+/// helper named like the one that was removed.
+///
+/// The first two floors are unchanged and still guard the scan itself. The third
+/// floor is inverted with them: `store_reaching` must now be **zero**.
 #[test]
-fn every_store_reaching_test_in_a_guarded_file_holds_a_guard() {
+fn the_intern_store_stays_deleted() {
     let mut files_scanned = 0usize;
     let mut test_fns_found = 0usize;
     let mut store_reaching = 0usize;
@@ -397,18 +435,29 @@ fn every_store_reaching_test_in_a_guarded_file_holds_a_guard() {
         "recognised only {test_fns_found} #[test] functions (floor {MIN_TEST_FUNCTIONS_FOUND}) — \
          the function scanner is broken, so this policy is checking nothing"
     );
-    assert!(
-        store_reaching >= MIN_STORE_REACHING_TESTS,
-        "found only {store_reaching} store-reaching tests (floor {MIN_STORE_REACHING_TESTS}) — \
-         STORE_REACHING_TOKENS has stopped matching, so this policy is exempting everything"
-    );
-    assert!(
-        !guarded_files.is_empty(),
-        "no test file declares `{GUARD_DEFINITION}` — either the guards were removed (in which \
-         case the store observations they protect are now unsound) or this policy has lost \
-         track of them"
+    // ★ THE INVERTED CLAUSE. Floors 1-2 above prove the scan ran; this one is the
+    // verdict. Zero, not "at least ten" — the store is gone and must stay gone.
+    assert_eq!(
+        store_reaching, 0,
+        "★ THE INTERN STORE HAS COME BACK.\n\n\
+         {store_reaching} test function(s) reach it again, and the detector names the \
+         shapes it matched in STORE_REACHING_TOKENS. The process-wide EPathMap intern \
+         store was DELETED, and deliberately: obtaining a shared entry cost a full \
+         streamed digest walk PLUS a second full encode_raw walk to verify the bucket \
+         — two walks to avoid one — behind a process-global mutex, in a 64-entry LRU \
+         whose eviction dropped a deep `Par` through the RECURSIVE DESTRUCTOR inside \
+         that lock.\n\n\
+         If reintroducing it is intended, that is a design decision to argue for \
+         explicitly, and this test is the place the argument has to be made: invert \
+         this clause back and restore the guard discipline below it, because a \
+         process-wide store shared across `cargo test`'s single process makes every \
+         store observation schedule-dependent."
     );
 
+    // With no store there is no guard to hold, so both remaining clauses are
+    // vacuously satisfied. They are KEPT rather than deleted: if the clause above is
+    // ever inverted back, these are the discipline that has to come back with it,
+    // and their text is the specification of what "guarded" means.
     assert!(
         violations.is_empty(),
         "these tests reach the process-wide intern store without holding their file's guard:\n  \
