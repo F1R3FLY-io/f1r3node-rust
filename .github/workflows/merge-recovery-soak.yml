@@ -404,7 +404,7 @@ jobs:
     environment: oci-credentials
     # 60, not 25: this job waits for the runner to register before relabelling
     # it (cloud-init 3-5 min, bounded at 15), and on a lost registration race it
-    # terminates the poached VM and launches another, up to three times. Worst
+    # abandons the poached VM and launches another, up to three times. Worst
     # case is three full 15-minute waits plus boots. The soak window absorbs
     # this; a hung launch job would not.
     timeout-minutes: 60
@@ -508,19 +508,14 @@ jobs:
         shell: bash -e {0}
         run: |
           # Bounded reclaim loop. Losing the registration race is recoverable:
-          # the poached VM is ours, so terminate it, launch another and try
-          # again. Three launches, because a pool busy enough to take three in a
-          # row is not a race any longer -- it is CI saturation, and burning
-          # more 16-OCPU VMs against it is waste, not persistence.
+          # abandon the poached VM to the job that took it, launch another and
+          # try again. Three launches, because a pool busy enough to take three
+          # in a row is not a race any longer -- it is CI saturation, and
+          # burning more 16-OCPU VMs against it is waste, not persistence.
           #
-          # Terminating a poached VM FAILS THE JOB THAT STOLE IT, with the same
-          # runner-loss error this branch exists to diagnose. That is a real
-          # cost paid by another workflow, accepted deliberately: the alternative
-          # is abandoning the VM to finish its stolen job, which spends the same
-          # money and leaves the soak waiting on a runner that will deregister
-          # the moment it is done. A re-runnable CI job is cheaper than a lost
-          # soak window. Once launch-runner.sh takes RUNNER_LABELS this loop
-          # stops firing, because there is no window left to lose.
+          # See the abandon-rather-than-terminate note below for why we do not
+          # simply take the VM back. Once launch-runner.sh takes RUNNER_LABELS
+          # this loop stops firing, because there is no window left to lose.
           MAX_LAUNCHES=3
           bound=""
           for launch in $(seq 1 "$MAX_LAUNCHES"); do
@@ -579,8 +574,18 @@ jobs:
           printf '{"labels":["f1r3fly-rust-soak"]}' \
             | gh api -X POST "repos/$GH_REPO/actions/runners/$rid/labels" \
                 --input - >/dev/null
+          # Best-effort, and NOT because failures do not matter -- the
+          # verification below is the gate, and it is stricter than this call.
+          #
+          # Removing a label the runner does not have returns 404, and gh exits
+          # non-zero on 404, which under `bash -e` kills the step. That is
+          # exactly the state we are driving toward: once launch-runner.sh
+          # honours RUNNER_LABELS, the VM registers as f1r3fly-rust-soak and
+          # never carries the shared label at all. Left strict, this line would
+          # fail every soak the day the pin moves -- a fix breaking on success.
           gh api -X DELETE \
-            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-ci-ephemeral" >/dev/null
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-ci-ephemeral" \
+            >/dev/null 2>&1 || true
           have="$(gh api "repos/$GH_REPO/actions/runners/$rid/labels" \
             --jq '[.labels[].name] | sort | join(",")')"
           echo "labels now: $have"
@@ -610,31 +615,33 @@ jobs:
             bound="$name"
             break
           fi
-          echo "::warning::$name was claimed by another workflow before the exclusive label landed (busy=$busy); reclaiming"
-          # Deregister first. A terminated-but-registered runner lingers as an
-          # offline entry that the next launch has to scroll past, and there are
-          # already a dozen of those. Best effort: GitHub refuses to delete a
-          # busy runner, which is exactly the case here, so this usually 409s
-          # and the entry goes offline on its own once the VM dies.
-          gh api -X DELETE "repos/$GH_REPO/actions/runners/$rid" >/dev/null 2>&1 || true
-          # Find the VM by the display-name launch-runner.sh gave it. Passed to
-          # jq with --arg so the name is data, never filter text.
-          iid="$(oci compute instance list \
-            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>/dev/null \
-            | jq -r --arg n "$name" '
-                .data[]
-                | select(."lifecycle-state" == "RUNNING")
-                | select(."display-name" == $n)
-                | .id' 2>/dev/null | head -1 || true)"
-          if [ -n "$iid" ]; then
-            if oci compute instance terminate --instance-id "$iid" --force >/dev/null 2>&1; then
-              echo "terminated poached VM $name"
-            else
-              echo "::warning::could not terminate $name ($iid); the reaper will collect it at the age bound"
-            fi
-          else
-            echo "::warning::could not locate a RUNNING instance named $name to terminate; it may already be gone"
-          fi
+          echo "::warning::$name was claimed by another workflow before the exclusive label landed (busy=$busy); abandoning it and launching a replacement"
+          # ABANDON, do not terminate. The VM is ours and terminating it would
+          # free the money sooner, but it would kill the job that claimed it --
+          # producing a runner-loss failure in that workflow, which is the exact
+          # signature we have spent two days learning to read as a bug. Three
+          # separate mechanisms already present identically from outside (the
+          # idle watchdog killing a live job, this label race, and whatever is
+          # still killing segments). A deliberate fourth producer of that signal
+          # means the next person debugging one has to first rule out that we
+          # did it on purpose, and nothing in the failed run would tell them.
+          #
+          # Abandoning costs the same money -- the runner is --ephemeral, so it
+          # exits after the stolen job and the VM self-terminates -- and buys a
+          # slightly slower retry. That is the right trade: the diagnostic
+          # channel is worth more than the minutes.
+          #
+          # Credit where due: this was system-integration's call, not mine. I
+          # had weighed only cost and soak windows, where it is genuinely close.
+          #
+          # Take the exclusive label back off it, though. We added
+          # f1r3fly-rust-soak before discovering it was busy, and leaving it
+          # there means an abandoned runner still advertises the label this
+          # soak routes on. Best effort: if it fails the runner is about to
+          # deregister anyway.
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-soak" \
+            >/dev/null 2>&1 || true
           if [ "$launch" -lt "$MAX_LAUNCHES" ]; then
             echo "launching a replacement soak runner"
             system-integration/ci/oci-runners/launch-runner.sh amd64
