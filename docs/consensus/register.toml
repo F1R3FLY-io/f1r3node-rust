@@ -1466,7 +1466,7 @@ token = "eval_stable_epathmap"
 [[citation]]
 owner = "(doc)"
 cited = "rhoapi_ext.rs"
-line = 238
+line = 244
 at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "proto field 8"
@@ -1539,7 +1539,7 @@ token = "byte_slice"
 [[citation]]
 owner = "CBR-042"
 cited = "models/src/rust/rhoapi_ext.rs"
-line = 870
+line = 875
 at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "from_path_stream_and_values"
