@@ -171,15 +171,44 @@ fn the_escape_arm_ceiling_is_searched_not_transcribed() {
 /// The observable consequence is the asymmetry asserted here: the depth at
 /// which a bare entry stops decoding *standalone* is strictly greater than the
 /// depth at which the same entry stops arriving *inside a map*.
+/// ★★ **NESTING NOW COSTS NOTHING, and that is the stronger claim.**
+///
+/// ⚠ This test was `the_escape_arm_reads_deeper_than_tag_one_can_deliver`, and it
+/// asserted `ingress_ceiling < standalone_ceiling` — that an entry nested inside a
+/// map died *sooner* than the same entry standalone, because the tag-1 `repeated
+/// Par` walk spent `W ≥ 3` levels of the outer decode's budget before reaching it.
+/// Measured 31 vs 32: **one** level of headroom, and that inequality is what
+/// justified CBR-041's acceptance axis.
+///
+/// **CBR-041 (`1b576c90`) then deleted the tag-1 arm**, so the quantity the old
+/// assertion compared against no longer exists. The search loop ran to its own
+/// bound and asserted `32 < 32`. ⛔ **That commit cited this file by name and did
+/// not update it — the test was left RED in committed state.** Repaired here.
+///
+/// # What replaces it, and why it is stronger
+///
+/// Every map now emits `U(m)` at proto field 8, a `bytes` field — and a `bytes`
+/// field costs prost **zero message levels**. So an entry nested inside a map is
+/// re-decoded from its own key with a *fresh* `DecodeContext`, spending nothing on
+/// the envelope that carried it.
+///
+/// ⇒ the ingress ceiling does not merely *exceed* the old one; it **equals the
+/// standalone ceiling exactly**. Nesting is free. That is a sharper property than
+/// the old inequality — it says the map envelope has no depth cost at all, rather
+/// than merely a smaller one — and it is what makes the headroom grow with nesting
+/// depth instead of shrinking.
+///
+/// The old inequality cannot be re-measured: its second term was deleted. It stands
+/// as the historical justification for CBR-041 and is recorded there.
 #[test]
-fn the_escape_arm_reads_deeper_than_tag_one_can_deliver() {
+fn a_map_envelope_costs_the_reader_no_depth_at_all() {
     use models::rhoapi::EPathMap;
     use prost::Message;
 
     let standalone_ceiling = escape_arm_ceiling(400);
 
-    // The greatest depth at which an entry survives prost's decode while nested
-    // inside an EPathMap's tag-1 field walk — searched the same way.
+    // The greatest depth at which an entry survives while nested inside a map —
+    // searched the same way, so a moved ceiling is REPORTED, not silently passed.
     let mut ingress_ceiling = 0;
     for depth in 0..=standalone_ceiling {
         let map = EPathMap::new(vec![escaped_nest(depth)], Vec::new(), false, None);
@@ -190,20 +219,31 @@ fn the_escape_arm_reads_deeper_than_tag_one_can_deliver() {
         }
     }
 
-    assert!(
-        ingress_ceiling < standalone_ceiling,
-        "★ THE DOMAIN THEOREM FAILED. The escape arm must read STRICTLY deeper \
-         than tag 1 can deliver, because it re-decodes with a fresh budget while \
-         tag 1 spends W ≥ 3 levels of the outer decode's budget first. Measured \
-         ingress = {ingress_ceiling}, standalone = {standalone_ceiling}. If these \
-         coincide, the prost move is NOT permissive and the register entry's \
-         acceptance axis is wrong."
+    // ANTI-VACUITY: the fixture must actually be taking the field-8 arm. Field 8
+    // length-delimited is 0x42; the retired list arm was tag 1 (0x0a).
+    let probe = EPathMap::new(vec![escaped_nest(1)], Vec::new(), false, None);
+    let probe_bytes = <EPathMap as Message>::encode_to_vec(&probe);
+    assert_eq!(
+        probe_bytes.first(),
+        Some(&0x42u8),
+        "control: the map must emit U(m) at field 8 — if a list arm ever returns, \
+         this measurement is about a different envelope and proves nothing"
+    );
+
+    assert_eq!(
+        ingress_ceiling, standalone_ceiling,
+        "★ THE MAP ENVELOPE HAS ACQUIRED A DEPTH COST. Field 8 is a `bytes` field, \
+         which costs prost ZERO message levels, and the escape arm re-decodes each \
+         key with a FRESH DecodeContext — so an entry inside a map must survive to \
+         exactly the depth it survives to standalone. Measured ingress = \
+         {ingress_ceiling}, standalone = {standalone_ceiling}. A gap here means the \
+         envelope is spending budget again, and CBR-041's acceptance axis would need \
+         re-deriving."
     );
 
     println!(
-        "MEASURED prost: tag-1 ingress ceiling = {ingress_ceiling}, escape-arm ceiling = \
-         {standalone_ceiling}, headroom = {}",
-        standalone_ceiling - ingress_ceiling
+        "MEASURED prost: map-nested ceiling = {ingress_ceiling}, standalone ceiling = \
+         {standalone_ceiling} — the envelope costs 0 levels"
     );
 }
 
