@@ -939,6 +939,53 @@ axis_acceptance = "NO"
 axis_metering = "NO"
 
 [[entry]]
+id = "CBR-041"
+surface = "N"
+commits = ["1b576c90"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+# The entry SET a pathmap denotes is unchanged, and so is every entry in it.
+# U(m) and the entry set determine each other: encode_trie_path is injective on
+# its domain, and a trie indexes children by byte so its order is byte-lexicographic
+# by construction. Same reading CBR-011 / CBR-012 / CBR-040 use for changes that
+# move a representation without moving what it denotes.
+axis_value = "NO"
+# EPathMap ordering reaches spatial matching through ScoredTerm::sort_vec, and the
+# sorter's canonical golden moved on 2 of 120 entries. ⚠ Their SCORE TREES are
+# identical in want and got — only the emitted bytes differ — so what moved is the
+# tie-break input, not the comparator. A pathmap-bearing pattern can select a
+# different branch on a tie-carrying term.
+axis_verdict = "MOVES"
+# NOT moved by this commit. wire_encode/par_codec still emit `u64 n ‖ n × Par`;
+# every bincode golden came back UNMOVED. ⚠ This is the HALF OF THE MANDATE STILL
+# OWED, blocked on Phase 4 S2 — see (i).
+axis_bytes_bincode = "NO"
+# ★ THE AXIS. Every map now emits U(m) at proto field 8; the tag-1 `repeated Par`
+# walk is deleted. GROUND maps are byte-IDENTICAL — eval_stable_epathmap required
+# fields 3/4/5 at their defaults, so a ground map emitted field 8 alone already, and
+# still does. Exactly 2 of 15 goldens moved, both maps carrying non-default metadata.
+axis_bytes_prost = "MOVES"
+# The prost encoding is the preimage cost_accounting/sig.rs SIGNS (named by
+# sorter_canonical_golden.rs:894 in its own failure message), so a moved encoding is
+# a moved signature and a moved post-state hash.
+axis_post_state_hash = "MOVES"
+# ★ STRICTLY PERMISSIVE, and MEASURED rather than argued. merge_field keeps BOTH read
+# arms (tag 1 is read-only legacy; a reader is never narrowed), and the new arm reads
+# DEEPER than the old one could deliver: a tag-8 `bytes` field costs prost zero message
+# levels and the escape arm re-decodes with a FRESH DecodeContext, where tag 1 first
+# spent W ≥ 3 levels of the outer decode's budget. rholang/tests/
+# pathmap_escape_depth_reachability.rs measures escape-arm ceiling 32 vs tag-1 ingress
+# ceiling 31. ⚠ Headroom is ONE level, not the three a W ≥ 3 argument predicts; the
+# inequality is what the conclusion needs and it holds, but the margin is thin and is
+# filed as measured, not derived. No term that decoded before stops decoding.
+axis_acceptance = "NO"
+# EPathMap::encoded_len is a metering input (costs.rs, substitute.rs — charged twice
+# per substitution). Its value changes from the sum of per-entry prost lengths to the
+# length of the one shared key stream, which the memo returns without re-encoding.
+axis_metering = "MOVES"
+
+[[entry]]
 id = "CBR-L14"
 surface = "L"
 commits = ["713e0364", "5a9efa00", "93155150", "3aea562f"]

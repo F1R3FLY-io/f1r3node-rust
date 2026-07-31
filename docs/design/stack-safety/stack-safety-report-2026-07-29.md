@@ -52,6 +52,8 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`wire_encode`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C3** | `7c74260d` | f1r3node | wire-schema generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C4** | `56fb1fd0` | f1r3node | prost encoder: $`\Theta(d^2) \rightarrow \Theta(n)`$ **work** | 302 $`\rightarrow`$ 302 | ⚠ **no** — and **dormant** | [5.3.5](#535-the-prost-network-encoder-56fb1fd0--converted-in-work-not-in-stack-and-dormant) |
+| **SS-C5** | `1b576c90` | f1r3node | prost `EPathMap`: the tag-1 **entry walk is DELETED**, not converted — every map emits the trie's own byte array `U(m)` at field 8 | — (traversal removed) | **yes** — by deletion | [5.3.6](#536-the-prost-epathmap-arm-1b576c90--the-traversal-is-deleted-not-converted) |
+| **SS-C6** | `698406a3` | f1r3node | `U(m)` becomes a memo on the trie; the warm encode is one `memcpy` | $`\Theta(\text{entries}) \rightarrow`$ **0** *(amortised)* | — (work, not stack) | [5.3.6](#536-the-prost-epathmap-arm-1b576c90--the-traversal-is-deleted-not-converted) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -951,6 +953,47 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 | M3 skip-if-default $`\rightarrow`$ `if true` for `bool` | 68 | **REJECTED** | lengths 18 vs 14, 11 vs 9, 17 vs 11, 8 vs 6 across the corpus. |
 
 ⚠ **The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally, never by timing** — a timing assertion in a test suite is a flake. The length table must grow **linearly** across $`d \in \{4, 8, 16, 32\}`$, i.e. constant entries per level; a growing per-level cost **is** the quadratic. **NOT MEASURED**: no wall-clock benchmark of `prost_encode` against `prost`'s own encoder exists, and none was constructed for this report, because the code is dormant and benchmarking a dormant path would report a number nobody can collect (§5.9).
+
+---
+
+#### 5.3.6 The prost `EPathMap` arm (`1b576c90`) — the traversal is DELETED, not converted
+
+★ **Every other row in Family C converts a recursive walk into an iterative one. This one removes the walk.** It is worth its own subsection precisely because "make the traversal iterative" is not the only available move, and this register had no example of the alternative.
+
+**What was there.** An `EPathMap` stores a `pathmap::PathMap<Par>` — a prefix-compressed byte-node trie-map. Proto field 8 already carried the trie's own canonical byte array $`U(m)`$ — but only for maps satisfying `eval_stable_epathmap`. Every other map emitted `repeated Par` at tag 1: the trie flattened to a list, **each entry re-encoded from scratch**, hereditarily through nested maps, and re-filed entry by entry on the far side at one `encode_trie_path` per entry.
+
+**What is there now.** One arm. Fields 3, 4, 5, 8 in ascending tag order; field 8 is $`U(m)`$ for every non-empty map. The per-entry encode traversal has no remaining caller.
+
+```math
+\text{bytes}(m) \;=\; \underbrace{\Theta\!\left(\textstyle\sum_{e \in m} |\mathrm{prost}(e)|\right)}_{\text{tag-1 walk, re-derived per encode}}
+\;\longrightarrow\;
+\underbrace{\Theta\!\left(|U(m)|\right)}_{\text{one memoised } \texttt{memcpy}}
+```
+
+**SS-C6, the memo it rests on.** `EPathMap::path_stream()` previously re-walked the whole trie and returned a fresh `Vec<u8>` **on every call** — so a ground map paid a full read-zipper pass plus an allocation on every `encode_raw` *and* again on every `encoded_len`, the latter being a metering input charged twice per substitution. It is now `path_stream: OnceLock<Arc<Vec<u8>>>` on the `EntryTrie`, computed once per value and shared by every clone. The warm encode is one `memcpy`.
+
+##### ⚠ The measured boundary that stopped this at the prost surface
+
+The same move on the **bincode** surface is *not* taken, and the reason is measured rather than preferred. `rholang/tests/pathmap_escape_depth_reachability.rs` searches both ceilings — it walks the depth axis until the codec actually refuses, so a moved ceiling is reported rather than silently passed:
+
+| quantity | measured |
+|---|---|
+| escape-arm read ceiling (`decode_trie_path`) | **32** |
+| tag-1 prost ingress ceiling | **31** |
+| headroom | **1** |
+| ordinary Rholang `{\| Set([[…1…]]) \|}` at depth 40 | compiles; its trie key does **not** decode |
+
+★ **On prost the change is strictly permissive, and that is a proof rather than a sweep.** A tag-8 `bytes` field costs prost **zero** message levels, and the escape arm re-decodes its payload with a **fresh** `DecodeContext` — the full 100-level budget from zero — whereas tag 1 first spent $`W \ge 3`$ levels of the outer decode's budget. Hence every entry tag 1 could deliver, tag 8 can read. ⚠ The measured headroom is **one** level, not the three that $`W \ge 3`$ predicts; the inequality is what the conclusion needs and it holds, but the margin is thin and is recorded as **measured, not derived**.
+
+⛔ **On bincode the same move would be a REGRESSION reachable from a deploy.** The cold-store wire is iterative and depth-unlimited in *both* directions today. Emitting $`U(m)`$ there makes `decode_trie_path` the reader, capping a path that is currently uncapped — and the reachability row above shows ordinary Rholang crossing that cap. **This is a new dependency edge from the cold store onto [§8.6.5](#865-119120-the-prost-read-ceiling)'s unbounded prost reader**, not a footnote: the bincode half of the owner's serialization mandate cannot land until that reader exists.
+
+##### What did NOT move, and why that is the control
+
+Exactly **2 of 15** goldens moved — both maps carrying non-default metadata, i.e. precisely the class `eval_stable_epathmap` was excluding. The three **ground** prost goldens and **every** bincode and JSON golden came back unmoved. That unmoved set is the anti-vacuity control: a change that moved everything would mean the emitter had drifted rather than the fork having been removed, and without it the two claims are indistinguishable.
+
+⚠ **MEASURED FALSE — recorded so it is not revived as a justification.** $`U(m)`$ does **not** exploit prefix sharing. `path_stream_of` writes each key in full; `ezipper.prost.bin` carries `04 01 61 04 01 78 00` and `04 01 61 04 01 79 00`, a shared 3-byte prefix written whole both times. The trie is prefix-compressed *in memory*; its serialization is not. The gain here is **canonicity and single-sourcing**, not compression.
+
+Consensus exposure is filed as **CBR-041** (seven axes; `axis_bytes_prost`, `axis_post_state_hash`, `axis_verdict` and `axis_metering` all `MOVES`).
 
 ---
 
