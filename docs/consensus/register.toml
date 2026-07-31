@@ -1209,6 +1209,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "6a264e05"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 45 — one new file, models/examples/sort_collection_reentry_probe.rs. An example target is not compiled into the library and no production path references it; zero lines of models/src changed. It MEASURES existing behaviour and changes none: the ladder it fits (Theta(3^d) for the three collection sorter arms) is recorded as SS-Y3 in the stack-safety report, an OPEN defect, precisely because this commit does not repair it. [DERIVED]"
+
+[[exempt]]
 commit = "08e876fd"
 window = "FRONTIER"
 reason = "HYGIENE"
