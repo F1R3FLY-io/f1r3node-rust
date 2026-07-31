@@ -241,6 +241,18 @@ pub struct EntryTrie {
     /// The memoized key walk: `canonical_ps_from_trie(&trie)`. A pure function
     /// of `trie` with no mutator, behind an `Arc` so `Clone` stays O(1).
     view: OnceLock<Arc<Vec<Par>>>,
+    /// ★ **THE consensus byte string** — `U(m)`, the trie's own length-framed
+    /// key stream (`path_stream_of`). A pure function of `trie`, memoized behind
+    /// an `Arc` so `Clone` stays O(1) and a warm encode is one `memcpy`.
+    ///
+    /// This is the trie serialized *as a trie*: `pathmap`'s `.paths` payload
+    /// (`u32-LE keylen ++ key`, in zipper order) with the disqualifying
+    /// zlib-ng deflate removed. Every serialization surface reads it, so the
+    /// entry SET — never a projected sequence — is what reaches the wire.
+    ///
+    /// ⚠ It walks KEYS and never decodes, which is what makes it total where
+    /// [`EntryTrie::view`]'s key-side twin would not be.
+    path_stream: OnceLock<Arc<Vec<u8>>>,
 }
 
 /// ★ **THE reader.** The entries of a trie, in trie order (a read-zipper walk,
@@ -307,6 +319,26 @@ impl EntryTrie {
     pub fn view(&self) -> &Vec<Par> {
         self.view
             .get_or_init(|| Arc::new(entries_in_trie_order(&self.trie)))
+    }
+
+    /// ★ `U(m)` — the trie's own length-framed key stream, memoized.
+    ///
+    /// The byte string every serialization surface emits: prost field 8, serde,
+    /// and the bincode event-hash preimage all hand *this slice* to their host
+    /// format's byte-string primitive. Computed once per value and shared by
+    /// every later clone, so the hot encode is a `memcpy` and allocates nothing.
+    ///
+    /// # Why it is canonical without sorting anything
+    ///
+    /// A trie indexes children by byte, so a read-zipper walk is
+    /// byte-lexicographic *by construction* and `path_stream_of` performs no
+    /// sort. Duplicates are impossible — one slot per key. `encode_trie_path`
+    /// is injective on its domain. So `U(m)` and the entry set determine each
+    /// other, and a producer's insertion order is not merely normalized away:
+    /// it is **unrepresentable**.
+    pub fn path_stream(&self) -> &[u8] {
+        self.path_stream
+            .get_or_init(|| Arc::new(path_stream_of(&self.trie)))
     }
 
     /// The trie itself — the store, handed out for the O(1) `clone()` that
@@ -381,6 +413,7 @@ impl EntryTrie {
             self.len += 1;
         }
         self.view.take();
+        self.path_stream.take();
     }
 
     /// Add every entry of `other` — the set union that `graft` performs.
@@ -447,6 +480,7 @@ impl EntryTrie {
         );
 
         self.view.take();
+        self.path_stream.take();
     }
 
     /// `true` iff the projection memo has been forced, i.e. a second full copy of the entries
@@ -514,6 +548,12 @@ impl EntryTrie {
             union_locally_free: _,
             any_connective_used: _,
             view,
+            // ★ NOT a retainer. `U(m)` is a flat `Vec<u8>` — it holds no `Par`,
+            // so dropping it is a `dealloc` of one buffer and can never reach
+            // the recursive destructor this method exists to avoid. It is named
+            // rather than elided because the `..`-free form is the guard: a
+            // future field that DOES retain entries must fail to compile here.
+            path_stream: _,
         } = self;
 
         if let Some(entries) = view.into_inner().and_then(Arc::into_inner) {
@@ -546,6 +586,7 @@ impl EntryTrie {
         if removed.is_some() {
             self.len -= 1;
             self.view.take();
+            self.path_stream.take();
             // The folds are not invertible, so they are recomputed rather than
             // decremented. `entries_stable` in particular MUST stay exact: a
             // conservative `false` would move a now-ground map off proto field
@@ -568,6 +609,10 @@ impl EntryTrie {
         }
         self.union_locally_free = union_locally_free;
         self.view = OnceLock::from(Arc::new(entries));
+        // `U(m)` is a function of the trie, which just changed. Dropped rather
+        // than recomputed: the folds have to be eager (they are read O(1)), the
+        // key stream does not.
+        self.path_stream.take();
     }
 }
 
@@ -635,6 +680,7 @@ impl EntryTrie {
             union_locally_free,
             any_connective_used,
             view: OnceLock::from(Arc::new(entries)),
+            path_stream: OnceLock::new(),
         }
     }
 }
@@ -686,6 +732,7 @@ impl Clone for EntryTrie {
             union_locally_free: self.union_locally_free.clone(),
             any_connective_used: self.any_connective_used,
             view: self.view.clone(),
+            path_stream: self.path_stream.clone(),
         }
     }
 }
@@ -701,6 +748,7 @@ impl Default for EntryTrie {
             union_locally_free: Vec::new(),
             any_connective_used: false,
             view: OnceLock::new(),
+            path_stream: OnceLock::new(),
         }
     }
 }
@@ -1085,9 +1133,11 @@ impl EPathMap {
     ///
     /// ★ `pub` since the intern store was deleted. The store used to front this, so a
     /// caller wanting `U(m)` reached it as `intern().path_stream`; with no store the
-    /// walk itself is the only way to ask, and it is an 11-line read-zipper pass.
-    pub fn path_stream(&self) -> Vec<u8> {
-        path_stream_of(self.ps.trie())
+    /// walk itself is the only way to ask — and it is now **memoized on the trie**
+    /// ([`EntryTrie::path_stream`]) rather than re-walked per call, because every
+    /// serialization surface reads it.
+    pub fn path_stream(&self) -> &[u8] {
+        self.ps.path_stream()
     }
 }
 
@@ -1173,7 +1223,7 @@ impl prost::Message for EPathMap {
         // tag 1) — whose entries are now the canonical projection, which is the
         // consensus-visible half of this change.
         if eval_stable_epathmap(self) && !self.ps.is_empty() {
-            encode_ground_field8(&self.path_stream(), buf);
+            encode_ground_field8(self.path_stream(), buf);
             return;
         }
         self.encode_raw_fields(buf);
@@ -1313,7 +1363,7 @@ impl prost::Message for EPathMap {
         // Empty cell: a non-empty GROUND map's length is the field-8 (U(m))
         // length; non-ground / empty maps use the field walk.
         if eval_stable_epathmap(self) && !self.ps.is_empty() {
-            return ground_field8_len(&self.path_stream());
+            return ground_field8_len(self.path_stream());
         }
         self.encoded_len_fields()
     }
