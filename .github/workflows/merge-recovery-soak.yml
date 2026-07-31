@@ -571,9 +571,20 @@ jobs:
             # not under this repository's control.
             if listing="$(gh api "repos/$GH_REPO/actions/runners" --paginate 2>&1)"; then
               api_fail=0
-              rid="$(printf '%s' "$listing" \
-                | jq -r --arg name "$name" \
-                    '.runners[] | select(.name == $name) | .id' 2>/dev/null | head -1)"
+              # A jq failure here is a THIRD fact, distinct from both "API is
+              # broken" and "not registered yet": the call succeeded and
+              # returned something that is not the JSON we expect. Swallowed, it
+              # spends the full 15 minutes and then reports "never registered",
+              # naming slow cloud-init for what is a malformed API response --
+              # the exact conflation the api_fail counter below exists to stop.
+              if ! matched="$(printf '%s' "$listing" \
+                   | jq -r --arg name "$name" \
+                       '.runners[] | select(.name == $name) | .id' 2>&1)"; then
+                printf '%s\n' "$matched" | tail -5
+                echo "::error::the runner listing came back as unparseable JSON; this is an API fault, not a slow boot"
+                exit 1
+              fi
+              rid="$(printf '%s' "$matched" | head -1)"
             else
               # An empty runner list and a broken API call are different facts.
               # Swallowing both makes an auth or permission regression look
@@ -872,8 +883,22 @@ jobs:
               if [ "$attempt" -lt 12 ]; then sleep 15; fi
               continue
             fi
+            # Empty or null is OCI genuinely reporting no tags -- a real answer,
+            # and {} is the correct starting point for it.
             case "$existing" in ''|null) existing='{}' ;; esac
-            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            # Anything else that does not parse is NOT an answer, and must be
+            # handled exactly like the read failure above: retry, never write.
+            # This previously fell back to {}, which -- since --freeform-tags
+            # replaces the whole map -- erased every existing tag, including the
+            # cost-tracking metadata the comment above is about. The loop
+            # defended against erasure-by-read-failure and then erased on the
+            # parse failure four lines later.
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/12: current tags did not parse as a JSON object; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | head -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
             # github-run-key is what lets capture_diagnostics find this VM after
             # the fact. When the runner is LOST rather than failing, the job
             # never completes, so nothing it wrote to $GITHUB_OUTPUT is ever
