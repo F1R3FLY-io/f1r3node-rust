@@ -1240,6 +1240,18 @@ reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13. [DERIVED]"
 
 [[exempt]]
+commit = "4544c268"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 57 — compiler-driven dead-code removal following C6 and C7c. EncOp::{EntryPath, CloseEntryPath} and their arms (C6 made them unreachable), 20 of 24 rhoapi imports in spliced_event_bytes (the deleted emitter's), and HashMap/Arc/Mutex/OnceLock/INTERN_TICK (the intern store's LRU bookkeeping). Zero errors and ZERO WARNINGS after. One over-trim caught and reverted: ParWithRandom is still used by StableHashSerialize. Byte set unmoved. [DERIVED]"
+
+[[exempt]]
+commit = "387d4b93"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 56 — C6. encode_trie_path's EPathmapBody arm pushed one EncOp::EntryPath per entry, each re-running the full canonical encode, over entries from the deep-cloning projection memo — HEREDITARILY, so a map nested d deep re-encoded at every level, on the codec's hottest path. Now a read-zipper walk pushing rz.path() straight into the region. BYTE-IDENTICAL BY THREE FACTS, not by test: (1) forall (k,v). encode_trie_path(v) = k is the trie's entry invariant, enforced in RELEASE by adopt_trie which re-files rather than trusting; (2) EntryPath encoded with known_stable=true while the stored key had eval_stable_par computed — these disagree only for an UNSTABLE entry, which this arm cannot see, being under the eval_stable guard where entries_stable requires every entry stable; (3) CloseNestedRegion builds a PathMap<()> and emits ITS walk, so the region is a function of the key SET, not push order. SHOWN RED — and it proves the goldens reach nested maps rather than passing vacuously: appending a 0xEE byte to each key failed epathmap_canonical_fixtures::prost_goldens_epathmap_fixtures. [DERIVED]"
+
+[[exempt]]
 commit = "c0385b79"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
@@ -1328,7 +1340,7 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 [[citation]]
 owner = "(doc)"
 cited = "pathmap_crate_type_mapper.rs"
-line = 259
+line = 254
 at = "HEAD"
 path = "models/src/rust/pathmap_crate_type_mapper.rs"
 token = "eval_stable_epathmap"
