@@ -325,18 +325,120 @@ fn sorting_is_idempotent_the_canonical_form_is_a_fixed_point() {
     });
 }
 
-/// **Score/term agreement.** Two inputs land on the same canonical term *iff*
-/// they land on the same score.
+/// ★★★ **THE PINNED WITNESS — distinct canonical terms CAN share a score, and the consequence
+/// is a live consensus fault.**
 ///
-/// This is the honest version of what the deleted tests were reaching for.
-/// It is a statement about the sorter's two outputs *agreeing with each other*
-/// — not about either of them being injective in the input — and it is the
-/// property `sort_vec` needs: siblings are ordered by score, so two siblings
-/// with the same canonical term must compare `Equal`, and two with different
-/// canonical terms must not silently share a score class in a way that makes
-/// their order depend on which one the comparator saw first.
+/// This is the counterexample [`equal_canonical_terms_carry_equal_scores`] was weakened for. It
+/// is pinned in the shape [`the_sorter_is_a_normalizer_and_is_therefore_not_injective`] uses:
+/// a hand-built witness, asserted directly, so no generator has to be lucky.
+///
+/// # Why the score cannot separate these
+///
+/// `combine_emap` chains **only** `sorted_key.score` (`sort_combine.rs:1442-1450`); nothing in
+/// an `EMap`'s score tree depends on the values. So `{3 → 30}` and `{3 → 90}` are distinct
+/// canonical terms whose score trees are identical — both `(999 (9 -1 (999 (2 3) 0) 0) 0)`, in
+/// which the key `3` appears and the values appear nowhere.
+///
+/// # The consequence, and it is the part that matters
+///
+/// `ScoredTerm::sort_vec` is a **stable** sort, so tied siblings keep their input order. Two
+/// independent things then feed that input order, and both are defects:
+///
+/// | site | input order | consequence |
+/// |---|---|---|
+/// | `SortedParHashSet::create_from_vec` | `HashSet<Par>` iteration — seeded **per process** | canonical form is a **coin flip**; measured 20/20 across 40 processes |
+/// | `combine_par` (`sort_combine.rs:447-455`) | the message's own field order | ⛔ **deterministic**, and two spellings of the SAME process sign differently |
+///
+/// ⇒ The second is the worse one. `|` is commutative, so `{3:30} | {3:90}` and
+/// `{3:90} | {3:30}` denote one process; they must reach one canonical form. Measured, they do
+/// not — and unlike the hash case, these are bytes that **are defined today**.
+/// `permutation_collapse_survives_nesting` already asserts the property this violates.
+///
+/// ⚠ **These assertions are written in their CURRENT-STATE polarity and are expected to flip.**
+/// The `assert_ne!` below is the statement of a defect, not of a desired property. When the
+/// sibling order is made total, it becomes `assert_eq!` in the same commit, and that diff is
+/// the fix's RED-to-GREEN pair. ★ Do not "fix" this test by deleting it.
 #[test]
-fn the_score_and_the_canonical_term_agree_with_each_other() {
+fn distinct_canonical_terms_can_share_a_score_and_that_is_a_consensus_fault() {
+    use models::rhoapi::{EMap, KeyValuePair};
+    use prost::Message;
+
+    fn gint(v: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(v)),
+        }])
+    }
+    fn map1(key: i64, value: i64) -> Expr {
+        Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair {
+                    key: Some(gint(key)),
+                    value: Some(gint(value)),
+                }],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }
+    }
+
+    let a = Par::default().with_exprs(vec![map1(3, 30)]);
+    let b = Par::default().with_exprs(vec![map1(3, 90)]);
+    let sa = ParSortMatcher::sort_match(&a);
+    let sb = ParSortMatcher::sort_match(&b);
+
+    assert_ne!(
+        sa.term, sb.term,
+        "VACUOUS: {{3 → 30}} and {{3 → 90}} reached the SAME canonical term, so this witness \
+         no longer witnesses anything. Rebuild it from a pair that really is distinct."
+    );
+    assert_eq!(
+        sa.score, sb.score,
+        "the score now SEPARATES {{3 → 30}} from {{3 → 90}}. If that is deliberate — the value's \
+         score is no longer discarded — then this witness is discharged and the `iff` that \
+         `equal_canonical_terms_carry_equal_scores` used to assert may be recoverable. Re-derive \
+         it rather than deleting this test: the other lossy score paths (`EZipper`'s cursor, \
+         `ReceiveBind.free_count`) may still admit ties."
+    );
+
+    // ── The deterministic fork. No `HashSet`, no seed, one process. ──
+    let ab = Par::default().with_exprs(vec![map1(3, 30), map1(3, 90)]);
+    let ba = Par::default().with_exprs(vec![map1(3, 90), map1(3, 30)]);
+    let cab = ParSortMatcher::sort_match(&ab).term.encode_to_vec();
+    let cba = ParSortMatcher::sort_match(&ba).term.encode_to_vec();
+
+    assert_ne!(
+        cab, cba,
+        "★ THE DEFECT IS REPAIRED — `{{3:30}} | {{3:90}}` and `{{3:90}} | {{3:30}}` now reach \
+         the SAME canonical form.\n\n\
+         This assertion is written in its CURRENT-STATE polarity: it asserts the FAULT, because \
+         the fault is what is true at the commit that pins it. Flipping it to `assert_eq!` is \
+         the repair's deliverable, and that flip belongs in the SAME commit as the fix so the \
+         diff carries its own RED-to-GREEN evidence.\n\n\
+         Do not delete this test to make the suite green."
+    );
+}
+
+/// **Score/term agreement — the FORWARD direction only.** Equal canonical terms carry equal
+/// scores.
+///
+/// ⛔★★★ **This test used to assert an `iff`, and the reverse direction is FALSE.** It was
+/// weakened to what is true, and the counterexample is pinned in
+/// [`distinct_canonical_terms_can_share_a_score_and_that_is_a_consensus_fault`] below rather
+/// than left for the next reader to rediscover.
+///
+/// The `iff` passed only because the generators never drew the witness — the identical failure
+/// shape the stack-safety report's §5.7.3 documents for the three tests **this one replaced**.
+/// ⇒ A property test whose corpus cannot express the falsifying input is not evidence for the
+/// property; it is evidence about the corpus.
+///
+/// ★ What survives, and it is the direction `sort_vec` actually needs for its `Equal` case:
+/// siblings with the same canonical term must compare `Equal`. What does **not** survive is the
+/// claim the old docstring made — *"two with different canonical terms must not silently share
+/// a score class in a way that makes their order depend on which one the comparator saw
+/// first"*. They can, they do, and the consequence is measured in the test below.
+#[test]
+fn equal_canonical_terms_carry_equal_scores() {
     fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
     where
         T: Clone + PartialEq + std::fmt::Debug,
@@ -347,15 +449,19 @@ fn the_score_and_the_canonical_term_agree_with_each_other() {
                 for y in &values {
                     let sx = sort_fn(x);
                     let sy = sort_fn(y);
-                    assert_eq!(
-                        sx.term == sy.term,
-                        sx.score == sy.score,
-                        "the canonical TERM and the SCORE disagree about whether two inputs \
-                         are the same. Siblings are ordered by score, so a disagreement makes \
-                         the canonical order depend on comparison order:\n  \
-                         x = {:?}\n  y = {:?}\n  sorted x = {:?}\n  sorted y = {:?}",
-                        x, y, sx.term, sy.term
-                    );
+                    // ⚠ FORWARD DIRECTION ONLY. The reverse (`equal scores => equal terms`)
+                    // is FALSE — see this test's doc comment and the pinned witness below.
+                    // Asserting the `iff` here is what let the fault stay invisible.
+                    if sx.term == sy.term {
+                        assert_eq!(
+                            sx.score, sy.score,
+                            "two inputs reached the SAME canonical term but DIFFERENT scores. \
+                             Siblings are ordered by score, so equal terms that disagree on \
+                             score would order nondeterministically:\n  \
+                             x = {:?}\n  y = {:?}\n  sorted = {:?}",
+                            x, y, sx.term
+                        );
+                    }
                 }
             }
         });
