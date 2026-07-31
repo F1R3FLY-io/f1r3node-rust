@@ -375,10 +375,54 @@ impl EntryTrie {
     }
 
     /// Add every entry of `other` — the set union that `graft` performs.
+    ///
+    /// ★ **A trie-to-trie walk, not a materialise-and-reinsert.** This used to be
+    /// `for par in other.view().iter() { self.insert_entry(par.clone()) }`, which did two
+    /// avoidable things per entry:
+    ///
+    /// 1. **Forced `other`'s memo**, deep-cloning its whole entry set into a `Vec<Par>` — the
+    ///    flat shadow of a prefix-compressed trie, materialised only to be walked once.
+    /// 2. **Re-derived a key `other` already holds.** `insert_entry` opens with
+    ///    `encode_trie_path(&par)`, and that byte string *is* the key the entry is stored under
+    ///    in `other`. Recomputing it is a full canonical encode per entry — and for a nested
+    ///    `EPathMap`, a hereditary one.
+    ///
+    /// ⇒ Reading `other`'s keys directly is strictly less work and keeps a trie operation a
+    /// trie operation end to end. The pair comes straight off the read zipper, in the same walk
+    /// order [`entries_in_trie_order`] uses.
+    ///
+    /// ⚠ **Byte-neutral by injectivity, not by inspection.** `encode_trie_path` is injective
+    /// (`canonical_path.rs` — capless, prefix-free, total), so `rz.path()` equals what
+    /// `encode_trie_path(rz.val())` would have produced. That invariant is checked in release
+    /// builds by [`EntryTrie::adopt_trie`], which re-files on divergence rather than trusting
+    /// it. Equal keys therefore imply equal entries, which is what makes keep-vs-replace
+    /// immaterial here.
+    ///
+    /// ⚠ The three metadata folds are maintained inline rather than delegated, because
+    /// `insert_entry` is no longer on this path. Each is monotone and O(1) per entry — the same
+    /// three folds, in the same order.
     pub fn extend_entries(&mut self, other: &EntryTrie) {
-        for par in other.view().iter() {
-            self.insert_entry(par.clone());
+        use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+
+        let mut rz = other.trie.read_zipper();
+        while rz.to_next_val() {
+            let par = rz
+                .val()
+                .expect("to_next_val stops only at positions holding a value");
+
+            self.entries_stable &= eval_stable_par(par);
+            self.any_connective_used |= par.connective_used;
+            self.union_locally_free = crate::rust::utils::union(
+                std::mem::take(&mut self.union_locally_free),
+                par.locally_free.clone(),
+            );
+
+            // ★ `rz.path()` is the key `other` stores this entry under — no re-encode.
+            if self.trie.insert(rz.path(), par.clone()).is_none() {
+                self.len += 1;
+            }
         }
+        self.view.take();
     }
 
     /// Remove the entry with the GREATEST key in trie order, and return it.
