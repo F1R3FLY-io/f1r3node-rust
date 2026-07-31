@@ -500,8 +500,16 @@ pub struct TrieEntryDivergence {
 /// directions: `rholang_pathmap_to_e_pathmap` walked the **values** and
 /// `canonical_ps_from_trie` walked the **keys**, so every `EPathMap` the reducer
 /// handed back and every event-hash preimage agreed *only* while this held.
-/// **Both bulk readers now walk the keys**, so that particular disagreement is
-/// not fixed but **unrepresentable** — there is no second bulk reader to differ.
+/// ⛔ **CORRECTED 2026-07-31.** This said *"Both bulk readers now walk the keys"*. **Both walk
+/// the VALUES.** `entries_in_trie_order` (the projection) and `EntryTrie::adopt_trie` (adoption)
+/// both read `rz.val()`; `canonical_ps_from_trie` is `#[cfg(test)]`-only and is PARTIAL on the
+/// codec's own image, because `decode_trie_path`'s escape arm inherits prost's 100-level decoder
+/// cap while the encoder has none. ⇒ The disagreement is unrepresentable because there is one
+/// **value** reader, not because both read keys. ⚠ The table row below crediting
+/// `canonical_ps_from_trie` with serving the reducer, the serde/event-hash preimage and
+/// `canonicalize_ground_epathmap` is wrong on all three: it serves none of them, and the last
+/// has been deleted. Following the original text would reintroduce a panic on a trie the system
+/// itself built.
 ///
 /// What keeps it load-bearing is the **point lookups**, which still read values:
 ///

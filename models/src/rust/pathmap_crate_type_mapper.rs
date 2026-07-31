@@ -931,7 +931,28 @@ impl PathMapCrateTypeMapper {
 
     /// Convert from PathMap back to protobuf EPathMap.
     ///
-    /// # ★ There is ONE reader, and it reads the KEYS
+    /// # ⛔ CORRECTED 2026-07-31 — this heading said "it reads the KEYS". IT READS THE VALUES.
+    ///
+    /// The heading and the paragraphs below it described a design this function does NOT
+    /// implement, and following them would REINTRODUCE A PANIC. What it actually does is
+    /// `EntryTrie::adopt_trie(map)`, whose walk is `rz.val()` — the **value** side.
+    ///
+    /// ⚠ `canonical_ps_from_trie` — the key walk these paragraphs credit — is `#[cfg(test)]`
+    /// and its own doc says the opposite: *"⚠ This is a CHECK, not an answer … this function is
+    /// PARTIAL on the codec's own image."* `canonicalize_ground_epathmap`, named below as a
+    /// consumer, has been **deleted**.
+    ///
+    /// ★ **The correct rule, and it is the inverse of what follows:** the projection must read
+    /// **VALUES**; the key walk survives only as a **CHECK**, because key-decoding is partial on
+    /// this codec's own image. `decode_trie_path`'s `0x0F` escape arm calls `Par::decode`, and
+    /// prost's decoder caps recursion at 100 while its encoder caps nothing — so the system
+    /// builds terms whose own keys it cannot decode. Pinned by
+    /// `canonical_path.rs`'s `decode_is_partial_on_the_image_of_encode_and_the_projection_must_not_depend_on_it`,
+    /// whose corpus already contains the witness.
+    ///
+    /// ⇒ Switching the projection to the key walk is NOT "restoring the intended design". It
+    /// panics on a trie this system itself built. The prose below is retained for lineage;
+    /// **it is superseded by this block**, per the annotate-never-overwrite rule.
     ///
     /// This converter used to walk the trie's **values** and discard its keys,
     /// while [`canonical_ps_from_trie`] — the serde / event-hash reader — walked
