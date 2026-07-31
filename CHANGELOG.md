@@ -4,6 +4,20 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.34] - 2026-07-31
+
+### Bug Fixes
+
+- pin system-integration past the idle-watchdog fix
+- make the memory guards fire before the kernel OOM killer
+- tag the runner the job actually runs on, not the one we launched
+- restore the fork PR lane broken by actions/checkout's new guard
+
+### CI
+
+- capture OCI console history when the soak runner dies mid-run
+
+
 ## [0.4.33] - 2026-07-30
 
 ### Bug Fixes
@@ -31,12 +45,19 @@ This changelog is automatically generated from conventional commits.
 
 - record the system-integration agent's reply and the ceiling-default analysis
 - document restart mode, the RSS ceiling and the reaper exemption
+- document stability and performance badges
 
 ### Features
 
 - add operator script to restart a soak within its window
 - stamp restarted runs with covered span vs nominal window
 - restart a failed soak within its original scheduling window
+- publish stability and performance badges
+- show soaked commit and version, make badges reflect real state
+
+### Style
+
+- stack the soak charts 4 -> 2 -> 1 for narrow viewports
 
 
 ## [0.4.31] - 2026-07-30
