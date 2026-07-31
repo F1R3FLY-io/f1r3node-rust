@@ -577,22 +577,15 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # 40400-40455 sit inside the kernel ephemeral range (32768-60999); a
-        # transient outbound connection can grab one as its source port and
-        # fail the bind with "address already in use". Reserving them excludes
-        # them from ephemeral allocation. Reservation only stops NEW
-        # allocations — a socket that grabbed a port in the range before this
-        # step ran (runner provisioning, artifact download) still holds it
-        # (observed: run 29629049175, validator2 bind on 40420 failing with
-        # the reservation already in place). Wait for the range to drain
-        # (TIME_WAIT <= 60s) before starting anything that binds.
+        # Docker smoke tests bind 14400-14455 below the kernel ephemeral range.
+        # Fail for active holders; allow TIME_WAIT sockets up to 60s to clear.
         run: |
-          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is BELOW the
+          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is below the
           # kernel ephemeral floor of 32768, so nothing can be auto-assigned
-          # into it and no reservation is needed. This step is now a fast
-          # precondition check, not a drain wait.
+          # into it and no reservation is needed. Verify the range is available
+          # before starting containers, waiting only for TIME_WAIT sockets.
           #
           # It used to reserve and wait on 40400-40455, inside the ephemeral
           # range, and that is the whole reason the heavy pipeline had to be
@@ -736,17 +729,15 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # Same ephemeral-port hazard as the standalone smoke; observed as
-        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069,
-        # and again in run 29629049175 with the reservation alone in place —
-        # a pre-existing socket survives the sysctl, so also drain the range).
+        # Docker smoke tests bind 14400-14455 below the kernel ephemeral range.
+        # Fail for active holders; allow TIME_WAIT sockets up to 60s to clear.
         run: |
-          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is BELOW the
+          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is below the
           # kernel ephemeral floor of 32768, so nothing can be auto-assigned
-          # into it and no reservation is needed. This step is now a fast
-          # precondition check, not a drain wait.
+          # into it and no reservation is needed. Verify the range is available
+          # before starting containers, waiting only for TIME_WAIT sockets.
           #
           # It used to reserve and wait on 40400-40455, inside the ephemeral
           # range, and that is the whole reason the heavy pipeline had to be
@@ -909,16 +900,16 @@ jobs:
         shell: bash -ex {0}
         run: just setup-standalone
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # Same ephemeral-port hazard as the docker smokes: the node binary
-        # binds 40400-40405 directly on the host. Reservation + drain, same
-        # rationale as the docker smoke steps above.
+        # The local smoke binds 14400-14455 through node CLI flags, below the
+        # kernel ephemeral range. Fail for active holders; allow TIME_WAIT
+        # sockets up to 60s to clear.
         run: |
-          # CI binds 14400-14455 (see docker/ci-ports.*.yml), which is BELOW the
-          # kernel ephemeral floor of 32768, so nothing can be auto-assigned
-          # into it and no reservation is needed. This step is now a fast
-          # precondition check, not a drain wait.
+          # The local smoke binds 14400-14455 below the kernel ephemeral floor
+          # of 32768, so nothing can be auto-assigned into it and no reservation
+          # is needed. Verify the range is available before starting the node,
+          # waiting only for TIME_WAIT sockets.
           #
           # It used to reserve and wait on 40400-40455, inside the ephemeral
           # range, and that is the whole reason the heavy pipeline had to be
