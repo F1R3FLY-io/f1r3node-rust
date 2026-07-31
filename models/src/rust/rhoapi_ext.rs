@@ -824,11 +824,49 @@ impl Hash for EntryTrie {
 }
 
 impl Ord for EntryTrie {
-    /// Lexicographic over the canonical projection. `Par: Ord` is the DERIVED
-    /// one and therefore includes each entry's `locally_free` — see the
-    /// `EPathMap::cmp` note on the 84a0fbe4 wart.
+    /// Lexicographic over the **KEY** stream, in trie order — the same relation
+    /// [`PartialEq`] and [`Hash`] read.
+    ///
+    /// ★ This finishes C8. That commit moved `==` and `Hash` off the projected
+    /// list and onto the keys, *"the relation the wire commits to"*, and left
+    /// `Ord` behind on `self.view().cmp(other.view())`. So equality and hashing
+    /// asked the trie while ordering asked a flattened list, and `Ord` reaches
+    /// emitted bytes through `ScoredTerm::sort_vec`. Two orders for one value is
+    /// exactly the defect C8 was written to kill, surviving in the one impl the
+    /// commit did not enumerate.
+    ///
+    /// ⇒ One relation family, three impls, one byte stream. A map cannot now
+    /// compare `Equal` to a map it is not `==` to, because both questions are
+    /// answered by the same paired walk.
+    ///
+    /// # Why the walk and not `path_stream().cmp(...)`
+    ///
+    /// Comparing `U(m)` byte-for-byte would be O(1) after the memo and would
+    /// read literally the wire's bytes — tempting, and **rejected**: `U(m)`
+    /// frames each key with a `u32-LE` length *prefix*, so the framing would
+    /// outrank the content. Keys `["B"]` and `["AB"]` order one way by key and
+    /// the other way by `U(m)`, because `1u32` and `2u32` compare before the
+    /// first key byte is ever reached. That is a valid total order but an
+    /// arbitrary one — it sorts by an artifact of the framing rather than by the
+    /// trie's own byte-lexicographic structure. The walk costs what `eq`
+    /// already costs and orders by the thing that actually means something.
     fn cmp(&self, other: &Self) -> Ordering {
-        self.view().cmp(other.view())
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+        let mut a = self.trie.read_zipper();
+        let mut b = other.trie.read_zipper();
+        loop {
+            match (a.to_next_val(), b.to_next_val()) {
+                // Both exhausted at the same position: every key agreed.
+                (false, false) => return Ordering::Equal,
+                // A proper prefix of the other's key sequence sorts first.
+                (false, true) => return Ordering::Less,
+                (true, false) => return Ordering::Greater,
+                (true, true) => match a.path().cmp(b.path()) {
+                    Ordering::Equal => continue,
+                    decided => return decided,
+                },
+            }
+        }
     }
 }
 
