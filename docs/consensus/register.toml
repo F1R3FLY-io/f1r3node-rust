@@ -1240,6 +1240,12 @@ reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13. [DERIVED]"
 
 [[exempt]]
+commit = "c0385b79"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 55 — C7c. Deletes TRIE_INTERN, InternedEPathMap, InternBucket, INTERN_CAPACITY, intern_store, blake2b_256, ground_canonical_prost, store_insert, note_digest_collision, the four *_for_test seams, EPathMap::{intern, interned_handle, shadow_cell_for_test} and the intern field, plus 36 symbols of the now-unreachable spliced emitter and the 954-line epathmap_intern_store suite. BYTE-SAFETY WAS ESTABLISHED BY SIMULATION BEFORE ANY OF 124 REFERENCES WAS EDITED: forcing interned_handle() to return None failed exactly five tests, every one a test OF the mechanism (spliced_equals_direct_*, spliced_serde_bytes_shared_across_family, filling_the_intern_cell_moves_neither_encoder, event_hash_goldens_produce_with_filled_cell_splices_identically), and moved ZERO byte goldens. The emitter is unreachable because contains_par became CONSTANT FALSE: the intern-cell check was the sole true-producing arm in the predicate, and its OR partner recursed back into the same predicate, so removing the cell left no base case that can answer yes. The surviving branch is cold_encode, the trampolined depth-flat encoder, so the event-hash leg improves from Theta(depth) on ~95% of traffic to flat on all of it. Byte set unmoved: models --lib 95/95, epathmap_spliced_event_bytes 11/11, event_hash_leg_cold_encode_identity 6/6, epathmap_canonical_fixtures 13/13, epathmap_wire_serialized_paths 9/9, epathmap_wrapper_cell 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, par_codec_wire_shapes 13/13, epathmap_identity_is_the_path_stream 4/4, pathmap_integration_tests 60/60, epathmap_canonicalization 7/7. [DERIVED]"
+
+[[exempt]]
 commit = "5dade74c"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
@@ -1322,7 +1328,7 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 [[citation]]
 owner = "(doc)"
 cited = "pathmap_crate_type_mapper.rs"
-line = 587
+line = 259
 at = "HEAD"
 path = "models/src/rust/pathmap_crate_type_mapper.rs"
 token = "eval_stable_epathmap"

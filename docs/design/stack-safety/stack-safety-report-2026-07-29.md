@@ -69,6 +69,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567--ss-e1-3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568--ss-y3-the-collection-arms-re-score-every-element-three-times-per-level) |
 
+| **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; ⚠ `drop_in_place::<Par>` itself is untouched (Family D) | **n/a** — discharged by deletion | [5.6.10](#5610--ss-y6-the-lru-eviction-crash-dissolved-with-its-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` ≠ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569--ss-y4-sibling-order-is-not-a-total-function-of-the-term) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits do not create the defect, they **measure** one that was already live and unquantified. Each cross-references the other, and `SS-Y3` is discharged only by a commit that repairs it — never by deletion.
@@ -1553,6 +1554,29 @@ The bound on `sort_vec` became `T: EmittedBytes`, so **a sortable type that has 
 **What is still recursive.** n/a — this is an ordering fault, not a depth fault.
 
 **Anti-vacuity.** The pinned assertions are written in **current-state polarity**: they assert the *fault*, because the fault is what is true at the commit that pins them. The `assert_ne!` on the permutation pair becomes `assert_eq!` in the same commit as the repair, so that diff carries its own RED-to-GREEN evidence, and the failure message says not to delete the test to make the suite green. ⚠ The witness also carries a **vacuity assertion**: if `{3→30}` and `{3→90}` ever reach the same canonical term, it fails saying so rather than passing silently.
+
+#### 5.6.10 `SS-Y6` — the LRU eviction crash, dissolved with its store
+
+**The defect.** `InternedEPathMap` values lived in a process-global LRU store capped at 64 buckets. Eviction called `store.remove(&lru_digest)` **while holding the global `Mutex`**. If that dropped the last handle, its `PathMap<Par>` dropped, and every stored `Par` fell through the derived recursive destructor — **on an arbitrary thread, inside a global lock, at a moment no caller chose.** `par_children::dismantle` could not reach it.
+
+**How it was fixed.** ★ It was not. The store is **deleted** ([`c0385b79`](#)), so there is no LRU, no eviction, and no lock. A defect discharged by deleting its site is strictly better than one repaired at it, and this row records that rather than a repair.
+
+⇒ Why the store could go: it had **one** production caller, reading four fields — all four already O(1) on the `EPathMap` itself. Obtaining a *shared* entry cost a full streamed digest walk **plus** a second full `encode_raw` walk to verify the bucket — **two walks to avoid one**.
+
+**Results, with provenance.**
+
+| claim | evidence |
+|---|---|
+| deletion moves no byte | **simulation before any edit**: forcing the accessor to `None` failed exactly 5 tests, every one a test *of* the mechanism; **zero** byte goldens moved |
+| the spliced emitter is unreachable | `contains_par` is **constant false** — the cell check was the sole `true`-producing arm, and its `\|\|` partner recursed back into the same predicate |
+| the event-hash leg improves | the surviving branch is `cold_encode`, the trampolined **depth-flat** encoder; it was $`\Theta(d)`$ on the branch taken ~95% of the time |
+| #124 recursion 2b | discharged **by deletion** |
+
+**What it cost.** ⌀ on every axis. ~900 lines of emitter, ~450 of store, and a 954-line suite removed.
+
+⚠ **What is NOT dissolved, stated so it is not mistaken for closed.** The recursive `Par` destructor itself is untouched: `EPathMap` owns its trie, so a deep `Par` still tears down recursively when its last holder dies — `drop_in_place::<Par>` at 144 B/level release, **Family D**, still open. What died is this defect's *distinguishing* properties: arbitrary thread, held lock, deferred second site. One site instead of two, unlocked, on the owning thread.
+
+**Anti-vacuity.** The suite announced the change itself: `contains_par_equivalence`'s `VACUOUS at depth {depth}` assertions fired the moment the predicate went inert. ★ A differential that detects its own subject becoming constant is worth more than one that merely agrees — and it is why the emitter's unreachability was caught rather than assumed. ⚠ Twice before that it was argued the emitter *survived*, on the strength of the predicate's top-level `\|\|`. **Reading a predicate's shape is not checking whether it can still answer true**; only enumerating every `true`-producing arm settles it.
 
 ---
 
