@@ -131,12 +131,23 @@ jobs:
                 # untagged soak runner never starts, and any untagged instance
                 # that does exist gets cleaned up. Do not harmonise them.
                 #
-                # isinfinite/isnan are load-bearing, not defensive noise: jq's
-                # `tonumber` accepts "Infinity", "inf" and overflowing literals
-                # like "1e309", each of which yields a value no `< $now` can
-                # ever be true for — a permanent exemption from one typo.
-                # Verified empirically; the equivalent hole was found in
-                # system-integration's reaper by its own review (PR #70).
+                # isinfinite/isnan are load-bearing, not defensive noise. The
+                # jq tonumber builtin accepts "Infinity", "inf" and overflowing
+                # literals like "1e309", each of which yields a value no
+                # "< $now" can ever be true for — a permanent exemption from one
+                # typo. Verified empirically; the equivalent hole was found in
+                # the system-integration reaper by its own review (PR #70).
+                #
+                # NOTE: this whole jq program is a single-quoted shell string.
+                # An apostrophe anywhere in it — including in these comments —
+                # closes that quote and turns the rest into shell code. Two
+                # possessive forms did exactly that in 4330a24f: the step died
+                # with "syntax error near unexpected token |" on every run and
+                # reaped nothing for hours, silently removing the guard against
+                # the June 2026 leak. Invariant 8 in
+                # check-workflow-invariants.sh now runs bash -n over every
+                # run: block, so this cannot merge again. Use no apostrophes
+                # below this line.
                 # The horizon cap catches the finite-but-absurd case the same
                 # way: the longest legitimate deadline is a 60h weekend plus a
                 # 2h grace, so anything past 7 days is not a soak.
