@@ -38,11 +38,16 @@ fi
 # (a Pacific checkpoint) rather than after a fixed span. Without one, the
 # deadline is the full requested duration measured from the original start, so
 # a final segment needs no deadline of its own.
+# Whether this segment ends on a checkpoint boundary. The caller publishes a
+# checkpoint only when it passed a deadline, so this also decides whether an
+# on-demand checkpoint is possible here at all — see the signal handling below.
+HAS_CHECKPOINT_BOUNDARY=0
 if [ -n "${SOAK_DEADLINE_EPOCH:-}" ]; then
   if ! [[ "$SOAK_DEADLINE_EPOCH" =~ ^[1-9][0-9]*$ ]]; then
     printf 'SOAK_DEADLINE_EPOCH must be a positive integer\n' >&2
     exit 2
   fi
+  HAS_CHECKPOINT_BOUNDARY=1
   DEADLINE="$SOAK_DEADLINE_EPOCH"
   # Never run past the overall budget, whatever the caller asked for.
   if [ "$DEADLINE" -gt "$((STARTED_AT + DURATION_SECONDS))" ]; then
@@ -349,7 +354,73 @@ if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
   run_bench_segment
 fi
 
+# Operator signal, polled between iterations.
+#
+# A soak publishes only at a segment boundary, and those boundaries are fixed
+# Pacific instants (07:30 / 13:00). A run starting off that grid — a short
+# restart window, an afternoon dispatch — can run for hours with nothing on the
+# dashboard, and a 60h weekend run is dark for its first twelve. This makes a
+# boundary reachable on demand. The signal file is written by the poller in the
+# soak-segment action, which reads it from this instance's own OCI freeform
+# tags; see .github/workflows/soak-signal.yml for the sender.
+#
+# Checked here rather than in the poller because only this loop knows where an
+# iteration boundary is. Stopping mid-iteration would leave a half-finished
+# iteration that the aggregator counts as a real one, skewing the very numbers
+# the checkpoint exists to report.
+#
+#   checkpoint  End THIS segment now, so the caller's aggregate/upload/publish
+#               steps run exactly as at a scheduled checkpoint. The next
+#               segment resumes from the state file with counters, start time
+#               and iteration numbering intact, and the run continues.
+#
+#               Only possible where a segment boundary exists. The caller gates
+#               those publish steps on having passed a deadline, so in the
+#               final segment the request is refused rather than silently
+#               ending the run and publishing nothing -- which is what it would
+#               do if this simply broke the loop. Zero-checkpoint runs are all
+#               final segment, so that is the common case, not a corner.
+#
+#   finalize    End the run. The marker survives into the remaining segments,
+#               which exit immediately, so the run drains to the normal
+#               end-of-run publish and produces a real verdict and history
+#               entry rather than a latest-* refresh.
+SIGNAL_FILE="${SOAK_SIGNAL_FILE:-$OUTPUT_DIR/signal}"
+FINALIZE_MARKER="$OUTPUT_DIR/finalize-requested"
+if [ -e "$FINALIZE_MARKER" ]; then
+  printf 'finalize requested in an earlier segment; segment %s does no work\n' "$SEGMENT"
+  DEADLINE=0
+fi
+
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  if [ -e "$SIGNAL_FILE" ]; then
+    SIGNAL="$(tr -d '[:space:]' < "$SIGNAL_FILE" 2>/dev/null || true)"
+    # Consumed either way: an unread signal re-fires on every later iteration
+    # and every later segment.
+    rm -f "$SIGNAL_FILE"
+    case "$SIGNAL" in
+      checkpoint)
+        if [ "$HAS_CHECKPOINT_BOUNDARY" -eq 1 ]; then
+          printf 'checkpoint signalled after iteration %s; ending segment %s\n' "$ITERATIONS" "$SEGMENT"
+          printf '%s\n' "checkpoint signalled after iteration $ITERATIONS" \
+            > "$OUTPUT_DIR/signalled-checkpoint.txt"
+          break
+        fi
+        printf 'checkpoint signalled, but segment %s is the final segment and publishes no checkpoint; ignoring. Use finalize to end the run and publish a full verdict.\n' \
+          "$SEGMENT" >&2
+        ;;
+      finalize)
+        printf 'finalize signalled after iteration %s; ending the run\n' "$ITERATIONS"
+        printf '%s\n' "finalize signalled after iteration $ITERATIONS" > "$FINALIZE_MARKER"
+        break
+        ;;
+      '')
+        ;;
+      *)
+        printf 'ignoring unrecognised soak signal: %s\n' "$SIGNAL" >&2
+        ;;
+    esac
+  fi
   PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
   ITERATIONS="$((ITERATIONS + 1))"
   ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
