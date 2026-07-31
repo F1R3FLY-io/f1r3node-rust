@@ -148,8 +148,24 @@ ok "both pipeline callers pass secrets down"
 #    this drifts, since that is precisely the migration the note above argues
 #    against. My own mutation tests missed it: they covered divergent values
 #    and both-removed, never one-removed.
-ocid_required=".github/workflows/ci-runner-reaper.yml .github/workflows/merge-recovery-soak.yml"
+#    Only the reaper is REQUIRED to pin it. merge-recovery-soak.yml used to
+#    carry a copy because the launch job looked its instance up by compartment
+#    + display-name; that step is gone, because it tagged whichever VM the
+#    launch created rather than the one the job actually ran on (run
+#    30590630059). The soak now tags itself by the OCID the metadata service
+#    reports, so it needs no compartment at all. Any file that still pins one
+#    must agree with the reaper — checked below — but absence is no longer a
+#    violation for the soak.
+ocid_required=".github/workflows/ci-runner-reaper.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml"
 ocid_values=""
+for ocid_file in $ocid_optional; do
+    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        "$ocid_file" 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+    [ -n "$ocid_found" ] && ocid_values="${ocid_values}${ocid_found}
+"
+done
 for ocid_file in $ocid_required; do
     ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
         "$ocid_file" 2>/dev/null \
@@ -164,10 +180,65 @@ for ocid_file in $ocid_required; do
 done
 if [ "$fail" -eq 0 ]; then
     if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
-        err "CI_RUNNER_COMPARTMENT_OCID differs between $(printf '%s' "$ocid_required" | tr '\n' ' '); the reaper and the soak tagger must name the same compartment"
+        err "CI_RUNNER_COMPARTMENT_OCID differs across the workflows that pin it ($ocid_required $ocid_optional); every literal must name the same compartment"
     else
-        ok "CI_RUNNER_COMPARTMENT_OCID pinned identically in both required workflows"
+        ok "CI_RUNNER_COMPARTMENT_OCID pinned as a literal in $ocid_required, and consistent wherever else it appears"
     fi
+fi
+
+# 6. Fork-checkout hygiene. Every checkout of the code under test must set
+#    BOTH `persist-credentials: false` and `allow-unsafe-pr-checkout: true`.
+#
+#    The second is what makes the fork lane work at all: actions/checkout
+#    refuses fork code under pull_request_target without it, and because the
+#    action is pinned to the moving `@v4` tag, that guard arrived upstream and
+#    silently broke every fork PR at Clone Repository with no change in this
+#    repo. Asserting it means a future removal fails CI loudly instead of
+#    breaking outside contributors invisibly again.
+#
+#    The first is the control that opt-in leans on. Once we tell checkout to
+#    fetch untrusted code in a base-repo context, `persist-credentials: false`
+#    is what keeps a writable token out of a workspace that fork code will be
+#    built in. It was previously convention; opting past a security guard is
+#    exactly when convention stops being good enough.
+fork_bad_persist=""
+fork_bad_optin=""
+while read -r line_no flags; do
+    case "$flags" in
+        *P*) ;;
+        *) fork_bad_persist="$fork_bad_persist $PIPELINE:$line_no" ;;
+    esac
+    case "$flags" in
+        *A*) ;;
+        *) fork_bad_optin="$fork_bad_optin $PIPELINE:$line_no" ;;
+    esac
+done <<EOF
+$(awk '
+    function flush() {
+        if (is_fork) printf "%d %s%s\n", start, (has_persist ? "P" : "-"), (has_optin ? "A" : "-")
+        is_fork = 0; has_persist = 0; has_optin = 0
+    }
+    # Anchored to the start of the line so a YAML KEY is required, not just a
+    # mention of one. Unanchored, the comment above these settings — which
+    # names `persist-credentials: false` while explaining why it matters —
+    # satisfied the match by itself, and that half of the check could never
+    # fail. Caught by mutation testing; a guard defeated by its own
+    # documentation is worse than no guard, because it reports ok.
+    /^      - (name|uses):/ { flush(); start = NR }
+    /inputs\.checkout_repository/                       { is_fork = 1 }
+    /^[[:space:]]*persist-credentials:[[:space:]]*false/     { has_persist = 1 }
+    /^[[:space:]]*allow-unsafe-pr-checkout:[[:space:]]*true/ { has_optin = 1 }
+    END { flush() }
+' "$PIPELINE")
+EOF
+if [ -n "$fork_bad_persist" ]; then
+    err "checkout of fork-authored code without 'persist-credentials: false' at:${fork_bad_persist}; a writable token must never reach a workspace holding untrusted code"
+fi
+if [ -n "$fork_bad_optin" ]; then
+    err "checkout of fork-authored code without 'allow-unsafe-pr-checkout: true' at:${fork_bad_optin}; actions/checkout refuses fork code under pull_request_target without it, which breaks every fork PR at clone"
+fi
+if [ -z "$fork_bad_persist$fork_bad_optin" ]; then
+    ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
 fi
 
 if [ "$fail" -ne 0 ]; then

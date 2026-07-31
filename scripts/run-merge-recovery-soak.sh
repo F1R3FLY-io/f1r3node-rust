@@ -82,9 +82,23 @@ EARLY_EXIT_REASON=""
 # The harness default is 5000MB — sized for laptops, not the 32GB soak VM:
 # the 6-node shard legitimately peaks ~10GB under test_load, and the default
 # killed every iteration of run 30516534214 ~130s in. Size to the host
-# instead, leaving 8GB for OS/Docker/harness, so the watchdog stays on to
-# catch a real leak before swap-thrash freezes the VM without ever firing on
-# normal load. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+# instead, so the watchdog stays on to catch a real leak before swap-thrash
+# freezes the VM without ever firing on normal load.
+#
+# The reserve is 12GB, not the 8GB first tried. 8GB permits a 24GB node
+# working set on the 32GB VM, which puts the *kernel* OOM killer ahead of this
+# watchdog: at that point the harness has not breached, so the kernel picks a
+# victim by oom_score and Runner.Worker is a plausible one — a runner that
+# vanishes mid-step with no log and no failed step, which is exactly what
+# happened to run 30590630059. Reserving 12GB caps nodes at 20GB, still ~2x
+# the observed 10.8GB peak, and keeps the attributable failure ahead of the
+# unattributable one. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+HOST_RESERVE_MB="${SOAK_HOST_RESERVE_MB:-12288}"
+if ! [[ "$HOST_RESERVE_MB" =~ ^[0-9]+$ ]]; then
+  printf 'SOAK_HOST_RESERVE_MB must be a non-negative integer\n' >&2
+  exit 2
+fi
+MEM_TOTAL_MB="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null || echo 0)"
 RSS_CEILING_MB="${SOAK_RSS_CEILING_MB:-}"
 if [ -n "$RSS_CEILING_MB" ]; then
   if ! [[ "$RSS_CEILING_MB" =~ ^[0-9]+$ ]]; then
@@ -92,16 +106,67 @@ if [ -n "$RSS_CEILING_MB" ]; then
     exit 2
   fi
 else
-  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  RSS_CEILING_MB="$((mem_total_kb / 1024 - 8192))"
+  RSS_CEILING_MB="$((MEM_TOTAL_MB - HOST_RESERVE_MB))"
   if [ "$RSS_CEILING_MB" -lt 5000 ]; then
     RSS_CEILING_MB=5000
+  fi
+fi
+
+# Host-available-RAM floor passed to the harness (--host-free-floor-mb). The
+# harness default of 2000MB only fires once the machine is already at the
+# edge, by which point the kernel may have picked a victim first; 6000MB on the
+# 32GB soak VM makes the harness kill the nodes and report an attributable
+# breach while there is still room. This is a backstop to the RSS ceiling
+# above, catching pressure the ceiling is blind to (docker overhead, the runner
+# agent itself). Enforced on subprocess iterations only — docker iterations
+# rely on the ceiling.
+#
+# Scaled to MemTotal/4 and capped at 6000, because a flat 6000 is incoherent on
+# a small host: on an 8GB laptop it demands 6GB free while the ceiling still
+# permits a 5GB shard, so the floor would breach on contact. Quartering keeps
+# the same intent (fire well before the kernel does) at every size, and lands
+# on 2048 at 8GB — effectively the harness's own 2000 default.
+# SOAK_HOST_FREE_FLOOR_MB overrides; 0 disables the floor.
+HOST_FREE_FLOOR_MB="${SOAK_HOST_FREE_FLOOR_MB:-}"
+if [ -n "$HOST_FREE_FLOOR_MB" ]; then
+  if ! [[ "$HOST_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_HOST_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  HOST_FREE_FLOOR_MB="$((MEM_TOTAL_MB / 4))"
+  if [ "$HOST_FREE_FLOOR_MB" -gt 6000 ]; then
+    HOST_FREE_FLOOR_MB=6000
   fi
 fi
 
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
   exit 2
+fi
+
+# Declared version of the code under test. The workflow passes the ref and the
+# sha but not the version, and "which version was soaked" is what a reader of
+# the dashboard actually wants — a sha answers "which commit", not "which
+# release". This is the same value the Docker LABEL and the published image tag
+# carry, so a dashboard row can be matched against a pulled image.
+#
+# Takes the first `version = "..."` line, which is the same line release.yml
+# bumps (`0,/^version = ".*"/`), so the two cannot disagree about which one is
+# the package version. Degrades to "unknown" and never fails: a missing version
+# string must not abort a soak, and every consumer downstream treats it as
+# optional.
+#
+# Deliberately NOT scripts/version.sh, which resolves the newest `v*` tag in the
+# current repo. That answers "what is the latest release", not "what is this
+# commit" — a dev soak would report a tag that postdates or has nothing to do
+# with the code under test — and it needs tags present, which a shallow
+# node-under-test checkout does not guarantee. Do not consolidate the two.
+VERSION="unknown"
+if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
+  parsed_version="$(awk -F'"' '/^version = "/ { print $2; exit }' \
+    "$NODE_REPO_DIR/node/Cargo.toml" 2>/dev/null || true)"
+  [ -n "$parsed_version" ] && VERSION="$parsed_version"
 fi
 
 # Peak total node RSS for this iteration, from the newest harness
@@ -120,9 +185,21 @@ iteration_rss_peak_mb() {
                  if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null || true
 }
 
+# Peak total node CPU (%) for this iteration, same resource-timeseries.csv as
+# iteration_rss_peak_mb — reuses the copy that function already left in
+# iteration_dir rather than re-finding and re-copying it. Must run after
+# iteration_rss_peak_mb. Empty output when absent.
+iteration_cpu_peak_percent() {
+  local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+  [ -s "$ts_csv" ] || return 0
+  awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+           END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
+                 if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
+}
+
 # Propose-timing latency samples (total_ms) from node JSON logs written after
 # the iteration's start marker — the f1r3fly.propose.timing parse target from
-# profile-casper-latency.sh. Emits "p50 p95 count" or nothing.
+# profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
 iteration_finalization_latency() {
   local iteration_dir="$1"
   # `|| true` is load-bearing under pipefail: a failed iteration can leave
@@ -134,8 +211,25 @@ iteration_finalization_latency() {
     | sort -n \
     | awk '{ a[NR] = $1 }
            END { if (NR == 0) exit
-                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]
-                 print p50, p95, NR }' || true
+                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]; p99 = a[int((NR + 1) * 0.99)]
+                 if (p50 == "") p50 = a[NR]
+                 if (p95 == "") p95 = a[NR]
+                 if (p99 == "") p99 = a[NR]
+                 print p50, p95, p99, NR }' || true
+}
+
+# Count of proposal rejections logged as too far ahead of the last finalized
+# block since the iteration started — the exact string casper emits at
+# casper/src/rust/blocks/proposer/propose_result.rs:185. A rising count means
+# the proposer is outrunning finalization badly enough to be rejected outright,
+# distinct from the passive finalization_p95_ms latency this soak already
+# tracks (that measures how slow finalization is, not how often it is refused).
+iteration_too_far_ahead_errors() {
+  local iteration_dir="$1"
+  find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+    -type f \( -name '*.log' -o -name '*.txt' \) -newer "$iteration_dir/.started" 2>/dev/null \
+    | xargs -r grep -h -o 'too far ahead of the last finalized block' 2>/dev/null \
+    | wc -l | tr -d ' '
 }
 
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
@@ -146,17 +240,20 @@ emit_iteration_metrics() {
   local iteration_dir="$1" iteration="$2" provider="$3" \
         iter_started="$4" iter_finished="$5" exit_code="$6"
   command -v jq >/dev/null || return 0
-  local summary_line passed failed skipped errors rss_peak latency lat_p50 lat_p95 lat_n
+  local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
   summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
   passed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)"
   failed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)"
   skipped="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)"
   errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
   rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
+  cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
   latency="$(iteration_finalization_latency "$iteration_dir")"
   lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
   lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
-  lat_n="$(printf '%s' "$latency" | awk '{print $3}')"
+  lat_p99="$(printf '%s' "$latency" | awk '{print $3}')"
+  lat_n="$(printf '%s' "$latency" | awk '{print $4}')"
+  too_far_ahead="$(iteration_too_far_ahead_errors "$iteration_dir")"
   # Registry-driven metrics (see scripts/bench/soak-metrics.json). Unlike the
   # bespoke extractors above, adding a metric here needs no code change: the
   # harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
@@ -178,15 +275,20 @@ emit_iteration_metrics() {
     --argjson skipped "$skipped" \
     --argjson errors "$errors" \
     --argjson rss_peak "${rss_peak:-null}" \
+    --argjson cpu_peak "${cpu_peak:-null}" \
     --argjson lat_p50 "${lat_p50:-null}" \
     --argjson lat_p95 "${lat_p95:-null}" \
+    --argjson lat_p99 "${lat_p99:-null}" \
     --argjson lat_n "${lat_n:-null}" \
+    --argjson too_far_ahead "${too_far_ahead:-0}" \
     '{iteration: $iteration, provider: $provider,
       started_at: $started, finished_at: $finished,
       duration_s: ($finished - $started), exit_code: $exit_code,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
-      finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, samples: ($lat_n // 0)},
+      cpu_peak_pct: $cpu_peak,
+      finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
+      too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
       ok: ($exit_code == 0)}' > "$iteration_dir/metrics.json" 2>/dev/null || true
 }
@@ -267,6 +369,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       --provider="$PROVIDER" \
       --monitor \
       --rss-ceiling-mb "$RSS_CEILING_MB" \
+      --host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
@@ -343,8 +446,10 @@ if command -v jq >/dev/null; then
   [ -s "$OUTPUT_DIR/iterations.json" ] || echo '[]' > "$OUTPUT_DIR/iterations.json"
   jq -n \
     --slurpfile iters "$OUTPUT_DIR/iterations.json" \
+    --slurpfile registry "$SCRIPT_DIR/bench/soak-metrics.json" \
     --arg target_ref "$TARGET_REF" \
     --arg target_sha "$TARGET_SHA" \
+    --arg version "$VERSION" \
     --argjson started "$STARTED_AT" \
     --argjson finished "$FINISHED_AT" \
     --argjson requested "$DURATION_SECONDS" \
@@ -361,10 +466,39 @@ if command -v jq >/dev/null; then
          avg_duration_s: (if ($p_iters | length) > 0
                           then (($p_iters | map(.duration_s) | add) / ($p_iters | length) | floor)
                           else null end)};
+    # Rolls up a SOAK_METRIC-registry metric across iterations: "max"/"min"
+    # fold with max/min across iterations, any other declared aggregate (p50,
+    # p95, ...) folds with the cross-iteration median — the same treatment
+    # finalization_p95_ms already gets below. Declaring a metric in
+    # soak-metrics.json is enough for it to reach here; no further code change
+    # is needed per metric.
+    def rollup_tracked_metrics:
+      ($registry[0].metrics // []) as $defs
+      | [ $defs[] | . as $def
+          | ($iters[0] | map(.metrics[$def.key]) | map(select(. != null))) as $samples
+          | select(($samples | length) > 0)
+          | {
+              key: $def.key,
+              value: (
+                reduce ($def.aggregate // ["p50", "p95", "max"])[] as $agg
+                  ({}; . + {
+                    ($agg): (
+                      if $agg == "max" then ($samples | map(.max) | select(length > 0) | max)
+                      elif $agg == "min" then ($samples | map(.min) | select(length > 0) | min)
+                      else ($samples | map(.[$agg]) | select(length > 0) | median)
+                      end
+                    )
+                  })
+                | . + {samples: ($samples | map(.samples // 0) | add)}
+              )
+            }
+        ]
+      | from_entries;
     ($finished - $started) as $elapsed
     | {
         target_ref: $target_ref,
         target_sha: $target_sha,
+        version: $version,
         started_at: $started,
         finished_at: $finished,
         requested_seconds: $requested,
@@ -374,10 +508,15 @@ if command -v jq >/dev/null; then
         failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
         iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
         rss_peak_mb: ($iters[0] | map(.rss_peak_mb | select(. != null)) | max),
+        cpu_peak_pct: ($iters[0] | map(.cpu_peak_pct | select(. != null)) | max),
+        finalization_p50_ms: ($iters[0] | map(.finalization_latency.p50_ms | select(. != null)) | median),
         finalization_p95_ms: ($iters[0] | map(.finalization_latency.p95_ms | select(. != null)) | median),
+        finalization_p99_ms: ($iters[0] | map(.finalization_latency.p99_ms | select(. != null)) | median),
+        too_far_ahead_errors: ($iters[0] | map(.too_far_ahead_errors // 0) | add),
         providers: {docker: provider_split("docker"), subprocess: provider_split("subprocess")},
         bench_segments: $bench_segments,
         bench_failures: $bench_failures,
+        tracked_metrics: rollup_tracked_metrics,
         iteration_metrics: $iters[0]
       }' > "$OUTPUT_DIR/summary.json" 2>/dev/null \
     || printf 'summary.json emission failed (non-fatal)\n' >&2

@@ -17,15 +17,50 @@ runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
   (iteration metrics, benchmark segments, logs, `report/` with
-  `weekly-summary.json`, `verdict.json`, `perf-report.md`).
+  `weekly-summary.json`, `verdict.json`, `badge.json`, `perf-report.md`).
+- **README badges**: four shields.io *endpoint* badges, all generated from the
+  same `verdict.json` / `weekly-summary.json` the dashboard renders, so a badge
+  cannot disagree with the page behind it:
+
+  | Badge | Endpoint file | Producer |
+  |---|---|---|
+  | `soak · master` | `data/badge-soak.json` | `badge.json` |
+  | `soak · dev` | `data/badge-soak-daily.json` | `badge.json` |
+  | `stability` | `data/badge-stability.json` | `badge-stability.json` |
+  | `perf` | `data/badge-perf.json` | `badge-perf.json` |
+
+  `stability` is the share of iterations that completed a full bring-up → load →
+  finalize cycle — a success rate, deliberately not called uptime, since the
+  soak creates a fresh shard per iteration rather than watching a standing
+  deployment. Its colour bands are absolute and advisory; the release gate is
+  relative (week-over-week) and stays with the soak verdict, so 100% stability
+  alongside a `regress` verdict is coherent. `perf` is always blue: a readout,
+  not a judgement, because absolute latency and throughput have no threshold
+  here.
+
+  There are no CI badges. Per-commit build status is already rendered on the
+  repository home page and in pull requests; the badge row is reserved for the
+  soak signal, which has no other surface.
 
 Both series publish to Pages, into separate files — `history.json` and
-`history-daily.json`, each with its own `latest-summary`, `latest-verdict` and
-`latest-report`. They are kept apart so the week-over-week regression gate never
-compares a variable-length daily against the fixed 60h weekend baseline. A Pages
-deploy replaces the whole site, so whichever soak publishes carries the other
-series forward untouched; a transient fetch failure aborts the deploy rather
-than publishing a site with a series missing.
+`history-daily.json`, each with its own `latest-summary`, `latest-verdict`,
+`latest-report` and `badge-soak`. They are kept apart so the week-over-week
+regression gate never compares a variable-length daily against the fixed 60h
+weekend baseline. A Pages deploy replaces the whole site, so whichever soak
+publishes carries the other series forward untouched; a transient fetch failure
+aborts the deploy rather than publishing a site with a series missing.
+
+Three workflows publish the site — `merge-recovery-soak.yml` (final),
+`soak-checkpoint-publish.yml` (mid-run) and `soak-dashboard-pages.yml`
+(dashboard edits) — and each carries the published data forward from its own
+file list. **A new data file must be added to all three**, or the next publisher
+to run deletes it.
+
+Each run also records what it soaked: the target ref, the commit sha (linked to
+GitHub) and the node version declared at that commit — the same value carried by
+the Docker LABEL and image tag, so a dashboard row can be matched to a pulled
+image. Runs that predate version recording show a dash; history is never
+backfilled.
 
 ## Weekend vs daily
 
@@ -189,12 +224,56 @@ Passive (the soak's own load, per iteration, rolled up per run):
 | failure rate | pytest results per iteration |
 | throughput (iterations/hour) | wall-clock per iteration |
 | peak node RSS | harness `--monitor` resource timeseries |
-| finalization latency p95 | `f1r3fly.propose.timing` node logs |
+| peak node CPU | harness `--monitor` resource timeseries |
+| finalization latency p50 / p95 / p99 | `f1r3fly.propose.timing` node logs |
+| too-far-ahead errors | count of proposal rejections logged as too far ahead of the last finalized block, node logs |
+| LFB convergence spread (p95 / max) | `SOAK_METRIC` registry (`scripts/bench/soak-metrics.json`), track-only |
 
 Active (controlled-rate benchmark segments interleaved every Nth iteration —
 a fresh local shard flooded at a fixed deploy rate for run-over-run comparable
 latency): p50/p95 submit→finalize latency, throughput, finalization rate,
 peak RSS. See `scripts/bench/run-bench-segment.sh`.
+
+### Newly added metrics (2026-07-30)
+
+Extends the passive rollup with metrics modelled on `asi-chain-testbed`'s
+`pkg/metrics` chain-health charts, wired through the existing per-iteration →
+per-run → dashboard pipeline:
+
+- **Finalization latency p50 / p99** — the same `f1r3fly.propose.timing`
+  `total_ms` samples already used for p95 (`iteration_finalization_latency` in
+  `scripts/run-merge-recovery-soak.sh`), now also read at the 50th and 99th
+  percentile. Rolled up per run as the median of each iteration's percentile
+  (matching how p95 was already rolled up), and charted as three lines
+  ("Finalization latency percentiles").
+- **Too-far-ahead errors** — count, per iteration, of the exact log line
+  `"Proposal failed: too far ahead of the last finalized block"`
+  (`casper/src/rust/blocks/proposer/propose_result.rs:185`), summed across all
+  iterations in the run. Distinct from finalization latency: this counts
+  proposals the node refused outright rather than how slow finalization was.
+  Charted as "Too-far-ahead errors".
+- **LFB convergence spread (p95 / max)** — the `lfb_spread` metric already
+  declared in `scripts/bench/soak-metrics.json` (max−min last-finalized-block
+  across shard nodes) was captured per iteration but never reached the
+  dashboard: `summary.json` only rolled up the fixed passive fields, not the
+  registry's `SOAK_METRIC` output. `run-merge-recovery-soak.sh` now folds
+  every registry-declared metric into `summary.json.tracked_metrics`
+  generically (max/min aggregates fold with cross-iteration max/min, any other
+  declared aggregate — p50, p95, ... — folds with the cross-iteration
+  median), so declaring a new metric in `soak-metrics.json` is enough for it
+  to reach a run's `weekly-summary.json` and chart, no further code change.
+  Charted as "LFB convergence spread".
+- **Peak node CPU** — the harness's `resource-timeseries.csv` already carried
+  a `cpu_percent` column alongside the `memory_mb` one `rss_peak_mb` reads
+  (`elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb`); only the RSS
+  column was being read. `iteration_cpu_peak_percent` in
+  `scripts/run-merge-recovery-soak.sh` sums `cpu_percent` across shard nodes
+  per poll tick and takes the peak tick for the iteration, exactly mirroring
+  `iteration_rss_peak_mb`'s treatment of `memory_mb`. Rolled up per run as the
+  max across iterations. Charted as "Peak node CPU".
+
+All four are `track`-policy metrics: recorded and charted only, they do not
+enter the week-over-week gate in `soak-gate-thresholds.json`.
 
 ## Regression gates
 
@@ -252,20 +331,36 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   never enables `errexit`: metric collection returns nonzero when a failed
   iteration leaves nothing to sample, and making that fatal killed every
   segment mid-loop before any state or rollup was written.
-- **The harness RSS watchdog is sized to the host.** Its default ceiling
-  (5000MB) is laptop-scale, while the 6-node shard legitimately peaks ~10GB
-  under `test_load` on the 32GB soak VM, so the soak passes
-  `--rss-ceiling-mb` computed as `MemTotal − 8GB` (~24.5GB there). Override
-  with `SOAK_RSS_CEILING_MB`; `0` disables the watchdog, which is not
-  recommended — it exists to kill the shard before swap-thrash freezes the VM,
-  a state that reports nothing and keeps billing. Sustained RSS growth is
-  policed week-over-week by the regression gate, not by this ceiling.
+- **The harness memory guards are sized to the host, and deliberately fire
+  before the kernel does.** The harness default ceiling (5000MB) is
+  laptop-scale, while the 6-node shard legitimately peaks ~10GB under
+  `test_load` on the 32GB soak VM, so the soak passes `--rss-ceiling-mb`
+  computed as `MemTotal − 12GB` (~20GB there) and `--host-free-floor-mb` as
+  `min(MemTotal/4, 6000)` (~6000 there; harness default 2000). The floor is
+  scaled rather than flat because a flat 6000 breaches on contact on a small
+  host, where the clamped 5000 ceiling still permits a 5GB shard.
+  The reserve is 12GB rather than the 8GB first tried
+  because 8GB permits a 24GB node working set, which puts the *kernel* OOM
+  killer ahead of the watchdog — the harness never breaches, the kernel picks a
+  victim by `oom_score`, and `Runner.Worker` is a plausible one. That produces a
+  runner that vanishes mid-step with no log and no failed step, which is
+  unattributable; a breach is not. Override with `SOAK_HOST_RESERVE_MB`,
+  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard, which
+  is not recommended. The floor is enforced on subprocess iterations only —
+  docker iterations rely on the ceiling. Sustained RSS growth is policed
+  week-over-week by the regression gate, not by these limits.
 - **Soak runners are exempt from the CI reaper, with an expiry.**
   `ci-runner-reaper.yml` terminates `ci-eph-*` instances older than 2h, which
-  would kill any healthy soak mid-run. The launch job tags its instance with
-  `soak-deadline-epoch` (window end + 2h grace, alongside `purpose` and
-  `series`) and the reaper skips it until then. A leaked soak VM still dies,
+  would kill any healthy soak mid-run. The **soak job tags the instance it is
+  itself running on** — read from IMDS, written with instance-principal auth —
+  with `soak-deadline-epoch` (window end + 2h grace, alongside `purpose` and
+  `series`), and the reaper skips it until then. It is deliberately not the
+  launch job that tags: ephemeral runners register by label, so GitHub routes
+  the job to whichever matching runner claims it first, which is frequently an
+  idle runner from an earlier launch rather than the VM just created. Tagging at
+  launch therefore exempted the wrong machine (run 30590630059) and handed
+  reaping immunity to VMs that never received work. A leaked soak VM still dies,
   just later; an untagged or expired one is reaped on the normal rule. Tagging
-  fails closed — if it fails, the launch fails immediately rather than the
-  soak dying silently at hour two.
+  fails closed — if it fails, the soak fails immediately rather than dying
+  silently at hour two.
 - First run bootstraps: no baseline → verdict passes and seeds the history.

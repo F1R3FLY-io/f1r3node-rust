@@ -67,7 +67,26 @@ env:
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
-  SYSTEM_INTEGRATION_REF: 9ebdde01e414f4c013cb83e828b625990504f082
+  # 2026-07-30 (later): bumped to the PR #72 merge, a descendant of the above.
+  # This ref is load-bearing for the launch job, not just the test harness —
+  # cloud-init-runner.yml.tmpl is read from it at :445, so the runner's idle
+  # watchdog comes from whatever is pinned here. It carries three things:
+  #   - The watchdog fix. It decided "is a job running?" by grepping run.sh's
+  #     log for "Running job:", but that stdout is redirected to a file and
+  #     .NET block-buffers it, so the line can sit unflushed and the watchdog
+  #     kills a healthy runner at IDLE_TIMEOUT_SECS. Every job longer than
+  #     ~45min-minus-boot was exposed; the soak is exactly that shape, and this
+  #     is the leading explanation for run 30590630059. It now reads the
+  #     process table (Runner.Worker) instead.
+  #   - log() tees to /dev/console, which is what makes capture_diagnostics
+  #     below able to find anything: console history is the only VM-side
+  #     diagnostic that survives instance termination.
+  #   - PR #70's test_load.py resource-breach attribution, so a node killed by
+  #     the RSS/floor guardian names the ceiling that killed it instead of
+  #     surfacing a raw gRPC traceback — without which the tightened limits
+  #     below would be self-obscuring. Plus their reaper's soak guards.
+  # On their `dev` and heading to `main`; a SHA is immutable either way.
+  SYSTEM_INTEGRATION_REF: 7b6c9dd9674b19732923ed49feee758829b2c27a
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -436,99 +455,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
-          RUNNER_NAMES_FILE: /tmp/soak-runner-name
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
-
-      - name: Exempt runner from the CI reaper until the window ends
-        env:
-          # Same pinned compartment as ci-runner-reaper.yml; not a secret.
-          # Must stay byte-identical to that file's copy — this job writes the
-          # exemption tag, that job reads it, and a mismatch means the tag
-          # lands where the reaper never looks. check-workflow-invariants.sh
-          # enforces the equality; see the longer note at the reaper's env.
-          CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
-          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
-          KIND: ${{ needs.schedule_gate.outputs.kind }}
-          SUPPRESS_LABEL_WARNING: "True"
-        shell: bash -e {0}
-        run: |
-          # ci-runner-reaper.yml terminates ci-eph-* instances older than 2h;
-          # a 22h/60h soak must outlive that. Tag the instance with the epoch
-          # second after which reaping is allowed again — window end + 2h
-          # grace for final aggregation and artifact upload. Fail closed: an
-          # untagged soak runner dies at the 2h mark, so a tagging failure
-          # must fail the launch now, not the soak two hours in.
-          #
-          # Anchored to the gate's end_epoch, not to now + duration: launch
-          # can be delayed by queueing or a slow image pull, and a tag
-          # measured from this step would then extend past the window it is
-          # meant to track, drifting from the same instant the restart logic
-          # uses.
-          case "$END_EPOCH" in
-            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
-          esac
-          name="$(tail -1 /tmp/soak-runner-name)"
-          test -n "$name"
-          iid="$(oci compute instance list \
-            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" \
-            --display-name "$name" \
-            --query 'data[0].id' --raw-output)"
-          test -n "$iid" && [ "$iid" != "null" ]
-          deadline="$((END_EPOCH + 7200))"
-          # launch-runner.sh returns as soon as OCI accepts the launch call,
-          # but the instance keeps transitioning through PROVISIONING for
-          # another 30-60s, and `instance update` against a transitioning
-          # instance is refused with HTTP 409 "currently being modified, try
-          # again later". Run 30584775602 hit exactly that, 3s after launch.
-          # 409 is explicitly retryable, so retry rather than fail on it —
-          # while keeping the fail-closed contract: if the tag never lands we
-          # still fail the launch, because an untagged soak runner is reaped
-          # at the 2h mark.
-          #
-          # --freeform-tags REPLACES the instance's whole tag map; it does not
-          # merge. The launcher sets no freeform tags today, so overwriting
-          # would be harmless right now — but system-integration TASK-010-7
-          # plans cost-tracking tags applied at launch, and this step would
-          # then silently erase them, breaking cost attribution in a way
-          # nobody notices until a bill arrives. Read-modify-write instead,
-          # re-read each attempt so a write that lands mid-retry is merged
-          # rather than clobbered by a stale snapshot.
-          tagged=""
-          for attempt in $(seq 1 12); do
-            # A FAILED read must not fall through to `{}`. Because the update
-            # replaces the whole map, "read failed" and "instance has no tags"
-            # are indistinguishable once both become {} — and treating a
-            # transient read failure as "no tags" would erase every existing
-            # tag, which is the exact outcome the read-modify-write exists to
-            # prevent. Retry instead; only a *successful* read reporting an
-            # empty or null map may become {}.
-            if ! existing="$(oci compute instance get --instance-id "$iid" \
-                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
-              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
-              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
-              if [ "$attempt" -lt 12 ]; then sleep 15; fi
-              continue
-            fi
-            case "$existing" in ''|null) existing='{}' ;; esac
-            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
-            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
-            if update_err="$(oci compute instance update --instance-id "$iid" --force \
-                 --freeform-tags "$merged" 2>&1)"; then
-              tagged=1
-              break
-            fi
-            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
-              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
-            if [ "$attempt" -lt 12 ]; then sleep 15; fi
-          done
-          if [ -z "$tagged" ]; then
-            printf '%s\n' "$update_err" | tail -20
-            echo "::error::could not tag ${name} after 12 attempts (~3min); refusing to launch an unexempt soak runner, which the reaper would terminate at the 2h mark"
-            exit 1
-          fi
-          echo "tagged ${name} (${iid}): reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Remove OCI credentials
         if: always()
@@ -613,6 +541,12 @@ jobs:
       # signal retry_within_window keys on to tell infrastructure death from
       # a run that completed red.
       completed: ${{ steps.complete.outputs.completed }}
+      # OCID of the instance this job actually ran on, published early by the
+      # self-tag step. capture_diagnostics needs it after the fact: when the
+      # runner agent is killed, no step inside THIS job can run, so the
+      # post-mortem has to happen from a GitHub-hosted job that still has OCI
+      # credentials. Set before the image build, so it survives any later death.
+      instance_id: ${{ steps.selftag.outputs.instance_id }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -640,6 +574,80 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: ci-control
           persist-credentials: false
+
+      # FIRST, before the expensive image build: this job must exempt the
+      # instance it is ACTUALLY RUNNING ON from ci-runner-reaper.yml.
+      #
+      # Tagging from the launch job was wrong and is removed. GitHub assigns a
+      # job to whichever registered runner with matching labels claims it
+      # first, which is routinely an older idle runner from an earlier launch
+      # — not the VM that launch just created. Run 30590630059 proved it: the
+      # launch job correctly tagged ...-233015-24ed76, while the soak actually
+      # ran on untagged ...-225401-fad5e4. The exemption protected an idle VM
+      # and left the working one exposed. Worse, it granted a 22h/60h reaping
+      # exemption to a VM that never did any work, turning the guard into a
+      # leak: those VMs then outlive the 2h rule that would have collected
+      # them.
+      #
+      # Instance-principal auth, not secrets: invariant 2 confines credentials
+      # to launch_ephemeral_runners, and the dynamic group already holds
+      # "manage instance-family in compartment ci-runner". The in-soak ONS
+      # alert uses the same path.
+      #
+      # Fails closed. An unexempt soak runner is terminated at the 2h mark, so
+      # there is no point spending an image build and a night on it.
+      - name: Exempt this runner from the CI reaper
+        id: selftag
+        env:
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
+          esac
+          command -v oci >/dev/null || { echo "::error::oci CLI not found on the soak runner"; exit 1; }
+          # IMDSv2 on the instance itself — the only authority on which VM this is.
+          iid="$(curl -sS --max-time 10 -H 'Authorization: Bearer Oracle' \
+            http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || iid=""
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *) echo "::error::could not read this instance's OCID from the metadata service; refusing to soak on a runner that cannot be exempted"; exit 1 ;;
+          esac
+          deadline="$((END_EPOCH + 7200))"
+          # Same read-modify-write and 409 retry as before: --freeform-tags
+          # REPLACES the whole map, and a transient read failure must never be
+          # mistaken for "no tags" or it erases cost-tracking metadata.
+          tagged=""
+          for attempt in $(seq 1 12); do
+            if ! existing="$(oci --auth instance_principal compute instance get \
+                 --instance-id "$iid" --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
+            case "$existing" in ''|null) existing='{}' ;; esac
+            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
+            if update_err="$(oci --auth instance_principal compute instance update \
+                 --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
+              tagged=1
+              break
+            fi
+            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
+              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
+            if [ "$attempt" -lt 12 ]; then sleep 15; fi
+          done
+          if [ -z "$tagged" ]; then
+            printf '%s\n' "${update_err:-}" | tail -20
+            echo "::error::could not tag this runner after 12 attempts; refusing to soak on a runner the reaper will terminate at the 2h mark"
+            exit 1
+          fi
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
+          echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
         uses: actions/checkout@v4
@@ -1029,7 +1037,10 @@ jobs:
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           for f in history.json latest-summary.json latest-verdict.json latest-report.md \
                    history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-                   latest-report-daily.md; do
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -1056,7 +1067,10 @@ jobs:
             }
           done
           for f in latest-summary.json latest-verdict.json \
-                   latest-summary-daily.json latest-verdict-daily.json; do
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
               echo "::error::published ${f} is not a JSON object; refusing to republish it"
@@ -1102,6 +1116,15 @@ jobs:
           cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
           cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
           cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
+          # Cosmetic, and deliberately not part of the "history exists but
+          # latest-* is missing" abort above: a README badge must never be able
+          # to block publishing the dashboard. Guarded because a re-run against
+          # an artifact produced before badge.json existed would otherwise fail
+          # the copy and take the whole publish down with it.
+          for b in badge:badge-soak badge-stability:badge-stability badge-perf:badge-perf; do
+            src="soak-results/report/${b%%:*}.json"
+            [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
+          done
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -1132,6 +1155,113 @@ jobs:
             exit 0
           fi
           exit 1
+
+  capture_diagnostics:
+    name: Capture Soak Runner Post-Mortem
+    needs: [schedule_gate, soak]
+    # Only when the soak died WITHOUT reaching its completion marker — i.e. the
+    # runner was lost rather than the soak producing a red result. A completed
+    # red run has logs and an artifact already; this exists for the case where
+    # it has neither.
+    #
+    # Run 30590630059 is why: the job vanished 19 minutes in, GitHub kept no
+    # log at all ("log not found"), and the leading explanation — the
+    # cloud-init idle watchdog killing run.sh at IDLE_TIMEOUT_SECS despite a
+    # job being active — lives entirely in /var/log/runner-run.log on the VM.
+    # That evidence was then lost when the instance was terminated during
+    # cleanup. Console history is captured as a SEPARATE OCI resource with its
+    # own lifecycle, so it outlives the instance and can be read the next day.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.soak.result == 'failure' &&
+      needs.soak.outputs.completed != 'true' &&
+      needs.soak.outputs.instance_id != ''
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0} # no -x: never trace the private key
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+
+      - name: Capture console history
+        env:
+          IID: ${{ needs.soak.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          mkdir -p /tmp/postmortem
+          printf 'instance: %s\nrun: %s\n' "$IID" "$GITHUB_RUN_ID" > /tmp/postmortem/instance.txt
+          oci compute instance get --instance-id "$IID" > /tmp/postmortem/instance.json 2>&1 || true
+          state="$(jq -r '.data."lifecycle-state" // "unknown"' /tmp/postmortem/instance.json 2>/dev/null || echo unknown)"
+          echo "instance lifecycle-state: $state"
+          # Capture is asynchronous: request it, then poll until SUCCEEDED
+          # before fetching. A terminated instance cannot be captured, which is
+          # itself the finding — record it rather than failing the job.
+          hid="$(oci compute instance-console-history capture --instance-id "$IID" \
+            --query 'data.id' --raw-output 2>/dev/null || true)"
+          if [ -z "$hid" ]; then
+            echo "::warning::could not start console-history capture (instance state: $state); the VM was likely already terminated"
+          else
+            for _ in $(seq 1 20); do
+              st="$(oci compute instance-console-history get --instance-console-history-id "$hid" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo REQUESTED)"
+              [ "$st" = "SUCCEEDED" ] && break
+              [ "$st" = "FAILED" ] && { echo "::warning::console history capture FAILED"; break; }
+              sleep 15
+            done
+            oci compute instance-console-history get-content \
+              --instance-console-history-id "$hid" --file /tmp/postmortem/console.log \
+              --length 1048576 >/dev/null 2>&1 || true
+          fi
+          echo "--- last 60 lines of console output ---"
+          tail -60 /tmp/postmortem/console.log 2>/dev/null || echo "(no console content captured)"
+          # The specific line that would confirm the idle-watchdog hypothesis.
+          if grep -q 'Idle .* with no job; killing runner' /tmp/postmortem/console.log 2>/dev/null; then
+            echo "::warning::CONFIRMED: the cloud-init idle watchdog killed the runner while a job was active"
+          fi
+
+      - name: Upload post-mortem
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-postmortem-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/postmortem
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   notify_failure:
     name: Email Soak Failure Alert

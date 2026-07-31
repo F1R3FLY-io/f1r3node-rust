@@ -9,6 +9,9 @@
 # Outputs (OUT_DIR):
 #   weekly-summary.json   the record appended to the dashboard data history
 #   verdict.json          pass/regress + per-metric deltas (release gate input)
+#   badge.json            shields.io endpoint badge (soak verdict)
+#   badge-stability.json  endpoint badge: iteration success rate
+#   badge-perf.json       endpoint badge: finalization p95 + throughput
 #   perf-report.md        human summary (step summary / artifact)
 #
 # Verdict policy (thresholds file, maintainer-approved EPOCH-010):
@@ -129,6 +132,11 @@ jq -n \
         kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        # Optional by construction: soaks that ran before the soak script began
+        # emitting it, and any run where the node checkout was unreadable, have
+        # no version. History entries are never backfilled, so the dashboard
+        # must tolerate the field being absent on older rows.
+        version: ($passive.version // "unknown"),
         started_at: ($passive.started_at // null),
         finished_at: ($passive.finished_at // null),
         duration_seconds: $duration,
@@ -148,8 +156,13 @@ jq -n \
         failure_rate: $passive.failure_rate,
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
+        cpu_peak_pct: $passive.cpu_peak_pct,
+        finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
-        providers: $passive.providers
+        finalization_p99_ms: $passive.finalization_p99_ms,
+        too_far_ahead_errors: $passive.too_far_ahead_errors,
+        providers: $passive.providers,
+        tracked_metrics: ($passive.tracked_metrics // {})
       } end),
       active: {
         segments_total: ($segs | length),
@@ -219,6 +232,107 @@ jq -n \
     }
 ' >"$OUT_DIR/verdict.json"
 
+# Shields.io endpoint badge for the README, derived from verdict.json rather
+# than recomputed from the inputs: a badge that can disagree with the dashboard
+# is worse than no badge at all.
+#
+# The endpoint schema is used, not shields' dynamic/json, because dynamic/json
+# cannot vary colour by value — it would render "regress" in the same colour as
+# "pass", which is the exact failure the static badges this replaces already had.
+jq \
+	'
+  def branch_label:
+    # Prefer the branch actually soaked, so the badge self-corrects if the
+    # weekend/daily targeting ever changes. Fall back to the series name when
+    # the ref is a sha or anything else that would not read as a branch — a
+    # manual dispatch can pass either.
+    (.run.target_ref // "") as $r
+    | if ($r | test("^[A-Za-z0-9._/-]{1,24}$")) and (($r | test("^[0-9a-f]{7,40}$")) | not)
+      then $r else (.run.kind // "soak") end;
+  def hours: if . == null then null else (. / 3600 * 10 | floor / 10) end;
+  {
+    schemaVersion: 1,
+    label: "soak · \(branch_label)",
+    # A checkpoint shows progress rather than a verdict, matching the
+    # in_progress handling above; "pass · no baseline" keeps a bootstrap run
+    # from claiming a comparison it never made.
+    message:
+      (if .verdict == "in_progress"
+         then ((.run.elapsed_seconds | hours) as $e
+               | (.run.duration_seconds | hours) as $t
+               | if $e == null or $t == null then "in progress"
+                 else "\($e)h/\($t)h" end)
+       elif .verdict == "regress" then "regress"
+       elif .bootstrap then "pass · no baseline"
+       else "pass" end),
+    color:
+      (if .verdict == "in_progress" then "lightgrey"
+       elif .verdict == "regress" then "red"
+       elif .bootstrap then "yellowgreen"
+       else "brightgreen" end)
+  }
+' "$OUT_DIR/verdict.json" >"$OUT_DIR/badge.json"
+
+# Stability readout: how often a full bring-up -> load -> finalize iteration
+# succeeded. Deliberately NOT called uptime — the soak builds a fresh shard per
+# iteration rather than watching a standing one, so this is a success rate, not
+# an availability measurement, and labelling it uptime would claim monitoring
+# this repo does not have.
+#
+# The colour bands are advisory and absolute; the release gate is relative
+# (week-over-week deltas) and stays with the verdict badge. A run can be
+# brightgreen here and `regress` there, which is correct: perfect iterations
+# that got slower are still a regression.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null or (($p.iterations // 0) == 0)
+    then {schemaVersion: 1, label: "stability", message: "no data", color: "lightgrey"}
+    else (((1 - ($p.failure_rate // 0)) * 1000 | round) / 10) as $pct
+      | {schemaVersion: 1,
+         label: "stability",
+         message: "\($pct)% · \($p.iterations) iters",
+         color: (if $partial then "lightgrey"
+                 elif $pct >= 100 then "brightgreen"
+                 elif $pct >= 99 then "green"
+                 elif $pct >= 95 then "yellow"
+                 else "orange" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-stability.json"
+
+# Performance readout: the two headline numbers, finalization p95 and iteration
+# throughput. Always blue — a readout, not a judgement. Performance has no
+# absolute threshold here (the gate is week-over-week), so colouring it green or
+# red would invent a standard that does not exist; the verdict badge carries the
+# pass/regress call.
+jq \
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	'
+  # One decimal, always, including the .0. jq drops a trailing zero — 2966.9ms
+  # would render "p95 3s", which reads like a suspiciously round number rather
+  # than a measurement — so the tenths digit is assembled by hand.
+  def one_dp: (. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)";
+  def ms_short: if . == null then null
+                elif . >= 1000 then "\((. / 1000) | one_dp)s"
+                else "\(. | round)ms" end;
+  (.passive // null) as $p
+  | ($verdict.verdict == "in_progress") as $partial
+  | if $p == null then {schemaVersion: 1, label: "perf", message: "no data", color: "lightgrey"}
+    else [($p.finalization_p95_ms | ms_short | if . == null then null else "p95 \(.)" end),
+          (if $p.iterations_per_hour == null then null
+           else "\($p.iterations_per_hour | one_dp)/h" end)]
+         | map(select(. != null))
+      | {schemaVersion: 1,
+         label: "perf",
+         # Grey whenever there is nothing to report, matching the stability
+         # badge — a blue "no data" reads as a healthy reading.
+         message: (if length == 0 then "no data" else join(" · ") end),
+         color: (if length == 0 or $partial then "lightgrey" else "blue" end)}
+    end
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-perf.json"
+
 jq -r \
 	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
 	--argjson baseline "$BASELINE_ARG" \
@@ -251,7 +365,11 @@ jq -r \
   "| failure rate | \(.passive.failure_rate // null | fmt) | \($bp.failure_rate | fmt) |",
   "| iterations/hour | \(.passive.iterations_per_hour // null | fmt) | \($bp.iterations_per_hour | fmt) |",
   "| peak RSS (MB) | \(.passive.rss_peak_mb // null | fmt) | \($bp.rss_peak_mb | fmt) |",
+  "| peak CPU (%) | \(.passive.cpu_peak_pct // null | fmt) | \($bp.cpu_peak_pct | fmt) |",
+  "| finalization p50 (ms) | \(.passive.finalization_p50_ms // null | fmt) | \($bp.finalization_p50_ms | fmt) |",
   "| finalization p95 (ms) | \(.passive.finalization_p95_ms // null | fmt) | \($bp.finalization_p95_ms | fmt) |",
+  "| finalization p99 (ms) | \(.passive.finalization_p99_ms // null | fmt) | \($bp.finalization_p99_ms | fmt) |",
+  "| too-far-ahead errors | \(.passive.too_far_ahead_errors // null | fmt) | \($bp.too_far_ahead_errors | fmt) |",
   "",
   "## Active benchmark segments (controlled-rate, medians)",
   "",
@@ -273,6 +391,6 @@ jq -r \
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
 rm -f "$SEGMENTS_JSON"
-echo "wrote weekly-summary.json, verdict.json, perf-report.md to $OUT_DIR" >&2
+echo "wrote weekly-summary.json, verdict.json, badge.json, badge-stability.json, badge-perf.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
 	"$OUT_DIR/verdict.json" >&2
