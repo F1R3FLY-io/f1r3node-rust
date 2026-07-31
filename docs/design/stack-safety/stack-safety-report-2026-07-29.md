@@ -69,7 +69,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567--ss-e1-3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568--ss-y3-the-collection-arms-re-score-every-element-three-times-per-level) |
 
-| **SS-Y4** | *(pre-existing; MEASURED and PINNED by `6bdd6ad7`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` ≠ `{3:90} \| {3:30}` | ⛔ **open** — repair route ruled but **not yet landed** | [5.6.9](#569--ss-y4-sibling-order-is-not-a-total-function-of-the-term) |
+| **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` ≠ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569--ss-y4-sibling-order-is-not-a-total-function-of-the-term) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits do not create the defect, they **measure** one that was already live and unquantified. Each cross-references the other, and `SS-Y3` is discharged only by a commit that repairs it — never by deletion.
 
@@ -1525,11 +1525,28 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 | seeded nondeterminism | 40 independent processes, identical binary and term ⇒ **20 / 20** split across two byte strings |
 | ⛔ deterministic fork | `{3:30} \| {3:90}` → `2a11ba010e…3c2a12ba010f…b401`; `{3:90} \| {3:30}` → `2a12ba010f…b4012a11ba010e…3c`. **Identical across runs**, different from each other |
 
+**After the repair, both measured again on the same instruments:**
+
+| claim | before | after |
+|---|---|---|
+| seeded — 40 processes, one term | **20 / 20** split | ★ **40 / 40 identical** |
+| deterministic — `{3:30} \| {3:90}` vs `{3:90} \| {3:30}` | different bytes | ★ **byte-identical** |
+| `sorter_canonical_golden` (tie-free by construction) | — | **UNMOVED**, both columns |
+| `par_codec_differential` · `wire_encode_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7**, unmoved |
+
+★ The golden being unmoved is not a happy accident — the tie-break **refines and never reorders**, being consulted only where `compare_score` returns `Equal`, so byte-neutrality on any tie-free corpus holds *by construction*. A move there would have been a bug in the implementation, not a legitimate change.
+
 ⇒ **These are two different faults.** The seeded one moves bytes that are currently **undefined**; the deterministic one moves bytes that **are defined today**, since `|` is commutative and the two spellings denote one process. `permutation_collapse_survives_nesting` already asserts the property the second violates, and both are reachable from an ordinary deploy — `@"c"!({3:30} | {3:90})`.
 
 **Why nothing caught it.** `sorter_canonical_golden.rs:88-101` uses pairwise-**distinct** scores *by construction*, saying so ("otherwise it would flake"); the frozen oracle shares `sort_combine` with the driver; and the one test that should have caught it asserted an **iff whose reverse is false**, passing on sampling luck. ⇒ The corpus was chosen to exclude the input class that breaks the property — the same shape [§5.7.3](#573-the-harness-prerequisite-that-was-totally-vacuous) records for the three tests that test replaced.
 
-**How the fix was made.** ⌀ **NOT YET LANDED.** Route **β-total** is ruled — order siblings by $`(\text{score},\ \text{the bytes the element emits})`$ — but three questions gate it: β-total vs. β-narrow, whether an activation height is needed, and the `unverified_budget`. ★ Rejected alternatives are recorded now rather than after: **γ** (make the score injective) is a *complete-the-list* repair over at least three lossy paths (`EMap` values, `EZipper` cursor, `ReceiveBind.free_count`) and the list is not derivable; **δ** (drop the `HashSet`) is actively harmful **first**, because it greens the cross-process gate while leaving the permutation fork live — [CBR-L12](#cbr-l12)'s recorded ordering hazard, inverted.
+**How the fix was made.** ★ **LANDED.** `ScoredTerm::sort_vec` now orders siblings by $`(\text{score},\ \text{the bytes the element emits})`$ — a **total** order. The key is *derived, not chosen*: consensus observes exactly one thing about a sibling, the bytes it contributes, so ordering by those is the unique key for which *"swapping two siblings is invisible"* and *"the two are equal under the key"* are the same statement. ⇒ Totality **without** requiring the encoding to be injective: if two distinct terms encode identically, swapping them is byte-invisible.
+
+The bound on `sort_vec` became `T: EmittedBytes`, so **a sortable type that has not answered this question does not compile** — no list to keep current. ★ That forcing function fired during implementation: a `ScoredTerm<usize>` in the sorter's own permutation oracle failed the build until it was given an answer.
+
+⚠ **All eleven `sort_vec` call sites were left untouched**, and that is the evidence the repair sits at the right level rather than a convenience: a sibling-blind repair is structurally impossible here.
+
+★ The owner ruled the network **pre-production**, so this lands unconditionally with no activation height. ⇒ CBR-040 needs no `UNVERIFIED` cell and `unverified_budget` (`register.toml:33`) **stays at 1**. ★ Rejected alternatives are recorded now rather than after: **γ** (make the score injective) is a *complete-the-list* repair over at least three lossy paths (`EMap` values, `EZipper` cursor, `ReceiveBind.free_count`) and the list is not derivable; **δ** (drop the `HashSet`) is actively harmful **first**, because it greens the cross-process gate while leaving the permutation fork live — [CBR-L12](#cbr-l12)'s recorded ordering hazard, inverted.
 
 **What it cost.** ⌀ — nothing changed; this row measures and pins existing behaviour.
 

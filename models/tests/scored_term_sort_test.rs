@@ -407,15 +407,18 @@ fn distinct_canonical_terms_can_share_a_score_and_that_is_a_consensus_fault() {
     let cab = ParSortMatcher::sort_match(&ab).term.encode_to_vec();
     let cba = ParSortMatcher::sort_match(&ba).term.encode_to_vec();
 
-    assert_ne!(
+    // ★★ FLIPPED BY THE REPAIR, in the repair's own commit — this diff IS the RED-to-GREEN
+    // evidence the previous polarity promised. `sort_vec` now orders siblings by
+    // `(score, emitted bytes)`, a TOTAL order, so `|`'s commutativity is respected again.
+    assert_eq!(
         cab, cba,
-        "★ THE DEFECT IS REPAIRED — `{{3:30}} | {{3:90}}` and `{{3:90}} | {{3:30}}` now reach \
-         the SAME canonical form.\n\n\
-         This assertion is written in its CURRENT-STATE polarity: it asserts the FAULT, because \
-         the fault is what is true at the commit that pins it. Flipping it to `assert_eq!` is \
-         the repair's deliverable, and that flip belongs in the SAME commit as the fix so the \
-         diff carries its own RED-to-GREEN evidence.\n\n\
-         Do not delete this test to make the suite green."
+        "⛔ THE PERMUTATION FORK IS BACK. `{{3:30}} | {{3:90}}` and `{{3:90}} | {{3:30}}` are two \
+         spellings of ONE process — `|` is commutative — and they must reach one canonical form. \n\n\
+         They no longer do, which means the sibling order has stopped being TOTAL: something \
+         reintroduced a tie that `EmittedBytes` used to break, or a `sort_vec` call site \
+         acquired a `T` whose `emitted_bytes` is not what the enclosing message emits for it.\n\n\
+         This is a CONSENSUS FAULT, not a test failure: `cost_accounting/sig.rs` signs these \
+         bytes, so two spellings of one process would sign differently. See SS-Y4."
     );
 }
 

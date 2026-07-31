@@ -345,18 +345,133 @@ pub fn compare_score(s1: &Tree<ScoreAtom>, s2: &Tree<ScoreAtom>) -> std::cmp::Or
     Ordering::Equal
 }
 
-impl<T: Clone> ScoredTerm<T> {
-    /// Sort siblings into canonical order.
+/// ★★★ **The tie-break key: the bytes this element contributes to the enclosing term.**
+///
+/// # Why the sibling order needs a second key at all
+///
+/// Siblings are ordered by score, and **the score is not injective on canonical terms**.
+/// `combine_emap` chains only the *key's* score, so `{3 → 30}` and `{3 → 90}` are distinct
+/// canonical terms with byte-identical score trees; `EZipper`'s cursor and `ReceiveBind`'s
+/// `free_count` are two further lossy paths. Where two distinct terms tie, `sort_by`'s
+/// **stability** hands the decision to whatever filled the input vector — which is `HashSet`
+/// iteration order (seeded **per process**) at `SortedParHashSet::create_from_vec`, and the
+/// message's own **field order** at `combine_par`.
+///
+/// ⇒ Measured: a set containing both maps split **20/20 across 40 processes**; and
+/// `{3:30} | {3:90}` versus `{3:90} | {3:30}` — two spellings of one process, `|` being
+/// commutative — reached **different canonical bytes deterministically**. See `SS-Y4` in the
+/// stack-safety report.
+///
+/// # Why THIS key, and not another
+///
+/// The key is **derived, not chosen**. Consensus observes exactly one thing about a sibling:
+/// the bytes it contributes to the enclosing encoded term. Ordering by those bytes is the
+/// unique key for which *"swapping two siblings is invisible"* and *"the two siblings are equal
+/// under the key"* are the **same statement**. That gives totality **without** requiring the
+/// encoding to be injective: if two distinct terms encode identically, swapping them is
+/// byte-invisible, so their residual order cannot be observed by anything.
+///
+/// ⚠ **This is NOT the proposal the consensus register rejected.** `consensus-change-register.md`
+/// `:3016-3019` rejected sorting on `(score, sibling_index)` — correctly, because `sibling_index`
+/// *is* the hash iteration index and is therefore itself nondeterministic. This key is a pure
+/// function of the element's own value, computed after the element is fully sorted, with no
+/// reference to position, container, seed or iteration order.
+///
+/// # Why a trait rather than an expression at each call site
+///
+/// `sort_vec` has eleven call sites. Adding a tie-break expression to each is a
+/// *complete-the-list* repair, and the list would silently gain a twelfth. Instead the bound on
+/// [`ScoredTerm::sort_vec`] is `T: EmittedBytes`, so **a sortable type that has not answered
+/// this question does not compile**. There is no list to keep current.
+pub trait EmittedBytes {
+    /// The bytes the enclosing message will emit for this element.
+    fn emitted_bytes(&self) -> Vec<u8>;
+}
+
+/// Every sortable node type is a prost message, and its emitted bytes are its own encoding.
+macro_rules! emitted_bytes_via_prost {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl EmittedBytes for $t {
+                fn emitted_bytes(&self) -> Vec<u8> {
+                    prost::Message::encode_to_vec(self)
+                }
+            }
+        )*
+    };
+}
+
+emitted_bytes_via_prost!(
+    crate::rhoapi::Par,
+    crate::rhoapi::Expr,
+    crate::rhoapi::Send,
+    crate::rhoapi::Receive,
+    crate::rhoapi::ReceiveBind,
+    crate::rhoapi::New,
+    crate::rhoapi::Match,
+    crate::rhoapi::MatchCase,
+    crate::rhoapi::Bundle,
+    crate::rhoapi::Connective,
+    crate::rhoapi::GUnforgeable,
+    crate::rhoapi::If,
+    crate::rhoapi::Var,
+);
+
+/// An `EMap` entry. ⚠ The key must be **the pair's `KeyValuePair` encoding**, not the two `Par`s
+/// concatenated, because that is what `par_map_to_emap` actually emits for this element.
+impl EmittedBytes for (crate::rhoapi::Par, crate::rhoapi::Par) {
+    fn emitted_bytes(&self) -> Vec<u8> {
+        prost::Message::encode_to_vec(&crate::rhoapi::KeyValuePair {
+            key: Some(self.0.clone()),
+            value: Some(self.1.clone()),
+        })
+    }
+}
+
+/// ⚠ Used only by `ScoredTerm<String>` in the sorter's own tests. Real terms never reach it.
+impl EmittedBytes for String {
+    fn emitted_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+}
+
+/// ⚠ Test-only, and its presence is deliberate rather than incidental.
+///
+/// `score_tree.rs`'s permutation oracle sorts `ScoredTerm<usize>`, using the `usize` as a
+/// position marker. ★ It is impl'd here rather than in the test module because that oracle's
+/// whole purpose is to check the PERMUTATION `sort_vec` produces — so it must go through the
+/// same code path, including the tie-break, or it would be checking a function that no longer
+/// exists. Encoding as big-endian bytes keeps the byte order agreeing with the numeric order,
+/// so a tie between two markers breaks the same way a reader would expect.
+impl EmittedBytes for usize {
+    fn emitted_bytes(&self) -> Vec<u8> {
+        self.to_be_bytes().to_vec()
+    }
+}
+
+impl<T: EmittedBytes> ScoredTerm<T> {
+    /// Sort siblings into canonical order — a **total** order.
     ///
-    /// ⚠ `sort_by`, never `sort_unstable_by`. This sort is **stable**, and the
-    /// comparator returns `Equal` for distinct terms with equal scores (the
-    /// sorter is a normalizer, so it is not injective — directly measured:
-    /// `Par{exprs:[GInt 1, GInt 2]}` and `Par{exprs:[GInt 2, GInt 1]}` are
-    /// unequal terms with equal scores). An unstable sort would be free to
-    /// reorder those, which would fork the canonical form and therefore the
-    /// signed bytes.
+    /// ★ The tie-break **refines and never reorders**: it is consulted only where
+    /// `compare_score` returns `Equal`. Every pair the score already separates keeps its order
+    /// exactly, so byte-neutrality on any tie-free input is true **by construction** rather than
+    /// by measurement. That is why `sorter_canonical_golden.rs` — whose collections carry
+    /// pairwise-distinct scores by construction (`:88-101`) — must be byte-identical across this
+    /// change, and why a move there would be a bug in this function rather than a legitimate
+    /// canonical-form change.
+    ///
+    /// ⚠ `sort_by` is kept rather than `sort_unstable_by`, but the reason has CHANGED and the
+    /// old one no longer applies. It used to be load-bearing: the comparator returned `Equal`
+    /// for distinct terms, so an unstable sort could reorder them and fork the canonical form.
+    /// With a total order there are no ties left for stability to have an opinion about, so the
+    /// choice is now immaterial to correctness. It is kept because the consensus register cites
+    /// it, and changing it would be an unmeasured second axis in a commit that already moves
+    /// bytes.
     pub fn sort_vec(scored_terms: &mut Vec<ScoredTerm<T>>) {
-        scored_terms.sort_by(|s1, s2| compare_score(&s1.score, &s2.score));
+        scored_terms.sort_by(|s1, s2| {
+            compare_score(&s1.score, &s2.score)
+                .then_with(|| s1.term.emitted_bytes().cmp(&s2.term.emitted_bytes()))
+        });
     }
 }
 
