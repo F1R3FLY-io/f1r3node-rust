@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "975e35fd"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 51 — doc comments only, no executable line, emitted bytes identical by construction. Corrects TWO blocks that stated the INVERSE of the projection rule: pathmap_crate_type_mapper.rs claimed the converter reads the trie's KEYS (it calls adopt_trie, which walks rz.val(), the VALUE side) and pathmap_integration.rs claimed both bulk readers walk keys (both walk values). The key walk they credit, canonical_ps_from_trie, is cfg(test)-only and PARTIAL on the codec's own image, because decode_trie_path's 0x0F escape arm inherits prost's 100-level decoder cap while the encoder has none. A reader following either block would switch the projection to the key walk believing it restored the intended design, and would reintroduce a panic on a trie the system itself built. Annotated, not rewritten. [DERIVED]"
+
+[[exempt]]
 commit = "626cf42d"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
