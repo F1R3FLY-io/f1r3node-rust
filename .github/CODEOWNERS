@@ -1,0 +1,17 @@
+# Code owners for CI and its credential wiring.
+#
+# Scope is deliberately narrow. Workflow files and the scripts they invoke carry
+# the credential model — which jobs may read OCI and GitHub App secrets, and what
+# holds untrusted fork code back — so a change here can widen the blast radius
+# without touching a line of Rust. Everything else keeps the repository default.
+#
+# @F1R3FLY-io/ci-maintainers must retain at least `push` on this repository:
+# GitHub silently ignores code owners without write access, so a team demoted to
+# read would leave these paths effectively unowned with no error anywhere.
+#
+# This file only auto-requests reviewers on its own. The teeth come from the
+# `require_code_owner_review` rule on the devProtect and masterProtect rulesets.
+
+/.github/workflows/  @F1R3FLY-io/ci-maintainers
+/.github/scripts/    @F1R3FLY-io/ci-maintainers
+/.github/CODEOWNERS  @F1R3FLY-io/ci-maintainers

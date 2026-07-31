@@ -1,0 +1,187 @@
+name: Soak segment
+description: >-
+  Run one segment of a soak and, when it ends on a checkpoint rather than the
+  run's end, publish what has happened so far.
+
+# A soak publishes only when it finishes, so a 22h nightly is invisible until
+# the following afternoon and a 60h weekend is dark for two and a half days.
+# A single long `run:` step cannot be interrupted to publish, so the soak is
+# invoked as consecutive segments that share one output directory — the script
+# resumes from its state file, keeping counters, the original start time and
+# iteration numbering continuous — with a publish between each.
+#
+# The publish is handed to a separate short-lived workflow rather than done
+# here. Deploying Pages needs the `github-pages` environment and the
+# `soak-pages` concurrency group at job level; holding those from inside a 22h
+# soak job would block every other Pages deploy for a day.
+
+inputs:
+  deadline_epoch:
+    description: >-
+      Absolute epoch second to end this segment on. Empty means run to the
+      overall budget, i.e. this is the final segment and no checkpoint is
+      published from it.
+    required: false
+    default: ""
+  label:
+    description: Human-readable segment name, used in logs and artifact names.
+    required: true
+  duration_seconds:
+    description: Total budget for the whole run, not for this segment.
+    required: true
+  target_ref:
+    required: true
+    description: Branch under test.
+  target_sha:
+    required: true
+    description: Pinned revision under test.
+  run_benchmarks:
+    required: true
+    description: Whether active benchmark segments run (weekend only).
+  merge_exit_min_seconds:
+    required: true
+    description: Floor before a branch move may end the soak; 0 disables.
+  kind:
+    required: true
+    description: weekend | daily — selects the published series.
+  retry_attempt:
+    required: true
+    description: Restart counter from the gate; >0 marks a restarted run.
+  window_seconds:
+    required: true
+    description: >-
+      The series' nominal window span (79200 daily / 216000 weekend), as
+      opposed to this run's duration budget, which for a restarted run is
+      only the window's remainder.
+  node_repo_dir:
+    required: true
+    description: Checkout of the node under test.
+  system_integration_dir:
+    required: true
+    description: Checkout of the integration harness.
+  node_image:
+    required: true
+    description: Node image tag under test.
+  gh_token:
+    required: true
+    description: Token used to dispatch the publish workflow.
+
+runs:
+  using: composite
+  steps:
+    - name: Soak (${{ inputs.label }})
+      env:
+        F1R3FLY_NODE_IMAGE: ${{ inputs.node_image }}
+        F1R3FLY_NODE_BINARY: /tmp/rnode
+        F1R3FLY_NODE_DEFAULTS_CONF: ${{ inputs.node_repo_dir }}/node/src/main/resources/defaults.conf
+        SOAK_DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        SOAK_DEADLINE_EPOCH: ${{ inputs.deadline_epoch }}
+        SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
+        SOAK_TARGET_REF: ${{ inputs.target_ref }}
+        SOAK_TARGET_SHA: ${{ inputs.target_sha }}
+        SOAK_RUN_BENCHMARKS: ${{ inputs.run_benchmarks }}
+        SOAK_MERGE_EXIT_MIN_SECONDS: ${{ inputs.merge_exit_min_seconds }}
+        SOAK_NODE_REPO_DIR: ${{ inputs.node_repo_dir }}
+        SYSTEM_INTEGRATION_DIR: ${{ inputs.system_integration_dir }}
+      shell: bash -e {0}
+      run: ci-control/scripts/run-merge-recovery-soak.sh
+
+    # Everything below is checkpoint-only. The final segment publishes through
+    # the normal perf_report job, which computes a real verdict and appends to
+    # the history series.
+    #
+    # always(), because these steps exist for the runs that do NOT finish. A
+    # composite action aborts on the first failed step, so without it a segment
+    # that dies takes its own checkpoint down with it -- and the checkpoint is
+    # the only artifact a partial night can produce. That is how Soak Checkpoint
+    # Publish reached 2026-07-31 with zero runs in its entire history while
+    # three consecutive nights failed mid-segment. The salvage path was wired to
+    # the success path, where it is redundant: a segment that completes cleanly
+    # is one whose run goes on to publish a real verdict anyway.
+    #
+    # Note what this does NOT fix. When the RUNNER is lost rather than the step
+    # failing, no further step executes at all -- there is no machine left to
+    # run them on -- and always() cannot help. That was the actual failure mode
+    # on 30606130771, 30607922155 and 30611992344. This change matters for the
+    # segment that fails while its runner is still alive; the dead-runner case
+    # needs the soak to stop dying, not a better guard.
+    - name: Aggregate checkpoint (${{ inputs.label }})
+      id: aggregate
+      if: always() && inputs.deadline_epoch != ''
+      env:
+        SOAK_DIR: /tmp/merge-recovery-soak
+        OUT_DIR: /tmp/merge-recovery-soak/checkpoint
+        SOAK_STATUS: in_progress
+        SOAK_KIND: ${{ inputs.kind }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+        WINDOW_SECONDS: ${{ inputs.window_seconds }}
+        # Environment, not interpolation -- same rule the publish step below
+        # states explicitly: `${{ }}` inside `run:` is substituted before bash
+        # sees it, so the value is parsed as shell rather than quoted as data.
+        LABEL: ${{ inputs.label }}
+      shell: bash -euo pipefail {0}
+      run: |
+        # in_progress suppresses the verdict: a partial run has fewer
+        # iterations, a lower peak RSS and a throughput figure over a shorter
+        # window than the baseline it would be compared against, so a verdict
+        # here would measure the clock rather than the code.
+        #
+        # Reachable now via always() with the soak step failed, so "the soak
+        # produced nothing at all" is a real case rather than an impossible
+        # one. That is not an error worth reporting -- a segment that died
+        # before writing a single result has nothing to checkpoint, and saying
+        # so once is more useful than failing a second time on top of the
+        # failure that caused it. Report readiness and let the caller decide.
+        if [ ! -d "$SOAK_DIR" ] || [ -z "$(ls -A "$SOAK_DIR" 2>/dev/null)" ]; then
+          echo "no soak output at $SOAK_DIR; nothing to checkpoint"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if ! ci-control/scripts/bench/aggregate-perf-report.sh; then
+          echo "::warning::checkpoint aggregation failed for ${LABEL}; the segment result stands on its own"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "ready=true" >> "$GITHUB_OUTPUT"
+
+    # Gated on the aggregate having actually produced something, which keeps
+    # if-no-files-found: error meaningful. Dropping it to warn would have been
+    # the easy way to survive always(), at the cost of silencing a genuinely
+    # empty checkpoint on the success path -- the same trade that made the
+    # console-history typo invisible for as long as it was.
+    - name: Upload checkpoint (${{ inputs.label }})
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
+        path: /tmp/merge-recovery-soak/checkpoint
+        retention-days: 3
+        if-no-files-found: error
+
+    - name: Publish checkpoint (${{ inputs.label }})
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
+      env:
+        GH_TOKEN: ${{ inputs.gh_token }}
+        # Passed as environment, never interpolated into the script body:
+        # `${{ }}` inside `run:` is substituted before bash sees it, so a value
+        # containing shell metacharacters would execute rather than be quoted.
+        ARTIFACT: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
+        KIND: ${{ inputs.kind }}
+      shell: bash -euo pipefail {0}
+      run: |
+        # Fail-soft, deliberately. A checkpoint is a convenience; the run's real
+        # result is published at the end regardless. Losing a mid-run update
+        # must never take down a soak that is otherwise healthy, so a failure
+        # here is a warning and the next segment starts anyway.
+        if gh workflow run soak-checkpoint-publish.yml \
+             --field run_id="${GITHUB_RUN_ID}" \
+             --field run_attempt="${GITHUB_RUN_ATTEMPT}" \
+             --field artifact="${ARTIFACT}" \
+             --field kind="${KIND}"; then
+          echo "checkpoint publish dispatched for ${ARTIFACT}"
+        else
+          echo "::warning::could not dispatch the checkpoint publish for ${ARTIFACT}; the soak continues and its final result still publishes normally"
+        fi

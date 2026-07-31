@@ -10,7 +10,7 @@
 #     GITHUB_TOKEN is never written to .git/config where fork code could read it.
 #   - The ONLY secret-bearing job (launch_ephemeral_runners) checks out solely
 #     F1R3FLY-io/system-integration (trusted) and runs only its scripts. Fork
-#     code never executes in a job that has OCI_* / RELEASE_PAT in scope.
+#     code never executes in a job that has OCI or GitHub App credentials in scope.
 #   - Fork code runs only in build_docker_image / integration_tests / smoke_*,
 #     none of which reference secrets.
 name: Integration Pipeline (reusable)
@@ -33,14 +33,6 @@ on:
         type: boolean
         required: false
         default: false
-    secrets:
-      OCI_TENANCY_OCID: { required: true }
-      OCI_USER_OCID: { required: true }
-      OCI_REGION: { required: true }
-      OCI_FINGERPRINT: { required: true }
-      OCI_PRIVATE_KEY: { required: true }
-      RELEASE_PAT: { required: true }
-
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
@@ -112,6 +104,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -213,6 +220,7 @@ jobs:
     name: Launch Ephemeral Runners
     needs: await_approval
     runs-on: ubuntu-latest
+    environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
     # the tenancy's daily instance-creation quota is shared, so two pipelines
     # launching at once both risk LimitExceeded. cancel-in-progress: false makes
@@ -229,8 +237,8 @@ jobs:
     concurrency:
       group: oci-ephemeral-launch
       cancel-in-progress: false
-    # Runner registration uses RELEASE_PAT (admin scope); the default GITHUB_TOKEN
-    # mints nothing here, so this job needs only read access for the checkout.
+    # Runner registration uses a short-lived GitHub App token; the default
+    # GITHUB_TOKEN cannot mint repository runner registration tokens.
     permissions:
       contents: read
     timeout-minutes: 10
@@ -261,6 +269,30 @@ jobs:
             --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
+      # TEMPORARY DIAGNOSTIC — remove before merging this PR.
+      #
+      # Determines which store actually supplies these credentials. Prints only a
+      # byte length and a truncated SHA-256 per value: GitHub masks secret values
+      # in logs but not digests, so this distinguishes "empty" (delivery failed)
+      # from "present but unexpected" (a different store won) without disclosing
+      # anything. Compare the digests against the values stored in the
+      # oci-credentials environment. Runs before the config step so it still
+      # reports when that step fails.
+      - name: Diagnose credential delivery (temporary)
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          for name in OCI_TENANCY_OCID OCI_USER_OCID OCI_REGION OCI_FINGERPRINT OCI_PRIVATE_KEY; do
+            value="${!name}"
+            printf '%-18s len=%-5s sha256=%s\n' "$name" "${#value}" \
+              "$(printf '%s' "$value" | sha256sum | cut -c1-16)"
+          done
+
       - name: Configure OCI auth from secrets
         shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
@@ -284,14 +316,18 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch 2 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
-          # The default GITHUB_TOKEN can't mint runner registration tokens even
-          # with permissions: actions: write — that endpoint requires admin-on-
-          # repo scope. RELEASE_PAT is already provisioned with the repo scope
-          # (used by release.yml for tag creation) so reuse it here.
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Register ephemeral runners on the base repo (where the run executes).
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
@@ -401,6 +437,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
         uses: actions/checkout@v4
@@ -498,6 +549,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -607,6 +673,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -707,11 +788,36 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Install just
         shell: bash -ex {0}
+        env:
+          JUST_VERSION: 1.57.0
+          JUST_SHA256: 45b548094283cb9739af8f13273b8cddeee869f5b4ef2bb631b1f311cb566155
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+          archive="just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors -sSfL \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          printf '%s  %s\n' "$JUST_SHA256" "/tmp/${archive}" | sha256sum -c -
+          tar -xzf "/tmp/${archive}" -C /tmp just
+          sudo install -m 0755 /tmp/just /usr/local/bin/just
+          just --version
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
