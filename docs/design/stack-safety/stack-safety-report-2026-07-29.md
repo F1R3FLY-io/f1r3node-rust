@@ -1488,7 +1488,21 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 
 ⚠ **Scope of the claim.** The exponent is measured on a **single-element-per-level** chain. Width is a separate axis and is **NOT MEASURED** here; a wider collection multiplies the per-level factor and the composed figure is unknown. ⇒ Do not quote a cost for a real term from this table.
 
-★ **Consequence for 3b, and it is structural.** `sorted_pars` holds `sort_match`ed terms — **normalized values, not the message's elements** — so no message-borrowed `&'t Par` corresponds to a sorted element, and the borrow-based conversion route fails. `drive.rs` is bounded to borrowing traversals by `Traversal::Node<'t>: Copy`. ⇒ **3b needs the same owning driver that §3d's approved route (A) builds**, and the two should be built together rather than twice.
+★ **Consequence for 3b.** `sorted_pars` holds `sort_match`ed terms — **normalized values, not the message's elements** — so no message-borrowed `&'t Par` corresponds to a sorted element **in `sorted_pars` order**. That much stands.
+
+> ⛔ **SUPERSEDED, same day, by a design review — recorded here rather than rewritten, per [Appendix G](#appendix-g--the-maintenance-contract)'s rule 2.**
+>
+> This section originally concluded: *"⇒ **3b needs the same owning driver that §3d's approved route (A) builds**, and the two should be built together rather than twice."* **That inference is wrong, and the refutation is already in the same file.**
+>
+> `combine_ezipper` (`sort_combine.rs:1150-1182`) **is already the converted form of exactly this shape**, landed and green: `expr_child_pars`'s `EZipperBody` arm pushes `zipper.pathmap.ps().iter()` — message-borrowed `&'t Par` in **wire** order — and `combine_ezipper` then hands `element_terms` to `EPathMap::new`, so the container constructor still establishes the order (O2 honoured) and each element is scored **exactly once**.
+>
+> ⇒ The missing step was this: **you do not have to push in `sorted_pars` order.** Push in wire order and let the *combine* apply the permutation, because by then it holds every child's `ScoredTerm`. The reordering is legal by a property already asserted at HEAD — `models/tests/scored_term_sort_test.rs:339`, `the_score_and_the_canonical_term_agree_with_each_other`.
+>
+> ⇒ **No owning driver, no arena, no relaxation of `Node<'t>: Copy` for 3b.** §3d still takes route (A); the two are **independent**, with one ordering coupling (§3d's repair of `dismantle`'s pathmap arms touches the same payload 3b-1 touches from the sorter side, so it lands first).
+>
+> ⚠ The superseded inference was carried for the length of one session and reached both this report and `sort_combine.rs`'s O4 block. It is corrected in both. ★ The lesson is the one [§1.2](#12-why-a-register-and-not-a-narrative) already argues: *the design usually already exists* — `combine_ezipper` had been the worked precedent for three hundred lines above the arm the whole time.
+
+⚠ **A second correction from the same review, and this one weakens a claim rather than a plan.** `the_score_and_the_canonical_term_agree_with_each_other` asserts an **iff**, and it may be false: `combine_emap` chains only `sorted_key.score`, and nothing else in an `EMap`'s score tree depends on the values, so `{3 → 30}` and `{3 → 90}` are plausibly **distinct canonical terms with identical score trees**. If that witness holds, then `SortedParHashSet`'s `HashSet<Par>` iteration order (`sorted_par_hash_set.rs:22-24`) reaches `par_set_to_eset`'s emitted `ps` whenever two distinct elements tie on score — i.e. **the canonical form of such a term is process-dependent at HEAD**, a live consensus nondeterminism on the path `cost_accounting/sig.rs` signs. ⌀ **NOT YET MEASURED** — the deciding witness is a twenty-line hand-built test, and it is the first thing run before any arm is converted. It would enter this register as `SS-Y4`.
 
 ---
 
