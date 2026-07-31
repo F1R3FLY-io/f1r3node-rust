@@ -85,8 +85,25 @@ env:
   #     the RSS/floor guardian names the ceiling that killed it instead of
   #     surfacing a raw gRPC traceback — without which the tightened limits
   #     below would be self-obscuring. Plus their reaper's soak guards.
-  # On their `dev` and heading to `main`; a SHA is immutable either way.
-  SYSTEM_INTEGRATION_REF: 7b6c9dd9674b19732923ed49feee758829b2c27a
+  # 2026-07-31: bumped to system-integration main (PR #76 merge). This is the
+  # bump that makes every bump above it mean anything.
+  #
+  # Until now this pin did not bind. launch-runner.sh registered every VM with
+  # one shared label set, so GitHub routed the soak job to whichever runner
+  # claimed it first -- frequently a VM some CI run had launched, carrying the
+  # cloud-init THAT workflow pinned. Run 30606130771 executed the pre-fix idle
+  # watchdog while this variable named the commit that fixed it; the console
+  # history has no pgrep and no Runner.Worker anywhere in 2410 lines. A pin that
+  # does not bind is worse than no pin, because it reads as a guarantee and
+  # stops people re-checking.
+  #
+  # This ref carries the RUNNER_LABELS override, so the soak now registers its
+  # runner under a label nothing else requests and therefore runs on the VM it
+  # launched. Verified on main by ancestry (git merge-base --is-ancestor), not
+  # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
+  # template placeholder, long before the override existed. Grepping would have
+  # said yes against a launcher that ignores the variable.
+  SYSTEM_INTEGRATION_REF: 5b3144e4e567e985fa36cc8c69ee70ee63d599ac
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -473,6 +490,18 @@ jobs:
           # The next step needs it to find this exact runner among all the
           # ci-eph-* runners registered at any moment.
           RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # Register under the exclusive label from the start rather than
+          # relabelling afterwards. Relabelling cannot revoke a job already
+          # assigned, so it always left a window; this closes it.
+          #
+          # The whole set, not just the pool label: RUNNER_LABELS replaces
+          # DEFAULT_LABELS outright. launch-runner.sh requires self-hosted,
+          # linux, the arch and oracle-cloud, and refuses to launch without
+          # them -- an omission here is a hard failure at launch, not a VM that
+          # boots healthy and never matches a runs-on. oracle-cloud in
+          # particular is the one whose absence actually breaks routing, and it
+          # must stay in step with the soak job's runs-on below.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
 
@@ -505,6 +534,12 @@ jobs:
           # Same file the launch step wrote to. launch-runner.sh APPENDS, so on
           # a relaunch below the newest name is the last line.
           RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # MUST match the launch step. This step relaunches on a lost race, and
+          # without it the replacement VM would register under the shared label
+          # set -- so the retry that exists to escape the race would re-enter it,
+          # and the soak would then wait on an exclusive label its own
+          # replacement does not carry. Silent, and only on the retry path.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
         shell: bash -e {0}
         run: |
           # Bounded reclaim loop. Losing the registration race is recoverable:
