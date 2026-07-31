@@ -89,8 +89,25 @@ runs:
     # Everything below is checkpoint-only. The final segment publishes through
     # the normal perf_report job, which computes a real verdict and appends to
     # the history series.
+    #
+    # always(), because these steps exist for the runs that do NOT finish. A
+    # composite action aborts on the first failed step, so without it a segment
+    # that dies takes its own checkpoint down with it -- and the checkpoint is
+    # the only artifact a partial night can produce. That is how Soak Checkpoint
+    # Publish reached 2026-07-31 with zero runs in its entire history while
+    # three consecutive nights failed mid-segment. The salvage path was wired to
+    # the success path, where it is redundant: a segment that completes cleanly
+    # is one whose run goes on to publish a real verdict anyway.
+    #
+    # Note what this does NOT fix. When the RUNNER is lost rather than the step
+    # failing, no further step executes at all -- there is no machine left to
+    # run them on -- and always() cannot help. That was the actual failure mode
+    # on 30606130771, 30607922155 and 30611992344. This change matters for the
+    # segment that fails while its runner is still alive; the dead-runner case
+    # needs the soak to stop dying, not a better guard.
     - name: Aggregate checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      id: aggregate
+      if: always() && inputs.deadline_epoch != ''
       env:
         SOAK_DIR: /tmp/merge-recovery-soak
         OUT_DIR: /tmp/merge-recovery-soak/checkpoint
@@ -101,16 +118,42 @@ runs:
         DURATION_SECONDS: ${{ inputs.duration_seconds }}
         RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
         WINDOW_SECONDS: ${{ inputs.window_seconds }}
+        # Environment, not interpolation -- same rule the publish step below
+        # states explicitly: `${{ }}` inside `run:` is substituted before bash
+        # sees it, so the value is parsed as shell rather than quoted as data.
+        LABEL: ${{ inputs.label }}
       shell: bash -euo pipefail {0}
       run: |
         # in_progress suppresses the verdict: a partial run has fewer
         # iterations, a lower peak RSS and a throughput figure over a shorter
         # window than the baseline it would be compared against, so a verdict
         # here would measure the clock rather than the code.
-        ci-control/scripts/bench/aggregate-perf-report.sh
+        #
+        # Reachable now via always() with the soak step failed, so "the soak
+        # produced nothing at all" is a real case rather than an impossible
+        # one. That is not an error worth reporting -- a segment that died
+        # before writing a single result has nothing to checkpoint, and saying
+        # so once is more useful than failing a second time on top of the
+        # failure that caused it. Report readiness and let the caller decide.
+        if [ ! -d "$SOAK_DIR" ] || [ -z "$(ls -A "$SOAK_DIR" 2>/dev/null)" ]; then
+          echo "no soak output at $SOAK_DIR; nothing to checkpoint"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if ! ci-control/scripts/bench/aggregate-perf-report.sh; then
+          echo "::warning::checkpoint aggregation failed for ${LABEL}; the segment result stands on its own"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "ready=true" >> "$GITHUB_OUTPUT"
 
+    # Gated on the aggregate having actually produced something, which keeps
+    # if-no-files-found: error meaningful. Dropping it to warn would have been
+    # the easy way to survive always(), at the cost of silencing a genuinely
+    # empty checkpoint on the success path -- the same trade that made the
+    # console-history typo invisible for as long as it was.
     - name: Upload checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
@@ -119,7 +162,7 @@ runs:
         if-no-files-found: error
 
     - name: Publish checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
         # Passed as environment, never interpolated into the script body:
