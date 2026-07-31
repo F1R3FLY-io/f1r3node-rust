@@ -64,6 +64,8 @@ Reserved keywords in the Rholang grammar include: `contract`, `new`, `in`, `for`
 
 The gRPC `exploratoryDeploy` endpoint returns errors in the `ExploratoryDeployResponse.Error` message field, which pyf1r3fly surfaces as `F1r3flyClientException`.
 
+Exploratory execution defaults to one active query, a two-second queue wait, a 5,000,000 phlogiston budget, and a 15-second execution deadline. These values can be changed with `F1R3_EXPLORATORY_DEPLOY_MAX_CONCURRENT`, `F1R3_EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS`, `F1R3_EXPLORATORY_DEPLOY_PHLO_LIMIT`, and `F1R3_EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS`.
+
 ## Block Hash Parameter
 
 When calling exploratory deploy, always pass an explicit block hash (typically the LFB hash) to ensure you're querying the expected state. Passing an empty string may resolve to a state that doesn't include recent deploys.

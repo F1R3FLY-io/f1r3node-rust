@@ -85,6 +85,8 @@ pub struct RuntimeManager {
     pub state_hash_cache: Option<Arc<StateHashCache>>,
     exploratory_deploy_semaphore: Arc<Semaphore>,
     exploratory_deploy_queue_timeout: Duration,
+    exploratory_deploy_phlo_limit: i64,
+    exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
 }
 
@@ -124,6 +126,11 @@ impl RuntimeManager {
     const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
     const EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS_ENV: &str =
         "F1R3_EXPLORATORY_DEPLOY_QUEUE_TIMEOUT_MS";
+    const EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT: i64 = 5_000_000;
+    const EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV: &str = "F1R3_EXPLORATORY_DEPLOY_PHLO_LIMIT";
+    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT: u64 = 15_000;
+    const EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV: &str =
+        "F1R3_EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS";
 
     fn collect_replay_logs(
         usr_processed: &[ProcessedDeploy],
@@ -266,6 +273,24 @@ impl RuntimeManager {
         )
     }
 
+    fn exploratory_deploy_phlo_limit() -> i64 {
+        env::var_or(
+            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_ENV,
+            Self::EXPLORATORY_DEPLOY_PHLO_LIMIT_DEFAULT,
+        )
+        .max(1)
+    }
+
+    fn exploratory_deploy_execution_timeout() -> Duration {
+        Duration::from_millis(
+            env::var_or(
+                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_ENV,
+                Self::EXPLORATORY_DEPLOY_EXECUTION_TIMEOUT_MS_DEFAULT,
+            )
+            .max(1),
+        )
+    }
+
     async fn acquire_exploratory_deploy_permit_with(
         semaphore: Arc<Semaphore>,
         timeout: Duration,
@@ -282,6 +307,10 @@ impl RuntimeManager {
             self.exploratory_deploy_queue_timeout,
         )
         .await
+    }
+
+    pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
+        self.exploratory_deploy_execution_timeout
     }
 
     pub fn trim_allocator() {
@@ -829,7 +858,9 @@ impl RuntimeManager {
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops.play_exploratory_deploy(term, hash).await
+        runtime_ops
+            .play_exploratory_deploy_with_phlo_limit(term, hash, self.exploratory_deploy_phlo_limit)
+            .await
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {
@@ -1295,6 +1326,8 @@ impl RuntimeManager {
                 exploratory_deploy_max_concurrent,
             )),
             exploratory_deploy_queue_timeout: Self::exploratory_deploy_queue_timeout(),
+            exploratory_deploy_phlo_limit: Self::exploratory_deploy_phlo_limit(),
+            exploratory_deploy_execution_timeout: Self::exploratory_deploy_execution_timeout(),
             external_services,
         }
     }

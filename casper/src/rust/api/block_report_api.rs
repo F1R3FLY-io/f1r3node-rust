@@ -1,9 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockReportAPI.scala
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use dashmap::DashMap;
 use models::casper::{
     BlockEventInfo, DeployInfoWithEventData, ReportProto, SingleReport,
     SystemDeployInfoWithEventData,
@@ -11,9 +11,10 @@ use models::casper::{
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
 use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-use shared::rust::ByteString;
+use shared::rust::{env, ByteString};
 use tokio::sync::Semaphore;
 
 use crate::rust::api::block_api::BlockAPI;
@@ -22,6 +23,18 @@ use crate::rust::report_store::ReportStore;
 use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::CliqueOracleImpl;
+use crate::rust::util::proto_util;
+
+const REPORT_CACHE_VERSION: &[u8] = b"v2:";
+const BLOCK_REPORT_QUEUE_TIMEOUT_MS_DEFAULT: u64 = 2_000;
+const BLOCK_REPORT_QUEUE_TIMEOUT_MS_ENV: &str = "F1R3_BLOCK_REPORT_QUEUE_TIMEOUT_MS";
+
+fn report_cache_key(block_hash: &BlockHash) -> ByteString {
+    let mut key = Vec::with_capacity(REPORT_CACHE_VERSION.len() + block_hash.len());
+    key.extend_from_slice(REPORT_CACHE_VERSION);
+    key.extend_from_slice(block_hash);
+    key
+}
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +45,10 @@ pub enum BlockReportError {
     ReadOnlyRequired,
     #[error("Block {0:?} not found")]
     BlockNotFound(BlockHash),
+    #[error("Block report pre-state is unavailable for block {0:?}")]
+    StateUnavailable(BlockHash),
+    #[error("Block reporter is busy; retry later")]
+    Busy,
     #[error("Failed to trace block: {0}")]
     ReplayFailed(String),
     #[error("Block info error: {0}")]
@@ -54,9 +71,8 @@ pub struct BlockReportAPI {
     block_store: KeyValueBlockStore,
     #[allow(dead_code)] // Part of constructor signature matching Scala, not directly used
     oracle: CliqueOracleImpl,
-    /// Thread-safe map of block hashes to semaphores for per-block locking
-    /// Equivalent to Scala's `blockLockMap: TrieMap[BlockHash, MetricsSemaphore[F]]`
-    block_lock_map: Arc<DashMap<BlockHash, Arc<Semaphore>>>,
+    block_report_semaphore: Arc<Semaphore>,
+    block_report_queue_timeout: Duration,
     /// Transformer for converting reporting events to protobuf format
     report_transformer: Arc<ReportingProtoTransformer>,
     /// When true, allows block reports on validator nodes (bypasses read-only check)
@@ -79,7 +95,14 @@ impl BlockReportAPI {
             engine_cell,
             block_store,
             oracle,
-            block_lock_map: Arc::new(DashMap::new()),
+            block_report_semaphore: Arc::new(Semaphore::new(1)),
+            block_report_queue_timeout: Duration::from_millis(
+                env::var_or(
+                    BLOCK_REPORT_QUEUE_TIMEOUT_MS_ENV,
+                    BLOCK_REPORT_QUEUE_TIMEOUT_MS_DEFAULT,
+                )
+                .max(1),
+            ),
             report_transformer: Arc::new(ReportingProtoTransformer::new()),
             dev_mode,
         }
@@ -96,6 +119,16 @@ impl BlockReportAPI {
             .trace(block)
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
+
+        let expected_post_state = proto_util::post_state_hash(block);
+        if report_result.post_state_hash.as_slice() != expected_post_state.as_ref() {
+            return Err(BlockReportError::ReplayFailed(format!(
+                "computed post-state {} does not match recorded post-state {} for block {}",
+                hex::encode(&report_result.post_state_hash),
+                hex::encode(&expected_post_state),
+                hex::encode(&block.block_hash)
+            )));
+        }
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
@@ -122,27 +155,23 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash = block.block_hash.clone();
-
-        let semaphore = self
-            .block_lock_map
-            .entry(block_hash.clone())
-            .or_insert_with(|| Arc::new(Semaphore::new(1)))
-            .clone();
-
         metrics::gauge!("block_report.lock.queue_size", "source" => "casper").increment(1.0);
-        let _permit = semaphore
-            .acquire()
-            .await
-            .map_err(|e| BlockReportError::SemaphoreError(e.to_string()))?;
+        let permit = tokio::time::timeout(
+            self.block_report_queue_timeout,
+            self.block_report_semaphore.acquire(),
+        )
+        .await;
         metrics::gauge!("block_report.lock.queue_size", "source" => "casper").decrement(1.0);
+        let _permit = match permit {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(error)) => return Err(BlockReportError::SemaphoreError(error.to_string())),
+            Err(_) => {
+                metrics::counter!("block_report.busy", "source" => "casper").increment(1);
+                return Err(BlockReportError::Busy);
+            }
+        };
 
-        let result = self.block_report_inner(force_replay, block, casper).await;
-
-        // Remove semaphore entry to prevent unbounded growth of the lock map
-        self.block_lock_map.remove(&block_hash);
-
-        result
+        self.block_report_inner(force_replay, block, casper).await
     }
 
     /// Inner block report logic (separated to ensure lock map cleanup on all paths)
@@ -152,7 +181,7 @@ impl BlockReportAPI {
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash_bytes: ByteString = block.block_hash.to_vec().into();
+        let block_hash_bytes = report_cache_key(&block.block_hash);
         let cached = self
             .report_store
             .get(&vec![block_hash_bytes.clone()])
@@ -162,6 +191,16 @@ impl BlockReportAPI {
             if !force_replay {
                 return Ok(cached_report.clone());
             }
+        }
+
+        let pre_state_hash = Blake2b256Hash::from_bytes_prost(&proto_util::pre_state_hash(block));
+        let has_pre_state = casper
+            .runtime_manager()
+            .has_root(&pre_state_hash)
+            .map_err(|error| BlockReportError::ReplayFailed(error.to_string()))?;
+        if !has_pre_state {
+            metrics::counter!("block_report.state_unavailable", "source" => "casper").increment(1);
+            return Err(BlockReportError::StateUnavailable(block.block_hash.clone()));
         }
 
         let report = self.replay_block(block, casper).await?;
@@ -271,5 +310,21 @@ impl BlockReportAPI {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::{report_cache_key, REPORT_CACHE_VERSION};
+
+    #[test]
+    fn report_cache_key_is_versioned() {
+        let block_hash = Bytes::from_static(&[1, 2, 3]);
+        let key = report_cache_key(&block_hash);
+
+        assert_eq!(&key[..REPORT_CACHE_VERSION.len()], REPORT_CACHE_VERSION);
+        assert_eq!(&key[REPORT_CACHE_VERSION.len()..], block_hash.as_ref());
     }
 }

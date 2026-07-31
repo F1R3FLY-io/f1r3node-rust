@@ -174,22 +174,23 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            let replay_result = runtime
+            runtime
                 .replay_deploy_e(with_cost_accounting, term, block_data)
-                .await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "f1r3fly.casper.reporting",
-                        deploy_index = idx,
-                        error = %e,
-                        "Deploy replay failed, returning empty events"
-                    );
-                    Vec::new()
-                }
-            };
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Deploy replay failed at index {} for {}: {}",
+                        idx,
+                        hex::encode(&term.deploy.sig),
+                        error
+                    )
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             deploy_results.push(DeployReportResult {
                 processed_deploy: term.clone(),
@@ -206,22 +207,18 @@ impl RhoReporterCasper {
                 "Replaying system deploy for report"
             );
 
-            let replay_result = runtime
+            runtime
                 .replay_block_system_deploy(block_data, system_deploy)
-                .await;
-
-            let events = match replay_result {
-                Ok(_) => runtime.get_report().unwrap_or_default(),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "f1r3fly.casper.reporting",
-                        system_deploy_index = idx,
-                        error = %e,
-                        "System deploy replay failed, returning empty events"
-                    );
-                    Vec::new()
-                }
-            };
+                .await
+                .map_err(|error| {
+                    format!("System deploy replay failed at index {}: {}", idx, error)
+                })?;
+            let events = runtime.get_report().map_err(|error| {
+                format!(
+                    "Failed to collect system deploy report at index {}: {}",
+                    idx, error
+                )
+            })?;
 
             let system_deploy_data = match system_deploy {
                 ProcessedSystemDeploy::Succeeded { system_deploy, .. } => system_deploy.clone(),

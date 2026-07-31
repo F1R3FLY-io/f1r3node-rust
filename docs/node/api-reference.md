@@ -412,6 +412,8 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
+| `503` | Observer query capacity is occupied (`observer_busy`) |
+| `504` | Execution exceeded the observer deadline (`exploratory_timeout`) |
 
 #### `POST /api/explore-deploy-by-block-hash`
 
@@ -439,6 +441,8 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
+| `503` | Observer query capacity is occupied (`observer_busy`) |
+| `504` | Execution exceeded the observer deadline (`exploratory_timeout`) |
 
 ---
 

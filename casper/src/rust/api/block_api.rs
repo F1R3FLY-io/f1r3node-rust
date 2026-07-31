@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use crypto::rust::public_key::PublicKey;
@@ -207,6 +207,12 @@ impl std::error::Error for ExploratoryDeployReadOnlyError {}
 #[derive(Debug, thiserror::Error)]
 #[error("Observer is busy processing another exploratory query; retry later")]
 pub struct ExploratoryDeployBusyError;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
+pub struct ExploratoryDeployTimeoutError {
+    pub timeout_ms: u128,
+}
 
 #[derive(Debug)]
 pub enum LatestBlockMessageError {
@@ -1722,9 +1728,50 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let (res, cost) = runtime_manager
-                            .play_exploratory_deploy(term, &state_hash)
-                            .await?;
+                        let started = Instant::now();
+                        metrics::gauge!(
+                            "exploratory_deploy.active",
+                            "source" => "casper"
+                        )
+                        .increment(1.0);
+                        let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
+                        let result = tokio::time::timeout(
+                            timeout,
+                            runtime_manager.play_exploratory_deploy(term, &state_hash),
+                        )
+                        .await;
+                        metrics::gauge!(
+                            "exploratory_deploy.active",
+                            "source" => "casper"
+                        )
+                        .decrement(1.0);
+                        metrics::histogram!(
+                            "exploratory_deploy.duration",
+                            "source" => "casper"
+                        )
+                        .record(started.elapsed().as_secs_f64());
+                        RuntimeManager::trim_allocator();
+
+                        let (res, cost) = match result {
+                            Ok(result) => {
+                                metrics::counter!(
+                                    "exploratory_deploy.completed",
+                                    "source" => "casper"
+                                )
+                                .increment(1);
+                                result?
+                            }
+                            Err(_) => {
+                                metrics::counter!(
+                                    "exploratory_deploy.timed_out",
+                                    "source" => "casper"
+                                )
+                                .increment(1);
+                                return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                    timeout_ms: timeout.as_millis(),
+                                }));
+                            }
+                        };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
