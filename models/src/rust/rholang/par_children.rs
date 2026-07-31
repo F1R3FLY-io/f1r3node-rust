@@ -392,10 +392,22 @@ fn take_expr_instance_child_pars(e: ExprInstance, out: &mut Vec<Par>) {
                 out.extend(kv.value);
             }
         }
-        ExprInstance::EPathmapBody(x) => out.extend(x.ps().iter().cloned()),
+        // ★ BY MOVE, like every arm above. These two used to read
+        // `out.extend(x.ps().iter().cloned())` — the only arms in this function that CLONED
+        // while their siblings consumed — which meant teardown did the work twice and *still*
+        // left the originals to the recursive destructor when `x` fell out of scope.
+        //
+        // ⚠ It was worse than one stray copy: `ps()` forces a MEMOISED `Vec<Par>` built by
+        // cloning every entry, and a freshly built map's memo is cold — so the teardown path
+        // materialised a full second copy in order to destroy the first.
+        //
+        // `drain_owned_pars` consumes the value and hands over both retainers (the memo and the
+        // trie, plus the interned handle for `EPathMap`); see its doc for the uniqueness test
+        // and why a shared trie's copy-on-write is never a regression.
+        ExprInstance::EPathmapBody(x) => x.drain_owned_pars(out),
         ExprInstance::EZipperBody(x) => {
             if let Some(pm) = x.pathmap {
-                out.extend(pm.ps().iter().cloned());
+                pm.drain_owned_pars(out);
             }
         }
 
@@ -1030,12 +1042,102 @@ mod tests {
     /// The by-move table must detach exactly the children the by-reference
     /// table reports — same set, same order. Without this the two drift and
     /// `dismantle` silently leaks a subtree back onto the recursive `Drop`.
+    /// How many live owners the children of this `ExprInstance` have.
+    ///
+    /// One for every arm except the two that hold an `EPathMap`: a map's entries live in the
+    /// trie, in the projection memo once forced, and in the interned handle once interned.
+    fn expr_instance_retainers(e: &ExprInstance) -> usize {
+        match e {
+            ExprInstance::EPathmapBody(m) => m.live_retainer_count(),
+            ExprInstance::EZipperBody(z) => {
+                z.pathmap.as_ref().map_or(1, |m| m.live_retainer_count())
+            }
+            _ => 1,
+        }
+    }
+
+    /// ★ **by-move ⊇ by-reference, with a COUNTED allowance** (owner ruling, 2026-07-31).
+    ///
+    /// The two tables answer different questions, and after the pathmap arms became by-move the
+    /// difference became observable:
+    ///
+    /// * **by-reference** reports the **logical children** — what a matcher or a collector wants.
+    /// * **by-move** must release every **owned `Par`**, and a memoised representation *owns*
+    ///   more than it logically *contains*. An `EPathMap` holds its entries in the trie AND in
+    ///   the projection memo (and, when interned, in the handle) — every one of which must reach
+    ///   the iterative worklist, or it falls back onto the recursive destructor.
+    ///
+    /// ⚠ So strict equality is the WRONG assertion here: it would force the by-move table to
+    /// leak whichever retainers it declined to drain. What must hold instead is **containment
+    /// with the slack PINNED**, not open — `moved` is `borrowed` repeated once per live
+    /// retainer, and the multiplier is asserted to be uniform rather than merely "≥".
+    ///
+    /// ⇒ A retainer added without being drained changes the multiplier and fails here. A
+    /// retainer drained twice does too. Open-ended `⊇` would catch neither.
+    fn assert_containment_with_counted_allowance(
+        actual: &[u8],
+        expected: &[u8],
+        retainers: usize,
+        table: &str,
+    ) {
+        if expected.is_empty() {
+            assert!(
+                actual.is_empty(),
+                "{table}: the by-reference table reports NO children but the by-move table \
+                 yielded {} — a by-move arm is releasing `Par`s the borrow table does not know \
+                 about, which means the two tables disagree about what this variant CONTAINS.",
+                actual.len()
+            );
+            return;
+        }
+
+        // ⚠⚠ `retainers` is PINNED FROM THE VALUE, never inferred from `actual.len() /
+        // expected.len()`. That inference is what makes a counted allowance vacuous: drop a
+        // retainer's drain and the ratio just becomes a smaller whole number, still "valid".
+        // MEASURED — with the multiplier derived, removing the memo drain left this GREEN.
+        assert_eq!(
+            actual.len(),
+            expected.len() * retainers,
+            "{table}: the by-move table yielded {} `Par`s; the by-reference table reports {} \
+             children and the value declares {retainers} live retainer(s), so {} were \
+             expected.\n\n\
+             by-move must release EVERY owned `Par` — the trie, the projection memo once forced, \
+             and the interned handle each own a full copy. A shortfall is a retainer left to the \
+             RECURSIVE destructor; a surplus is one drained twice.\n\
+             moved = {actual:?}\n  borrowed = {expected:?}",
+            actual.len(),
+            expected.len(),
+            expected.len() * retainers
+        );
+        let mut want: Vec<u8> = Vec::with_capacity(actual.len());
+        for _ in 0..retainers {
+            want.extend_from_slice(expected);
+        }
+        let (mut got_sorted, mut want_sorted) = (actual.to_vec(), want);
+        got_sorted.sort_unstable();
+        want_sorted.sort_unstable();
+
+        assert_eq!(
+            got_sorted, want_sorted,
+            "{table}: the by-move table is not the by-reference table repeated {retainers}×.\n\n\
+             Same COUNT but different CONTENT means a by-move arm released a different set of \
+             `Par`s than the borrow table reports — not a retainer-count difference but a \
+             genuine disagreement about which children the variant has.\n\
+             moved = {actual:?}\n  borrowed = {expected:?}"
+        );
+    }
+
     #[test]
     fn move_and_borrow_tables_agree() {
         for (instance, _) in expr_instance_corpus() {
             let mut borrowed: Vec<&Par> = Vec::new();
             expr_instance_child_pars(&instance, &mut borrowed);
             let expected = tags(&borrowed);
+
+            // ⚠ Computed AFTER the borrow pass, because that pass calls `ps()` and therefore
+            // FORCES the projection memo — which is itself one of the retainers being counted.
+            // Computing it first would under-count by exactly the memo.
+            let retainers = expr_instance_retainers(&instance);
 
             let mut moved: Vec<Par> = Vec::new();
             take_expr_instance_child_pars(instance, &mut moved);
@@ -1044,9 +1146,11 @@ mod tests {
                 .map(|p| *p.locally_free.first().unwrap_or(&0))
                 .collect();
 
-            assert_eq!(
-                actual, expected,
-                "the by-move and by-reference ExprInstance tables disagree"
+            assert_containment_with_counted_allowance(
+                &actual,
+                &expected,
+                retainers,
+                "ExprInstance",
             );
         }
 
@@ -1062,9 +1166,14 @@ mod tests {
                 .map(|p| *p.locally_free.first().unwrap_or(&0))
                 .collect();
 
-            assert_eq!(
-                actual, expected,
-                "the by-move and by-reference ConnectiveInstance tables disagree"
+            // No `ConnectiveInstance` arm holds an `EPathMap`, so every child has exactly one
+            // owner. If that ever stops being true this call site must learn the same trick the
+            // `ExprInstance` one uses.
+            assert_containment_with_counted_allowance(
+                &actual,
+                &expected,
+                1,
+                "ConnectiveInstance",
             );
         }
     }

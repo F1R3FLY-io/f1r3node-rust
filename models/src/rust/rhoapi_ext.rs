@@ -440,6 +440,55 @@ impl EntryTrie {
         self.view.take();
     }
 
+    /// `true` iff the projection memo has been forced, i.e. a second full copy of the entries
+    /// is live. See [`EPathMap::live_retainer_count`].
+    #[cfg(test)]
+    pub(crate) fn view_is_forced(&self) -> bool {
+        self.view.get().is_some()
+    }
+
+    /// Hand every `Par` this value owns to `out`, **BY MOVE**, leaving none behind.
+    ///
+    /// ★ For iterative teardown ([`crate::rust::rholang::par_children::dismantle`]). `Drop` for
+    /// the `Par` family is itself a Θ(depth) recursive traversal, so a deep term must be taken
+    /// apart with an explicit worklist rather than dropped — and the worklist can only do that
+    /// if it is handed the `Par`s themselves, not copies of them.
+    ///
+    /// ⚠ **Exhaustively destructured, with no `..`.** That is the point: a field added to
+    /// `EntryTrie` that can hold a `Par` becomes a COMPILE ERROR here rather than a silent leak
+    /// back onto the recursive destructor. The wrong form is unspellable.
+    ///
+    /// Two retainers, and both are drained:
+    ///
+    /// * **the memo** — a full second copy of the entries. [`OnceLock::into_inner`] plus
+    ///   [`Arc::into_inner`] IS the uniqueness test, and here it is expressible: `Some` means we
+    ///   own the `Vec` and move it; `None` means another handle survives, so dropping ours is an
+    ///   O(1) refcount decrement and there is nothing to tear down.
+    /// * **the store** — `PathMap`'s by-move `IntoIterator`. On a uniquely-owned trie this is a
+    ///   true move and clones nothing. On a SHARED root the crate copies-on-write, one
+    ///   `<Par as Clone>::clone` per value — but that clone is **converted and stack-flat**
+    ///   (`CONVERTED_DEPTH`), so it cannot overflow, and it is exactly what the `.cloned()` this
+    ///   replaces paid *unconditionally*. ⇒ never a regression, and strictly better whenever the
+    ///   trie is unique.
+    pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
+        // ⚠ NO `..` — see the doc above.
+        let EntryTrie {
+            trie,
+            len: _,
+            entries_stable: _,
+            union_locally_free: _,
+            any_connective_used: _,
+            view,
+        } = self;
+
+        if let Some(entries) = view.into_inner().and_then(Arc::into_inner) {
+            out.extend(entries);
+        }
+        for (_key, par) in trie {
+            out.push(par);
+        }
+    }
+
     /// Remove the entry with the GREATEST key in trie order, and return it.
     ///
     /// ⚠ This is the honest replacement for `ps.pop()`. A `Vec` has a last
@@ -812,6 +861,52 @@ impl EPathMap {
     /// This replaces the former `pub ps: SharedPars` field. It is a method
     /// rather than a field because it is a **projection**: the map does not
     /// store a `Vec<Par>`, it stores a trie, and the vector is derived from it.
+    /// Hand every `Par` this map owns to `out`, **BY MOVE**.
+    ///
+    /// ★ Delegates to [`EntryTrie::drain_owned_pars`]; see that method for why the destructure
+    /// is exhaustive and how the two retainers are drained.
+    ///
+    /// ⚠ **`intern` is drained too, and that matters more than it looks.** The interned handle
+    /// owns an `InternedEPathMap` whose `map: RholangPathMap` is a second holder of the same
+    /// entries. Its usual fate is an O(1) refcount decrement — but the process-global intern
+    /// store is **LRU-evicting**, so an evicted entry's handle becomes unique and its drop runs
+    /// the recursive destructor at full depth, on an arbitrary thread, inside the store's mutex,
+    /// at a moment no caller chose. Draining it here removes this value's contribution to that
+    /// path. (The store itself is slated for deletion, which dissolves the rest.)
+    pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
+        // ⚠ NO `..` — a field added here that can hold a `Par` must fail to compile.
+        let EPathMap {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+            intern,
+        } = self;
+
+        ps.drain_owned_pars(out);
+
+        if let Some(interned) = intern.into_inner().and_then(Arc::into_inner) {
+            for (_key, par) in interned.map {
+                out.push(par);
+            }
+        }
+    }
+
+    /// How many distinct owners of this map's entries are LIVE right now.
+    ///
+    /// ★ Exists so a teardown guard can pin the by-move table's multiplier **from the value**
+    /// rather than infer it from the data. That distinction is load-bearing: a guard that
+    /// derives the multiplier as `moved.len() / borrowed.len()` cannot detect a retainer that
+    /// was never drained, because the ratio simply becomes a smaller whole number and still
+    /// looks valid. Measured — removing the memo drain left such a guard GREEN.
+    ///
+    /// The trie always owns them; the projection memo owns a full second copy once forced; the
+    /// interned handle owns a third when this map has been interned.
+    #[cfg(test)]
+    pub(crate) fn live_retainer_count(&self) -> usize {
+        1 + usize::from(self.ps.view_is_forced()) + usize::from(self.intern.get().is_some())
+    }
+
     pub fn ps(&self) -> &Vec<Par> {
         self.ps.view()
     }
