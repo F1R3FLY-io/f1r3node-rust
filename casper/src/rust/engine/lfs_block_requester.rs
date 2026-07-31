@@ -145,6 +145,11 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
+    /// Records `key` for a best-effort mergeable-channel entry request.
+    ///
+    /// Entry delivery does not gate LFS completion. Missing entries are
+    /// reconstructed deterministically by `replay_blocks_for_mergeable_channels`
+    /// in `initializing.rs` after block synchronization.
     pub fn mergeable_pending(&self, key: Key) -> Self {
         let mut new_mergeable_d = self.mergeable_d.clone();
         new_mergeable_d.insert(key, ReqStatus::Init);
@@ -346,6 +351,11 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
+    /// Returns whether the block-request stream has finished.
+    ///
+    /// This deliberately ignores `mergeable_d`: mergeable-entry delivery is
+    /// best-effort, and `replay_blocks_for_mergeable_channels` in
+    /// `initializing.rs` deterministically reconstructs any missing entries.
     pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
