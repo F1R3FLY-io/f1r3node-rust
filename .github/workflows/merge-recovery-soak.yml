@@ -402,7 +402,9 @@ jobs:
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: oci-credentials
-    timeout-minutes: 10
+    # 25, not 10: this job now waits for the runner to register before
+    # relabelling it, and cloud-init alone takes 3-5 min (bounded at 15).
+    timeout-minutes: 25
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
@@ -464,8 +466,90 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          # launch-runner.sh appends the name it generated when this is set.
+          # The next step needs it to find this exact runner among all the
+          # ci-eph-* runners registered at any moment.
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
+
+      # Without this, the soak and CI compete for one undifferentiated pool.
+      # launch-runner.sh registers every VM with the same labels, so GitHub
+      # hands each queued job to whichever runner claims it first, regardless
+      # of which workflow paid to launch it. Run 30606130771 is the worked
+      # example: the soak ran on a VM launched by a PR CI run, its own VM took
+      # a CI job, and the soak died when the CI side finished with the runner
+      # it thought it owned.
+      #
+      # The damage is not only a lost night. The VM that runs the soak carries
+      # whatever cloud-init the OTHER workflow pinned, so SYSTEM_INTEGRATION_REF
+      # above silently stops describing the runner the soak actually runs on --
+      # 30606130771 ran the pre-fix idle watchdog despite the pin naming a
+      # commit that fixed it. A pin that does not bind is worse than no pin,
+      # because it reads like a guarantee.
+      #
+      # So: give this runner a label nothing else requests, and take away the
+      # shared one so nothing else can take it. Both directions, or the soak
+      # merely loses its runner instead of stealing one.
+      #
+      # Fails closed. A soak that cannot get an exclusive runner must not fall
+      # back to the shared pool -- that is the bug.
+      - name: Bind the soak runner to a dedicated label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash -e {0}
+        run: |
+          name="$(cat /tmp/soak-runner-name 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "$name" ]; then
+            echo "::error::launch-runner.sh wrote no runner name; cannot bind a dedicated label"
+            exit 1
+          fi
+          echo "waiting for $name to register (cloud-init takes ~3-5 min)"
+          rid=""
+          for attempt in $(seq 1 60); do
+            rid="$(gh api "repos/$GH_REPO/actions/runners" --paginate \
+              --jq ".runners[] | select(.name == \"$name\") | .id" 2>/dev/null | head -1 || true)"
+            [ -n "$rid" ] && break
+            sleep 15
+          done
+          if [ -z "$rid" ]; then
+            echo "::error::$name never registered after 15 minutes; refusing to run the soak on the shared pool"
+            exit 1
+          fi
+          echo "registered as runner id $rid"
+          # Add the exclusive label before removing the shared one. The reverse
+          # order would leave a window where the runner matches nothing and a
+          # job queued in between waits forever.
+          # Explicit JSON body rather than the -f "labels[]=..." shorthand:
+          # this endpoint requires labels to be an ARRAY, and the shorthand is
+          # easy to get subtly wrong. Since this step fails closed, a malformed
+          # body would not merely mislabel a runner -- it would block every
+          # soak. Be unambiguous here.
+          printf '{"labels":["f1r3fly-rust-soak"]}' \
+            | gh api -X POST "repos/$GH_REPO/actions/runners/$rid/labels" \
+                --input - >/dev/null
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-ci-ephemeral" >/dev/null
+          have="$(gh api "repos/$GH_REPO/actions/runners/$rid/labels" \
+            --jq '[.labels[].name] | sort | join(",")')"
+          echo "labels now: $have"
+          case "$have" in
+            *f1r3fly-rust-soak*) ;;
+            *) echo "::error::dedicated label missing after update: $have"; exit 1 ;;
+          esac
+          case "$have" in
+            *f1r3fly-rust-ci-ephemeral*)
+              echo "::error::shared CI label still present after removal: $have"
+              exit 1
+              ;;
+          esac
+          # Residual race: between the runner registering and the DELETE above
+          # landing, a queued CI job can still claim it. Narrow, but real. The
+          # complete fix is upstream -- launch-runner.sh hardcodes LABELS with
+          # no override, so it cannot register correctly in the first place.
+          # Worth a one-line RUNNER_LABELS env override there.
+          echo "soak runner $name is now exclusive to this workflow"
 
       - name: Remove OCI credentials
         if: always()
@@ -544,7 +628,11 @@ jobs:
     name: Merge Recovery Soak
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+    # f1r3fly-rust-soak, not the shared f1r3fly-rust-ci-ephemeral: only the
+    # runner launched by launch_runner above carries it, so this job cannot
+    # land on a CI-launched VM. See "Bind the soak runner to a dedicated
+    # label" for why that matters beyond scheduling.
+    runs-on: [self-hosted, linux, x64, f1r3fly-rust-soak, oracle-cloud]
     outputs:
       # Set by the job's last step. Empty means the VM died mid-run — the
       # signal retry_within_window keys on to tell infrastructure death from
@@ -1303,19 +1391,30 @@ jobs:
           # Capture is asynchronous: request it, then poll until SUCCEEDED
           # before fetching. A terminated instance cannot be captured, which is
           # itself the finding — record it rather than failing the job.
-          hid="$(oci compute instance-console-history capture --instance-id "$IID" \
+          #
+          # The subcommand is "console-history", NOT "instance-console-history"
+          # (which is what "instance-console-connection" is called, and what
+          # this originally said). Because every call here is wrapped in
+          # `|| true` and 2>/dev/null so a terminated VM does not fail the job,
+          # the wrong name produced no error at all — just "(no console content
+          # captured)", indistinguishable from a VM that was already gone.
+          # Verified against oci-cli 3.82.0: `oci compute console-history` has
+          # capture / get / get-content; `instance-console-history` does not
+          # exist. Confirmed by capturing 2410 lines from the run 30606130771
+          # runner by hand.
+          hid="$(oci compute console-history capture --instance-id "$IID" \
             --query 'data.id' --raw-output 2>/dev/null || true)"
           if [ -z "$hid" ]; then
             echo "::warning::could not start console-history capture (instance state: $state); the VM was likely already terminated"
           else
             for _ in $(seq 1 20); do
-              st="$(oci compute instance-console-history get --instance-console-history-id "$hid" \
+              st="$(oci compute console-history get --instance-console-history-id "$hid" \
                 --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo REQUESTED)"
               [ "$st" = "SUCCEEDED" ] && break
               [ "$st" = "FAILED" ] && { echo "::warning::console history capture FAILED"; break; }
               sleep 15
             done
-            oci compute instance-console-history get-content \
+            oci compute console-history get-content \
               --instance-console-history-id "$hid" --file /tmp/postmortem/console.log \
               --length 1048576 >/dev/null 2>&1 || true
           fi
