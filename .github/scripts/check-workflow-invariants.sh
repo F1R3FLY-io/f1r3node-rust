@@ -241,6 +241,77 @@ if [ -z "$fork_bad_persist$fork_bad_optin" ]; then
     ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
 fi
 
+# 8. Every `run:` block in every workflow must be parseable by its shell.
+#
+# A workflow is not compiled, so a `run:` block with a syntax error is a
+# runtime failure on a schedule nobody is watching. 4330a24f shipped exactly
+# that: two apostrophes inside a single-quoted jq program in
+# ci-runner-reaper.yml closed the quote, the step died with "syntax error near
+# unexpected token |" on every 30-minute run, and the reaper — the guard
+# against the June 2026 leak of ~209 instances, ~$6k — silently terminated
+# nothing. It was found by reading a run log, not by CI.
+#
+# `bash -n` parses without executing, so this is safe and fast. It catches the
+# whole quoting/heredoc/unbalanced-block class. It does NOT catch semantic
+# faults (unset variables, wrong OCIDs) — for that this would need actionlint.
+#
+# Only default-shell and bash blocks are checked. A `shell: python` or
+# `shell: pwsh` block is skipped rather than mis-parsed as bash; that skip is
+# reported so a silent gap cannot masquerade as coverage.
+bad_syntax=""
+skipped_shells=""
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+while IFS= read -r wf; do
+    # Extract every run: block with its job/step identity. Ruby is already a
+    # hard dependency of this repo's tooling and ships with a YAML parser, so
+    # the blocks come from a real parse rather than an indentation heuristic
+    # that block scalars would defeat.
+    ruby -ryaml -e '
+      wf = ARGV[0]; out = ARGV[1]
+      doc = YAML.load_file(wf) rescue nil
+      exit 0 unless doc.is_a?(Hash) && doc["jobs"].is_a?(Hash)
+      doc["jobs"].each do |job_id, job|
+        next unless job.is_a?(Hash) && job["steps"].is_a?(Array)
+        job["steps"].each_with_index do |step, i|
+          next unless step.is_a?(Hash) && step["run"].is_a?(String)
+          shell = (step["shell"] || job.dig("defaults", "run", "shell") ||
+                   doc.dig("defaults", "run", "shell") || "bash").to_s
+          label = "#{job_id} / #{step["name"] || "step #{i + 1}"}"
+          # bash -e {0}, bash -euo pipefail {0} etc. are all bash.
+          kind = shell.split(/\s/).first
+          File.write(File.join(out, "block-#{job_id}-#{i}.sh"), step["run"])
+          File.open(File.join(out, "index.txt"), "a") { |f|
+            f.puts("block-#{job_id}-#{i}.sh\t#{kind}\t#{label}")
+          }
+        end
+      end' "$wf" "$scratch" 2>/dev/null || continue
+
+    [ -f "$scratch/index.txt" ] || continue
+    while IFS=$'\t' read -r blockfile kind label; do
+        case "$kind" in
+            bash | sh | "") ;;
+            *) skipped_shells="${skipped_shells}
+  ${wf}: ${label} (shell: ${kind})"; continue ;;
+        esac
+        if ! errout="$(bash -n "$scratch/$blockfile" 2>&1)"; then
+            bad_syntax="${bad_syntax}
+  ${wf}: ${label}
+    ${errout}"
+        fi
+    done < "$scratch/index.txt"
+    rm -f "$scratch"/index.txt "$scratch"/block-*.sh
+done < <(find .github/workflows -name '*.yml' -o -name '*.yaml' | sort)
+
+if [ -n "$bad_syntax" ]; then
+    err "workflow run: block(s) fail 'bash -n' and will die at runtime:${bad_syntax}"
+else
+    ok "every workflow run: block parses under bash -n"
+fi
+if [ -n "$skipped_shells" ]; then
+    printf 'note: non-bash run: blocks not syntax-checked:%s\n' "$skipped_shells"
+fi
+
 if [ "$fail" -ne 0 ]; then
     printf '::error::%s\n' "workflow security invariants violated; see errors above"
     exit 1
