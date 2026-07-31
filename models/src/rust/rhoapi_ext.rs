@@ -705,25 +705,64 @@ impl fmt::Debug for EntryTrie {
 }
 
 impl PartialEq for EntryTrie {
-    /// Entry-set equality, read through the canonical projection.
+    /// Entry-set equality, read through the **KEYS** — the relation the wire commits to.
     ///
-    /// Because both sides are in trie order, deduplicated, and recursively
-    /// canonical, a positional `Vec<Par>` comparison **is** set comparison —
-    /// there is no permutation left for it to be fooled by. `Par`'s own `==` is
-    /// the AlwaysEqual one (it ignores `locally_free`), which is what keeps this
-    /// consistent with [`Hash`] below.
+    /// ★ C8, owner-ruled a REPAIR rather than a semantic change. This used to compare
+    /// `self.view() == other.view()`, i.e. the projected entries under `Par`'s
+    /// **AlwaysEqual** `==`, which IGNORES `locally_free`. But entries are KEYED by
+    /// `encode_trie_path`, whose escape arm is the entry's canonical prost bytes —
+    /// which INCLUDE `locally_free`. So two maps could compare EQUAL while holding
+    /// different key sets, hence different `U(m)`, hence **different emitted bytes**.
+    /// `==` was strictly coarser than the relation consensus commits to.
+    ///
+    /// The old doc named this exact hazard and dismissed it: *"In a well-formed term
+    /// `locally_free` is a function of the structure, so the two cannot differ; the note
+    /// is here because 'cannot' should be written down."* ⚠ That is a claim about who
+    /// the callers are, not about what the type permits — the same shape that let
+    /// `contains_par`'s memo ship unsound earlier in this campaign. Comparing keys makes
+    /// it unrepresentable instead of unlikely.
+    ///
+    /// ⇒ Now a paired zipper walk over the two key streams. It is also strictly cheaper:
+    /// the old form forced BOTH projections, deep-cloning every entry on each side, to
+    /// answer a question the tries could answer by walking.
     fn eq(&self, other: &Self) -> bool {
-        self.view() == other.view()
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+        if self.len != other.len {
+            return false;
+        }
+        let mut a = self.trie.read_zipper();
+        let mut b = other.trie.read_zipper();
+        loop {
+            match (a.to_next_val(), b.to_next_val()) {
+                (false, false) => return true,
+                (true, true) if a.path() == b.path() => continue,
+                _ => return false,
+            }
+        }
     }
 }
 
 impl Eq for EntryTrie {}
 
 impl Hash for EntryTrie {
-    /// Consistent with [`PartialEq`]: the same canonical projection, hashed
-    /// element-wise by `Par`'s AlwaysEqual `Hash`.
+    /// Consistent with [`PartialEq`]: the same **key** stream, hashed in trie order.
+    ///
+    /// ⚠ `Hash` must agree with `==` or a `HashMap` keyed on this type silently loses
+    /// entries, so this moved with `eq` and could not have moved separately.
+    ///
+    /// ★ Changing it is byte-neutral, and the reason is a repair landed earlier in this
+    /// campaign rather than an argument about callers. `Hash` reaches emitted bytes only
+    /// through `HashSet<Par>`/`HashMap<Par,Par>` iteration order in
+    /// `SortedParHashSet::create_from_vec` and `SortedParMap`, and BOTH funnel into
+    /// `ScoredTerm::sort_vec` — which `SS-Y4` made a TOTAL order. A total sort's output
+    /// does not depend on its input order, so hash iteration order cannot reach a byte.
+    /// Before that repair this change would have needed a seven-axis entry.
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.view().hash(state);
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
+        let mut rz = self.trie.read_zipper();
+        while rz.to_next_val() {
+            rz.path().hash(state);
+        }
     }
 }
 

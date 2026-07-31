@@ -1852,3 +1852,70 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
          constant would pass. Add an entry carrying a connective or a free variable."
     );
 }
+
+/// ★ **`==` agrees with the wire** — the relation consensus actually commits to.
+///
+/// C8's repair, pinned. `EntryTrie`'s `==` used to compare the projected entries under
+/// `Par`'s **AlwaysEqual** `==`, which ignores `locally_free`. But entries are **keyed** by
+/// `encode_trie_path`, whose escape arm is the entry's canonical prost bytes — and those
+/// include `locally_free`. So `==` was strictly **coarser** than the key set, and therefore
+/// coarser than `U(m)`: two maps could compare equal while emitting different bytes.
+///
+/// ⚠ The old code named this hazard and dismissed it — *"in a well-formed term `locally_free`
+/// is a function of the structure, so the two cannot differ"*. That is a claim about who the
+/// callers are, not about what the type permits, and this campaign has already shipped one
+/// unsound memo on exactly that reasoning. This test replaces the claim with a check.
+///
+/// The property: **equal maps emit equal `U(m)`**. That is what makes `==` safe to use
+/// anywhere a validator's agreement is at stake.
+#[test]
+fn map_equality_agrees_with_the_emitted_key_stream() {
+    let cases = pathmap_len_lemma_corpus();
+    assert!(!cases.is_empty(), "VACUOUS: empty corpus.");
+
+    // ★ THE DISCRIMINATING WITNESS. Two maps whose entries are AlwaysEqual — `Par`'s `==`
+    // ignores `locally_free` — but whose trie KEYS differ, because `encode_trie_path`'s
+    // escape arm is the entry's canonical prost bytes and those include `locally_free`.
+    // Under the old projection comparison these were `==`; their `U(m)` was never equal.
+    let lf_a = EPathMap::new(
+        vec![Par { locally_free: vec![0x01], ..make_list_par(vec!["z"]) }],
+        Vec::new(), false, None,
+    );
+    let lf_b = EPathMap::new(
+        vec![Par { locally_free: vec![0x02], ..make_list_par(vec!["z"]) }],
+        Vec::new(), false, None,
+    );
+    assert_eq!(
+        (lf_a == lf_b),
+        (lf_a.path_stream() == lf_b.path_stream()),
+        "the locally_free witness: `==` and the emitted key stream must agree. If this fires \
+         with `==` true and the streams different, `==` is coarser than the wire — the exact \
+         defect C8 repairs."
+    );
+
+    let mut compared = 0usize;
+    for (name_a, a) in &cases {
+        for (name_b, b) in &cases {
+            compared += 1;
+            let equal = a == b;
+            let same_stream = a.path_stream() == b.path_stream();
+            assert_eq!(
+                equal, same_stream,
+                "'{name_a}' vs '{name_b}': `==` says {equal} but the emitted key stream says \
+                 {same_stream}.\n\n\
+                 These must agree. `U(m)` is what a ground map emits as proto field 8, so a \
+                 pair that is `==` while emitting different bytes would let two validators \
+                 treat one term as two — or two as one."
+            );
+        }
+    }
+
+    // ⚠ Anti-vacuity: a corpus of pairwise-distinct maps would satisfy the assertion with
+    // both sides always `false`, and one of identical maps with both always `true`.
+    let n = cases.len();
+    assert!(
+        compared == n * n && n > 1,
+        "VACUOUS: {compared} comparisons over {n} cases; the corpus must contain at least two \
+         distinct maps AND compare every pair, so both polarities of the agreement are exercised."
+    );
+}
