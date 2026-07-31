@@ -67,12 +67,26 @@ env:
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
-  # 2026-07-30 (later): bumped to the PR #70 merge, a descendant of the above.
-  # Wanted for test_load.py's resource-breach attribution: without it, a node
-  # killed by the RSS/floor guardian surfaces as a raw gRPC traceback rather
-  # than naming the ceiling that killed it, which is the whole point of
-  # tightening those limits below. Also carries their reaper's soak guards.
-  SYSTEM_INTEGRATION_REF: 0ef9416e36e878854b29f8c50b2bc8a6ec2aef02
+  # 2026-07-30 (later): bumped to the PR #72 merge, a descendant of the above.
+  # This ref is load-bearing for the launch job, not just the test harness —
+  # cloud-init-runner.yml.tmpl is read from it at :445, so the runner's idle
+  # watchdog comes from whatever is pinned here. It carries three things:
+  #   - The watchdog fix. It decided "is a job running?" by grepping run.sh's
+  #     log for "Running job:", but that stdout is redirected to a file and
+  #     .NET block-buffers it, so the line can sit unflushed and the watchdog
+  #     kills a healthy runner at IDLE_TIMEOUT_SECS. Every job longer than
+  #     ~45min-minus-boot was exposed; the soak is exactly that shape, and this
+  #     is the leading explanation for run 30590630059. It now reads the
+  #     process table (Runner.Worker) instead.
+  #   - log() tees to /dev/console, which is what makes capture_diagnostics
+  #     below able to find anything: console history is the only VM-side
+  #     diagnostic that survives instance termination.
+  #   - PR #70's test_load.py resource-breach attribution, so a node killed by
+  #     the RSS/floor guardian names the ceiling that killed it instead of
+  #     surfacing a raw gRPC traceback — without which the tightened limits
+  #     below would be self-obscuring. Plus their reaper's soak guards.
+  # On their `dev` and heading to `main`; a SHA is immutable either way.
+  SYSTEM_INTEGRATION_REF: 7b6c9dd9674b19732923ed49feee758829b2c27a
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
