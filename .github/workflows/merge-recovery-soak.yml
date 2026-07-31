@@ -507,9 +507,35 @@ jobs:
           fi
           echo "waiting for $name to register (cloud-init takes ~3-5 min)"
           rid=""
+          api_fail=0
           for attempt in $(seq 1 60); do
-            rid="$(gh api "repos/$GH_REPO/actions/runners" --paginate \
-              --jq ".runners[] | select(.name == \"$name\") | .id" 2>/dev/null | head -1 || true)"
+            # --arg, not string interpolation: the name must reach jq as DATA.
+            # Interpolated into the filter text, a name containing a quote or
+            # pipe would be parsed as jq code. launch-runner.sh controls the
+            # name today, so this is hygiene rather than a live hole -- but the
+            # whole point of this step is that what launch-runner.sh does is
+            # not under this repository's control.
+            if listing="$(gh api "repos/$GH_REPO/actions/runners" --paginate 2>&1)"; then
+              api_fail=0
+              rid="$(printf '%s' "$listing" \
+                | jq -r --arg name "$name" \
+                    '.runners[] | select(.name == $name) | .id' 2>/dev/null | head -1)"
+            else
+              # An empty runner list and a broken API call are different facts.
+              # Swallowing both makes an auth or permission regression look
+              # like slow cloud-init for a full 15 minutes, then fail with a
+              # message naming the wrong cause.
+              api_fail=$((api_fail + 1))
+              if [ "$api_fail" -eq 1 ] || [ "$((api_fail % 10))" -eq 0 ]; then
+                printf 'attempt %s: runner listing failed (%s consecutive)\n' "$attempt" "$api_fail"
+                printf '%s\n' "$listing" | tail -3
+              fi
+              if [ "$api_fail" -ge 20 ]; then
+                printf '%s\n' "$listing" | tail -20
+                echo "::error::runner listing has failed $api_fail times in a row; this is an API or permissions fault, not a slow boot"
+                exit 1
+              fi
+            fi
             [ -n "$rid" ] && break
             sleep 15
           done
@@ -1346,21 +1372,45 @@ jobs:
             echo "instance from soak job output: $iid"
           else
             echo "soak job published no instance_id (runner lost); searching by github-run-id tag"
+            # The list and the filter are separated deliberately. Piping the
+            # CLI straight into jq under 2>/dev/null || true makes four very
+            # different facts indistinguishable -- expired credentials, a
+            # missing IAM policy, an OCI outage, and a genuine no-match all
+            # yield the empty string, and the job then reports the benign
+            # "died before self-tagging" warning and exits green.
+            #
+            # That is the same defect as the instance-console-history typo
+            # this file already carries a note about: an error swallowed into
+            # a plausible-looking negative result. A post-mortem that cannot
+            # distinguish "nothing to find" from "could not look" is not a
+            # post-mortem. Fail loudly on the second, stay quiet on the first.
+            #
             # --all: the compartment accumulates terminated instances, and the
             # match may be well past the first page.
-            found="$(oci compute instance list \
-              --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>/dev/null \
-              | jq -r --arg run "$GITHUB_RUN_ID" '
-                  [ .data[]
-                    | select(."display-name" | startswith("ci-eph-"))
-                    | select((."freeform-tags"["github-run-id"] // "") == $run)
-                  ]
-                  | sort_by(."time-created")
-                  | last
-                  | .id // empty' 2>/dev/null || true)"
+            if ! listing="$(oci compute instance list \
+                 --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>&1)"; then
+              printf '%s\n' "$listing" | tail -20
+              echo "::error::could not list instances in the ci-runner compartment; the post-mortem cannot tell a missing VM from an unreadable one"
+              exit 1
+            fi
+            if ! found="$(printf '%s' "$listing" \
+                 | jq -r --arg run "$GITHUB_RUN_ID" '
+                     [ .data[]
+                       | select(."display-name" | startswith("ci-eph-"))
+                       | select((."freeform-tags"["github-run-id"] // "") == $run)
+                     ]
+                     | sort_by(."time-created")
+                     | last
+                     | .id // empty' 2>&1)"; then
+              printf '%s\n' "$found" | tail -10
+              echo "::error::could not parse the instance listing; treating this as a lookup failure rather than an absent instance"
+              exit 1
+            fi
             if [ -n "$found" ]; then
               iid="$found"
               echo "resolved by tag: $iid"
+            else
+              echo "listing read cleanly; no ci-eph-* instance carries github-run-id=$GITHUB_RUN_ID"
             fi
           fi
           case "$iid" in
