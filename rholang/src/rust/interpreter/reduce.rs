@@ -6243,6 +6243,56 @@ impl DebruijnInterpreter {
                             rholang_pathmap.remove(&key);
                         }
 
+                        // ★★ HOISTED OUT OF THE LOOP BELOW. This search is **loop-invariant**:
+                        // its closure captures `zipper.current_path` and nothing else — never
+                        // `source_entry` — so inside the loop it recomputed an identical answer
+                        // once per source entry, giving O(N·M) where O(N) suffices.
+                        //
+                        // ⚠ Hoisting is provably semantics-preserving *because* the computation
+                        // does not depend on the loop variable. This is not a reformulation of
+                        // the search — which would have to prove a new search finds the SAME
+                        // entry — it is the same search, evaluated once.
+                        //
+                        // ⚠ It also stops re-forcing `pathmap.ps()` per iteration: that is a
+                        // memoised `Vec<Par>` whose materialisation deep-clones every entry.
+                        //
+                        // `Some(prefix)` ⇔ the old `found_existing == true`. The `find` predicate
+                        // already rejects anything that is not an `EListBody`, so every entry it
+                        // can return matches the inner `if let`, and the two are equivalent.
+                        let hoisted_prefix: Option<Vec<Par>> = {
+                            use models::rust::pathmap_integration::par_to_path;
+                            pathmap
+                                .ps()
+                                .iter()
+                                .find(|entry| {
+                                    if let Some(ExprInstance::EListBody(existing_list)) =
+                                        &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
+                                    {
+                                        if existing_list.ps.len() < zipper.current_path.len() {
+                                            return false;
+                                        }
+                                        // Check if the entry actually starts with current_path
+                                        let entry_segments = par_to_path(entry);
+                                        entry_segments.starts_with(&zipper.current_path)
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .and_then(|existing_entry| {
+                                    if let Some(ExprInstance::EListBody(existing_list)) =
+                                        &existing_entry
+                                            .exprs
+                                            .first()
+                                            .and_then(|e| e.expr_instance.as_ref())
+                                    {
+                                        // Take first N elements where N = current_path length
+                                        Some(existing_list.ps[..zipper.current_path.len()].to_vec())
+                                    } else {
+                                        None
+                                    }
+                                })
+                        };
+
                         // Step 3: Add source entries with prepended prefix
                         for source_entry in source.ps().iter() {
                             use models::rust::pathmap_integration::par_to_path;
@@ -6259,37 +6309,12 @@ impl DebruijnInterpreter {
                             // Extract elements from an existing entry to understand their structure
                             let mut absolute_elements = Vec::new();
 
-                            // Find an existing entry that starts with current_path
-                            let found_existing = if let Some(existing_entry) =
-                                pathmap.ps().iter().find(|entry| {
-                                    if let Some(ExprInstance::EListBody(existing_list)) =
-                                        &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        if existing_list.ps.len() < zipper.current_path.len() {
-                                            return false;
-                                        }
-                                        // Check if the entry actually starts with current_path
-                                        use models::rust::pathmap_integration::par_to_path;
-                                        let entry_segments = par_to_path(entry);
-                                        entry_segments.starts_with(&zipper.current_path)
-                                    } else {
-                                        false
-                                    }
-                                }) {
-                                if let Some(ExprInstance::EListBody(existing_list)) =
-                                    &existing_entry
-                                        .exprs
-                                        .first()
-                                        .and_then(|e| e.expr_instance.as_ref())
-                                {
-                                    // Take first N elements where N = current_path length
-                                    absolute_elements.extend(
-                                        existing_list.ps[..zipper.current_path.len()].to_vec(),
-                                    );
+                            let found_existing = match &hoisted_prefix {
+                                Some(prefix) => {
+                                    absolute_elements.extend(prefix.iter().cloned());
+                                    true
                                 }
-                                true
-                            } else {
-                                false
+                                None => false,
                             };
 
                             // If no existing entry found, reconstruct Par elements from current_path bytes
