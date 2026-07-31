@@ -11,6 +11,22 @@ This changelog is automatically generated from conventional commits.
 - seed grey badges so the README stops showing 'resource not found'
 
 
+## [0.4.35] - 2026-07-31
+
+### Bug Fixes
+
+- stop two more error-suppressions from reading as normal results
+- key the post-mortem by run attempt; stop excusing capture failures
+- register the runner exclusively; make the pin bind
+- abandon the poached runner instead of terminating it
+- reclaim the runner when the registration race is lost
+- fail fast when the exclusive label lands after a poach
+- let a failed segment still publish its checkpoint
+- stop the post-mortem lookup from reading failure as absence
+- give the soak an exclusive runner, and fix the console-history call
+- locate the post-mortem instance by tag, not job output
+
+
 ## [0.4.34] - 2026-07-31
 
 ### Bug Fixes
