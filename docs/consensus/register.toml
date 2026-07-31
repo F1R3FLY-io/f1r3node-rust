@@ -1209,6 +1209,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "6bdd6ad7"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 46 — models/tests/scored_term_sort_test.rs and models/examples/score_tie_witness.rs; ZERO production lines. Weakens an assertion that was FALSE (the score/term iff) to its true forward direction, and pins the counterexample. The assertions are written in CURRENT-STATE polarity: they assert the FAULT, which is what is true at this commit. Measured: {3->30} and {3->90} have byte-identical score trees while being distinct canonical terms; a set containing both splits 20/20 across 40 processes; and {3:30}|{3:90} vs {3:90}|{3:30} — two spellings of one process, `|` being commutative — reach DIFFERENT canonical bytes deterministically, with no HashSet and no seed. The assert_ne! flips to assert_eq! in the same commit as the repair. [DERIVED]"
+
+[[exempt]]
 commit = "6a264e05"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
