@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "afab2b77"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 54 — C3. setSubtrie step 3's linear scan over pathmap.ps() ran INSIDE the loop over source.ps() while being LOOP-INVARIANT (its closure captures zipper.current_path and never source_entry), so it recomputed an identical answer per source entry: O(N*M) where O(N) suffices, re-forcing the deep-cloning projection memo each iteration. Hoisted. NEUTRALITY IS BY CONSTRUCTION, not by test: hoisting an expression that does not depend on the loop variable is pure code motion. A trie-descent rewrite was deliberately NOT taken because it would need to prove the new search returns the SAME entry as a projection-order find, and that answer feeds absolute_elements and therefore emitted bytes. Correction to the filed plan: the step-3b sibling search is NOT in a loop (it is in the source.entry_trie().is_empty() branch, executed once) and is left alone. COVERAGE GAP FOUND AND FILED (pgmcp 4914, pre-existing): perturbing the hoisted result to found_existing=false left setsubtrie_spec 5/5, getsubtrie_spec 4/4, zipper_advanced_navigation_spec 10/10, epathmap_live_match_spec 5/5 and epathmap_differential_scaffold 2/2 all GREEN, so that branch has zero coverage despite feeding emitted entries. [DERIVED]"
+
+[[exempt]]
 commit = "f351e74c"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
