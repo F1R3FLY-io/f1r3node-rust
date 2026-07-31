@@ -91,6 +91,15 @@ env:
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  # OCI compartment "ci-runner". The soak tags itself by the OCID the metadata
+  # service reports and so needs no compartment to run; capture_diagnostics
+  # does, because it runs GitHub-hosted after the soak runner is gone and has
+  # to FIND the instance rather than be it. Literal for the same reason as in
+  # ci-runner-reaper.yml — an Actions variable would let anyone with repo admin
+  # repoint the search. check-workflow-invariants.sh already treats this file
+  # as an optional pin site and fails CI if the two ever name different
+  # compartments.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
 
 jobs:
   schedule_gate:
@@ -630,8 +639,15 @@ jobs:
             fi
             case "$existing" in ''|null) existing='{}' ;; esac
             jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            # github-run-id is what lets capture_diagnostics find this VM after
+            # the fact. When the runner is LOST rather than failing, the job
+            # never completes, so nothing it wrote to $GITHUB_OUTPUT is ever
+            # published — steps.selftag.outputs.instance_id is empty in exactly
+            # the case the post-mortem exists for. A tag lives on the instance
+            # instead of in the job, so it survives the job dying.
             merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
+              --arg r "$GITHUB_RUN_ID" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d, "github-run-id": $r}')"
             if update_err="$(oci --auth instance_principal compute instance update \
                  --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
               tagged=1
@@ -1171,12 +1187,21 @@ jobs:
     # That evidence was then lost when the instance was terminated during
     # cleanup. Console history is captured as a SEPARATE OCI resource with its
     # own lifecycle, so it outlives the instance and can be read the next day.
+    #
+    # This job previously also required needs.soak.outputs.instance_id != '',
+    # which made it dead code. A lost runner never completes its job, so its
+    # outputs are never published — the ID is empty precisely when the runner
+    # vanishes, which is the only condition this job runs under. Run
+    # 30606130771 proved it: the soak died 18 minutes in with every step after
+    # "Install integration dependencies" left at a null conclusion and no log,
+    # the self-tag step had already succeeded so the OCID was known on the VM,
+    # and this job still skipped. The instance is now located by tag instead;
+    # see "Resolve the soak instance" below.
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.soak.result == 'failure' &&
-      needs.soak.outputs.completed != 'true' &&
-      needs.soak.outputs.instance_id != ''
+      needs.soak.outputs.completed != 'true'
     runs-on: ubuntu-latest
     environment: oci-credentials
     timeout-minutes: 15
@@ -1210,9 +1235,63 @@ jobs:
           key_file=$HOME/.oci/oci_api_key.pem
           EOF
 
-      - name: Capture console history
+      # Two sources, in order of authority. The job output is exact when it
+      # exists, but exists only when the soak job completed normally — rare
+      # here, since this job runs when it did not. The tag is written by the
+      # soak runner itself, from the OCID the metadata service reported, and
+      # lives on the instance rather than in the job, so it survives the runner
+      # being lost. Neither is a guess: both trace back to IMDSv2 on the VM.
+      #
+      # Terminated instances are deliberately NOT filtered out. A terminated
+      # VM is still worth resolving, because console history is a separate OCI
+      # resource with its own lifecycle and can be read after the instance is
+      # gone — recovering that evidence is the entire point of this job.
+      - name: Resolve the soak instance
+        id: resolve
         env:
-          IID: ${{ needs.soak.outputs.instance_id }}
+          OUTPUT_IID: ${{ needs.soak.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          iid="$OUTPUT_IID"
+          if [ -n "$iid" ]; then
+            echo "instance from soak job output: $iid"
+          else
+            echo "soak job published no instance_id (runner lost); searching by github-run-id tag"
+            # --all: the compartment accumulates terminated instances, and the
+            # match may be well past the first page.
+            found="$(oci compute instance list \
+              --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>/dev/null \
+              | jq -r --arg run "$GITHUB_RUN_ID" '
+                  [ .data[]
+                    | select(."display-name" | startswith("ci-eph-"))
+                    | select((."freeform-tags"["github-run-id"] // "") == $run)
+                  ]
+                  | sort_by(."time-created")
+                  | last
+                  | .id // empty' 2>/dev/null || true)"
+            if [ -n "$found" ]; then
+              iid="$found"
+              echo "resolved by tag: $iid"
+            fi
+          fi
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *)
+              # Not a failure. The soak can die before the self-tag step runs,
+              # in which case no tagged VM ever existed and there is nothing to
+              # capture. Say so plainly rather than failing a diagnostic job
+              # and burying the real failure under a second red mark.
+              echo "::warning::no soak instance found for run $GITHUB_RUN_ID; it likely died before the self-tag step, so no console history exists to capture"
+              iid=""
+              ;;
+          esac
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
+
+      - name: Capture console history
+        if: steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
           SUPPRESS_LABEL_WARNING: "True"
         shell: bash -e {0}
         run: |
