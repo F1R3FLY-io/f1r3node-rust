@@ -151,9 +151,14 @@ use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path
 // Removing the import is what makes it impossible to reintroduce the fork by
 // reflex.
 use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of, PathFrameError,
-    PathFrames,
+    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of, PathFrames,
 };
+/// ★ Re-exported, not merely imported. [`PathStreamDisagreement::MalformedFraming`]
+/// carries a `PathFrameError`, so a caller who matches on the disagreement needs to
+/// name its payload — and a private `use` made the type unreachable at the path that
+/// exposes it. `rustc`'s `private_interfaces` lint caught exactly that: a public enum
+/// whose variant field could be observed but not spelled.
+pub use super::pathmap_crate_type_mapper::PathFrameError;
 use super::pathmap_integration::RholangPathMap;
 use crate::rhoapi::{Par, Var};
 
