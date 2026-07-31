@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "d329c0b7"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 47 — one new test file plus its [[test]] declaration in models/Cargo.toml (autotests = false, so an undeclared file runs nowhere). ZERO production lines. It is the permanent gate for SS-Y4's class: canonical form must be a function of the term. Its control is proven LIVE BY MUTATION — a verbatim twin of the pre-repair sort_vec must still disagree on the corpus, measured disagreements > 0 — so the permutation clause cannot be green because the corpus went inert. Its vitality clause cannot be satisfied by a tie-free corpus, which is what stops the gate being quietly retired. 3 passed. [DERIVED]"
+
+[[exempt]]
 commit = "6bdd6ad7"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
