@@ -874,15 +874,22 @@ jobs:
             fi
             case "$existing" in ''|null) existing='{}' ;; esac
             jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
-            # github-run-id is what lets capture_diagnostics find this VM after
+            # github-run-key is what lets capture_diagnostics find this VM after
             # the fact. When the runner is LOST rather than failing, the job
             # never completes, so nothing it wrote to $GITHUB_OUTPUT is ever
             # published — steps.selftag.outputs.instance_id is empty in exactly
             # the case the post-mortem exists for. A tag lives on the instance
             # instead of in the job, so it survives the job dying.
+            #
+            # run_id ALONE is not unique. GitHub keeps the same run id across
+            # re-runs and increments run_attempt instead, so attempt 2 that dies
+            # before self-tagging would resolve attempt 1's VM and publish its
+            # console history as the current failure's post-mortem. A confidently
+            # wrong post-mortem is worse than none: the whole point of this path
+            # is that what it reports can be trusted. Key on both.
             merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-              --arg r "$GITHUB_RUN_ID" \
-              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d, "github-run-id": $r}')"
+              --arg k "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d, "github-run-key": $k}')"
             if update_err="$(oci --auth instance_principal compute instance update \
                  --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
               tagged=1
@@ -1492,7 +1499,8 @@ jobs:
           if [ -n "$iid" ]; then
             echo "instance from soak job output: $iid"
           else
-            echo "soak job published no instance_id (runner lost); searching by github-run-id tag"
+            key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "soak job published no instance_id (runner lost); searching by github-run-key=$key"
             # The list and the filter are separated deliberately. Piping the
             # CLI straight into jq under 2>/dev/null || true makes four very
             # different facts indistinguishable -- expired credentials, a
@@ -1515,10 +1523,10 @@ jobs:
               exit 1
             fi
             if ! found="$(printf '%s' "$listing" \
-                 | jq -r --arg run "$GITHUB_RUN_ID" '
+                 | jq -r --arg key "$key" '
                      [ .data[]
                        | select(."display-name" | startswith("ci-eph-"))
-                       | select((."freeform-tags"["github-run-id"] // "") == $run)
+                       | select((."freeform-tags"["github-run-key"] // "") == $key)
                      ]
                      | sort_by(."time-created")
                      | last
@@ -1531,7 +1539,7 @@ jobs:
               iid="$found"
               echo "resolved by tag: $iid"
             else
-              echo "listing read cleanly; no ci-eph-* instance carries github-run-id=$GITHUB_RUN_ID"
+              echo "listing read cleanly; no ci-eph-* instance carries github-run-key=$key"
             fi
           fi
           case "$iid" in
@@ -1555,13 +1563,36 @@ jobs:
         shell: bash -e {0}
         run: |
           mkdir -p /tmp/postmortem
-          printf 'instance: %s\nrun: %s\n' "$IID" "$GITHUB_RUN_ID" > /tmp/postmortem/instance.txt
-          oci compute instance get --instance-id "$IID" > /tmp/postmortem/instance.json 2>&1 || true
-          state="$(jq -r '.data."lifecycle-state" // "unknown"' /tmp/postmortem/instance.json 2>/dev/null || echo unknown)"
+          printf 'instance: %s\nrun: %s attempt %s\n' \
+            "$IID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > /tmp/postmortem/instance.txt
+          # The lifecycle state is load-bearing below: it is the ONLY thing that
+          # makes a capture failure benign. Read it properly rather than
+          # defaulting to "unknown" on error, or every capture failure becomes
+          # excusable by an unreadable state.
+          if ! inst="$(oci compute instance get --instance-id "$IID" 2>&1)"; then
+            printf '%s\n' "$inst" | tail -20 | tee /tmp/postmortem/instance.json
+            echo "::error::could not read instance $IID; the OCID resolved but the API call failed, so this is a credentials, permissions or outage fault, not a missing VM"
+            exit 1
+          fi
+          printf '%s' "$inst" > /tmp/postmortem/instance.json
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json)"
+          if [ -z "$state" ]; then
+            echo "::error::instance $IID returned no lifecycle-state; refusing to guess whether a capture failure is expected"
+            exit 1
+          fi
           echo "instance lifecycle-state: $state"
           # Capture is asynchronous: request it, then poll until SUCCEEDED
           # before fetching. A terminated instance cannot be captured, which is
           # itself the finding — record it rather than failing the job.
+          #
+          # But ONLY a terminated instance. Until now every call here was
+          # wrapped in `|| true` and 2>/dev/null, so expired credentials, a
+          # missing console-history IAM policy, an OCI outage and a rate limit
+          # all surfaced as "the VM was likely already terminated" — the exact
+          # error-as-plausible-negative this job was rewritten to stop doing one
+          # step earlier, left in place one step later. The lifecycle state read
+          # above is what tells the two apart: if the VM is RUNNING and capture
+          # fails, something is wrong with us, and saying so is the entire job.
           #
           # The subcommand is "console-history", NOT "instance-console-history"
           # (which is what "instance-console-connection" is called, and what
@@ -1573,21 +1604,51 @@ jobs:
           # capture / get / get-content; `instance-console-history` does not
           # exist. Confirmed by capturing 2410 lines from the run 30606130771
           # runner by hand.
-          hid="$(oci compute console-history capture --instance-id "$IID" \
-            --query 'data.id' --raw-output 2>/dev/null || true)"
-          if [ -z "$hid" ]; then
-            echo "::warning::could not start console-history capture (instance state: $state); the VM was likely already terminated"
+          if hid="$(oci compute console-history capture --instance-id "$IID" \
+               --query 'data.id' --raw-output 2>&1)"; then
+            captured=1
           else
+            captured=""
+            case "$state" in
+              TERMINATED|TERMINATING)
+                echo "::notice::instance is $state, so no console history can be captured; that is the expected outcome, not a fault"
+                ;;
+              *)
+                printf '%s\n' "$hid" | tail -20
+                echo "::error::console-history capture failed while the instance is $state; this is a credentials, permissions, quota or outage fault and NOT an absent VM"
+                exit 1
+                ;;
+            esac
+            hid=""
+          fi
+          if [ -n "$captured" ]; then
+            st=""
             for _ in $(seq 1 20); do
               st="$(oci compute console-history get --instance-console-history-id "$hid" \
-                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo REQUESTED)"
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo UNREADABLE)"
               [ "$st" = "SUCCEEDED" ] && break
-              [ "$st" = "FAILED" ] && { echo "::warning::console history capture FAILED"; break; }
+              [ "$st" = "FAILED" ] && break
               sleep 15
             done
-            oci compute console-history get-content \
-              --instance-console-history-id "$hid" --file /tmp/postmortem/console.log \
-              --length 1048576 >/dev/null 2>&1 || true
+            case "$st" in
+              SUCCEEDED)
+                # A SUCCEEDED capture that will not download is a fault, not an
+                # empty log. Say which.
+                if ! err="$(oci compute console-history get-content \
+                     --instance-console-history-id "$hid" \
+                     --file /tmp/postmortem/console.log --length 1048576 2>&1)"; then
+                  printf '%s\n' "$err" | tail -20
+                  echo "::error::console history captured successfully but could not be downloaded; the evidence exists in OCI as $hid and is not lost, but this job could not retrieve it"
+                  exit 1
+                fi
+                ;;
+              FAILED)
+                echo "::warning::OCI reported the console-history capture as FAILED for $hid; nothing to download"
+                ;;
+              *)
+                echo "::warning::console-history capture did not reach SUCCEEDED within 5 minutes (last state: ${st:-none}); it may still complete -- history $hid outlives this job and can be fetched by hand"
+                ;;
+            esac
           fi
           echo "--- last 60 lines of console output ---"
           tail -60 /tmp/postmortem/console.log 2>/dev/null || echo "(no console content captured)"
