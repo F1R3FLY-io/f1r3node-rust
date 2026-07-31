@@ -80,7 +80,21 @@ mod pinned {
     pub const NESTED_ENCODED_LEN: usize = 30;
     pub const EZIPPER_ENCODED_LEN: usize = 40;
     pub const LOCALLY_FREE_ENCODED_LEN: usize = 36;
-    pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 23;
+    /// ★ CBR-041 re-pin (23→19). Every map now emits `U(m)` at proto field 8; the
+    /// tag-1 `ps` list arm is deleted. This fixture carries a non-default
+    /// `connective_used` + `remainder`, so it was on the list arm and moved.
+    ///
+    /// ⚠ EXACTLY TWO prost goldens moved — this one and `locally_free` — and both
+    /// are maps with non-default metadata fields, i.e. precisely the class
+    /// `eval_stable_epathmap` was excluding from field 8. The three GROUND prost
+    /// goldens (`e6a_index`, `nested`, `ezipper`) and every bincode and JSON golden
+    /// came back UNMOVED. That is the anti-vacuity control for this re-blessing: a
+    /// change that moved everything would mean the emitter had drifted rather than
+    /// the fork having been removed.
+    ///
+    /// `LOCALLY_FREE_ENCODED_LEN` is unchanged at 36 — a coincidence of length, not
+    /// of content: its bytes moved (tag-1 pair ⇒ tag 3 + tag 8) at equal size.
+    pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 19;
 
     /// Blake2b256 of `bincode(channel)` for the E-6a index channel Par
     /// (`stable_hash_provider::hash`, the channel leg of every event hash).

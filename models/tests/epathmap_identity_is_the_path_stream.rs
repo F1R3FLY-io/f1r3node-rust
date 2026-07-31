@@ -345,26 +345,36 @@ fn identity_hash_and_both_encodings_are_functions_of_the_path_stream() {
 /// collapses those, because pattern equivalence is undecidable in general. The
 /// gain is order-insensitivity and deduplication, which is real.
 #[test]
-fn a_non_ground_map_now_encodes_as_an_ORDER_INSENSITIVE_LIST() {
-    // An `EVar` is non-`eval_stable` by content, so a map holding one takes the
-    // tag-1 field walk rather than the field-8 value arm.
+fn a_non_ground_map_encodes_as_THE_TRIE_not_as_a_list() {
+    // An `EVar` is non-`eval_stable` by content. That used to route the map onto the
+    // tag-1 field walk — a LIST of re-encoded entries. It now takes the same field-8
+    // arm every other map takes, because the trie is the representation and there is
+    // no second arm to fall onto.
     let var_entry = models::rust::utils::new_boundvar_par(1, Vec::new(), false);
     let ground_entry = make_list_of(vec![make_string_par("a")]);
 
     let forward = ground_map(vec![var_entry.clone(), ground_entry.clone()]);
     let backward = ground_map(vec![ground_entry, var_entry]);
 
-    // The premise, unchanged: these are genuinely non-ground, so neither took
-    // the field-8 arm. A ground map's encoding starts with the field-8 key
-    // (tag 8, length-delimited = 0x42); a non-ground one starts with tag 1
-    // (0x0a). Without this the measurement could pass vacuously by drifting
-    // onto the ground path.
+    // The premise, INVERTED by the fork's removal: the fixture is still genuinely
+    // ¬eval_stable, and that no longer selects a different arm. Field 8 is tag 8
+    // length-delimited (0x42); the old list arm was tag 1 (0x0a).
+    //
+    // ⚠ NOT a first-byte check. Fields emit in ascending tag order, and this fixture's
+    // bound-variable entry gives the map a non-empty `locally_free`, so tag 3 (0x1a)
+    // legitimately comes first. Asserting `first() == 0x42` measured the fixture's
+    // metadata, not its arm — it failed for that reason on the first run.
     let forward_bytes = prost_bytes(&forward);
     let backward_bytes = prost_bytes(&backward);
-    assert_eq!(
+    assert!(
+        forward_bytes.contains(&0x42u8),
+        "the fixture must carry U(m) at field 8 — the trie is the representation"
+    );
+    assert_ne!(
         forward_bytes.first(),
         Some(&0x0au8),
-        "the fixture must exercise the TAG-1 arm, not the field-8 value arm"
+        "…and nothing may open with the tag-1 `ps` list: a ¬eval_stable map has no \
+         separate list arm to fall onto any more"
     );
 
     // ★ THE MEASUREMENT, INVERTED: one entry set, two orders, ONE encoding.
@@ -395,10 +405,9 @@ fn a_non_ground_map_now_encodes_as_an_ORDER_INSENSITIVE_LIST() {
         make_list_of(vec![make_string_par("a")]),
     ]);
     let different_bytes = prost_bytes(&different);
-    assert_eq!(
-        different_bytes.first(),
-        Some(&0x0au8),
-        "the control must exercise the same TAG-1 arm"
+    assert!(
+        different_bytes.contains(&0x42u8),
+        "the control must exercise the same field-8 TRIE arm as the fixture"
     );
     assert_ne!(
         forward_bytes, different_bytes,

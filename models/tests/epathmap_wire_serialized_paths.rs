@@ -140,25 +140,53 @@ fn large_map_round_trips() {
 }
 
 #[test]
-fn non_ground_map_stays_on_the_term_arm() {
-    // A map carrying a remainder is NOT eval_stable ⇒ the TERM arm (field 1
-    // `ps`), byte-identical to pre-wire behavior.
+fn a_non_ground_map_takes_the_TRIE_arm_too_there_is_no_term_arm_left() {
+    // ★ THE FORK IS GONE. This was `non_ground_map_stays_on_the_term_arm`, and it
+    // asserted the opposite: that a ¬eval_stable map serialized as `repeated Par` at
+    // tag 1, "byte-identical to pre-wire behavior". That WAS the defect — the trie
+    // flattened to a list at the wire boundary, discarding the key order it maintains
+    // by construction and the encoded form it already stores, so the far side could
+    // re-file it entry by entry and pay `encode_trie_path` per entry to rebuild what
+    // the sender had already computed.
+    //
+    // A pathmap now serializes as its own byte array on every surface. `U(m)` at proto
+    // field 8 is the only entry arm; there is no second one to be on.
     let remainder = Some(Var {
         var_instance: Some(VarInstance::FreeVar(0)),
     });
     let m = EPathMap::new(vec![gint(1)], Vec::new(), true, remainder);
     let bytes = m.encode_to_vec();
-    assert_eq!(
+
+    // Metadata still emits in ascending tag order at prost-derive parity: 4
+    // (connective_used), 5 (remainder), 8 (U(m)). `locally_free` is empty here, so
+    // tag 3 is skipped by proto3's omit-at-default rule.
+    assert_ne!(
         bytes[0], FIELD1_KEY,
-        "a non-ground map serializes on the term arm (field 1 ps), never field 8"
+        "nothing may open with the tag-1 `ps` list any more — the term arm is deleted"
     );
+
+    // ⚠ ANTI-VACUITY. A bare `contains(&0x42)` can be satisfied by a coincidental byte
+    // inside a payload, so field 8 is pinned POSITIONALLY: it carries the highest tag,
+    // so it is emitted last, and what follows its key and one-byte length varint must
+    // BE the key stream — compared against `path_stream()` verbatim rather than by
+    // shape. A drifted arm cannot satisfy this by accident.
+    let field8_at = bytes
+        .iter()
+        .rposition(|byte| *byte == FIELD8_KEY)
+        .expect("a ¬eval_stable map must carry U(m) at field 8 — the trie IS the value");
+    assert_eq!(
+        &bytes[field8_at + 2..],
+        m.path_stream(),
+        "the bytes after the field-8 key and its length varint must be U(m), verbatim"
+    );
+
     // ⛔ Was `assert!(m.intern().path_stream.is_empty())`. That asserted a property of
     // the INTERN STORE — it computed `path_stream` only for ground maps — not of the
     // trie. `EPathMap::path_stream()` walks the keys unconditionally, so a non-ground
-    // map has a perfectly good key stream; it simply is not what gets EMITTED. The
-    // assertion that still carries that meaning is the field-1-not-field-8 check above.
-    let decoded = EPathMap::decode(&bytes[..]).expect("decode term arm");
+    // map has a perfectly good key stream; it is now also what gets EMITTED.
+    let decoded = EPathMap::decode(&bytes[..]).expect("decode the trie arm");
     assert_eq!(decoded.encode_to_vec(), bytes);
+    assert_eq!(decoded.ps(), m.ps(), "…and it round-trips to the same entries");
 }
 
 #[test]

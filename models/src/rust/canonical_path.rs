@@ -1304,10 +1304,32 @@ impl<'b> DecMachine<'b> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Decode one top-level TRIE path — the inverse of [`encode_trie_path`]:
-/// deterministic, left-to-right, iterative, depth-limited. The `0x0F` escape
-/// arm is admitted at top-level segment positions (canonical-prost +
-/// ¬eval_stable enforced on payloads); every non-canonical byte shape is
+/// deterministic, left-to-right, iterative, and **UNBOUNDED IN DEPTH**. The
+/// `0x0F` escape arm is admitted at top-level segment positions (canonical-prost
+/// + ¬eval_stable enforced on payloads); every non-canonical byte shape is
 /// rejected (decode-accepts ≡ encoder-image).
+///
+/// ⚠ This used to say *"depth-limited"*, describing `COLLECTION_DEPTH_LIMIT = 32`
+/// — a cap **retired** from this module (see the notes at the top of the file and
+/// where `SCANNER_STACK_CEILING` used to live). Stale prose on the one function
+/// whose totality the wire format now turns on.
+///
+/// # The one residual partiality — and it is not the trie grammar
+///
+/// The structural arms are total at any depth. The `0x0F` escape arm is not: it
+/// stores a ¬`eval_stable` entry as its canonical prost bytes and reads them back
+/// with `Par::decode`, which prost caps at 100 message levels while capping its
+/// encoder at nothing. Past that depth an entry encodes to a key that will not
+/// decode. That is read-ceiling site #130, and
+/// `rholang/tests/pathmap_escape_depth_reachability.rs` measures the boundary by
+/// SEARCH: last accepting depth 32, with ordinary Rholang reaching past it.
+///
+/// ★ The nesting works in the PERMISSIVE direction, which is what lets proto
+/// field 8 carry every map. `Par::decode` here constructs a FRESH `DecodeContext`,
+/// so the payload gets the full budget starting at zero, whereas an entry arriving
+/// as a nested message has already spent several levels of the outer decode's
+/// budget before it is reached. Measured consequence: this arm reads to depth 32
+/// where tag-1 ingress stopped at 31.
 pub fn decode_trie_path(path: &[u8]) -> Result<Par, CodecError> {
     DecMachine::new(path).run_path()
 }

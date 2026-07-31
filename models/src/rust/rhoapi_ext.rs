@@ -144,9 +144,14 @@ use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
 
 use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
+// ⚠ `eval_stable_epathmap` is deliberately NOT imported here any more. It was the
+// wire discriminant — the predicate that chose between field 8 and the tag-1 list —
+// and with one arm there is nothing left for it to select. It is NOT deleted: it
+// remains `canonical_path`'s recursion cut and `entries_stable()`'s own consumer.
+// Removing the import is what makes it impossible to reintroduce the fork by
+// reflex.
 use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_epathmap, eval_stable_par, ground_field8_len,
-    path_stream_of,
+    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of,
 };
 use super::pathmap_integration::RholangPathMap;
 use crate::rhoapi::{Par, Var};
@@ -790,10 +795,25 @@ impl PartialEq for EntryTrie {
         let mut a = self.trie.read_zipper();
         let mut b = other.trie.read_zipper();
         loop {
+            // ⚠ NO `_` arm. `variant_exhaustiveness_gate` refuses a catch-all in a
+            // comparison impl, and it is right to: a catch-all answering `false` makes
+            // the match exhaustive to the compiler, which disables the only check that a
+            // newly-reachable case gets a deliberate answer. Enumerated, the three
+            // not-equal shapes are visibly the three that should be not-equal.
             match (a.to_next_val(), b.to_next_val()) {
+                // Both streams ended together: every key agreed.
                 (false, false) => return true,
-                (true, true) if a.path() == b.path() => continue,
-                _ => return false,
+                // Both produced a key: equal iff the keys are.
+                (true, true) => {
+                    if a.path() != b.path() {
+                        return false;
+                    }
+                    continue;
+                }
+                // One ended first — different lengths, and `len` should already
+                // have caught it above. Kept because "cannot happen" is a claim
+                // about callers, not about what the tries permit.
+                (false, true) | (true, false) => return false,
             }
         }
     }
@@ -1101,46 +1121,19 @@ impl EPathMap {
 
 
 
-    /// The UNCACHED field-by-field prost encode — the prost-derive 0.14.3
-    /// expansion for this message shape, verbatim (tag order 1, 3, 4, 5;
-    /// scalar fields skipped at their proto defaults). `pub(crate)` so the
-    /// store's K2 verify can stream the fields.
-    pub(crate) fn encode_raw_fields(&self, buf: &mut impl BufMut) {
-        for msg in self.ps() {
-            encoding::message::encode(1u32, msg, buf);
-        }
-        // prost-derive emits `if self.locally_free != b"" as &[u8]`.
-        if !self.locally_free.is_empty() {
-            encoding::bytes::encode(3u32, &self.locally_free, buf);
-        }
-        // prost-derive emits `if self.connective_used != false`.
-        if self.connective_used {
-            encoding::bool::encode(4u32, &self.connective_used, buf);
-        }
-        if let Some(ref msg) = self.remainder {
-            encoding::message::encode(5u32, msg, buf);
-        }
-    }
-
-    /// The UNCACHED field-by-field `encoded_len` (prost-derive expansion,
-    /// same skip-at-default structure as [`Self::encode_raw_fields`]).
-    pub(crate) fn encoded_len_fields(&self) -> usize {
-        encoding::message::encoded_len_repeated(1u32, self.ps().as_slice())
-            + if !self.locally_free.is_empty() {
-                encoding::bytes::encoded_len(3u32, &self.locally_free)
-            } else {
-                0
-            }
-            + if self.connective_used {
-                encoding::bool::encoded_len(4u32, &self.connective_used)
-            } else {
-                0
-            }
-            + self
-                .remainder
-                .as_ref()
-                .map_or(0, |msg| encoding::message::encoded_len(5u32, msg))
-    }
+    // ⛔ `encode_raw_fields` / `encoded_len_fields` are DELETED, not parked.
+    //
+    // They were the tag-1 field walk — `for msg in self.ps() { encode(1u32, msg) }`
+    // and its `encoded_len_repeated(1u32, …)` twin — reached only from the
+    // ¬eval_stable side of the fork in `encode_raw` / `encoded_len`. With the fork
+    // removed there is no caller and no shape they describe: every map emits `U(m)`
+    // at field 8, and the metadata fields 3/4/5 are emitted inline by the two
+    // methods that replaced them, where the encode and its length twin can be read
+    // side by side. Keeping a second, unreachable copy of that logic would be an
+    // invitation to drift between two things prost requires to agree byte for byte.
+    //
+    // (Their `pub(crate)` was for the intern store's K2 verify, which was itself
+    // deleted with the store.)
 
     /// ★ **`U(m)` — the identity artifact of this map's entries.**
     ///
@@ -1251,20 +1244,62 @@ impl prost::Message for EPathMap {
         // 64-entry LRU whose eviction drops a deep `Par` through the recursive
         // destructor inside that lock (pgmcp 4910).
         //
-        // A non-empty GROUND
-        // map emits the VALUE arm: proto field 8 = U(m), read straight off the
-        // stored trie. Non-ground / empty maps take the field walk (`ps` at
-        // tag 1) — whose entries are now the canonical projection, which is the
-        // consensus-visible half of this change.
-        // map emits the VALUE arm: proto field 8 = U(m), read straight off the
-        // stored trie. Non-ground / empty maps take the field walk (`ps` at
-        // tag 1) — whose entries are now the canonical projection, which is the
-        // consensus-visible half of this change.
-        if eval_stable_epathmap(self) && !self.ps.is_empty() {
-            encode_ground_field8(self.path_stream(), buf);
-            return;
+        // ★★ ONE ARM. The trie serializes AS A TRIE — proto field 8 = U(m), read
+        // straight off the stored trie — for EVERY map, ground or not. There is no
+        // longer a `ps` field walk at tag 1, and so no fork to be on the wrong side of.
+        //
+        // # What this replaced, and why the fork was the defect
+        //
+        // Field 8 used to be gated on `eval_stable_epathmap(self)`; every other map
+        // emitted `repeated Par` at tag 1 — the trie flattened to a LIST and each entry
+        // re-encoded from scratch. That threw away, at the wire boundary, exactly the
+        // properties the trie exists to provide: the key order it maintains by
+        // construction, the dedup it guarantees by holding one slot per key, and the
+        // encoded form it already stores. The list then had to be re-filed entry by
+        // entry on the far side, paying `encode_trie_path` per entry to rebuild what
+        // the sender had already computed.
+        //
+        // # Byte movement, stated exactly
+        //
+        // GROUND maps are byte-IDENTICAL. `eval_stable_epathmap` requires fields 3/4/5
+        // at their proto defaults, so a ground map skipped all three and emitted field 8
+        // alone — which is still precisely what the ascending-tag walk below produces.
+        // The ground goldens must come back UNMOVED, and they are the anti-vacuity
+        // control for the non-ground re-blessing.
+        //
+        // NON-GROUND maps move: tag-1 field walk ⇒ tag 8. That is the consensus-visible
+        // half, and it is why this carries a seven-axis register entry.
+        //
+        // # ★ The move is PERMISSIVE, and it is measured rather than argued
+        //
+        // Reading tag 8 back means `decode_trie_path` per key, whose escape arm
+        // re-decodes a ¬eval_stable entry through prost. That is a *fresh*
+        // `DecodeContext` — the full 100-level budget starting at zero — whereas tag 1
+        // spent W ≥ 3 levels of the OUTER decode's budget before reaching the entry.
+        // `rholang/tests/pathmap_escape_depth_reachability.rs` measures the consequence:
+        // escape-arm ceiling 32 vs tag-1 ingress ceiling 31.
+        //
+        // ⇒ every entry tag 1 could deliver, tag 8 can read. The headroom is ONE level,
+        // not the three a `W ≥ 3` argument predicts; the inequality is what the
+        // conclusion needs and it holds, but the margin is thin and is recorded as
+        // measured rather than derived. No term that decodes today stops decoding.
+        //
+        // Ascending tag order (3, 4, 5, 8), prost-derive parity on the skip-at-default
+        // rule for each scalar — the format's universal rule, not a fork.
+        if !self.locally_free.is_empty() {
+            encoding::bytes::encode(3u32, &self.locally_free, buf);
         }
-        self.encode_raw_fields(buf);
+        if self.connective_used {
+            encoding::bool::encode(4u32, &self.connective_used, buf);
+        }
+        if let Some(ref msg) = self.remainder {
+            encoding::message::encode(5u32, msg, buf);
+        }
+        // Skipped when the trie is empty — proto3's own "omit at default" rule for a
+        // `bytes` field, which is also what keeps an empty map byte-identical.
+        if !self.ps.is_empty() {
+            encode_ground_field8(self.path_stream(), buf);
+        }
     }
 
     // `DecodeError::new` is prost's only public constructor for a custom
@@ -1398,12 +1433,31 @@ impl prost::Message for EPathMap {
         // chain's intern call — every other map already paid O(map) — and the price
         // of keeping it was two full walks plus a global lock per rendezvous.
         //
-        // Empty cell: a non-empty GROUND map's length is the field-8 (U(m))
-        // length; non-ground / empty maps use the field walk.
-        if eval_stable_epathmap(self) && !self.ps.is_empty() {
-            return ground_field8_len(self.path_stream());
-        }
-        self.encoded_len_fields()
+        // ★ THE EXACT TWIN of `encode_raw`. Same four conditions, same order, same
+        // skip-at-default rule, term for term — prost corrupts the stream if these two
+        // ever disagree by a single byte, so they are written to be read side by side.
+        //
+        // ⚠ This is also a METERING input (`costs.rs`, `substitute.rs`), so the charge
+        // moves with the bytes: it is no longer the sum of per-entry prost lengths but
+        // the length of the one shared key stream — a figure the memo hands back
+        // without re-encoding anything.
+        (if !self.locally_free.is_empty() {
+            encoding::bytes::encoded_len(3u32, &self.locally_free)
+        } else {
+            0
+        }) + (if self.connective_used {
+            encoding::bool::encoded_len(4u32, &self.connective_used)
+        } else {
+            0
+        }) + self
+            .remainder
+            .as_ref()
+            .map_or(0, |msg| encoding::message::encoded_len(5u32, msg))
+            + (if !self.ps.is_empty() {
+                ground_field8_len(self.path_stream())
+            } else {
+                0
+            })
     }
 
     fn clear(&mut self) {

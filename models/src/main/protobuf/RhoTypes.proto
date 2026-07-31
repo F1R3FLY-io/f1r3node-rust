@@ -346,11 +346,19 @@ message EPathMap {
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 4;
   Var remainder = 5;
-  // VALUE arm (GROUND maps only): U(m) = the UNCOMPRESSED, trie-ordered,
-  // length-framed key stream `repeat( u32-LE keylen ++ trie_key )`. NEVER
-  // deflated. The canonical identity + hash preimage of a ground map, produced
-  // by a PathMap read-zipper walk over the intern trie (no sort). A non-empty
-  // `serialized_paths` marks the value arm (presence check, no discriminant).
+  // ★★ THE entry arm, for EVERY map -- ground or not. U(m) = the UNCOMPRESSED,
+  // trie-ordered, length-framed key stream `repeat( u32-LE keylen ++ trie_key )`,
+  // produced by a PathMap read-zipper walk (NO sort -- a trie indexes children by
+  // byte, so the walk is byte-lexicographic BY CONSTRUCTION, and a permuted entry
+  // order is not normalized away but unrepresentable). NEVER deflated.
+  //
+  // This is pathmap's OWN `.paths` payload with the compressor removed: the crate's
+  // `serialize_paths` emits exactly these bytes and then hands them to zlib-ng at
+  // level 7, whose output is a function of the compressor build rather than of the
+  // trie. That disqualifies it as a consensus preimage; U(m) is the uncompressed
+  // twin, and the reason it is hand-rolled.
+  //
+  // Omitted when the map holds no entries, by proto3's own omit-at-default rule.
   bytes serialized_paths = 8;
 }
 
