@@ -143,7 +143,7 @@ use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
 
-use super::canonical_path::{decode_trie_path, encode_trie_path};
+use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
 use super::pathmap_crate_type_mapper::{
     encode_ground_field8, eval_stable_epathmap, eval_stable_par, ground_field8_len,
     path_stream_of,
@@ -361,8 +361,17 @@ impl EntryTrie {
     /// Takes the memo (the projection must be recomputed) but never hands out a
     /// `&mut Vec<Par>`: the only thing a caller can do is name an entry.
     pub fn insert_entry(&mut self, par: Par) {
-        let key = encode_trie_path(&par);
-        self.entries_stable &= eval_stable_par(&par);
+        // ★ ONE walk, not two. `encode_trie_path` opens with
+        // `let stable = known_stable || eval_stable_par(par)` — stability is what selects
+        // the escape arm — so this used to run `eval_stable_par` a SECOND time over the
+        // same entry, and `entries_stable` became a second opinion about something the
+        // codec had already decided. Now the codec hands the bit back.
+        //
+        // ⚠ Still EXACT, which is required: this fold selects proto field 8 over the tag-1
+        // field walk, so a conservative `false` would be a consensus-visible byte change.
+        // It is the encoder's own verdict, not an approximation.
+        let (key, stable) = encode_trie_path_with_stability(&par);
+        self.entries_stable &= stable;
         self.any_connective_used |= par.connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),

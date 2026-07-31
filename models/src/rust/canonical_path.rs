@@ -476,6 +476,12 @@ struct EncMachine<'p> {
     root: Vec<u8>,
     detours: Vec<EncCtx>,
     ops: Vec<EncOp<'p>>,
+    /// The TOP-LEVEL stability verdict, recorded by the first `push_path_ops`.
+    ///
+    /// ★ Not new information — `push_path_ops` has always computed it, because stability
+    /// is what selects the escape arm. It is retained so a caller can be handed the bit
+    /// instead of recomputing it; see [`encode_trie_path_with_stability`].
+    top_level_stable: Option<bool>,
 }
 
 impl<'p> EncMachine<'p> {
@@ -484,6 +490,7 @@ impl<'p> EncMachine<'p> {
             root: Vec::new(),
             detours: Vec::new(),
             ops: Vec::new(),
+            top_level_stable: None,
         }
     }
 
@@ -520,6 +527,13 @@ impl<'p> EncMachine<'p> {
     /// top-level segment position takes the `0x0F` escape arm.
     fn push_path_ops(&mut self, par: &'p Par, known_stable: bool) -> Result<(), CodecError> {
         let stable = known_stable || eval_stable_par(par);
+        // ★ Record the TOP-LEVEL verdict so callers can have the bit the codec already
+        // computed, instead of running `eval_stable_par` a second time over the same term.
+        // Only the outermost call sets it: nested pushes are heredity, not the entry's
+        // own stability.
+        if self.top_level_stable.is_none() {
+            self.top_level_stable = Some(stable);
+        }
         if let Some(list) = split_carrier_list(par) {
             // Split form: per-element segments + the terminator. LIFO push:
             // terminator first so it emits LAST.
@@ -781,12 +795,35 @@ impl<'p> EncMachine<'p> {
 /// unlimited depth; iterative; no panics. This is THE navigable trie key
 /// the PathMap zippers index on (`create_pathmap_from_elements`).
 pub fn encode_trie_path(par: &Par) -> Vec<u8> {
+    encode_trie_path_with_stability(par).0
+}
+
+/// [`encode_trie_path`], plus the stability verdict the encode ALREADY COMPUTED.
+///
+/// ★ Why this exists. `EntryTrie::insert_entry` used to call `encode_trie_path(&par)` and
+/// then `eval_stable_par(&par)` — but the encoder's own first act is
+/// `let stable = known_stable || eval_stable_par(par)`, because stability is what selects
+/// the escape arm. So every insert walked the entry twice to answer one question, and the
+/// `entries_stable` fold became a SECOND OPINION about something the codec had already
+/// decided.
+///
+/// ⇒ Handing the bit back makes the fold free and single-sourced. The drift hazard shrinks
+/// from "two independent computations that must agree" to "one value, plumbed" — which is
+/// the difference between a property that needs a test and one that needs a type.
+///
+/// ⚠ `entries_stable` must stay EXACT: it selects proto field 8 over the tag-1 field walk,
+/// so a conservative `false` is a consensus-visible byte change. This returns the encoder's
+/// own verdict, not an approximation of it.
+pub fn encode_trie_path_with_stability(par: &Par) -> (Vec<u8>, bool) {
     let mut machine = EncMachine::new();
     machine
         .push_path_ops(par, false)
         .expect("trie path scheduling is total");
     machine.run().expect("trie path encoding is total");
-    machine.into_buffer()
+    let stable = machine
+        .top_level_stable
+        .expect("push_path_ops always records the top-level verdict");
+    (machine.into_buffer(), stable)
 }
 
 /// One TRIE-grammar segment (escape-capable, total) — the building block of
