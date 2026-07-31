@@ -366,13 +366,14 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
         // ---- n-ary, order-preserving ----
         ExprInstance::EListBody(x) => out.extend(x.ps.iter()),
         ExprInstance::ETupleBody(x) => out.extend(x.ps.iter()),
-        ExprInstance::EZipperBody(x) => out.extend(
-            x.pathmap
-                .as_ref()
-                .expect("zipper pathmap was None")
-                .ps()
-                .iter(),
-        ),
+        // ★ Reads the TRIE. `ps()` forces the deep-clone projection memo to hand back
+        // borrows the trie can hand out itself, at the trie's own lifetime.
+        ExprInstance::EZipperBody(x) => x
+            .pathmap
+            .as_ref()
+            .expect("zipper pathmap was None")
+            .entry_trie()
+            .extend_entry_refs(out),
 
         // ---- ⚠ arguments BEFORE target: that is the pre-conversion order ----
         ExprInstance::EMethodBody(x) => {
@@ -1736,11 +1737,18 @@ let canonical = if eval_stable_epathmap(pathmap) && !pathmap.entry_trie().is_emp
     pathmap.clone()
 } else {
     EPathMap::new(
-        pathmap
-            .ps()
-            .iter()
-            .map(|p| ParSortMatcher::sort_match(p).term)
-            .collect::<Vec<Par>>(),
+        {
+            // ★ Walks the TRIE. These entries must be OWNED — each is AC-normalised and
+            // re-filed through `EPathMap::new`, which re-keys — but they never needed the
+            // projection to get there: `ps()` deep-clones every entry AND retains a second
+            // copy for the value's lifetime, only for `sort_match` to build its own owned
+            // term from each anyway. The walk skips both copies.
+            let mut sorted = Vec::with_capacity(pathmap.entry_trie().len());
+            pathmap
+                .entry_trie()
+                .for_each_entry(|p| sorted.push(ParSortMatcher::sort_match(p).term));
+            sorted
+        },
         pathmap.locally_free.clone(),
         pathmap.connective_used,
         pathmap.remainder.clone(),
@@ -1748,11 +1756,13 @@ let canonical = if eval_stable_epathmap(pathmap) && !pathmap.entry_trie().is_emp
 };
 // Score the (now-canonical) entries so the enclosing sort
 // agrees with the emitted term order.
-let pars: Vec<ScoredTerm<Par>> = canonical
-    .ps()
-    .iter()
-    .map(ParSortMatcher::sort_match)
-    .collect();
+let pars: Vec<ScoredTerm<Par>> = {
+    let mut scored = Vec::with_capacity(canonical.entry_trie().len());
+    canonical
+        .entry_trie()
+        .for_each_entry(|p| scored.push(ParSortMatcher::sort_match(p)));
+    scored
+};
 let remainder_score = remainder_score(&canonical.remainder);
 let connective_used_score: i64 = flag_score(canonical.connective_used);
 
