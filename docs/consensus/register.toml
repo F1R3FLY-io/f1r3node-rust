@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "f351e74c"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13. [DERIVED]"
+
+[[exempt]]
 commit = "5dade74c"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
@@ -1334,7 +1340,7 @@ token = "eval_stable_epathmap"
 [[citation]]
 owner = "(doc)"
 cited = "par_children.rs"
-line = 395
+line = 407
 at = "HEAD"
 path = "models/src/rust/rholang/par_children.rs"
 token = "EPathmapBody"
