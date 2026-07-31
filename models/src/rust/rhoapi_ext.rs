@@ -232,10 +232,19 @@ pub struct EntryTrie {
     /// `PathMap::val_count` is documented O(N) ("This is not a cheap method",
     /// `pathmap-0.2.2/src/trie_map.rs:499`).
     len: usize,
-    /// `ps.iter().all(eval_stable_par)` — the entry half of the GROUND
-    /// predicate, which selects the WIRE ARM. Exact, not conservative: a
-    /// conservative `false` would silently move a ground map off proto field 8
-    /// and onto the tag-1 field walk, which is a consensus-visible byte change.
+    /// `ps.iter().all(eval_stable_par)` — the entry half of the GROUND predicate.
+    ///
+    /// ⚠ NO LONGER A WIRE DISCRIMINANT. This used to select the wire arm: a ground
+    /// map emitted proto field 8, everything else took the tag-1 field walk, so a
+    /// conservative `false` was a consensus-visible byte change. That fork is
+    /// DELETED — every map emits proto field 8 now — and this fold no longer
+    /// chooses anything the wire can see.
+    ///
+    /// It is still computed EXACTLY rather than conservatively, because it is
+    /// still the honest answer to "are all entries in the codec's ground domain?"
+    /// for `entries_stable()`'s remaining consumers, and because it comes free
+    /// from the encoder's own verdict (`encode_trie_path_with_stability`) rather
+    /// than from a second walk that could form a second opinion.
     entries_stable: bool,
     /// Union of the entries' `locally_free` bitsets — the value
     /// `create_pathmap_from_elements` used to compute on every conversion.
@@ -404,9 +413,11 @@ impl EntryTrie {
         // same entry, and `entries_stable` became a second opinion about something the
         // codec had already decided. Now the codec hands the bit back.
         //
-        // ⚠ Still EXACT, which is required: this fold selects proto field 8 over the tag-1
-        // field walk, so a conservative `false` would be a consensus-visible byte change.
-        // It is the encoder's own verdict, not an approximation.
+        // ⚠ Still EXACT, though no longer for the wire's sake: this fold used to select
+        // proto field 8 over the tag-1 field walk, and that fork is now deleted. It stays
+        // exact because it is the encoder's own verdict rather than an approximation, and
+        // taking it here costs nothing — the alternative is a second walk that could form
+        // a second opinion about something the codec has already decided.
         let (key, stable) = encode_trie_path_with_stability(&par);
         self.entries_stable &= stable;
         self.any_connective_used |= par.connective_used;

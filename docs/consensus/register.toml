@@ -1366,7 +1366,7 @@ token = "eval_stable_epathmap"
 [[citation]]
 owner = "(doc)"
 cited = "rhoapi_ext.rs"
-line = 232
+line = 238
 at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "proto field 8"
