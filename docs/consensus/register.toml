@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "626cf42d"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 50 — extend_entries (the set union graft performs) becomes a read-zipper walk over other.trie instead of materialising other.view() and re-encoding every key. BYTE-NEUTRAL BY INJECTIVITY: encode_trie_path is capless, prefix-free and total, so rz.path() equals what encode_trie_path(rz.val()) would have produced; the invariant is checked in RELEASE builds by adopt_trie, which re-files on divergence rather than trusting it. Equal keys imply equal entries, so keep-vs-replace is immaterial. Live callers confirmed before landing (three graft sites in reduce.rs plus epathmap_wrapper_cell). Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, pathmap_integration_tests 59/59, models --lib 99/99. [DERIVED]"
+
+[[exempt]]
 commit = "7c26f2f2"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
@@ -1300,7 +1306,7 @@ token = "eval_stable_epathmap"
 [[citation]]
 owner = "(doc)"
 cited = "rhoapi_ext.rs"
-line = 967
+line = 232
 at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "proto field 8"
