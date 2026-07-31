@@ -1108,16 +1108,27 @@ impl prost::Message for EPathMap {
     /// `cached_bytes_still_valid` and `fields_match_canonical_prost` are deleted
     /// with it.
     fn encode_raw(&self, buf: &mut impl BufMut) {
-        if let Some(interned) = self.intern.get() {
-            // THE digest-pipeline kill: one memcpy of the canonical bytes
-            // instead of the O(map) field walk. Same bytes by construction
-            // (canonical_prost IS this value's canonical encoding — field 8
-            // U(m) for a ground map, or the field walk otherwise), gated by
-            // the P0 prost goldens.
-            buf.put_slice(&interned.canonical_prost);
-            return;
-        }
-        // Empty cell (incl. during the intern rendezvous). A non-empty GROUND
+        // ⛔ The interned fast path is GONE. It read
+        // `self.intern.get()` and, on a hit, `put_slice(&interned.canonical_prost)`.
+        //
+        // ★ Removing it is byte-neutral BY CONSTRUCTION, and the deleted comment
+        // said so itself: *"canonical_prost IS this value's canonical encoding —
+        // field 8 U(m) for a ground map, or the field walk otherwise"*. Those bytes
+        // were produced by the two arms below this line, inside
+        // `OnceLock::get_or_init` with the cell empty. So the cache's content was
+        // never anything but the output of the code that now runs unconditionally.
+        //
+        // ⚠ What it cost to keep: obtaining the shared entry required a full
+        // streamed digest walk PLUS a second full `encode_raw` walk to verify the
+        // bucket — two walks to avoid one — behind a process-global mutex, in a
+        // 64-entry LRU whose eviction drops a deep `Par` through the recursive
+        // destructor inside that lock (pgmcp 4910).
+        //
+        // A non-empty GROUND
+        // map emits the VALUE arm: proto field 8 = U(m), read straight off the
+        // stored trie. Non-ground / empty maps take the field walk (`ps` at
+        // tag 1) — whose entries are now the canonical projection, which is the
+        // consensus-visible half of this change.
         // map emits the VALUE arm: proto field 8 = U(m), read straight off the
         // stored trie. Non-ground / empty maps take the field walk (`ps` at
         // tag 1) — whose entries are now the canonical projection, which is the
@@ -1250,11 +1261,17 @@ impl prost::Message for EPathMap {
     /// the same reason as [`Self::encode_raw`]'s — see the note there.
     #[inline]
     fn encoded_len(&self) -> usize {
-        if let Some(interned) = self.intern.get() {
-            // O(1): InternedEPathMap.encoded_len == canonical_prost.len()
-            // == the canonical encoded_len of this value.
-            return interned.encoded_len;
-        }
+        // ⛔ The interned O(1) arm is GONE, mirroring `encode_raw`. It returned
+        // `interned.encoded_len`, which was `canonical_prost.len()` — the length of
+        // bytes the two arms below produce. Same value by construction.
+        //
+        // ⚠ Honest cost, stated rather than buried: on a map whose cell HAD been
+        // filled, `Message::encoded_len` drops from O(1) to O(map). That matters on
+        // the substitution charge path, which walks `encoded_len` twice per
+        // substitution by design. It is bounded to maps that went through the fused
+        // chain's intern call — every other map already paid O(map) — and the price
+        // of keeping it was two full walks plus a global lock per rendezvous.
+        //
         // Empty cell: a non-empty GROUND map's length is the field-8 (U(m))
         // length; non-ground / empty maps use the field walk.
         if eval_stable_epathmap(self) && !self.ps.is_empty() {

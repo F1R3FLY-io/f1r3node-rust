@@ -124,12 +124,10 @@
 //! builds contain NO runtime-flippable fusion path (a runtime flag would be
 //! a node-divergence hazard under a latent parity bug).
 
-use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
-use models::rust::pathmap_crate_type_mapper::{interned_epathmap, InternedEPathMap};
 use models::rust::pathmap_integration::{
     composed_cursor_kind, cursor_entry_key, entry_key_at, par_to_path, segments_to_key, CursorKind,
 };
@@ -1051,7 +1049,7 @@ impl DebruijnInterpreter {
                             // Nil).
                             let read_zipper = RholangReadZipper::new(
                                 chain.source_map.entry_trie().trie(),
-                                (chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some()),
+                                chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some(),
                                 chain.source_map.entry_trie().union_locally_free().to_vec(),
                             );
                             match read_zipper.get_val() {
@@ -1083,7 +1081,7 @@ impl DebruijnInterpreter {
                             single_expr_par(ExprInstance::EPathmapBody(EPathMap::new(
                                 elements,
                                 chain.source_map.entry_trie().union_locally_free().to_vec(),
-                                (chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some()),
+                                chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some(),
                                 None,
                             )))
                         }
