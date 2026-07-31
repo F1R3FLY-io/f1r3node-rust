@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "5dade74c"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 52 — C1 of the EPathMap convergence. extend_entries' three per-entry metadata re-derivations (including eval_stable_par, a full walk of every entry) become O(1) combines from the source trie's maintained folds. LICENSED BY IDEMPOTENCE: all three combiners are monotone and idempotent (&&, ||, bitset union each absorb a repeated operand), so an entry present in both tries contributes the same value whether folded once or twice — exactness under overlap, which is the only case where per-entry and aggregate folding could differ. `len` is deliberately NOT combined (the union may overlap, so self.len + other.len over-counts) and stays per-insert. SHOWN RED: perturbing the any_connective_used combine failed the_metadata_folds_agree_with_a_fold_over_the_entries naming the 'built-by-extend-entries' case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, epathmap_canonical_fixtures 13/13, epathmap_identity_is_the_path_stream 4/4, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, models --lib 99/99, pathmap_integration_tests 60/60. [DERIVED]"
+
+[[exempt]]
 commit = "975e35fd"
 window = "FRONTIER"
 reason = "HYGIENE"
