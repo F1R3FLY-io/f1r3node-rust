@@ -67,7 +67,12 @@ env:
   # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
   # adds the test_load.py drain-snapshot convergence fix and registry pull
   # retries on top of the validator4 certs.
-  SYSTEM_INTEGRATION_REF: 9ebdde01e414f4c013cb83e828b625990504f082
+  # 2026-07-30 (later): bumped to the PR #70 merge, a descendant of the above.
+  # Wanted for test_load.py's resource-breach attribution: without it, a node
+  # killed by the RSS/floor guardian surfaces as a raw gRPC traceback rather
+  # than naming the ceiling that killed it, which is the whole point of
+  # tightening those limits below. Also carries their reaper's soak guards.
+  SYSTEM_INTEGRATION_REF: 0ef9416e36e878854b29f8c50b2bc8a6ec2aef02
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

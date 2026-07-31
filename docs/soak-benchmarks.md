@@ -331,20 +331,36 @@ oci ons subscription delete --subscription-id <subscription-ocid>
   never enables `errexit`: metric collection returns nonzero when a failed
   iteration leaves nothing to sample, and making that fatal killed every
   segment mid-loop before any state or rollup was written.
-- **The harness RSS watchdog is sized to the host.** Its default ceiling
-  (5000MB) is laptop-scale, while the 6-node shard legitimately peaks ~10GB
-  under `test_load` on the 32GB soak VM, so the soak passes
-  `--rss-ceiling-mb` computed as `MemTotal − 8GB` (~24.5GB there). Override
-  with `SOAK_RSS_CEILING_MB`; `0` disables the watchdog, which is not
-  recommended — it exists to kill the shard before swap-thrash freezes the VM,
-  a state that reports nothing and keeps billing. Sustained RSS growth is
-  policed week-over-week by the regression gate, not by this ceiling.
+- **The harness memory guards are sized to the host, and deliberately fire
+  before the kernel does.** The harness default ceiling (5000MB) is
+  laptop-scale, while the 6-node shard legitimately peaks ~10GB under
+  `test_load` on the 32GB soak VM, so the soak passes `--rss-ceiling-mb`
+  computed as `MemTotal − 12GB` (~20GB there) and `--host-free-floor-mb` as
+  `min(MemTotal/4, 6000)` (~6000 there; harness default 2000). The floor is
+  scaled rather than flat because a flat 6000 breaches on contact on a small
+  host, where the clamped 5000 ceiling still permits a 5GB shard.
+  The reserve is 12GB rather than the 8GB first tried
+  because 8GB permits a 24GB node working set, which puts the *kernel* OOM
+  killer ahead of the watchdog — the harness never breaches, the kernel picks a
+  victim by `oom_score`, and `Runner.Worker` is a plausible one. That produces a
+  runner that vanishes mid-step with no log and no failed step, which is
+  unattributable; a breach is not. Override with `SOAK_HOST_RESERVE_MB`,
+  `SOAK_RSS_CEILING_MB`, `SOAK_HOST_FREE_FLOOR_MB`; `0` disables a guard, which
+  is not recommended. The floor is enforced on subprocess iterations only —
+  docker iterations rely on the ceiling. Sustained RSS growth is policed
+  week-over-week by the regression gate, not by these limits.
 - **Soak runners are exempt from the CI reaper, with an expiry.**
   `ci-runner-reaper.yml` terminates `ci-eph-*` instances older than 2h, which
-  would kill any healthy soak mid-run. The launch job tags its instance with
-  `soak-deadline-epoch` (window end + 2h grace, alongside `purpose` and
-  `series`) and the reaper skips it until then. A leaked soak VM still dies,
+  would kill any healthy soak mid-run. The **soak job tags the instance it is
+  itself running on** — read from IMDS, written with instance-principal auth —
+  with `soak-deadline-epoch` (window end + 2h grace, alongside `purpose` and
+  `series`), and the reaper skips it until then. It is deliberately not the
+  launch job that tags: ephemeral runners register by label, so GitHub routes
+  the job to whichever matching runner claims it first, which is frequently an
+  idle runner from an earlier launch rather than the VM just created. Tagging at
+  launch therefore exempted the wrong machine (run 30590630059) and handed
+  reaping immunity to VMs that never received work. A leaked soak VM still dies,
   just later; an untagged or expired one is reaped on the normal rule. Tagging
-  fails closed — if it fails, the launch fails immediately rather than the
-  soak dying silently at hour two.
+  fails closed — if it fails, the soak fails immediately rather than dying
+  silently at hour two.
 - First run bootstraps: no baseline → verdict passes and seeds the history.

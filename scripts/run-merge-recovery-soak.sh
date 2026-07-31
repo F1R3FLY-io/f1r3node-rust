@@ -82,9 +82,23 @@ EARLY_EXIT_REASON=""
 # The harness default is 5000MB — sized for laptops, not the 32GB soak VM:
 # the 6-node shard legitimately peaks ~10GB under test_load, and the default
 # killed every iteration of run 30516534214 ~130s in. Size to the host
-# instead, leaving 8GB for OS/Docker/harness, so the watchdog stays on to
-# catch a real leak before swap-thrash freezes the VM without ever firing on
-# normal load. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+# instead, so the watchdog stays on to catch a real leak before swap-thrash
+# freezes the VM without ever firing on normal load.
+#
+# The reserve is 12GB, not the 8GB first tried. 8GB permits a 24GB node
+# working set on the 32GB VM, which puts the *kernel* OOM killer ahead of this
+# watchdog: at that point the harness has not breached, so the kernel picks a
+# victim by oom_score and Runner.Worker is a plausible one — a runner that
+# vanishes mid-step with no log and no failed step, which is exactly what
+# happened to run 30590630059. Reserving 12GB caps nodes at 20GB, still ~2x
+# the observed 10.8GB peak, and keeps the attributable failure ahead of the
+# unattributable one. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+HOST_RESERVE_MB="${SOAK_HOST_RESERVE_MB:-12288}"
+if ! [[ "$HOST_RESERVE_MB" =~ ^[0-9]+$ ]]; then
+  printf 'SOAK_HOST_RESERVE_MB must be a non-negative integer\n' >&2
+  exit 2
+fi
+MEM_TOTAL_MB="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null || echo 0)"
 RSS_CEILING_MB="${SOAK_RSS_CEILING_MB:-}"
 if [ -n "$RSS_CEILING_MB" ]; then
   if ! [[ "$RSS_CEILING_MB" =~ ^[0-9]+$ ]]; then
@@ -92,10 +106,37 @@ if [ -n "$RSS_CEILING_MB" ]; then
     exit 2
   fi
 else
-  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  RSS_CEILING_MB="$((mem_total_kb / 1024 - 8192))"
+  RSS_CEILING_MB="$((MEM_TOTAL_MB - HOST_RESERVE_MB))"
   if [ "$RSS_CEILING_MB" -lt 5000 ]; then
     RSS_CEILING_MB=5000
+  fi
+fi
+
+# Host-available-RAM floor passed to the harness (--host-free-floor-mb). The
+# harness default of 2000MB only fires once the machine is already at the
+# edge, by which point the kernel may have picked a victim first; 6000MB on the
+# 32GB soak VM makes the harness kill the nodes and report an attributable
+# breach while there is still room. This is a backstop to the RSS ceiling
+# above, catching pressure the ceiling is blind to (docker overhead, the runner
+# agent itself). Enforced on subprocess iterations only — docker iterations
+# rely on the ceiling.
+#
+# Scaled to MemTotal/4 and capped at 6000, because a flat 6000 is incoherent on
+# a small host: on an 8GB laptop it demands 6GB free while the ceiling still
+# permits a 5GB shard, so the floor would breach on contact. Quartering keeps
+# the same intent (fire well before the kernel does) at every size, and lands
+# on 2048 at 8GB — effectively the harness's own 2000 default.
+# SOAK_HOST_FREE_FLOOR_MB overrides; 0 disables the floor.
+HOST_FREE_FLOOR_MB="${SOAK_HOST_FREE_FLOOR_MB:-}"
+if [ -n "$HOST_FREE_FLOOR_MB" ]; then
+  if ! [[ "$HOST_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_HOST_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  HOST_FREE_FLOOR_MB="$((MEM_TOTAL_MB / 4))"
+  if [ "$HOST_FREE_FLOOR_MB" -gt 6000 ]; then
+    HOST_FREE_FLOOR_MB=6000
   fi
 fi
 
@@ -328,6 +369,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       --provider="$PROVIDER" \
       --monitor \
       --rss-ceiling-mb "$RSS_CEILING_MB" \
+      --host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
