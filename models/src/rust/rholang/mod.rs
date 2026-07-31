@@ -12,13 +12,13 @@ pub mod wire;
 pub mod bincode_encoder;
 
 // ---------------------------------------------------------------------------
-// ★ THE FOUR GENERATED MODULES — ONE build-script pass, four outputs
+// ★ THE FIVE GENERATED MODULES — ONE build-script pass, five outputs
 //
 // `models/build/wire_schema.rs` resolves every `rhoapi` message ONCE and emits
-// four files into `OUT_DIR`; `models/build.rs` writes each one. All four are
+// five files into `OUT_DIR`; `models/build.rs` writes each one. All five are
 // included here, including the one that is currently empty, so the pipeline a
-// later stage fills is exercised from the stage that built it: four files
-// written, four modules compiled, one walk of the descriptor.
+// later stage fills is exercised from the stage that built it: five files
+// written, five modules compiled, one walk of the descriptor.
 //
 // ⚠★ The two field tables are the SAME resolved fields under TWO SORT KEYS —
 // `identity` for serde/bincode, `sort_by_key(min_tag)` for protobuf — and the
@@ -81,4 +81,34 @@ pub mod term_ops {
 #[allow(clippy::all, unused_imports)]
 pub mod schema_meta_tables {
     include!(concat!(env!("OUT_DIR"), "/rhoapi_schema_meta.rs"));
+}
+
+/// The GENERATED **protobuf deserializer** — the read half of the protobuf
+/// wire, the counterpart of [`protobuf_encoder`].
+///
+/// ⚠ At stage S0 it carries exactly ONE item, `skip_unknown_field`, and
+/// **nothing calls it**. It is the iterative re-implementation of
+/// `prost::encoding::skip_field`, whose `StartGroup` arm self-recurses once per
+/// nesting level over a depth the SENDER chooses: proto3 has no groups, so no
+/// message this node writes can carry wire type 3, but skipping an *unknown*
+/// field is a walk over bytes a peer supplied and is bounded by nothing the
+/// schema says. See the generated file's own header for the exactness contract
+/// against prost and for why its two error values are minted by calling prost
+/// rather than written out.
+///
+/// ★ It is GENERATED rather than checked in because 57 `rhoapi` messages are
+/// regenerated from the descriptor on every build, and S1's per-message decode
+/// arms must be derived from that same walk or they drift from the derive in
+/// silence. Starting the deserializer as a renderer means S1 extends one; a
+/// checked-in file would have to become one.
+///
+/// ⚠★ Named for the WIRE, never for the crate: `prost` is one implementation of
+/// the protobuf codec and is swappable, so a `prost_*` module path would bake a
+/// swappable dependency into the namespace. The module path, the `OUT_DIR` file
+/// name and the renderer's name all say `protobuf`. Its *signature* necessarily
+/// names prost's `WireType`, `Buf` and `DecodeError` — that is inherent, since
+/// agreeing with prost's accept set byte-for-byte is the whole contract.
+#[allow(clippy::all, unused_imports)]
+pub mod protobuf_decoder {
+    include!(concat!(env!("OUT_DIR"), "/rhoapi_protobuf_decoder.rs"));
 }

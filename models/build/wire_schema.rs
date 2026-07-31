@@ -1,9 +1,9 @@
-//! # The wire-schema GENERATOR — ONE pass, FOUR outputs
+//! # The wire-schema GENERATOR — ONE pass, FIVE outputs
 //!
 //! A **build-script pass**, not a proc-macro. It reads the protobuf
 //! `FileDescriptorSet` that `prost_build` was asked to dump (`build.rs`
 //! `.file_descriptor_set_path(...)`), resolves every `rhoapi` message **once**,
-//! and emits four files into `OUT_DIR`:
+//! and emits five files into `OUT_DIR`:
 //!
 //! ```text
 //!   rhoapi_wire.rs         the BINCODE table  — serializer + deserializer
@@ -11,7 +11,20 @@
 //!   rhoapi_term_ops.rs     the TERM-OP slot   — empty; filled by a later stage
 //!   rhoapi_schema_meta.rs  the child relation, the SCC, and the DERIVE
 //!                          DISPOSITION REGISTRY
+//!   rhoapi_protobuf_decoder.rs
+//!                          the protobuf DESERIALIZER (§8). At stage S0 it
+//!                          carries ONE schema-independent function, the
+//!                          iterative unknown-field skipper, and nothing calls
+//!                          it yet; S1 appends the per-message decode arms.
 //! ```
+//!
+//! ⚠★ The fifth output is named for the **wire** it speaks and never for the
+//! crate that implements it. `prost` is one implementation of the protobuf
+//! codec and is swappable; a `prost_*` module name bakes that dependency into
+//! the namespace, so swapping the crate would turn the name into a false
+//! statement about the implementation. `protobuf_*` stays true about the
+//! FORMAT. (`OUTPUT_PROST` above predates this and is the *table* the encoder
+//! reads, not a public module path.)
 //!
 //! ## ⚠★ The field-order table is PER FORMAT. It is a SORT KEY, not a walk.
 //!
@@ -173,6 +186,16 @@ pub const OUTPUT_PROST: &str = "rhoapi_prost_wire.rs";
 pub const OUTPUT_TERM_OPS: &str = "rhoapi_term_ops.rs";
 /// See [`OUTPUT_BINCODE`].
 pub const OUTPUT_SCHEMA_META: &str = "rhoapi_schema_meta.rs";
+/// See [`OUTPUT_BINCODE`].
+///
+/// ⚠★ The name says which **wire** this module speaks, never which **crate**
+/// emits it. `prost` is one implementation of the protobuf codec and is a
+/// swappable dependency; a `prost_*` name would bake that dependency into the
+/// namespace, so that swapping the crate turns every module name into a false
+/// statement about the implementation. `protobuf_*` stays true about the
+/// FORMAT, which is the stable thing. This is the workspace's standing
+/// "API names don't leak implementation" rule, not a preference.
+pub const OUTPUT_PROTOBUF_DECODER: &str = "rhoapi_protobuf_decoder.rs";
 
 // ===========================================================================
 // §0  What one run produces
@@ -953,6 +976,11 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     );
     let (schema_meta, derive_row_count) =
         emit_schema_meta_source(&messages, &oneofs, &extern_set, &graph, &plan);
+    // ★ §8, the protobuf DESERIALIZER. Takes no descriptor argument at S0: the
+    // one function it emits is schema-independent. It is emitted from this pass
+    // all the same, so that S1 EXTENDS a renderer instead of converting a
+    // checked-in source file into one. See §8's header.
+    let protobuf_decoder = emit_protobuf_decoder_source();
 
     // ★ THE NON-VACUITY FLOOR, at the generator rather than only at the consumer.
     //
@@ -1014,6 +1042,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
             (OUTPUT_PROST, prost),
             (OUTPUT_TERM_OPS, term_ops),
             (OUTPUT_SCHEMA_META, schema_meta),
+            (OUTPUT_PROTOBUF_DECODER, protobuf_decoder),
         ],
     }
 }
@@ -5497,4 +5526,321 @@ fn emit_schema_meta_source(
     .expect("write");
 
     (src, rows)
+}
+
+// ===========================================================================
+// §8  ★★ THE PROTOBUF DESERIALIZER — stage S0: the unknown-field skipper
+// ===========================================================================
+//
+// ## Why this output is GENERATED and not a checked-in source file
+//
+// Fifty-seven `rhoapi` messages are regenerated from the descriptor on every
+// build. A hand-written decoder table drifts from the derive silently — the
+// derive gains a field, the hand table does not, and the divergence surfaces as
+// a mis-decode rather than as a compile error. Every other driver in this
+// campaign is therefore emitted from the ONE descriptor walk above, and the
+// deserializer joins them from its FIRST stage rather than being converted into
+// a renderer after two thousand hand-written lines exist.
+//
+// S0 emits exactly one function and it is SCHEMA-INDEPENDENT: it takes a wire
+// type and a buffer and consults no field table. It is emitted here all the
+// same, because the alternative is to check a file into
+// `models/src/rust/rholang/` and then move it out again at S1 — and because a
+// renderer that starts as a constant and grows arms is a strictly smaller
+// change than a source file that has to become a renderer.
+//
+// ⚠ It is DORMANT. Nothing calls `skip_unknown_field` yet; the per-message
+// `merge_field` arms that will are S1's deliverable, and prost's own
+// `Message::merge_field` continues to serve every decode in the meantime.
+
+/// Emit the protobuf deserializer's runtime support.
+///
+/// Takes no descriptor argument at S0 because the one function it emits is
+/// schema-independent. S1 gives it the same `(messages, resolved, oneofs,
+/// extern_set)` the other emitters take, and appends the per-message arms.
+fn emit_protobuf_decoder_source() -> String {
+    let src = String::from(
+        r##"// @generated by models/build/wire_schema.rs (§8). DO NOT EDIT.
+// Regenerate by touching models/build/wire_schema.rs — models/build.rs emits a
+// `cargo:rerun-if-changed` for it, so an edit here cannot leave a stale copy in
+// `OUT_DIR` while the build reports success.
+//
+// ===========================================================================
+// THE PROTOBUF DESERIALIZER, stage S0 — the UNKNOWN-FIELD SKIPPER
+// ===========================================================================
+//
+// ⚠ NOTHING CALLS THIS YET. It is the first piece of the generated protobuf
+// deserializer, landed on its own so that its exactness against prost can be
+// argued and MEASURED before any decode path depends on it.
+//
+// ## What it is
+//
+// An ITERATIVE re-implementation of `prost::encoding::skip_field`
+// (`prost-0.14.3/src/encoding.rs:166-199`). prost's version is self-recursive:
+// its `StartGroup` arm (`:187`) calls itself once per nesting level, and the
+// nesting level is chosen by whoever sent the bytes. This version keeps the
+// same walk and moves the frames onto an explicit `Vec<u32>` of open group
+// tags, so its stack consumption is O(1) in the input.
+//
+// ## Why groups matter when the schema has none
+//
+// proto3 has no group syntax, so no `rhoapi` message can ever legitimately
+// carry wire type 3. That is a statement about what this node WRITES, not
+// about what it READS. Skipping an *unknown* field is a walk over bytes that a
+// peer chose, and a peer is free to send `StartGroup` keys forever. The
+// unknown-field path is therefore a recursive descent whose depth is entirely
+// attacker-controlled and entirely independent of the known-field walk that
+// the schema bounds.
+//
+// ## The exactness contract
+//
+// `skip_unknown_field` accepts exactly what `prost::encoding::skip_field`
+// accepts and rejects exactly what it rejects, returning `DecodeError` values
+// that compare EQUAL to prost's, and leaving the buffer at the same position
+// in both the accepting and the rejecting case. It differs in exactly two
+// ways, both deliberate:
+//
+//   1. it does not recurse; and
+//   2. it consults no depth budget, so it has no `RecursionLimitReached`.
+//
+// (2) is a CONSEQUENCE of (1). prost's `ctx.limit_reached()?` at `:172` exists
+// to stop the recursion at `:187` before the machine stack runs out; with the
+// recursion gone the budget is guarding nothing, and this workspace's standing
+// ruling is that artificial limits are removed outright rather than retained
+// as decoration.
+//
+// ⚠ prost's own recursive `skip_field` STAYS in the tree, and stays
+// recursion-limited. It is safe precisely because that limit still exists. The
+// limit and the recursion come out together or not at all — never in opposite
+// orders.
+//
+// ## Termination, and why the bound is not an artificial limit
+//
+// `|depth_stack|` is bounded by `|input|`: a tag is pushed only when a
+// `StartGroup` key has been read, and a key costs at least one byte, so a
+// buffer of `n` bytes can open at most `n` groups. The loop makes progress on
+// every iteration because every arm either consumes at least one byte or pops
+// a tag that a previously consumed byte pushed. There is no constant ceiling
+// anywhere in this function, and adding one would re-introduce exactly the
+// artificial limit that removing the recursion exists to retire.
+//
+// ## Space
+//
+// `Vec::new()`, not `Vec::with_capacity(_)`. The workspace preallocates when
+// the size is known — and here it IS known, and it is ZERO: proto3 emits no
+// groups, so no message this node produces can make the vector allocate. The
+// allocation happens only for a peer that sent a group, which is the case this
+// function exists to survive rather than the case it is tuned for. The cost is
+// then 4 bytes per open group against at least 1 input byte per open group,
+// i.e. O(|input|) heap in place of O(|input|) machine stack — heap being the
+// one of the two that can fail without aborting the process.
+//
+// ## Why the two error values are MINTED by calling prost
+//
+// `prost::error::DecodeErrorKind` is `pub(crate)` (`prost-0.14.3/src/error.rs:105`)
+// and `DecodeError`'s only public constructors produce `Other { description }`.
+// So a `BufferUnderflow` written out here by hand would be a DIFFERENT VALUE
+// from prost's under `PartialEq` — the exactness contract above would be false
+// and no test could tell, because the two render to similar text.
+//
+// The two values are therefore obtained from prost itself, by calling
+// `skip_field` on a constant input chosen to reach the arm that produces each:
+//
+// | wanted | call | prost's path |
+// |---|---|---|
+// | `BufferUnderflow` | `skip_field(ThirtyTwoBit, MIN_TAG, &mut &[][..], _)` | `len = 4`, `4 > 0` at `:193` |
+// | `UnexpectedEndGroupTag` | `skip_field(EndGroup, MIN_TAG, &mut &[][..], _)` | the `EndGroup` arm at `:190` |
+//
+// Both are non-recursive, allocation-free apart from the error itself, and
+// reached in constant time; both are `#[cold]` and live only on the error path.
+// Making the value BY CONSTRUCTION rather than by transcription is what lets
+// the gate assert equality instead of asserting a rendering.
+//
+// ⚠ The remaining error values need no minting: `decode_key` and
+// `decode_varint` are prost's own public functions and their errors
+// (`InvalidVarint`, `InvalidKey`, `InvalidTag`, `InvalidWireType`) propagate
+// through `?` unaltered, exactly as they do inside `skip_field`.
+
+use prost::bytes::Buf;
+use prost::encoding::{decode_key, decode_varint, DecodeContext, WireType, MIN_TAG};
+use prost::DecodeError;
+
+/// Skip one unknown protobuf field, iteratively.
+///
+/// Reads and discards the field whose key was `(tag, wire_type)`, advancing
+/// `buf` past its payload. A `StartGroup` field is skipped through to its
+/// matching `EndGroup`, however deeply the groups nest, WITHOUT recursion and
+/// WITHOUT a depth budget.
+///
+/// # Errors
+///
+/// Exactly `prost::encoding::skip_field`'s errors, as EQUAL values, minus
+/// `RecursionLimitReached` which this function cannot produce:
+///
+/// * `UnexpectedEndGroupTag` — `wire_type` is `EndGroup`, or a group closed
+///   with a tag other than the one that opened it;
+/// * `BufferUnderflow` — the field's payload runs past the end of `buf`;
+/// * whatever `decode_varint` / `decode_key` return for a malformed key or
+///   length (`InvalidVarint`, `InvalidKey`, `InvalidTag`, `InvalidWireType`).
+///
+/// # Panics
+///
+/// Does not panic. `Buf::advance` is called only after the same
+/// `len > buf.remaining()` guard prost applies at `encoding.rs:193`.
+pub fn skip_unknown_field(
+    wire_type: WireType,
+    tag: u32,
+    buf: &mut impl Buf,
+) -> Result<(), DecodeError> {
+    // ★ THE EXPLICIT STACK — the tags of the groups currently open, outermost
+    // first. This IS prost's recursion, with the frames named: prost's
+    // `skip_field(_, tag, _, ctx.enter_recursion())` carries `tag` down the
+    // machine stack so the matching `EndGroup` can be checked against it, and
+    // `tag` is the only thing a frame carries. So one `u32` per frame is not a
+    // summary of the recursion — it is the whole of it.
+    //
+    // Empty for every message this node writes (proto3 emits no groups), so
+    // the legitimate path never allocates.
+    let mut depth_stack: Vec<u32> = Vec::new();
+
+    // The field currently being skipped. Rebound rather than shadowed by a
+    // recursive call.
+    let mut wire_type = wire_type;
+    let mut tag = tag;
+
+    loop {
+        // ── ONE field, exactly prost's `match` at `encoding.rs:173-191` ──
+        let len: u64 = match wire_type {
+            WireType::Varint => {
+                decode_varint(buf)?;
+                0
+            }
+            WireType::ThirtyTwoBit => 4,
+            WireType::SixtyFourBit => 8,
+            WireType::LengthDelimited => decode_varint(buf)?,
+            // prost `:190`. Reached only for the field this call was ENTERED
+            // on: an inner `EndGroup` is handled by the key loop below and
+            // never reaches here, exactly as prost's inner `match` at `:181`
+            // intercepts it before the recursive call at `:187`.
+            WireType::EndGroup => return Err(unexpected_end_group_tag()),
+            // prost `:178`. Where prost recurses, this pushes.
+            //
+            // `len` is 0 because prost's `StartGroup` arm `break 0`s: the group
+            // consumes its bytes through the key loop, not through `advance`.
+            WireType::StartGroup => {
+                depth_stack.push(tag);
+                0
+            }
+        };
+
+        // prost `:193-197`, applied to every arm including the two that reach
+        // it with `len == 0` — `advance(0)` is a no-op and the comparison is
+        // false, so keeping the shape identical costs nothing and leaves one
+        // fewer difference to argue about.
+        if len > buf.remaining() as u64 {
+            return Err(buffer_underflow());
+        }
+        buf.advance(len as usize);
+
+        // ── the enclosing group's key loop, prost `:178-189` ──
+        //
+        // Reached when the field above is finished. In prost this is the point
+        // where the recursive call RETURNS and the caller's `loop` reads the
+        // next key; here it is the same loop, entered from the same place.
+        loop {
+            // No open group ⇒ the field this call was entered on is complete.
+            // In prost this is the outermost `skip_field` returning `Ok(())`.
+            let Some(&open) = depth_stack.last() else {
+                return Ok(());
+            };
+
+            let (inner_tag, inner_wire_type) = decode_key(buf)?;
+            if inner_wire_type == WireType::EndGroup {
+                // prost `:181-186`: the tag must match the one that opened
+                // THIS group. Popping first would lose the tag the check needs.
+                if inner_tag != open {
+                    return Err(unexpected_end_group_tag());
+                }
+                depth_stack
+                    .pop()
+                    .expect("skip_unknown_field: `last()` returned Some, so `pop()` cannot be None");
+                // The group is closed. In prost, that `skip_field` invocation
+                // now returns `Ok(())` into ITS caller's key loop — which is
+                // this same loop, one open group shallower.
+                continue;
+            }
+
+            // prost `:187`, the recursive call, as a rebinding.
+            wire_type = inner_wire_type;
+            tag = inner_tag;
+            break;
+        }
+    }
+}
+
+/// prost's own `BufferUnderflow`, obtained from prost.
+///
+/// See this module's header for why the value is minted rather than written:
+/// `DecodeErrorKind` is `pub(crate)`, so a hand-built error would not compare
+/// equal to the one `skip_field` produces.
+///
+/// `ThirtyTwoBit` on an empty buffer takes prost's `len = 4` arm and fails the
+/// `len > buf.remaining()` check at `encoding.rs:193` with `remaining() == 0`.
+/// No recursion, no group, no allocation beyond the error itself.
+#[cold]
+#[inline(never)]
+fn buffer_underflow() -> DecodeError {
+    let mut empty: &[u8] = &[];
+    prost::encoding::skip_field(
+        WireType::ThirtyTwoBit,
+        MIN_TAG,
+        &mut empty,
+        DecodeContext::default(),
+    )
+    .expect_err(
+        "skip_unknown_field: `skip_field(ThirtyTwoBit, .., <empty>)` must fail with \
+         BufferUnderflow — a 4-byte fixed field cannot be read from a 0-byte buffer. \
+         If this succeeded, prost's `encoding.rs:193` guard has changed shape and the \
+         error values this module mints are no longer the ones it produces.",
+    )
+}
+
+/// prost's own `UnexpectedEndGroupTag`, obtained from prost. See
+/// [`buffer_underflow`] for the rationale.
+///
+/// prost's `EndGroup` arm at `encoding.rs:190` returns this unconditionally,
+/// before reading anything, so the empty buffer is never touched.
+#[cold]
+#[inline(never)]
+fn unexpected_end_group_tag() -> DecodeError {
+    let mut empty: &[u8] = &[];
+    prost::encoding::skip_field(
+        WireType::EndGroup,
+        MIN_TAG,
+        &mut empty,
+        DecodeContext::default(),
+    )
+    .expect_err(
+        "skip_unknown_field: `skip_field(EndGroup, ..)` must fail with UnexpectedEndGroupTag \
+         — prost's `encoding.rs:190` returns it unconditionally. If this succeeded, the \
+         error values this module mints are no longer the ones prost produces.",
+    )
+}
+"##,
+    );
+
+    // ★ THE NON-VACUITY FLOOR, at the emitter. `models/build.rs` refuses a
+    // zero-byte output; this refuses an output that is present but does not
+    // carry the item `models/src/rust/rholang/mod.rs` includes it FOR. The
+    // `include!` would fail to compile, but its message names `OUT_DIR` and a
+    // missing function rather than the emitter that stopped emitting it.
+    assert!(
+        src.contains("pub fn skip_unknown_field("),
+        "wire_schema §8: the protobuf-decoder emitter produced {} bytes without \
+         `pub fn skip_unknown_field(`. That is the only item this output exists to \
+         carry at S0.",
+        src.len()
+    );
+
+    src
 }

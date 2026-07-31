@@ -172,7 +172,7 @@ fn main() {
     fs::write(&file_path, &modified_content).expect("Unable to write file");
 
     // -----------------------------------------------------------------------
-    // Stage 2: the wire-schema pass — ONE walk, FOUR outputs
+    // Stage 2: the wire-schema pass — ONE walk, FIVE outputs
     // -----------------------------------------------------------------------
     //
     // This extends an existing two-stage pipeline: the textual pass above
@@ -229,14 +229,14 @@ fn main() {
     // to land here and to name the item.
     check_clone_join(&clone_stripped, &generated.clone_impls);
 
-    // ── the four outputs of the one pass ──
+    // ── the five outputs of the one pass ──
     assert_eq!(
         generated.sources.len(),
-        4,
-        "models/build.rs: the wire-schema pass must produce exactly four outputs \
-         (bincode table, prost table, term-op slot, schema meta); it produced {}. \
-         `models/src/rust/rholang/mod.rs` includes four modules and a missing file is a \
-         compile error whose message names `OUT_DIR`, not this pass.",
+        5,
+        "models/build.rs: the wire-schema pass must produce exactly five outputs \
+         (bincode table, prost table, term-op slot, schema meta, protobuf deserializer); \
+         it produced {}. `models/src/rust/rholang/mod.rs` includes five modules and a \
+         missing file is a compile error whose message names `OUT_DIR`, not this pass.",
         generated.sources.len()
     );
     for (name, source) in &generated.sources {

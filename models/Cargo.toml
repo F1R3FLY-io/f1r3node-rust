@@ -202,6 +202,19 @@ path = "tests/pathmap_integration_tests.rs"
 name = "pathmap_native_query_walk"
 path = "tests/pathmap_native_query_walk.rs"
 
+# ★ THE GROUP BOMB. Wire type 3 (`StartGroup`) is ATTACKER-CHOSEN: proto3 emits
+# no groups, so nothing this node writes can carry one, but skipping an UNKNOWN
+# field is a walk over bytes a peer sent and prost's `skip_field` self-recurses
+# once per nesting level. This target pins the generated `protobuf_decoder`'s
+# iterative skipper against prost's on every arm of that walk, and carries the
+# one observation that cannot be recovered afterwards: prost's recursive body,
+# with its artificial depth budget removed and nothing else changed, is KILLED
+# BY A SIGNAL on a 1 MiB nest. Child processes throughout — never
+# `#[should_panic]` (`models/src/rust/rholang/drive.rs:196-199`).
+[[test]]
+name = "protobuf_decoder_group_bomb"
+path = "tests/protobuf_decoder_group_bomb.rs"
+
 [[test]]
 name = "protobuf_encoder_differential"
 path = "tests/protobuf_encoder_differential.rs"
