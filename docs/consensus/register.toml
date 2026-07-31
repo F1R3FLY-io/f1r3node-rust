@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "7c26f2f2"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 49 — 17 sites replaced map.ps().len()/.is_empty() with entry_trie().len()/.is_empty(). MECHANICAL NEUTRALITY: len returns usize and is_empty returns bool; neither type reaches any emitter, so no byte can move by construction. The soundness condition is that EntryTrie::len agrees with the projection's length, and len is a MAINTAINED FOLD, so it is pinned as a TEST (entry_trie_len_agrees_with_the_materialised_projection) rather than argued: corpus spans empty and >1 entry, the two boundaries the consensus selectors branch on, with anti-vacuity assertions. SHOWN RED by perturbing self.len += 1 to += 0 at rhoapi_ext.rs:372, which failed naming the case. Byte set unmoved: epathmap_spliced_event_bytes 11/11, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13, epathmap_canonicalization 7/7. [DERIVED]"
+
+[[exempt]]
 commit = "9c164559"
 window = "FRONTIER"
 reason = "HYGIENE"
@@ -1282,6 +1288,30 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 # row set is EXACTLY the coordinate set the document yields, so the corpus cannot
 # shrink by deletion, and it asserts each unchecked class's size EXACTLY.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[citation]]
+owner = "(doc)"
+cited = "pathmap_crate_type_mapper.rs"
+line = 587
+at = "HEAD"
+path = "models/src/rust/pathmap_crate_type_mapper.rs"
+token = "eval_stable_epathmap"
+
+[[citation]]
+owner = "(doc)"
+cited = "rhoapi_ext.rs"
+line = 967
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "proto field 8"
+
+[[citation]]
+owner = "(doc)"
+cited = "sort_combine.rs"
+line = 1735
+at = "HEAD"
+path = "models/src/rust/rholang/sorter/sort_combine.rs"
+token = "eval_stable_epathmap"
 
 [[citation]]
 owner = "(doc)"
