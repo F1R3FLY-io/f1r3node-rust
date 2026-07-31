@@ -86,10 +86,15 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 55 consensus-visible changes** — 41 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
-Of these, **52 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **25** entries move bytes; on the protobuf lane **26**; **28** move a
-*verdict*; **36** move the *post-state hash*; **16** move *acceptance*; **3** move *metering*.
+**Result: 56 consensus-visible changes** — 42 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **54 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **26** entries move bytes; on the protobuf lane **27**; **29** move a
+*verdict*; **38** move the *post-state hash*; **16** move *acceptance*; **4** move *metering*.
+⚠ **Six of these ten were re-projected on 2026-07-31 and four of them had drifted again** — the
+paragraph read `52 landed / 25 bincode / 26 prost / 28 verdict / 36 post-state / 3 metering` against
+projections of `53 / 25 / 27 / 29 / 37 / 4` *before* **CBR-042** was added. The unpinned figures here
+have now gone stale twice; the remedy is still the one sized in
+[§7.8.6](#786-the-two-drift-questions-answered) — read them from §4.1 rather than anchor them.
 ⚠★★ **Only three of the ten figures in this paragraph are pinned by the gate, and the other seven had
 ALL drifted by 2026-07-30 — four of them wrongly.** The previous revision of this paragraph claimed *"Every
 figure in this paragraph is **PROJECTED from the §4.1 rows by a test**, never adjusted and no longer
@@ -616,6 +621,7 @@ is a *future* fork, not a present one).
 | [CBR-038](#cbr-038) | N | The escape arm's prost encode was a remotely triggerable **abort** — and a second, unnamed recursion beside it | `d7818967`, `b75aa6a0` | ○ | ○ | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
 | [CBR-039](#cbr-039) | N | ∅ gets one spelling at the constructor; the `union` half was **reverted**, witness landed | `e93f0222`, `0075ded5` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-041](#cbr-041) | N | An `EPathMap` serializes on the prost wire as the TRIE — its own byte array `U(m)` at field 8 — for every map; the tag-1 list arm is deleted | `1b576c90` | ○ | ● | ○ | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -631,16 +637,16 @@ is a *future* fork, not a present one).
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 55 entries**, recounted from the rows above rather than adjusted: **41 on Surface N, 14 on
-Surface L**; **53 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **40 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **33 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 56 entries**, recounted from the rows above rather than adjusted: **42 on Surface N, 14 on
+Surface L**; **54 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **41 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **34 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 55 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 56 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
@@ -5454,9 +5460,123 @@ Owner ruling, 2026-07-31, verbatim: *"I mean serialization of pathmap should use
 
 #### (i) Residuals
 
-1. **★ The bincode surface is NOT yet trie-native, and the reason is measured, not preference.** Emitting `U(m)` there makes `decode_trie_path` the reader. `pathmap_escape_depth_reachability.rs` measures its ceiling at depth 32 — and measures ordinary Rholang compiling a ¬`eval_stable` pathmap entry at depth **40**. The cold store is iterative and depth-unlimited in **both** directions today, so moving its reader onto keys would break round-trip for terms a deploy can write: a **regression**, not a narrowing. It unblocks with Phase 4 S2's unbounded prost reader, after which the bincode encoding measures **6.2×–13.6×** smaller on these same fixtures.
-2. **The trie cursor in `wire_encode` is parked, not deleted** (`9478ffca`), with its reason in place. It is byte-identical but costs 3 allocations / 1408 B against `wire_encode_space`'s required zero, and only pays for itself once this seam emits `U(m)` and needs no cursor at all.
+1. ⚠★ **DISCHARGED IN PART by [CBR-042](#cbr-042) (`3a32cf07`) — the residual is quoted rather than replaced, because half of it is still owed and the half that is not was closed by a shape this text did not consider.** As written it read:
+
+   > **★ The bincode surface is NOT yet trie-native, and the reason is measured, not preference.** Emitting `U(m)` there makes `decode_trie_path` the reader. `pathmap_escape_depth_reachability.rs` measures its ceiling at depth 32 — and measures ordinary Rholang compiling a ¬`eval_stable` pathmap entry at depth **40**. The cold store is iterative and depth-unlimited in **both** directions today, so moving its reader onto keys would break round-trip for terms a deploy can write: a **regression**, not a narrowing. It unblocks with Phase 4 S2's unbounded prost reader, after which the bincode encoding measures **6.2×–13.6×** smaller on these same fixtures.
+
+   ★ **The measurement is unchallenged; the inference from it was too strong.** *"Emitting `U(m)` there makes `decode_trie_path` the reader"* holds only for a `U(m)`-**ONLY** encoding. **FORM ②** carries `U(m)` **and** the values — so `U(m)` reaches the wire verbatim and contiguously while the entries still come from the value sequence, `decode_trie_path` is never called, and the ceiling is never inherited. Measured green at depths 4, 34, 64 and 4,096, the middle two being past the very ceiling this residual names. ⇒ **the bincode surface IS trie-native as of `3a32cf07`.** What remains owed is `U(m)` **alone**, i.e. the size win: the **6.2×–13.6×** figure is a property of the values-free encoding and is unaffected — FORM ② is *larger* (`8 + |U(m)|` per map), and that is the cost the ruling accepted.
+2. **The trie cursor in `wire_encode` is parked, not deleted** (`9478ffca`), with its reason in place. It is byte-identical but costs 3 allocations / 1408 B against `wire_encode_space`'s required zero. ★ **CBR-042 settles it: the cursor is not merely unpaid for, it is UNNECESSARY.** FORM ② emits `U(m)` as one `put_bytes` of a memoized slice plus the sequence the encoder was already emitting, so the seam is trie-native at **zero** warm allocations (`wire_encode_space` 9/9, unchanged). Only an *interleaved* key/value form would need a cursor — and interleaving is exactly what would stop `U(m)` appearing contiguously.
 3. **`eval_stable_epathmap` survives as a fold, not a discriminant.** It is no longer imported by `rhoapi_ext` — that is what makes reintroducing the fork by reflex impossible — but it remains `canonical_path`'s recursion cut and `entries_stable()`'s own consumer, and is still computed **exactly**, because it comes free from the encoder's verdict rather than from a second walk that could form a second opinion.
+4. **The network-version constant is deliberately not bumped in the code commit**, per the standing convention; coordinating it is a separate act.
+
+### CBR-042
+
+**…and on the bincode wire too. An `EPathMap` writes its trie's own byte array `U(m)` verbatim and contiguously, then its values — and the reader never decodes a trie key.**
+
+| | |
+|---|---|
+| Commit(s) | `3a32cf07` (the four surfaces, one commit), `1b576c90` (the prost half this completes), `87ba591c` (the depth measurement that shaped it) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `models/src/rust/rhoapi_ext.rs` (`EntryTrie`'s `Serialize`/`Deserialize`, `from_path_stream_and_values`, `insert_encoded`, the tag-8 arm), `models/src/rust/pathmap_crate_type_mapper.rs` (`PathFrames`, `PathFrameError`), `models/src/rust/rholang/wire.rs` (`EPATHMAP_PROGRAM`, `PathmapPs`, `pathmap_ps`), `models/src/rust/rholang/wire_encode.rs` (`open_pathmap`), `models/src/rust/rholang/par_codec.rs` (`Op::Pathmap{Start,Build}`, `Reader::byte_slice`), `models/tests/epathmap_bincode_is_the_path_stream.rs` (the new gate) |
+
+#### (a) The issue
+
+[CBR-041](#cbr-041) made the **prost** wire trie-native and said so in its own residual (i)-1: *"the bincode surface is NOT yet trie-native."* So one value had two serializations of two different kinds — a trie on one wire, a flattened list on the other — and the list one is what the **event-hash** preimages and the **cold store** are built from. The owner's ruling names no format: *"Every other surface needs to serialize the trie-map! Holy shit, a trie is its own data structure with its own properties!"*
+
+#### (b) The disagreement
+
+A node on the old code and a node on the new code produce different bincode for **any** non-empty `EPathMap`. That is not a representation detail: `stable_hash_provider::hash` is Blake2b256 over `bincode(channel)` / `bincode(datum)`, so a moved encoding is a moved **event hash**, and the cold-store leaf bytes enter the history trie, so it is a moved **post-state hash**. Reachable by an ordinary deploy — `{| … |}` is surface syntax.
+
+#### (c) The change — FORM ②, and why the values ride along
+
+```text
+EPathMap serde/bincode ::= u64-LE |U(m)| ‖ U(m)      ← the trie's byte array, VERBATIM and CONTIGUOUS
+                           u64-LE n     ‖ n × Par    ← the values
+                           locally_free ‖ connective_used ‖ remainder
+```
+
+`EntryTrie::serialize` writes those first two lines as a positional 2-tuple, which bincode frames with **nothing of its own**, so they are literally consecutive bytes. The serde struct is still **4 fields**; the pair lives inside slot 0.
+
+★ **The naive move — `U(m)` ALONE — is what CBR-041 (i)-1 correctly refused, and FORM ② is not that move.** A `U(m)`-only encoding must reconstruct entries by `decode_trie_path` per key, whose `0x0F` escape arm re-decodes a ¬`eval_stable` entry through prost's recursion-limited decoder. Carrying the values keeps the reader on the existing iterative, depth-**unlimited** machinery, so `decode_trie_path` is **never called on this surface** and no ceiling is inherited. The price is `8 + |U(m)|` bytes per map, and it is the price the ruling accepted.
+
+⚠ **SPLIT, never interleaved**, and that is measured rather than stylistic. An interleaved key/value form needs a live trie read-zipper in the encoder — built, and parked as `Op::EntryPaths` at **3 allocations / 1408 B** on a warm encode where `wire_encode_space::the_steady_state_allocation_table` requires **zero**, two of them inside `read_zipper()` where they cannot be pooled away. Split, the encoder emits one **memoized** slice (`EntryTrie::path_stream`, a `memcpy`) plus the projection it was already emitting: the space gate stays **9/9**. And an interleaved form would destroy the property that makes this *the trie's byte array* at all — `U(m)` would no longer appear contiguously.
+
+★ **ONE reader, not two.** `EntryTrie::from_path_stream_and_values` serves both the derived `Deserialize` and `par_codec`'s `Op::PathmapBuild`. Two hand-written bulk readers of one wire shape is the defect `c705776c` closed. The **framing** is single-sourced too: `PathFrames` is the read twin of `path_stream_of`, and proto field 8's tag-8 arm now reads through it as well, at identical dispositions — one definition of `U(m)`'s framing in the tree, two policies over it.
+
+⚠ **A disagreeing peer stream is RE-FILED, never rejected.** That is `adopt_trie`'s policy and tag-8's, and it is an *acceptance* decision rather than a taste: a node that refuses a byte string its peers accept has forked. Malformed framing, a key that is not `encode_trie_path` of its value, a frame count that disagrees with the value count — every one yields the trie built from the values.
+
+#### (d) The axes
+
+| axis | cell | why |
+|---|---|---|
+| Value | `NO` | `encode_trie_path` is injective and trie order is byte-lexicographic by construction, so `U(m)` and the entry set determine each other. The values beside it are the projection this surface already emitted. Nothing a program can observe moves. |
+| Verdict | `NO` | **Measured.** Matching is structural; `ScoredTerm::sort_vec` reads `Ord`, which reads the trie KEYS and did not move; store channel hashes select a *bucket*, not an *order*. `models/tests/golden/sorter_canonical_forms.txt` came back **UNMOVED** — its last change is still `1b576c90` — and that is the direct control, because that same golden moved on 2 of 120 entries when CBR-041 touched this relation. |
+| Bytes (bincode) | `MOVES` | **The axis.** All five bincode goldens and all five JSON goldens moved. |
+| Bytes (prost) | `NO` | **Measured by SHA-256, not by length**: all five prost goldens byte-for-byte identical, all five `encoded_len` pins unchanged. See (g). |
+| Post-state hash | `MOVES` | Event hashes are Blake2b256 over bincode preimages; cold-store leaf bytes enter the history trie. |
+| Acceptance | `NO` | `decode_trie_path` is never called, so no depth ceiling is introduced — see (e). And a disagreeing stream re-files rather than being refused. |
+| Metering | `NO` | Metering reads prost `Message::encoded_len` (`rholang/src/rust/interpreter/accounting/costs.rs:67`), which this does not touch. No cost in the tree is computed from a bincode length. |
+
+★ **The four surfaces, pinned to the landed tree.** `models/src/rust/rholang/wire.rs:366` is the `FieldKind::Bytes` that opens `EPATHMAP_PROGRAM`; `models/src/rust/rholang/wire_encode.rs:477` is the single `put_bytes` that emits `U(m)`; `models/src/rust/rholang/par_codec.rs:1642` is the zero-copy `byte_slice` that reads it back; `models/src/rust/rhoapi_ext.rs:870` is the one shared reader both decode paths call; and `models/src/rust/pathmap_crate_type_mapper.rs:525` is the one splitter all three readers of `U(m)`'s framing go through.
+
+#### (e) Acceptance is unchanged, and the ceiling it avoids is re-measured rather than cited
+
+The claim *"no depth ceiling"* is only worth as much as the cliff it is measured against, so `models/tests/epathmap_bincode_is_the_path_stream.rs` re-measures both halves in one file rather than citing the other one:
+
+```text
+decode_trie_path(escape-arm key), depth  4 ....... Ok      ← the codec works
+decode_trie_path(escape-arm key), depth 34 ....... Err     ← the cliff is real
+decode_trie_path(escape-arm key), depth 64 ....... Err
+cold_decode ∘ cold_encode, depths 4 / 34 / 64 .... byte-level FIXED POINT
+cold_decode ∘ cold_encode, depth 4,096 .......... byte-level FIXED POINT
+```
+
+★ **The fixture is the ESCAPE-ARM shape, and that was a measured correction.** A *ground* deep entry is keyed by the structural `0x0C` arm, which is iterative and capped by nothing, so a ground ladder would pass against a key-reading decoder too and would prove nothing. The ladder is carried on `ESet([EList[…GInt(1)…]])` — the same term family `rholang/tests/pathmap_escape_depth_reachability.rs` measures the ceiling on.
+
+⇒ **no term that round-tripped before stops round-tripping.** And the re-filing disposition cannot narrow anything either, because the two branches are provably the **same trie**: on the agreeing branch every frame *equals* `encode_trie_path(value)`, which is the key `EntryTrie::from` would have used.
+
+#### (f) Could live chain state have been produced under the old behaviour?
+
+Reachable by any finalised deploy containing a pathmap. Settled under the owner's 2026-07-30 pre-production ruling, as [CBR-040](#cbr-040) (f) and [CBR-041](#cbr-041) (f) settle their own. `unverified_budget` is unchanged.
+
+#### (g) Evidence
+
+**MEASURED.** Exactly **10 of 15** goldens moved — every bincode golden and every JSON golden:
+
+| fixture | bincode | JSON | prost |
+|---|---|---|---|
+| `e6a_index` | 3,689 → 4,029 B (**+340**) | 36,894 → 42,146 B | 335 → **335** |
+| `nested` | 625 → 687 B (**+62**) | 5,242 → 6,713 B | 30 → **30** |
+| `ezipper` | 837 → 875 B (**+38**) | 5,110 → 5,819 B | 40 → **40** |
+| `locally_free` | 317 → 356 B (**+39**) | 1,697 → 2,155 B | 36 → **36** |
+| `remainder_connective` | 229 → 248 B (**+19**) | 1,247 → 1,465 B | 19 → **19** |
+
+★ **The five unmoved prost goldens are the anti-vacuity control, and they are compared by SHA-256 rather than by length** — a length-only comparison would accept a same-size permutation, which is exactly the class of drift a byte register exists to catch. A change that had moved them too would mean the prost emitter had drifted rather than the bincode surface having been converted, and the two claims are indistinguishable without the control.
+
+**A second control, on the event-hash legs.** `PRODUCE_INDEX_RS1_HASH_HEX` (`9991c1b0…` → `b94d5aaa…`) and `PRODUCE_INDEX_RS2_HASH_HEX` (`b86bf7a0…` → `c5458866…`) moved; `INDEX_CHANNEL_HASH_HEX` and `CONSUME_DISCOVERY_HASH_HEX` did **not**. The channel is a `GString`, not a map — so the movement is confined to the leg that actually carries an `EPathMap`, which is what distinguishes a targeted change from a global one.
+
+**A third, arithmetic.** The three cold-store leaf pins moved by exactly **+46 B** each (`PAR_DATUM` 4,153 → 4,199; `PAR_DATUMS` 4,285 → 4,331; `PAR_CONTS` 4,529 → 4,575). The fixture holds two maps — a bare `EPathmapBody` and one inside an `EZipper` — whose framed key streams are `8 + 12` and `8 + 18` bytes. $`(8+12) + (8+18) = 46`$. The delta is derived, not observed.
+
+**Test totals.** `models` **469 passed / 0 failed** (baseline **459**, plus the 10 assertions of the new file); `wire_encode_space` **9/9** with the warm allocation count still **0**; `wire_encode_differential` 13/13 and `par_codec_differential` 13/13, whose oracles are the derived `Serialize` and the derived `Deserialize` respectively — which is why all four surfaces had to land in one commit; `rspace_plus_plus` 336/336; `rholang` `epathmap_replay_equivalence_spec` 1/1 and `trie_entry_invariant_spec` 8/8.
+
+#### (h) Authority
+
+The same standing owner ruling [CBR-041](#cbr-041) (h) quotes, whose scope is *"regardless the format"* and *"Every other surface"* — the prost half discharged it in part; this discharges the rest of its *shape* obligation.
+
+#### (i) Residuals
+
+1. ⚠⚠ **An entry's `locally_free` now reaches the BINCODE wire — through the trie KEY, never through the value. Stated as plainly as the gain, because it is the one consequence FORM ② has that is not about pathmap ordering.** The serialize-only normalization (`serialize_as_empty_bytes`) blanks every `locally_free` *field*; but an entry is **keyed** by `encode_trie_path`, whose escape arm files a ¬`eval_stable` entry as its canonical **prost** bytes, and prost retains `locally_free`. `b73af1d2` (C8) named exactly this hazard for `==`/`Hash`/`Ord`; CBR-041 put those keys on the prost wire; this puts them on bincode.
+
+   ★ **The direction is a CONVERGENCE.** Before FORM ②, bincode was the last surface *coarser* than the value: two maps that are `!=` — different key sets, different `U(m)`, different prost bytes — produced **identical** bincode and therefore identical event hashes. The event hash was not injective on the value. It now is.
+
+   ⚠ **The cost, measured and pinned rather than argued away:** the entries this surface *writes* are lf-blanked, so a decoded map re-keys them and `cold_encode` is a byte-level fixed point only from the **second** application on such a map. `epathmap_bincode_is_the_path_stream::the_encoding_is_a_fixed_point_after_one_normalisation_round` pins both halves — that it settles after exactly one round (a stream that kept moving would be a non-terminating canonicalisation, a far worse defect) and, as the **control**, that a ground map settles immediately. Every fixture in the byte-golden suites is of the second kind.
+
+2. **`U(m)` ALONE — the size win — is still owed, and the blocker is unchanged.** FORM ② is *larger* than the list form by `8 + |U(m)|` per map. Dropping the values needs the reader to reconstruct entries from keys, i.e. `decode_trie_path`, i.e. Phase 4 S2's unbounded prost reader. See [CBR-041](#cbr-041) (i)-1, whose measurement stands and whose inference is corrected there.
+
+3. **`models/src/rust/rholang/prost_decode.rs` does not exist.** The unbounded prost reader that residual 2 waits on is unbuilt, not merely unfinished; the dependency edge is real and is recorded in `docs/design/stack-safety/stack-safety-report-2026-07-29.md` §5.3.6.
+
 4. **The network-version constant is deliberately not bumped in the code commit**, per the standing convention; coordinating it is a separate act.
 
 ### CBR-039
@@ -7191,26 +7311,34 @@ unforgeable crypto **channels** rather than method-table entries. **MEASURED** (
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 55 |
+| Axis | Entries that move it | Share of the 56 |
 |---|---|---|
-| 1 · computed value | **22** | 40 % |
-| 2 · verdict | **29** | 53 % |
-| 3 · bytes — Lane B (bincode) | **25** | 45 % |
-| 3 · bytes — Lane P (prost) | **27** | 49 % |
-| 4 · post-state hash | **37** | 67 % |
+| 1 · computed value | **22** | 39 % |
+| 2 · verdict | **29** | 52 % |
+| 3 · bytes — Lane B (bincode) | **26** | 46 % |
+| 3 · bytes — Lane P (prost) | **27** | 48 % |
+| 4 · post-state hash | **38** | 68 % |
 | 5 · accepted programs | **16** | 29 % |
 | 6 · metering | **4** | 7 % |
 
-⚠ **Recounted 2026-07-30 from the 54 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted.**
-The previous revision of this table read *"Share of the 40"* with Lane B at 19 and the post-state hash at
-28. Two of those were wrong *before* the three new entries landed: they were computed at 40 entries and
-never re-projected when **CBR-029** was added, so Lane B was under by one and the post-state hash by one.
-★ The table is a projection of the `B`, `P`, `H`, `V`, `T`, `A`, `M` columns and of nothing else; the
-`●` counts per column, plus the `○` and `·` counts, sum to 54 in every column, which is the check that no
-row was skipped.
+⚠ **Recounted 2026-07-31 from the 56 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
+— [CBR-042](#cbr-042) moved Lane B `25` $`\rightarrow`$ `26` and the post-state hash `37` $`\rightarrow`$
+`38`, and every other cell was re-derived rather than left alone. An earlier revision read *"Share of the
+40"* with Lane B at 19 and the post-state hash at 28. Two of those were wrong *before* the three new
+entries landed: they were computed at 40 entries and never re-projected when **CBR-029** was added, so
+Lane B was under by one and the post-state hash by one. ★ The table is a projection of the `V`, `T`, `B`,
+`P`, `H`, `A`, `M` columns and of nothing else; the `●` counts per column, plus the `○` and `·` counts,
+sum to 56 in every column, which is the check that no row was skipped.
 
-**Reading.** The post-state hash is the most-touched axis at **71 %**, which is expected: it is downstream
+★ **CBR-042 is the cleanest illustration in the register of why Lane B and Lane P are separate axes.**
+It moves **every** bincode golden and **no** prost byte at all — the exact mirror image of `7dcff96f`,
+which [§8](#8-conclusions) conclusion 2 already cites for moving four bytes on Lane B and zero on Lane P.
+Two entries, opposite lanes, same independence.
+
+**Reading.** The post-state hash is the most-touched axis at **68 %**, which is expected: it is downstream
 of both value and verdict, so a register of *serialisation and genesis* changes should look like this.
+⚠ **This figure read `71 %` until 2026-07-31 while the table beside it read `67 %`** — a third drift of the
+same kind, in the sentence that *interprets* the table rather than in the table.
 ⚠ **The previous revision of this paragraph read *"its share **rose** (70 % $`\rightarrow`$ 73 %) because
 all three new entries move it"*, and both halves went stale within a day.** The share is a *ratio*, so it
 falls whenever an entry lands that does **not** move the axis — which [CBR-033](#cbr-033) and
@@ -7259,19 +7387,20 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-30 from the 54 rows of [§4.1](#41-summary--the-register-at-a-glance).** The previous
-revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected.
+⚠ **Recounted 2026-07-31 from the 56 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
+revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected;
+the 2026-07-30 recount reached `33` / `55`, and [CBR-042](#cbr-042) makes it `34` / `56`.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **33** | The bulk. A wrong answer becomes right; the program ran before and runs now. The three newest entries — **CBR-030**, **CBR-L12**, **CBR-L13** — are all of this kind. |
+| CORRECTIVE | **34** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-042](#cbr-042), is of this kind: it completes on bincode the mandate [CBR-041](#cbr-041) completed on prost. |
 | PERMISSIVE | **11** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **55** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **56** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -8776,8 +8905,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **55** consensus-visible changes, derived from the campaign record: **41** on the
-   F1r3node node, **14** on MeTTaIL's Rholang. **53 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **56** consensus-visible changes, derived from the campaign record: **42** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **54 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

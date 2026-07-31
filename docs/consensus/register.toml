@@ -986,6 +986,59 @@ axis_acceptance = "NO"
 axis_metering = "MOVES"
 
 [[entry]]
+id = "CBR-042"
+surface = "N"
+commits = ["3a32cf07"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+# The entry SET is unchanged and so is every entry in it. U(m) and the entry set
+# determine each other (encode_trie_path is injective on its domain; a trie indexes
+# children by byte, so its order is byte-lexicographic by construction), and the value
+# sequence beside it is the projection this surface was already emitting. Same reading
+# CBR-041 uses for the prost half of the same mandate.
+axis_value = "NO"
+# MEASURED, not argued. Bincode reaches a verdict only through the RSpace store's
+# channel HASHES, which select a bucket rather than an order; spatial matching is
+# structural; ScoredTerm::sort_vec reads Ord, which reads the trie KEYS and did not
+# move. models/tests/golden/sorter_canonical_forms.txt came back UNMOVED — its last
+# change is still 1b576c90 — and that is the direct control, because that same golden
+# moved on 2 of 120 entries when CBR-041 touched this relation.
+axis_verdict = "NO"
+# ★ THE AXIS. An EPathMap serializes on the serde/bincode wire as FORM ②:
+# u64-LE |U(m)| ‖ U(m) ‖ u64-LE n ‖ n × Par — the trie's own byte array VERBATIM and
+# CONTIGUOUS, ahead of its values. All five bincode goldens moved (+340/+62/+38/+39/+19 B)
+# and all five JSON goldens moved; the three cold-store leaf pins moved +46 B each.
+axis_bytes_bincode = "MOVES"
+# MEASURED BY SHA-256, not by length: all five prost goldens came back BYTE-FOR-BYTE
+# UNMOVED and all five prost encoded_len pins are unchanged (335/30/40/36/19). That
+# unmoved set is the anti-vacuity control — this touches the serde surface only. The
+# tag-8 arm was re-pointed at the shared PathFrames splitter at identical dispositions,
+# which is a refactor of where the framing is stated, not a byte change.
+axis_bytes_prost = "NO"
+# Event hashes are Blake2b256 over bincode preimages and the cold-store leaf bytes enter
+# the history trie, so a moved encoding is a moved post-state hash. PRODUCE_INDEX_RS1/RS2
+# moved; INDEX_CHANNEL_HASH and CONSUME_DISCOVERY_HASH did NOT — the channel is a GString,
+# not a map, which confines the movement to the leg that actually carries an EPathMap.
+axis_post_state_hash = "MOVES"
+# ★ NO CEILING IS INTRODUCED, and that is the whole design. A U(m)-ONLY encoding would
+# make decode_trie_path the reader, whose escape arm re-decodes a ¬eval_stable entry
+# through prost's recursion-limited decoder; rholang/tests/pathmap_escape_depth_reachability.rs
+# measures that ceiling at 32 while ordinary Rholang compiles such an entry at 40. FORM ②
+# never calls decode_trie_path: frames are split by pure byte slicing and the entries come
+# from the value sequence through the existing depth-UNLIMITED machinery. Measured green at
+# depths 4/34/64/4096 (models/tests/epathmap_bincode_is_the_path_stream.rs), with the
+# refusal at 34 and 64 re-measured in the same file so the ladder is known to span a real
+# cliff. A stream whose keys disagree with its values is RE-FILED, never rejected —
+# adopt_trie's policy and tag-8's — and the two dispositions are provably the same trie,
+# so no term that round-tripped before stops.
+axis_acceptance = "NO"
+# Metering reads prost Message::encoded_len (rholang accounting/costs.rs:67,98,99,298),
+# which this commit does not touch: all five prost encoded_len pins are unchanged. No
+# cost in the tree is computed from a bincode length.
+axis_metering = "NO"
+
+[[entry]]
 id = "CBR-L14"
 surface = "L"
 commits = ["713e0364", "5a9efa00", "93155150", "3aea562f"]
@@ -1441,6 +1494,64 @@ line = 255
 at = "HEAD"
 path = "rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/sig.rs"
 token = "encode_to_vec"
+
+# ── CBR-042 (FORM ②). Written LAST, from the LANDED tree at 3a32cf07, because a
+#    coordinate authored before the code settles is a coordinate that drifts.
+#    The five together are the entry's claim that the change is where it says it is.
+
+# The metering cell's evidence: the charge reads prost `encoded_len`, not a serde length.
+[[citation]]
+owner = "CBR-042"
+cited = "rholang/src/rust/interpreter/accounting/costs.rs"
+line = 67
+at = "HEAD"
+path = "rholang/src/rust/interpreter/accounting/costs.rs"
+token = "encoded_len"
+
+# Surface 2 — the wire program's first field is now the trie's byte array.
+[[citation]]
+owner = "CBR-042"
+cited = "models/src/rust/rholang/wire.rs"
+line = 366
+at = "HEAD"
+path = "models/src/rust/rholang/wire.rs"
+token = "FieldKind::Bytes"
+
+# Surface 3 — the WHOLE of the encoder-side change: one put_bytes of a memoized slice.
+[[citation]]
+owner = "CBR-042"
+cited = "models/src/rust/rholang/wire_encode.rs"
+line = 477
+at = "HEAD"
+path = "models/src/rust/rholang/wire_encode.rs"
+token = "put_bytes"
+
+# Surface 4 — U(m) is BORROWED out of the input buffer, never copied.
+[[citation]]
+owner = "CBR-042"
+cited = "models/src/rust/rholang/par_codec.rs"
+line = 1642
+at = "HEAD"
+path = "models/src/rust/rholang/par_codec.rs"
+token = "byte_slice"
+
+# ★ THE one reader both decode paths call — the anti-"two bulk readers" claim.
+[[citation]]
+owner = "CBR-042"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 870
+at = "HEAD"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "from_path_stream_and_values"
+
+# ★ THE one splitter all three readers of U(m)'s framing go through.
+[[citation]]
+owner = "CBR-042"
+cited = "models/src/rust/pathmap_crate_type_mapper.rs"
+line = 525
+at = "HEAD"
+path = "models/src/rust/pathmap_crate_type_mapper.rs"
+token = "PathFrames"
 
 [[citation]]
 owner = "CBR-040"
