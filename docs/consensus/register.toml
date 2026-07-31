@@ -920,6 +920,25 @@ foreign_repo = "mettail-rust"
 source_gate = "NOT_NAMED"
 
 [[entry]]
+id = "CBR-040"
+surface = "N"
+commits = ["6192b4b9"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+# The multiset a collection denotes is unchanged; only the SEQUENCE. Same reading
+# CBR-011 / CBR-012 / CBR-L10 / CBR-L12 use for order-only changes.
+axis_value = "NO"
+# spatial_matcher.rs:683-684,742-743 read sorted_pars / sorted_list, so a match
+# against a set or map pattern can select a different branch on a tie-carrying term.
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+[[entry]]
 id = "CBR-L14"
 surface = "L"
 commits = ["713e0364", "5a9efa00", "93155150", "3aea562f"]
@@ -1251,6 +1270,46 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 # row set is EXACTLY the coordinate set the document yields, so the corpus cannot
 # shrink by deletion, and it asserts each unchecked class's size EXACTLY.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[citation]]
+owner = "CBR-040"
+cited = "cost_accounting/sig.rs"
+line = 255
+at = "HEAD"
+path = "rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/sig.rs"
+token = "encode_to_vec"
+
+[[citation]]
+owner = "CBR-040"
+cited = "sort_combine.rs"
+line = 447
+at = "HEAD"
+path = "models/src/rust/rholang/sorter/sort_combine.rs"
+token = "sort_vec"
+
+[[citation]]
+owner = "CBR-040"
+cited = "sort_combine.rs"
+line = 1442
+at = "HEAD"
+path = "models/src/rust/rholang/sorter/sort_combine.rs"
+token = "sort_key_value_pair"
+
+[[citation]]
+owner = "CBR-040"
+cited = "sorted_par_hash_set.rs"
+line = 22
+at = "HEAD"
+path = "models/src/rust/sorted_par_hash_set.rs"
+token = "HashSet<Par>"
+
+[[citation]]
+owner = "CBR-040"
+cited = "sorter_canonical_golden.rs"
+line = 90
+at = "HEAD"
+path = "models/tests/sorter_canonical_golden.rs"
+token = "distinct-scoring"
 
 [[citation]]
 owner = "(doc)"

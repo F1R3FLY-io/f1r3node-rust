@@ -428,6 +428,28 @@ impl EmittedBytes for (crate::rhoapi::Par, crate::rhoapi::Par) {
     }
 }
 
+/// ★ The twelfth `sort_vec` site — `rholang`'s `pre_sort_binds`, which sorts
+/// `(ReceiveBind, FreeMap<T>)`. **The compiler found it**, not a search: that file failed to
+/// build until this question was answered, which is the whole point of the bound.
+///
+/// ⚠ It lives here rather than in `rholang` because the orphan rule forbids implementing a
+/// foreign trait for a tuple ("tuples are always foreign"). A *local* trait may be implemented
+/// for any type, so `models` is the only crate that can answer for this shape.
+///
+/// ⚠ **The second element is deliberately ignored, and is generic to say so.** Consensus
+/// observes the `ReceiveBind` that gets emitted; the `FreeMap` is normalizer bookkeeping that
+/// reaches no byte. Ordering siblings on something a validator cannot see is precisely the
+/// defect class `SS-Y4` repairs, so it must not enter the key.
+///
+/// ⇒ **Stated residual:** two entries with byte-identical `ReceiveBind`s stay tied and keep
+/// source order. That is sound by the same argument that makes the key total without requiring
+/// injectivity — if the emitted bytes are identical, swapping them is invisible.
+impl<X> EmittedBytes for (crate::rhoapi::ReceiveBind, X) {
+    fn emitted_bytes(&self) -> Vec<u8> {
+        prost::Message::encode_to_vec(&self.0)
+    }
+}
+
 /// ⚠ Used only by `ScoredTerm<String>` in the sorter's own tests. Real terms never reach it.
 impl EmittedBytes for String {
     fn emitted_bytes(&self) -> Vec<u8> {

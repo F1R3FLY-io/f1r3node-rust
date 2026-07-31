@@ -5291,6 +5291,97 @@ is why the count is stated with its discovery method attached.
 
 ---
 
+### CBR-040
+
+**Sibling order was not a total function of the term; it is now — keyed on the bytes the element emits.**
+
+| | |
+|---|---|
+| Commit(s) | `6bdd6ad7` (the witness, pinned), `6192b4b9` (the repair) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `models/src/rust/rholang/sorter/score_tree.rs` (the `EmittedBytes` trait; the bound and tie-break in `sort_vec`), `models/tests/scored_term_sort_test.rs` (the witness), `models/examples/score_tie_witness.rs` (the probe) |
+
+#### (a) The issue
+
+Siblings are ordered by score, and **the score is not injective on canonical terms**. `combine_emap` chains only `sorted_key.score` (`sort_combine.rs:1442-1450`), so `{3 → 30}` and `{3 → 90}` are distinct canonical terms with byte-identical score trees. `EZipper`'s cursor and `ReceiveBind.free_count` are two further lossy paths.
+
+`ScoredTerm::sort_vec` was a **stable** sort, so tied siblings inherited whatever filled the input vector. Two things fill it, and both were defects:
+
+| site | input order | consequence |
+|---|---|---|
+| `SortedParHashSet::create_from_vec` (`sorted_par_hash_set.rs:22-24`) | `HashSet<Par>` iteration — `RandomState`, seeded **per process** | canonical form was a coin flip |
+| `combine_par` (`sort_combine.rs:447-455`) | the message's own **field order** | ⛔ deterministic, and two spellings of one process signed differently |
+
+★ **The old code knew about the ties.** `sort_vec`'s docstring chose `sort_by` over `sort_unstable_by` precisely because *"the comparator returns `Equal` for distinct terms with equal scores"*. But stability only preserves **input** order — and input order was the untrustworthy thing. The mitigation converted *"an unstable sort might reorder ties"* into *"ties inherit whatever fed them"*: a different source of nondeterminism, not determinism.
+
+#### (b) The disagreement
+
+**Fault class: safety fork.** Two forms, and they differ in kind.
+
+1. **Node vs. node.** Two honest validators running identical code on an identical term produced different canonical bytes, hence different signatures. Measured: **20 / 20** split over 40 independent processes on `{ {3→30}, {3→90} }`.
+2. ⛔ **A node against itself, and against the language.** `|` is commutative, so `{3:30} | {3:90}` and `{3:90} | {3:30}` denote **one process** — yet they reached different canonical bytes **deterministically**, identically on every run. `permutation_collapse_survives_nesting` already asserted the property this violated.
+
+⇒ Form 1 moved bytes that were **undefined** (tie-carrying terms had no agreed canonical form). Form 2 moved bytes that were **defined**, and wrong.
+
+#### (c) The change
+
+`sort_vec` now orders by `(score, the bytes the element emits)`.
+
+★ **The key is derived, not chosen.** Consensus observes exactly one thing about a sibling: the bytes it contributes to the enclosing encoded term. Ordering by those is the unique key for which *"swapping two siblings is invisible"* and *"the two are equal under the key"* are the **same statement**. That yields totality **without** requiring the encoding to be injective — if two distinct terms encode identically, swapping them is byte-invisible, so their residual order cannot be observed.
+
+⚠ **This is not the proposal rejected earlier in this register.** Sorting on `(score, sibling_index)` was rejected — correctly — because `sibling_index` *is* the hash iteration index and is therefore itself nondeterministic. This key is a pure function of the element's own value, computed after the element is fully sorted, with no reference to position, container, seed or iteration order.
+
+The bound became `T: EmittedBytes`, so **a sortable type that has not answered this question does not compile**. There is no list to keep current, and the forcing function fired twice during implementation: a `ScoredTerm<usize>` in the sorter's own permutation oracle, and `rholang`'s `pre_sort_binds` over `(ReceiveBind, FreeMap<T>)` — the twelfth site, found by the compiler rather than by a search.
+
+★ **All eleven original `sort_vec` call sites were left untouched.** That is the evidence the repair sits at the right level, and it makes a sibling-blind repair structurally impossible.
+
+#### (d) The axes
+
+| axis | cell | why |
+|---|---|---|
+| computed value | **NO** | the multiset a collection denotes is unchanged; only the sequence — the reading `CBR-011` / `CBR-012` / `CBR-L10` / `CBR-L12` use for order-only changes |
+| verdict | **MOVES** | `spatial_matcher.rs:683-684, 742-743` read `sorted_pars` / `sorted_list`, so a match against a set or map pattern can select a different branch on a tie-carrying term |
+| bytes — bincode | **MOVES** | tie-carrying terms only |
+| bytes — prost | **MOVES** | tie-carrying terms only |
+| post-state hash | **MOVES** | follows the bytes |
+| accepted programs | **NO** | no program is newly accepted or rejected; only its canonical form changes |
+| metering | **NO** | the tie-break is consulted only on ties, and charges nothing |
+
+#### (e) Blast radius
+
+The signed bytes (`cost_accounting/sig.rs:255`), the normalized deploy term, spatial matching, set/map reduction (`union`, `diff`, `add`, `delete`, `toList`), substitution rebuild, the replay-compared printer, RSpace channel hashes and event-hash preimages. Reachable by an unauthenticated peer with ordinary Rholang: `@"c"!({3:30} | {3:90})`.
+
+#### (f) Could live chain state have been produced under the old behaviour?
+
+**No — settled by owner ruling, not by inference.** The owner ruled the network **pre-production** on 2026-07-30, so there is no live chain state to preserve and the repair lands unconditionally with no activation height. ⇒ This entry needs no `UNVERIFIED` cell and `unverified_budget` (`register.toml`) **stays at 1**.
+
+⚠ Had that ruling gone the other way, the settling query was: instrument `sort_vec` to count adjacent pairs where `compare_score` returns `Equal` while the terms differ, replay every historical block, and report the first non-zero height **split by call site**. Non-zero at the seeded sites would have meant replay was *already* nondeterministic there; non-zero at `combine_par` would have meant a hard fork.
+
+#### (g) Evidence
+
+| claim | before | after |
+|---|---|---|
+| seeded — 40 processes, one term | **20 / 20** split | ★ **40 / 40 identical** |
+| deterministic — `{3:30} \| {3:90}` vs `{3:90} \| {3:30}` | different bytes | ★ **byte-identical** |
+| `sorter_canonical_golden` (tie-free by construction) | — | **UNMOVED**, both term and score columns |
+| `par_codec_differential` · `wire_encode_differential` · `serializer_par_byte_goldens` | — | **13/13 · 13/13 · 7/7** |
+| `models --lib` · `models_tests` | — | **99/99 · 55/55** |
+
+★ **The golden being unmoved is by construction, not luck.** The tie-break **refines and never reorders** — it is consulted only where `compare_score` returns `Equal` — so byte-neutrality on any tie-free corpus holds structurally. The golden's collections carry pairwise-distinct scores *by construction* (`sorter_canonical_golden.rs:90`), so a move there would have been a bug in the implementation rather than a legitimate canonical-form change.
+
+The witness's `assert_ne!` flipped to `assert_eq!` **in the repair's own commit**, so that diff carries its own RED-to-GREEN evidence.
+
+#### (h) Authority
+
+Owner ruling, 2026-07-30, verbatim: **"Pre-production — land unconditionally."** The scope (total rather than narrow) was not separately ruled: β-narrow would have closed only the node-vs-node fork and left the sorter non-confluent over `|`, which is a known-false assumption standing — forbidden by the standing no-pragmatic-scope-down rule.
+
+#### (i) Residuals
+
+1. **`locally_free` and the `Eq` class.** `<Par as PartialEq>::eq` and `Hash` ignore `locally_free` while prost encodes it, so a `HashSet<Par>` dedup can collapse an `Eq`-class whose members have different emitted bytes. Believed unreachable because `canonical_bit_vector` makes the bitset a function of the member set, but that is an argument, not a measurement.
+2. **Byte-identical `ReceiveBind`s** stay tied and keep source order — sound, because identical emitted bytes make the swap invisible.
+
 ### CBR-039
 
 **∅ had two spellings; the constructor now has one — and the half that would have moved consensus bytes was REVERTED, with its witness landed executable.**
