@@ -541,6 +541,49 @@ impl EntryTrie {
         }
     }
 
+    /// The FALLIBLE walk: like [`EntryTrie::for_each_entry`], but the visitor may fail
+    /// and the failure short-circuits.
+    ///
+    /// ★ Exists because `for_each_entry` cannot carry a `?`. A caller that evaluates
+    /// each entry — and evaluation can fail — otherwise has no borrowing option at all
+    /// and falls back to `ps()`, forcing the deep-clone memo to get a `Vec` it only
+    /// wanted in order to iterate it once.
+    pub fn try_for_each_entry<E>(
+        &self,
+        mut visit: impl FnMut(&Par) -> Result<(), E>,
+    ) -> Result<(), E> {
+        use pathmap::zipper::{ZipperIteration, ZipperValues};
+        let mut rz = self.trie.read_zipper();
+        while rz.to_next_val() {
+            visit(
+                rz.val()
+                    .expect("to_next_val stops only at positions holding a value"),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The EARLY-EXIT walk: the first entry satisfying `pred`, in trie order.
+    ///
+    /// ★ Exists because `for_each_entry` cannot `break`. A search expressed through it
+    /// would visit every entry after the answer was already known — and a caller who
+    /// notices that reaches for `ps().iter().find(..)` instead, forcing the deep-clone
+    /// memo. The borrow carries the TRIE's lifetime (`to_next_get_val`), so the hit can
+    /// be returned rather than cloned.
+    pub fn find_entry<'trie>(
+        &'trie self,
+        mut pred: impl FnMut(&Par) -> bool,
+    ) -> Option<&'trie Par> {
+        use pathmap::zipper::ZipperReadOnlyIteration;
+        let mut rz = self.trie.read_zipper();
+        while let Some(par) = rz.to_next_get_val() {
+            if pred(par) {
+                return Some(par);
+            }
+        }
+        None
+    }
+
     pub fn for_each_entry(&self, mut visit: impl FnMut(&Par)) {
         use pathmap::zipper::{ZipperIteration, ZipperValues};
         let mut rz = self.trie.read_zipper();

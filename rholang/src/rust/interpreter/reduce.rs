@@ -2832,7 +2832,14 @@ impl DebruijnInterpreter {
                     e1,
                     n: e1.entry_trie().len(),
                 }));
-                for p in e1.ps().iter().rev() {
+                // ★ REVERSE order, which a read-zipper cannot walk directly — it goes
+                // forward only. But the reversal never needed the deep-clone memo:
+                // collecting BORROWS (8 bytes each) and reversing those is the same
+                // order at a fraction of the cost, where `ps()` would have cloned every
+                // entry and retained a second copy of the whole entry set forever.
+                let mut entries: Vec<&Par> = Vec::with_capacity(e1.entry_trie().len());
+                e1.entry_trie().extend_entry_refs(&mut entries);
+                for p in entries.into_iter().rev() {
                     work.push(EvWork::EEval(p));
                 }
                 Ok(())
@@ -4494,11 +4501,16 @@ impl DebruijnInterpreter {
                     self.combine_etuple(evaled_ps, e1)
                 }
                 ExprInstance::EPathmapBody(e1) => {
-                    let evaled_ps = e1
-                        .ps()
-                        .iter()
-                        .map(|p| self.eval_expr_recursive(p, env))
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
+                    // ★ Walks the TRIE. `ps()` forces `EntryTrie::view`, which
+                    // deep-clones every entry, to build a `Vec` this only iterates once
+                    // — and the evaluation can fail, so the borrowing walk has to carry
+                    // the `?`. Preallocated from the O(1) maintained fold.
+                    let mut evaled_ps = Vec::with_capacity(e1.entry_trie().len());
+                    e1.entry_trie()
+                        .try_for_each_entry(|p| -> Result<(), InterpreterError> {
+                            evaled_ps.push(self.eval_expr_recursive(p, env)?);
+                            Ok(())
+                        })?;
                     self.combine_epathmap(evaled_ps, e1)
                 }
                 ExprInstance::ESetBody(eset) => {
@@ -6310,9 +6322,8 @@ impl DebruijnInterpreter {
                         let hoisted_prefix: Option<Vec<Par>> = {
                             use models::rust::pathmap_integration::par_to_path;
                             pathmap
-                                .ps()
-                                .iter()
-                                .find(|entry| {
+                                .entry_trie()
+                                .find_entry(|entry| {
                                     if let Some(ExprInstance::EListBody(existing_list)) =
                                         &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
                                     {
@@ -6342,7 +6353,15 @@ impl DebruijnInterpreter {
                         };
 
                         // Step 3: Add source entries with prepended prefix
-                        for source_entry in source.ps().iter() {
+                        // ★ Borrows, not the projection. The 112-line body below mutates
+                        // `pathmap` while these are live, so it is collected rather than
+                        // wrapped in a closure — a `Vec<&Par>` costs 8 bytes an entry and
+                        // leaves the body's borrows exactly where they were, while `ps()`
+                        // deep-cloned every entry to hand back the same sequence.
+                        let mut source_entries: Vec<&Par> =
+                            Vec::with_capacity(source.entry_trie().len());
+                        source.entry_trie().extend_entry_refs(&mut source_entries);
+                        for source_entry in source_entries {
                             use models::rust::pathmap_integration::par_to_path;
                             let source_segments = par_to_path(source_entry);
 
@@ -6469,7 +6488,7 @@ impl DebruijnInterpreter {
 
                             // Find an existing entry that starts with current_path
                             let found_existing = if let Some(existing_entry) =
-                                pathmap.ps().iter().find(|entry| {
+                                pathmap.entry_trie().find_entry(|entry| {
                                     if let Some(ExprInstance::EListBody(existing_list)) =
                                         &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
                                     {
