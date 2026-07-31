@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.36] - 2026-07-31
+
+### Bug Fixes
+
+- seed grey badges so the README stops showing 'resource not found'
+
+
 ## [0.4.34] - 2026-07-31
 
 ### Bug Fixes
