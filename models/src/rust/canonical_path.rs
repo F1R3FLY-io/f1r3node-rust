@@ -464,10 +464,6 @@ enum EncOp<'p> {
         known_stable: bool,
         top_level: bool,
     },
-    /// Open a buffered path for one region entry (entries of a `0x0D`
-    /// region are stable by heredity — module doc).
-    EntryPath { par: &'p Par },
-    CloseEntryPath,
     CloseNestedRegion,
     EmitTerminator,
 }
@@ -556,22 +552,10 @@ impl<'p> EncMachine<'p> {
                     known_stable,
                     top_level,
                 } => self.encode_segment(par, known_stable, top_level)?,
-                EncOp::EntryPath { par } => {
-                    self.detours.push(EncCtx::Buf(Vec::new()));
-                    self.ops.push(EncOp::CloseEntryPath);
-                    // Entries under a 0x0D arm are stable by heredity (the
-                    // arm is reachable only inside a stable subtree).
-                    self.push_path_ops(par, true)?;
-                }
-                EncOp::CloseEntryPath => {
-                    let Some(EncCtx::Buf(path)) = self.detours.pop() else {
-                        unreachable!("encoder invariant: CloseEntryPath without a path buffer")
-                    };
-                    let Some(EncCtx::Region(paths)) = self.detours.last_mut() else {
-                        unreachable!("encoder invariant: entry path outside a region context")
-                    };
-                    paths.push(path);
-                }
+                // ⛔ `EncOp::{EntryPath, CloseEntryPath}` are GONE with C6. They existed to
+                // re-encode each nested-map entry into a path; the nested trie already
+                // stores exactly those paths as its keys, so the `EPathmapBody` arm now
+                // reads them with a zipper and the ops have nothing left to do.
                 EncOp::CloseNestedRegion => {
                     let Some(EncCtx::Region(paths)) = self.detours.pop() else {
                         unreachable!("encoder invariant: CloseNestedRegion without a region")

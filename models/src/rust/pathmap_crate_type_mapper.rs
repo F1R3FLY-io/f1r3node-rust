@@ -34,9 +34,7 @@
 //!     single shared `Arc` (the re-lock re-scan below); `PathMap<Par>` is
 //!     `Send + Sync` with atomic node refcounts.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
@@ -62,9 +60,6 @@ const ENCODE_STREAM_CHUNK: usize = 256;
 
 
 
-/// Monotonic LRU tick source. Incremented only while the store mutex is
-/// held, so bucket last-use ticks are strictly ordered by lock acquisition.
-static INTERN_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// Count of digest-collision events: a digest bucket was HIT but the K2
 /// byte verify matched NO candidate in its collision list (each such event

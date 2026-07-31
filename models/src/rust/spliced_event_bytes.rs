@@ -88,18 +88,10 @@
 //! force-filled), and the replay-equivalence test over an EPathMap-heavy
 //! program (rholang).
 
-use serde::Serialize;
 
 use crate::rust::rholang::wire_encode::ColdStoreEncode;
 
-use crate::rhoapi::connective::ConnectiveInstance;
-use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::tagged_continuation::TaggedCont;
-use crate::rhoapi::{
-    BindPattern, Bundle, Connective, EList, EMap, EMatches, EMethod, EPathMap, ETuple, ESet,
-    EZipper, Expr, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
-    Receive, ReceiveBind, Send, TaggedContinuation,
-};
+use crate::rhoapi::{BindPattern, ListParWithRandom, Par, ParWithRandom, TaggedContinuation};
 
 
 // ─────────────────────────────────────────────────────────────────────────────
