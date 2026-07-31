@@ -1240,6 +1240,18 @@ reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 53 — C2 of the EPathMap convergence. The EPathmapBody/EZipperBody teardown arms in par_children.rs were the only arms that CLONED while every sibling consumed; they now drain by move. TEARDOWN-ONLY, so no value is observed by any consumer: take_expr_instance_child_pars and take_par_child_pars are private fns whose entire reachable set is dismantle / dismantle_all / dismantle_injections, all of which take their argument BY VALUE and return unit — a function that consumes its argument and returns () cannot contribute to any byte stream. That is a type-level fact, not an argument. The guard move_and_borrow_tables_agree changed from equality to containment with a counted allowance per owner ruling 2026-07-31, and the multiplier is PINNED FROM THE VALUE (EPathMap::live_retainer_count) rather than derived from the data — the derived version was MEASURED VACUOUS: deleting the memo drain left it green because the ratio became 1x. Byte set unmoved: models --lib 99/99, pathmap_integration_tests 60/60, epathmap_spliced_event_bytes 11/11, epathmap_canonicalization 7/7, serializer_par_byte_goldens 7/7, par_codec_differential 13/13, wire_encode_differential 13/13. [DERIVED]"
 
 [[exempt]]
+commit = "8e155334"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 59 — C4. dropHead's loop forced the deep-cloning projection and then cloned AGAIN into result_elements, so dropHead(0) paid two full copies of the map to return a copy of it; it now borrows via for_each_entry. Same expression over the same entries in the same trie order, one clone instead of two. ALSO RECORDS A NAMED NEGATIVE RESULT: the crate's own drop_head (join_k_path_into) cannot serve this method, on two independent grounds — it removes a fixed BYTE count where dropHead removes variable-length codec SEGMENTS, and it rewrites keys while leaving values, which violates the trie invariant so adopt_trie RE-FILES FROM THE VALUES and reconstructs the original keys, making dropHead a silent no-op in release builds. SHOWN RED and this suite genuinely discriminates: dropping every entry failed drop_head_spec's drop_head_zero_is_the_identity_on_both_arms, a_bare_entry_is_a_path_of_length_one and drop_head_removes_paths_it_exhausts. Restored 6/6. [DERIVED]"
+
+[[exempt]]
+commit = "093d4003"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 58 — C5. restriction built its prefix map from other_pathmap.ps(), a memoised projection that deep-clones every entry, while the loop only BORROWS each one; it now uses EntryTrie::for_each_entry. The loop body is byte-for-byte the same expression over the same entries in the same trie order. RECORDS WHY THE FURTHER OPTIMISATION IS WRONG: reading the key off the zipper and stripping the trailing tag::TERM looks valid because segments_to_key's two forms differ by that byte, but the STORED key is encode_trie_path(entry) whereas the key wanted is segments_to_key(par_to_path(entry), false), and for a BARE non-list entry those are DIFFERENT ENCODINGS — the segments form names the SINGLETON LIST, pinned by bare_and_singleton_list_are_distinct_entries. COVERAGE GAP FOUND AND NOT CLOSED (pre-existing): skipping the loop entirely still passed trie_entry_invariant_spec 8/8, epathmap_live_match_spec 5/5, epathmap_charge_trace_spec 9/9, epathmap_differential_scaffold 2/2 — nothing distinguishes restricting against other's entries from restricting against nothing, so this change rests on the borrow-vs-clone argument and the commit says so. [DERIVED]"
+
+[[exempt]]
 commit = "4544c268"
 window = "FRONTIER"
 reason = "HYGIENE"
