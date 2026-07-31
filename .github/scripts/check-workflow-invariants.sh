@@ -124,7 +124,69 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
-# 5. Fork-checkout hygiene. Every checkout of the code under test must set
+# 5. The CI runner compartment OCID is pinned identically wherever it appears.
+#    It is hardcoded rather than held in an Actions variable on purpose: the
+#    reaper's own comment claims it "can never touch other compartments", and a
+#    variable is mutable by anyone with repo admin, so moving it there would
+#    trade a compile-time guarantee for a permissions one. The cost of pinning
+#    is drift — ci-runner-reaper.yml decides what may be terminated, while
+#    merge-recovery-soak.yml tags the instance that must not be, and if those
+#    two ever name different compartments the tag is written where the reaper
+#    never looks. The soak then dies at the 2h mark with its exemption intact
+#    but invisible, which is indistinguishable from the bug we just fixed.
+#    Checking equality keeps the value immutable in-repo and makes divergence
+#    fail CI instead of failing a 60h weekend soak.
+#    `|| true` on both greps is load-bearing: under `set -e` a no-match grep
+#    inside a command substitution kills the script outright, so the "nobody
+#    pins it any more" branch below would be unreachable and the failure would
+#    surface as a red job with no annotation saying why. A guard that cannot
+#    explain itself is the failure mode this file exists to prevent.
+#    Both files are checked BY NAME and required to pin exactly one literal
+#    each. An earlier version only asserted "at least one file pins it, and
+#    all literals found agree", which passed when one of the two declarations
+#    was deleted or rewritten as `${{ vars.X }}` — the single most likely way
+#    this drifts, since that is precisely the migration the note above argues
+#    against. My own mutation tests missed it: they covered divergent values
+#    and both-removed, never one-removed.
+#    Only the reaper is REQUIRED to pin it. merge-recovery-soak.yml used to
+#    carry a copy because the launch job looked its instance up by compartment
+#    + display-name; that step is gone, because it tagged whichever VM the
+#    launch created rather than the one the job actually ran on (run
+#    30590630059). The soak now tags itself by the OCID the metadata service
+#    reports, so it needs no compartment at all. Any file that still pins one
+#    must agree with the reaper — checked below — but absence is no longer a
+#    violation for the soak.
+ocid_required=".github/workflows/ci-runner-reaper.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml"
+ocid_values=""
+for ocid_file in $ocid_optional; do
+    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        "$ocid_file" 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+    [ -n "$ocid_found" ] && ocid_values="${ocid_values}${ocid_found}
+"
+done
+for ocid_file in $ocid_required; do
+    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        "$ocid_file" 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+    ocid_count="$(printf '%s' "$ocid_found" | grep -c . || true)"
+    if [ "$ocid_count" -ne 1 ]; then
+        err "$ocid_file must pin exactly one literal CI_RUNNER_COMPARTMENT_OCID, found $ocid_count (an Actions variable trades a compile-time guarantee for an admin-mutable one — see the note in ci-runner-reaper.yml)"
+    else
+        ocid_values="${ocid_values}${ocid_found}
+"
+    fi
+done
+if [ "$fail" -eq 0 ]; then
+    if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
+        err "CI_RUNNER_COMPARTMENT_OCID differs across the workflows that pin it ($ocid_required $ocid_optional); every literal must name the same compartment"
+    else
+        ok "CI_RUNNER_COMPARTMENT_OCID pinned as a literal in $ocid_required, and consistent wherever else it appears"
+    fi
+fi
+
+# 6. Fork-checkout hygiene. Every checkout of the code under test must set
 #    BOTH `persist-credentials: false` and `allow-unsafe-pr-checkout: true`.
 #
 #    The second is what makes the fork lane work at all: actions/checkout

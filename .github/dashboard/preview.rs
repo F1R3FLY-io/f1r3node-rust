@@ -80,18 +80,40 @@ struct Run {
     sha: String,
     kind: &'static str,
     target_ref: &'static str,
+    // "unknown" on the oldest fixtures on purpose: history is never backfilled,
+    // so real data has exactly this shape, and the dashboard's
+    // dash-instead-of-"unknown" fallback needs exercising locally.
+    version: String,
     duration: u64,
     iterations: u64,
     failure_rate: f64,
     iters_per_hour: f64,
     rss_mb: f64,
+    cpu_pct: f64,
     final_p95: f64,
+    too_far_ahead: u64,
+    lfb_p95: u64,
+    lfb_max: u64,
     docker: (u64, u64),
     subprocess: (u64, u64),
     active: bool,
 }
 
 impl Run {
+    /// The `run` block, emitted by one function because production writes the
+    /// same object into both `history.json` and `verdict.json`. Two copies here
+    /// would let the preview drift out of step with the page it is previewing.
+    fn run_json(&self) -> String {
+        format!(
+            concat!(
+                r#"{{"date": "{}T07:30:00Z", "run_id": "{}", "target_sha": "{}", "#,
+                r#""target_ref": "{}", "version": "{}", "kind": "{}", "duration_seconds": {}}}"#
+            ),
+            self.date, self.run_id, self.sha, self.target_ref, self.version, self.kind,
+            self.duration
+        )
+    }
+
     fn to_json(&self) -> String {
         let active = if self.active {
             format!(
@@ -106,29 +128,32 @@ impl Run {
         };
         format!(
             concat!(
-                r#"{{"run": {{"date": "{}T07:30:00Z", "run_id": "{}", "target_sha": "{}", "#,
-                r#""target_ref": "{}", "kind": "{}", "duration_seconds": {}}}, "#,
+                r#"{{"run": {}, "#,
                 r#""passive": {{"iterations": {}, "failures": {}, "failure_rate": {}, "#,
-                r#""iterations_per_hour": {}, "rss_peak_mb": {}, "finalization_p95_ms": {}, "#,
+                r#""iterations_per_hour": {}, "rss_peak_mb": {}, "cpu_peak_pct": {}, "#,
+                r#""finalization_p50_ms": {}, "finalization_p95_ms": {}, "finalization_p99_ms": {}, "#,
+                r#""too_far_ahead_errors": {}, "#,
                 r#""providers": {{"docker": {{"iterations": {}, "failures": {}}}, "#,
-                r#""subprocess": {{"iterations": {}, "failures": {}}}}}}}, "active": {}}}"#
+                r#""subprocess": {{"iterations": {}, "failures": {}}}}}, "#,
+                r#""tracked_metrics": {{"lfb_spread": {{"p95": {}, "max": {}}}}}}}, "active": {}}}"#
             ),
-            self.date,
-            self.run_id,
-            self.sha,
-            self.target_ref,
-            self.kind,
-            self.duration,
+            self.run_json(),
             self.iterations,
             (self.iterations as f64 * self.failure_rate) as u64,
             r(self.failure_rate, 4),
             r(self.iters_per_hour, 3),
             r(self.rss_mb, 1),
+            r(self.cpu_pct, 1),
+            r(self.final_p95 * 0.55, 1),
             r(self.final_p95, 1),
+            r(self.final_p95 * 1.35, 1),
+            self.too_far_ahead,
             self.docker.0,
             self.docker.1,
             self.subprocess.0,
             self.subprocess.1,
+            self.lfb_p95,
+            self.lfb_max,
             active
         )
     }
@@ -148,6 +173,7 @@ fn series(
     mut p95: f64,
     mut iph: f64,
     mut fr: f64,
+    mut cpu: f64,
     bad: Option<usize>,
     active: bool,
 ) -> Vec<Run> {
@@ -157,13 +183,16 @@ fn series(
         p95 *= 1.0 + rng.unif(-0.06, 0.07);
         iph *= 1.0 + rng.unif(-0.05, 0.05);
         fr = (fr + rng.unif(-0.012, 0.015)).max(0.0);
+        cpu = (cpu * (1.0 + rng.unif(-0.04, 0.05))).clamp(5.0, 100.0);
+        let lfb_p95 = 1 + (rng.unif(0.0, 3.0) as u64);
+        let lfb_max = lfb_p95 + (rng.unif(0.0, 2.0) as u64);
 
         // One deliberately regressed run per series, so the failure styling is
         // exercised by the default fixture instead of needing a hand edit.
-        let (f, p) = if bad == Some(i) {
-            (fr + 0.06, p95 * 1.28)
+        let (f, p, too_far_ahead) = if bad == Some(i) {
+            (fr + 0.06, p95 * 1.28, 5 + (rng.unif(0.0, 4.0) as u64))
         } else {
-            (fr, p95)
+            (fr, p95, 0)
         };
 
         let it = ((iph * hours) as u64).max(1);
@@ -175,12 +204,23 @@ fn series(
             sha: rng.sha(),
             kind,
             target_ref,
+            // Oldest two entries predate version emission, so the table shows
+            // the mixed reality: dashes early, versions later.
+            version: if i < 2 {
+                "unknown".to_string()
+            } else {
+                format!("0.4.{}", 18 + i)
+            },
             duration,
             iterations: it,
             failure_rate: f,
             iters_per_hour: iph,
             rss_mb: rss,
+            cpu_pct: cpu,
             final_p95: p,
+            too_far_ahead,
+            lfb_p95,
+            lfb_max,
             docker: (dk, (dk as f64 * f) as u64),
             subprocess: (sp, (sp as f64 * f * 1.3) as u64),
             active,
@@ -208,6 +248,7 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         2400.0,
         3.1,
         0.02,
+        55.0,
         Some(7),
         true,
     );
@@ -224,6 +265,7 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         2250.0,
         3.4,
         0.015,
+        48.0,
         Some(13),
         false,
     );
@@ -245,9 +287,15 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         data,
         "latest-verdict.json",
         &format!(
-            r#"{{"verdict": "pass", "run_id": "{}", "generated_at": "{}T07:30:00Z", "failures": [], "warnings": []}}"#,
+            concat!(
+                r#"{{"verdict": "pass", "run_id": "{}", "generated_at": "{}T07:30:00Z", "#,
+                r#""bootstrap": false, "failures": [], "warnings": [], "run": {}}}"#
+            ),
             weekend[weekend.len() - 1].run_id,
-            weekend[weekend.len() - 1].date
+            weekend[weekend.len() - 1].date,
+            // Production always writes `run` into verdict.json; without it here
+            // the preview would not render the provenance line at all.
+            weekend[weekend.len() - 1].run_json()
         ),
     )?;
     write(
@@ -256,11 +304,14 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         &format!(
             concat!(
                 r#"{{"verdict": "regress", "run_id": "{}", "generated_at": "{}T07:30:00Z", "#,
+                r#""bootstrap": false, "#,
                 r#""failures": ["failure rate 8.1% > baseline 2.0% +5pts", "#,
-                r#""finalization p95 3180ms > baseline 2310ms +20%"], "warnings": []}}"#
+                r#""finalization p95 3180ms > baseline 2310ms +20%"], "warnings": [], "#,
+                r#""run": {}}}"#
             ),
             daily[daily.len() - 1].run_id,
-            daily[daily.len() - 1].date
+            daily[daily.len() - 1].date,
+            daily[daily.len() - 1].run_json()
         ),
     )?;
     write(

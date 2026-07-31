@@ -4,6 +4,41 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.33] - 2026-07-30
+
+### Bug Fixes
+
+- require both workflows to pin the OCID; never write tags on a failed read
+- close the non-finite deadline hole in the reaper's exemption
+- retry the reaper tag through OCI's provisioning conflict
+
+### Documentation
+
+- cross-reference the pinned compartment OCID; record TASK-010-8
+
+
+## [0.4.32] - 2026-07-30
+
+### Bug Fixes
+
+- merge reaper tags instead of replacing; bound the restart window client-side
+- close the restart-mode holes found in review; record follow-ups
+- never auto-restart a cancelled soak
+- size RSS ceiling to host, exempt live soak runners from the reaper
+- drop mid-loop errexit so a failed iteration cannot kill the segment
+
+### Documentation
+
+- record the system-integration agent's reply and the ceiling-default analysis
+- document restart mode, the RSS ceiling and the reaper exemption
+
+### Features
+
+- add operator script to restart a soak within its window
+- stamp restarted runs with covered span vs nominal window
+- restart a failed soak within its original scheduling window
+
+
 ## [0.4.31] - 2026-07-30
 
 ### Bug Fixes
