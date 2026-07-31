@@ -148,8 +148,24 @@ ok "both pipeline callers pass secrets down"
 #    this drifts, since that is precisely the migration the note above argues
 #    against. My own mutation tests missed it: they covered divergent values
 #    and both-removed, never one-removed.
-ocid_required=".github/workflows/ci-runner-reaper.yml .github/workflows/merge-recovery-soak.yml"
+#    Only the reaper is REQUIRED to pin it. merge-recovery-soak.yml used to
+#    carry a copy because the launch job looked its instance up by compartment
+#    + display-name; that step is gone, because it tagged whichever VM the
+#    launch created rather than the one the job actually ran on (run
+#    30590630059). The soak now tags itself by the OCID the metadata service
+#    reports, so it needs no compartment at all. Any file that still pins one
+#    must agree with the reaper — checked below — but absence is no longer a
+#    violation for the soak.
+ocid_required=".github/workflows/ci-runner-reaper.yml"
+ocid_optional=".github/workflows/merge-recovery-soak.yml"
 ocid_values=""
+for ocid_file in $ocid_optional; do
+    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+        "$ocid_file" 2>/dev/null \
+        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+    [ -n "$ocid_found" ] && ocid_values="${ocid_values}${ocid_found}
+"
+done
 for ocid_file in $ocid_required; do
     ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
         "$ocid_file" 2>/dev/null \
@@ -164,9 +180,9 @@ for ocid_file in $ocid_required; do
 done
 if [ "$fail" -eq 0 ]; then
     if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
-        err "CI_RUNNER_COMPARTMENT_OCID differs between $(printf '%s' "$ocid_required" | tr '\n' ' '); the reaper and the soak tagger must name the same compartment"
+        err "CI_RUNNER_COMPARTMENT_OCID differs across the workflows that pin it ($ocid_required $ocid_optional); every literal must name the same compartment"
     else
-        ok "CI_RUNNER_COMPARTMENT_OCID pinned identically in both required workflows"
+        ok "CI_RUNNER_COMPARTMENT_OCID pinned as a literal in $ocid_required, and consistent wherever else it appears"
     fi
 fi
 

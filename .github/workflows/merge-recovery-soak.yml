@@ -436,99 +436,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
-          RUNNER_NAMES_FILE: /tmp/soak-runner-name
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
-
-      - name: Exempt runner from the CI reaper until the window ends
-        env:
-          # Same pinned compartment as ci-runner-reaper.yml; not a secret.
-          # Must stay byte-identical to that file's copy — this job writes the
-          # exemption tag, that job reads it, and a mismatch means the tag
-          # lands where the reaper never looks. check-workflow-invariants.sh
-          # enforces the equality; see the longer note at the reaper's env.
-          CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
-          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
-          KIND: ${{ needs.schedule_gate.outputs.kind }}
-          SUPPRESS_LABEL_WARNING: "True"
-        shell: bash -e {0}
-        run: |
-          # ci-runner-reaper.yml terminates ci-eph-* instances older than 2h;
-          # a 22h/60h soak must outlive that. Tag the instance with the epoch
-          # second after which reaping is allowed again — window end + 2h
-          # grace for final aggregation and artifact upload. Fail closed: an
-          # untagged soak runner dies at the 2h mark, so a tagging failure
-          # must fail the launch now, not the soak two hours in.
-          #
-          # Anchored to the gate's end_epoch, not to now + duration: launch
-          # can be delayed by queueing or a slow image pull, and a tag
-          # measured from this step would then extend past the window it is
-          # meant to track, drifting from the same instant the restart logic
-          # uses.
-          case "$END_EPOCH" in
-            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
-          esac
-          name="$(tail -1 /tmp/soak-runner-name)"
-          test -n "$name"
-          iid="$(oci compute instance list \
-            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" \
-            --display-name "$name" \
-            --query 'data[0].id' --raw-output)"
-          test -n "$iid" && [ "$iid" != "null" ]
-          deadline="$((END_EPOCH + 7200))"
-          # launch-runner.sh returns as soon as OCI accepts the launch call,
-          # but the instance keeps transitioning through PROVISIONING for
-          # another 30-60s, and `instance update` against a transitioning
-          # instance is refused with HTTP 409 "currently being modified, try
-          # again later". Run 30584775602 hit exactly that, 3s after launch.
-          # 409 is explicitly retryable, so retry rather than fail on it —
-          # while keeping the fail-closed contract: if the tag never lands we
-          # still fail the launch, because an untagged soak runner is reaped
-          # at the 2h mark.
-          #
-          # --freeform-tags REPLACES the instance's whole tag map; it does not
-          # merge. The launcher sets no freeform tags today, so overwriting
-          # would be harmless right now — but system-integration TASK-010-7
-          # plans cost-tracking tags applied at launch, and this step would
-          # then silently erase them, breaking cost attribution in a way
-          # nobody notices until a bill arrives. Read-modify-write instead,
-          # re-read each attempt so a write that lands mid-retry is merged
-          # rather than clobbered by a stale snapshot.
-          tagged=""
-          for attempt in $(seq 1 12); do
-            # A FAILED read must not fall through to `{}`. Because the update
-            # replaces the whole map, "read failed" and "instance has no tags"
-            # are indistinguishable once both become {} — and treating a
-            # transient read failure as "no tags" would erase every existing
-            # tag, which is the exact outcome the read-modify-write exists to
-            # prevent. Retry instead; only a *successful* read reporting an
-            # empty or null map may become {}.
-            if ! existing="$(oci compute instance get --instance-id "$iid" \
-                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
-              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
-              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
-              if [ "$attempt" -lt 12 ]; then sleep 15; fi
-              continue
-            fi
-            case "$existing" in ''|null) existing='{}' ;; esac
-            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
-            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
-              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
-            if update_err="$(oci compute instance update --instance-id "$iid" --force \
-                 --freeform-tags "$merged" 2>&1)"; then
-              tagged=1
-              break
-            fi
-            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
-              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
-            if [ "$attempt" -lt 12 ]; then sleep 15; fi
-          done
-          if [ -z "$tagged" ]; then
-            printf '%s\n' "$update_err" | tail -20
-            echo "::error::could not tag ${name} after 12 attempts (~3min); refusing to launch an unexempt soak runner, which the reaper would terminate at the 2h mark"
-            exit 1
-          fi
-          echo "tagged ${name} (${iid}): reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Remove OCI credentials
         if: always()
@@ -640,6 +549,78 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: ci-control
           persist-credentials: false
+
+      # FIRST, before the expensive image build: this job must exempt the
+      # instance it is ACTUALLY RUNNING ON from ci-runner-reaper.yml.
+      #
+      # Tagging from the launch job was wrong and is removed. GitHub assigns a
+      # job to whichever registered runner with matching labels claims it
+      # first, which is routinely an older idle runner from an earlier launch
+      # — not the VM that launch just created. Run 30590630059 proved it: the
+      # launch job correctly tagged ...-233015-24ed76, while the soak actually
+      # ran on untagged ...-225401-fad5e4. The exemption protected an idle VM
+      # and left the working one exposed. Worse, it granted a 22h/60h reaping
+      # exemption to a VM that never did any work, turning the guard into a
+      # leak: those VMs then outlive the 2h rule that would have collected
+      # them.
+      #
+      # Instance-principal auth, not secrets: invariant 2 confines credentials
+      # to launch_ephemeral_runners, and the dynamic group already holds
+      # "manage instance-family in compartment ci-runner". The in-soak ONS
+      # alert uses the same path.
+      #
+      # Fails closed. An unexempt soak runner is terminated at the 2h mark, so
+      # there is no point spending an image build and a night on it.
+      - name: Exempt this runner from the CI reaper
+        env:
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
+          esac
+          command -v oci >/dev/null || { echo "::error::oci CLI not found on the soak runner"; exit 1; }
+          # IMDSv2 on the instance itself — the only authority on which VM this is.
+          iid="$(curl -sS --max-time 10 -H 'Authorization: Bearer Oracle' \
+            http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || iid=""
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *) echo "::error::could not read this instance's OCID from the metadata service; refusing to soak on a runner that cannot be exempted"; exit 1 ;;
+          esac
+          deadline="$((END_EPOCH + 7200))"
+          # Same read-modify-write and 409 retry as before: --freeform-tags
+          # REPLACES the whole map, and a transient read failure must never be
+          # mistaken for "no tags" or it erases cost-tracking metadata.
+          tagged=""
+          for attempt in $(seq 1 12); do
+            if ! existing="$(oci --auth instance_principal compute instance get \
+                 --instance-id "$iid" --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
+            case "$existing" in ''|null) existing='{}' ;; esac
+            jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1 || existing='{}'
+            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d}')"
+            if update_err="$(oci --auth instance_principal compute instance update \
+                 --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
+              tagged=1
+              break
+            fi
+            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
+              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
+            if [ "$attempt" -lt 12 ]; then sleep 15; fi
+          done
+          if [ -z "$tagged" ]; then
+            printf '%s\n' "${update_err:-}" | tail -20
+            echo "::error::could not tag this runner after 12 attempts; refusing to soak on a runner the reaper will terminate at the 2h mark"
+            exit 1
+          fi
+          echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
         uses: actions/checkout@v4
