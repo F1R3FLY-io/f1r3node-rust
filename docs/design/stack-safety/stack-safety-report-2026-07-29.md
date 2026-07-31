@@ -66,6 +66,10 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G6** | `3276c1ee` | mettail | **#174's hash-keyed collection cost, ATTRIBUTED** — `par_hash` / `par_hashmap` isolate `models`' `impl Hash for Par`; a subtraction control pins the attribution | 625 / 113 recorded with ceilings; ⚠ **both filed figures withdrawn** — `map_pair_lower` 10,491 $`\rightarrow`$ **227**, `list_pair_lower` 950 $`\rightarrow`$ **0** | **no** — a residue is *named*, not converted | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | `3276c1ee` | f1r3node | ⚠★★ **A live, unrepaired defect NAMED by `SS-G6`** — `impl Hash for Par` (`models/src/lib.rs:284`) and `impl PartialEq for Par` (`:265`) are **hand-written host-recursive** traversals on a **consensus-adjacent** path (`SortedParMap` feeds the canonical sort `cost_accounting/sig.rs` signs) | 625 debug / 113 release B/level | ⛔ **open**; invisible to **both** existing censuses | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
+| **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567--ss-e1-3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
+| **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568--ss-y3-the-collection-arms-re-score-every-element-three-times-per-level) |
+
+⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits do not create the defect, they **measure** one that was already live and unquantified. Each cross-references the other, and `SS-Y3` is discharged only by a commit that repairs it — never by deletion.
 
 ⚠ **`SS-G6` and `SS-Y2` are the mandatory pair required by [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4**, in its *revealed-by* rather than *introduced-by* form: `SS-G6`'s commit does not create the defect, it **names** one that was already live and unattributed. Each cross-references the other; `SS-Y2` is discharged only by a commit that repairs it.
 
@@ -1399,6 +1403,92 @@ Nothing in production: the commit adds probe subjects and assertions only.
 ★★ **A SUBTRACTION control, not merely an invariant one.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope` asserts `lower_depth` stays flat, so the two ceilinged rows **cannot go on passing while their attribution quietly becomes false**. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash` 339,968 → 2,580,480 against `lower_depth` flat at ~73,728 ⇒ the excess **is** the whole slope, and it is the hash's.
 
 ⚠ `par_hash` and `par_hashmap` are kept as **two** rows rather than folded into one, because **the pair is the attribution**: `par_hash` runs the hash alone, `par_hashmap` runs it plus `Eq for Par` on collision. Their agreement (625 vs 636 debug; 113 vs 113 release) is what says the collect adds nothing of its own. **If they diverge, the `Eq` half has started to matter and the attribution needs revisiting.** This is [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish)'s *"an invariant control is not sufficient"* satisfied in code.
+
+#### 5.6.7 `SS-E1` — 3b's prerequisite instrument, and the two checks that were blind
+
+**The defect.** Phase 3b converts the three self-contained sorter arms. Sorting is *order-defining*, so the usual "evaluation order is unobservable" argument does not apply, and `SortedParMap` feeds the canonical sort that `cost_accounting/sig.rs` signs. The epic therefore required an explicit identical-total-order argument **before** any conversion. It did not exist, and — measured here — **neither existing check could have gated the conversion.**
+
+**Architecture, and why this shape.** The order is established in two places, not one. `combine_eset` never sorts: it maps elements through `sort_match` in the iteration order of `par_set.ps.sorted_pars`, `split_scored_terms` preserves that order into both halves, `SortedParHashSet::create_from_vec` then establishes the **term** order, and the score `Tree` keeps the **input** order. ⇒ Terms and scores are ordered by two different permutations.
+
+Three obligations follow, and one is already discharged:
+
+| # | obligation | status |
+|---|---|---|
+| **O1** | the score `Tree` must chain in *input* order, which a LIFO stack does not preserve | ★ **already mechanised** — `SortNode.idx`/`IxKont.idx` carry the source index and `SortTraversal::combine` runs `assert_children_are_in_source_order` **before any pop** |
+| **O2** | the container's constructor is part of the canonical form; sorting elements directly is a second opinion | human obligation |
+| **O3** | `sort_key_value_pair` keeps **only** the key's score and discards the value's | human obligation |
+
+★ **Rejected alternative — a new `NodeKind` variant.** `NodeKind` has twelve variants and none is `ESet`/`EMap`/`EPathMap`, which suggested one was needed. It is not: `descend_expr` is already generic (children via `expr_child_pars`, pushed as `NodeKind::Par` under the existing `ExprK` kont). Recorded in `08e876fd`, superseding the earlier reading.
+
+⛔ **Rejected alternative — using the existing checks as the gate.** Both are blind, for opposite reasons, and the composition is exactly 3b's target:
+
+| check | sees | blind to |
+|---|---|---|
+| `sort_recursive.rs` (frozen oracle) | traversal shape | ⛔ the arms — *"the oracle shares `sort_combine` with the driver… cannot catch an error transcribed into the shared table itself"* (its own header). **These three arms are that shared table.** |
+| `sorter_canonical_golden.rs` | the arms, incl. the **score** column | ⛔ depth $`\geq 2`$ — every collection in it was depth-1 and scalar-only, and its `EMap` was **monotone** |
+
+**How the instrument was built.** `ad468163` adds three depth-$`\geq 2`$ rows — a set inside a map inside a set (the map nesting on *both* sides, so key and value descent are each exercised), an **anti-monotone** map (`3 → 90`, `9 → 30`), and a pathmap over a set — captured from the **pre-conversion** implementation.
+
+**Results, with provenance.**
+
+| quantity | value | provenance |
+|---|---|---|
+| corpus size, before → after | 114 → 120 entries | gate output, shown **RED before blessing** |
+| golden fixture diff | **6 insertions, 0 deletions** | `git diff --numstat`; ⇒ every pre-existing canonical form byte-identical |
+| anti-monotone row's score render | `(i9 i-1 (i999 (i2 i3) i0) (i999 (i2 i9) i0) i0)` | the fixture; chains **only** key scores ⇒ O3's defect would add atoms to this line |
+| nesting depth reached | 3 levels (`i8` → `i9` → `i8`) | the fixture's set row |
+
+**What it cost.** One example binary and three fixture rows. ⌀ on every runtime axis — nothing in `models/src` changed.
+
+**What is still recursive.** All three arms. `SS-E1` is an instrument, **not** a conversion, and deliberately carries `class change: no`; per this report's own rule a traversal enters §0 as a class change *only by being converted*.
+
+**Anti-vacuity.** The golden was shown RED (120 vs 114) before blessing; the register exemption was shown RED by perturbing its `reason`, which failed two clauses naming `UntypedExemption { commit: "5a744c66" }`. ⚠ Capture order is load-bearing and not recoverable: blessing **after** a conversion would pin whatever that conversion produced.
+
+#### 5.6.8 `SS-Y3` — the collection arms re-score every element THREE times per level
+
+**The defect.** `Ordering::sort_pars` (`ordering.rs:13-20`) is not a sort. It calls `ParSortMatcher::sort_match` on **every element** and returns the *sorted terms*, not its inputs. `combine_eset` reaches it three times for the same elements:
+
+1. `eset_to_par_set(eset.clone())` → `ParSet::new` → `SortedParHashSet::create_from_vec` → `sort_pars` → `sort_match` per element;
+2. `par_set.ps.sorted_pars.iter().map(ParSortMatcher::sort_match)` — again;
+3. `create_from_vec(element_terms)` → `sort_pars` → a third time.
+
+Each of those descends into that element's own collections, where the same three passes recur. ⇒ the re-entry is **multiplicative** in nesting depth. `combine_emap`/`combine_epathmap` have the same shape.
+
+**Method.** `models/examples/sort_collection_reentry_probe.rs` builds $`\{\{\{\ldots\{0\}\ldots\}\}\}`$ — `depth` nested **single-element** `ESet`s — and calls `sort_match` on it exactly once. Under `callgrind`, total Ir is an exact deterministic function of depth with no timer involved. ⚠ One element per level is deliberate: width would confound the question, which is how many times a *single* element is re-scored as a function of how deep it sits.
+
+★ **Invariant control.** `--control` builds the same shape from nested `EList`s. `EListBody` is **not** one of the three self-contained arms — its children go through `expr_child_pars` like any other node — so its cost must be linear.
+
+**Results, with provenance.** Ir via `valgrind --tool=callgrind`; baseline is the control at $`d{=}1`$ (461,526 Ir of process startup).
+
+| depth | subject Ir | control Ir | control ratio | subject $`-`$ baseline | **subject ratio** |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 501,371 | 461,526 | — | 39,845 | — |
+| 2 | 668,922 | 478,061 | 1.03 | 207,396 | 5.205 |
+| 3 | 1,163,222 | 493,935 | 1.03 | 701,696 | 3.383 |
+| 4 | 2,636,296 | 510,249 | 1.03 | 2,174,770 | 3.099 |
+| 5 | 7,030,393 | 526,476 | 1.03 | 6,568,867 | 3.020 |
+| 6 | 20,279,660 | 542,322 | 1.03 | 19,818,134 | **3.016** |
+
+⇒ the ratio converges to **3.0** — one factor per pass, the three passes compounding per level — while the control holds flat at **1.03×** across the whole ladder. Fitted: $`\Theta(3^d)`$.
+
+Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost by $`\approx 9`$:
+
+| depth | wall clock | ratio |
+|---:|---:|---:|
+| 10 | 0.16 s | — |
+| 12 | 1.51 s | 9.4 |
+| 14 | 13.63 s | 9.0 |
+| 16 | **> 120 s** (killed) | — |
+
+**What it cost.** ⌀ — nothing was changed; this row measures existing behaviour.
+
+**What is still recursive.** All three arms, and the defect is **open**.
+
+**Anti-vacuity.** The control is the load-bearing part: a harness artefact would move both arms of the ladder, and the control's ratio is flat to within $`0.03`$ at every rung while the subject's climbs from $`1.33`$ to $`2.88`$ raw. The probe also consumes its result so the subject cannot be dead-code-eliminated.
+
+⚠ **Scope of the claim.** The exponent is measured on a **single-element-per-level** chain. Width is a separate axis and is **NOT MEASURED** here; a wider collection multiplies the per-level factor and the composed figure is unknown. ⇒ Do not quote a cost for a real term from this table.
+
+★ **Consequence for 3b, and it is structural.** `sorted_pars` holds `sort_match`ed terms — **normalized values, not the message's elements** — so no message-borrowed `&'t Par` corresponds to a sorted element, and the borrow-based conversion route fails. `drive.rs` is bounded to borrowing traversals by `Traversal::Node<'t>: Copy`. ⇒ **3b needs the same owning driver that §3d's approved route (A) builds**, and the two should be built together rather than twice.
 
 ---
 
