@@ -734,10 +734,45 @@ impl<'p> EncMachine<'p> {
                     ExprInstance::EPathmapBody(map) => {
                         self.emit_byte(tag::EPATHMAP)?;
                         self.detours.push(EncCtx::Region(Vec::new()));
-                        self.ops.push(EncOp::CloseNestedRegion);
-                        for entry in map.ps().iter().rev() {
-                            self.ops.push(EncOp::EntryPath { par: entry });
+
+                        // ★★ THE NESTED TRIE ALREADY HOLDS THESE KEYS. Read them.
+                        //
+                        // This arm used to push one `EncOp::EntryPath` per entry, each of
+                        // which re-ran the full canonical encode — over entries obtained
+                        // from `map.ps()`, a memoised projection whose materialisation
+                        // deep-clones every `Par`. Both costs bought a byte string the
+                        // nested trie was already storing as its key, and both were
+                        // HEREDITARY: a map nested `d` deep re-encoded at every level.
+                        //
+                        // ⚠ BYTE-IDENTICAL, and the argument is not "the tests pass":
+                        //
+                        //   1. `∀(k,v). encode_trie_path(v) = k` is the trie's entry
+                        //      invariant, enforced in RELEASE builds by
+                        //      `EntryTrie::adopt_trie`, which re-files a foreign trie rather
+                        //      than trusting it. So `rz.path()` IS what `EntryPath` computes.
+                        //   2. `EntryPath` encoded with `known_stable: true`, whereas the
+                        //      stored key was built with `eval_stable_par(entry)` actually
+                        //      computed. Those disagree ONLY for an unstable entry — and
+                        //      this arm cannot see one: it is guarded by the
+                        //      `unreachable!("eval_stable expr outside the stable alphabet")`
+                        //      below, and `eval_stable_epathmap` requires `entries_stable`,
+                        //      i.e. EVERY entry stable. That is the heredity the old comment
+                        //      asserted, now carrying weight rather than explaining a choice.
+                        //   3. `CloseNestedRegion` builds a `PathMap<()>` from these paths
+                        //      and emits ITS trie walk, so the region is a function of the
+                        //      key SET, not of push order. Same keys ⇒ same region bytes.
+                        {
+                            use pathmap::zipper::{ZipperIteration, ZipperMoving};
+                            let Some(EncCtx::Region(paths)) = self.detours.last_mut() else {
+                                unreachable!("encoder invariant: region pushed immediately above")
+                            };
+                            let mut rz = map.entry_trie().trie().read_zipper();
+                            while rz.to_next_val() {
+                                paths.push(rz.path().to_vec());
+                            }
                         }
+
+                        self.ops.push(EncOp::CloseNestedRegion);
                         Ok(())
                     }
                     _ => unreachable!("eval_stable expr outside the stable alphabet"),
