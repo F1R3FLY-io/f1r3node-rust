@@ -86,10 +86,16 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 56 consensus-visible changes** — 42 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
-Of these, **54 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **26** entries move bytes; on the protobuf lane **27**; **29** move a
-*verdict*; **38** move the *post-state hash*; **16** move *acceptance*; **4** move *metering*.
+**Result: 57 consensus-visible changes** — 43 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **55 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **27** entries move bytes; on the protobuf lane **28**; **30** move a
+*verdict*; **39** move the *post-state hash*; **16** move *acceptance*; **4** move *metering*.
+⚠ **Seven of these ten moved again on 2026-07-31 when [CBR-040](#cbr-040) gained the §4.1 glyph row it
+had never had** — the entry had a `[[entry]]` in the machine index and a prose body but no row in the
+table the gate projects from, so **every** figure on this page was computed from 56 rows while the index
+held 57. The row is the projection's only input, so an entry missing from it is an entry that does not
+exist to any figure. ★ This is the same class as the drifts below, one layer deeper: not a stale number
+beside a correct table, but a **correct number beside an incomplete table**.
 ⚠ **Six of these ten were re-projected on 2026-07-31 and four of them had drifted again** — the
 paragraph read `52 landed / 25 bincode / 26 prost / 28 verdict / 36 post-state / 3 metering` against
 projections of `53 / 25 / 27 / 29 / 37 / 4` *before* **CBR-042** was added. The unpinned figures here
@@ -620,6 +626,7 @@ is a *future* fork, not a present one).
 | [CBR-037](#cbr-037) | N | The `EPathMap` tag-8 trie-key **reader** becomes total — the writer was unlimited by requirement | `063974c5` | ○ | ● | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
 | [CBR-038](#cbr-038) | N | The escape arm's prost encode was a remotely triggerable **abort** — and a second, unnamed recursion beside it | `d7818967`, `b75aa6a0` | ○ | ○ | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
 | [CBR-039](#cbr-039) | N | ∅ gets one spelling at the constructor; the `union` half was **reverted**, witness landed | `e93f0222`, `0075ded5` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | CORRECTIVE | **L** |
+| [CBR-040](#cbr-040) | N | Sibling order was not a total function of the term; it is now — `ScoredTerm::sort_vec` tie-breaks on the bytes the element **emits** | `6192b4b9` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-041](#cbr-041) | N | An `EPathMap` serializes on the prost wire as the TRIE — its own byte array `U(m)` at field 8 — for every map; the tag-1 list arm is deleted | `1b576c90` | ○ | ● | ○ | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -637,29 +644,37 @@ is a *future* fork, not a present one).
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 56 entries**, recounted from the rows above rather than adjusted: **42 on Surface N, 14 on
-Surface L**; **54 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **41 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **34 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 57 entries**, recounted from the rows above rather than adjusted: **43 on Surface N, 14 on
+Surface L**; **55 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **42 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **35 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 56 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 57 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 55 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 57 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**54**, which is the arithmetic check that no row was double-counted or dropped.
+**57**, which is the arithmetic check that no row was double-counted or dropped.
+
+⚠★★ **Both figures in the paragraph above were themselves stale, and a THIRD kind of staleness is why.**
+They read *"the 55 body rows"* and *"each sum to **54**"* against a table that held **56** rows — two
+numbers that had never been re-projected after **CBR-041** and **CBR-042** landed, sitting inside the
+very sentence that explains how to recount. ★ Neither is anchored in `STATED_FIGURES`, so no clause could
+have caught them: the gate projects *from* this table but does not check every sentence that *describes*
+it. That asymmetry is the residual [§7.5](#75-first-extensions) extension 4 has left, and it is now
+recorded rather than repaired, because repairing it means anchoring prose that is deliberately narrative.
 
 ⚠ **Recounting again found three more stale figures — in a paragraph whose own previous revision
 announced that recounting is what finds them.** [§5.1](#51-aggregate-axis-exposure) still read *"Share of
@@ -7311,24 +7326,34 @@ unforgeable crypto **channels** rather than method-table entries. **MEASURED** (
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 56 |
+| Axis | Entries that move it | Share of the 57 |
 |---|---|---|
 | 1 · computed value | **22** | 39 % |
-| 2 · verdict | **29** | 52 % |
-| 3 · bytes — Lane B (bincode) | **26** | 46 % |
-| 3 · bytes — Lane P (prost) | **27** | 48 % |
-| 4 · post-state hash | **38** | 68 % |
-| 5 · accepted programs | **16** | 29 % |
+| 2 · verdict | **30** | 53 % |
+| 3 · bytes — Lane B (bincode) | **27** | 47 % |
+| 3 · bytes — Lane P (prost) | **28** | 49 % |
+| 4 · post-state hash | **39** | 68 % |
+| 5 · accepted programs | **16** | 28 % |
 | 6 · metering | **4** | 7 % |
 
-⚠ **Recounted 2026-07-31 from the 56 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
+⚠ **Recounted 2026-07-31 from the 57 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
 — [CBR-042](#cbr-042) moved Lane B `25` $`\rightarrow`$ `26` and the post-state hash `37` $`\rightarrow`$
 `38`, and every other cell was re-derived rather than left alone. An earlier revision read *"Share of the
 40"* with Lane B at 19 and the post-state hash at 28. Two of those were wrong *before* the three new
 entries landed: they were computed at 40 entries and never re-projected when **CBR-029** was added, so
 Lane B was under by one and the post-state hash by one. ★ The table is a projection of the `V`, `T`, `B`,
 `P`, `H`, `A`, `M` columns and of nothing else; the `●` counts per column, plus the `○` and `·` counts,
-sum to 56 in every column, which is the check that no row was skipped.
+sum to 57 in every column, which is the check that no row was skipped.
+
+⚠★ **[CBR-040](#cbr-040)'s late glyph row moved four of the seven counts at once**, because the entry is
+`○ ● ● ● ● ○ ○`: verdict `29` $`\rightarrow`$ `30`, Lane B `26` $`\rightarrow`$ `27`, Lane P `27`
+$`\rightarrow`$ `28`, the post-state hash `38` $`\rightarrow`$ `39`. **Every share moved too**, including
+the three whose *count* did not — a share is a ratio, so `computed value` held at **22** and yet its
+denominator grew. ★ This is the sharpest instance in the register of the failure mode the paragraph above
+describes: the numbers were not stale relative to the table, they were *correct* relative to a table that
+was missing a row. **A projection is only as complete as the table it reads**, and nothing in the gate
+compared the table's row set against the machine index's entry set — which is the omission
+[§7.5](#75-first-extensions) should close next.
 
 ★ **CBR-042 is the cleanest illustration in the register of why Lane B and Lane P are separate axes.**
 It moves **every** bincode golden and **no** prost byte at all — the exact mirror image of `7dcff96f`,
@@ -7387,20 +7412,22 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-07-31 from the 56 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
+⚠ **Recounted 2026-07-31 from the 57 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected;
-the 2026-07-30 recount reached `33` / `55`, and [CBR-042](#cbr-042) makes it `34` / `56`.
+the 2026-07-30 recount reached `33` / `55`, [CBR-042](#cbr-042) made it `34` / `56`, and
+[CBR-040](#cbr-040)'s late glyph row makes it `35` / `57` — a CORRECTIVE entry that had been landed and
+bodied since before either of them, and was invisible to this table the whole time.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **34** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-042](#cbr-042), is of this kind: it completes on bincode the mandate [CBR-041](#cbr-041) completed on prost. |
+| CORRECTIVE | **35** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-042](#cbr-042), is of this kind: it completes on bincode the mandate [CBR-041](#cbr-041) completed on prost. |
 | PERMISSIVE | **11** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **56** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **57** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -8905,8 +8932,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **56** consensus-visible changes, derived from the campaign record: **42** on the
-   F1r3node node, **14** on MeTTaIL's Rholang. **54 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **57** consensus-visible changes, derived from the campaign record: **43** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **55 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register
