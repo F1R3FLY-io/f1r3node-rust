@@ -1228,6 +1228,12 @@ reason = "DORMANT"
 evidence = "Appendix B.3 row 40 — adds `Outcome::Tail` and its termination backstop to `models/src/rust/rholang/drive.rs`; the `sort_drive.rs` and `rho-pure-eval/src/eval.rs` arms are the EXHAUSTIVENESS arms the new variant forces. NOTHING CONSTRUCTS A TAIL: a search of models/src, rho-pure-eval/src, rholang/src and casper/src finds `Outcome::Tail` only in doc comments and in the driver's own `Ok(Outcome::Tail(node)) =>` pattern. Same disposition as `699ee646` in the same file. [DERIVED]"
 
 [[exempt]]
+commit = "9c164559"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 48 — one test file, DOC COMMENTS ONLY, +54/-7 with no executable line changed; emitted bytes identical by construction. It removes two FALSEHOODS about par_children::dismantle that were live in the tree: (1) the claim that its EPathmapBody arm leaves a trie whose Pars were 'moved out' — par_children.rs:395 is out.extend(x.ps().iter().cloned()), a COPY, and the arm owns the EPathMap so the originals fall to the recursive destructor; (2) the list membership, asserted as TRIPWIRE_DEPTH at :2404 and as CONVERTED_DEPTH at :2519, when pathmap_chain_drop is in CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE, in NEITHER register, per its own doc at :898-921. Records the real reason the ladder reads flat (refcount aliasing on a pathmap-at-every-level fixture) so a flat reading is not mistaken for coverage again. [DERIVED]"
+
+[[exempt]]
 commit = "d329c0b7"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
@@ -1276,6 +1282,14 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 # row set is EXACTLY the coordinate set the document yields, so the corpus cannot
 # shrink by deletion, and it asserts each unchecked class's size EXACTLY.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+
+[[citation]]
+owner = "(doc)"
+cited = "par_children.rs"
+line = 395
+at = "HEAD"
+path = "models/src/rust/rholang/par_children.rs"
+token = "EPathmapBody"
 
 [[citation]]
 owner = "CBR-040"
