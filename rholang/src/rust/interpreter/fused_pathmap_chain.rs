@@ -318,10 +318,22 @@ struct FusedChain<'a> {
     /// `kinds[i]` classifies `links[i]`.
     kinds: Vec<LinkKind>,
     base: FusedBase<'a>,
-    /// The interned conversion of `source_map` — the ONE trie every link
-    /// reads (an `Arc` field access per link instead of today's per-link
-    /// O(map) digest re-walk through `e_pathmap_to_rholang_pathmap`).
-    interned: Arc<InternedEPathMap>,
+    // ⛔ The `interned: Arc<InternedEPathMap>` field is GONE.
+    //
+    // It cached four things, and every one of them is an O(1) read off `source_map`
+    // itself: `.map` is `source_map.entry_trie().trie()` (13 of the 16 reads, all
+    // borrows — so not even the refcount bump a clone would cost), `.locally_free`
+    // and `.connective_used` are the entry trie's maintained folds, and
+    // `.eval_stable` is `eval_stable_epathmap(source_map)` — the very function the
+    // store called to compute the cached bit.
+    //
+    // ⚠ So the "pre-warm" this field was introduced for bought nothing: it paid a
+    // full streamed digest walk plus a global-mutex rendezvous to memoise values
+    // that were already sitting in the message. Worse, it interned BEFORE the
+    // `eval_stable` gate below, so a non-ground map paid the whole cost and then
+    // took the fallback path anyway — and stayed resident in a 64-entry LRU whose
+    // eviction drops a deep `Par` through the RECURSIVE destructor, inside that
+    // mutex, on an arbitrary thread.
     /// The source EPathMap MESSAGE (borrowed from the base binding or the
     /// literal). Under the `eval_stable` gate this is byte-identical to
     /// every re-evaluated copy today's path constructs, so it is THE message
@@ -445,8 +457,10 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
     // pre-warms the one store entry every link will read — the same entry
     // today's first conversion would create (same message bytes ⇒ same
     // digest), so no second cache mechanism is introduced (risk R3).
-    let interned = interned_epathmap(source_map);
-    if !interned.eval_stable {
+    // THE GATE, unchanged in meaning: `eval_stable_epathmap` is the same classifier
+    // the store used to compute its cached `eval_stable` bit, read directly instead
+    // of through a global rendezvous.
+    if !models::rust::pathmap_crate_type_mapper::eval_stable_epathmap(source_map) {
         return None;
     }
 
@@ -454,7 +468,6 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
         links,
         kinds,
         base,
-        interned,
         source_map,
     })
 }
@@ -751,7 +764,7 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, kind, .. } => {
                             // :5526 — first (byte-lex smallest) child.
                             let children = collect_child_segments(
-                                &chain.interned.map,
+                                chain.source_map.entry_trie().trie(),
                                 &segments_to_key(focus, false),
                                 Some(1),
                             );
@@ -809,7 +822,7 @@ impl DebruijnInterpreter {
                                 // enumerates all children and `.get` still
                                 // yields None).
                                 let children = collect_child_segments(
-                                    &chain.interned.map,
+                                    chain.source_map.entry_trie().trie(),
                                     &segments_to_key(focus, false),
                                     Some((idx as usize).saturating_add(1)),
                                 );
@@ -932,7 +945,7 @@ impl DebruijnInterpreter {
                                 // :5713/:5803 — all siblings, ascending
                                 // byte-lex, deduplicated.
                                 let siblings =
-                                    collect_child_segments(&chain.interned.map, &parent_key, None);
+                                    collect_child_segments(chain.source_map.entry_trie().trie(), &parent_key, None);
                                 match siblings.iter().position(|s| s == &current_segment) {
                                     Some(current_idx) => {
                                         let target_idx = if kind == LinkKind::ToNextSibling {
@@ -1004,7 +1017,7 @@ impl DebruijnInterpreter {
                                 !chain.source_map.entry_trie().is_empty()
                             } else {
                                 // :5019 — native trie-path lookup.
-                                path_prefix_exists(&chain.interned.map, &key)
+                                path_prefix_exists(chain.source_map.entry_trie().trie(), &key)
                             }
                         }
                         // :5022-5024 — a raw map exists iff non-empty.
@@ -1026,8 +1039,8 @@ impl DebruijnInterpreter {
                             // `[1]` (key `03 02 00`). Byte-identical to the
                             // retired `segments_to_key(focus, true)` for a
                             // SPLIT cursor, which every ground-list chain has.
-                            let key = cursor_entry_key(focus, *kind, &chain.interned.map);
-                            match chain.interned.map.get(&key) {
+                            let key = cursor_entry_key(focus, *kind, chain.source_map.entry_trie().trie());
+                            match chain.source_map.entry_trie().trie().get(&key) {
                                 Some(value) => value.clone(),
                                 None => Par::default(),
                             }
@@ -1037,9 +1050,9 @@ impl DebruijnInterpreter {
                             // the same RholangReadZipper path (root value or
                             // Nil).
                             let read_zipper = RholangReadZipper::new(
-                                &chain.interned.map,
-                                chain.interned.connective_used,
-                                chain.interned.locally_free.clone(),
+                                chain.source_map.entry_trie().trie(),
+                                (chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some()),
+                                chain.source_map.entry_trie().union_locally_free().to_vec(),
                             );
                             match read_zipper.get_val() {
                                 Some(value) => value.clone(),
@@ -1059,7 +1072,7 @@ impl DebruijnInterpreter {
                             // :3999-4013 — native subtrie descent below the
                             // focus prefix.
                             let elements = collect_subtrie_values(
-                                &chain.interned.map,
+                                chain.source_map.entry_trie().trie(),
                                 &segments_to_key(focus, false),
                             );
                             // :4016-4023 — locally_free/connective_used from
@@ -1069,8 +1082,8 @@ impl DebruijnInterpreter {
                             // of a struct literal (private shadow cell).
                             single_expr_par(ExprInstance::EPathmapBody(EPathMap::new(
                                 elements,
-                                chain.interned.locally_free.clone(),
-                                chain.interned.connective_used,
+                                chain.source_map.entry_trie().union_locally_free().to_vec(),
+                                (chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some()),
                                 None,
                             )))
                         }
@@ -1092,7 +1105,7 @@ impl DebruijnInterpreter {
                             // :5428-5444 — distinct immediate children below
                             // the focus.
                             collect_child_segments(
-                                &chain.interned.map,
+                                chain.source_map.entry_trie().trie(),
                                 &segments_to_key(focus, false),
                                 None,
                             )
@@ -1100,7 +1113,7 @@ impl DebruijnInterpreter {
                         }
                         ViewMode::Map => {
                             // :5446-5457 — distinct first segments.
-                            collect_child_segments(&chain.interned.map, &[], None).len() as i64
+                            collect_child_segments(chain.source_map.entry_trie().trie(), &[], None).len() as i64
                         }
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
@@ -1124,13 +1137,13 @@ impl DebruijnInterpreter {
                     // stays byte-for-byte the same function.
                     let key = match &mode {
                         ViewMode::Zipper { focus, .. } => {
-                            entry_key_at(focus, path_par, &chain.interned.map)
+                            entry_key_at(focus, path_par, chain.source_map.entry_trie().trie())
                         }
-                        ViewMode::Map => entry_key_at(&[], path_par, &chain.interned.map),
+                        ViewMode::Map => entry_key_at(&[], path_par, chain.source_map.entry_trie().trie()),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :4922-4925/:4945-4948 — value or Nil, UNWRAPPED.
-                    return Ok(match chain.interned.map.get(&key) {
+                    return Ok(match chain.source_map.entry_trie().trie().get(&key) {
                         Some(value) => value.clone(),
                         None => Par::default(),
                     });
