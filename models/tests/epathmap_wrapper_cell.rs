@@ -198,16 +198,23 @@ fn arb_epathmap() -> impl Strategy<Value = EPathMap> {
 /// The CANONICAL serde-oracle twin: same struct name, field names and order,
 /// the same `serialize_with` on `locally_free`, no cell.
 ///
-/// ★ The twin's `ps` is simply `map.ps()`. It used to be
-/// `canonicalize_ground_epathmap(map).ps` — a ground map's entries re-read off
-/// a trie, other maps' entries verbatim — because the wrapper's `Serialize`
-/// forked the same way. Neither forks now: the map STORES the trie, so its
-/// projection is the canonical order for every map and the oracle is the plain
-/// field read again.
+/// ★★ **FORM ② — `ps` is a two-element TUPLE.** The wrapper's `EntryTrie`
+/// serializes as the trie's own byte array `U(m)` followed by its values, so the
+/// layout oracle carries that pair explicitly. bincode writes a tuple
+/// positionally with **no framing of its own**, so this derives byte-for-byte
+/// what the hand-written impl emits — which is exactly what makes it an oracle
+/// rather than a restatement: `#[derive(Serialize)]` is compiler-generated and
+/// cannot drift toward the implementation it is checking.
+///
+/// The `Vec<Par>` half used to be the whole field, and before that it was
+/// `canonicalize_ground_epathmap(map).ps` — a ground map's entries re-read off a
+/// trie, other maps' entries verbatim — because the wrapper's `Serialize` forked
+/// the same way. Neither forks now: the map STORES the trie, so its projection is
+/// the canonical order for every map.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename = "EPathMap")]
 struct DerivedTwin {
-    ps: Vec<Par>,
+    ps: (Vec<u8>, Vec<Par>),
     #[serde(serialize_with = "models::rust::serde_helpers::serialize_as_empty_bytes")]
     locally_free: Vec<u8>,
     connective_used: bool,
@@ -216,9 +223,9 @@ struct DerivedTwin {
 
 fn derived_twin(map: &EPathMap) -> DerivedTwin {
     DerivedTwin {
-        // The twin keeps a plain `Vec<Par>` (it IS the layout oracle) — an
-        // owned copy of the map's canonical projection.
-        ps: map.ps().clone(),
+        // The twin keeps plain owned values (it IS the layout oracle): `U(m)`
+        // and a copy of the map's canonical projection.
+        ps: (map.path_stream().to_vec(), map.ps().clone()),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
         remainder: map.remainder.clone(),
@@ -231,7 +238,7 @@ fn derived_twin(map: &EPathMap) -> DerivedTwin {
 #[derive(serde::Serialize)]
 #[serde(rename = "EPathMap")]
 struct RawBytesTwin {
-    ps: Vec<Par>,
+    ps: (Vec<u8>, Vec<Par>),
     locally_free: Vec<u8>,
     connective_used: bool,
     remainder: Option<Var>,
@@ -308,8 +315,14 @@ fn serde_locally_free_asymmetry_serialize_normalizes_deserialize_reads() {
     // Deserialize half: real bytes in the stream are read VERBATIM (no
     // deserialize-side normalization exists — the asymmetry is
     // serialize-only).
+    //
+    // ⚠ The crafted stream's `U(m)` is DELIBERATELY EMPTY while its value
+    // sequence is not — a disagreement, and therefore also a live witness that
+    // the reader RE-FILES rather than rejecting. It reaches `locally_free` at
+    // all only because the reader has no error channel to stop on.
+    let entries = vec![ground_list(vec![gstring_par("head")])];
     let raw = RawBytesTwin {
-        ps: vec![ground_list(vec![gstring_par("head")])],
+        ps: (Vec::new(), entries),
         locally_free: create_bit_vector(&[3]),
         connective_used: true,
         remainder: None,

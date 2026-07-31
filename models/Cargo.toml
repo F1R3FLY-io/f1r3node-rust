@@ -120,6 +120,17 @@ path = "tests/epathmap_canonical_fixtures.rs"
 name = "epathmap_canonicalization"
 path = "tests/epathmap_canonicalization.rs"
 
+# ★ FORM ② — the bincode surface becomes TRIE-NATIVE. It pins that `U(m)` is
+# carried VERBATIM and CONTIGUOUSLY (a substring search, because an interleaved
+# form round-trips perfectly and is not the trie's byte array), that the reader
+# acquires NO depth ceiling (34 and 64 are past `decode_trie_path`'s measured
+# escape-arm ceiling of 32, which is the whole reason the values are carried
+# beside `U(m)`), and that a peer stream whose keys disagree with its values
+# RE-FILES rather than being rejected — narrowing there would be a fork.
+[[test]]
+name = "epathmap_bincode_is_the_path_stream"
+path = "tests/epathmap_bincode_is_the_path_stream.rs"
+
 [[test]]
 name = "epathmap_identity_is_the_path_stream"
 path = "tests/epathmap_identity_is_the_path_stream.rs"

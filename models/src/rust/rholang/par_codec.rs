@@ -139,12 +139,24 @@
 //!    reads the stream's **real** length and never assumes zero — anything else
 //!    would reject byte strings the derived decoder accepts.
 //!
-//! 3. **`EPathMap`** (`models/src/rust/rhoapi_ext.rs`) has **4 wire fields, not
-//!    5**: `intern` is `#[serde(skip)]` and is left at `OnceLock::default()`;
-//!    `ps` is a `SharedPars(Arc<Vec<Par>>)` whose `Deserialize` is transparent
-//!    (`Vec::<Par>::deserialize` then wrap); `locally_free` is blanked on
+//! 3. **`EPathMap`** (`models/src/rust/rhoapi_ext.rs`) has **4 serde fields, not
+//!    5** — and ★ **the first of them is a PAIR**. `intern` is `#[serde(skip)]`
+//!    and is left at `OnceLock::default()`; `locally_free` is blanked on
 //!    *serialize only*, and the retained derived `Deserialize` reads the real
-//!    bytes. See [`Op::PathmapBuild`].
+//!    bytes; and `ps` is an `EntryTrie` that serializes as **FORM ②** — the
+//!    trie's own byte array followed by its values:
+//!
+//!    ```text
+//!      u64-LE |U(m)| ‖ U(m)      the entry trie, serialized AS A TRIE
+//!      u64-LE n      ‖ n × Par   the values
+//!    ```
+//!
+//!    bincode writes a tuple **positionally with no framing of its own**, so the
+//!    pair contributes exactly its two elements and `U(m)` is CONTIGUOUS. The
+//!    values are carried beside it because a `U(m)`-only reader would be
+//!    `decode_trie_path`, whose escape arm ceiling is a measured 32 against
+//!    ordinary Rholang's 40. See [`Op::PathmapBuild`] and
+//!    `EntryTrie::from_path_stream_and_values`.
 //!
 //! 4. **The three oneofs** (`ExprInstance` 36 arms, `ConnectiveInstance` 9,
 //!    `TaggedCont` 2) are an `Option` tag (**1** byte) *then* a variant index
@@ -215,7 +227,7 @@ use crate::rhoapi::{
     ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
-use crate::rust::rhoapi_ext::EPathMap;
+use crate::rust::rhoapi_ext::{EPathMap, EntryTrie};
 use crate::rust::rholang::par_children::{
     dismantle_all, CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
 };
@@ -436,15 +448,27 @@ impl<'a> Reader<'a> {
         usize::try_from(n).map_err(|_| ColdStoreDecodeError::LengthOverflow(n))
     }
 
-    /// A `Vec<u8>` field. serde has **no** specialisation for `Vec<u8>`: it
-    /// uses the generic sequence impl, so the wire is a `u64` count followed by
-    /// that many single-byte elements — byte-identical to what
-    /// `serialize_bytes` writes, which is why the `serialize_as_empty_bytes`
-    /// asymmetry (shape 2) is invisible to the *format* and visible only to the
-    /// *values*.
-    fn byte_seq(&mut self) -> Res<Vec<u8>> {
+    /// A `Vec<u8>` field, **borrowed** out of the input rather than copied.
+    ///
+    /// serde has **no** specialisation for `Vec<u8>`: it uses the generic
+    /// sequence impl, so the wire is a `u64` count followed by that many
+    /// single-byte elements — byte-identical to what `serialize_bytes` writes,
+    /// which is why the `serialize_as_empty_bytes` asymmetry (shape 2) is
+    /// invisible to the *format* and visible only to the *values*.
+    ///
+    /// ★ Exists for `EPathMap`'s `U(m)` (wire shape 3), which is *compared*
+    /// against freshly encoded trie keys and then dropped — copying it would
+    /// allocate a second image of a byte string already in the caller's buffer.
+    fn byte_slice(&mut self) -> Res<&'a [u8]> {
         let n = self.len()?;
-        Ok(self.take(n, "a byte sequence")?.to_vec())
+        self.take(n, "a byte sequence")
+    }
+
+    /// An owned `Vec<u8>` field — [`Reader::byte_slice`] plus the copy. The two
+    /// share the length read and the `wanted` label, so their `UnexpectedEof`
+    /// disposition cannot drift apart.
+    fn byte_seq(&mut self) -> Res<Vec<u8>> {
+        self.byte_slice().map(<[u8]>::to_vec)
     }
 
     /// `String::deserialize` → `deserialize_string` → `read_string`: read the
@@ -690,8 +714,12 @@ enum Op {
     ExprFromPathmap,
     ExprZipperBuild { has_pathmap: bool },
 
-    // ---- EPathMap: ps, locally_free, connective_used, remainder
+    // ---- EPathMap: U(m), ps, locally_free, connective_used, remainder
     PathmapStart,
+    /// `n` is the VALUE count; the `U(m)` slice rides on
+    /// [`Machine::path_streams`] because a `&[u8]` cannot live in a
+    /// lifetime-free `Op` — the same side-frame discipline `ParFrame` and
+    /// `NewFrame` follow.
     PathmapBuild { n: usize },
 
     // ---- KeyValuePair: key, value
@@ -796,6 +824,16 @@ struct Machine<'a> {
     receive_tails: Vec<ReceiveTail>,
     new_frames: Vec<NewFrame>,
     method_names: Vec<String>,
+    /// One live `U(m)` per open `EPathMap` — wire shape 3's first element,
+    /// read at `PathmapStart` and consumed at `PathmapBuild`, so it must
+    /// survive the whole value sequence's descent.
+    ///
+    /// ★ A **borrow** into the input buffer, never a copy: the slice is
+    /// compared against freshly encoded trie keys and then dropped, so an owned
+    /// `Vec<u8>` would be a second image of bytes the caller already holds. It
+    /// is a side frame rather than an `Op` payload because `Op` carries no
+    /// lifetime.
+    path_streams: Vec<&'a [u8]>,
 }
 
 /// Take the last `n` values off a stack, **preserving stream order**.
@@ -853,6 +891,7 @@ impl<'a> Machine<'a> {
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
+            path_streams: Vec::new(),
         }
     }
 
@@ -947,6 +986,7 @@ impl<'a> Machine<'a> {
             || !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
+            || !self.path_streams.is_empty()
         {
             return Err(ColdStoreDecodeError::MachineInvariant(
                 "side frame not drained at end of run",
@@ -1594,7 +1634,14 @@ impl<'a> Machine<'a> {
             // EPathMap — wire shape 3
             // ---------------------------------------------------------------
             Op::PathmapStart => {
+                // ★★ FORM ② — the trie's own byte array `U(m)` comes FIRST,
+                // then the value count and the values. `EntryTrie::serialize`
+                // writes the pair as a positional 2-tuple, which bincode frames
+                // with nothing of its own, so the two are literally consecutive
+                // here.
+                let path_stream = self.r.byte_slice()?;
                 let n = self.r.len()?;
+                self.path_streams.push(path_stream);
                 self.ops.push(Op::PathmapBuild { n });
                 self.repeat(Kind::Par, n);
             }
@@ -1603,13 +1650,25 @@ impl<'a> Machine<'a> {
                 let connective_used = self.r.bool()?;
                 let remainder = self.r.opt_var()?;
                 let ps = take_n(&mut self.pars, n, "EPathMap.ps")?;
-                // FOUR wire fields, not five: `intern` is `#[serde(skip)]`.
+                let path_stream = take_one(&mut self.path_streams, "EPathMap.serialized_paths")?;
+                // ★ THE ONE reader of the split encoding, shared with the
+                // derived `Deserialize` — two hand-written bulk readers of one
+                // wire shape is the defect `c705776c` closed.
+                //
+                // ⚠ The verdict is discarded: a stream whose key stream
+                // disagrees with its values is RE-FILED, never rejected, because
+                // a node that refuses a byte string its peers accept has forked.
+                // `decode_trie_path` is never reached, so this surface acquires
+                // no depth ceiling.
+                let (entries, _verdict) =
+                    EntryTrie::from_path_stream_and_values(path_stream, ps);
+                // FOUR serde fields, not five: `intern` is `#[serde(skip)]`.
                 // `EPathMap::new` leaves the shadow cell empty, which is
                 // exactly what the derived `Deserialize` does for a skipped
                 // `OnceLock` field, and is required — a decoded value must
                 // never carry a stale intern handle.
                 self.pathmaps.push(EPathMap::new(
-                    ps,
+                    entries,
                     locally_free,
                     connective_used,
                     remainder,

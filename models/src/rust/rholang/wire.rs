@@ -337,42 +337,67 @@ pub struct VariantProgram {
 ///
 /// `EPathMap` is `extern_path`'d in `models/build.rs`, so prost generates no
 /// struct for it and the descriptor-driven generator deliberately refuses to
-/// invent one. Its layout is the **4-field** shape its hand-written
-/// `Serialize` writes (`models/src/rust/rhoapi_ext.rs`): the private `intern`
-/// shadow cell is `#[serde(skip)]` and never reaches the wire.
+/// invent one. Its layout is the **4-field** shape its hand-written `Serialize`
+/// writes (`models/src/rust/rhoapi_ext.rs`) — but the first of those four fields
+/// is now a **two-element tuple**, and a `FieldKind` program is a flat list of
+/// what reaches the wire, so it is spelled here as **five** entries.
 ///
-/// The `ps` field is `self.ps()` — the canonical projection of the entry trie,
-/// in trie order, deduped and recursively canonical — so a map's event-hash
-/// preimage is a pure function of its entry SET, independent of the order and
-/// multiplicity a producer happened to use. [`pathmap_ps`] reproduces exactly
-/// the choice `Serialize` makes, which is now the only choice there is.
+/// ★ **FORM ②** — `ps` serializes as the entry trie's own byte array followed by
+/// its values:
+///
+/// ```text
+///   Bytes       U(m)             ← u64-LE |U(m)| ‖ the trie's key stream, VERBATIM
+///   Seq         the entries      ← u64-LE n ‖ n × Par
+///   EmptyBytes  locally_free
+///   Bool        connective_used
+///   Opt         remainder
+/// ```
+///
+/// bincode writes a tuple positionally with no framing of its own, so the tuple
+/// contributes no bytes beyond its two elements and the program stays a flat
+/// list. `U(m)` is therefore **contiguous** in the encoding.
+///
+/// The `Seq` element is `self.ps()` — the canonical projection of the entry
+/// trie, in trie order, deduped and recursively canonical — so a map's
+/// event-hash preimage is a pure function of its entry SET, independent of the
+/// order and multiplicity a producer happened to use. [`pathmap_ps`] reproduces
+/// exactly the choice `Serialize` makes, which is now the only choice there is.
 pub static EPATHMAP_PROGRAM: &[FieldKind] = &[
-    FieldKind::Seq,        // ps            (canonical order when ground)
+    FieldKind::Bytes,      // U(m)          (the trie, as its own byte array)
+    FieldKind::Seq,        // ps            (canonical trie order)
     FieldKind::EmptyBytes, // locally_free  (always blanked on serialize)
     FieldKind::Bool,       // connective_used
     FieldKind::Opt,        // remainder
 ];
 
-/// Which `ps` an `EPathMap` serializes.
+/// What an `EPathMap` serializes for its entries: the trie's byte array and the
+/// canonical projection, **both borrowed**.
 ///
-/// # ★ There is only one answer now, and it is a BORROW
+/// # ★ Nothing is constructed, and that is what deleted the arena
 ///
 /// This enum used to have two variants because a GROUND map's `ps` had to be
 /// *constructed* in canonical order — the stored `Vec` was in the producer's
 /// order — and a constructed vector cannot be returned by borrow, which is why
 /// the encoder had to park it in an owned slot for the duration of the subtree.
 ///
-/// An `EPathMap` stores a trie, so `EPathMap::ps()` **is** the canonical order,
-/// for every map, and it is memoized on the value. Nothing is constructed and
-/// nothing needs parking. The variant is kept as a named type (rather than the
-/// bare reference) so the encoder's `open_pathmap` keeps documenting *why* an
-/// `EPathMap` is opened here instead of at field 0.
+/// An `EPathMap` stores a trie, so `EPathMap::ps()` **is** the canonical order
+/// for every map and `EPathMap::path_stream()` **is** `U(m)`; both are memoized
+/// on the value. Nothing is constructed and nothing needs parking. The variant
+/// is kept as a named type (rather than a bare pair of references) so the
+/// encoder's `open_pathmap` keeps documenting *why* an `EPathMap` is opened
+/// there instead of at field 0.
 pub enum PathmapPs<'a> {
-    /// The canonical projection, borrowed.
+    /// `U(m)` and the canonical projection, borrowed.
     ///
     /// A `&Vec<Par>` rather than a `&[Par]` because only a *sized* type can be
     /// coerced to `&dyn WireSeq`.
-    Stored(&'a Vec<Par>),
+    Stored {
+        /// The trie's own length-framed key stream, memoized
+        /// (`EntryTrie::path_stream`). Emitted verbatim as one `put_bytes`.
+        path_stream: &'a [u8],
+        /// The entries, in trie order.
+        entries: &'a Vec<Par>,
+    },
 }
 
 impl WireNode for EPathMap {
@@ -386,26 +411,27 @@ impl WireNode for EPathMap {
         Some(self)
     }
 
-    /// ⚠ **Never entered at field 0.** `ps` may have to be *constructed* in
-    /// canonical order (see [`PathmapPs`]), and no borrow-returning emission
-    /// can own a freshly built vector, so the driver opens an `EPathMap`
-    /// through [`pathmap_ps`] and re-enters here at field 1. Emitting the
-    /// stored order here would silently drop the ground canonicalization —
-    /// which changes the event-hash preimage — so it refuses rather than
-    /// returning a plausible answer.
+    /// ⚠ **Never entered at fields 0 or 1.** Those two are the `ps` tuple —
+    /// `U(m)` and the entry projection — and both are reached through
+    /// accessors ([`pathmap_ps`]) rather than by a plain field read, so the
+    /// driver opens an `EPathMap` there and re-enters here at field 2. Emitting
+    /// the entries without their key stream, or in the stored order of some
+    /// other representation, changes the event-hash preimage silently, so this
+    /// refuses rather than returning a plausible answer.
     fn wire_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
         let mut i = from;
         loop {
             match i {
-                0 => unreachable!(
-                    "EPathMap.ps must be opened through `wire::pathmap_ps` — a ground map's \
-                     `ps` is CONSTRUCTED in canonical order and cannot be emitted from a borrow"
+                0 | 1 => unreachable!(
+                    "EPathMap's entries must be opened through `wire::pathmap_ps` — field 0 is \
+                     the trie's byte array U(m) and field 1 the canonical projection, and both \
+                     are accessor-reached rather than plain field reads"
                 ),
-                1 => put_empty_bytes(out),
-                2 => put_bool(out, self.connective_used),
+                2 => put_empty_bytes(out),
+                3 => put_bool(out, self.connective_used),
                 // `remainder` is the LAST field, so a descent into it needs no
                 // resume point — the encoder's tail call.
-                3 => match &self.remainder {
+                4 => match &self.remainder {
                     Some(v) => {
                         put_bool(out, true);
                         return Descent::Node {
@@ -422,13 +448,18 @@ impl WireNode for EPathMap {
     }
 }
 
-/// The `ps` an `EPathMap` serializes — the same choice its `Serialize` makes.
+/// What an `EPathMap` serializes for its entries — the same two things its
+/// `Serialize` impl emits, read through the same two accessors.
 ///
-/// The predicate and the canonicalizer are the *same two functions* the
-/// `Serialize` impl calls (`models/src/rust/pathmap_crate_type_mapper.rs`), so
-/// this cannot drift into a second opinion about what "ground" means.
+/// `EPathMap::path_stream()` and `EPathMap::ps()` are the *same two methods*
+/// the `Serialize` impl calls (`models/src/rust/rhoapi_ext.rs`), both memoized
+/// on the value, so this cannot drift into a second opinion about what a map's
+/// entries are.
 pub fn pathmap_ps(map: &EPathMap) -> PathmapPs<'_> {
-    PathmapPs::Stored(map.ps())
+    PathmapPs::Stored {
+        path_stream: map.path_stream(),
+        entries: map.ps(),
+    }
 }
 
 /// `Var` is reachable as `Option<Var>` (`remainder`) from several programs and

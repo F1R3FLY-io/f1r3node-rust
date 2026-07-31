@@ -179,21 +179,29 @@ enum Op<'a> {
     // /// call, so no `Vec<Par>` has to exist for `&dyn WireNode` to point into.
     // EntryPaths,
     //
-    // WHY IT IS PARKED. It works and is byte-identical (`wire_encode_differential`
-    // 13/13, every golden unmoved), but it costs 3 allocations / 1408 B on a warm
-    // encode where `wire_encode_space::the_steady_state_allocation_table` requires
-    // ZERO — one for the cursor `Vec`, two inside `read_zipper()` itself, which
-    // cannot be pooled away. It only pays for itself as a step toward emitting
-    // `U(m)` at this seam, which would need no cursor at all.
+    // WHY IT IS PARKED. It works and is byte-identical to the entry walk it replaced
+    // (`wire_encode_differential` 13/13, every golden unmoved at the time), but it
+    // costs 3 allocations / 1408 B on a warm encode where
+    // `wire_encode_space::the_steady_state_allocation_table` requires ZERO — one for
+    // the cursor `Vec`, two inside `read_zipper()` itself, which cannot be pooled
+    // away. It only ever paid for itself as a step toward emitting `U(m)` at this
+    // seam, which needs no cursor at all.
     //
-    // ⚠ That destination is currently unreachable, and it was MEASURED rather than
-    // assumed: `rholang/tests/pathmap_escape_depth_reachability.rs` shows the escape
-    // arm's read ceiling is 32 while ordinary Rholang compiles a ¬eval_stable pathmap
-    // entry at depth 40. The bincode cold store is iterative and depth-unlimited in
-    // BOTH directions today, so moving its READER onto trie keys would break
-    // round-trip for terms a deploy can write. Until that reader is unbounded, this
-    // seam must keep emitting entries — and while it emits entries, the borrow in
-    // `open_pathmap` beats the cursor on the one axis the space gate measures.
+    // ★ THE DESTINATION IS NOW PARTLY REACHED — see `open_pathmap`. FORM ② emits
+    // `U(m)` as ONE `put_bytes` of the memoized key stream, followed by the value
+    // sequence: the trie IS serialized as its own byte array, contiguously, and the
+    // encoder still allocates nothing warm. So the cursor is not merely unpaid for,
+    // it is unnecessary — an interleaved key/value form is the ONLY shape that would
+    // need it, and interleaving is exactly what would stop `U(m)` from appearing
+    // contiguously.
+    //
+    // ⚠ What is still owed is `U(m)` ALONE, without the values beside it, and that
+    // remains blocked for a MEASURED reason: `rholang/tests/
+    // pathmap_escape_depth_reachability.rs` shows the escape arm's read ceiling is 32
+    // while ordinary Rholang compiles a ¬eval_stable pathmap entry at depth 40. A
+    // reader reconstructing entries from keys alone would refuse terms a deploy can
+    // write. FORM ② sidesteps that completely by never calling `decode_trie_path`;
+    // dropping the values awaits the unbounded prost reader (Phase 4 S2).
 }
 
 // ===========================================================================
@@ -432,39 +440,45 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Open an `EPathMap`: emit its `ps` count, then arrange for fields 1..4.
+    /// Open an `EPathMap`: emit `U(m)` and the `ps` count, then arrange for
+    /// fields 2..5.
     ///
     /// ⚠ It is still opened HERE rather than at field 0 of the generated
-    /// walker, because `EPathMap`'s `ps` is a projection reached through
-    /// `pathmap_ps` rather than a plain field read, and emitting the wrong one
-    /// changes the event-hash preimage silently. `WireNode::wire_emit` refuses
-    /// field 0 for exactly that reason.
+    /// walker, because `EPathMap`'s entries are reached through `pathmap_ps`
+    /// (two accessors, two memos) rather than a plain field read, and emitting
+    /// the wrong one changes the event-hash preimage silently.
+    /// `WireNode::wire_emit` refuses fields 0 and 1 for exactly that reason.
     fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, map: &'a EPathMap) {
-        // ⚠ THIS SEAM IS NOT YET TRIE-NATIVE, and the reason is measured.
+        // ★★ THIS SEAM IS TRIE-NATIVE — FORM ②.
         //
         // The mandate is that a pathmap serializes as its own byte array on every
-        // surface. Here that would mean emitting `U(m)` — `map.entry_trie().path_stream()`,
-        // one `put_bytes` — with no count, no cursor and no entry walk at all.
+        // surface, and here that is `put_bytes(out, U(m))`: one memoized slice,
+        // emitted VERBATIM and CONTIGUOUSLY, with no cursor and no per-key walk.
         //
-        // It cannot land until the bincode READER can read it back. Reconstructing
-        // entries from `U(m)` means `decode_trie_path` per key, whose escape arm re-decodes
-        // a ¬eval_stable entry through prost's recursion-limited decoder.
-        // `rholang/tests/pathmap_escape_depth_reachability.rs` measures that ceiling at
-        // depth 32 — and measures ordinary Rholang compiling such an entry at depth 40.
-        // The cold store is iterative and depth-unlimited in BOTH directions today, so
-        // moving this pair onto keys would break round-trip for terms a deploy can write.
-        // The unbounded prost reader (Phase 4 S2) is what unblocks it.
+        // The VALUES follow it, and that is not a hedge — it is what makes the move
+        // total. `U(m)` alone would make `decode_trie_path` the reader, whose escape
+        // arm re-decodes a ¬eval_stable entry through prost's recursion-limited
+        // decoder; `rholang/tests/pathmap_escape_depth_reachability.rs` measures that
+        // ceiling at depth 32 and measures ordinary Rholang compiling such an entry at
+        // depth 40. Carrying the values keeps the reader on the existing iterative,
+        // depth-UNLIMITED machinery (`EntryTrie::from_path_stream_and_values` never
+        // calls `decode_trie_path`), so nothing that round-trips today stops.
         //
-        // Until then the seam emits entries, and it does so through the projection memo's
-        // BORROW rather than a live trie cursor: `WireSeq` is index-based and
-        // borrow-returning, and the borrow costs zero allocations on a warm encode where
-        // the cursor costs three. See the parked `Op::EntryPaths` for the cursor and why
-        // it is not the answer while this still emits a sequence.
-        let PathmapPs::Stored(ps) = pathmap_ps(map);
-        put_u64(out, ps.len() as u64);
-        self.suspend(node, 1);
-        if !ps.is_empty() {
-            self.open_seq(ps, ps.len());
+        // ⚠ SPLIT, never interleaved. Interleaving would need a live trie cursor here
+        // — built, measured at 3 allocations / 1408 B against `wire_encode_space::
+        // the_steady_state_allocation_table`'s required ZERO, and parked as
+        // `Op::EntryPaths` — and would stop `U(m)` from appearing contiguously.
+        // Split, the encoder emits one borrowed memo plus the projection it was
+        // already emitting, and the space gate stays at zero.
+        let PathmapPs::Stored {
+            path_stream,
+            entries,
+        } = pathmap_ps(map);
+        put_bytes(out, path_stream);
+        put_u64(out, entries.len() as u64);
+        self.suspend(node, 2);
+        if !entries.is_empty() {
+            self.open_seq(entries, entries.len());
         }
     }
 }

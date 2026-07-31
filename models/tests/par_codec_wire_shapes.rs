@@ -254,7 +254,7 @@ fn shape_2_etuple_has_no_remainder_field() {
 }
 
 // ===========================================================================
-// SHAPE 3 — `EPathMap` has FOUR wire fields, not five
+// SHAPE 3 — `EPathMap` has FOUR serde fields, and the first is a PAIR
 // ===========================================================================
 
 /// `intern: OnceLock<Arc<InternedEPathMap>>` is `#[serde(skip)]`, so serde's
@@ -262,10 +262,21 @@ fn shape_2_etuple_has_no_remainder_field() {
 /// `deserialize_tuple(4)` (`bincode/src/de/mod.rs:402-412`). The cell consumes
 /// **nothing** and is left at `OnceLock::default()`.
 ///
-/// `ps` is a `SharedPars(Arc<Vec<Par>>)` whose `Deserialize` is transparent —
-/// `Vec::<Par>::deserialize` then wrap — so it is a plain sequence on the wire.
+/// ★★ **FORM ② — `ps` is a two-element TUPLE, not a bare sequence.** The
+/// `EntryTrie` serializes as the trie's own byte array `U(m)` followed by its
+/// values, and bincode writes a tuple **positionally with no framing of its
+/// own**, so the pair contributes exactly its two elements:
+///
+/// ```text
+///   u64-LE |U(m)| ‖ U(m)      ← the trie, serialized AS A TRIE
+///   u64-LE n      ‖ n × Par   ← the values
+/// ```
+///
+/// That is why the field COUNT is unchanged at four while the byte layout moved:
+/// the tuple lives inside slot 0. `models/tests/epathmap_bincode_is_the_path_stream.rs`
+/// carries the rest of the property (contiguity, no depth ceiling, re-filing).
 #[test]
-fn shape_3_epathmap_is_four_wire_fields_with_a_transparent_ps() {
+fn shape_3_epathmap_is_four_serde_fields_whose_first_is_the_trie_then_its_values() {
     let map = EPathMap::new(
         vec![corpus::gint(1), corpus::gint(2)],
         vec![0xAA],
@@ -273,30 +284,52 @@ fn shape_3_epathmap_is_four_wire_fields_with_a_transparent_ps() {
         None,
     );
     let bytes = bincode::serialize(&map).expect("serialize");
+    let path_stream = map.path_stream().to_vec();
 
-    // Field 0: `ps`, a transparent sequence — u64 count first.
+    // Element 0 of the pair: `U(m)`, length-framed.
     assert_eq!(
         u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+        path_stream.len() as u64,
+        "shape 3: the FIRST thing an EPathMap writes is |U(m)|"
+    );
+    assert_eq!(
+        &bytes[8..8 + path_stream.len()],
+        &path_stream[..],
+        "shape 3: …followed by U(m) itself, verbatim"
+    );
+    // Element 1: the values, a plain u64-counted sequence.
+    let after_stream = 8 + path_stream.len();
+    assert_eq!(
+        u64::from_le_bytes(
+            bytes[after_stream..after_stream + 8]
+                .try_into()
+                .expect("8 bytes")
+        ),
         2,
-        "shape 3: `SharedPars` is transparent — a plain u64-counted sequence"
+        "shape 3: the values follow as a plain u64-counted sequence"
     );
 
-    // The whole encoding is exactly: ps ++ locally_free ++ connective_used ++
-    // remainder, and NOTHING for `intern`.
-    let ps_bytes = bincode::serialize(&vec![corpus::gint(1), corpus::gint(2)]).expect("ps");
-    let mut expected = ps_bytes;
+    // The whole encoding is exactly: U(m) ++ ps ++ locally_free ++
+    // connective_used ++ remainder, and NOTHING for `intern`.
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&(path_stream.len() as u64).to_le_bytes());
+    expected.extend_from_slice(&path_stream);
+    expected.extend_from_slice(
+        &bincode::serialize(&vec![corpus::gint(1), corpus::gint(2)]).expect("ps"),
+    );
     expected.extend_from_slice(&0u64.to_le_bytes()); // locally_free: BLANKED
     expected.push(1); // connective_used
     expected.push(0); // remainder: None
     assert_eq!(
         bytes, expected,
-        "shape 3: EPathMap's wire form is exactly four fields; the `intern` cell \
-         contributes nothing"
+        "shape 3: EPathMap's wire form is exactly the trie's byte array, its values, \
+         and the three metadata fields; the `intern` cell contributes nothing"
     );
 
     // And the retained derived `Deserialize` reads REAL `locally_free` bytes,
     // which the machine must match: hand-build one with a non-empty bitset.
-    let mut hand = bincode::serialize(&Vec::<Par>::new()).expect("empty ps");
+    let mut hand = 0u64.to_le_bytes().to_vec(); // U(m): empty
+    hand.extend_from_slice(&bincode::serialize(&Vec::<Par>::new()).expect("empty ps"));
     hand.extend_from_slice(&2u64.to_le_bytes());
     hand.extend_from_slice(&[0x01, 0x02]);
     hand.push(0); // connective_used
@@ -310,11 +343,13 @@ fn shape_3_epathmap_is_four_wire_fields_with_a_transparent_ps() {
 
     // Reached through the `Par` machine (`EPathmapBody`).
     let decoded = both(&par_of(ExprInstance::EPathmapBody(map)));
-    match decoded.exprs[0].expr_instance.as_ref() {
-        Some(ExprInstance::EPathmapBody(m)) => {
-        }
-        _ => panic!("expected EPathmapBody"),
-    }
+    assert!(
+        matches!(
+            decoded.exprs[0].expr_instance.as_ref(),
+            Some(ExprInstance::EPathmapBody(_))
+        ),
+        "expected EPathmapBody"
+    );
 }
 
 /// `EZipper.pathmap` is an `Option<EPathMap>`: one tag byte, THEN the four

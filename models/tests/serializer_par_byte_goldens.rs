@@ -38,7 +38,7 @@
 //! |---|-------|----------------|
 //! | 1 | `New.injections: BTreeMap<String, Par>` | the ONLY `btree_map` field in `RhoTypes.proto`; serde emits a **map** (`u64` count, then key/value pairs), so a decoder must call `deserialize_map`, not `deserialize_seq` |
 //! | 2 | the 12 `serialize_with = serialize_as_empty_bytes` sites | WRITTEN as `serialize_bytes(&[])` (8 zero bytes), READ back as `Vec<u8>` through `deserialize_seq`. The asymmetry is deliberate (`models/src/rust/serde_helpers.rs`), and a decoder must read the stream's REAL length rather than assume zero |
-//! | 3 | `EPathMap` (`models/src/rust/rhoapi_ext.rs`) | **4** wire fields, not 5 — `intern` is `#[serde(skip)]`; `ps` is a `SharedPars(Arc<Vec<Par>>)` that is transparent as a seq; `locally_free` is blanked on serialize ONLY, and the retained derived `Deserialize` reads the real bytes |
+//! | 3 | `EPathMap` (`models/src/rust/rhoapi_ext.rs`) | **4** serde fields, not 5 — `intern` is `#[serde(skip)]`; ★ `ps` is a **two-element tuple** (`u64 \|U(m)\| ‖ U(m)`, then `u64 n ‖ n × Par`) that bincode writes positionally with no framing of its own; `locally_free` is blanked on serialize ONLY, and the retained derived `Deserialize` reads the real bytes |
 //! | 4 | the three oneofs (`ExprInstance` 36, `ConnectiveInstance` 9, `TaggedCont` 2) | an `Option` tag (1 byte) **then** a variant index (`u32`, 4 bytes fixint-LE) — two separate reads, not one |
 //!
 //! ## Blessing procedure
@@ -432,22 +432,39 @@ fn digest_hex(bytes: &[u8]) -> String {
 }
 
 mod pinned {
+    //! ★★ **CBR-042 re-pin — the bincode surface became TRIE-NATIVE (FORM ②).**
+    //!
+    //! An `EPathMap` now writes `u64-LE |U(m)| ‖ U(m)` — the entry trie's own
+    //! byte array — ahead of its values, so every fixture carrying a map grew by
+    //! `8 + |U(m)|` per map and all three digests moved. The fixture holds two
+    //! maps (a bare `EPathmapBody` and one inside an `EZipper`), and all three
+    //! encodings grew by exactly **+46 B**: the same two maps, the same twice.
+    //!
+    //! ⚠ Re-blessing is a **consensus change** and is filed as one (CBR-042).
+    //! The anti-vacuity control lives beside it in
+    //! `models/tests/epathmap_canonical_fixtures.rs`: **all five prost goldens
+    //! came back byte-for-byte UNMOVED** (SHA-256, not merely length) while all
+    //! five bincode and all five JSON goldens moved — which is what
+    //! distinguishes *"the bincode surface changed"* from *"an emitter drifted"*.
+
     /// `encode_datum(fixture_datum())` — the models-typed cold-store leaf.
     /// Captured 2026-07-27 at `18419514` on the DERIVED encoder, before any
-    /// line of `par_codec.rs` existed.
-    pub const PAR_DATUM_LEN: usize = 4153;
+    /// line of `par_codec.rs` existed; re-pinned 4,153 → 4,199 by CBR-042.
+    pub const PAR_DATUM_LEN: usize = 4199;
     pub const PAR_DATUM_DIGEST_HEX: &str =
-        "e795c175331fb84bf01e9ba738041fc6a518c07e67f996a241ab1ceb921c5a13";
+        "e56abdc5614046cad47458adc5b2a3ac74165c70a09304c86ab77c1545f3f0b9";
 
     /// `encode_datums([fixture_datum(), fixture_datum_persist()])`.
-    pub const PAR_DATUMS_LEN: usize = 4285;
+    /// Re-pinned 4,285 → 4,331 by CBR-042.
+    pub const PAR_DATUMS_LEN: usize = 4331;
     pub const PAR_DATUMS_DIGEST_HEX: &str =
-        "a0c2c21b35675338cc9a66f193269f49878d61500512174ac5fd1c9e0257d360";
+        "df32b177bf14f25ead168ca00f71b372c119cc071d12cc6f668b33d0d4194f64";
 
     /// `encode_continuations([par_body, scala_ref])`.
-    pub const PAR_CONTS_LEN: usize = 4529;
+    /// Re-pinned 4,529 → 4,575 by CBR-042.
+    pub const PAR_CONTS_LEN: usize = 4575;
     pub const PAR_CONTS_DIGEST_HEX: &str =
-        "e285cf4bce0561f5f75b4847fc57ee1cf13e23a50dc7bd8694d5c9fd8c88f3d5";
+        "714df35754a4133ac3b53d96f4ecfcdf1833342b8c4e6205c76e548b15b151f1";
 }
 
 fn bless() -> bool {

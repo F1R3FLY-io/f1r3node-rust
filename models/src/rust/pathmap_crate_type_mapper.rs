@@ -474,6 +474,114 @@ pub(crate) fn path_stream_of(map: &RholangPathMap) -> Vec<u8> {
     stream
 }
 
+/// Why a `U(m)` byte string could not be split into frames.
+///
+/// ⚠ The three variants are the three ways [`path_stream_of`]'s output can fail
+/// to be reproduced, and they are kept DISTINCT because the two readers dispose
+/// of them differently: proto field 8 has nothing but the keys, so it rejects;
+/// the bincode surface carries the values beside the stream, so it re-files. A
+/// single merged "malformed" variant would make those two policies look like one
+/// policy applied twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathFrameError {
+    /// Between 1 and 3 bytes remained — not enough for a `u32-LE` length
+    /// header. `at` is the offset of the first orphaned byte.
+    TruncatedLength { at: usize },
+    /// A length header promised `needed` key bytes and only `available`
+    /// remained. `at` is the offset the key would have started at.
+    TruncatedKey {
+        at: usize,
+        needed: usize,
+        available: usize,
+    },
+    /// `at + needed` overflowed `usize`. Unreachable on a 64-bit target (a
+    /// `u32` length cannot carry an in-memory offset past `isize::MAX`), and
+    /// enumerated anyway because "cannot happen" is a claim about the host.
+    LengthOverflow { at: usize, needed: usize },
+}
+
+/// ★ **THE reader of `U(m)`'s framing** — the read twin of [`path_stream_of`],
+/// and the only place in the tree that interprets it.
+///
+/// Yields each frame's KEY as a borrowed slice, in stream order, performing
+/// **no decode at all**: the framing is `repeat( u32-LE keylen ‖ key )`, so
+/// splitting it is pure byte slicing. That is what makes this iterator TOTAL on
+/// every byte string — `decode_trie_path`, which the key would have to go
+/// through to become a `Par`, is not.
+///
+/// ⚠ **FUSED at the first error.** A framing fault leaves no defensible cursor
+/// to resume from (the next four bytes are a length header only if the previous
+/// frame was well-formed), so the iterator yields the error once and then ends.
+/// Without the fuse a caller that ignored the error would loop forever on the
+/// same offset.
+///
+/// # Why the two readers share it rather than each splitting inline
+///
+/// `U(m)` is written in exactly one place. Read in two, its framing would be
+/// stated twice — and the two statements would be free to disagree about a
+/// trailing partial header, which is precisely the class of divergence that
+/// forks a network. The *dispositions* still differ (reject vs. re-file) and
+/// belong to the callers; the *framing* does not.
+pub(crate) struct PathFrames<'a> {
+    stream: &'a [u8],
+    cursor: usize,
+    done: bool,
+}
+
+impl<'a> PathFrames<'a> {
+    pub(crate) fn new(stream: &'a [u8]) -> Self {
+        PathFrames {
+            stream,
+            cursor: 0,
+            done: false,
+        }
+    }
+}
+
+impl<'a> Iterator for PathFrames<'a> {
+    type Item = Result<&'a [u8], PathFrameError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let remaining = self.stream.len() - self.cursor;
+        match remaining {
+            0 => {
+                self.done = true;
+                None
+            }
+            1..=3 => {
+                self.done = true;
+                Some(Err(PathFrameError::TruncatedLength { at: self.cursor }))
+            }
+            _ => {
+                let header = &self.stream[self.cursor..self.cursor + 4];
+                let needed = u32::from_le_bytes(
+                    header
+                        .try_into()
+                        .expect("a 4-byte slice converts to a 4-byte array"),
+                ) as usize;
+                let start = self.cursor + 4;
+                let Some(end) = start.checked_add(needed) else {
+                    self.done = true;
+                    return Some(Err(PathFrameError::LengthOverflow { at: start, needed }));
+                };
+                if end > self.stream.len() {
+                    self.done = true;
+                    return Some(Err(PathFrameError::TruncatedKey {
+                        at: start,
+                        needed,
+                        available: self.stream.len() - start,
+                    }));
+                }
+                self.cursor = end;
+                Some(Ok(&self.stream[start..end]))
+            }
+        }
+    }
+}
+
 /// Emit proto field 8 (`serialized_paths`, length-delimited bytes) = U(m).
 pub(crate) fn encode_ground_field8(path_stream: &[u8], buf: &mut impl BufMut) {
     prost::encoding::encode_key(8u32, prost::encoding::WireType::LengthDelimited, buf);

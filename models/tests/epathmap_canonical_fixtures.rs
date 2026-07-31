@@ -94,10 +94,22 @@ mod pinned {
     ///
     /// `LOCALLY_FREE_ENCODED_LEN` is unchanged at 36 — a coincidence of length, not
     /// of content: its bytes moved (tag-1 pair ⇒ tag 3 + tag 8) at equal size.
+    ///
+    /// ★★ CBR-042 (FORM ②): **not one of these five moved, and that is the
+    /// anti-vacuity control for the re-blessing below.** FORM ② makes the
+    /// *bincode* surface trie-native and touches no prost byte; all five prost
+    /// goldens came back byte-for-byte identical (verified by SHA-256, not by
+    /// length), while all five bincode and all five JSON goldens moved. A change
+    /// that had moved these too would mean the prost emitter had drifted.
     pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 19;
 
     /// Blake2b256 of `bincode(channel)` for the E-6a index channel Par
     /// (`stable_hash_provider::hash`, the channel leg of every event hash).
+    ///
+    /// ★ **UNMOVED by CBR-042** — the channel is a `GString`, not a map, so a
+    /// change to the pathmap wire cannot reach it. It is the second control:
+    /// paired with the two moved `PRODUCE_*` hashes it shows the movement is
+    /// confined to the leg that actually carries an `EPathMap`.
     pub const INDEX_CHANNEL_HASH_HEX: &str =
         "5927a6b63fd2ee3b92b4bfd2b4166f4fa4e2f59f99a38fed853c8e1d5bba6301";
 
@@ -108,14 +120,20 @@ mod pinned {
     /// serializes `ps` in CANONICAL trie order instead of DFS construction
     /// order. The channel hash (`INDEX_CHANNEL_HASH_HEX`) is UNCHANGED (the
     /// channel is a `GString`, not the map).
+    ///
+    /// ★★ **CBR-042 re-pin** (`9991c1b0…` → `b94d5aaa…`). The datum embeds the
+    /// map's bincode, which now opens with `u64-LE |U(m)| ‖ U(m)` — the entry
+    /// trie's own byte array — before its values. The preimage grew by
+    /// `8 + |U(m)|` (this fixture: 3,689 → 4,029 B), so the digest moved.
     pub const PRODUCE_INDEX_RS1_HASH_HEX: &str =
-        "9991c1b0e45834315488f58bb395672baade5949d5983ee0aef449a2e04692ea";
+        "b94d5aaab4aff470914d1d94b30cb6d56015bccdd4c8a11be0e5e2cb6eb8308f";
 
     /// Same datum pars, `random_state` differing in ONE byte — the hash MUST
     /// differ (pins the per-produce random_state placement inside the datum).
-    /// MOVED for the same reason as `PRODUCE_INDEX_RS1_HASH_HEX`.
+    /// MOVED for the same reason as `PRODUCE_INDEX_RS1_HASH_HEX`, and re-pinned
+    /// again by CBR-042 (`b86bf7a0…` → `c5458866…`).
     pub const PRODUCE_INDEX_RS2_HASH_HEX: &str =
-        "b86bf7a0a321af4f189dc8969f1e20f3762c7c9eed87d857779d9fe4542ae460";
+        "c5458866a160a44c63099421e265552bc7e61727853443c309d314f2bcef30d3";
 
     /// `Consume::create([channel], [freevar bind], ParBody continuation,
     /// false).hash` — the discovery-receive shape.
@@ -284,39 +302,90 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
 }
 
 /// THE serialize-only normalization (models/build.rs injects
-/// `serialize_as_empty_bytes` on EVERY `.rhoapi` `locally_free`): serde output
-/// is IDENTICAL whether the bitsets are populated or empty, for both bincode
-/// and JSON. Event hashes therefore never see `locally_free` — the P4 spliced
-/// emitter must replicate exactly this asymmetry (serialize normalizes,
-/// deserialize reads real bytes; plan amendment PM-1).
+/// `serialize_as_empty_bytes` on EVERY `.rhoapi` `locally_free`): every
+/// `locally_free` **field** is written as empty bytes, so a round trip loses the
+/// bits and the *value* half of an encoding never carries them.
+///
+/// # ⚠⚠ RE-STATED, and NARROWED, by FORM ② — read this before trusting the name
+///
+/// This test used to assert something strictly stronger: that serde output is
+/// byte-**identical** whether the bitsets are populated or empty, hence *"event
+/// hashes therefore never see `locally_free`"*. That claim is **now false for an
+/// `EPathMap`'s entries**, and it is false for a reason that has nothing to do
+/// with the `serialize_with` normalization:
+///
+/// * an entry is **KEYED** by `encode_trie_path`, whose `0x0F` escape arm files a
+///   ¬`eval_stable` entry as its canonical **prost** bytes, and prost RETAINS
+///   `locally_free` (`b73af1d2` / C8 named exactly this);
+/// * `1b576c90` (CBR-041) put that key stream `U(m)` on the **prost** wire;
+/// * FORM ② (CBR-042) puts it on the **bincode** wire.
+///
+/// ⇒ two maps differing only in an entry's `locally_free` now hold different
+/// keys, hence different `U(m)`, hence different bincode. The normalization
+/// still governs every `locally_free` FIELD; it never governed the trie KEY, and
+/// bincode was simply the last surface that could not see the difference.
+///
+/// ★ Filed as CBR-042, not discovered here — and the direction is a
+/// **convergence**: before FORM ② two `!=` maps produced identical bincode, so
+/// the event hash was not injective on the value. It now is.
 ///
 /// Both `tagged` and its FULLY-cleared twin are NON-ground: the tagged entry is
 /// a bound-variable `EVar` — non-ground BY CONTENT, not by its lf bits (see
 /// [`epathmap_locally_free_entries`]) — so clearing `locally_free` does NOT flip
-/// the map to ground. Both therefore take the construction-order serialize arm,
-/// and the byte-identity below isolates the `locally_free` normalization from
-/// the producer-independent hardening's ground-`ps` canonicalization (an
-/// orthogonal, ground-only reordering that never applies here).
+/// the map to ground, and both take the same serialize path.
 #[test]
 fn serde_normalizes_locally_free_to_empty() {
     let tagged = epathmap_locally_free_entries();
     let cleared = clear_locally_free(&tagged);
 
+    // ── What the normalization still guarantees: the VALUE half ─────────────
+    //
+    // Strip the leading `u64-LE |U(m)| ‖ U(m)` and the two encodings are
+    // identical — i.e. every `locally_free` FIELD really is written empty.
+    let tagged_bytes = bincode::serialize(&tagged).expect("bincode");
+    let cleared_bytes = bincode::serialize(&cleared).expect("bincode");
+    let tagged_values = after_path_stream(&tagged_bytes);
+    let cleared_values = after_path_stream(&cleared_bytes);
     assert_eq!(
-        bincode::serialize(&tagged).expect("bincode"),
-        bincode::serialize(&cleared).expect("bincode"),
-        "bincode must not see locally_free (serialize_as_empty_bytes)"
+        tagged_values, cleared_values,
+        "the VALUE half must not see locally_free (serialize_as_empty_bytes): with the \
+         trie's key stream stripped, a bit-tagged map and its cleared twin must write \
+         identical bytes"
     );
+
+    // ── What FORM ② added: the KEY half DOES carry it ───────────────────────
+    assert_ne!(
+        tagged.path_stream(),
+        cleared.path_stream(),
+        "★ THE CONTROL. The two maps must hold DIFFERENT keys — the escape arm files a \
+         ¬eval_stable entry as its canonical prost bytes, which retain locally_free. If \
+         they were equal, the assertion above would be comparing a map with itself and \
+         would be vacuous."
+    );
+    assert_ne!(
+        tagged_bytes, cleared_bytes,
+        "⚠ MEASURED AND FILED (CBR-042): once U(m) is on the bincode wire, an entry's \
+         locally_free reaches it through the KEY. This is the cost stated as plainly as \
+         the gain — not an accident, and not a test that was loosened."
+    );
+
+    // JSON: the same split, expressed structurally rather than by byte offset.
+    let tagged_json: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&tagged).expect("json")).expect("parse");
+    let cleared_json: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&cleared).expect("json")).expect("parse");
     assert_eq!(
-        serde_json::to_string(&tagged).expect("json"),
-        serde_json::to_string(&cleared).expect("json"),
-        "serde_json must not see locally_free (serialize_as_empty_bytes)"
+        tagged_json["ps"][1], cleared_json["ps"][1],
+        "serde_json's VALUE half must not see locally_free either"
+    );
+    assert_ne!(
+        tagged_json["ps"][0], cleared_json["ps"][0],
+        "…and its KEY half must, for the same reason bincode's does"
     );
 
     // A round trip drops every bitset (map level and entry level) — the
-    // property that makes event hashes lf-blind.
-    let round: EPathMap =
-        bincode::deserialize(&bincode::serialize(&tagged).expect("ser")).expect("de");
+    // property that makes the DECODED VALUE lf-blind, which is unchanged.
+    let round: EPathMap = bincode::deserialize(&tagged_bytes).expect("de");
     assert!(
         round.locally_free.is_empty(),
         "map-level locally_free must normalize to empty on serialize"
@@ -327,6 +396,16 @@ fn serde_normalizes_locally_free_to_empty() {
             "entry-level locally_free must normalize to empty on serialize"
         );
     }
+}
+
+/// An `EPathMap` encoding with its leading `u64-LE |U(m)| ‖ U(m)` removed — the
+/// VALUE half alone.
+///
+/// ⚠ Reads the length prefix rather than taking a fixed offset, so it cannot
+/// silently start slicing in the middle of a key stream when a fixture changes.
+fn after_path_stream(bytes: &[u8]) -> &[u8] {
+    let len = u64::from_le_bytes(bytes[..8].try_into().expect("8-byte length prefix")) as usize;
+    &bytes[8 + len..]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

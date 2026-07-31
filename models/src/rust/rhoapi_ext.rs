@@ -151,7 +151,8 @@ use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path
 // Removing the import is what makes it impossible to reintroduce the fork by
 // reflex.
 use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of,
+    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of, PathFrameError,
+    PathFrames,
 };
 use super::pathmap_integration::RholangPathMap;
 use crate::rhoapi::{Par, Var};
@@ -419,6 +420,24 @@ impl EntryTrie {
         // taking it here costs nothing — the alternative is a second walk that could form
         // a second opinion about something the codec has already decided.
         let (key, stable) = encode_trie_path_with_stability(&par);
+        self.insert_encoded(key, stable, par);
+    }
+
+    /// File `par` under a key the caller has **already** obtained from
+    /// [`encode_trie_path_with_stability`], carrying the stability verdict that
+    /// came back with it.
+    ///
+    /// ★ The whole of [`EntryTrie::insert_entry`]'s body below the encode, so
+    /// the fold maintenance (`entries_stable`, `any_connective_used`,
+    /// `union_locally_free`, `len`) and the two memo invalidations are stated
+    /// ONCE. It exists for [`EntryTrie::from_path_stream_and_values`], which
+    /// needs the key in its own hand to compare against the peer's frame and
+    /// must not pay a second `encode_trie_path` to hand it back.
+    ///
+    /// ⚠ `key` must be `encode_trie_path(&par)` and `stable` its companion
+    /// verdict. It is `pub(crate)` and takes both together — never a bare key —
+    /// so the only way to reach it is to have called the encoder.
+    pub(crate) fn insert_encoded(&mut self, key: Vec<u8>, stable: bool, par: Par) {
         self.entries_stable &= stable;
         self.any_connective_used |= par.connective_used;
         self.union_locally_free = crate::rust::utils::union(
@@ -764,6 +783,135 @@ impl EntryTrie {
     }
 }
 
+/// Why a peer's `U(m)` was not the key stream this node's own encoder produces
+/// for the values that came with it.
+///
+/// ⚠ **Never a rejection.** Every variant names a stream this node ACCEPTS —
+/// see [`EntryTrie::from_path_stream_and_values`] for why narrowing here would
+/// be a fork rather than a hardening. The variants exist so the disagreement can
+/// be *observed* (by a test, or by a future diagnostic) instead of being a
+/// silent branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathStreamDisagreement {
+    /// The framing itself did not parse — a partial length header, a key
+    /// running past the end, or a length that overflows the host's `usize`.
+    MalformedFraming(PathFrameError),
+    /// Frame `index` is not `encode_trie_path` of the value beside it.
+    KeyDisagrees { index: usize },
+    /// The stream held more frames than there were values.
+    ExcessFrames { values: usize },
+    /// The stream ran out of frames before the values did.
+    MissingFrames { at: usize, values: usize },
+}
+
+/// What a peer's `U(m)` turned out to be, checked against this node's encoder.
+///
+/// ⚠ It does **not** select the returned value — see
+/// [`EntryTrie::from_path_stream_and_values`], where the two branches are proved
+/// to be the same trie. It is the *verdict*, carried out so that the check is
+/// observable rather than dead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathStreamVerdict {
+    /// Every frame was exactly `encode_trie_path` of the value beside it, and
+    /// the two sequences ended together.
+    Agrees,
+    /// The first disagreement found. The trie was built from the VALUES.
+    Refiled(PathStreamDisagreement),
+}
+
+impl EntryTrie {
+    /// ★★ **THE reader of the split `U(m) ‖ values` encoding — FORM ②.**
+    ///
+    /// The bincode surface serializes an `EPathMap`'s entries as the trie's own
+    /// byte array `U(m)` **followed by** the values, and this is the one place
+    /// that reads the pair back. Both surfaces that carry that encoding — the
+    /// `serde::Deserialize` impl below and `par_codec`'s `Op::PathmapBuild` —
+    /// call it, because two hand-written bulk readers of one wire shape is the
+    /// defect `c705776c` closed and it does not get to come back.
+    ///
+    /// # ★ Why this is TOTAL where a `U(m)`-only reader would not be
+    ///
+    /// Reconstructing entries from `U(m)` **alone** means `decode_trie_path` per
+    /// key, whose escape arm re-decodes a ¬`eval_stable` entry through prost's
+    /// recursion-limited decoder. `rholang/tests/pathmap_escape_depth_reachability.rs`
+    /// measures that ceiling at depth **32** — and measures ordinary Rholang
+    /// compiling such an entry at depth **40**. A reader built on it would refuse
+    /// terms a deploy can write, which is a regression rather than a narrowing.
+    ///
+    /// ⇒ `decode_trie_path` is **never called here**. Splitting `U(m)` into
+    /// frames is pure byte slicing ([`PathFrames`]); the entries come from the
+    /// value sequence, through the existing depth-unlimited machinery; and
+    /// `encode_trie_path` — the direction that is total — is what relates the
+    /// two. **Nothing that round-trips today stops round-tripping.**
+    ///
+    /// # ⚠ A disagreeing stream is RE-FILED, never rejected
+    ///
+    /// This is `adopt_trie`'s policy and proto field 8's, and it is a
+    /// consensus-acceptance decision rather than a taste: a node that rejected a
+    /// byte string its peers accept has forked. So every fault — malformed
+    /// framing, a key that is not `encode_trie_path` of its value, a frame count
+    /// that disagrees with the value count — yields the trie built from the
+    /// VALUES, exactly as though the stream had carried no key stream at all.
+    ///
+    /// ★ **And the two branches are the same trie.** A trie is a set of
+    /// (key, value) slots; on the agreeing branch every frame *equals*
+    /// `encode_trie_path(value)`, which is the key `EntryTrie::from` would have
+    /// used. So the disposition cannot change the decoded value — which is the
+    /// property that keeps `axis_acceptance` at `NO`. The verdict is returned
+    /// rather than dropped so that the check is observable
+    /// (`models/tests/epathmap_bincode_is_the_path_stream.rs` asserts both
+    /// halves: the disagreement is *detected*, and the value is *unchanged*).
+    ///
+    /// # Preallocation
+    ///
+    /// None is possible or wanted: the trie is grown by `insert`, and `values`
+    /// is already an owned `Vec` moved through by value. `EntryTrie::len()` is
+    /// the O(1) maintained fold and is what a *caller* preallocates from.
+    pub fn from_path_stream_and_values(
+        path_stream: &[u8],
+        values: Vec<Par>,
+    ) -> (EntryTrie, PathStreamVerdict) {
+        let value_count = values.len();
+        let mut frames = PathFrames::new(path_stream);
+        let mut built = EntryTrie::default();
+        // The FIRST fault wins; later ones are consequences of it.
+        let mut verdict = PathStreamVerdict::Agrees;
+        let mut note = |found: PathStreamDisagreement| {
+            if matches!(verdict, PathStreamVerdict::Agrees) {
+                verdict = PathStreamVerdict::Refiled(found);
+            }
+        };
+
+        for (index, par) in values.into_iter().enumerate() {
+            // ★ The ENCODE direction, which is total. The key is taken in hand
+            // so it can be compared against the peer's frame and then filed
+            // without a second encode.
+            let (key, stable) = encode_trie_path_with_stability(&par);
+            match frames.next() {
+                Some(Ok(frame)) if frame == key.as_slice() => {}
+                Some(Ok(_)) => note(PathStreamDisagreement::KeyDisagrees { index }),
+                Some(Err(fault)) => note(PathStreamDisagreement::MalformedFraming(fault)),
+                None => note(PathStreamDisagreement::MissingFrames {
+                    at: index,
+                    values: value_count,
+                }),
+            }
+            built.insert_encoded(key, stable, par);
+        }
+
+        // The stream must end exactly where the values do.
+        match frames.next() {
+            None => {}
+            Some(Ok(_)) => note(PathStreamDisagreement::ExcessFrames {
+                values: value_count,
+            }),
+            Some(Err(fault)) => note(PathStreamDisagreement::MalformedFraming(fault)),
+        }
+
+        (built, verdict)
+    }
+}
+
 impl From<Vec<Par>> for EntryTrie {
     /// THE construction entry: file every element under its own codec path.
     ///
@@ -972,20 +1120,68 @@ impl PartialOrd for EntryTrie {
 }
 
 impl serde::Serialize for EntryTrie {
-    /// Transparent seq over the canonical projection (bincode = u64-LE length +
-    /// elements; JSON = array) — the same 1-field-of-4 slot `EPathMap`'s serde
-    /// layout has always had, now filled from the trie.
+    /// ★★ **FORM ② — the trie's own byte array, then the values.**
+    ///
+    /// A two-element seq occupying the same 1-field-of-4 slot `EPathMap`'s serde
+    /// layout has always had:
+    ///
+    /// ```text
+    ///   u64-LE |U(m)| ‖ U(m)      ← the trie serialized AS A TRIE, verbatim
+    ///   u64-LE n      ‖ n × Par   ← the values
+    /// ```
+    ///
+    /// bincode writes a tuple positionally with no framing of its own, so those
+    /// two lines are literally consecutive — `U(m)` appears in the encoding
+    /// **contiguously**, which is the property
+    /// `models/tests/epathmap_bincode_is_the_path_stream.rs` asserts by substring
+    /// search.
+    ///
+    /// # ★ Why SPLIT and not interleaved
+    ///
+    /// Interleaving key with value would need a live trie cursor in the encoder.
+    /// That was built, measured, and parked (`wire_encode.rs`, `Op::EntryPaths`):
+    /// it costs 3 allocations / 1408 B on a warm encode where
+    /// `wire_encode_space::the_steady_state_allocation_table` requires **zero**,
+    /// two of them inside `read_zipper()` where they cannot be pooled away. Split,
+    /// the encoder emits one memoized slice ([`EntryTrie::path_stream`], a
+    /// `memcpy`) plus the projection it was already emitting — and `U(m)` stays
+    /// contiguous, which an interleaved form would destroy.
+    ///
+    /// # ⚠ The values are carried, and that is the cost the ruling accepted
+    ///
+    /// `U(m)` alone would be smaller. It would also make `decode_trie_path` the
+    /// reader, whose escape arm ceiling is a MEASURED 32 against ordinary
+    /// Rholang's 40 — see [`EntryTrie::from_path_stream_and_values`]. So this
+    /// surface pays `8 + |U(m)|` extra bytes per map to serialize the trie as a
+    /// trie **without** capping a reader that is uncapped today. Dropping the
+    /// values awaits the unbounded prost reader.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.view().as_slice().serialize(serializer)
+        use serde::ser::SerializeTuple;
+
+        let mut state = serializer.serialize_tuple(2)?;
+        // `&[u8]` serializes as a seq of `u8`, which is byte-for-byte what
+        // `serialize_bytes` writes in bincode — serde has no `Vec<u8>`
+        // specialisation, so the two spellings coincide on this format
+        // (`par_codec`'s shape-2 note says the same thing from the read side).
+        state.serialize_element(self.path_stream())?;
+        state.serialize_element(self.view().as_slice())?;
+        state.end()
     }
 }
 
 impl<'de> serde::Deserialize<'de> for EntryTrie {
-    /// Reads a plain `Vec<Par>` (the unchanged serde wire shape) and files it.
-    /// A stream carrying a permuted or duplicated entry set therefore decodes
-    /// to the same value as its canonical twin.
+    /// The read half of FORM ②: the byte array, then the values, then
+    /// [`EntryTrie::from_path_stream_and_values`] — which never calls
+    /// `decode_trie_path`, so this surface acquires **no depth ceiling**.
+    ///
+    /// ⚠ The verdict is deliberately discarded. A stream whose key stream
+    /// disagrees with its values is RE-FILED, not rejected: rejecting would
+    /// narrow the language this node accepts relative to its peers, which is a
+    /// fork. See that function for why the two dispositions are the same trie.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<Par>::deserialize(deserializer).map(EntryTrie::from)
+        let (path_stream, values) = <(Vec<u8>, Vec<Par>)>::deserialize(deserializer)?;
+        let (trie, _verdict) = EntryTrie::from_path_stream_and_values(&path_stream, values);
+        Ok(trie)
     }
 }
 
@@ -1454,29 +1650,32 @@ impl prost::Message for EPathMap {
                     error.push(STRUCT_NAME, "serialized_paths");
                     error
                 })?;
-                let mut cursor = 0usize;
+                // ★ The framing is split by the SHARED reader
+                // (`pathmap_crate_type_mapper::PathFrames`), the read twin of
+                // `path_stream_of` that writes it. Two inline splitters would be
+                // free to disagree about a trailing partial header, which is
+                // exactly the class of divergence that forks a network. The
+                // DISPOSITION stays this arm's own — and it is the opposite of
+                // the bincode surface's, necessarily: field 8 carries the keys
+                // and nothing else, so a key it cannot read is a stream it
+                // cannot represent.
                 let mut entries: Vec<Par> = Vec::new();
-                while cursor + 4 <= region.len() {
-                    let len = u32::from_le_bytes(
-                        region[cursor..cursor + 4].try_into().expect("4-byte length"),
-                    ) as usize;
-                    cursor += 4;
-                    let end = cursor.checked_add(len).ok_or_else(|| {
-                        DecodeError::new("EPathMap serialized_paths: key length overflow")
+                for frame in PathFrames::new(&region) {
+                    let key = frame.map_err(|fault| match fault {
+                        PathFrameError::LengthOverflow { .. } => {
+                            DecodeError::new("EPathMap serialized_paths: key length overflow")
+                        }
+                        PathFrameError::TruncatedKey { .. } => {
+                            DecodeError::new("EPathMap serialized_paths: truncated key")
+                        }
+                        PathFrameError::TruncatedLength { .. } => DecodeError::new(
+                            "EPathMap serialized_paths: trailing bytes after the final key",
+                        ),
                     })?;
-                    if end > region.len() {
-                        return Err(DecodeError::new("EPathMap serialized_paths: truncated key"));
-                    }
-                    let par = decode_trie_path(&region[cursor..end]).map_err(|codec_error| {
+                    let par = decode_trie_path(key).map_err(|codec_error| {
                         DecodeError::new(format!("EPathMap serialized_paths key: {codec_error:?}"))
                     })?;
                     entries.push(par);
-                    cursor = end;
-                }
-                if cursor != region.len() {
-                    return Err(DecodeError::new(
-                        "EPathMap serialized_paths: trailing bytes after the final key",
-                    ));
                 }
                 // Re-file each decoded key through `insert_entry` rather than
                 // re-using the incoming key bytes verbatim: a peer's key that
