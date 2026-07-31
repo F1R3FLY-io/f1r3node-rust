@@ -8,6 +8,7 @@ This changelog is automatically generated from conventional commits.
 
 ### Bug Fixes
 
+- repair the reaper syntax error and gate the whole class
 - pin system-integration past the idle-watchdog fix
 - make the memory guards fire before the kernel OOM killer
 - tag the runner the job actually runs on, not the one we launched
