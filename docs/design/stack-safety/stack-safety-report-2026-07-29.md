@@ -69,6 +69,8 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567--ss-e1-3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568--ss-y3-the-collection-arms-re-score-every-element-three-times-per-level) |
 
+| **SS-Y4** | *(pre-existing; MEASURED and PINNED by `6bdd6ad7`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` ≠ `{3:90} \| {3:30}` | ⛔ **open** — repair route ruled but **not yet landed** | [5.6.9](#569--ss-y4-sibling-order-is-not-a-total-function-of-the-term) |
+
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits do not create the defect, they **measure** one that was already live and unquantified. Each cross-references the other, and `SS-Y3` is discharged only by a commit that repairs it — never by deletion.
 
 ⚠ **`SS-G6` and `SS-Y2` are the mandatory pair required by [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4**, in its *revealed-by* rather than *introduced-by* form: `SS-G6`'s commit does not create the defect, it **names** one that was already live and unattributed. Each cross-references the other; `SS-Y2` is discharged only by a commit that repairs it.
@@ -1503,6 +1505,37 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 > ⚠ The superseded inference was carried for the length of one session and reached both this report and `sort_combine.rs`'s O4 block. It is corrected in both. ★ The lesson is the one [§1.2](#12-why-a-register-and-not-a-narrative) already argues: *the design usually already exists* — `combine_ezipper` had been the worked precedent for three hundred lines above the arm the whole time.
 
 ⚠ **A second correction from the same review, and this one weakens a claim rather than a plan.** `the_score_and_the_canonical_term_agree_with_each_other` asserts an **iff**, and it may be false: `combine_emap` chains only `sorted_key.score`, and nothing else in an `EMap`'s score tree depends on the values, so `{3 → 30}` and `{3 → 90}` are plausibly **distinct canonical terms with identical score trees**. If that witness holds, then `SortedParHashSet`'s `HashSet<Par>` iteration order (`sorted_par_hash_set.rs:22-24`) reaches `par_set_to_eset`'s emitted `ps` whenever two distinct elements tie on score — i.e. **the canonical form of such a term is process-dependent at HEAD**, a live consensus nondeterminism on the path `cost_accounting/sig.rs` signs. ⌀ **NOT YET MEASURED** — the deciding witness is a twenty-line hand-built test, and it is the first thing run before any arm is converted. It would enter this register as `SS-Y4`.
+
+#### 5.6.9 `SS-Y4` — sibling order is not a total function of the term
+
+**The defect.** Siblings are ordered by score. The score is **not injective on canonical terms**, and `ScoredTerm::sort_vec` is a **stable** sort — so where two distinct terms tie, their relative order is inherited from whatever fed the input vector. Two independent things feed it, and both are defects.
+
+| site | input order | consequence |
+|---|---|---|
+| `SortedParHashSet::create_from_vec` (`sorted_par_hash_set.rs:22-24`) | `HashSet<Par>` iteration — `RandomState`, seeded **per process** | canonical form is a **coin flip** |
+| `combine_par` (`sort_combine.rs:447-455`) | the message's own **field order** | ⛔ **deterministic**, and two spellings of one process sign differently |
+
+**Method.** `models/examples/score_tie_witness.rs`, pinned as a test in `6bdd6ad7`.
+
+**Results, with provenance.**
+
+| claim | measurement |
+|---|---|
+| the score does not separate `{3→30}` from `{3→90}` | score trees byte-identical — both $`(999\ (9\ {-1}\ (999\ (2\ 3)\ 0)\ 0)\ 0)`$; the key `3` appears, the values appear nowhere |
+| seeded nondeterminism | 40 independent processes, identical binary and term ⇒ **20 / 20** split across two byte strings |
+| ⛔ deterministic fork | `{3:30} \| {3:90}` → `2a11ba010e…3c2a12ba010f…b401`; `{3:90} \| {3:30}` → `2a12ba010f…b4012a11ba010e…3c`. **Identical across runs**, different from each other |
+
+⇒ **These are two different faults.** The seeded one moves bytes that are currently **undefined**; the deterministic one moves bytes that **are defined today**, since `|` is commutative and the two spellings denote one process. `permutation_collapse_survives_nesting` already asserts the property the second violates, and both are reachable from an ordinary deploy — `@"c"!({3:30} | {3:90})`.
+
+**Why nothing caught it.** `sorter_canonical_golden.rs:88-101` uses pairwise-**distinct** scores *by construction*, saying so ("otherwise it would flake"); the frozen oracle shares `sort_combine` with the driver; and the one test that should have caught it asserted an **iff whose reverse is false**, passing on sampling luck. ⇒ The corpus was chosen to exclude the input class that breaks the property — the same shape [§5.7.3](#573-the-harness-prerequisite-that-was-totally-vacuous) records for the three tests that test replaced.
+
+**How the fix was made.** ⌀ **NOT YET LANDED.** Route **β-total** is ruled — order siblings by $`(\text{score},\ \text{the bytes the element emits})`$ — but three questions gate it: β-total vs. β-narrow, whether an activation height is needed, and the `unverified_budget`. ★ Rejected alternatives are recorded now rather than after: **γ** (make the score injective) is a *complete-the-list* repair over at least three lossy paths (`EMap` values, `EZipper` cursor, `ReceiveBind.free_count`) and the list is not derivable; **δ** (drop the `HashSet`) is actively harmful **first**, because it greens the cross-process gate while leaving the permutation fork live — [CBR-L12](#cbr-l12)'s recorded ordering hazard, inverted.
+
+**What it cost.** ⌀ — nothing changed; this row measures and pins existing behaviour.
+
+**What is still recursive.** n/a — this is an ordering fault, not a depth fault.
+
+**Anti-vacuity.** The pinned assertions are written in **current-state polarity**: they assert the *fault*, because the fault is what is true at the commit that pins them. The `assert_ne!` on the permutation pair becomes `assert_eq!` in the same commit as the repair, so that diff carries its own RED-to-GREEN evidence, and the failure message says not to delete the test to make the suite green. ⚠ The witness also carries a **vacuity assertion**: if `{3→30}` and `{3→90}` ever reach the same canonical term, it fails saying so rather than passing silently.
 
 ---
 
