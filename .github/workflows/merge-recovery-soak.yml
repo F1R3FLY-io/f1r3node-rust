@@ -522,6 +522,12 @@ jobs:
       # signal retry_within_window keys on to tell infrastructure death from
       # a run that completed red.
       completed: ${{ steps.complete.outputs.completed }}
+      # OCID of the instance this job actually ran on, published early by the
+      # self-tag step. capture_diagnostics needs it after the fact: when the
+      # runner agent is killed, no step inside THIS job can run, so the
+      # post-mortem has to happen from a GitHub-hosted job that still has OCI
+      # credentials. Set before the image build, so it survives any later death.
+      instance_id: ${{ steps.selftag.outputs.instance_id }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -572,6 +578,7 @@ jobs:
       # Fails closed. An unexempt soak runner is terminated at the 2h mark, so
       # there is no point spending an image build and a night on it.
       - name: Exempt this runner from the CI reaper
+        id: selftag
         env:
           END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
           KIND: ${{ needs.schedule_gate.outputs.kind }}
@@ -620,6 +627,7 @@ jobs:
             echo "::error::could not tag this runner after 12 attempts; refusing to soak on a runner the reaper will terminate at the 2h mark"
             exit 1
           fi
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
@@ -1128,6 +1136,113 @@ jobs:
             exit 0
           fi
           exit 1
+
+  capture_diagnostics:
+    name: Capture Soak Runner Post-Mortem
+    needs: [schedule_gate, soak]
+    # Only when the soak died WITHOUT reaching its completion marker — i.e. the
+    # runner was lost rather than the soak producing a red result. A completed
+    # red run has logs and an artifact already; this exists for the case where
+    # it has neither.
+    #
+    # Run 30590630059 is why: the job vanished 19 minutes in, GitHub kept no
+    # log at all ("log not found"), and the leading explanation — the
+    # cloud-init idle watchdog killing run.sh at IDLE_TIMEOUT_SECS despite a
+    # job being active — lives entirely in /var/log/runner-run.log on the VM.
+    # That evidence was then lost when the instance was terminated during
+    # cleanup. Console history is captured as a SEPARATE OCI resource with its
+    # own lifecycle, so it outlives the instance and can be read the next day.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.soak.result == 'failure' &&
+      needs.soak.outputs.completed != 'true' &&
+      needs.soak.outputs.instance_id != ''
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0} # no -x: never trace the private key
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+
+      - name: Capture console history
+        env:
+          IID: ${{ needs.soak.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          mkdir -p /tmp/postmortem
+          printf 'instance: %s\nrun: %s\n' "$IID" "$GITHUB_RUN_ID" > /tmp/postmortem/instance.txt
+          oci compute instance get --instance-id "$IID" > /tmp/postmortem/instance.json 2>&1 || true
+          state="$(jq -r '.data."lifecycle-state" // "unknown"' /tmp/postmortem/instance.json 2>/dev/null || echo unknown)"
+          echo "instance lifecycle-state: $state"
+          # Capture is asynchronous: request it, then poll until SUCCEEDED
+          # before fetching. A terminated instance cannot be captured, which is
+          # itself the finding — record it rather than failing the job.
+          hid="$(oci compute instance-console-history capture --instance-id "$IID" \
+            --query 'data.id' --raw-output 2>/dev/null || true)"
+          if [ -z "$hid" ]; then
+            echo "::warning::could not start console-history capture (instance state: $state); the VM was likely already terminated"
+          else
+            for _ in $(seq 1 20); do
+              st="$(oci compute instance-console-history get --instance-console-history-id "$hid" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo REQUESTED)"
+              [ "$st" = "SUCCEEDED" ] && break
+              [ "$st" = "FAILED" ] && { echo "::warning::console history capture FAILED"; break; }
+              sleep 15
+            done
+            oci compute instance-console-history get-content \
+              --instance-console-history-id "$hid" --file /tmp/postmortem/console.log \
+              --length 1048576 >/dev/null 2>&1 || true
+          fi
+          echo "--- last 60 lines of console output ---"
+          tail -60 /tmp/postmortem/console.log 2>/dev/null || echo "(no console content captured)"
+          # The specific line that would confirm the idle-watchdog hypothesis.
+          if grep -q 'Idle .* with no job; killing runner' /tmp/postmortem/console.log 2>/dev/null; then
+            echo "::warning::CONFIRMED: the cloud-init idle watchdog killed the runner while a job was active"
+          fi
+
+      - name: Upload post-mortem
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-postmortem-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/postmortem
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   notify_failure:
     name: Email Soak Failure Alert
