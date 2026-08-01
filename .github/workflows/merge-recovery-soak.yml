@@ -1,16 +1,16 @@
 name: Merge Recovery Soak
 
+run-name: >-
+  ${{ inputs.scheduled_slot_epoch != '' && format('Merge Recovery Soak [scheduled:{0}]', inputs.scheduled_slot_epoch) || 'Merge Recovery Soak' }}
+
 on:
-  schedule:
-    # Both slots target Pacific 19:30; one matches PDT (UTC-7), the other PST
-    # (UTC-8), and the schedule gate no-ops whichever is currently wrong.
-    # 19:30 Pacific is chosen so the Friday weekend-60h soak finishes at
-    # exactly 07:30 Pacific on Monday (19:30 + 60h), in both DST regimes.
-    # Pacific 19:30 falls on the *next* UTC day, hence 02:30/03:30 UTC.
-    - cron: "30 2 * * *"
-    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
+      scheduled_slot_epoch:
+        description: Intended OCI Resource Scheduler slot in epoch seconds; empty means manual mode
+        required: false
+        default: ""
+        type: string
       target_ref:
         description: Branch, tag, or SHA to validate
         required: true
@@ -49,6 +49,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -125,6 +126,9 @@ jobs:
     name: Resolve Pacific Schedule
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: merge-recovery-soak-slot-${{ inputs.scheduled_slot_epoch != '' && inputs.scheduled_slot_epoch || github.run_id }}
+      cancel-in-progress: false
     outputs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
@@ -149,8 +153,7 @@ jobs:
       - name: Resolve schedule
         id: resolve
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
           INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
@@ -160,7 +163,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ -z "$INPUT_SCHEDULED_SLOT" ]; then
             if [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
             else
@@ -216,77 +219,60 @@ jobs:
               fi
             fi
           else
-            # GitHub delivers cron triggers minutes-to-hours late, so gate on
-            # the cron's intended slot (most recent occurrence at or before
-            # now), not the wall clock at execution time.
-            # The window is on a half hour, so the minute field matters as
-            # much as the hour — compare %H%M, not %H.
-            cron_min="$(awk '{print $1}' <<<"$EVENT_SCHEDULE")"
-            cron_hour="$(awk '{print $2}' <<<"$EVENT_SCHEDULE")"
+            case "$INPUT_SCHEDULED_SLOT" in
+              ''|*[!0-9]*) echo "::error::scheduled_slot_epoch must be epoch seconds"; exit 1 ;;
+            esac
             now_epoch="$(date -u +%s)"
-            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:${cron_min}:00" +%s)"
-            if [ "$slot_epoch" -gt "$now_epoch" ]; then
-              slot_epoch=$((slot_epoch - 86400))
+            slot_epoch="$INPUT_SCHEDULED_SLOT"
+            trigger_delay=$((now_epoch - slot_epoch))
+            if [ "$trigger_delay" -lt 0 ] || [ "$trigger_delay" -gt 900 ]; then
+              echo "::error::scheduled_slot_epoch delay ${trigger_delay}s is outside the accepted 0..900s range"
+              exit 1
             fi
             pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
-            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
-            target_ref=dev
-            should_run=false
+            if [ "$pacific_hm" != "1930" ] || [ "$pacific_weekday" -lt 1 ] || [ "$pacific_weekday" -gt 5 ]; then
+              echo "::error::OCI slot $(date -u -d "@${slot_epoch}" +%FT%TZ) does not resolve to an eligible Pacific 19:30 weekday"
+              exit 1
+            fi
+            echo "source=oci-resource-scheduler slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            should_run=true
             idle_skip=false
-            duration_seconds=79200
-            if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
-              # 22h, not 24h. The soak job shares a concurrency group with
-              # cancel-in-progress, so a 24h soak on a 24h cadence is cancelled
-              # by the next night's launch ~10min before it finishes — losing
-              # its final iteration and its entire artifact upload. 22h leaves
-              # the run time to report before the next one starts.
-              should_run=true
-              duration_seconds=79200
-              # Don't re-soak code that has already been soaked. If nothing
-              # landed on the branch since the previous window there is nothing
-              # new to learn, and an OCI runner is not worth spending on it.
-              #
-              # Fails OPEN: any API error, empty response or unparseable count
-              # runs the soak. A silently skipped soak is the exact failure this
-              # workflow exists to avoid, so "unsure" must mean "soak".
-              #
-              # The window is anchored to the previous eligible slot, not to a
-              # fixed 24h, because daily windows are not 24h apart: dailies run
-              # Mon-Thu, so Monday's window is four days after Thursday's. A 24h
-              # lookback on a Monday cannot see anything that landed over the
-              # weekend, and would skip the soak on code that has never been
-              # soaked at all — `dev` gets no weekend coverage either, since the
-              # 60h weekend soak targets `master`.
-              if [ "$pacific_weekday" -eq 1 ]; then
-                prev_slot_epoch=$((slot_epoch - 4 * 86400))
-              else
-                prev_slot_epoch=$((slot_epoch - 86400))
-              fi
-              # Two hours of overlap, for two reasons. Slot-aligned windows tile
-              # exactly, so a commit landing on a boundary could fall between
-              # two of them and never be seen. And the arithmetic above is in
-              # epoch seconds, so a window spanning a Pacific DST change lands
-              # an hour off — on the November change, Monday's window would
-              # otherwise start at Thursday 20:30 PT and miss the hour before
-              # it. The margin absorbs both without needing DST-aware date
-              # maths. Erring wide costs at most one redundant soak; erring
-              # narrow is the bug this whole check is meant to avoid.
-              since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
-              new_commits="$(gh api \
-                "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
-                --jq 'length' 2>/dev/null || echo "")"
-              if [ "$new_commits" = "0" ]; then
-                should_run=false
-                idle_skip=true
-                echo "no commits on $target_ref since $since; skipping tonight's soak"
-              else
-                echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
-              fi
-            elif [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -eq 5 ]; then
-              # Friday 19:30 + 60h = Monday 07:30 Pacific.
-              should_run=true
+            duplicate_skip=false
+            expected_title="Merge Recovery Soak [scheduled:${slot_epoch}]"
+            canonical_run="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&per_page=100" 2>/dev/null \
+              | jq -r --arg title "$expected_title" '[.workflow_runs[] | select(.display_title == $title) | .id] | min // empty' \
+              || true)"
+            if [ -n "$canonical_run" ] && [ "$canonical_run" != "$GITHUB_RUN_ID" ]; then
+              should_run=false
+              duplicate_skip=true
+              echo "scheduled slot already belongs to run $canonical_run; suppressing duplicate run $GITHUB_RUN_ID"
+            fi
+            if [ "$pacific_weekday" -eq 5 ]; then
+              target_ref=master
               duration_seconds=216000
+            else
+              target_ref=dev
+              duration_seconds=79200
+              if [ "$should_run" = "true" ]; then
+                if [ "$pacific_weekday" -eq 1 ]; then
+                  prev_slot_epoch=$((slot_epoch - 4 * 86400))
+                else
+                  prev_slot_epoch=$((slot_epoch - 86400))
+                fi
+                since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
+                new_commits="$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                  --jq 'length' 2>/dev/null || echo "")"
+                if [ "$new_commits" = "0" ]; then
+                  should_run=false
+                  idle_skip=true
+                  echo "no commits on $target_ref since $since; skipping tonight's soak"
+                else
+                  echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+                fi
+              fi
             fi
           fi
           kind=daily
@@ -366,6 +352,14 @@ jobs:
               echo "The original window ends too soon for a restart to be worth an OCI runner."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${duplicate_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: another run owns this OCI slot. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (duplicate OCI slot)"
+              echo ""
+              echo "Run \`$canonical_run\` already owns scheduled slot \`$slot_epoch\`."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
             echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
             {
@@ -376,11 +370,10 @@ jobs:
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ]; then
-            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 19:30 launch window. No soak was attempted; this run's success is not a soak result."
+            echo "::notice::Schedule gate no-op. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: no-op"
               echo ""
-              echo "This scheduled trigger resolved outside the Pacific 19:30 launch window."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
