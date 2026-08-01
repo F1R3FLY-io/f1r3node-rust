@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.38] - 2026-08-01
+
+### Features
+
+- let an operator ask a running soak to publish
+
+
 ## [0.4.36] - 2026-07-31
 
 ### Bug Fixes
