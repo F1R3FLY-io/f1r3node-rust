@@ -1269,6 +1269,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      # actions: read is for the checkpoint-recovery fallback below, which
+      # lists and downloads this run's own artifacts through the API.
+      actions: read
       pages: write
       id-token: write
     concurrency:
@@ -1285,11 +1288,48 @@ jobs:
           path: ci-control
           persist-credentials: false
 
+      # continue-on-error, because this artifact only exists when the soak job
+      # lived long enough to reach its always() upload. A runner lost mid-run
+      # (30713818751: VM frozen at ~2h of a 45h budget) uploads nothing, and
+      # failing here left the dashboard showing the PREVIOUS run's state for a
+      # night that actually died — the checkpoint recovery below publishes
+      # what the run managed to report before it was lost.
       - name: Download soak results
+        id: results
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: soak-results
+
+      - name: Recover latest checkpoint (runner lost)
+        if: steps.results.outcome == 'failure'
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # The final results artifact never made it off the VM. Each completed
+          # segment uploaded a checkpoint before that, so the newest one is the
+          # last state the run is known to have reached — publish that instead
+          # of nothing. Its weekly-summary.json carries status=in_progress, so
+          # the assemble step updates the latest-* files without appending a
+          # dead run's partial numbers to the history series.
+          prefix="soak-checkpoint-${RUN_ID}-${RUN_ATTEMPT}-"
+          name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            | jq -r --arg prefix "$prefix" \
+              '[.artifacts[] | select(.name | startswith($prefix)) | select(.expired | not)]
+               | sort_by(.created_at) | last.name // empty' || true)"
+          if [ -z "$name" ]; then
+            echo "::error::soak results artifact is missing and no checkpoint was ever uploaded; the run died before its first checkpoint. Nothing to publish — see the post-mortem artifact."
+            exit 1
+          fi
+          mkdir -p soak-results/report
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$name" --dir soak-results/report
+          echo "::warning::final soak results were never uploaded (runner lost); publishing the last checkpoint ${name} instead"
+          echo "Recovered checkpoint: ${name}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assemble dashboard site
         shell: bash -euo pipefail {0}
@@ -1387,17 +1427,28 @@ jobs:
           # and burning a slot of the daily retention cap. Runs whose id is
           # missing or "unknown" are always appended — they cannot be told
           # apart, so collapsing them would merge genuinely distinct runs.
-          hist="site/data/history${SERIES_SUFFIX}.json"
-          [ -e "$hist" ] || echo '[]' > "$hist"
-          jq -s --argjson max "$MAX_HISTORY" \
-            '.[0] as $hist | .[1] as $new
-             | ($new.run.run_id // "") as $rid
-             | (if $rid == "" or $rid == "unknown" then $hist
-                else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
-             | ($kept + [$new] | sort_by(.run.date)) as $all
-             | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
-            "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
-          mv /tmp/history-merged.json "$hist"
+          #
+          # A recovered checkpoint (status=in_progress — the runner died and
+          # the fallback above republished the last mid-run state) updates the
+          # latest-* files below but never joins the history: a history entry
+          # means one completed run, and a partial night's lower numbers would
+          # poison every later week-over-week comparison drawn against it.
+          if jq -e '(.run.status // "complete") == "in_progress"' \
+            soak-results/report/weekly-summary.json >/dev/null; then
+            echo "recovered checkpoint: updating latest-* only, not appending to history"
+          else
+            hist="site/data/history${SERIES_SUFFIX}.json"
+            [ -e "$hist" ] || echo '[]' > "$hist"
+            jq -s --argjson max "$MAX_HISTORY" \
+              '.[0] as $hist | .[1] as $new
+               | ($new.run.run_id // "") as $rid
+               | (if $rid == "" or $rid == "unknown" then $hist
+                  else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+               | ($kept + [$new] | sort_by(.run.date)) as $all
+               | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
+              "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
+            mv /tmp/history-merged.json "$hist"
+          fi
           cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
           cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
           cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
@@ -1683,6 +1734,71 @@ jobs:
           if grep -q 'Idle .* with no job; killing runner' /tmp/postmortem/console.log 2>/dev/null; then
             echo "::warning::CONFIRMED: the cloud-init idle watchdog killed the runner while a job was active"
           fi
+
+      # The self-tag exempts the VM from the reaper until window end + 2h so a
+      # healthy soak is never shot mid-run. But this job only runs when the run
+      # is already dead, and a weekend VM frozen on Friday night then sits
+      # billable behind that exemption until Sunday + 2h — the 16-OCPU leak of
+      # 2026-08-01. With the post-mortem captured above, the exemption has done
+      # its job: shrink the deadline to a short grace so the next hourly reaper
+      # pass collects the VM. 30 minutes rather than immediate, because a
+      # "lost" runner can be an OCI host stall the VM recovers from — give its
+      # own self-termination path first claim before the reaper's backstop.
+      #
+      # Fail-soft throughout: the original deadline still bounds the leak at
+      # window end + 2h, so a failure here costs money, not correctness — and
+      # must never bury the post-mortem this job exists to produce.
+      - name: Release reaper exemption
+        if: always() && steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json 2>/dev/null || true)"
+          case "$state" in
+            TERMINATED|TERMINATING)
+              echo "instance is $state; nothing to release"
+              exit 0
+              ;;
+          esac
+          new_deadline="$(( $(date -u +%s) + 1800 ))"
+          released=""
+          for attempt in 1 2 3; do
+            # Same read-modify-write as the self-tag step: --freeform-tags
+            # replaces the whole map, so an unreadable or unparseable read
+            # means retry, never write.
+            if ! existing="$(oci compute instance get --instance-id "$IID" \
+                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/3: could not read current tags\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            case "$existing" in ''|null) existing='{}' ;; esac
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/3: current tags did not parse as a JSON object\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            current="$(jq -r '."soak-deadline-epoch" // empty' <<<"$existing")"
+            if [ -n "$current" ] && [ "$current" -le "$new_deadline" ] 2>/dev/null; then
+              echo "existing deadline $current is already within the grace window"
+              released=1
+              break
+            fi
+            merged="$(jq -c --arg d "$new_deadline" \
+              '. + {"soak-deadline-epoch": $d}' <<<"$existing")"
+            if oci compute instance update --instance-id "$IID" --force \
+                 --freeform-tags "$merged" >/dev/null 2>&1; then
+              released=1
+              echo "reaper exemption released: $IID reapable after $(date -u -d "@${new_deadline}" +%FT%TZ)"
+              break
+            fi
+            printf 'attempt %s/3: tag update failed\n' "$attempt"
+            sleep 10
+          done
+          [ -n "$released" ] || \
+            echo "::warning::could not release the reaper exemption for $IID; the VM stays billable until its original window-end deadline"
 
       - name: Upload post-mortem
         if: always()

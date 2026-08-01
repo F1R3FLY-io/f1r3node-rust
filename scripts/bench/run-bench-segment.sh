@@ -35,6 +35,22 @@ SHARD_YML="$NODE_REPO_DIR/docker/shard.yml"
 [ -f "$SHARD_YML" ] || { echo "missing $SHARD_YML" >&2; exit 2; }
 command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
 
+# latency-benchmark.sh needs a funded deployer. Default to the shard's own
+# bootstrap key from the checked-in fixture env — the documented default
+# ("funded locally and in wallets.txt", docs/vps-cloud-testing.md) that the
+# benchmark script requires but nothing in the soak path ever supplied, which
+# made every soak bench segment die on its first line (run 30713818751:
+# bench_segments=1 bench_failures=1, every week, silently).
+if [ -z "${DEPLOYER_KEY:-}" ]; then
+  DEPLOYER_KEY="$(awk -F= '$1 == "BOOTSTRAP_PRIVATE_KEY" { print $2; exit }' \
+    "$NODE_REPO_DIR/docker/.env" 2>/dev/null || true)"
+  if [ -z "$DEPLOYER_KEY" ]; then
+    echo "DEPLOYER_KEY not set and no BOOTSTRAP_PRIVATE_KEY in $NODE_REPO_DIR/docker/.env" >&2
+    exit 2
+  fi
+fi
+export DEPLOYER_KEY
+
 mkdir -p "$OUT_DIR"
 COMPOSE=(docker compose -f "$SHARD_YML" -p soak-bench)
 SAMPLER_PID=""
@@ -111,7 +127,8 @@ if [ "$BENCH_STATUS" -ne 0 ] || [ ! -s "$BENCH_OUT/metrics.json" ]; then
     --argjson rss "${RSS_PEAK_MB:-0}" \
     '{segment_index: $idx, started_at: $started, offset_seconds: $offset,
       rss_peak_mb: $rss, ok: false}' > "$OUT_DIR/metrics.json"
-  echo "benchmark flood failed (status $BENCH_STATUS)" >&2
+  echo "benchmark flood failed (status $BENCH_STATUS); bench.log tail:" >&2
+  tail -20 "$OUT_DIR/bench.log" >&2 || true
   exit 1
 fi
 

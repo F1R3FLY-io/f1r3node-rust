@@ -345,6 +345,16 @@ run_bench_segment() {
   if [ "$status" -ne 0 ]; then
     BENCH_FAILURES="$((BENCH_FAILURES + 1))"
     printf '%s\n' "$status" > "$segment_dir/exit-code.txt"
+    # The segment's output goes to files that die with the VM when the run is
+    # lost — 30713818751's bench failed 100% silently for exactly that reason
+    # (missing DEPLOYER_KEY, visible only in a bench.log nobody ever saw).
+    printf 'bench segment %s failed (status %s); segment.log tail:\n' \
+      "$BENCH_SEGMENTS" "$status" >&2
+    tail -20 "$segment_dir/segment.log" >&2 || true
+    if [ -s "$segment_dir/bench.log" ]; then
+      printf 'bench.log tail:\n' >&2
+      tail -20 "$segment_dir/bench.log" >&2 || true
+    fi
   fi
 }
 
@@ -395,7 +405,59 @@ if [ -e "$FINALIZE_MARKER" ]; then
   DEADLINE=0
 fi
 
+# Orchestrator-level host guardian, independent of the whole test stack.
+#
+# The harness's protections live inside or under pytest: the in-process
+# ceiling dies with the pytest process, and the docker provider sets no
+# per-container memory limit. On run 30713818751 the kernel OOM killer shot
+# pytest itself (oom_score_adj 500) while the docker-provider node containers
+# — not pytest children — ran on uncapped and unwatched until the VM froze
+# and the runner was lost. This loop is a separate process of this script,
+# not of pytest, so it survives exactly that: on a sustained free-RAM floor
+# breach it SIGKILLs every node process and container, writes a breach
+# marker, and the iteration loop below fails the soak closed.
+HOST_GUARDIAN_BREACH="$OUTPUT_DIR/host-guardian-breach.txt"
+rm -f "$HOST_GUARDIAN_BREACH"
+HOST_GUARDIAN_PID=""
+if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
+  (
+    over=0
+    while :; do
+      sleep 5
+      free_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null)"
+      [ -n "$free_mb" ] || continue
+      if [ "$free_mb" -ge "$HOST_FREE_FLOOR_MB" ]; then
+        over=0
+        continue
+      fi
+      over=$((over + 1))
+      [ "$over" -lt 3 ] && continue
+      printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB for 3 consecutive samples (5s each); killed all node processes and containers to protect the host\n' \
+        "$free_mb" "$HOST_FREE_FLOOR_MB" > "$HOST_GUARDIAN_BREACH"
+      pkill -9 -f '/tmp/rnode' 2>/dev/null
+      docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null
+      exit 0
+    done
+  ) &
+  HOST_GUARDIAN_PID=$!
+  trap '[ -n "$HOST_GUARDIAN_PID" ] && kill "$HOST_GUARDIAN_PID" 2>/dev/null' EXIT
+  printf 'orchestrator host guardian watching MemAvailable floor %sMB (pid %s)\n' \
+    "$HOST_FREE_FLOOR_MB" "$HOST_GUARDIAN_PID"
+fi
+
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  # The orchestrator guardian can fire outside a failing iteration — during a
+  # bench segment, or after an iteration that still exited 0. Never start new
+  # work once the host has been defended.
+  if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+    EARLY_EXIT_REASON="host_protection_breach"
+    printf 'orchestrator host guardian fired; ending soak (fail-closed)\n'
+    head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+    printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+      > "$OUTPUT_DIR/early-exit.txt"
+    FAILURES="$((FAILURES + 1))"
+    break
+  fi
   if [ -e "$SIGNAL_FILE" ]; then
     SIGNAL="$(tr -d '[:space:]' < "$SIGNAL_FILE" 2>/dev/null || true)"
     # Consumed either way: an unread signal re-fires on every later iteration
@@ -465,7 +527,55 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     FAILURES="$((FAILURES + 1))"
     printf '%s\n' "$STATUS" > "$ITERATION_DIR/exit-code.txt"
     if [ -d "$SYSTEM_INTEGRATION_DIR/integration-tests/data" ]; then
-      cp -a "$SYSTEM_INTEGRATION_DIR/integration-tests/data" "$ITERATION_DIR/data"
+      # Evidence only — logs, CSVs, configs. A full `cp -a` drags the nodes'
+      # LMDB data along, which ran to a silent half-hour stall between
+      # iterations on run 30713818751 (19:16→19:45 with zero output) and
+      # would bloat the results artifact past uploadable size.
+      COPY_STARTED="$(date +%s)"
+      printf 'preserving failure evidence from integration-tests/data (iteration %s)\n' "$ITERATIONS"
+      mkdir -p "$ITERATION_DIR/data"
+      (cd "$SYSTEM_INTEGRATION_DIR/integration-tests/data" && \
+        find . -type f \( -name '*.log' -o -name '*.csv' -o -name '*.txt' \
+          -o -name '*.json' -o -name '*.conf' -o -name '*.toml' \) -print0 \
+        | tar --null -T - -cf -) \
+        | tar -xf - -C "$ITERATION_DIR/data" \
+        || printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
+      printf 'failure evidence preserved in %ss\n' "$(( $(date +%s) - COPY_STARTED ))"
+    fi
+    # Fail closed on a host-protection breach. The guardian killing the nodes
+    # means the load does not fit under the configured ceiling/floor on this
+    # host; every further iteration reproduces the breach (30713818751 breached
+    # on all three iterations across both providers), and each one is another
+    # spin of a workload known to endanger the host. Preserve evidence above,
+    # then end the whole soak: the early-exit marker makes every remaining
+    # segment a no-op, and the job still reaches its completion marker so
+    # retry_within_window does not relaunch the same doomed run on a fresh VM.
+    #
+    # Three channels, most authoritative first: the orchestrator guardian's
+    # own marker, the harness monitor's marker file, and — for harness
+    # versions predating the marker — the breach message in the pytest log.
+    BREACH_LINE=""
+    if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+      BREACH_LINE="$(head -1 "$HOST_GUARDIAN_BREACH")"
+    else
+      HARNESS_MARKER="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+        -name host-protection-breach.txt -newer "$ITERATION_DIR/.started" 2>/dev/null \
+        | head -1 || true)"
+      if [ -n "$HARNESS_MARKER" ]; then
+        BREACH_LINE="$(head -1 "$HARNESS_MARKER")"
+      else
+        BREACH_LINE="$(grep -m1 -E \
+          'Host-protection guardian breach|Resource ceiling breached|host-protection watchdog killed' \
+          "$ITERATION_DIR/pytest.log" 2>/dev/null || true)"
+      fi
+    fi
+    if [ -n "$BREACH_LINE" ]; then
+      EARLY_EXIT_REASON="host_protection_breach"
+      printf 'host-protection breach in iteration %s; ending soak (fail-closed)\n' "$ITERATIONS"
+      printf '%s\n' "$BREACH_LINE" | tee "$OUTPUT_DIR/protection-breach.txt"
+      printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$BREACH_LINE" \
+        > "$OUTPUT_DIR/early-exit.txt"
+      break
     fi
     sleep 30
   fi
@@ -526,7 +636,36 @@ if command -v jq >/dev/null; then
   SOAK_BENCH_SEGMENTS="$BENCH_SEGMENTS" \
   SOAK_BENCH_FAILURES="$BENCH_FAILURES" \
     "$SCRIPT_DIR/bench/write-soak-summary.sh" \
-    || printf 'summary.json emission failed (non-fatal)\n' >&2
+    || {
+      # The full rollup failing must not leave the run without passive data:
+      # aggregate-perf-report.sh then emits started_at/elapsed_seconds as
+      # null, and Soak Checkpoint Publish rejects that checkpoint outright
+      # ("metadata does not match"). Fall back to the counters this script
+      # already holds — nulls for the sampled metrics, real values for the
+      # run identity and timing the publish contract validates.
+      printf 'summary.json emission failed; writing minimal fallback summary\n' >&2
+      jq -n \
+        --arg target_ref "$TARGET_REF" \
+        --arg target_sha "$TARGET_SHA" \
+        --arg version "$VERSION" \
+        --argjson started "$STARTED_AT" \
+        --argjson finished "$FINISHED_AT" \
+        --argjson requested "$DURATION_SECONDS" \
+        --argjson iterations "$ITERATIONS" \
+        --argjson failures "$FAILURES" \
+        --argjson bench_segments "$BENCH_SEGMENTS" \
+        --argjson bench_failures "$BENCH_FAILURES" \
+        '{target_ref: $target_ref, target_sha: $target_sha, version: $version,
+          started_at: $started, finished_at: $finished,
+          requested_seconds: $requested,
+          elapsed_seconds: ($finished - $started),
+          iterations: $iterations, failures: $failures,
+          failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
+          bench_segments: $bench_segments, bench_failures: $bench_failures,
+          degraded: "full summary emission failed; sampled metrics missing"}' \
+        > "$OUTPUT_DIR/summary.json" \
+        || printf 'fallback summary emission failed too (non-fatal)\n' >&2
+    }
 fi
 
 if [ "$FAILURES" -ne 0 ]; then
