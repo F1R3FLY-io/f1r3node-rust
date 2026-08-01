@@ -104,6 +104,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -429,6 +444,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
         uses: actions/checkout@v4
@@ -526,6 +556,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -635,6 +680,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -735,11 +795,36 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Install just
         shell: bash -ex {0}
+        env:
+          JUST_VERSION: 1.57.0
+          JUST_SHA256: 45b548094283cb9739af8f13273b8cddeee869f5b4ef2bb631b1f311cb566155
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+          archive="just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors -sSfL \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          printf '%s  %s\n' "$JUST_SHA256" "/tmp/${archive}" | sha256sum -c -
+          tar -xzf "/tmp/${archive}" -C /tmp just
+          sudo install -m 0755 /tmp/just /usr/local/bin/just
+          just --version
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
