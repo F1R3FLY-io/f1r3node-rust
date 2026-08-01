@@ -9,6 +9,42 @@ mr_status:
 
 # Tasks and Epics
 
+## CLOSED: extraction complete, root cause found, evidence VMs released (2026-08-01T02:05Z)
+
+<!-- claude-session-9f68c6fa — supersedes the 01:35Z orchestrator status below -->
+
+- **Extraction COMPLETE**: 79 files (runner `_diag` incl. 1MB Worker log,
+  syslog family, 4h06m of `/tmp/merge-recovery-soak` results) in the secure
+  session vault, SHA256 `7141929f...c3354` verified both ends. Raw logs stay
+  out of git per owner directive.
+- **Root cause of run 30661821085 (and the whole "runner lost, VM healthy"
+  class): a 52-minute OCI host stall froze the VM's userspace** — job-lock
+  renewals stopped 00:08:34, lock expired 00:18:31 (= exact job death),
+  listener woke 01:00:03. The staged runner self-update was a red herring.
+  On-box mitigations cannot address this class; lock expiry is the detector,
+  restart-in-window is the recovery, Oracle ticket / placement diversity are
+  the fixes. Full analysis: `../system-integration/docs/ToDos.md` (01:50Z).
+- **`c7fd9f` and `evidence-helper-c7fd9f` terminated on the repo owner's
+  explicit instruction** after completeness was confirmed — the 01:35Z
+  "do not terminate" below is superseded. Durable copies remain: boot-volume
+  backup `evidence-run-30661821085-...T013353Z` and clone
+  `evidence-c7fd9f-clone`, both AVAILABLE in OCI.
+- The weekend 60h soak (02:30Z) proceeds with known exposure to the same
+  stall class; failed VMs survive by construction and the clone-and-extract
+  playbook is proven.
+
+---
+
+## ORCHESTRATOR STATUS (superseded): evidence extraction is active, not yet complete (2026-08-01T01:35Z)
+
+- The recovered `~/.ssh/oci-ci-runner` key matches the runner public key, but direct SSH to the original VM still stalls before the SSH banner. Do not reboot or terminate it.
+- The evidence hold is extended to 2026-08-02T04:30Z.
+- A live, crash-consistent boot-volume clone is available and a helper VM is SSH-reachable.
+- The cloned volume is now `ATTACHED` read-only and mounted at `/mnt/evidence` on the helper. Disk evidence is available for extraction; never remount it read-write.
+- Raw logs and diagnostics belong only in the secure temporary vault; commit sanitized findings, hashes, and paths—not credentials, addresses, or raw runner output.
+
+The clone is mounted and ready for selected evidence to be copied into the secure temporary vault with hashes. Volatile state on the original VM remains unavailable while its SSH service fails before the banner.
+
 This document tracks implementation work through **epics** (logical groupings of related tasks).
 
 **Document Structure**
