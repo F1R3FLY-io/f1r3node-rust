@@ -3562,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "node"
-version = "0.4.42"
+version = "0.4.43"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
