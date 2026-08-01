@@ -4,6 +4,22 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.41] - 2026-08-01
+
+### Bug Fixes
+
+- move smoke-test host ports out of the ephemeral range
+
+### Documentation
+
+- close the runner-loss incident — root cause and disposition
+- correct host port check guidance
+
+### Refactoring
+
+- extract the node host port check to a shared script
+
+
 ## [0.4.39] - 2026-08-01
 
 ### Bug Fixes
