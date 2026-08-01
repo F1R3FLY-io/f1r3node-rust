@@ -253,6 +253,12 @@ if grep -qE '^      scheduled_slot_epoch:' "$SOAK_WORKFLOW" &&
 else
 	err "$SOAK_WORKFLOW must accept and resolve scheduled_slot_epoch from OCI"
 fi
+if grep -Fq -- "[ \"\$trigger_delay\" -gt 900 ]" "$SOAK_WORKFLOW" &&
+	grep -q 'merge-recovery-soak-slot-' "$SOAK_WORKFLOW"; then
+	ok "OCI slot delay and duplicate serialization fail closed"
+else
+	err "$SOAK_WORKFLOW must enforce the 15-minute OCI delay and serialize duplicate slots"
+fi
 if grep -Fq "[ \"\$pacific_weekday\" -eq 5 ]" "$SOAK_WORKFLOW" &&
 	grep -q 'target_ref=master' "$SOAK_WORKFLOW" &&
 	grep -q 'duration_seconds=216000' "$SOAK_WORKFLOW" &&

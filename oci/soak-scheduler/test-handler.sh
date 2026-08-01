@@ -20,12 +20,19 @@ assert_ineligible() {
 	[ "$status" -eq 10 ]
 }
 
-assert_slot 1785551460 2 weekend master
-assert_ineligible 1785555060 3
-assert_slot 1796441460 3 weekend master
-assert_ineligible 1796437860 2
-assert_slot 1785810660 2 daily dev
-assert_ineligible 1785637860 2
+pdt_friday_0231_utc=1785551460
+pdt_friday_0331_utc=1785555060
+pst_friday_0331_utc=1796441460
+pst_friday_0231_utc=1796437860
+pdt_monday_0231_utc=1785810660
+pdt_saturday_0231_utc=1785637860
+
+assert_slot "$pdt_friday_0231_utc" 2 weekend master
+assert_ineligible "$pdt_friday_0331_utc" 3
+assert_slot "$pst_friday_0331_utc" 3 weekend master
+assert_ineligible "$pst_friday_0231_utc" 2
+assert_slot "$pdt_monday_0231_utc" 2 daily dev
+assert_ineligible "$pdt_saturday_0231_utc" 2
 
 set +e
 resolve_slot 1785552361 2 900 >/dev/null 2>&1

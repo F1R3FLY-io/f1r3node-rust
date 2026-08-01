@@ -126,6 +126,9 @@ jobs:
     name: Resolve Pacific Schedule
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: merge-recovery-soak-slot-${{ inputs.scheduled_slot_epoch != '' && inputs.scheduled_slot_epoch || github.run_id }}
+      cancel-in-progress: false
     outputs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
@@ -222,8 +225,8 @@ jobs:
             now_epoch="$(date -u +%s)"
             slot_epoch="$INPUT_SCHEDULED_SLOT"
             trigger_delay=$((now_epoch - slot_epoch))
-            if [ "$trigger_delay" -lt 0 ] || [ "$trigger_delay" -gt 3600 ]; then
-              echo "::error::scheduled_slot_epoch delay ${trigger_delay}s is outside the accepted 0..3600s range"
+            if [ "$trigger_delay" -lt 0 ] || [ "$trigger_delay" -gt 900 ]; then
+              echo "::error::scheduled_slot_epoch delay ${trigger_delay}s is outside the accepted 0..900s range"
               exit 1
             fi
             pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"

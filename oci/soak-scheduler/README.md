@@ -19,9 +19,19 @@ Create or update a GitHub App installed only on `F1R3FLY-io/f1r3node-rust` with:
 
 Store its PEM private key in an OCI Vault secret. Record the App ID, installation ID, secret OCID, function compartment OCID, and subnet OCID. The deployment script never accepts the PEM contents directly.
 
-## Deploy
+## Deployment prerequisites
 
-The selected subnet must provide outbound HTTPS access to `api.github.com`. Authenticate Docker to the regional OCIR endpoint before deploying.
+Before deployment:
+
+1. Install and authenticate the OCI CLI and Docker.
+2. Create or select an OCI compartment, an outbound-enabled subnet, an OCI Vault secret containing the GitHub App PEM, and an OCIR repository namespace.
+3. Grant the deploying OCI principal permission to manage Functions, Resource Scheduler schedules, dynamic groups, policies, and the target OCIR repository.
+4. Authenticate Docker to `<region>.ocir.io` using an OCI auth token.
+5. Ensure the selected subnet can reach `api.github.com` over HTTPS.
+
+The script honors `OCI_PROFILE` and `OCI_CLI_CONFIG_FILE`. `OCI_REGION`, `OCI_TENANCY_OCID`, and `OCIR_NAMESPACE` can override profile-derived values. Existing Function application subnets are immutable in OCI; the script fails with recreation instructions rather than silently retaining a different subnet.
+
+## Deploy
 
 ```bash
 export OCI_COMPARTMENT_OCID='<function-and-scheduler-compartment-ocid>'
@@ -35,7 +45,15 @@ scripts/oci/deploy-soak-scheduler.sh
 
 The script builds and pushes the Bash/HotWrap Function image, creates or updates the Function, creates the 02:30 and 03:30 UTC schedules, and creates least-scope dynamic groups and IAM policy statements for Function invocation and Vault access. The image pins the OCI CLI and HotWrap base images by digest and contains the Bash, jq, curl, OpenSSL, and timezone tools used by the handler.
 
-Deploy only after the workflow change reaches `master`, because GitHub resolves `workflow_dispatch` from the configured `master` ref.
+Use this cutover order:
+
+1. Merge the workflow change through `dev` and promote it to `master`.
+2. Confirm `merge-recovery-soak.yml` on `master` accepts `scheduled_slot_epoch`.
+3. Run `scripts/oci/deploy-soak-scheduler.sh`.
+4. Invoke the eligible Function payload manually and complete the verification below.
+5. Confirm no GitHub `schedule` trigger remains enabled.
+
+GitHub resolves `workflow_dispatch` from the configured `master` ref, so deploying before step 1 will fail against workflow inputs that do not yet exist.
 
 ## Verify
 

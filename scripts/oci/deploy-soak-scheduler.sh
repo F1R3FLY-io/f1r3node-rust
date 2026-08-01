@@ -21,17 +21,41 @@ for command in docker git jq oci; do
 	}
 done
 
+config_value() {
+	local file="$1" profile="$2" key="$3"
+	[ -r "$file" ] || return 0
+	awk -F= -v profile="$profile" -v key="$key" '
+        /^[[:space:]]*\[/ {
+            section = $0
+            gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+            active = section == profile
+            next
+        }
+        active {
+            candidate = $1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", candidate)
+            if (candidate == key) {
+                value = substr($0, index($0, "=") + 1)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+            }
+        }
+    ' "$file"
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SOURCE="$ROOT/oci/soak-scheduler"
-OCI_REGION="${OCI_REGION:-$(awk -F= '$1 == "region" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$HOME/.oci/config")}"
 OCI_PROFILE="${OCI_PROFILE:-DEFAULT}"
+OCI_CONFIG_FILE="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+OCI_REGION="${OCI_REGION:-$(config_value "$OCI_CONFIG_FILE" "$OCI_PROFILE" region)}"
 OCIR_NAMESPACE="${OCIR_NAMESPACE:-$(oci os ns get --profile "$OCI_PROFILE" --query data --raw-output)}"
 OCIR_REPOSITORY="${OCIR_REPOSITORY:-f1r3node/soak-scheduler}"
 APPLICATION_NAME="${APPLICATION_NAME:-f1r3node-ci-schedulers}"
 FUNCTION_NAME="${FUNCTION_NAME:-f1r3node-soak-scheduler}"
 IMAGE_TAG="${IMAGE_TAG:-$(git -C "$ROOT" rev-parse --short=12 HEAD)}"
 IMAGE="${OCI_REGION}.ocir.io/${OCIR_NAMESPACE}/${OCIR_REPOSITORY}:${IMAGE_TAG}"
-TENANCY_OCID="${OCI_TENANCY_OCID:-$(awk -F= '$1 == "tenancy" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$HOME/.oci/config")}"
+TENANCY_OCID="${OCI_TENANCY_OCID:-$(config_value "$OCI_CONFIG_FILE" "$OCI_PROFILE" tenancy)}"
 SECRET_COMPARTMENT_OCID="${GITHUB_SECRET_COMPARTMENT_OCID:-$OCI_COMPARTMENT_OCID}"
 
 [ -n "$OCI_REGION" ] || {
@@ -68,15 +92,32 @@ application_id="$(oci fn application list \
 	--output json |
 	jq -r --arg name "$APPLICATION_NAME" '.data[] | select(."display-name" == $name and ."lifecycle-state" != "DELETED") | .id' |
 	head -1)"
+subnet_ids="$(jq -cn --arg id "$OCI_SUBNET_OCID" '[$id]')"
 if [ -z "$application_id" ]; then
-	subnet_ids="$(jq -cn --arg id "$OCI_SUBNET_OCID" '[$id]')"
 	application_id="$(oci fn application create \
 		--profile "$OCI_PROFILE" \
 		--compartment-id "$OCI_COMPARTMENT_OCID" \
 		--display-name "$APPLICATION_NAME" \
 		--subnet-ids "$subnet_ids" \
+		--wait-for-state ACTIVE \
 		--query data.id \
 		--raw-output)"
+else
+	application="$(oci fn application get \
+		--profile "$OCI_PROFILE" \
+		--application-id "$application_id" \
+		--output json)"
+	actual_subnet_ids="$(jq -c '.data."subnet-ids" | sort' <<<"$application")"
+	desired_subnet_ids="$(jq -c 'sort' <<<"$subnet_ids")"
+	if [ "$actual_subnet_ids" != "$desired_subnet_ids" ]; then
+		printf 'existing Function application %s uses subnet IDs %s; OCI cannot update application subnets in place, so recreate it with %s\n' \
+			"$application_id" "$actual_subnet_ids" "$desired_subnet_ids" >&2
+		exit 1
+	fi
+	if [ "$(jq -r '.data."lifecycle-state"' <<<"$application")" != ACTIVE ]; then
+		printf 'existing Function application %s is not ACTIVE\n' "$application_id" >&2
+		exit 1
+	fi
 fi
 
 function_config="$(jq -cn \
@@ -100,6 +141,7 @@ if [ -z "$function_id" ]; then
 		--memory-in-mbs 256 \
 		--timeout-in-seconds 120 \
 		--config "$function_config" \
+		--wait-for-state ACTIVE \
 		--query data.id \
 		--raw-output)"
 else
@@ -110,6 +152,7 @@ else
 		--memory-in-mbs 256 \
 		--timeout-in-seconds 120 \
 		--config "$function_config" \
+		--wait-for-state ACTIVE \
 		--force >/dev/null
 fi
 
@@ -192,13 +235,14 @@ upsert_dynamic_group "$schedule_02_group" "ALL {resource.type='resourceschedule'
 upsert_dynamic_group "$schedule_03_group" "ALL {resource.type='resourceschedule', resource.id='${schedule_03_id}'}" >/dev/null
 
 policy_name="f1r3node-soak-scheduler"
+secret_statement="Allow dynamic-group $function_group to read secret-bundles in compartment id $SECRET_COMPARTMENT_OCID"
+schedule_02_statement="Allow dynamic-group $schedule_02_group to use fn-invocation in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
+schedule_03_statement="Allow dynamic-group $schedule_03_group to use fn-invocation in compartment id $OCI_COMPARTMENT_OCID where target.function.id = '$function_id'"
 statements="$(jq -cn \
-	--arg function_group "$function_group" \
-	--arg schedule_02_group "$schedule_02_group" \
-	--arg schedule_03_group "$schedule_03_group" \
-	--arg function_compartment "$OCI_COMPARTMENT_OCID" \
-	--arg secret_compartment "$SECRET_COMPARTMENT_OCID" \
-	'["Allow dynamic-group \($function_group) to read secret-bundles in compartment id \($secret_compartment)","Allow dynamic-group \($schedule_02_group) to manage functions-family in compartment id \($function_compartment)","Allow dynamic-group \($schedule_03_group) to manage functions-family in compartment id \($function_compartment)"]')"
+	--arg secret "$secret_statement" \
+	--arg schedule_02 "$schedule_02_statement" \
+	--arg schedule_03 "$schedule_03_statement" \
+	'[$secret,$schedule_02,$schedule_03]')"
 policy_id="$(oci iam policy list \
 	--profile "$OCI_PROFILE" \
 	--compartment-id "$TENANCY_OCID" \

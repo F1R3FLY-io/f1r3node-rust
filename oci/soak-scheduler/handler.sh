@@ -68,7 +68,7 @@ resolve_slot() {
 	fi
 	pacific_hm="$(epoch_format "$slot_epoch" America/Los_Angeles %H%M)"
 	pacific_weekday="$(epoch_format "$slot_epoch" America/Los_Angeles %u)"
-	if [ "$pacific_hm" != 1930 ] || [ "$pacific_weekday" -gt 5 ]; then
+	if [ "$pacific_hm" != 1930 ] || [ "$pacific_weekday" -lt 1 ] || [ "$pacific_weekday" -gt 5 ]; then
 		return 10
 	fi
 	if [ "$pacific_weekday" -eq 5 ]; then
@@ -180,7 +180,7 @@ dispatch_slot() {
 	local workflow_path title runs payload
 	workflow_path="$(workflow_api_path)"
 	title="Merge Recovery Soak [scheduled:${slot_epoch}]"
-	runs="$(github_api GET "${workflow_path}/runs?event=workflow_dispatch&per_page=30" "$token")"
+	runs="$(github_api GET "${workflow_path}/runs?event=workflow_dispatch&per_page=100" "$token")"
 	if jq -e --arg title "$title" '.workflow_runs[]? | select(.display_title == $title)' <<<"$runs" >/dev/null; then
 		jq -cn --argjson slot_epoch "$slot_epoch" --arg series "$series" \
 			'{status:"duplicate",slot_epoch:$slot_epoch,series:$series}'
