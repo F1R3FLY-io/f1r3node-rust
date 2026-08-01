@@ -513,86 +513,19 @@ FINISHED_AT="$(date +%s)"
 } | tee "$OUTPUT_DIR/summary.txt"
 
 if command -v jq >/dev/null; then
-  find "$OUTPUT_DIR" -path '*iteration-*/metrics.json' -print0 \
-    | sort -z \
-    | xargs -0 --no-run-if-empty cat \
-    | jq -s 'sort_by(.iteration)' > "$OUTPUT_DIR/iterations.json"
-  [ -s "$OUTPUT_DIR/iterations.json" ] || echo '[]' > "$OUTPUT_DIR/iterations.json"
-  jq -n \
-    --slurpfile iters "$OUTPUT_DIR/iterations.json" \
-    --slurpfile registry "$SCRIPT_DIR/bench/soak-metrics.json" \
-    --arg target_ref "$TARGET_REF" \
-    --arg target_sha "$TARGET_SHA" \
-    --arg version "$VERSION" \
-    --argjson started "$STARTED_AT" \
-    --argjson finished "$FINISHED_AT" \
-    --argjson requested "$DURATION_SECONDS" \
-    --argjson iterations "$ITERATIONS" \
-    --argjson failures "$FAILURES" \
-    --argjson bench_segments "$BENCH_SEGMENTS" \
-    --argjson bench_failures "$BENCH_FAILURES" \
-    '
-    def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
-    def provider_split(p):
-      ($iters[0] | map(select(.provider == p))) as $p_iters
-      | {iterations: ($p_iters | length),
-         failures: ($p_iters | map(select(.ok | not)) | length),
-         avg_duration_s: (if ($p_iters | length) > 0
-                          then (($p_iters | map(.duration_s) | add) / ($p_iters | length) | floor)
-                          else null end)};
-    # Rolls up a SOAK_METRIC-registry metric across iterations: "max"/"min"
-    # fold with max/min across iterations, any other declared aggregate (p50,
-    # p95, ...) folds with the cross-iteration median — the same treatment
-    # finalization_p95_ms already gets below. Declaring a metric in
-    # soak-metrics.json is enough for it to reach here; no further code change
-    # is needed per metric.
-    def rollup_tracked_metrics:
-      ($registry[0].metrics // []) as $defs
-      | [ $defs[] | . as $def
-          | ($iters[0] | map(.metrics[$def.key]) | map(select(. != null))) as $samples
-          | select(($samples | length) > 0)
-          | {
-              key: $def.key,
-              value: (
-                reduce ($def.aggregate // ["p50", "p95", "max"])[] as $agg
-                  ({}; . + {
-                    ($agg): (
-                      if $agg == "max" then ($samples | map(.max) | select(length > 0) | max)
-                      elif $agg == "min" then ($samples | map(.min) | select(length > 0) | min)
-                      else ($samples | map(.[$agg]) | select(length > 0) | median)
-                      end
-                    )
-                  })
-                | . + {samples: ($samples | map(.samples // 0) | add)}
-              )
-            }
-        ]
-      | from_entries;
-    ($finished - $started) as $elapsed
-    | {
-        target_ref: $target_ref,
-        target_sha: $target_sha,
-        version: $version,
-        started_at: $started,
-        finished_at: $finished,
-        requested_seconds: $requested,
-        elapsed_seconds: $elapsed,
-        iterations: $iterations,
-        failures: $failures,
-        failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
-        iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
-        rss_peak_mb: ($iters[0] | map(.rss_peak_mb | select(. != null)) | max),
-        cpu_peak_pct: ($iters[0] | map(.cpu_peak_pct | select(. != null)) | max),
-        finalization_p50_ms: ($iters[0] | map(.finalization_latency.p50_ms | select(. != null)) | median),
-        finalization_p95_ms: ($iters[0] | map(.finalization_latency.p95_ms | select(. != null)) | median),
-        finalization_p99_ms: ($iters[0] | map(.finalization_latency.p99_ms | select(. != null)) | median),
-        too_far_ahead_errors: ($iters[0] | map(.too_far_ahead_errors // 0) | add),
-        providers: {docker: provider_split("docker"), subprocess: provider_split("subprocess")},
-        bench_segments: $bench_segments,
-        bench_failures: $bench_failures,
-        tracked_metrics: rollup_tracked_metrics,
-        iteration_metrics: $iters[0]
-      }' > "$OUTPUT_DIR/summary.json" 2>/dev/null \
+  SOAK_OUTPUT_DIR="$OUTPUT_DIR" \
+  SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
+  SOAK_TARGET_REF="$TARGET_REF" \
+  SOAK_TARGET_SHA="$TARGET_SHA" \
+  SOAK_VERSION="$VERSION" \
+  SOAK_STARTED_AT="$STARTED_AT" \
+  SOAK_FINISHED_AT="$FINISHED_AT" \
+  SOAK_DURATION_SECONDS="$DURATION_SECONDS" \
+  SOAK_ITERATIONS="$ITERATIONS" \
+  SOAK_FAILURES="$FAILURES" \
+  SOAK_BENCH_SEGMENTS="$BENCH_SEGMENTS" \
+  SOAK_BENCH_FAILURES="$BENCH_FAILURES" \
+    "$SCRIPT_DIR/bench/write-soak-summary.sh" \
     || printf 'summary.json emission failed (non-fatal)\n' >&2
 fi
 
