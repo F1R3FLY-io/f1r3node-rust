@@ -235,39 +235,47 @@ runs:
         ARTIFACT: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
         KIND: ${{ inputs.kind }}
         REPO: ${{ github.repository }}
-        REF: ${{ github.ref_name }}
+        REF: ${{ github.event.repository.default_branch }}
       shell: bash -euo pipefail {0}
       run: |
         # Fail-soft, deliberately. A checkpoint is a convenience; the run's real
         # result is published at the end regardless. Losing a mid-run update
         # must never take down a soak that is otherwise healthy, so a failure
         # here is a warning and the next segment starts anyway.
-        payload="$(jq -cn \
-          --arg ref "$REF" \
-          --arg run_id "$GITHUB_RUN_ID" \
-          --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
-          --arg artifact "$ARTIFACT" \
-          --arg kind "$KIND" \
-          '{ref:$ref,inputs:{run_id:$run_id,run_attempt:$run_attempt,artifact:$artifact,kind:$kind}}')"
-        response="$(mktemp)"
-        status=000
-        if ! status="$(curl --silent --show-error \
-          --output "$response" \
-          --write-out '%{http_code}' \
-          --request POST \
-          --header 'Accept: application/vnd.github+json' \
-          --header "Authorization: Bearer $GH_TOKEN" \
-          --header 'Content-Type: application/json' \
-          --header 'X-GitHub-Api-Version: 2022-11-28' \
-          --data "$payload" \
-          "https://api.github.com/repos/${REPO}/actions/workflows/soak-checkpoint-publish.yml/dispatches")"; then
-          status=000
+        dispatch_checkpoint() {
+          local payload response http_status api_message
+          [ -n "${GH_TOKEN:-}" ] || return 1
+          payload="$(jq -cn \
+            --arg ref "$REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg artifact "$ARTIFACT" \
+            --arg kind "$KIND" \
+            '{ref:$ref,inputs:{run_id:$run_id,run_attempt:$run_attempt,artifact:$artifact,kind:$kind}}')" || return 1
+          response="$(mktemp)" || return 1
+          http_status=000
+          if ! http_status="$(curl --silent --show-error \
+            --output "$response" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --data "$payload" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/soak-checkpoint-publish.yml/dispatches")"; then
+            http_status=000
+          fi
+          if [ "$http_status" = 204 ]; then
+            rm -f "$response"
+            echo "checkpoint publish dispatched for ${ARTIFACT}"
+            return 0
+          fi
+          api_message="$(jq -r '.message? // empty | strings | gsub("[\\r\\n]"; " ")' "$response" 2>/dev/null || true)"
+          rm -f "$response"
+          echo "::warning::checkpoint publish dispatch failed with HTTP ${http_status}; the soak continues and its final result still publishes normally"
+          [ -z "$api_message" ] || echo "::notice::GitHub API response: ${api_message}"
+        }
+        if ! dispatch_checkpoint; then
+          echo "::warning::checkpoint publish setup failed; the soak continues and its final result still publishes normally"
         fi
-        if [ "$status" = 204 ]; then
-          echo "checkpoint publish dispatched for ${ARTIFACT}"
-        else
-          echo "::warning::checkpoint publish dispatch failed with HTTP ${status}; the soak continues and its final result still publishes normally"
-          head -c 1000 "$response"
-          echo
-        fi
-        rm -f "$response"

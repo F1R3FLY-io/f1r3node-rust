@@ -35,6 +35,7 @@ jq -n \
 	--argjson bench_failures "$BENCH_FAILURES" \
 	'
     def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
+    def max_or_null: if length == 0 then null else max end;
     ($iters[0] | map(select(type == "object"))) as $all
     | def numeric_values(path): [$all[] | path | select(type == "number")];
       def provider_split(p):
@@ -78,8 +79,8 @@ jq -n \
           failures: $failures,
           failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
           iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
-          rss_peak_mb: (numeric_values(.rss_peak_mb?) | max),
-          cpu_peak_pct: (numeric_values(.cpu_peak_pct?) | max),
+          rss_peak_mb: (numeric_values(.rss_peak_mb?) | max_or_null),
+          cpu_peak_pct: (numeric_values(.cpu_peak_pct?) | max_or_null),
           finalization_p50_ms: (numeric_values(.finalization_latency?.p50_ms?) | median),
           finalization_p95_ms: (numeric_values(.finalization_latency?.p95_ms?) | median),
           finalization_p99_ms: (numeric_values(.finalization_latency?.p99_ms?) | median),
