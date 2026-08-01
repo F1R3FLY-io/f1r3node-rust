@@ -4,11 +4,61 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.41] - 2026-08-01
+
+### Bug Fixes
+
+- move smoke-test host ports out of the ephemeral range
+
+### Documentation
+
+- close the runner-loss incident — root cause and disposition
+- correct host port check guidance
+
+### Refactoring
+
+- extract the node host port check to a shared script
+
+
+## [0.4.39] - 2026-08-01
+
+### Bug Fixes
+
+- avoid blocking cold start on mergeable snapshots
+
+### Documentation
+
+- explain mergeable replay backstop
+
+
+## [0.4.38] - 2026-08-01
+
+### Features
+
+- let an operator ask a running soak to publish
+
+
 ## [0.4.36] - 2026-07-31
 
 ### Bug Fixes
 
 - seed grey badges so the README stops showing 'resource not found'
+
+
+## [0.4.35] - 2026-07-31
+
+### Bug Fixes
+
+- stop two more error-suppressions from reading as normal results
+- key the post-mortem by run attempt; stop excusing capture failures
+- register the runner exclusively; make the pin bind
+- abandon the poached runner instead of terminating it
+- reclaim the runner when the registration race is lost
+- fail fast when the exclusive label lands after a poach
+- let a failed segment still publish its checkpoint
+- stop the post-mortem lookup from reading failure as absence
+- give the soak an exclusive runner, and fix the console-history call
+- locate the post-mortem instance by tag, not job output
 
 
 ## [0.4.34] - 2026-07-31
