@@ -145,6 +145,9 @@ else
   fi
 fi
 
+printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB\n' \
+  "$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB"
+
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
   exit 2
