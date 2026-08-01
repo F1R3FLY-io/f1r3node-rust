@@ -103,7 +103,7 @@ env:
   # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
   # template placeholder, long before the override existed. Grepping would have
   # said yes against a launcher that ignores the variable.
-  SYSTEM_INTEGRATION_REF: 5b3144e4e567e985fa36cc8c69ee70ee63d599ac
+  SYSTEM_INTEGRATION_REF: 79262d8b5cfb8d80b2c94815aeff6b62bcf6127d
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

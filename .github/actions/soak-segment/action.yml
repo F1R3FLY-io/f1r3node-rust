@@ -69,8 +69,72 @@ inputs:
 runs:
   using: composite
   steps:
+    # Turns an operator signal into something the soak loop can see.
+    #
+    # The channel is this instance's own OCI freeform tags, read with
+    # instance-principal auth and the OCID from IMDSv2 -- the same mechanism
+    # the soak already uses to exempt itself from the reaper, so it grants no
+    # new credential and trusts nothing new. .github/workflows/soak-signal.yml
+    # is the sender.
+    #
+    # Backgrounded because the soak is a single long-running `run:`: there is
+    # no other point at which this job could notice anything. It writes a file
+    # rather than signalling the process, because the loop must choose the
+    # moment -- stopping mid-iteration leaves a partial result the aggregator
+    # would count as real.
+    #
+    # Entirely optional. If IMDS or OCI is unreachable it warns and exits, and
+    # the segment behaves exactly as before: a soak must never fail because a
+    # convenience channel is unavailable.
+    - name: Start signal poller (${{ inputs.label }})
+      shell: bash -e {0}
+      env:
+        SIGNAL_FILE: /tmp/merge-recovery-soak/signal
+        SUPPRESS_LABEL_WARNING: "True"
+      run: |
+        mkdir -p /tmp/merge-recovery-soak
+        # A signal left over from the previous segment would fire the instant
+        # this one starts.
+        rm -f "$SIGNAL_FILE"
+        iid="$(curl -sS --max-time 10 -H 'Authorization: Bearer Oracle' \
+          http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || iid=""
+        case "$iid" in
+          ocid1.instance.*) ;;
+          *)
+            echo "::warning::signal poller: could not read this instance OCID from IMDS; on-demand checkpoint/finalize is unavailable for this segment"
+            exit 0
+            ;;
+        esac
+        # Only a signal newer than this segment counts. Without the floor, a
+        # tag from an earlier segment ends every later one the moment it opens.
+        started="$(date +%s)"
+        printf '%s' "$iid" > /tmp/merge-recovery-soak/.signal-iid
+        printf '%s' "$started" > /tmp/merge-recovery-soak/.signal-since
+        nohup bash -c '
+          iid="$(cat /tmp/merge-recovery-soak/.signal-iid)"
+          since="$(cat /tmp/merge-recovery-soak/.signal-since)"
+          while :; do
+            sleep 30
+            raw="$(oci --auth instance_principal compute instance get \
+              --instance-id "$iid" \
+              --query "data.\"freeform-tags\".\"soak-signal\"" --raw-output 2>/dev/null || true)"
+            case "$raw" in ""|null) continue ;; esac
+            action="${raw%%:*}"; at="${raw##*:}"
+            case "$at" in ""|*[!0-9]*) continue ;; esac
+            [ "$at" -le "$since" ] && continue
+            case "$action" in
+              checkpoint|finalize)
+                printf "%s" "$action" > /tmp/merge-recovery-soak/signal
+                exit 0
+                ;;
+            esac
+          done
+        ' >/dev/null 2>&1 &
+        echo "signal poller watching soak-signal on $iid; signals after ${started} count"
+
     - name: Soak (${{ inputs.label }})
       env:
+        SOAK_SIGNAL_FILE: /tmp/merge-recovery-soak/signal
         F1R3FLY_NODE_IMAGE: ${{ inputs.node_image }}
         F1R3FLY_NODE_BINARY: /tmp/rnode
         F1R3FLY_NODE_DEFAULTS_CONF: ${{ inputs.node_repo_dir }}/node/src/main/resources/defaults.conf
