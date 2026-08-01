@@ -4,6 +4,17 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.39] - 2026-08-01
+
+### Bug Fixes
+
+- avoid blocking cold start on mergeable snapshots
+
+### Documentation
+
+- explain mergeable replay backstop
+
+
 ## [0.4.38] - 2026-08-01
 
 ### Features
