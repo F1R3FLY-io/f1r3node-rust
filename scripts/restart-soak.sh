@@ -8,11 +8,11 @@
 # is excluded from baseline duty — a short manual run must never become the
 # baseline a full-window run is judged against. It also cannot spill into the
 # next scheduled slot: the run ends at the window end you choose, and the
-# next cron slot proceeds normally.
+# next OCI Resource Scheduler slot proceeds normally.
 #
 #   scripts/restart-soak.sh --last-failed
-#       Find the most recent FAILED scheduled soak run, recompute the window
-#       its cron slot defined (Fri 19:30 Pacific + 60h = weekend, Mon-Thu
+#       Find the most recent FAILED OCI-scheduled soak run, recompute the window
+#       its recorded slot defined (Fri 19:30 Pacific + 60h = weekend, Mon-Thu
 #       19:30 Pacific + 22h = daily), and restart for whatever remains of it.
 #
 #   scripts/restart-soak.sh --series daily --until-next-slot
@@ -25,7 +25,7 @@
 #
 # Options:
 #   --last-failed          derive series/target/window from the latest failed
-#                          scheduled run (mutually exclusive with the rest)
+#                          OCI-scheduled run (mutually exclusive with the rest)
 #   --series X             daily | weekend
 #   --target-ref R         branch/SHA to soak (default: dev for daily,
 #                          master for weekend — matching the schedule gate)
@@ -52,16 +52,25 @@ NEXT_SLOT_MARGIN=1800
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
-command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 2; }
-command -v python3 >/dev/null || { echo "python3 not found (needed for Pacific-time window maths)" >&2; exit 2; }
-command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+command -v gh >/dev/null || {
+	echo "gh CLI not found" >&2
+	exit 2
+}
+command -v python3 >/dev/null || {
+	echo "python3 not found (needed for Pacific-time window maths)" >&2
+	exit 2
+}
+command -v jq >/dev/null || {
+	echo "jq not found" >&2
+	exit 2
+}
 
 py() { python3 - "$@"; }
 
 # Prints "<slot_epoch> <series>" for the 19:30 Pacific slot at or before the
 # given epoch — the slot that launched a scheduled run created at that time.
 slot_before() {
-  py "$1" <<'PY'
+	py "$1" <<'PY'
 import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -76,7 +85,7 @@ PY
 }
 
 next_slot_epoch() {
-  py <<'PY'
+	py <<'PY'
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 tz = ZoneInfo("America/Los_Angeles")
@@ -89,7 +98,7 @@ PY
 }
 
 pacific() {
-  py "$1" <<'PY'
+	py "$1" <<'PY'
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -107,87 +116,126 @@ DRY_RUN=false
 ASSUME_YES=false
 
 while [ $# -gt 0 ]; do
-  case "$1" in
-    --last-failed) LAST_FAILED=true ;;
-    --series) SERIES="${2:?--series needs a value}"; shift ;;
-    --target-ref) TARGET_REF="${2:?--target-ref needs a value}"; shift ;;
-    --window-end) WINDOW_END="${2:?--window-end needs a value}"; shift ;;
-    --until-next-slot) UNTIL_NEXT_SLOT=true ;;
-    --hours) HOURS="${2:?--hours needs a value}"; shift ;;
-    --dry-run) DRY_RUN=true ;;
-    --yes) ASSUME_YES=true ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
-  esac
-  shift
+	case "$1" in
+	--last-failed) LAST_FAILED=true ;;
+	--series)
+		SERIES="${2:?--series needs a value}"
+		shift
+		;;
+	--target-ref)
+		TARGET_REF="${2:?--target-ref needs a value}"
+		shift
+		;;
+	--window-end)
+		WINDOW_END="${2:?--window-end needs a value}"
+		shift
+		;;
+	--until-next-slot) UNTIL_NEXT_SLOT=true ;;
+	--hours)
+		HOURS="${2:?--hours needs a value}"
+		shift
+		;;
+	--dry-run) DRY_RUN=true ;;
+	--yes) ASSUME_YES=true ;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		echo "unknown argument: $1" >&2
+		usage >&2
+		exit 2
+		;;
+	esac
+	shift
 done
 
 NOW="$(date +%s)"
 
 if [ "$LAST_FAILED" = "true" ]; then
-  if [ -n "$SERIES$TARGET_REF$WINDOW_END$HOURS" ] || [ "$UNTIL_NEXT_SLOT" = "true" ]; then
-    echo "--last-failed derives everything itself; do not combine it with other selectors" >&2
-    exit 2
-  fi
-  # Only scheduled runs: their window is defined by the cron slot, which can
-  # be recomputed from the run's creation time. A dispatched run's window
-  # lives in its inputs, which the API does not expose.
-  failed="$(gh run list --repo "$REPO_SLUG" --workflow "$WORKFLOW" \
-      --status failure --limit 30 \
-      --json databaseId,createdAt,event,url \
-    | jq -r '[.[] | select(.event == "schedule")][0] // empty
-             | "\(.databaseId)\t\(.createdAt)\t\(.url)"')"
-  [ -n "$failed" ] || { echo "no failed scheduled soak run found" >&2; exit 1; }
-  run_id="${failed%%$'\t'*}"
-  rest="${failed#*$'\t'}"
-  created_at="${rest%%$'\t'*}"
-  run_url="${rest#*$'\t'}"
-  created_epoch="$(py "$created_at" <<'PY'
+	if [ -n "$SERIES$TARGET_REF$WINDOW_END$HOURS" ] || [ "$UNTIL_NEXT_SLOT" = "true" ]; then
+		echo "--last-failed derives everything itself; do not combine it with other selectors" >&2
+		exit 2
+	fi
+	failed="$(gh run list --repo "$REPO_SLUG" --workflow "$WORKFLOW" \
+		--status failure --limit 30 \
+		--json databaseId,createdAt,displayTitle,event,url |
+		jq -r '[.[] | select(.event == "schedule" or (.displayTitle | test("^Merge Recovery Soak \\[scheduled:[0-9]+\\]$")))][0] // empty
+             | "\(.databaseId)\t\(.createdAt)\t\(.displayTitle)\t\(.url)"')"
+	[ -n "$failed" ] || {
+		echo "no failed OCI-scheduled soak run found" >&2
+		exit 1
+	}
+	run_id="${failed%%$'\t'*}"
+	rest="${failed#*$'\t'}"
+	created_at="${rest%%$'\t'*}"
+	rest="${rest#*$'\t'}"
+	display_title="${rest%%$'\t'*}"
+	run_url="${rest#*$'\t'}"
+	if [[ "$display_title" =~ \[scheduled:([0-9]+)\] ]]; then
+		slot_epoch="${BASH_REMATCH[1]}"
+	else
+		created_epoch="$(
+			py "$created_at" <<'PY'
 import sys
 from datetime import datetime
 print(int(datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()))
 PY
-)"
-  read -r slot_epoch SERIES <<<"$(slot_before "$created_epoch")"
-  if [ "$SERIES" = "weekend" ]; then
-    WINDOW_END=$((slot_epoch + 216000))
-    TARGET_REF="master"
-  else
-    WINDOW_END=$((slot_epoch + 79200))
-    TARGET_REF="dev"
-  fi
-  echo "latest failed scheduled run: $run_id ($run_url)"
-  echo "  slot:   $(pacific "$slot_epoch") -> $SERIES"
+		)"
+		read -r slot_epoch _ <<<"$(slot_before "$created_epoch")"
+	fi
+	read -r _ SERIES <<<"$(slot_before "$slot_epoch")"
+	if [ "$SERIES" = "weekend" ]; then
+		WINDOW_END=$((slot_epoch + 216000))
+		TARGET_REF="master"
+	else
+		WINDOW_END=$((slot_epoch + 79200))
+		TARGET_REF="dev"
+	fi
+	echo "latest failed scheduled run: $run_id ($run_url)"
+	echo "  slot:   $(pacific "$slot_epoch") -> $SERIES"
 else
-  case "$SERIES" in
-    daily|weekend) ;;
-    "") echo "--series is required (daily | weekend) unless using --last-failed" >&2; exit 2 ;;
-    *) echo "--series must be daily or weekend" >&2; exit 2 ;;
-  esac
-  if [ -z "$TARGET_REF" ]; then
-    TARGET_REF="dev"
-    [ "$SERIES" = "weekend" ] && TARGET_REF="master"
-  fi
-  ends=0
-  [ -n "$WINDOW_END" ] && ends=$((ends + 1))
-  [ -n "$HOURS" ] && ends=$((ends + 1))
-  [ "$UNTIL_NEXT_SLOT" = "true" ] && ends=$((ends + 1))
-  if [ "$ends" -ne 1 ]; then
-    echo "pick exactly one of --window-end, --hours, --until-next-slot" >&2
-    exit 2
-  fi
-  if [ "$UNTIL_NEXT_SLOT" = "true" ]; then
-    WINDOW_END=$(( $(next_slot_epoch) - NEXT_SLOT_MARGIN ))
-  elif [ -n "$HOURS" ]; then
-    [[ "$HOURS" =~ ^[1-9][0-9]*$ ]] || { echo "--hours must be a positive integer" >&2; exit 2; }
-    WINDOW_END=$((NOW + HOURS * 3600))
-  fi
-  [[ "$WINDOW_END" =~ ^[1-9][0-9]*$ ]] || { echo "--window-end must be epoch seconds" >&2; exit 2; }
+	case "$SERIES" in
+	daily | weekend) ;;
+	"")
+		echo "--series is required (daily | weekend) unless using --last-failed" >&2
+		exit 2
+		;;
+	*)
+		echo "--series must be daily or weekend" >&2
+		exit 2
+		;;
+	esac
+	if [ -z "$TARGET_REF" ]; then
+		TARGET_REF="dev"
+		[ "$SERIES" = "weekend" ] && TARGET_REF="master"
+	fi
+	ends=0
+	[ -n "$WINDOW_END" ] && ends=$((ends + 1))
+	[ -n "$HOURS" ] && ends=$((ends + 1))
+	[ "$UNTIL_NEXT_SLOT" = "true" ] && ends=$((ends + 1))
+	if [ "$ends" -ne 1 ]; then
+		echo "pick exactly one of --window-end, --hours, --until-next-slot" >&2
+		exit 2
+	fi
+	if [ "$UNTIL_NEXT_SLOT" = "true" ]; then
+		WINDOW_END=$(($(next_slot_epoch) - NEXT_SLOT_MARGIN))
+	elif [ -n "$HOURS" ]; then
+		[[ "$HOURS" =~ ^[1-9][0-9]*$ ]] || {
+			echo "--hours must be a positive integer" >&2
+			exit 2
+		}
+		WINDOW_END=$((NOW + HOURS * 3600))
+	fi
+	[[ "$WINDOW_END" =~ ^[1-9][0-9]*$ ]] || {
+		echo "--window-end must be epoch seconds" >&2
+		exit 2
+	}
 fi
 
 case "$SERIES" in
-  daily) WINDOW_NOMINAL=79200 ;;
-  weekend) WINDOW_NOMINAL=216000 ;;
+daily) WINDOW_NOMINAL=79200 ;;
+weekend) WINDOW_NOMINAL=216000 ;;
 esac
 
 REMAINING=$((WINDOW_END - NOW))
@@ -203,19 +251,19 @@ REMAINING=$((WINDOW_END - NOW))
 # intent and still ends before the slot. An explicit --hours/--window-end is
 # rejected instead, because the operator named a span we cannot honour.
 if [ "$REMAINING" -gt "$WINDOW_NOMINAL" ]; then
-  if [ "$UNTIL_NEXT_SLOT" = "true" ]; then
-    echo "note: $((REMAINING / 3600))h to the next slot exceeds the ${SERIES} window ($((WINDOW_NOMINAL / 3600))h); capping"
-    WINDOW_END=$((NOW + WINDOW_NOMINAL))
-    REMAINING="$WINDOW_NOMINAL"
-  else
-    echo "window is ${REMAINING}s, beyond the ${WINDOW_NOMINAL}s ${SERIES} window; the gate would refuse it. A restart can only shorten the window it inherits." >&2
-    exit 1
-  fi
+	if [ "$UNTIL_NEXT_SLOT" = "true" ]; then
+		echo "note: $((REMAINING / 3600))h to the next slot exceeds the ${SERIES} window ($((WINDOW_NOMINAL / 3600))h); capping"
+		WINDOW_END=$((NOW + WINDOW_NOMINAL))
+		REMAINING="$WINDOW_NOMINAL"
+	else
+		echo "window is ${REMAINING}s, beyond the ${WINDOW_NOMINAL}s ${SERIES} window; the gate would refuse it. A restart can only shorten the window it inherits." >&2
+		exit 1
+	fi
 fi
 
 if [ "$REMAINING" -lt "$FLOOR_SECONDS" ]; then
-  echo "only ${REMAINING}s remain before $(pacific "$WINDOW_END") — under the 2h floor; the gate would refuse, so not dispatching" >&2
-  exit 1
+	echo "only ${REMAINING}s remain before $(pacific "$WINDOW_END") — under the 2h floor; the gate would refuse, so not dispatching" >&2
+	exit 1
 fi
 
 DURATION="daily-24h"
@@ -228,23 +276,27 @@ echo "  window ends: $(pacific "$WINDOW_END") (~$((REMAINING / 3600))h from now)
 echo "  marked:      restarted (retry_attempt=1; excluded from baselines)"
 
 CMD=(gh workflow run "$WORKFLOW" --repo "$REPO_SLUG"
-  -f "target_ref=$TARGET_REF"
-  -f "duration=$DURATION"
-  -f "window_end_epoch=$WINDOW_END"
-  -f "series=$SERIES"
-  -f "retry_attempt=1")
+	-f "target_ref=$TARGET_REF"
+	-f "duration=$DURATION"
+	-f "window_end_epoch=$WINDOW_END"
+	-f "series=$SERIES"
+	-f "retry_attempt=1")
 
 if [ "$DRY_RUN" = "true" ]; then
-  printf 'dry run — would execute:\n  %q' "${CMD[0]}"
-  printf ' %q' "${CMD[@]:1}"
-  printf '\n'
-  exit 0
+	printf 'dry run — would execute:\n  %q' "${CMD[0]}"
+	printf ' %q' "${CMD[@]:1}"
+	printf '\n'
+	exit 0
 fi
 
 if [ "$ASSUME_YES" != "true" ]; then
-  printf 'dispatch this run? [y/N] '
-  read -r answer
-  case "$answer" in y|Y|yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+	printf 'dispatch this run? [y/N] '
+	read -r answer
+	case "$answer" in y | Y | yes | YES) ;; *)
+		echo "aborted"
+		exit 1
+		;;
+	esac
 fi
 
 "${CMD[@]}"
