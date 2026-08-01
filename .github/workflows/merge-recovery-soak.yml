@@ -53,6 +53,8 @@ permissions:
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
+  SOAK_RSS_CEILING_MB: "14336"
+  SOAK_HOST_FREE_FLOOR_MB: "12288"
   # THIRD pin site. The other two — .github/oci-validation.env and
   # _integration-pipeline.yml — are held identical by build_base's drift check;
   # this one is outside that check and rotted unnoticed as a result. It sat at
@@ -103,7 +105,7 @@ env:
   # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
   # template placeholder, long before the override existed. Grepping would have
   # said yes against a launcher that ignores the variable.
-  SYSTEM_INTEGRATION_REF: 79262d8b5cfb8d80b2c94815aeff6b62bcf6127d
+  SYSTEM_INTEGRATION_REF: 369d49df2f97e65b3d0ad869aa668a7383b11179
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
