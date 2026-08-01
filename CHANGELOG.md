@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.42] - 2026-08-01
+
+### Documentation
+
+- normalize ToDos.md to the epic/task standard
+
+
 ## [0.4.41] - 2026-08-01
 
 ### Bug Fixes
