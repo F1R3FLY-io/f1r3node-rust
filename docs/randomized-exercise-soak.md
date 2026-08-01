@@ -10,7 +10,7 @@ The initial release targets the existing six-node single-shard topology and both
 
 - This document is canonical for the orchestrator value stream and scheduling policy.
 - [`docs/ci-pins.md`](ci-pins.md) is canonical for split runner/catalog pins, JSONC resolution, trigger trust, and pin-bump automation.
-- [system-integration's randomized exercise soak contract](https://github.com/F1R3FLY-io/system-integration/blob/dev/docs/specs/randomized-exercise-soak-contract.md) is canonical for the executable catalog, executor, result, and replay interface.
+- [system-integration's randomized exercise soak contract](https://github.com/F1R3FLY-io/system-integration/blob/392368870dd686587cabc03e1b965ef45bc0fa62/docs/specs/randomized-exercise-soak-contract.md) is canonical for the executable catalog, executor, result, and replay interface.
 
 The documents cross-link by canonical repository URL so their relationship survives separate clones and local workspace layouts.
 

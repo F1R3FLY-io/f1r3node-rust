@@ -8,7 +8,7 @@ canonical_path: docs/ci-pins.md
 canonical_branch: dev
 counterpart:
   repository: F1R3FLY-io/system-integration
-  url: https://github.com/F1R3FLY-io/system-integration/blob/dev/docs/specs/randomized-exercise-soak-contract.md
+  url: https://github.com/F1R3FLY-io/system-integration/blob/392368870dd686587cabc03e1b965ef45bc0fa62/docs/specs/randomized-exercise-soak-contract.md
 implements_epic: EPIC-016
 ---
 
@@ -16,7 +16,7 @@ implements_epic: EPIC-016
 
 ## Canonical status
 
-This document is canonical for dependency-pin ownership, trust selection, and consumption in `F1R3FLY-io/f1r3node-rust`. The system-integration executor/catalog contract is canonical in [system-integration's randomized exercise soak contract](https://github.com/F1R3FLY-io/system-integration/blob/dev/docs/specs/randomized-exercise-soak-contract.md). Each document links to the other; neither duplicates the other's executable contract.
+This document is canonical for dependency-pin ownership, trust selection, and consumption in `F1R3FLY-io/f1r3node-rust`. The system-integration executor/catalog contract is canonical in [system-integration's randomized exercise soak contract](https://github.com/F1R3FLY-io/system-integration/blob/392368870dd686587cabc03e1b965ef45bc0fa62/docs/specs/randomized-exercise-soak-contract.md). Each document links to the other; neither duplicates the other's executable contract.
 
 ## Problem
 
