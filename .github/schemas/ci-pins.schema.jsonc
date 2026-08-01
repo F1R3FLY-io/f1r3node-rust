@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/.github/schemas/ci-pins.schema.jsonc",
+  "title": "F1R3node CI pins",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "systemIntegration", "ociCli"],
+  "properties": {
+    "$schema": {
+      "const": "./schemas/ci-pins.schema.jsonc"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "systemIntegration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runnerRef", "catalogRef", "catalogSchemaVersion"],
+      "properties": {
+        "runnerRef": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "catalogRef": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "catalogSchemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ociCli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "installerUrl", "installerSha256", "installerPySha256"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "installerUrl": {
+          "type": "string",
+          "pattern": "^https://raw\\.githubusercontent\\.com/oracle/oci-cli/v[0-9]+\\.[0-9]+\\.[0-9]+/scripts/install/install\\.sh$"
+        },
+        "installerSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "installerPySha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

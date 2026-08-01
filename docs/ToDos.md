@@ -1124,7 +1124,7 @@ tasks:
 ---
 epic_id: EPIC-016
 title: "Trusted Single-Source CI Pin Registry"
-status: pending
+status: in_progress
 priority: p1
 user_story: US-009
 blocked_by: []
@@ -1134,7 +1134,7 @@ claimed_at: null
 tasks:
   - id: TASK-016-1
     title: "Define ci-pins.jsonc schema and offline resolver"
-    status: pending
+    status: in_progress
     acceptance:
       - ".github/ci-pins.jsonc is the only source for systemIntegration.runnerRef, systemIntegration.catalogRef, catalogSchemaVersion, and OCI CLI URL/version/checksums"
       - "A committed schema and offline parser support JSONC comments and trailing commas while rejecting duplicate keys, missing keys, unknown security-sensitive keys, mutable refs, malformed SHAs, malformed checksums, and OCI URL/version mismatch"

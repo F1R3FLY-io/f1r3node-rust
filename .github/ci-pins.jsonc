@@ -1,4 +1,5 @@
 {
+  "$schema": "./schemas/ci-pins.schema.jsonc",
   "schemaVersion": 1,
   "systemIntegration": {
     "runnerRef": "369d49df2f97e65b3d0ad869aa668a7383b11179",
