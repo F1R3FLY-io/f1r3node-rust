@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.0"
-last_updated: 2026-04-17
+last_updated: 2026-08-01
 mr_status:
   ready: false
   target_branch: master
@@ -12,12 +12,30 @@ mr_status:
 This document tracks implementation work through **epics** (logical groupings of related tasks).
 
 **Document Structure**
+
 - Active work: This file (`docs/ToDos.md`)
 - User stories: `docs/UserStories.md`
 - Completed work: `docs/CompletedTasks.md`
 - Backlog: `docs/Backlog.md`
 
 **Shared Coordination File:** `/tmp/migrationPlan.md` (read by agents in both f1r3node and f1r3node-rust)
+
+---
+
+## Active Coordination
+
+<!-- Compact, current-state-only. This section replaces the free-form status
+     entries that previously accumulated at the top of this file; the full
+     narrative history is preserved verbatim in
+     docs/work-logs/coordination-archive-2026-08-01T03Z.md.
+     NOTE: docs/discoveries/*.md is gitignored here (.gitignore:123) — use
+     docs/work-logs/ for durable cross-agent notes, and keep this section to
+     current operative facts only. -->
+
+- **PR #182** (`hotfix/renormalize-system-integration-pin-post-79` → `dev`, head `121029f1`) normalizes all three `SYSTEM_INTEGRATION_REF` sites to system-integration `main` `369d49df2f97e65b3d0ad869aa668a7383b11179` (the post-#79/#80 promotion). Multi-agent review posted 2026-08-01: approved 3-0 (anthropic abstained on an API billing error). This completes and supersedes the 2026-07-31T19:33 PDT handoff; the similarly named local branch `hotfix/normalize-system-integration-pin-post-79` is stale and has no PR.
+- **Hold `dev` → `master` until the weekend soak snapshot is verified.** The Friday 19:30 Pacific scheduled `Merge Recovery Soak` run must exist with its `headSha` recorded, confirming it launched from the pre-normalization `master` (PR #181 pin `79262d8b`), before promoting. Merging first would silently move the weekend soak to the post-#79 `369d49df` pin. If no scheduled run appears, hold the promotion and investigate or manually dispatch from the intended pre-normalization `master`. Known discrepancy: scheduled runs initialize `target_ref=dev` although comments say the Friday weekend run targets `master` — treat the captured workflow `headSha`/pin and the resolved target SHA as separate evidence.
+- **Run 30661821085 (2026-07-31 dispatch) is CLOSED.** Root cause: a 52-minute OCI host stall froze the VM's userspace ("runner lost, VM healthy" class) — not a node or test failure; the node was healthy at block 141 when output stopped. Evidence was extracted and hash-verified, and the evidence VMs were released with durable OCI backups remaining. Full analysis: `../system-integration/docs/ToDos.md` and the archive work log.
+- **Cross-agent INBOX** entries from claude-session-02f66bb7 are archived; their actionable items live in TASK-010-6, TASK-010-7, and TASK-010-8. Use tracked files (this file or `docs/work-logs/`) for inter-agent messages — never `docs/discoveries/`.
 
 ---
 
@@ -106,11 +124,13 @@ tasks:
 **Context:** The `system-integration` repo orchestrates this node via Docker Compose and shardctl. It has a 6-phase migration plan (see `system-integration/docs/migration-to-rust-node.md`) to make f1r3node-rust the sole node implementation. Phase 1 requires genesis and compose alignment in this repo.
 
 **Scope:**
+
 - Genesis wallets.txt sync (critical blocker for system-integration Phase 1)
 - Compose env var and network name standardization
 - Validation that shard starts correctly
 
 **Notes:**
+
 - system-integration currently targets branch `dev` in its services.yml, but this repo uses `master` as its working branch. system-integration will need to update its branch reference.
 - standalone.yml keeps its own network name (`f1r3fly-standalone`) since it's isolated by design.
 
@@ -150,6 +170,7 @@ tasks:
 **Context:** system-integration manages monitoring as a separate compose file (`compose/monitoring.yml`). Aligning this repo's structure makes compose files directly usable as upstream sources during the migration (Phase 3).
 
 **Scope:**
+
 - Move prometheus and grafana service definitions from `docker/shard.yml` to `docker/monitoring.yml`
 - Update documentation
 
@@ -209,10 +230,12 @@ tasks:
 **Context:** The Reified RSpaces chain (#328-#338) is a major architectural change that must land before code sync. This phase is owned by the agent working in the f1r3node repository. Completion is signaled via the shared migration plan file.
 
 **Scope:**
+
 - Included: Merging blocking and ready PRs into f1r3node rust/dev
 - Excluded: Any work in f1r3node-rust (that starts in EPIC-004)
 
 **Notes:**
+
 - The 11-PR Reified RSpaces chain has a sequential dependency — each PR targets the previous one
 - Chain base (#328) depends on `new_parser` branch which depends on `rholang-rs#83`
 - Monitor `/tmp/migrationPlan.md` for `phase_1_critical_prs.status` to know when to start EPIC-004
@@ -306,10 +329,12 @@ tasks:
 **Context:** Brings f1r3node-rust to full parity with post-merge f1r3node rust/dev. This is the core migration step — after this, f1r3node-rust becomes the canonical source of truth.
 
 **Scope:**
+
 - Included: All Rust crates, CI/CD, Docker, scripts, local dev config, version tagging
 - Excluded: Issue migration (EPIC-005), external repo updates (EPIC-006)
 
 **Notes:**
+
 - The code delta is ~4 releases (v0.4.9-v0.4.11) plus the critical PRs from EPIC-003
 - Docker image renamed from `f1r3fly-rust-node` to `f1r3fly-rust`
 - Version drops the `rust-` tag prefix (no longer needed in a Rust-only repo)
@@ -364,6 +389,7 @@ tasks:
 **Context:** Transfer the 27 open issues from f1r3node to their appropriate destinations. 22 issues migrate to f1r3node-rust, 5 Scala-only issues are closed.
 
 **Scope:**
+
 - Included: Issue creation, cross-referencing, closing Scala issues
 - Excluded: Fixing any of the migrated issues
 
@@ -411,6 +437,7 @@ tasks:
 **Context:** Downstream consumers need to point at the new repo and Docker image name. system-integration and pyf1r3fly are the primary consumers. rholang-rs is already independent.
 
 **Scope:**
+
 - Included: system-integration, pyf1r3fly, rholang-rs verification
 - Excluded: Any other F1R3FLY-io repos not listed
 
@@ -451,6 +478,7 @@ tasks:
 **Context:** All open PRs on f1r3node must be resolved. Tier 3 PRs (viable Rust work) get redirect instructions. Tier 4 PRs (Scala) are closed with deprecation notice.
 
 **Scope:**
+
 - Included: Commenting and closing PRs on f1r3node
 - Excluded: Tier 1/2 PRs (handled in EPIC-003)
 
@@ -506,10 +534,12 @@ tasks:
 **Context:** Final step — makes f1r3node read-only and redirects all traffic to f1r3node-rust. This must not happen until all issues, PRs, and external repos are handled.
 
 **Scope:**
+
 - Included: README update, repo metadata, CI disable, archive
 - Excluded: Any further development in f1r3node
 
 **Notes:**
+
 - Do NOT archive until Phases 5-7 are confirmed complete
 - The other agent in f1r3node should NOT start this until signaled
 
@@ -625,6 +655,7 @@ tasks:
 **Context:** Stands up a realistic multi-host deployment (single shard distributed across 2 VPSes) to measure network-latency-bound consensus performance. This is distinct from in-process or single-host Docker tests — it exercises the P2P transport, Kademlia discovery, and Casper finalization under real inter-host latency.
 
 **Scope:**
+
 - Included: OCI provisioning, image distribution, distributed compose, deploy/teardown automation, latency benchmark port
 - Excluded: Inter-shard consensus (Option B, ~1,500+ LOC of consensus work — see BACKLOG-FI-001)
 - Excluded: Non-OCI providers (Tata cloud, etc.)
@@ -632,6 +663,7 @@ tasks:
 - Excluded: Production-grade secrets management (using `scp` for TLS keys for now)
 
 **Notes:**
+
 - Uses arm64 (VM.Standard.A1.Flex) for free-tier eligibility and production representativeness
 - Image distribution intentionally uses `docker save/load` rather than registry pull, to keep this epic self-contained until the OCIR CI switch lands
 - TLS keys for bootstrap are shipped via `scp` (acceptable for a throwaway testbed)
@@ -704,12 +736,44 @@ tasks:
       - "merge-recovery-soak.yml's SYSTEM_INTEGRATION_REF is covered by build_base's pin-drift check, alongside .github/oci-validation.env and _integration-pipeline.yml. It is a THIRD pin site that nobody knew existed: CI's pin advanced to 06f2020c while the soak's sat at a50eeb19, which predated system-integration 81284fc (adding integration-tests/certs/validator4). compose.py bind-mounts that path, so Docker created a directory and every node died on 'Failed to read the X.509 certificate: IO error: Is a directory (os error 21)'. Fixed for now by 4879a1f6; the guard is what stops it recurring."
       - "A schedule-gate no-op is distinguishable from a real pass without opening the run. Two cron slots fire nightly; the 19:30 Pacific slot runs the real soak and the 20:30 slot no-ops and reports success. From 2026-07-27 the real soak failed at bring-up every night while the workflow showed green, because the no-op is the later run. The job already prints a ::notice saying no soak was attempted — that is not enough, since the signal people read is the check mark."
       - "Regression coverage: the soak runs integration-tests/test/tests/custom/test_load.py, which the CI integration matrix explicitly --deselects. Any test only the soak runs needs either CI coverage or an explicit note that the soak is its sole gate, otherwise CI stays green through soak-only breakage."
+
+  - id: TASK-010-7
+    title: "Make system-integration's compartment reaper soak-aware (cross-repo)"
+    status: pending
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    coordination_note: "Executed by the agent working in ../system-integration. Coordinate via that repo's docs/ToDos.md — NOT docs/discoveries/, whose *.md contents are gitignored here (.gitignore:123) and so do not survive as a durable trace."
+    acceptance:
+      - "ci/oci-runners/reap-stale-runners.sh no longer terminates live soak runners. As of pin 9ebdde01 its OCI query filters ONLY on lifecycle-state == RUNNING and time-created < now - MAX_AGE_HOURS (default 6) — no display-name filter and no freeform-tag check — so it is blind to the soak-deadline-epoch exemption added by f1r3node-rust PR #169 and would kill a 22h/60h soak at hour 6. LATENT, NOT ACTIVE: no workflow schedules it at that SHA (.github/workflows contains only smoke-test.yml), so the hazard is a manual invocation. Fix mirrors ci-runner-reaper.yml: restrict to the ephemeral name prefixes and honour soak-deadline-epoch before terminating."
+      - "Same script must also stop terminating long-lived golden images (ci-runner-golden-*), which the unfiltered age query sweeps up too; this is the reaper gap the system-integration agent previously supplied a diff for."
+      - "Soak runners carry their own name prefix. launch-runner.sh builds RUNNER_NAME=ci-eph-$REPO_SLUG-$ARCH-$TS-$RAND, so a soak VM is indistinguishable from a 45-minute CI runner by name alone and any future age-based rule matches it by accident."
+      - "cloud-init-runner.yml.tmpl schedules an on-instance self-destruct sized to a per-run dollar budget (~$12 daily / ~$33 weekend at VM.Standard.E6.Flex 16 OCPU / 32GB per state.env) — the last line of defence when both GitHub and the reaper fail."
+      - "Soak VMs carry a cost-tracking freeform tag, with a monthly OCI budget and 80/100% alerts scoped to it. Note the enforcement is the VM lifetime, not the budget: OCI budgets are monthly and alert-only and cannot stop a running resource."
+      - "launch-runner.sh tags the instance atomically at creation (oci compute instance launch --freeform-tags) rather than leaving it to a follow-up update. Validation run 30584775602 proved why: the launcher returns as soon as OCI accepts the launch call, but the instance keeps transitioning through PROVISIONING, and `instance update` against it is refused with HTTP 409 'currently being modified, try again later' — 3s after launch, which failed the whole launch job. f1r3node-rust now retries for ~3min (commit ea566d8a), which works but is a workaround: tagging at creation removes the race entirely and is the only way a tag can be guaranteed present from the instance's first instant, closing the window in which a reaper could see an untagged soak VM. Applies equally to the cost-tracking tags requested above."
+      - "conftest.py's --rss-ceiling-mb default (5000, conftest.py:94) is raised to a host-relative value. This is a defect, not a tuning preference, and our SOAK_RSS_CEILING_MB override is a workaround that leaves it armed for every other caller. test_load.py fixes its shard at 6 nodes (test_load.py:220, '4 genesis validators (6 nodes total with boot + readonly)', include_readonly=True at :232), and that shard peaks ~9.9-10.8GB on ANY host — so the default sits at roughly half the working set of the harness's own primary load test, and kills it identically on a 64GB workstation. It is correct only on genuinely small hosts (<~12GB), where the test cannot run anyway, which is what makes the flat value look defensible. Why it went unnoticed: _integration-pipeline.yml:482 --deselects test_load.py, so CI never runs it and the soak was its only automated caller — and the soak never got past bring-up until 2026-07-30. Suggested shape: max(floor, MemTotal - headroom), keeping 5000 as the small-host case. Sequence after a clean soak: it is a shared default touching every caller. Also note --host-free-floor-mb (conftest.py:105, default 2000, subprocess-only) is a second always-on guard the ceiling override does not touch."
+
+  - id: TASK-010-8
+    title: "De-duplicate the CI runner compartment OCID without weakening the reaper"
+    status: review
+    claimed_by: claude-session-9f68c6fa
+    completed_at: 2026-07-30T22:20:00Z
+    branch: chore/reaper-compartment-invariant
+    notes:
+      - "Resolved by asserting equality rather than de-duplicating: check-workflow-invariants.sh gained invariant 5, which fails CI when the two literals diverge or when neither file pins one any more. Both sites now carry cross-referencing comments naming the other and the enforcing check."
+      - "The de-duplication framing in the first acceptance line was the wrong shape and is superseded by the second: a repo variable is admin-mutable, and the reaper's blast-radius guarantee depends on the value being immutable in-repo. Equality-under-CI keeps both properties."
+      - "Mutation-tested: a divergent OCID fails, and removing both literals fails with a message naming the cause. That testing caught a real defect in the guard itself — under set -e a no-match grep inside a command substitution killed the script before it could print why, making the 'nobody pins it any more' branch unreachable. Fixed with `|| true` on both greps; a guard that cannot explain itself is the failure mode this file exists to prevent."
+      - "OPEN — cross-repo blind spot, raised by claude-session-02f66bb7. There is a THIRD site holding this OCID that the invariant cannot see: system-integration's ci/oci-runners/state.env COMP, which launch-runner.sh uses to CREATE instances and reap-stale-runners.sh uses to scan them. Verified byte-identical today. Not guarded here because the check would need a network fetch of the pinned SYSTEM_INTEGRATION_REF inside the Lint job, and because divergence there fails CLOSED rather than silently: the launcher would create the instance in one compartment while our tagging step lists the other, find no instance, and fail the launch. Loud and immediate, unlike the same-repo divergence this invariant guards, which would be silent until a soak died at 2h. Revisit if a cheap deterministic check appears — the ref is pinned, so a fetch would be reproducible."
+    acceptance:
+      - "CI_RUNNER_COMPARTMENT_OCID stops being hardcoded in two places — .github/workflows/ci-runner-reaper.yml and the 'Exempt runner from the CI reaper' step in .github/workflows/merge-recovery-soak.yml. A compartment migration currently needs coordinated edits, and changing only one side silently leaves soak runners either untagged (reaped mid-run) or un-reapable."
+      - "The chosen mechanism does not weaken the reaper's blast-radius guarantee. A repo-level Actions variable is mutable by anyone with repo admin, whereas the present hardcoding is precisely why the reaper 'can never touch other compartments' (its own comment, which is load-bearing). Preferred option: keep both literals pinned in-repo and add an assertion to .github/scripts/check-workflow-invariants.sh that they match, so drift fails CI while the value stays immutable."
+      - "Raised by xai in the PR #169 multi-review and deliberately deferred from that PR: it touches the reaper's security posture and should not ride a same-day hotfix."
 ---
 ```
 
 **Context:** Implements US-004 plus the delivery/reporting design agreed 2026-07-15: the 72h soak concludes Mondays (weekly cadence); metrics are published to a GitHub Pages trend dashboard (pull) and a plain-text ONS email (push); regressions gate releases. Full design rationale, alternatives considered (email-only, Discussions, bot-committed reports), and open questions are in `docs/work-logs/task-EPIC-010-2026-07-15T20-57Z.md`.
 
 **Scope:**
+
 - Included: metrics emission, resource sampling, compare+gate, Pages dashboard, ONS email
 - Excluded: PR #72 residual par-serialization benchmarking (separate concern)
 - Excluded: HTML email formatting (ONS is plain-text; detail lives on the dashboard)
@@ -742,7 +806,7 @@ EPIC-002 (monitoring separation)               |
 ## Task States
 
 | Status | Meaning | Next Action |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `pending` | Not started | Available to claim |
 | `in_progress` | Being worked on | Continue or handoff |
 | `blocked` | Waiting on dependency | Check `blocked_by` |

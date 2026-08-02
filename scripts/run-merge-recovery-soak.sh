@@ -38,11 +38,16 @@ fi
 # (a Pacific checkpoint) rather than after a fixed span. Without one, the
 # deadline is the full requested duration measured from the original start, so
 # a final segment needs no deadline of its own.
+# Whether this segment ends on a checkpoint boundary. The caller publishes a
+# checkpoint only when it passed a deadline, so this also decides whether an
+# on-demand checkpoint is possible here at all — see the signal handling below.
+HAS_CHECKPOINT_BOUNDARY=0
 if [ -n "${SOAK_DEADLINE_EPOCH:-}" ]; then
   if ! [[ "$SOAK_DEADLINE_EPOCH" =~ ^[1-9][0-9]*$ ]]; then
     printf 'SOAK_DEADLINE_EPOCH must be a positive integer\n' >&2
     exit 2
   fi
+  HAS_CHECKPOINT_BOUNDARY=1
   DEADLINE="$SOAK_DEADLINE_EPOCH"
   # Never run past the overall budget, whatever the caller asked for.
   if [ "$DEADLINE" -gt "$((STARTED_AT + DURATION_SECONDS))" ]; then
@@ -78,9 +83,98 @@ BENCH_FAILURES="${BENCH_FAILURES:-0}"
 MERGE_EXIT_MIN_SECONDS="${SOAK_MERGE_EXIT_MIN_SECONDS:-0}"
 EARLY_EXIT_REASON=""
 
+# Total-node-RSS watchdog ceiling passed to the harness (--rss-ceiling-mb).
+# The harness default is 5000MB — sized for laptops, not the 32GB soak VM:
+# the 6-node shard legitimately peaks ~10GB under test_load, and the default
+# killed every iteration of run 30516534214 ~130s in. Size to the host
+# instead, so the watchdog stays on to catch a real leak before swap-thrash
+# freezes the VM without ever firing on normal load.
+#
+# The reserve is 12GB, not the 8GB first tried. 8GB permits a 24GB node
+# working set on the 32GB VM, which puts the *kernel* OOM killer ahead of this
+# watchdog: at that point the harness has not breached, so the kernel picks a
+# victim by oom_score and Runner.Worker is a plausible one — a runner that
+# vanishes mid-step with no log and no failed step, which is exactly what
+# happened to run 30590630059. Reserving 12GB caps nodes at 20GB, still ~2x
+# the observed 10.8GB peak, and keeps the attributable failure ahead of the
+# unattributable one. SOAK_RSS_CEILING_MB overrides; 0 disables the watchdog.
+HOST_RESERVE_MB="${SOAK_HOST_RESERVE_MB:-12288}"
+if ! [[ "$HOST_RESERVE_MB" =~ ^[0-9]+$ ]]; then
+  printf 'SOAK_HOST_RESERVE_MB must be a non-negative integer\n' >&2
+  exit 2
+fi
+MEM_TOTAL_MB="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+RSS_CEILING_MB="${SOAK_RSS_CEILING_MB:-}"
+if [ -n "$RSS_CEILING_MB" ]; then
+  if ! [[ "$RSS_CEILING_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_RSS_CEILING_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  RSS_CEILING_MB="$((MEM_TOTAL_MB - HOST_RESERVE_MB))"
+  if [ "$RSS_CEILING_MB" -lt 5000 ]; then
+    RSS_CEILING_MB=5000
+  fi
+fi
+
+# Host-available-RAM floor passed to the harness (--host-free-floor-mb). The
+# harness default of 2000MB only fires once the machine is already at the
+# edge, by which point the kernel may have picked a victim first; 6000MB on the
+# 32GB soak VM makes the harness kill the nodes and report an attributable
+# breach while there is still room. This is a backstop to the RSS ceiling
+# above, catching pressure the ceiling is blind to (docker overhead, the runner
+# agent itself). Enforced on subprocess iterations only — docker iterations
+# rely on the ceiling.
+#
+# Scaled to MemTotal/4 and capped at 6000, because a flat 6000 is incoherent on
+# a small host: on an 8GB laptop it demands 6GB free while the ceiling still
+# permits a 5GB shard, so the floor would breach on contact. Quartering keeps
+# the same intent (fire well before the kernel does) at every size, and lands
+# on 2048 at 8GB — effectively the harness's own 2000 default.
+# SOAK_HOST_FREE_FLOOR_MB overrides; 0 disables the floor.
+HOST_FREE_FLOOR_MB="${SOAK_HOST_FREE_FLOOR_MB:-}"
+if [ -n "$HOST_FREE_FLOOR_MB" ]; then
+  if ! [[ "$HOST_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
+    printf 'SOAK_HOST_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+    exit 2
+  fi
+else
+  HOST_FREE_FLOOR_MB="$((MEM_TOTAL_MB / 4))"
+  if [ "$HOST_FREE_FLOOR_MB" -gt 6000 ]; then
+    HOST_FREE_FLOOR_MB=6000
+  fi
+fi
+
+printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB\n' \
+  "$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB"
+
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
   exit 2
+fi
+
+# Declared version of the code under test. The workflow passes the ref and the
+# sha but not the version, and "which version was soaked" is what a reader of
+# the dashboard actually wants — a sha answers "which commit", not "which
+# release". This is the same value the Docker LABEL and the published image tag
+# carry, so a dashboard row can be matched against a pulled image.
+#
+# Takes the first `version = "..."` line, which is the same line release.yml
+# bumps (`0,/^version = ".*"/`), so the two cannot disagree about which one is
+# the package version. Degrades to "unknown" and never fails: a missing version
+# string must not abort a soak, and every consumer downstream treats it as
+# optional.
+#
+# Deliberately NOT scripts/version.sh, which resolves the newest `v*` tag in the
+# current repo. That answers "what is the latest release", not "what is this
+# commit" — a dev soak would report a tag that postdates or has nothing to do
+# with the code under test — and it needs tags present, which a shallow
+# node-under-test checkout does not guarantee. Do not consolidate the two.
+VERSION="unknown"
+if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
+  parsed_version="$(awk -F'"' '/^version = "/ { print $2; exit }' \
+    "$NODE_REPO_DIR/node/Cargo.toml" 2>/dev/null || true)"
+  [ -n "$parsed_version" ] && VERSION="$parsed_version"
 fi
 
 # Peak total node RSS for this iteration, from the newest harness
@@ -91,19 +185,33 @@ iteration_rss_peak_mb() {
   local iteration_dir="$1" ts_csv
   ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name resource-timeseries.csv -newer "$iteration_dir/.started" 2>/dev/null \
-    | xargs -r ls -t 2>/dev/null | head -1)"
+    | xargs -r ls -t 2>/dev/null | head -1 || true)"
   [ -n "$ts_csv" ] || return 0
   cp "$ts_csv" "$iteration_dir/resource-timeseries.csv" 2>/dev/null || true
   awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $3 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
-                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null
+                 if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null || true
+}
+
+# Peak total node CPU (%) for this iteration, same resource-timeseries.csv as
+# iteration_rss_peak_mb — reuses the copy that function already left in
+# iteration_dir rather than re-finding and re-copying it. Must run after
+# iteration_rss_peak_mb. Empty output when absent.
+iteration_cpu_peak_percent() {
+  local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+  [ -s "$ts_csv" ] || return 0
+  awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+           END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
+                 if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
 }
 
 # Propose-timing latency samples (total_ms) from node JSON logs written after
 # the iteration's start marker — the f1r3fly.propose.timing parse target from
-# profile-casper-latency.sh. Emits "p50 p95 count" or nothing.
+# profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
 iteration_finalization_latency() {
   local iteration_dir="$1"
+  # `|| true` is load-bearing under pipefail: a failed iteration can leave
+  # zero matching samples, making grep exit 1 and the pipeline nonzero.
   find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
     -name '*.log' -newer "$iteration_dir/.started" 2>/dev/null \
     | xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null \
@@ -111,8 +219,25 @@ iteration_finalization_latency() {
     | sort -n \
     | awk '{ a[NR] = $1 }
            END { if (NR == 0) exit
-                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]
-                 print p50, p95, NR }'
+                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]; p99 = a[int((NR + 1) * 0.99)]
+                 if (p50 == "") p50 = a[NR]
+                 if (p95 == "") p95 = a[NR]
+                 if (p99 == "") p99 = a[NR]
+                 print p50, p95, p99, NR }' || true
+}
+
+# Count of proposal rejections logged as too far ahead of the last finalized
+# block since the iteration started — the exact string casper emits at
+# casper/src/rust/blocks/proposer/propose_result.rs:185. A rising count means
+# the proposer is outrunning finalization badly enough to be rejected outright,
+# distinct from the passive finalization_p95_ms latency this soak already
+# tracks (that measures how slow finalization is, not how often it is refused).
+iteration_too_far_ahead_errors() {
+  local iteration_dir="$1"
+  find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+    -type f \( -name '*.log' -o -name '*.txt' \) -newer "$iteration_dir/.started" 2>/dev/null \
+    | xargs -r grep -h -o 'too far ahead of the last finalized block' 2>/dev/null \
+    | wc -l | tr -d ' '
 }
 
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
@@ -123,17 +248,20 @@ emit_iteration_metrics() {
   local iteration_dir="$1" iteration="$2" provider="$3" \
         iter_started="$4" iter_finished="$5" exit_code="$6"
   command -v jq >/dev/null || return 0
-  local summary_line passed failed skipped errors rss_peak latency lat_p50 lat_p95 lat_n
-  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1)"
+  local summary_line passed failed skipped errors rss_peak cpu_peak latency lat_p50 lat_p95 lat_p99 lat_n too_far_ahead
+  summary_line="$(grep -E '^=+ .* in [0-9.]+s( \([^)]*\))? =+$' "$iteration_dir/pytest.log" 2>/dev/null | tail -1 || true)"
   passed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)"
   failed="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)"
   skipped="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)"
   errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
   rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
+  cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
   latency="$(iteration_finalization_latency "$iteration_dir")"
   lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
   lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
-  lat_n="$(printf '%s' "$latency" | awk '{print $3}')"
+  lat_p99="$(printf '%s' "$latency" | awk '{print $3}')"
+  lat_n="$(printf '%s' "$latency" | awk '{print $4}')"
+  too_far_ahead="$(iteration_too_far_ahead_errors "$iteration_dir")"
   # Registry-driven metrics (see scripts/bench/soak-metrics.json). Unlike the
   # bespoke extractors above, adding a metric here needs no code change: the
   # harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
@@ -155,15 +283,20 @@ emit_iteration_metrics() {
     --argjson skipped "$skipped" \
     --argjson errors "$errors" \
     --argjson rss_peak "${rss_peak:-null}" \
+    --argjson cpu_peak "${cpu_peak:-null}" \
     --argjson lat_p50 "${lat_p50:-null}" \
     --argjson lat_p95 "${lat_p95:-null}" \
+    --argjson lat_p99 "${lat_p99:-null}" \
     --argjson lat_n "${lat_n:-null}" \
+    --argjson too_far_ahead "${too_far_ahead:-0}" \
     '{iteration: $iteration, provider: $provider,
       started_at: $started, finished_at: $finished,
       duration_s: ($finished - $started), exit_code: $exit_code,
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
-      finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, samples: ($lat_n // 0)},
+      cpu_peak_pct: $cpu_peak,
+      finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
+      too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
       ok: ($exit_code == 0)}' > "$iteration_dir/metrics.json" 2>/dev/null || true
 }
@@ -201,7 +334,6 @@ run_bench_segment() {
   local segment_dir
   segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
   mkdir -p "$segment_dir"
-  set +e
   NODE_REPO_DIR="$NODE_REPO_DIR" \
   OUT_DIR="$segment_dir" \
   BENCH_DURATION="$BENCH_DURATION" \
@@ -210,7 +342,6 @@ run_bench_segment() {
   SOAK_STARTED_AT="$STARTED_AT" \
     "$SCRIPT_DIR/bench/run-bench-segment.sh" > "$segment_dir/segment.log" 2>&1
   local status=$?
-  set -e
   if [ "$status" -ne 0 ]; then
     BENCH_FAILURES="$((BENCH_FAILURES + 1))"
     printf '%s\n' "$status" > "$segment_dir/exit-code.txt"
@@ -226,7 +357,73 @@ if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
   run_bench_segment
 fi
 
+# Operator signal, polled between iterations.
+#
+# A soak publishes only at a segment boundary, and those boundaries are fixed
+# Pacific instants (07:30 / 13:00). A run starting off that grid — a short
+# restart window, an afternoon dispatch — can run for hours with nothing on the
+# dashboard, and a 60h weekend run is dark for its first twelve. This makes a
+# boundary reachable on demand. The signal file is written by the poller in the
+# soak-segment action, which reads it from this instance's own OCI freeform
+# tags; see .github/workflows/soak-signal.yml for the sender.
+#
+# Checked here rather than in the poller because only this loop knows where an
+# iteration boundary is. Stopping mid-iteration would leave a half-finished
+# iteration that the aggregator counts as a real one, skewing the very numbers
+# the checkpoint exists to report.
+#
+#   checkpoint  End THIS segment now, so the caller's aggregate/upload/publish
+#               steps run exactly as at a scheduled checkpoint. The next
+#               segment resumes from the state file with counters, start time
+#               and iteration numbering intact, and the run continues.
+#
+#               Only possible where a segment boundary exists. The caller gates
+#               those publish steps on having passed a deadline, so in the
+#               final segment the request is refused rather than silently
+#               ending the run and publishing nothing -- which is what it would
+#               do if this simply broke the loop. Zero-checkpoint runs are all
+#               final segment, so that is the common case, not a corner.
+#
+#   finalize    End the run. The marker survives into the remaining segments,
+#               which exit immediately, so the run drains to the normal
+#               end-of-run publish and produces a real verdict and history
+#               entry rather than a latest-* refresh.
+SIGNAL_FILE="${SOAK_SIGNAL_FILE:-$OUTPUT_DIR/signal}"
+FINALIZE_MARKER="$OUTPUT_DIR/finalize-requested"
+if [ -e "$FINALIZE_MARKER" ]; then
+  printf 'finalize requested in an earlier segment; segment %s does no work\n' "$SEGMENT"
+  DEADLINE=0
+fi
+
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  if [ -e "$SIGNAL_FILE" ]; then
+    SIGNAL="$(tr -d '[:space:]' < "$SIGNAL_FILE" 2>/dev/null || true)"
+    # Consumed either way: an unread signal re-fires on every later iteration
+    # and every later segment.
+    rm -f "$SIGNAL_FILE"
+    case "$SIGNAL" in
+      checkpoint)
+        if [ "$HAS_CHECKPOINT_BOUNDARY" -eq 1 ]; then
+          printf 'checkpoint signalled after iteration %s; ending segment %s\n' "$ITERATIONS" "$SEGMENT"
+          printf '%s\n' "checkpoint signalled after iteration $ITERATIONS" \
+            > "$OUTPUT_DIR/signalled-checkpoint.txt"
+          break
+        fi
+        printf 'checkpoint signalled, but segment %s is the final segment and publishes no checkpoint; ignoring. Use finalize to end the run and publish a full verdict.\n' \
+          "$SEGMENT" >&2
+        ;;
+      finalize)
+        printf 'finalize signalled after iteration %s; ending the run\n' "$ITERATIONS"
+        printf '%s\n' "finalize signalled after iteration $ITERATIONS" > "$FINALIZE_MARKER"
+        break
+        ;;
+      '')
+        ;;
+      *)
+        printf 'ignoring unrecognised soak signal: %s\n' "$SIGNAL" >&2
+        ;;
+    esac
+  fi
   PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
   ITERATIONS="$((ITERATIONS + 1))"
   ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
@@ -238,7 +435,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
   ITER_STARTED="$(date +%s)"
   touch "$ITERATION_DIR/.started"
-  set +e
   (
     cd "$SYSTEM_INTEGRATION_DIR"
     timeout --signal=TERM --kill-after=120 "${REMAINING}s" \
@@ -246,14 +442,20 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       integration-tests/test/tests/custom/test_load.py \
       --provider="$PROVIDER" \
       --monitor \
+      --rss-ceiling-mb "$RSS_CEILING_MB" \
+      --host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
   ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
   STATUS="${PIPESTATUS[0]}"
-  set -e
+  # No `set -e` restore: this script never enables errexit (line 2 is
+  # `set -uo pipefail`), and turning it on here made the first failed
+  # iteration fatal — the metric pipelines return nonzero when a failed
+  # iteration leaves nothing to sample, which killed every segment mid-loop
+  # before the state file or rollup could be written (run 30516534214).
   ITER_FINISHED="$(date +%s)"
   emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
-    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS"
+    "$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
 
   if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
     printf '%s\n' "deadline reached during iteration $ITERATIONS" > "$ITERATION_DIR/deadline.txt"
@@ -311,50 +513,19 @@ FINISHED_AT="$(date +%s)"
 } | tee "$OUTPUT_DIR/summary.txt"
 
 if command -v jq >/dev/null; then
-  find "$OUTPUT_DIR" -path '*iteration-*/metrics.json' -print0 \
-    | sort -z \
-    | xargs -0 --no-run-if-empty cat \
-    | jq -s 'sort_by(.iteration)' > "$OUTPUT_DIR/iterations.json"
-  [ -s "$OUTPUT_DIR/iterations.json" ] || echo '[]' > "$OUTPUT_DIR/iterations.json"
-  jq -n \
-    --slurpfile iters "$OUTPUT_DIR/iterations.json" \
-    --arg target_ref "$TARGET_REF" \
-    --arg target_sha "$TARGET_SHA" \
-    --argjson started "$STARTED_AT" \
-    --argjson finished "$FINISHED_AT" \
-    --argjson requested "$DURATION_SECONDS" \
-    --argjson iterations "$ITERATIONS" \
-    --argjson failures "$FAILURES" \
-    --argjson bench_segments "$BENCH_SEGMENTS" \
-    --argjson bench_failures "$BENCH_FAILURES" \
-    '
-    def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
-    def provider_split(p):
-      ($iters[0] | map(select(.provider == p))) as $p_iters
-      | {iterations: ($p_iters | length),
-         failures: ($p_iters | map(select(.ok | not)) | length),
-         avg_duration_s: (if ($p_iters | length) > 0
-                          then (($p_iters | map(.duration_s) | add) / ($p_iters | length) | floor)
-                          else null end)};
-    ($finished - $started) as $elapsed
-    | {
-        target_ref: $target_ref,
-        target_sha: $target_sha,
-        started_at: $started,
-        finished_at: $finished,
-        requested_seconds: $requested,
-        elapsed_seconds: $elapsed,
-        iterations: $iterations,
-        failures: $failures,
-        failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
-        iterations_per_hour: (if $elapsed > 0 then ($iterations * 3600 / $elapsed * 100 | floor / 100) else 0 end),
-        rss_peak_mb: ($iters[0] | map(.rss_peak_mb | select(. != null)) | max),
-        finalization_p95_ms: ($iters[0] | map(.finalization_latency.p95_ms | select(. != null)) | median),
-        providers: {docker: provider_split("docker"), subprocess: provider_split("subprocess")},
-        bench_segments: $bench_segments,
-        bench_failures: $bench_failures,
-        iteration_metrics: $iters[0]
-      }' > "$OUTPUT_DIR/summary.json" 2>/dev/null \
+  SOAK_OUTPUT_DIR="$OUTPUT_DIR" \
+  SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
+  SOAK_TARGET_REF="$TARGET_REF" \
+  SOAK_TARGET_SHA="$TARGET_SHA" \
+  SOAK_VERSION="$VERSION" \
+  SOAK_STARTED_AT="$STARTED_AT" \
+  SOAK_FINISHED_AT="$FINISHED_AT" \
+  SOAK_DURATION_SECONDS="$DURATION_SECONDS" \
+  SOAK_ITERATIONS="$ITERATIONS" \
+  SOAK_FAILURES="$FAILURES" \
+  SOAK_BENCH_SEGMENTS="$BENCH_SEGMENTS" \
+  SOAK_BENCH_FAILURES="$BENCH_FAILURES" \
+    "$SCRIPT_DIR/bench/write-soak-summary.sh" \
     || printf 'summary.json emission failed (non-fatal)\n' >&2
 fi
 
