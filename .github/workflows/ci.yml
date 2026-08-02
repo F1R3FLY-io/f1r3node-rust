@@ -159,6 +159,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
+      - name: Verify soak schedule routing
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-soak-schedule-routing.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh

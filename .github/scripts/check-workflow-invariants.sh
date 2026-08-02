@@ -332,12 +332,20 @@ puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY
 puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
 injection = jobs.dig("soak", "steps").find { |step| step["name"] == "Configure injected protection breach" }
 puts "protection injection step is missing or not gate-controlled" unless injection&.dig("if").to_s == "needs.schedule_gate.outputs.inject_protection_breach == 'true'"
+puts "OCI scheduled slots are not handled before manual dispatches" unless body&.include?('if [ -n "$INPUT_SCHEDULED_SLOT" ]; then')
+puts "OCI scheduled inputs are not isolated from manual controls" unless body&.include?("scheduled_slot_epoch cannot be combined")
+puts "Friday routing does not consistently target master" unless body&.scan("target_ref=master")&.length.to_i >= 2
+puts "daily routing does not consistently target dev" unless body&.scan("target_ref=dev")&.length.to_i >= 2
+puts "OCI scheduled runs are not deduplicated" unless body&.include?("scheduled slot already belongs to run")
+raw = File.read(ARGV[0])
+puts "scheduled_slot_epoch input is missing" unless raw.include?("scheduled_slot_epoch:")
+puts "scheduled run names are not slot-stable" unless raw.include?("Merge Recovery Soak [scheduled:{0}]")
 RUBY
-canary_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
-if [ -n "$canary_errors" ]; then
-	err "soak canary isolation invariants failed: $(printf '%s' "$canary_errors" | tr '\n' ';')"
+soak_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
+if [ -n "$soak_errors" ]; then
+	err "soak workflow invariants failed: $(printf '%s' "$soak_errors" | tr '\n' ';')"
 else
-	ok "soak canaries are bounded and cannot retry, checkpoint-publish, dashboard-publish, or notify"
+	ok "soak canaries are isolated and scheduled routing maps daily to dev and weekend to master"
 fi
 
 if [ "$fail" -ne 0 ]; then
