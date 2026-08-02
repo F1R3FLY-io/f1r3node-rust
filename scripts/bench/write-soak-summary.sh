@@ -48,13 +48,13 @@ jq -n \
                else null end)};
       def rollup_tracked_metrics:
         ($registry[0].metrics // []) as $defs
-        | [ $defs[] | . as $def
-            | ([$all[] | .metrics?[$def.key]? | select(type == "object")]) as $samples
+        | [ $defs[] | . as $mdef
+            | ([$all[] | .metrics?[$mdef.key]? | select(type == "object")]) as $samples
             | select(($samples | length) > 0)
             | {
-                key: $def.key,
+                key: $mdef.key,
                 value: (
-                  reduce ($def.aggregate // ["p50", "p95", "max"])[] as $agg
+                  reduce ($mdef.aggregate // ["p50", "p95", "max"])[] as $agg
                     ({};
                      ($samples | map(.[$agg]? | select(type == "number"))) as $values
                      | . + {($agg): (if ($values | length) == 0 then null

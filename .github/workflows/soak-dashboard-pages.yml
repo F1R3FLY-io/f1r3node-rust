@@ -7,6 +7,36 @@ on:
       - .github/dashboard/**
       - .github/workflows/soak-dashboard-pages.yml
   workflow_dispatch:
+    inputs:
+      remove_run_id:
+        description: Run ID to remove from one dashboard history
+        required: false
+        default: ""
+        type: string
+      restore_run_id:
+        description: Run ID whose final report becomes latest after removal
+        required: false
+        default: ""
+        type: string
+      restore_run_attempt:
+        description: Restore run attempt
+        required: false
+        default: "1"
+        type: string
+      restore_duration_seconds:
+        description: Restore run artifact duration component
+        required: false
+        default: ""
+        type: string
+      restore_series:
+        description: Series to repair
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - daily
+          - weekend
 
 permissions:
   contents: read
@@ -17,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write
@@ -36,6 +67,12 @@ jobs:
         shell: bash -euo pipefail {0}
         env:
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          GH_TOKEN: ${{ github.token }}
+          REMOVE_RUN_ID: ${{ inputs.remove_run_id }}
+          RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
+          RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
+          RESTORE_DURATION_SECONDS: ${{ inputs.restore_duration_seconds }}
+          RESTORE_SERIES: ${{ inputs.restore_series }}
         run: |
           # Bootstrap/refresh deploy: publish the dashboard shell while
           # preserving any data already published by the weekend soak's
@@ -119,6 +156,24 @@ jobs:
               }
             done
           done
+          if [ -n "$REMOVE_RUN_ID" ]; then
+            case "$REMOVE_RUN_ID/$RESTORE_RUN_ID/$RESTORE_RUN_ATTEMPT/$RESTORE_DURATION_SECONDS" in
+              *[!0-9/]*|*//*|/*|*/) echo "::error::dashboard repair inputs must be non-empty integers"; exit 1 ;;
+            esac
+            case "$RESTORE_SERIES" in
+              daily|weekend) ;;
+              *) echo "::error::restore_series must be daily or weekend"; exit 1 ;;
+            esac
+            artifact="merge-recovery-soak-${RESTORE_DURATION_SECONDS}s-${RESTORE_RUN_ID}-${RESTORE_RUN_ATTEMPT}"
+            gh run download "$RESTORE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir restore
+            SITE_DIR=site/data \
+            RESTORE_REPORT_DIR=restore/report \
+            REMOVE_RUN_ID="$REMOVE_RUN_ID" \
+            RESTORE_RUN_ID="$RESTORE_RUN_ID" \
+            RESTORE_RUN_ATTEMPT="$RESTORE_RUN_ATTEMPT" \
+            RESTORE_SERIES="$RESTORE_SERIES" \
+              bash scripts/bench/restore-soak-dashboard-run.sh
+          fi
           # Seed a grey "no data" badge for any series that has not published
           # one, exactly as the reports below are seeded.
           #
