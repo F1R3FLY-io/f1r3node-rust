@@ -1,105 +1,535 @@
 name: Merge Recovery Soak
 
+run-name: >-
+  ${{ inputs.scheduled_slot_epoch != '' && format('Merge Recovery Soak [scheduled:{0}]', inputs.scheduled_slot_epoch) || 'Merge Recovery Soak' }}
+
 on:
   schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
+    # Both slots target Pacific 19:30; one matches PDT (UTC-7), the other PST
+    # (UTC-8), and the schedule gate no-ops whichever is currently wrong.
+    # 19:30 Pacific is chosen so the Friday weekend-60h soak finishes at
+    # exactly 07:30 Pacific on Monday (19:30 + 60h), in both DST regimes.
+    # Pacific 19:30 falls on the *next* UTC day, hence 02:30/03:30 UTC.
+    - cron: "30 2 * * *"
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
+      scheduled_slot_epoch:
+        description: Intended OCI Resource Scheduler slot in epoch seconds; empty means manual mode
+        required: false
+        default: ""
+        type: string
       target_ref:
         description: Branch, tag, or SHA to validate
         required: true
         default: dev
         type: string
       duration:
-        description: Requested soak duration
+        description: Requested soak duration (ignored when window_end_epoch is set)
         required: true
         default: daily-24h
         type: choice
         options:
           - daily-24h
           - weekend-60h
+      window_end_epoch:
+        description: >-
+          Restart mode: epoch second the ORIGINAL window ends at. When set,
+          the run soaks only the remainder of that window instead of a fresh
+          full span, so a restarted night still conforms to its slot and can
+          never overlap the next one. Set by the automatic in-window retry;
+          usable manually to the same effect.
+        required: false
+        default: ""
+        type: string
+      series:
+        description: >-
+          Restart mode: which published series (daily | weekend) the run
+          belongs to. Required alongside window_end_epoch — a remainder span
+          no longer identifies the series by duration.
+        required: false
+        default: ""
+        type: string
+      retry_attempt:
+        description: Automatic-retry counter; the chain stops after 1.
+        required: false
+        default: "0"
+        type: string
+      canary:
+        description: Run a 30-minute non-publishing OCI protection canary
+        required: false
+        default: false
+        type: boolean
+      inject_protection_breach:
+        description: Force a canary host-floor breach after workload startup
+        required: false
+        default: false
+        type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
-  SYSTEM_INTEGRATION_REF: a50eeb198c6e542504af8db92389de5c02500422
+  SOAK_RSS_CEILING_MB: "14336"
+  SOAK_HOST_FREE_FLOOR_MB: "12288"
+  # THIRD pin site. The other two — .github/oci-validation.env and
+  # _integration-pipeline.yml — are held identical by build_base's drift check;
+  # this one is outside that check and rotted unnoticed as a result. It sat at
+  # a50eeb19 while CI advanced to 06f2020c, and a50eeb19 predates
+  # system-integration 81284fc, which added integration-tests/certs/validator4.
+  # compose.py bind-mounts that path, so with no host file Docker created a
+  # directory and every node start died on "Failed to read the X.509
+  # certificate: IO error: Is a directory (os error 21)" — the soak failed at
+  # bring-up nightly from ~2026-07-27, and since checkpoint publishes come from
+  # completed segments, the dashboard never published. Bump this whenever the
+  # other two move.
+  # 2026-07-30: bumped to the system-integration PR #68 merge (main tip) —
+  # adds the test_load.py drain-snapshot convergence fix and registry pull
+  # retries on top of the validator4 certs.
+  # 2026-07-30 (later): bumped to the PR #72 merge, a descendant of the above.
+  # This ref is load-bearing for the launch job, not just the test harness —
+  # cloud-init-runner.yml.tmpl is read from it at :445, so the runner's idle
+  # watchdog comes from whatever is pinned here. It carries three things:
+  #   - The watchdog fix. It decided "is a job running?" by grepping run.sh's
+  #     log for "Running job:", but that stdout is redirected to a file and
+  #     .NET block-buffers it, so the line can sit unflushed and the watchdog
+  #     kills a healthy runner at IDLE_TIMEOUT_SECS. Every job longer than
+  #     ~45min-minus-boot was exposed; the soak is exactly that shape, and this
+  #     is the leading explanation for run 30590630059. It now reads the
+  #     process table (Runner.Worker) instead.
+  #   - log() tees to /dev/console, which is what makes capture_diagnostics
+  #     below able to find anything: console history is the only VM-side
+  #     diagnostic that survives instance termination.
+  #   - PR #70's test_load.py resource-breach attribution, so a node killed by
+  #     the RSS/floor guardian names the ceiling that killed it instead of
+  #     surfacing a raw gRPC traceback — without which the tightened limits
+  #     below would be self-obscuring. Plus their reaper's soak guards.
+  # 2026-07-31: bumped to system-integration main (PR #76 merge). This is the
+  # bump that makes every bump above it mean anything.
+  #
+  # Until now this pin did not bind. launch-runner.sh registered every VM with
+  # one shared label set, so GitHub routed the soak job to whichever runner
+  # claimed it first -- frequently a VM some CI run had launched, carrying the
+  # cloud-init THAT workflow pinned. Run 30606130771 executed the pre-fix idle
+  # watchdog while this variable named the commit that fixed it; the console
+  # history has no pgrep and no Runner.Worker anywhere in 2410 lines. A pin that
+  # does not bind is worse than no pin, because it reads as a guarantee and
+  # stops people re-checking.
+  #
+  # This ref carries the RUNNER_LABELS override, so the soak now registers its
+  # runner under a label nothing else requests and therefore runs on the VM it
+  # launched. Verified on main by ancestry (git merge-base --is-ancestor), not
+  # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
+  # template placeholder, long before the override existed. Grepping would have
+  # said yes against a launcher that ignores the variable.
+  SYSTEM_INTEGRATION_REF: 66de4f95141cbef9c1308d58fbb872b66cf75197
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  # OCI compartment "ci-runner". The soak tags itself by the OCID the metadata
+  # service reports and so needs no compartment to run; capture_diagnostics
+  # does, because it runs GitHub-hosted after the soak runner is gone and has
+  # to FIND the instance rather than be it. Literal for the same reason as in
+  # ci-runner-reaper.yml — an Actions variable would let anyone with repo admin
+  # repoint the search. check-workflow-invariants.sh already treats this file
+  # as an optional pin site and fails CI if the two ever name different
+  # compartments.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
 
 jobs:
   schedule_gate:
     name: Resolve Pacific Schedule
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: merge-recovery-soak-slot-${{ inputs.scheduled_slot_epoch != '' && inputs.scheduled_slot_epoch || github.run_id }}
+      cancel-in-progress: false
     outputs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # weekend | daily. Selects which published series this run appends to;
+      # the two are kept in separate files so the week-over-week regression
+      # gate never compares a 22h daily against a 60h weekend baseline.
+      kind: ${{ steps.resolve.outputs.kind }}
+      # Epoch second the run's window ends at. retry_within_window anchors a
+      # restarted run to this instant so it conforms to the original slot.
+      end_epoch: ${{ steps.resolve.outputs.end_epoch }}
+      retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
+      canary: ${{ steps.resolve.outputs.canary }}
+      inject_protection_breach: ${{ steps.resolve.outputs.inject_protection_breach }}
+      # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
+      # slots are skipped; see the resolve step for why there are five.
+      checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
+      checkpoint_2: ${{ steps.resolve.outputs.checkpoint_2 }}
+      checkpoint_3: ${{ steps.resolve.outputs.checkpoint_3 }}
+      checkpoint_4: ${{ steps.resolve.outputs.checkpoint_4 }}
+      checkpoint_5: ${{ steps.resolve.outputs.checkpoint_5 }}
     steps:
       - name: Resolve schedule
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
+          INPUT_SERIES: ${{ inputs.series }}
+          INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+          INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
+          # Read-only, for the "did anything land since the last window?" check.
+          GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          case "${INPUT_INJECT_PROTECTION_BREACH:-false}" in
+            true)
+              if [ "${INPUT_CANARY:-false}" != "true" ]; then
+                echo "::error::inject_protection_breach requires canary"
+                exit 1
+              fi
+              ;;
+            false|"") ;;
+            *) echo "::error::inject_protection_breach must be true or false"; exit 1 ;;
+          esac
+          if [ -n "$INPUT_SCHEDULED_SLOT" ]; then
+            if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+              echo "::error::scheduled_slot_epoch cannot be combined with canary, injection, restart, series, or retry inputs"
+              exit 1
+            fi
+            case "$INPUT_SCHEDULED_SLOT" in
+              ''|*[!0-9]*) echo "::error::scheduled_slot_epoch must be epoch seconds"; exit 1 ;;
+            esac
+            now_epoch="$(date -u +%s)"
+            slot_epoch="$INPUT_SCHEDULED_SLOT"
+            trigger_delay=$((now_epoch - slot_epoch))
+            if [ "$trigger_delay" -lt 0 ] || [ "$trigger_delay" -gt 900 ]; then
+              echo "::error::scheduled_slot_epoch delay ${trigger_delay}s is outside the accepted 0..900s range"
+              exit 1
+            fi
+            pacific_hm="$(TZ=America/Los_Angeles date -d "@$slot_epoch" +%H%M)"
+            pacific_weekday="$(TZ=America/Los_Angeles date -d "@$slot_epoch" +%u)"
+            if [ "$pacific_hm" != "1930" ] || [ "$pacific_weekday" -lt 1 ] || [ "$pacific_weekday" -gt 5 ]; then
+              echo "::error::OCI slot $(date -u -d "@$slot_epoch" +%FT%TZ) does not resolve to an eligible Pacific 19:30 weekday"
+              exit 1
+            fi
+            echo "source=oci-resource-scheduler slot=$(date -u -d "@$slot_epoch" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            should_run=true
+            idle_skip=false
+            duplicate_skip=false
+            expected_title="Merge Recovery Soak [scheduled:${slot_epoch}]"
+            canonical_run="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&per_page=100" 2>/dev/null \
+              | jq -r --arg title "$expected_title" '[.workflow_runs[] | select(.display_title == $title) | .id] | min // empty' \
+              || true)"
+            if [ -n "$canonical_run" ] && [ "$canonical_run" != "$GITHUB_RUN_ID" ]; then
+              should_run=false
+              duplicate_skip=true
+              echo "scheduled slot already belongs to run $canonical_run; suppressing duplicate run $GITHUB_RUN_ID"
+            fi
+            if [ "$pacific_weekday" -eq 5 ]; then
+              target_ref=master
+              duration_seconds=216000
+            else
+              target_ref=dev
+              duration_seconds=79200
+              if [ "$should_run" = "true" ]; then
+                if [ "$pacific_weekday" -eq 1 ]; then
+                  prev_slot_epoch=$((slot_epoch - 4 * 86400))
+                else
+                  prev_slot_epoch=$((slot_epoch - 86400))
+                fi
+                since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
+                new_commits="$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                  --jq 'length' 2>/dev/null || echo "")"
+                if [ "$new_commits" = "0" ]; then
+                  should_run=false
+                  idle_skip=true
+                  echo "no commits on $target_ref since $since; skipping tonight's soak"
+                else
+                  echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+                fi
+              fi
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
             else
-              duration_seconds=86400
+              duration_seconds=79200
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            # A manual run has no cron slot, so it starts now. The checkpoint
+            # computation below needs a start instant either way, and without
+            # this the step dies on an unbound variable under `set -u` — a
+            # manual dispatch would fail the gate outright.
+            slot_epoch="$(date -u +%s)"
+            # Restart mode: window_end_epoch anchors this run to the original
+            # slot's window instead of a fresh full span, so a soak restarted
+            # after an infrastructure failure still ends exactly when the
+            # scheduled run would have — it can never spill into the next
+            # slot. The checkpoint enumeration below then yields exactly the
+            # original window's remaining Pacific instants.
+            if [ "$INPUT_CANARY" = "true" ]; then
+              if [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+                echo "::error::canary cannot be combined with window_end_epoch, series, or a retry attempt"
+                exit 1
+              fi
+              duration_seconds=1800
+            elif [ -n "$INPUT_WINDOW_END" ]; then
+              case "$INPUT_WINDOW_END" in
+                *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
+              esac
+              # series is genuinely required here, not merely documented as
+              # such: a remainder span no longer identifies the series by its
+              # duration, so without it the guess below would publish the run
+              # into the wrong history with the wrong benchmark, timeout and
+              # concurrency behaviour. Fail rather than guess.
+              case "$INPUT_SERIES" in
+                daily) window_nominal=79200 ;;
+                weekend) window_nominal=216000 ;;
+                *)
+                  echo "::error::series must be daily or weekend when window_end_epoch is set"
+                  exit 1
+                  ;;
+              esac
+              remaining="$((INPUT_WINDOW_END - slot_epoch))"
+              # A restart can only ever shorten the window it inherits. Without
+              # this bound an epoch typo — milliseconds for seconds, say — is
+              # accepted, and the reaper exemption derived from it would keep a
+              # leaked VM exempt for years. The exemption is meant to expire.
+              if [ "$remaining" -gt "$window_nominal" ]; then
+                echo "::error::window_end_epoch is ${remaining}s away, beyond the ${window_nominal}s $INPUT_SERIES window"
+                exit 1
+              fi
+              # 2h floor: launch, image build and shard bring-up eat ~20min,
+              # and a sub-2h remainder is not worth an OCI VM.
+              if [ "$remaining" -lt 7200 ]; then
+                should_run=false
+                restart_skip=true
+                echo "only ${remaining}s left of the window ending $(date -u -d "@${INPUT_WINDOW_END}" +%FT%TZ); not launching"
+              else
+                duration_seconds="$remaining"
+              fi
+            fi
           else
             # GitHub delivers cron triggers minutes-to-hours late, so gate on
             # the cron's intended slot (most recent occurrence at or before
             # now), not the wall clock at execution time.
+            # The window is on a half hour, so the minute field matters as
+            # much as the hour — compare %H%M, not %H.
+            cron_min="$(awk '{print $1}' <<<"$EVENT_SCHEDULE")"
             cron_hour="$(awk '{print $2}' <<<"$EVENT_SCHEDULE")"
             now_epoch="$(date -u +%s)"
-            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:00:00" +%s)"
+            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:${cron_min}:00" +%s)"
             if [ "$slot_epoch" -gt "$now_epoch" ]; then
               slot_epoch=$((slot_epoch - 86400))
             fi
-            pacific_hour="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H)"
+            pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
-            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hour=$pacific_hour pacific_weekday=$pacific_weekday"
+            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
             target_ref=dev
             should_run=false
-            duration_seconds=86400
-            if [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+            idle_skip=false
+            duration_seconds=79200
+            if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+              # 22h, not 24h. The soak job shares a concurrency group with
+              # cancel-in-progress, so a 24h soak on a 24h cadence is cancelled
+              # by the next night's launch ~10min before it finishes — losing
+              # its final iteration and its entire artifact upload. 22h leaves
+              # the run time to report before the next one starts.
               should_run=true
-            elif [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -eq 5 ]; then
+              duration_seconds=79200
+              # Don't re-soak code that has already been soaked. If nothing
+              # landed on the branch since the previous window there is nothing
+              # new to learn, and an OCI runner is not worth spending on it.
+              #
+              # Fails OPEN: any API error, empty response or unparseable count
+              # runs the soak. A silently skipped soak is the exact failure this
+              # workflow exists to avoid, so "unsure" must mean "soak".
+              #
+              # The window is anchored to the previous eligible slot, not to a
+              # fixed 24h, because daily windows are not 24h apart: dailies run
+              # Mon-Thu, so Monday's window is four days after Thursday's. A 24h
+              # lookback on a Monday cannot see anything that landed over the
+              # weekend, and would skip the soak on code that has never been
+              # soaked at all — `dev` gets no weekend coverage either, since the
+              # 60h weekend soak targets `master`.
+              if [ "$pacific_weekday" -eq 1 ]; then
+                prev_slot_epoch=$((slot_epoch - 4 * 86400))
+              else
+                prev_slot_epoch=$((slot_epoch - 86400))
+              fi
+              # Two hours of overlap, for two reasons. Slot-aligned windows tile
+              # exactly, so a commit landing on a boundary could fall between
+              # two of them and never be seen. And the arithmetic above is in
+              # epoch seconds, so a window spanning a Pacific DST change lands
+              # an hour off — on the November change, Monday's window would
+              # otherwise start at Thursday 20:30 PT and miss the hour before
+              # it. The margin absorbs both without needing DST-aware date
+              # maths. Erring wide costs at most one redundant soak; erring
+              # narrow is the bug this whole check is meant to avoid.
+              since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
+              new_commits="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                --jq 'length' 2>/dev/null || echo "")"
+              if [ "$new_commits" = "0" ]; then
+                should_run=false
+                idle_skip=true
+                echo "no commits on $target_ref since $since; skipping tonight's soak"
+              else
+                echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+              fi
+            elif [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -eq 5 ]; then
+              # Friday 19:30 + 60h = Monday 07:30 Pacific.
               should_run=true
+              target_ref=master
               duration_seconds=216000
             fi
           fi
-          run_benchmarks=false
+          kind=daily
           if [ "$duration_seconds" = "216000" ]; then
+            kind=weekend
+          fi
+          # A restart's remaining span is arbitrary, so the duration-based
+          # guess above is wrong for it; the retry passes the original series
+          # through explicitly and it wins. Everything series-scoped below
+          # (benchmarks, publish series, job timeout, concurrency) keys on
+          # kind, never on the raw duration.
+          if [ "$INPUT_SERIES" = "daily" ] || [ "$INPUT_SERIES" = "weekend" ]; then
+            kind="$INPUT_SERIES"
+          fi
+          run_benchmarks=false
+          if [ "$kind" = "weekend" ]; then
             run_benchmarks=true
           fi
-          if [ "$should_run" != "true" ]; then
-            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 22:00 launch window. No soak was attempted; this run's success is not a soak result."
+
+          # Checkpoints: every 07:30 and 13:00 Pacific strictly inside the run.
+          # A soak publishes only when it ends, so without these a 22h nightly
+          # is invisible until the following afternoon and a 60h weekend is dark
+          # for two and a half days. The soak is run as consecutive segments
+          # ending on these instants, with a publish after each.
+          #
+          # Enumerated by Pacific calendar date rather than by adding 86400 to
+          # an epoch: a DST day is 23 or 25 hours long, so epoch arithmetic
+          # would drift the wall-clock time and, on the short day, could skip a
+          # date entirely. Interpreting "<date> 07:30" in the Pacific zone keeps
+          # each checkpoint at the intended local time year round.
+          #
+          # Five slots. A 60h Friday-evening weekend normally needs four (Sat
+          # and Sun, two each), but on the spring-forward weekend the clocks
+          # jump and 60h from Friday 19:30 lands at Monday 08:30 rather than
+          # 07:30 — putting a fifth checkpoint, the Monday-morning one this
+          # schedule exists for, strictly inside the run. A daily uses the
+          # first two and never crosses a transition, since those fall on
+          # Sundays and dailies run Mon–Thu. GitHub cannot generate a variable
+          # number of steps, so unused slots are emitted empty and skip.
+          end_epoch=$((slot_epoch + duration_seconds))
+          base_day="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%F)"
+          checkpoints=()
+          for d in 0 1 2 3; do
+            day="$(date -u -d "${base_day} +${d} days" +%F)"
+            for hm in 07:30 13:00; do
+              cp="$(TZ=America/Los_Angeles date -d "${day} ${hm}" +%s)"
+              # Strictly inside: a checkpoint on the final instant would leave a
+              # zero-length last segment that publishes the same data twice.
+              if [ "$cp" -gt "$slot_epoch" ] && [ "$cp" -lt "$end_epoch" ]; then
+                checkpoints+=("$cp")
+              fi
+            done
+          done
+          if [ "${INPUT_CANARY:-false}" = "true" ]; then
+            checkpoints=()
+          fi
+          cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
+          [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
+          [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
+          [ "${#checkpoints[@]}" -ge 3 ] && cp3="${checkpoints[2]}"
+          [ "${#checkpoints[@]}" -ge 4 ] && cp4="${checkpoints[3]}"
+          [ "${#checkpoints[@]}" -ge 5 ] && cp5="${checkpoints[4]}"
+          # Never drop a checkpoint silently. If the schedule ever grows past
+          # five, the run still works — it just publishes less often than
+          # intended — and this says so instead of leaving it to be noticed.
+          if [ "${#checkpoints[@]}" -gt 5 ]; then
+            echo "::warning::${#checkpoints[@]} checkpoints computed but only 5 slots exist; the last $(( ${#checkpoints[@]} - 5 )) will not publish. Add slots in schedule_gate and matching soak segments."
+          fi
+          if [ "$should_run" = "true" ]; then
+            printf 'checkpoints (%s):\n' "${#checkpoints[@]}"
+            for cp in "${checkpoints[@]}"; do
+              printf '  %s Pacific\n' "$(TZ=America/Los_Angeles date -d "@${cp}" '+%a %F %H:%M')"
+            done
+          fi
+          if [ "$should_run" != "true" ] && [ "${restart_skip:-false}" = "true" ]; then
+            echo "::notice::Restart gate skip: less than 2h remains of the original window. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Restart gate: skipped (window nearly over)"
+              echo ""
+              echo "The original window ends too soon for a restart to be worth an OCI runner."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${duplicate_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: another run owns this OCI slot. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (duplicate OCI slot)"
+              echo ""
+              echo "Run \`$canonical_run\` already owns scheduled slot \`$slot_epoch\`."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (no new commits)"
+              echo ""
+              echo "Nothing landed on \`$target_ref\` since the previous window, so this"
+              echo "soak would have re-tested code that was already soaked."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ]; then
+            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 19:30 launch window. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: no-op"
               echo ""
-              echo "This scheduled trigger resolved outside the Pacific 22:00 launch window."
+              echo "This scheduled trigger resolved outside the Pacific 19:30 launch window."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The counter rides through the gate untrusted; anything that is
+          # not a plain integer becomes 0 so a malformed dispatch can neither
+          # break the gate nor unlock an unbounded retry chain.
+          retry_attempt="${INPUT_RETRY_ATTEMPT:-0}"
+          case "$retry_attempt" in
+            ''|*[!0-9]*) retry_attempt=0 ;;
+          esac
+          # A window-bounded run IS a restart, whatever the caller passed: it
+          # covers only part of its series' span. Forcing the counter keeps
+          # provenance, baseline exclusion and the one-retry cap consistent
+          # even for a hand-rolled dispatch that set window_end_epoch without
+          # retry_attempt — which would otherwise publish a partial run as a
+          # full one and still be eligible to retry.
+          if [ -n "${INPUT_WINDOW_END:-}" ] && [ "$retry_attempt" -eq 0 ]; then
+            retry_attempt=1
           fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
             echo "run_benchmarks=$run_benchmarks"
+            echo "kind=$kind"
+            echo "end_epoch=$end_epoch"
+            echo "retry_attempt=$retry_attempt"
+            echo "canary=${INPUT_CANARY:-false}"
+            echo "inject_protection_breach=${INPUT_INJECT_PROTECTION_BREACH:-false}"
+            echo "checkpoint_1=$cp1"
+            echo "checkpoint_2=$cp2"
+            echo "checkpoint_3=$cp3"
+            echo "checkpoint_4=$cp4"
+            echo "checkpoint_5=$cp5"
           } >> "$GITHUB_OUTPUT"
 
   launch_runner:
@@ -107,10 +537,18 @@ jobs:
     needs: schedule_gate
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    environment: ephemeral-launch-internal
-    timeout-minutes: 10
+    environment: oci-credentials
+    # 60, not 25: this job waits for the runner to register before relabelling
+    # it (cloud-init 3-5 min, bounded at 15), and on a lost registration race it
+    # abandons the poached VM and launches another, up to three times. Worst
+    # case is three full 15-minute waits plus boots. The soak window absorbs
+    # this; a hung launch job would not.
+    timeout-minutes: 60
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      # Grouped by series (not raw duration — a restart's remainder is
+      # arbitrary) so the next night's launch still cancels a lingering
+      # previous run of the same series, restarts included.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
@@ -154,13 +592,241 @@ jobs:
           EOF
           oci iam region list >/dev/null
 
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
       - name: Launch runner
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           SUPPRESS_LABEL_WARNING: "True"
+          # launch-runner.sh appends the name it generated when this is set.
+          # The next step needs it to find this exact runner among all the
+          # ci-eph-* runners registered at any moment.
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # Register under the exclusive label from the start rather than
+          # relabelling afterwards. Relabelling cannot revoke a job already
+          # assigned, so it always left a window; this closes it.
+          #
+          # The whole set, not just the pool label: RUNNER_LABELS replaces
+          # DEFAULT_LABELS outright. launch-runner.sh requires self-hosted,
+          # linux, the arch and oracle-cloud, and refuses to launch without
+          # them -- an omission here is a hard failure at launch, not a VM that
+          # boots healthy and never matches a runs-on. oracle-cloud in
+          # particular is the one whose absence actually breaks routing, and it
+          # must stay in step with the soak job's runs-on below.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
         shell: bash -e {0}
         run: system-integration/ci/oci-runners/launch-runner.sh amd64
+
+      # Without this, the soak and CI compete for one undifferentiated pool.
+      # launch-runner.sh registers every VM with the same labels, so GitHub
+      # hands each queued job to whichever runner claims it first, regardless
+      # of which workflow paid to launch it. Run 30606130771 is the worked
+      # example: the soak ran on a VM launched by a PR CI run, its own VM took
+      # a CI job, and the soak died when the CI side finished with the runner
+      # it thought it owned.
+      #
+      # The damage is not only a lost night. The VM that runs the soak carries
+      # whatever cloud-init the OTHER workflow pinned, so SYSTEM_INTEGRATION_REF
+      # above silently stops describing the runner the soak actually runs on --
+      # 30606130771 ran the pre-fix idle watchdog despite the pin naming a
+      # commit that fixed it. A pin that does not bind is worse than no pin,
+      # because it reads like a guarantee.
+      #
+      # So: give this runner a label nothing else requests, and take away the
+      # shared one so nothing else can take it. Both directions, or the soak
+      # merely loses its runner instead of stealing one.
+      #
+      # Fails closed. A soak that cannot get an exclusive runner must not fall
+      # back to the shared pool -- that is the bug.
+      - name: Bind the soak runner to a dedicated label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
+          # Same file the launch step wrote to. launch-runner.sh APPENDS, so on
+          # a relaunch below the newest name is the last line.
+          RUNNER_NAMES_FILE: /tmp/soak-runner-name
+          # MUST match the launch step. This step relaunches on a lost race, and
+          # without it the replacement VM would register under the shared label
+          # set -- so the retry that exists to escape the race would re-enter it,
+          # and the soak would then wait on an exclusive label its own
+          # replacement does not carry. Silent, and only on the retry path.
+          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+        shell: bash -e {0}
+        run: |
+          # Bounded reclaim loop. Losing the registration race is recoverable:
+          # abandon the poached VM to the job that took it, launch another and
+          # try again. Three launches, because a pool busy enough to take three
+          # in a row is not a race any longer -- it is CI saturation, and
+          # burning more 16-OCPU VMs against it is waste, not persistence.
+          #
+          # See the abandon-rather-than-terminate note below for why we do not
+          # simply take the VM back. Once launch-runner.sh takes RUNNER_LABELS
+          # this loop stops firing, because there is no window left to lose.
+          MAX_LAUNCHES=3
+          bound=""
+          for launch in $(seq 1 "$MAX_LAUNCHES"); do
+          name="$(tail -n 1 /tmp/soak-runner-name 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "$name" ]; then
+            echo "::error::launch-runner.sh wrote no runner name; cannot bind a dedicated label"
+            exit 1
+          fi
+          echo "=== launch $launch/$MAX_LAUNCHES: waiting for $name to register (cloud-init takes ~3-5 min) ==="
+          rid=""
+          api_fail=0
+          for attempt in $(seq 1 60); do
+            # --arg, not string interpolation: the name must reach jq as DATA.
+            # Interpolated into the filter text, a name containing a quote or
+            # pipe would be parsed as jq code. launch-runner.sh controls the
+            # name today, so this is hygiene rather than a live hole -- but the
+            # whole point of this step is that what launch-runner.sh does is
+            # not under this repository's control.
+            if listing="$(gh api "repos/$GH_REPO/actions/runners" --paginate 2>&1)"; then
+              api_fail=0
+              # A jq failure here is a THIRD fact, distinct from both "API is
+              # broken" and "not registered yet": the call succeeded and
+              # returned something that is not the JSON we expect. Swallowed, it
+              # spends the full 15 minutes and then reports "never registered",
+              # naming slow cloud-init for what is a malformed API response --
+              # the exact conflation the api_fail counter below exists to stop.
+              if ! matched="$(printf '%s' "$listing" \
+                   | jq -r --arg name "$name" \
+                       '.runners[] | select(.name == $name) | .id' 2>&1)"; then
+                printf '%s\n' "$matched" | tail -5
+                echo "::error::the runner listing came back as unparseable JSON; this is an API fault, not a slow boot"
+                exit 1
+              fi
+              rid="$(printf '%s' "$matched" | head -1)"
+            else
+              # An empty runner list and a broken API call are different facts.
+              # Swallowing both makes an auth or permission regression look
+              # like slow cloud-init for a full 15 minutes, then fail with a
+              # message naming the wrong cause.
+              api_fail=$((api_fail + 1))
+              if [ "$api_fail" -eq 1 ] || [ "$((api_fail % 10))" -eq 0 ]; then
+                printf 'attempt %s: runner listing failed (%s consecutive)\n' "$attempt" "$api_fail"
+                printf '%s\n' "$listing" | tail -3
+              fi
+              if [ "$api_fail" -ge 20 ]; then
+                printf '%s\n' "$listing" | tail -20
+                echo "::error::runner listing has failed $api_fail times in a row; this is an API or permissions fault, not a slow boot"
+                exit 1
+              fi
+            fi
+            [ -n "$rid" ] && break
+            sleep 15
+          done
+          if [ -z "$rid" ]; then
+            echo "::error::$name never registered after 15 minutes; refusing to run the soak on the shared pool"
+            exit 1
+          fi
+          echo "registered as runner id $rid"
+          # Add the exclusive label before removing the shared one. The reverse
+          # order would leave a window where the runner matches nothing and a
+          # job queued in between waits forever.
+          # Explicit JSON body rather than the -f "labels[]=..." shorthand:
+          # this endpoint requires labels to be an ARRAY, and the shorthand is
+          # easy to get subtly wrong. Since this step fails closed, a malformed
+          # body would not merely mislabel a runner -- it would block every
+          # soak. Be unambiguous here.
+          printf '{"labels":["f1r3fly-rust-soak"]}' \
+            | gh api -X POST "repos/$GH_REPO/actions/runners/$rid/labels" \
+                --input - >/dev/null
+          # Best-effort, and NOT because failures do not matter -- the
+          # verification below is the gate, and it is stricter than this call.
+          #
+          # Removing a label the runner does not have returns 404, and gh exits
+          # non-zero on 404, which under `bash -e` kills the step. That is
+          # exactly the state we are driving toward: once launch-runner.sh
+          # honours RUNNER_LABELS, the VM registers as f1r3fly-rust-soak and
+          # never carries the shared label at all. Left strict, this line would
+          # fail every soak the day the pin moves -- a fix breaking on success.
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-ci-ephemeral" \
+            >/dev/null 2>&1 || true
+          have="$(gh api "repos/$GH_REPO/actions/runners/$rid/labels" \
+            --jq '[.labels[].name] | sort | join(",")')"
+          echo "labels now: $have"
+          case "$have" in
+            *f1r3fly-rust-soak*) ;;
+            *) echo "::error::dedicated label missing after update: $have"; exit 1 ;;
+          esac
+          case "$have" in
+            *f1r3fly-rust-ci-ephemeral*)
+              echo "::error::shared CI label still present after removal: $have"
+              exit 1
+              ;;
+          esac
+          # Correct labels are not the same as an available runner. A busy
+          # runner accepts label edits happily, so every check above passes on a
+          # VM that a CI job claimed during the registration window -- and the
+          # runner is --ephemeral, so it exits after that job and deregisters.
+          # The soak would then wait against timeout-minutes: 1440 for a runner
+          # that no longer exists: a 24h hang that burns the window exactly as
+          # a crash would, reported as a timeout with no cause attached.
+          #
+          # Checking busy is what makes the reclaim below possible at all: a
+          # correctly labelled runner and an available one are different facts,
+          # and only the second one can run a soak.
+          busy="$(gh api "repos/$GH_REPO/actions/runners/$rid" --jq '.busy' 2>/dev/null || echo unknown)"
+          if [ "$busy" = "false" ]; then
+            bound="$name"
+            break
+          fi
+          echo "::warning::$name was claimed by another workflow before the exclusive label landed (busy=$busy); abandoning it and launching a replacement"
+          # ABANDON, do not terminate. The VM is ours and terminating it would
+          # free the money sooner, but it would kill the job that claimed it --
+          # producing a runner-loss failure in that workflow, which is the exact
+          # signature we have spent two days learning to read as a bug. Three
+          # separate mechanisms already present identically from outside (the
+          # idle watchdog killing a live job, this label race, and whatever is
+          # still killing segments). A deliberate fourth producer of that signal
+          # means the next person debugging one has to first rule out that we
+          # did it on purpose, and nothing in the failed run would tell them.
+          #
+          # Abandoning costs the same money -- the runner is --ephemeral, so it
+          # exits after the stolen job and the VM self-terminates -- and buys a
+          # slightly slower retry. That is the right trade: the diagnostic
+          # channel is worth more than the minutes.
+          #
+          # Credit where due: this was system-integration's call, not mine. I
+          # had weighed only cost and soak windows, where it is genuinely close.
+          #
+          # Take the exclusive label back off it, though. We added
+          # f1r3fly-rust-soak before discovering it was busy, and leaving it
+          # there means an abandoned runner still advertises the label this
+          # soak routes on. Best effort: if it fails the runner is about to
+          # deregister anyway.
+          gh api -X DELETE \
+            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-soak" \
+            >/dev/null 2>&1 || true
+          if [ "$launch" -lt "$MAX_LAUNCHES" ]; then
+            echo "launching a replacement soak runner"
+            system-integration/ci/oci-runners/launch-runner.sh amd64
+          fi
+          done
+          if [ -z "$bound" ]; then
+            echo "::error::could not obtain an exclusive soak runner in $MAX_LAUNCHES launches; every VM was claimed by another workflow during the registration window. CI is saturating the shared pool. Re-run when it is quiet, or land the launch-runner.sh RUNNER_LABELS override that removes the window entirely."
+            exit 1
+          fi
+          # The window between registering and the DELETE landing still exists;
+          # this loop makes losing it recoverable rather than fatal. Closing it
+          # needs launch-runner.sh to register under the exclusive label from the
+          # start, which it cannot do while LABELS is hardcoded with no override.
+          # That override is being added upstream. This repository deliberately
+          # does not patch the launcher in its checkout to force the issue: the
+          # step that fetches it is called "Clone trusted runner launcher" and
+          # pins SYSTEM_INTEGRATION_REF, and rewriting it between checkout and
+          # execution would mean the pinned SHA no longer describes what ran --
+          # which is the exact defect this branch exists to fix.
+          echo "soak runner $bound is registered, exclusive, and idle"
 
       - name: Remove OCI credentials
         if: always()
@@ -169,14 +835,112 @@ jobs:
           shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
           rm -rf ~/.oci
 
+  retry_within_window:
+    name: Restart Failed Soak In Window
+    needs: [schedule_gate, launch_runner, soak]
+    # Restart only on infrastructure death: the launch never delivered a
+    # runner, or the soak job ended without reaching its completion marker
+    # (VM preempted, reaped or frozen mid-run — a lost runner surfaces as job
+    # FAILURE, not cancellation). A soak that completed red produced a real
+    # verdict — a second VM would only reproduce it. Cancellation never
+    # restarts anything: a manual cancel is an operator calling the night or
+    # weekend off, so !cancelled() skips this job for the whole run, and
+    # cancelled-shaped job results (timeout, next slot's concurrency cancel)
+    # stay dead too. The restart conforms to the original window via
+    # window_end_epoch, so it can never spill into the next slot, and
+    # retry_attempt caps the chain at one: a second failure in the same
+    # window is a pattern to investigate, not a blip to retry, and OCI
+    # capacity shortages (the common launch failure) rarely clear within the
+    # night.
+    if: >-
+      !cancelled() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.schedule_gate.outputs.retry_attempt == '0' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
+      (needs.launch_runner.result == 'failure' ||
+       (needs.soak.result == 'failure' &&
+        needs.soak.outputs.completed != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # workflow_dispatch via the API is exempt from GitHub's rule that
+    # GITHUB_TOKEN events start no workflows, so actions:write is all the
+    # re-dispatch needs. No checkout, no other scopes.
+    permissions:
+      actions: write
+    steps:
+      - name: Re-dispatch soak for the remainder of the window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+          WORKFLOW_REF: ${{ github.ref_name }}
+        shell: bash -euo pipefail {0}
+        run: |
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::no usable end_epoch from the gate; cannot restart"; exit 1 ;;
+          esac
+          remaining="$(( END_EPOCH - $(date -u +%s) ))"
+          # Same 2h floor as the gate — checked here too so a failure near
+          # the window's end skips the dispatch instead of launching a run
+          # whose own gate immediately no-ops.
+          if [ "$remaining" -lt 7200 ]; then
+            echo "::notice::not restarting: only ${remaining}s left of the window (2h floor)"
+            exit 0
+          fi
+          # duration is ignored whenever window_end_epoch is set; passed so
+          # the dispatched run's inputs read sensibly in the UI.
+          dur=daily-24h
+          [ "$KIND" = "weekend" ] && dur=weekend-60h
+          gh workflow run merge-recovery-soak.yml \
+            --ref "$WORKFLOW_REF" \
+            -f target_ref="$TARGET_REF" \
+            -f duration="$dur" \
+            -f window_end_epoch="$END_EPOCH" \
+            -f series="$KIND" \
+            -f retry_attempt=1
+          echo "::notice::restarted $KIND soak for the remaining $((remaining / 3600))h of the window (ends $(date -u -d "@${END_EPOCH}" +%FT%TZ))"
+
   soak:
     name: Merge Recovery Soak
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
-    runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
-    timeout-minutes: 3840
+    # f1r3fly-rust-soak, not the shared f1r3fly-rust-ci-ephemeral: only the
+    # runner launched by launch_runner above carries it, so this job cannot
+    # land on a CI-launched VM. See "Bind the soak runner to a dedicated
+    # label" for why that matters beyond scheduling.
+    runs-on: [self-hosted, linux, x64, f1r3fly-rust-soak, oracle-cloud]
+    outputs:
+      # Set by the job's last step. Empty means the VM died mid-run — the
+      # signal retry_within_window keys on to tell infrastructure death from
+      # a run that completed red.
+      completed: ${{ steps.complete.outputs.completed }}
+      # OCID of the instance this job actually ran on, published early by the
+      # self-tag step. capture_diagnostics needs it after the fact: when the
+      # runner agent is killed, no step inside THIS job can run, so the
+      # post-mortem has to happen from a GitHub-hosted job that still has OCI
+      # credentials. Set before the image build, so it survives any later death.
+      instance_id: ${{ steps.selftag.outputs.instance_id }}
+    # actions: write is needed only so a segment can dispatch the checkpoint
+    # publish workflow. Without it `gh workflow run` is rejected and — because
+    # that dispatch is deliberately fail-soft — checkpoints would silently
+    # never publish while the soak still reported success.
+    permissions:
+      contents: read
+      actions: write
+    # Backstop only — the soak script stops itself at SOAK_DURATION_SECONDS.
+    # Scaled to the kind of run so a stuck daily cannot burn a 64h runner:
+    # daily 79200s (22h) + 2h, weekend 216000s (60h) + 4h. The margin is not
+    # slack: this budget also covers the image build, poetry install and the
+    # post-soak aggregate/alert/upload steps, so a ceiling equal to the soak
+    # duration would kill the job while it uploads its own results. With the
+    # daily soak at 22h the ceiling is a true 24h. Keyed on kind, not the raw
+    # duration: an in-window restart's remainder is arbitrary, and a
+    # restarted weekend with >24h left must still get the weekend ceiling.
+    timeout-minutes: ${{ needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440 }}
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Checkout CI control files
@@ -185,6 +949,108 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: ci-control
           persist-credentials: false
+
+      # FIRST, before the expensive image build: this job must exempt the
+      # instance it is ACTUALLY RUNNING ON from ci-runner-reaper.yml.
+      #
+      # Tagging from the launch job was wrong and is removed. GitHub assigns a
+      # job to whichever registered runner with matching labels claims it
+      # first, which is routinely an older idle runner from an earlier launch
+      # — not the VM that launch just created. Run 30590630059 proved it: the
+      # launch job correctly tagged ...-233015-24ed76, while the soak actually
+      # ran on untagged ...-225401-fad5e4. The exemption protected an idle VM
+      # and left the working one exposed. Worse, it granted a 22h/60h reaping
+      # exemption to a VM that never did any work, turning the guard into a
+      # leak: those VMs then outlive the 2h rule that would have collected
+      # them.
+      #
+      # Instance-principal auth, not secrets: invariant 2 confines credentials
+      # to launch_ephemeral_runners, and the dynamic group already holds
+      # "manage instance-family in compartment ci-runner". The in-soak ONS
+      # alert uses the same path.
+      #
+      # Fails closed. An unexempt soak runner is terminated at the 2h mark, so
+      # there is no point spending an image build and a night on it.
+      - name: Exempt this runner from the CI reaper
+        id: selftag
+        env:
+          END_EPOCH: ${{ needs.schedule_gate.outputs.end_epoch }}
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          case "$END_EPOCH" in
+            ''|*[!0-9]*) echo "::error::bad end_epoch from the gate: $END_EPOCH"; exit 1 ;;
+          esac
+          command -v oci >/dev/null || { echo "::error::oci CLI not found on the soak runner"; exit 1; }
+          # IMDSv2 on the instance itself — the only authority on which VM this is.
+          iid="$(curl -sS --max-time 10 -H 'Authorization: Bearer Oracle' \
+            http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || iid=""
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *) echo "::error::could not read this instance's OCID from the metadata service; refusing to soak on a runner that cannot be exempted"; exit 1 ;;
+          esac
+          deadline="$((END_EPOCH + 7200))"
+          # Same read-modify-write and 409 retry as before: --freeform-tags
+          # REPLACES the whole map, and a transient read failure must never be
+          # mistaken for "no tags" or it erases cost-tracking metadata.
+          tagged=""
+          for attempt in $(seq 1 12); do
+            if ! existing="$(oci --auth instance_principal compute instance get \
+                 --instance-id "$iid" --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/12: could not read current tags; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | tail -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
+            # Empty or null is OCI genuinely reporting no tags -- a real answer,
+            # and {} is the correct starting point for it.
+            case "$existing" in ''|null) existing='{}' ;; esac
+            # Anything else that does not parse is NOT an answer, and must be
+            # handled exactly like the read failure above: retry, never write.
+            # This previously fell back to {}, which -- since --freeform-tags
+            # replaces the whole map -- erased every existing tag, including the
+            # cost-tracking metadata the comment above is about. The loop
+            # defended against erasure-by-read-failure and then erased on the
+            # parse failure four lines later.
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/12: current tags did not parse as a JSON object; retrying without writing\n' "$attempt"
+              [ "$attempt" -eq 1 ] && printf '%s\n' "$existing" | head -5
+              if [ "$attempt" -lt 12 ]; then sleep 15; fi
+              continue
+            fi
+            # github-run-key is what lets capture_diagnostics find this VM after
+            # the fact. When the runner is LOST rather than failing, the job
+            # never completes, so nothing it wrote to $GITHUB_OUTPUT is ever
+            # published — steps.selftag.outputs.instance_id is empty in exactly
+            # the case the post-mortem exists for. A tag lives on the instance
+            # instead of in the job, so it survives the job dying.
+            #
+            # run_id ALONE is not unique. GitHub keeps the same run id across
+            # re-runs and increments run_attempt instead, so attempt 2 that dies
+            # before self-tagging would resolve attempt 1's VM and publish its
+            # console history as the current failure's post-mortem. A confidently
+            # wrong post-mortem is worse than none: the whole point of this path
+            # is that what it reports can be trusted. Key on both.
+            merged="$(jq -cn --argjson cur "$existing" --arg s "$KIND" --arg d "$deadline" \
+              --arg k "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              '$cur + {purpose: "soak", series: $s, "soak-deadline-epoch": $d, "github-run-key": $k}')"
+            if update_err="$(oci --auth instance_principal compute instance update \
+                 --instance-id "$iid" --force --freeform-tags "$merged" 2>&1)"; then
+              tagged=1
+              break
+            fi
+            printf 'attempt %s/12: tag not applied yet (%s); retrying\n' \
+              "$attempt" "$(printf '%s' "$update_err" | grep -oE '"code": "[^"]*"' | head -1)"
+            if [ "$attempt" -lt 12 ]; then sleep 15; fi
+          done
+          if [ -z "$tagged" ]; then
+            printf '%s\n' "${update_err:-}" | tail -20
+            echo "::error::could not tag this runner after 12 attempts; refusing to soak on a runner the reaper will terminate at the 2h mark"
+            exit 1
+          fi
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
+          echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
         uses: actions/checkout@v4
@@ -237,30 +1103,202 @@ jobs:
           poetry lock --no-update
           poetry install --with integration
 
-      - name: Run soak
-        env:
-          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
-          F1R3FLY_NODE_BINARY: /tmp/rnode
-          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
-          SOAK_DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
-          SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
-          SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
-          SOAK_TARGET_SHA: ${{ steps.target.outputs.sha }}
-          SOAK_RUN_BENCHMARKS: ${{ needs.schedule_gate.outputs.run_benchmarks }}
-          SOAK_NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
-          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
-        shell: bash -e {0}
-        run: ci-control/scripts/run-merge-recovery-soak.sh
+      - name: Configure injected protection breach
+        if: needs.schedule_gate.outputs.inject_protection_breach == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          total_mb="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+          test "$total_mb" -gt 0
+          echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
-      - name: Aggregate weekly report + verdict
-        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+      # The soak runs as consecutive segments sharing one output directory, so
+      # results can be published part-way through. The script resumes from its
+      # state file each time — counters, the original start time and iteration
+      # numbering all continue — so the run behaves as one continuous soak.
+      # Unused checkpoint slots are empty and their segments skip; the final
+      # segment carries no deadline and runs to the overall budget.
+      #
+      # A segment that fails does not stop the ones after it: an iteration
+      # failure is a soak result, not a workflow error, and the run must still
+      # reach its end to publish. `steps.target` is read by every segment, so
+      # they stay in this job rather than becoming a matrix.
+      - name: Soak segment 1
+        if: always() && needs.schedule_gate.outputs.checkpoint_1 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-1
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 2
+        if: always() && needs.schedule_gate.outputs.checkpoint_2 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-2
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 3
+        if: always() && needs.schedule_gate.outputs.checkpoint_3 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-3
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 4
+        if: always() && needs.schedule_gate.outputs.checkpoint_4 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-4
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak segment 5
+        if: always() && needs.schedule_gate.outputs.checkpoint_5 != ''
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: segment-5
+          deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      - name: Soak final segment
+        if: always()
+        uses: ./ci-control/.github/actions/soak-segment
+        with:
+          label: final
+          # Normal run: no deadline, i.e. run to the overall budget measured
+          # from the original start. Restart: end on the window's absolute
+          # instant instead. The gate measures the remainder before the runner
+          # is provisioned, so a start-relative budget would overrun the
+          # window by however long launch, checkout and the image build took —
+          # exactly the guarantee a restart exists to keep. Normal runs stay
+          # start-relative: their 22h/60h budgets already sit inside the slot
+          # cadence with hours to spare, and re-anchoring them would shorten
+          # every weekend baseline by a variable provisioning time.
+          #
+          # This segment publishes through perf_report, which computes a real
+          # verdict and appends the run to its history series.
+          deadline_epoch: ${{ needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.end_epoch || '' }}
+          duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          target_sha: ${{ steps.target.outputs.sha }}
+          run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          merge_exit_min_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '0' || '28800' }}
+          kind: ${{ needs.schedule_gate.outputs.kind }}
+          retry_attempt: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
+          node_repo_dir: ${{ github.workspace }}/node-under-test
+          system_integration_dir: ${{ github.workspace }}/system-integration
+          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          gh_token: ${{ github.token }}
+
+      # Runs for dailies too. The aggregator needs no benchmark segments — it
+      # emits the passive rollup with a null `active` block — and without this
+      # a daily soak produces no summary at all, so there is nothing to publish
+      # and its numbers die with the 14-day artifact.
+      - name: Aggregate soak report + verdict
+        if: always() && needs.schedule_gate.outputs.should_run == 'true'
         shell: bash -euo pipefail {0}
         env:
           SOAK_DIR: /tmp/merge-recovery-soak
           OUT_DIR: /tmp/merge-recovery-soak/report
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          WINDOW_SECONDS: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # Non-empty value must be the truthy branch: GitHub treats '' as
+          # false, so `kind == 'weekend' && '' || '-daily'` would yield
+          # '-daily' for BOTH series.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
         run: |
           # Cache-busted so the week-over-week deltas are not computed against
           # a stale CDN copy. Unlike the history fetch this stays soft: a 60h
@@ -269,11 +1307,34 @@ jobs:
           # but a non-404 miss is warned about, since a silently absent
           # baseline makes the verdict look clean.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Compared against the same series only. A daily measured against a
+          # 60h weekend baseline would flag a regression purely because the
+          # spans differ.
           base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/soak-baseline.json \
-            "${DASHBOARD_URL}data/latest-summary.json?cb=${cb}")" || base_code=000
+            -o /tmp/soak-history.json \
+            "${DASHBOARD_URL}data/history${SERIES_SUFFIX}.json?cb=${cb}")" || base_code=000
           case "$base_code" in
-            200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
+            200)
+              if jq -e 'type == "array"' /tmp/soak-history.json >/dev/null 2>&1; then
+                # Restarted runs are excluded from baseline duty: they cover
+                # a partial span, so their lower iteration count and peak RSS
+                # would make the next full-window run look like a regression
+                # purely because the spans differ.
+                jq --arg run_id "$RUN_ID" \
+                  '[.[] | select((.run.status // "complete") != "in_progress")
+                        | select((.run.restarted // false) | not)
+                        | select((.run.run_id // "" | tostring) != $run_id)]
+                   | sort_by(.run.date // "") | last // empty' \
+                  /tmp/soak-history.json > /tmp/soak-baseline.json
+                if [ -s /tmp/soak-baseline.json ]; then
+                  export BASELINE_JSON=/tmp/soak-baseline.json
+                else
+                  echo "no completed baseline yet (bootstrap run)"
+                fi
+              else
+                echo "::warning::published history is not a JSON array; verdict computed without week-over-week comparison"
+              fi
+              ;;
             404) echo "no published baseline yet (bootstrap run)" ;;
             *)   echo "::warning::baseline fetch failed (HTTP ${base_code}); verdict computed without week-over-week comparison" ;;
           esac
@@ -312,13 +1373,31 @@ jobs:
           path: /tmp/merge-recovery-soak
           retention-days: 14
 
+      - name: Mark soak job complete
+        id: complete
+        if: always()
+        shell: bash -e {0}
+        # Deliberately last. If the VM is lost mid-run (preempted, reaped,
+        # frozen) this never executes and the job's `completed` output stays
+        # empty — which is how retry_within_window tells infrastructure death
+        # from a soak that ran its course. A run that reaches here produced a
+        # real result, even a red one, and a restart would only spend a
+        # second VM reproducing it.
+        run: echo "completed=true" >> "$GITHUB_OUTPUT"
+
   perf_report:
     name: Publish Soak Dashboard
     needs: [schedule_gate, soak]
-    if: needs.schedule_gate.outputs.run_benchmarks == 'true' && !cancelled()
+    # Both series publish. Gating this on run_benchmarks made it weekend-only,
+    # so the dashboard's Daily tab had no producer and nightly results expired
+    # with the artifact.
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      # actions: read is for the checkpoint-recovery fallback below, which
+      # lists and downloads this run's own artifacts through the API.
+      actions: read
       pages: write
       id-token: write
     concurrency:
@@ -335,50 +1414,179 @@ jobs:
           path: ci-control
           persist-credentials: false
 
+      # continue-on-error, because this artifact only exists when the soak job
+      # lived long enough to reach its always() upload. A runner lost mid-run
+      # (30713818751: VM frozen at ~2h of a 45h budget) uploads nothing, and
+      # failing here left the dashboard showing the PREVIOUS run's state for a
+      # night that actually died — the checkpoint recovery below publishes
+      # what the run managed to report before it was lost.
       - name: Download soak results
+        id: results
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: soak-results
 
+      - name: Recover latest checkpoint (runner lost)
+        if: steps.results.outcome == 'failure'
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # The final results artifact never made it off the VM. Each completed
+          # segment uploaded a checkpoint before that, so the newest one is the
+          # last state the run is known to have reached — publish that instead
+          # of nothing. Its weekly-summary.json carries status=in_progress, so
+          # the assemble step updates the latest-* files without appending a
+          # dead run's partial numbers to the history series.
+          prefix="soak-checkpoint-${RUN_ID}-${RUN_ATTEMPT}-"
+          name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            | jq -r --arg prefix "$prefix" \
+              '[.artifacts[] | select(.name | startswith($prefix)) | select(.expired | not)]
+               | sort_by(.created_at) | last.name // empty' || true)"
+          if [ -z "$name" ]; then
+            echo "::error::soak results artifact is missing and no checkpoint was ever uploaded; the run died before its first checkpoint. Nothing to publish — see the post-mortem artifact."
+            exit 1
+          fi
+          mkdir -p soak-results/report
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$name" --dir soak-results/report
+          echo "::warning::final soak results were never uploaded (runner lost); publishing the last checkpoint ${name} instead"
+          echo "Recovered checkpoint: ${name}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Assemble dashboard site
         shell: bash -euo pipefail {0}
         env:
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          # See the note on the aggregate step: the non-empty value has to be
+          # the truthy branch, because GitHub treats '' as false.
+          SERIES_SUFFIX: ${{ needs.schedule_gate.outputs.kind == 'daily' && '-daily' || '' }}
+          # Weekend runs once a week, so its series stays small on its own.
+          # Dailies land up to four a week and would grow without bound, so the
+          # series is trimmed to roughly half a year of runs.
+          MAX_HISTORY: ${{ needs.schedule_gate.outputs.kind == 'daily' && '120' || '0' }}
         run: |
           test -s soak-results/report/weekly-summary.json || {
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
-          cp -r ci-control/site/soak-dashboard/. site/
-          # Pages is the only durable store for the history series — soak
-          # artifacts expire after 14 days — and this is the job that appends
-          # to it. Treating a transient fetch failure as "nothing published"
-          # would permanently reset the series to this run alone, so only a
-          # 404 may start an empty history and anything else aborts. The
-          # cache-busting query string stops the CDN serving a copy older
-          # than the last publish, which would drop intervening weeks.
+          cp -r ci-control/.github/dashboard/. site/
+          # Pages is the only durable store for these series — soak artifacts
+          # expire after 14 days — and a Pages deploy replaces the whole site.
+          # So this job must republish BOTH series, not just its own: a daily
+          # run that uploaded only daily files would delete the weekend series
+          # outright. Every published file is therefore fetched and carried
+          # forward, and only this run's own series is overwritten below.
+          #
+          # Treating a transient fetch failure as "nothing published" would
+          # permanently reset a series, so only a 404 may yield an absent file
+          # and anything else aborts. The cache-busting query string stops the
+          # CDN serving a copy older than the last publish, which would drop
+          # intervening runs.
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/history.json "${DASHBOARD_URL}data/history.json?cb=${cb}")" || code=000
-          case "$code" in
-            200)
-              jq -e 'type == "array"' /tmp/history.json >/dev/null 2>&1 || {
-                echo "::error::published history.json is not a JSON array; refusing to reset the series"
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+          done
+          # HTTP 200 is not proof of valid content — a CDN or proxy error page
+          # is served with 200 too, and republishing one would corrupt the
+          # series just as thoroughly as dropping it. Every carried-forward
+          # JSON file is checked, not just the histories: a summary or verdict
+          # replaced by an error page breaks the dashboard tab that reads it
+          # and, for a summary, becomes the baseline the next run compares
+          # against.
+          for f in history.json history-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON array; refusing to replace it"
+              exit 1
+            }
+          done
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
+              exit 1
+            }
+          done
+
+          # A 404 is only trustworthy when a series has genuinely never
+          # published. Once its history has entries, every run wrote a summary
+          # and a verdict alongside, so a 404 on those means the fetch lied
+          # rather than that they are absent — and accepting it would publish a
+          # site with that series' tab silently emptied. An empty history is
+          # the legitimate bootstrap case and stays permitted.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
                 exit 1
               }
-              ;;
-            404) echo '[]' > /tmp/history.json ;;
-            *)
-              echo "::error::could not read published history.json (HTTP ${code}); aborting so the series is not reset to this run alone"
-              exit 1
-              ;;
-          esac
-          jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
-            /tmp/history.json soak-results/report/weekly-summary.json \
-            > site/data/history.json
-          cp soak-results/report/weekly-summary.json site/data/latest-summary.json
-          cp soak-results/report/verdict.json site/data/latest-verdict.json
-          cp soak-results/report/perf-report.md site/data/latest-report.md
+            done
+          done
+
+          # Append this run to its own series, leaving the other untouched.
+          # Replace rather than append when an entry for this run already
+          # exists: a re-run reuses github.run_id, so a plain append would add
+          # a second entry for the same night, double-counting it on the chart
+          # and burning a slot of the daily retention cap. Runs whose id is
+          # missing or "unknown" are always appended — they cannot be told
+          # apart, so collapsing them would merge genuinely distinct runs.
+          #
+          # A recovered checkpoint (status=in_progress — the runner died and
+          # the fallback above republished the last mid-run state) updates the
+          # latest-* files below but never joins the history: a history entry
+          # means one completed run, and a partial night's lower numbers would
+          # poison every later week-over-week comparison drawn against it.
+          if jq -e '(.run.status // "complete") == "in_progress"' \
+            soak-results/report/weekly-summary.json >/dev/null; then
+            echo "recovered checkpoint: updating latest-* only, not appending to history"
+          else
+            hist="site/data/history${SERIES_SUFFIX}.json"
+            [ -e "$hist" ] || echo '[]' > "$hist"
+            jq -s --argjson max "$MAX_HISTORY" \
+              '.[0] as $hist | .[1] as $new
+               | ($new.run.run_id // "") as $rid
+               | (if $rid == "" or $rid == "unknown" then $hist
+                  else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+               | ($kept + [$new] | sort_by(.run.date)) as $all
+               | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
+              "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
+            mv /tmp/history-merged.json "$hist"
+          fi
+          cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
+          cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
+          cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
+          # Cosmetic, and deliberately not part of the "history exists but
+          # latest-* is missing" abort above: a README badge must never be able
+          # to block publishing the dashboard. Guarded because a re-run against
+          # an artifact produced before badge.json existed would otherwise fail
+          # the copy and take the whole publish down with it.
+          for b in badge:badge-soak badge-stability:badge-stability badge-perf:badge-perf; do
+            src="soak-results/report/${b%%:*}.json"
+            [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
+          done
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -391,13 +1599,348 @@ jobs:
 
       - name: Gate on regression verdict
         shell: bash -euo pipefail {0}
+        env:
+          KIND: ${{ needs.schedule_gate.outputs.kind }}
         run: |
           verdict="$(jq -r '.verdict' soak-results/report/verdict.json)"
-          echo "Weekly soak verdict: $verdict"
-          if [ "$verdict" != "pass" ]; then
-            jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
+          echo "${KIND} soak verdict: $verdict"
+          [ "$verdict" = "pass" ] && exit 0
+          jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
+          # Only the weekend series gates. Dailies vary in span — they stop
+          # early when dev advances — so a run-over-run delta can reflect a
+          # shorter run rather than a real regression. Failing on that would
+          # train people to ignore a red soak, which costs more than the
+          # signal is worth. The verdict is still published, and the dashboard
+          # shows it on the Daily tab.
+          if [ "$KIND" != "weekend" ]; then
+            echo "::warning::Daily soak regressed against the previous daily run — see the dashboard's Daily tab. Not failing the run: only the weekend series gates releases."
+            exit 0
+          fi
+          exit 1
+
+  capture_diagnostics:
+    name: Capture Soak Runner Post-Mortem
+    needs: [schedule_gate, soak]
+    # Only when the soak died WITHOUT reaching its completion marker — i.e. the
+    # runner was lost rather than the soak producing a red result. A completed
+    # red run has logs and an artifact already; this exists for the case where
+    # it has neither.
+    #
+    # Run 30590630059 is why: the job vanished 19 minutes in, GitHub kept no
+    # log at all ("log not found"), and the leading explanation — the
+    # cloud-init idle watchdog killing run.sh at IDLE_TIMEOUT_SECS despite a
+    # job being active — lives entirely in /var/log/runner-run.log on the VM.
+    # That evidence was then lost when the instance was terminated during
+    # cleanup. Console history is captured as a SEPARATE OCI resource with its
+    # own lifecycle, so it outlives the instance and can be read the next day.
+    #
+    # This job previously also required needs.soak.outputs.instance_id != '',
+    # which made it dead code. A lost runner never completes its job, so its
+    # outputs are never published — the ID is empty precisely when the runner
+    # vanishes, which is the only condition this job runs under. Run
+    # 30606130771 proved it: the soak died 18 minutes in with every step after
+    # "Install integration dependencies" left at a null conclusion and no log,
+    # the self-tag step had already succeeded so the OCID was known on the VM,
+    # and this job still skipped. The instance is now located by tag instead;
+    # see "Resolve the soak instance" below.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.soak.result == 'failure' &&
+      needs.soak.outputs.completed != 'true'
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0} # no -x: never trace the private key
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+
+      # Two sources, in order of authority. The job output is exact when it
+      # exists, but exists only when the soak job completed normally — rare
+      # here, since this job runs when it did not. The tag is written by the
+      # soak runner itself, from the OCID the metadata service reported, and
+      # lives on the instance rather than in the job, so it survives the runner
+      # being lost. Neither is a guess: both trace back to IMDSv2 on the VM.
+      #
+      # Terminated instances are deliberately NOT filtered out. A terminated
+      # VM is still worth resolving, because console history is a separate OCI
+      # resource with its own lifecycle and can be read after the instance is
+      # gone — recovering that evidence is the entire point of this job.
+      - name: Resolve the soak instance
+        id: resolve
+        env:
+          OUTPUT_IID: ${{ needs.soak.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          iid="$OUTPUT_IID"
+          if [ -n "$iid" ]; then
+            echo "instance from soak job output: $iid"
+          else
+            key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "soak job published no instance_id (runner lost); searching by github-run-key=$key"
+            # The list and the filter are separated deliberately. Piping the
+            # CLI straight into jq under 2>/dev/null || true makes four very
+            # different facts indistinguishable -- expired credentials, a
+            # missing IAM policy, an OCI outage, and a genuine no-match all
+            # yield the empty string, and the job then reports the benign
+            # "died before self-tagging" warning and exits green.
+            #
+            # That is the same defect as the instance-console-history typo
+            # this file already carries a note about: an error swallowed into
+            # a plausible-looking negative result. A post-mortem that cannot
+            # distinguish "nothing to find" from "could not look" is not a
+            # post-mortem. Fail loudly on the second, stay quiet on the first.
+            #
+            # --all: the compartment accumulates terminated instances, and the
+            # match may be well past the first page.
+            if ! listing="$(oci compute instance list \
+                 --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>&1)"; then
+              printf '%s\n' "$listing" | tail -20
+              echo "::error::could not list instances in the ci-runner compartment; the post-mortem cannot tell a missing VM from an unreadable one"
+              exit 1
+            fi
+            if ! found="$(printf '%s' "$listing" \
+                 | jq -r --arg key "$key" '
+                     [ .data[]
+                       | select(."display-name" | startswith("ci-eph-"))
+                       | select((."freeform-tags"["github-run-key"] // "") == $key)
+                     ]
+                     | sort_by(."time-created")
+                     | last
+                     | .id // empty' 2>&1)"; then
+              printf '%s\n' "$found" | tail -10
+              echo "::error::could not parse the instance listing; treating this as a lookup failure rather than an absent instance"
+              exit 1
+            fi
+            if [ -n "$found" ]; then
+              iid="$found"
+              echo "resolved by tag: $iid"
+            else
+              echo "listing read cleanly; no ci-eph-* instance carries github-run-key=$key"
+            fi
+          fi
+          case "$iid" in
+            ocid1.instance.*) ;;
+            *)
+              # Not a failure. The soak can die before the self-tag step runs,
+              # in which case no tagged VM ever existed and there is nothing to
+              # capture. Say so plainly rather than failing a diagnostic job
+              # and burying the real failure under a second red mark.
+              echo "::warning::no soak instance found for run $GITHUB_RUN_ID; it likely died before the self-tag step, so no console history exists to capture"
+              iid=""
+              ;;
+          esac
+          echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
+
+      - name: Capture console history
+        if: steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          mkdir -p /tmp/postmortem
+          printf 'instance: %s\nrun: %s attempt %s\n' \
+            "$IID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > /tmp/postmortem/instance.txt
+          # The lifecycle state is load-bearing below: it is the ONLY thing that
+          # makes a capture failure benign. Read it properly rather than
+          # defaulting to "unknown" on error, or every capture failure becomes
+          # excusable by an unreadable state.
+          if ! inst="$(oci compute instance get --instance-id "$IID" 2>&1)"; then
+            printf '%s\n' "$inst" | tail -20 | tee /tmp/postmortem/instance.json
+            echo "::error::could not read instance $IID; the OCID resolved but the API call failed, so this is a credentials, permissions or outage fault, not a missing VM"
             exit 1
           fi
+          printf '%s' "$inst" > /tmp/postmortem/instance.json
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json)"
+          if [ -z "$state" ]; then
+            echo "::error::instance $IID returned no lifecycle-state; refusing to guess whether a capture failure is expected"
+            exit 1
+          fi
+          echo "instance lifecycle-state: $state"
+          # Capture is asynchronous: request it, then poll until SUCCEEDED
+          # before fetching. A terminated instance cannot be captured, which is
+          # itself the finding — record it rather than failing the job.
+          #
+          # But ONLY a terminated instance. Until now every call here was
+          # wrapped in `|| true` and 2>/dev/null, so expired credentials, a
+          # missing console-history IAM policy, an OCI outage and a rate limit
+          # all surfaced as "the VM was likely already terminated" — the exact
+          # error-as-plausible-negative this job was rewritten to stop doing one
+          # step earlier, left in place one step later. The lifecycle state read
+          # above is what tells the two apart: if the VM is RUNNING and capture
+          # fails, something is wrong with us, and saying so is the entire job.
+          #
+          # The subcommand is "console-history", NOT "instance-console-history"
+          # (which is what "instance-console-connection" is called, and what
+          # this originally said). Because every call here is wrapped in
+          # `|| true` and 2>/dev/null so a terminated VM does not fail the job,
+          # the wrong name produced no error at all — just "(no console content
+          # captured)", indistinguishable from a VM that was already gone.
+          # Verified against oci-cli 3.82.0: `oci compute console-history` has
+          # capture / get / get-content; `instance-console-history` does not
+          # exist. Confirmed by capturing 2410 lines from the run 30606130771
+          # runner by hand.
+          if hid="$(oci compute console-history capture --instance-id "$IID" \
+               --query 'data.id' --raw-output 2>&1)"; then
+            captured=1
+          else
+            captured=""
+            case "$state" in
+              TERMINATED|TERMINATING)
+                echo "::notice::instance is $state, so no console history can be captured; that is the expected outcome, not a fault"
+                ;;
+              *)
+                printf '%s\n' "$hid" | tail -20
+                echo "::error::console-history capture failed while the instance is $state; this is a credentials, permissions, quota or outage fault and NOT an absent VM"
+                exit 1
+                ;;
+            esac
+            hid=""
+          fi
+          if [ -n "$captured" ]; then
+            st=""
+            for _ in $(seq 1 20); do
+              st="$(oci compute console-history get --instance-console-history-id "$hid" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo UNREADABLE)"
+              [ "$st" = "SUCCEEDED" ] && break
+              [ "$st" = "FAILED" ] && break
+              sleep 15
+            done
+            case "$st" in
+              SUCCEEDED)
+                # A SUCCEEDED capture that will not download is a fault, not an
+                # empty log. Say which.
+                if ! err="$(oci compute console-history get-content \
+                     --instance-console-history-id "$hid" \
+                     --file /tmp/postmortem/console.log --length 1048576 2>&1)"; then
+                  printf '%s\n' "$err" | tail -20
+                  echo "::error::console history captured successfully but could not be downloaded; the evidence exists in OCI as $hid and is not lost, but this job could not retrieve it"
+                  exit 1
+                fi
+                ;;
+              FAILED)
+                echo "::warning::OCI reported the console-history capture as FAILED for $hid; nothing to download"
+                ;;
+              *)
+                echo "::warning::console-history capture did not reach SUCCEEDED within 5 minutes (last state: ${st:-none}); it may still complete -- history $hid outlives this job and can be fetched by hand"
+                ;;
+            esac
+          fi
+          echo "--- last 60 lines of console output ---"
+          tail -60 /tmp/postmortem/console.log 2>/dev/null || echo "(no console content captured)"
+          # The specific line that would confirm the idle-watchdog hypothesis.
+          if grep -q 'Idle .* with no job; killing runner' /tmp/postmortem/console.log 2>/dev/null; then
+            echo "::warning::CONFIRMED: the cloud-init idle watchdog killed the runner while a job was active"
+          fi
+
+      # The self-tag exempts the VM from the reaper until window end + 2h so a
+      # healthy soak is never shot mid-run. But this job only runs when the run
+      # is already dead, and a weekend VM frozen on Friday night then sits
+      # billable behind that exemption until Sunday + 2h — the 16-OCPU leak of
+      # 2026-08-01. With the post-mortem captured above, the exemption has done
+      # its job: shrink the deadline to a short grace so the next hourly reaper
+      # pass collects the VM. 30 minutes rather than immediate, because a
+      # "lost" runner can be an OCI host stall the VM recovers from — give its
+      # own self-termination path first claim before the reaper's backstop.
+      #
+      # Fail-soft throughout: the original deadline still bounds the leak at
+      # window end + 2h, so a failure here costs money, not correctness — and
+      # must never bury the post-mortem this job exists to produce.
+      - name: Release reaper exemption
+        if: always() && steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json 2>/dev/null || true)"
+          case "$state" in
+            TERMINATED|TERMINATING)
+              echo "instance is $state; nothing to release"
+              exit 0
+              ;;
+          esac
+          new_deadline="$(( $(date -u +%s) + 1800 ))"
+          released=""
+          for attempt in 1 2 3; do
+            # Same read-modify-write as the self-tag step: --freeform-tags
+            # replaces the whole map, so an unreadable or unparseable read
+            # means retry, never write.
+            if ! existing="$(oci compute instance get --instance-id "$IID" \
+                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/3: could not read current tags\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            case "$existing" in ''|null) existing='{}' ;; esac
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/3: current tags did not parse as a JSON object\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            current="$(jq -r '."soak-deadline-epoch" // empty' <<<"$existing")"
+            if [ -n "$current" ] && [ "$current" -le "$new_deadline" ] 2>/dev/null; then
+              echo "existing deadline $current is already within the grace window"
+              released=1
+              break
+            fi
+            merged="$(jq -c --arg d "$new_deadline" \
+              '. + {"soak-deadline-epoch": $d}' <<<"$existing")"
+            if oci compute instance update --instance-id "$IID" --force \
+                 --freeform-tags "$merged" >/dev/null 2>&1; then
+              released=1
+              echo "reaper exemption released: $IID reapable after $(date -u -d "@${new_deadline}" +%FT%TZ)"
+              break
+            fi
+            printf 'attempt %s/3: tag update failed\n' "$attempt"
+            sleep 10
+          done
+          [ -n "$released" ] || \
+            echo "::warning::could not release the reaper exemption for $IID; the VM stays billable until its original window-end deadline"
+
+      - name: Upload post-mortem
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-postmortem-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/postmortem
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   notify_failure:
     name: Email Soak Failure Alert
@@ -411,9 +1954,10 @@ jobs:
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
-    environment: ephemeral-launch-internal
+    environment: oci-credentials
     timeout-minutes: 10
     # Alerting needs OCI credentials, never the GitHub API — this job has no
     # checkout and no reason to hold a token scope.
@@ -458,6 +2002,8 @@ jobs:
           DASHBOARD_RESULT: ${{ needs.perf_report.result }}
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
+          RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
         shell: bash -euo pipefail {0}
@@ -466,7 +2012,14 @@ jobs:
             echo "::error::SOAK_ONS_TOPIC_OCID is not configured; failure alert NOT sent"
             exit 1
           fi
-          if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          # From kind, not the raw duration: a restart's span is the window's
+          # remainder, so a duration test would label a restarted weekend as a
+          # daily. Say so explicitly too — "the weekend soak failed" and "the
+          # restart of the weekend soak failed" call for different responses.
+          if [ "$SOAK_KIND" = "weekend" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          if [ "${RETRY_ATTEMPT:-0}" != "0" ]; then
+            kind="$kind restart ($((DURATION_SECONDS / 3600))h remaining)"
+          fi
           # Name what actually broke. A soak that never ran and a report stage
           # that failed after a clean soak are different pages. perf_report
           # covers both the Pages deploy and the regression verdict gate, so

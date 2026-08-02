@@ -28,6 +28,17 @@ NC='\033[0m'
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# git exports GIT_INDEX_FILE=<repo>/.git/index.lock into this hook's
+# environment. cargo shells out to git for its own repositories (the RustSec
+# advisory database fetched by `cargo deny`, git dependencies resolved by
+# `cargo fmt`/`cargo clippy`), and those child git processes inherit the
+# variable — writing their index entries into this repo's pending lock index.
+# git then builds the commit tree from the poisoned lock and aborts with
+# "invalid object <sha> for '<path>' / Error building trees", naming a path
+# that belongs to the other repository. Drop the inherited git environment
+# before running any cargo command.
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
+
 SKIP_FMT="${SKIP_FMT:-0}"
 SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
 SKIP_DENY="${SKIP_DENY:-0}"

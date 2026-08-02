@@ -89,10 +89,6 @@ pub struct ST<Key: Hash + Eq + Clone> {
     pub lower_bound: i64,
     pub height_map: BTreeMap<i64, HashSet<Key>>,
     pub finished: HashSet<Key>,
-    /// Per-block status of the mergeable-channels entry request. A block-side
-    /// `done()` does NOT mark the per-block work as finished — the entry must
-    /// also have landed. `is_finished()` requires both `d`/`latest` to be
-    /// empty AND `mergeable_d` to be empty.
     pub mergeable_d: HashMap<Key, ReqStatus>,
 }
 
@@ -149,9 +145,11 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
-    /// Mark `key`'s mergeable-channels entry as needing a request. Called
-    /// immediately after the BlockMessage for `key` has been stored; the
-    /// per-block work isn't `Done` until the entry has also landed.
+    /// Records `key` for a best-effort mergeable-channel entry request.
+    ///
+    /// Entry delivery does not gate LFS completion. Missing entries are
+    /// reconstructed deterministically by `replay_blocks_for_mergeable_channels`
+    /// in `initializing.rs` after block synchronization.
     pub fn mergeable_pending(&self, key: Key) -> Self {
         let mut new_mergeable_d = self.mergeable_d.clone();
         new_mergeable_d.insert(key, ReqStatus::Init);
@@ -353,11 +351,12 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         }
     }
 
-    /// Returns flag if all keys are marked as finished (Done) AND every block
-    /// has had its mergeable-channels entry imported.
-    pub fn is_finished(&self) -> bool {
-        self.latest.is_empty() && self.d.is_empty() && self.mergeable_d.is_empty()
-    }
+    /// Returns whether the block-request stream has finished.
+    ///
+    /// This deliberately ignores `mergeable_d`: mergeable-entry delivery is
+    /// best-effort, and `replay_blocks_for_mergeable_channels` in
+    /// `initializing.rs` deterministically reconstructs any missing entries.
+    pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
 struct StreamProcessor<'a, T: BlockRequesterOps> {
@@ -647,16 +646,16 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         resp: &MergeableEntryResponse,
     ) -> Result<(), CasperError> {
         let block_hash_str = format!("{:?}", resp.block_hash);
-        let was_pending = {
-            let mut state = self.st.lock().map_err(|_| {
+        let was_pending = self
+            .st
+            .lock()
+            .map_err(|_| {
                 CasperError::StreamError(
-                    "Failed to acquire state lock for mergeable_received".to_string(),
+                    "Failed to acquire state lock for mergeable response".to_string(),
                 )
-            })?;
-            let (new_state, was_pending) = state.mergeable_received(&resp.block_hash);
-            *state = new_state;
-            was_pending
-        };
+            })?
+            .mergeable_d
+            .contains_key(&resp.block_hash);
 
         if !was_pending {
             tracing::debug!(
@@ -671,16 +670,23 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 "Mergeable entry response for {} is empty (peer has block, no entry); accepted as soft miss.",
                 block_hash_str
             );
-            return Ok(());
+        } else {
+            self.requester
+                .put_mergeable_entry(&resp.block_hash, resp.serialized_entry.as_ref())?;
+            tracing::debug!(
+                "Mergeable entry imported for block {} ({} bytes)",
+                block_hash_str,
+                resp.serialized_entry.len()
+            );
         }
 
-        self.requester
-            .put_mergeable_entry(&resp.block_hash, resp.serialized_entry.as_ref())?;
-        tracing::debug!(
-            "Mergeable entry imported for block {} ({} bytes)",
-            block_hash_str,
-            resp.serialized_entry.len()
-        );
+        let mut state = self.st.lock().map_err(|_| {
+            CasperError::StreamError(
+                "Failed to acquire state lock for mergeable_received".to_string(),
+            )
+        })?;
+        let (new_state, _) = state.mergeable_received(&resp.block_hash);
+        *state = new_state;
         Ok(())
     }
 
@@ -854,9 +860,6 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 /// Create a stream to receive blocks needed for Last Finalized State.
 /// Uses exponential backoff: starts at request_timeout, doubles up to max_request_timeout.
 /// Resets to request_timeout when a response is received.
-///
-/// After each block lands, fires a `MergeableEntryRequest` for the same hash;
-/// per-block work isn't done until the entry has been imported.
 pub async fn stream<'a, T: BlockRequesterOps>(
     approved_block: &'a ApprovedBlock,
     initial_response_messages: &'a VecDeque<BlockMessage>,
