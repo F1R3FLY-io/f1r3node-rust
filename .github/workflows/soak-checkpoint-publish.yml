@@ -95,15 +95,25 @@ jobs:
           # The soak run is still in progress. Artifacts are readable as soon as
           # they finish uploading, but the dispatch can outrun that, so retry a
           # few times before giving up.
+          #
+          # --repo is load-bearing: this step's working directory is not a git
+          # checkout (the checkout lands in ci-control/), and without it every
+          # gh invocation dies on "failed to determine base repo" before ever
+          # reaching the API — which run 30716000285 then reported as five
+          # rounds of "artifact not ready" against an artifact that existed.
+          # The real error is echoed per attempt so a recurrence names itself.
           for attempt in 1 2 3 4 5; do
-            if gh run download "$RUN_ID" --name "$ARTIFACT" --dir checkpoint; then
+            if download_err="$(gh run download "$RUN_ID" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --name "$ARTIFACT" --dir checkpoint 2>&1)"; then
               break
             fi
+            printf 'attempt %s failed: %s\n' "$attempt" "$download_err"
             if [ "$attempt" = "5" ]; then
               echo "::error::artifact ${ARTIFACT} not readable on run ${RUN_ID} after 5 attempts"
               exit 1
             fi
-            echo "attempt ${attempt}: artifact not ready, retrying"
+            echo "attempt ${attempt}: retrying"
             sleep 15
           done
           test -s checkpoint/weekly-summary.json || {

@@ -4,6 +4,14 @@ run-name: >-
   ${{ inputs.scheduled_slot_epoch != '' && format('Merge Recovery Soak [scheduled:{0}]', inputs.scheduled_slot_epoch) || 'Merge Recovery Soak' }}
 
 on:
+  schedule:
+    # Both slots target Pacific 19:30; one matches PDT (UTC-7), the other PST
+    # (UTC-8), and the schedule gate no-ops whichever is currently wrong.
+    # 19:30 Pacific is chosen so the Friday weekend-60h soak finishes at
+    # exactly 07:30 Pacific on Monday (19:30 + 60h), in both DST regimes.
+    # Pacific 19:30 falls on the *next* UTC day, hence 02:30/03:30 UTC.
+    - cron: "30 2 * * *"
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       scheduled_slot_epoch:
@@ -47,6 +55,16 @@ on:
         required: false
         default: "0"
         type: string
+      canary:
+        description: Run a 30-minute non-publishing OCI protection canary
+        required: false
+        default: false
+        type: boolean
+      inject_protection_breach:
+        description: Force a canary host-floor breach after workload startup
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -106,7 +124,7 @@ env:
   # by grep: main already contained the string __RUNNER_LABELS__, the cloud-init
   # template placeholder, long before the override existed. Grepping would have
   # said yes against a launcher that ignores the variable.
-  SYSTEM_INTEGRATION_REF: 369d49df2f97e65b3d0ad869aa668a7383b11179
+  SYSTEM_INTEGRATION_REF: 66de4f95141cbef9c1308d58fbb872b66cf75197
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -142,6 +160,8 @@ jobs:
       # restarted run to this instant so it conforms to the original slot.
       end_epoch: ${{ steps.resolve.outputs.end_epoch }}
       retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
+      canary: ${{ steps.resolve.outputs.canary }}
+      inject_protection_breach: ${{ steps.resolve.outputs.inject_protection_breach }}
       # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
       # slots are skipped; see the resolve step for why there are five.
       checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
@@ -153,72 +173,35 @@ jobs:
       - name: Resolve schedule
         id: resolve
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
           INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
           INPUT_SERIES: ${{ inputs.series }}
           INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+          INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
           # Read-only, for the "did anything land since the last window?" check.
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
-          if [ -z "$INPUT_SCHEDULED_SLOT" ]; then
-            if [ "$INPUT_DURATION" = "weekend-60h" ]; then
-              duration_seconds=216000
-            else
-              duration_seconds=79200
-            fi
-            target_ref="$INPUT_TARGET_REF"
-            should_run=true
-            # A manual run has no cron slot, so it starts now. The checkpoint
-            # computation below needs a start instant either way, and without
-            # this the step dies on an unbound variable under `set -u` — a
-            # manual dispatch would fail the gate outright.
-            slot_epoch="$(date -u +%s)"
-            # Restart mode: window_end_epoch anchors this run to the original
-            # slot's window instead of a fresh full span, so a soak restarted
-            # after an infrastructure failure still ends exactly when the
-            # scheduled run would have — it can never spill into the next
-            # slot. The checkpoint enumeration below then yields exactly the
-            # original window's remaining Pacific instants.
-            if [ -n "$INPUT_WINDOW_END" ]; then
-              case "$INPUT_WINDOW_END" in
-                *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
-              esac
-              # series is genuinely required here, not merely documented as
-              # such: a remainder span no longer identifies the series by its
-              # duration, so without it the guess below would publish the run
-              # into the wrong history with the wrong benchmark, timeout and
-              # concurrency behaviour. Fail rather than guess.
-              case "$INPUT_SERIES" in
-                daily) window_nominal=79200 ;;
-                weekend) window_nominal=216000 ;;
-                *)
-                  echo "::error::series must be daily or weekend when window_end_epoch is set"
-                  exit 1
-                  ;;
-              esac
-              remaining="$((INPUT_WINDOW_END - slot_epoch))"
-              # A restart can only ever shorten the window it inherits. Without
-              # this bound an epoch typo — milliseconds for seconds, say — is
-              # accepted, and the reaper exemption derived from it would keep a
-              # leaked VM exempt for years. The exemption is meant to expire.
-              if [ "$remaining" -gt "$window_nominal" ]; then
-                echo "::error::window_end_epoch is ${remaining}s away, beyond the ${window_nominal}s $INPUT_SERIES window"
+          case "${INPUT_INJECT_PROTECTION_BREACH:-false}" in
+            true)
+              if [ "${INPUT_CANARY:-false}" != "true" ]; then
+                echo "::error::inject_protection_breach requires canary"
                 exit 1
               fi
-              # 2h floor: launch, image build and shard bring-up eat ~20min,
-              # and a sub-2h remainder is not worth an OCI VM.
-              if [ "$remaining" -lt 7200 ]; then
-                should_run=false
-                restart_skip=true
-                echo "only ${remaining}s left of the window ending $(date -u -d "@${INPUT_WINDOW_END}" +%FT%TZ); not launching"
-              else
-                duration_seconds="$remaining"
-              fi
+              ;;
+            false|"") ;;
+            *) echo "::error::inject_protection_breach must be true or false"; exit 1 ;;
+          esac
+          if [ -n "$INPUT_SCHEDULED_SLOT" ]; then
+            if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+              echo "::error::scheduled_slot_epoch cannot be combined with canary, injection, restart, series, or retry inputs"
+              exit 1
             fi
-          else
             case "$INPUT_SCHEDULED_SLOT" in
               ''|*[!0-9]*) echo "::error::scheduled_slot_epoch must be epoch seconds"; exit 1 ;;
             esac
@@ -229,13 +212,13 @@ jobs:
               echo "::error::scheduled_slot_epoch delay ${trigger_delay}s is outside the accepted 0..900s range"
               exit 1
             fi
-            pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
-            pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
+            pacific_hm="$(TZ=America/Los_Angeles date -d "@$slot_epoch" +%H%M)"
+            pacific_weekday="$(TZ=America/Los_Angeles date -d "@$slot_epoch" +%u)"
             if [ "$pacific_hm" != "1930" ] || [ "$pacific_weekday" -lt 1 ] || [ "$pacific_weekday" -gt 5 ]; then
-              echo "::error::OCI slot $(date -u -d "@${slot_epoch}" +%FT%TZ) does not resolve to an eligible Pacific 19:30 weekday"
+              echo "::error::OCI slot $(date -u -d "@$slot_epoch" +%FT%TZ) does not resolve to an eligible Pacific 19:30 weekday"
               exit 1
             fi
-            echo "source=oci-resource-scheduler slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            echo "source=oci-resource-scheduler slot=$(date -u -d "@$slot_epoch" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
             should_run=true
             idle_skip=false
             duplicate_skip=false
@@ -273,6 +256,141 @@ jobs:
                   echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
                 fi
               fi
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$INPUT_DURATION" = "weekend-60h" ]; then
+              duration_seconds=216000
+            else
+              duration_seconds=79200
+            fi
+            target_ref="$INPUT_TARGET_REF"
+            should_run=true
+            # A manual run has no cron slot, so it starts now. The checkpoint
+            # computation below needs a start instant either way, and without
+            # this the step dies on an unbound variable under `set -u` — a
+            # manual dispatch would fail the gate outright.
+            slot_epoch="$(date -u +%s)"
+            # Restart mode: window_end_epoch anchors this run to the original
+            # slot's window instead of a fresh full span, so a soak restarted
+            # after an infrastructure failure still ends exactly when the
+            # scheduled run would have — it can never spill into the next
+            # slot. The checkpoint enumeration below then yields exactly the
+            # original window's remaining Pacific instants.
+            if [ "$INPUT_CANARY" = "true" ]; then
+              if [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+                echo "::error::canary cannot be combined with window_end_epoch, series, or a retry attempt"
+                exit 1
+              fi
+              duration_seconds=1800
+            elif [ -n "$INPUT_WINDOW_END" ]; then
+              case "$INPUT_WINDOW_END" in
+                *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
+              esac
+              # series is genuinely required here, not merely documented as
+              # such: a remainder span no longer identifies the series by its
+              # duration, so without it the guess below would publish the run
+              # into the wrong history with the wrong benchmark, timeout and
+              # concurrency behaviour. Fail rather than guess.
+              case "$INPUT_SERIES" in
+                daily) window_nominal=79200 ;;
+                weekend) window_nominal=216000 ;;
+                *)
+                  echo "::error::series must be daily or weekend when window_end_epoch is set"
+                  exit 1
+                  ;;
+              esac
+              remaining="$((INPUT_WINDOW_END - slot_epoch))"
+              # A restart can only ever shorten the window it inherits. Without
+              # this bound an epoch typo — milliseconds for seconds, say — is
+              # accepted, and the reaper exemption derived from it would keep a
+              # leaked VM exempt for years. The exemption is meant to expire.
+              if [ "$remaining" -gt "$window_nominal" ]; then
+                echo "::error::window_end_epoch is ${remaining}s away, beyond the ${window_nominal}s $INPUT_SERIES window"
+                exit 1
+              fi
+              # 2h floor: launch, image build and shard bring-up eat ~20min,
+              # and a sub-2h remainder is not worth an OCI VM.
+              if [ "$remaining" -lt 7200 ]; then
+                should_run=false
+                restart_skip=true
+                echo "only ${remaining}s left of the window ending $(date -u -d "@${INPUT_WINDOW_END}" +%FT%TZ); not launching"
+              else
+                duration_seconds="$remaining"
+              fi
+            fi
+          else
+            # GitHub delivers cron triggers minutes-to-hours late, so gate on
+            # the cron's intended slot (most recent occurrence at or before
+            # now), not the wall clock at execution time.
+            # The window is on a half hour, so the minute field matters as
+            # much as the hour — compare %H%M, not %H.
+            cron_min="$(awk '{print $1}' <<<"$EVENT_SCHEDULE")"
+            cron_hour="$(awk '{print $2}' <<<"$EVENT_SCHEDULE")"
+            now_epoch="$(date -u +%s)"
+            slot_epoch="$(date -u -d "$(date -u +%F) ${cron_hour}:${cron_min}:00" +%s)"
+            if [ "$slot_epoch" -gt "$now_epoch" ]; then
+              slot_epoch=$((slot_epoch - 86400))
+            fi
+            pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
+            pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
+            echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
+            target_ref=dev
+            should_run=false
+            idle_skip=false
+            duration_seconds=79200
+            if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+              # 22h, not 24h. The soak job shares a concurrency group with
+              # cancel-in-progress, so a 24h soak on a 24h cadence is cancelled
+              # by the next night's launch ~10min before it finishes — losing
+              # its final iteration and its entire artifact upload. 22h leaves
+              # the run time to report before the next one starts.
+              should_run=true
+              duration_seconds=79200
+              # Don't re-soak code that has already been soaked. If nothing
+              # landed on the branch since the previous window there is nothing
+              # new to learn, and an OCI runner is not worth spending on it.
+              #
+              # Fails OPEN: any API error, empty response or unparseable count
+              # runs the soak. A silently skipped soak is the exact failure this
+              # workflow exists to avoid, so "unsure" must mean "soak".
+              #
+              # The window is anchored to the previous eligible slot, not to a
+              # fixed 24h, because daily windows are not 24h apart: dailies run
+              # Mon-Thu, so Monday's window is four days after Thursday's. A 24h
+              # lookback on a Monday cannot see anything that landed over the
+              # weekend, and would skip the soak on code that has never been
+              # soaked at all — `dev` gets no weekend coverage either, since the
+              # 60h weekend soak targets `master`.
+              if [ "$pacific_weekday" -eq 1 ]; then
+                prev_slot_epoch=$((slot_epoch - 4 * 86400))
+              else
+                prev_slot_epoch=$((slot_epoch - 86400))
+              fi
+              # Two hours of overlap, for two reasons. Slot-aligned windows tile
+              # exactly, so a commit landing on a boundary could fall between
+              # two of them and never be seen. And the arithmetic above is in
+              # epoch seconds, so a window spanning a Pacific DST change lands
+              # an hour off — on the November change, Monday's window would
+              # otherwise start at Thursday 20:30 PT and miss the hour before
+              # it. The margin absorbs both without needing DST-aware date
+              # maths. Erring wide costs at most one redundant soak; erring
+              # narrow is the bug this whole check is meant to avoid.
+              since="$(date -u -d "@$((prev_slot_epoch - 7200))" +%Y-%m-%dT%H:%M:%SZ)"
+              new_commits="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                --jq 'length' 2>/dev/null || echo "")"
+              if [ "$new_commits" = "0" ]; then
+                should_run=false
+                idle_skip=true
+                echo "no commits on $target_ref since $since; skipping tonight's soak"
+              else
+                echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+              fi
+            elif [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -eq 5 ]; then
+              # Friday 19:30 + 60h = Monday 07:30 Pacific.
+              should_run=true
+              target_ref=master
+              duration_seconds=216000
             fi
           fi
           kind=daily
@@ -326,6 +444,9 @@ jobs:
               fi
             done
           done
+          if [ "${INPUT_CANARY:-false}" = "true" ]; then
+            checkpoints=()
+          fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
           [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
           [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
@@ -370,10 +491,11 @@ jobs:
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ]; then
-            echo "::notice::Schedule gate no-op. No soak was attempted; this run's success is not a soak result."
+            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 19:30 launch window. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: no-op"
               echo ""
+              echo "This scheduled trigger resolved outside the Pacific 19:30 launch window."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -401,6 +523,8 @@ jobs:
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
             echo "retry_attempt=$retry_attempt"
+            echo "canary=${INPUT_CANARY:-false}"
+            echo "inject_protection_breach=${INPUT_INJECT_PROTECTION_BREACH:-false}"
             echo "checkpoint_1=$cp1"
             echo "checkpoint_2=$cp2"
             echo "checkpoint_3=$cp3"
@@ -732,6 +856,7 @@ jobs:
       !cancelled() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.schedule_gate.outputs.retry_attempt == '0' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
       (needs.launch_runner.result == 'failure' ||
        (needs.soak.result == 'failure' &&
         needs.soak.outputs.completed != 'true'))
@@ -977,6 +1102,14 @@ jobs:
         run: |
           poetry lock --no-update
           poetry install --with integration
+
+      - name: Configure injected protection breach
+        if: needs.schedule_gate.outputs.inject_protection_breach == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          total_mb="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+          test "$total_mb" -gt 0
+          echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
       # The soak runs as consecutive segments sharing one output directory, so
       # results can be published part-way through. The script resumes from its
@@ -1258,10 +1391,13 @@ jobs:
     # Both series publish. Gating this on run_benchmarks made it weekend-only,
     # so the dashboard's Daily tab had no producer and nightly results expired
     # with the artifact.
-    if: needs.schedule_gate.outputs.should_run == 'true' && !cancelled()
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      # actions: read is for the checkpoint-recovery fallback below, which
+      # lists and downloads this run's own artifacts through the API.
+      actions: read
       pages: write
       id-token: write
     concurrency:
@@ -1278,11 +1414,48 @@ jobs:
           path: ci-control
           persist-credentials: false
 
+      # continue-on-error, because this artifact only exists when the soak job
+      # lived long enough to reach its always() upload. A runner lost mid-run
+      # (30713818751: VM frozen at ~2h of a 45h budget) uploads nothing, and
+      # failing here left the dashboard showing the PREVIOUS run's state for a
+      # night that actually died — the checkpoint recovery below publishes
+      # what the run managed to report before it was lost.
       - name: Download soak results
+        id: results
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: soak-results
+
+      - name: Recover latest checkpoint (runner lost)
+        if: steps.results.outcome == 'failure'
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # The final results artifact never made it off the VM. Each completed
+          # segment uploaded a checkpoint before that, so the newest one is the
+          # last state the run is known to have reached — publish that instead
+          # of nothing. Its weekly-summary.json carries status=in_progress, so
+          # the assemble step updates the latest-* files without appending a
+          # dead run's partial numbers to the history series.
+          prefix="soak-checkpoint-${RUN_ID}-${RUN_ATTEMPT}-"
+          name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            | jq -r --arg prefix "$prefix" \
+              '[.artifacts[] | select(.name | startswith($prefix)) | select(.expired | not)]
+               | sort_by(.created_at) | last.name // empty' || true)"
+          if [ -z "$name" ]; then
+            echo "::error::soak results artifact is missing and no checkpoint was ever uploaded; the run died before its first checkpoint. Nothing to publish — see the post-mortem artifact."
+            exit 1
+          fi
+          mkdir -p soak-results/report
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$name" --dir soak-results/report
+          echo "::warning::final soak results were never uploaded (runner lost); publishing the last checkpoint ${name} instead"
+          echo "Recovered checkpoint: ${name}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assemble dashboard site
         shell: bash -euo pipefail {0}
@@ -1380,17 +1553,28 @@ jobs:
           # and burning a slot of the daily retention cap. Runs whose id is
           # missing or "unknown" are always appended — they cannot be told
           # apart, so collapsing them would merge genuinely distinct runs.
-          hist="site/data/history${SERIES_SUFFIX}.json"
-          [ -e "$hist" ] || echo '[]' > "$hist"
-          jq -s --argjson max "$MAX_HISTORY" \
-            '.[0] as $hist | .[1] as $new
-             | ($new.run.run_id // "") as $rid
-             | (if $rid == "" or $rid == "unknown" then $hist
-                else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
-             | ($kept + [$new] | sort_by(.run.date)) as $all
-             | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
-            "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
-          mv /tmp/history-merged.json "$hist"
+          #
+          # A recovered checkpoint (status=in_progress — the runner died and
+          # the fallback above republished the last mid-run state) updates the
+          # latest-* files below but never joins the history: a history entry
+          # means one completed run, and a partial night's lower numbers would
+          # poison every later week-over-week comparison drawn against it.
+          if jq -e '(.run.status // "complete") == "in_progress"' \
+            soak-results/report/weekly-summary.json >/dev/null; then
+            echo "recovered checkpoint: updating latest-* only, not appending to history"
+          else
+            hist="site/data/history${SERIES_SUFFIX}.json"
+            [ -e "$hist" ] || echo '[]' > "$hist"
+            jq -s --argjson max "$MAX_HISTORY" \
+              '.[0] as $hist | .[1] as $new
+               | ($new.run.run_id // "") as $rid
+               | (if $rid == "" or $rid == "unknown" then $hist
+                  else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+               | ($kept + [$new] | sort_by(.run.date)) as $all
+               | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
+              "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
+            mv /tmp/history-merged.json "$hist"
+          fi
           cp soak-results/report/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
           cp soak-results/report/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
           cp soak-results/report/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
@@ -1677,6 +1861,71 @@ jobs:
             echo "::warning::CONFIRMED: the cloud-init idle watchdog killed the runner while a job was active"
           fi
 
+      # The self-tag exempts the VM from the reaper until window end + 2h so a
+      # healthy soak is never shot mid-run. But this job only runs when the run
+      # is already dead, and a weekend VM frozen on Friday night then sits
+      # billable behind that exemption until Sunday + 2h — the 16-OCPU leak of
+      # 2026-08-01. With the post-mortem captured above, the exemption has done
+      # its job: shrink the deadline to a short grace so the next hourly reaper
+      # pass collects the VM. 30 minutes rather than immediate, because a
+      # "lost" runner can be an OCI host stall the VM recovers from — give its
+      # own self-termination path first claim before the reaper's backstop.
+      #
+      # Fail-soft throughout: the original deadline still bounds the leak at
+      # window end + 2h, so a failure here costs money, not correctness — and
+      # must never bury the post-mortem this job exists to produce.
+      - name: Release reaper exemption
+        if: always() && steps.resolve.outputs.instance_id != ''
+        env:
+          IID: ${{ steps.resolve.outputs.instance_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: |
+          state="$(jq -r '.data."lifecycle-state" // empty' /tmp/postmortem/instance.json 2>/dev/null || true)"
+          case "$state" in
+            TERMINATED|TERMINATING)
+              echo "instance is $state; nothing to release"
+              exit 0
+              ;;
+          esac
+          new_deadline="$(( $(date -u +%s) + 1800 ))"
+          released=""
+          for attempt in 1 2 3; do
+            # Same read-modify-write as the self-tag step: --freeform-tags
+            # replaces the whole map, so an unreadable or unparseable read
+            # means retry, never write.
+            if ! existing="$(oci compute instance get --instance-id "$IID" \
+                 --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+              printf 'attempt %s/3: could not read current tags\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            case "$existing" in ''|null) existing='{}' ;; esac
+            if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+              printf 'attempt %s/3: current tags did not parse as a JSON object\n' "$attempt"
+              sleep 10
+              continue
+            fi
+            current="$(jq -r '."soak-deadline-epoch" // empty' <<<"$existing")"
+            if [ -n "$current" ] && [ "$current" -le "$new_deadline" ] 2>/dev/null; then
+              echo "existing deadline $current is already within the grace window"
+              released=1
+              break
+            fi
+            merged="$(jq -c --arg d "$new_deadline" \
+              '. + {"soak-deadline-epoch": $d}' <<<"$existing")"
+            if oci compute instance update --instance-id "$IID" --force \
+                 --freeform-tags "$merged" >/dev/null 2>&1; then
+              released=1
+              echo "reaper exemption released: $IID reapable after $(date -u -d "@${new_deadline}" +%FT%TZ)"
+              break
+            fi
+            printf 'attempt %s/3: tag update failed\n' "$attempt"
+            sleep 10
+          done
+          [ -n "$released" ] || \
+            echo "::warning::could not release the reaper exemption for $IID; the VM stays billable until its original window-end deadline"
+
       - name: Upload post-mortem
         if: always()
         uses: actions/upload-artifact@v4
@@ -1705,6 +1954,7 @@ jobs:
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     environment: oci-credentials

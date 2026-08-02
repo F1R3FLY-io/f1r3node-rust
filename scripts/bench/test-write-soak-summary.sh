@@ -65,4 +65,16 @@ jq -e '
   and .tracked_metrics.lfb_spread.samples == 2
 ' "$SPARSE/summary.json" >/dev/null
 
+# jq 1.6 compatibility lint. The soak VM (Ubuntu 22.04) ships jq 1.6, which
+# rejects jq keywords as variable names ("$def" cost run 30713818751 its
+# summary and, through null metadata, its checkpoint). CI runs on jq 1.7+,
+# which accepts them, so parsing alone cannot catch the regression here.
+JQ_KEYWORDS='def|if|then|elif|else|end|as|reduce|foreach|try|catch|label|import|include|and|or|not|__loc__'
+if grep -rnE "(as \\\$|--arg |--argjson |--slurpfile )($JQ_KEYWORDS)\\b" \
+  "$ROOT/scripts/bench" "$ROOT/scripts/oci" "$ROOT/scripts/run-merge-recovery-soak.sh" \
+  --include='*.sh' 2>/dev/null; then
+  printf 'jq keyword used as a variable name (breaks jq 1.6 on the soak runner)\n' >&2
+  exit 1
+fi
+
 printf 'soak summary writer tests passed\n'
