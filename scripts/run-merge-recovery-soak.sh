@@ -182,12 +182,14 @@ fi
 # (columns: elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb; the
 # __system__ row is host state, not node RSS). Empty output when absent.
 iteration_rss_peak_mb() {
-  local iteration_dir="$1" ts_csv
-  ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
-    -name resource-timeseries.csv -newer "$iteration_dir/.started" 2>/dev/null \
-    | xargs -r ls -t 2>/dev/null | head -1 || true)"
-  [ -n "$ts_csv" ] || return 0
-  cp "$ts_csv" "$iteration_dir/resource-timeseries.csv" 2>/dev/null || true
+  local iteration_dir="$1" ts_csv="$1/resource-timeseries.csv"
+  if [ ! -s "$ts_csv" ]; then
+    ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+      -name resource-timeseries.csv -newer "$iteration_dir/.started" -print0 2>/dev/null \
+      | xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
+    [ -n "$ts_csv" ] || return 0
+    cp "$ts_csv" "$iteration_dir/resource-timeseries.csv" 2>/dev/null || true
+  fi
   awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $3 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
                  if (max > 0) printf "%.0f\n", max }' "$ts_csv" 2>/dev/null || true
@@ -203,6 +205,25 @@ iteration_cpu_peak_percent() {
   awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
                  if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
+}
+
+snapshot_iteration_monitor_outputs() {
+  local iteration_dir="$1" filename source tmp
+  while :; do
+    for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
+      source="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+        -name "$filename" -newer "$iteration_dir/.started" -print0 2>/dev/null \
+        | xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
+      [ -n "$source" ] || continue
+      tmp="$iteration_dir/.$filename.tmp"
+      if cp "$source" "$tmp" 2>/dev/null; then
+        mv "$tmp" "$iteration_dir/$filename"
+      else
+        rm -f "$tmp"
+      fi
+    done
+    sleep "${SOAK_MONITOR_SNAPSHOT_SECONDS:-2}"
+  done
 }
 
 # Propose-timing latency samples (total_ms) from node JSON logs written after
@@ -421,6 +442,7 @@ rm -f "$HOST_GUARDIAN_BREACH"
 HOST_GUARDIAN_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
+ITERATION_SNAPSHOT_PID=""
 ITERATION_FIFO=""
 cleanup_soak_processes() {
   [ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
@@ -429,6 +451,7 @@ cleanup_soak_processes() {
     pkill -KILL -f 'integration-tests/test/tests/custom/test_load.py' 2>/dev/null || true
   fi
   [ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
+  [ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
   [ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 }
 trap cleanup_soak_processes EXIT
@@ -531,6 +554,8 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       --timeout=1200
   ) > "$ITERATION_FIFO" 2>&1 &
   ITERATION_PID=$!
+  snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
+  ITERATION_SNAPSHOT_PID=$!
   GUARDIAN_INTERRUPTED=0
   while kill -0 "$ITERATION_PID" 2>/dev/null; do
     if [ -s "$HOST_GUARDIAN_BREACH" ]; then
@@ -548,9 +573,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   wait "$ITERATION_PID" 2>/dev/null
   STATUS=$?
   wait "$ITERATION_TEE_PID" 2>/dev/null || true
+  kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+  wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
   rm -f "$ITERATION_FIFO"
   ITERATION_PID=""
   ITERATION_TEE_PID=""
+  ITERATION_SNAPSHOT_PID=""
   ITERATION_FIFO=""
   if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
     STATUS=1

@@ -45,6 +45,7 @@ DEPLOYER_KEY="${DEPLOYER_KEY:?DEPLOYER_KEY must be set}"
 
 # Status polling
 POLL_INTERVAL="${POLL_INTERVAL:-3}"
+PREFLIGHT_TIMEOUT="${PREFLIGHT_TIMEOUT:-120}"
 HTTP_PORT="${HTTP_PORT:-40413}"             # validator1 HTTP port in local shard.yml
 
 # --- Logging ---
@@ -138,7 +139,8 @@ SUBMITS_FILE="$OUT_DIR/submits.tsv"
 FINALS_FILE="$OUT_DIR/finals.tsv"
 SUMMARY="$OUT_DIR/load-summary.txt"
 REPORT="$OUT_DIR/latency-report.txt"
-: > "$SUBMITS_FILE" > "$FINALS_FILE"
+: > "$SUBMITS_FILE"
+: > "$FINALS_FILE"
 
 # --- Deploy the benchmark contract file into the container ---
 BENCH_RHO_LOCAL="$OUT_DIR/bench.rho"
@@ -163,6 +165,46 @@ STATUS_JSON="$(curl -fsS --max-time 5 "${API_BASE}/api/status")" || die "Node un
 PEERS="$(echo "$STATUS_JSON" | jq -r '.peers')"
 NODES="$(echo "$STATUS_JSON" | jq -r '.nodes')"
 info "Node healthy: peers=$PEERS nodes=$NODES"
+
+PREFLIGHT_DEADLINE=$(( $(date +%s) + PREFLIGHT_TIMEOUT ))
+CASPER_READY=0
+while [[ $(date +%s) -lt $PREFLIGHT_DEADLINE ]]; do
+  if "${EXEC_CMD[@]}" /opt/docker/bin/node show-blocks 1 >/dev/null 2>&1; then
+    CASPER_READY=1
+    break
+  fi
+  sleep "$POLL_INTERVAL"
+done
+[[ "$CASPER_READY" == "1" ]] || die "Casper instance was not available within ${PREFLIGHT_TIMEOUT}s"
+
+harvest_finalizations() {
+  while true; do
+    while IFS=$'\t' read -r _ sig; do
+      [[ -z "$sig" ]] && continue
+      grep -q -F "$sig" "$FINALS_FILE" && continue
+      FINALIZATION="$(curl -fsS --max-time 5 \
+        "${API_BASE}/api/deploy-finalization-status/${sig}" 2>/dev/null || true)"
+      if [[ "$(jq -r '.state // empty' <<<"$FINALIZATION" 2>/dev/null)" == "Finalized" ]]; then
+        FINAL_MS="$(date +%s%3N)"
+        BLOCK_HASH="$(jq -r '.latest_block_hash // "unknown"' <<<"$FINALIZATION")"
+        printf '%s\t%s\t%s\n' "$FINAL_MS" "$sig" "$BLOCK_HASH" >> "$FINALS_FILE"
+      fi
+    done < "$SUBMITS_FILE"
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+HARVEST_PID=""
+stop_harvester() {
+  if [[ -n "$HARVEST_PID" ]]; then
+    kill "$HARVEST_PID" 2>/dev/null || true
+    wait "$HARVEST_PID" 2>/dev/null || true
+    HARVEST_PID=""
+  fi
+}
+trap stop_harvester EXIT
+harvest_finalizations &
+HARVEST_PID=$!
 
 # --- Deploy flood ---
 INTERVAL_SEC="$(awk -v r="$DEPLOYS_PER_SEC" 'BEGIN{printf "%.3f", 1.0/r}')"
@@ -190,30 +232,15 @@ done
 info "Flood complete: submitted=$SUBMITTED failed=$FAILED"
 
 # --- Wait for finalization + match deploys ---
-info "Waiting ${POLL_INTERVAL}s for blocks to propagate, then harvesting finalizations"
+info "Waiting up to 90s for remaining deploys to finalize"
 WAIT_DEADLINE=$(( $(date +%s) + 90 ))
 
 while [[ $(date +%s) -lt $WAIT_DEADLINE ]]; do
-  # Fetch last 50 blocks; match any DeployIds we know about
-  SHOW="$("${EXEC_CMD[@]}" /opt/docker/bin/node show-blocks 50 2>&1 || true)"
-  # Crude extraction: block_number + deployer + sig lines
-  echo "$SHOW" | awk '
-    /block_number:/ { blk=$2; gsub(",","",blk) }
-    /sig: "/ {
-      sig=$0; sub(/^[^"]*"/,"",sig); sub(/".*/,"",sig);
-      print blk"\t"sig
-    }' | while read -r blk sig; do
-      [[ -z "$sig" ]] && continue
-      if grep -q -F "$sig" "$SUBMITS_FILE" && ! grep -q -F "$sig" "$FINALS_FILE"; then
-        FINAL_MS="$(date +%s%3N)"
-        printf '%s\t%s\t%s\n' "$FINAL_MS" "$sig" "$blk" >> "$FINALS_FILE"
-      fi
-    done
-  # Stop early if every submitted deploy is matched
   MATCHED="$(wc -l < "$FINALS_FILE" | tr -d ' ')"
   [[ "$MATCHED" -ge "$SUBMITTED" ]] && break
   sleep "$POLL_INTERVAL"
 done
+stop_harvester
 
 # --- Emit load-summary.txt ---
 MATCHED="$(wc -l < "$FINALS_FILE" | tr -d ' ')"
