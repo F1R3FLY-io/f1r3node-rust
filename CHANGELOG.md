@@ -4,6 +4,14 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.44] - 2026-08-01
+
+### Bug Fixes
+
+- address soak checkpoint review
+- restore soak checkpoint publishing
+
+
 ## [0.4.43] - 2026-08-01
 
 ### Miscellaneous
