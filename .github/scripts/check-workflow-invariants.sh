@@ -18,12 +18,12 @@ PIPELINE=.github/workflows/_integration-pipeline.yml
 fail=0
 
 err() {
-    printf '::error::%s\n' "$1"
-    fail=1
+	printf '::error::%s\n' "$1"
+	fail=1
 }
 
 ok() {
-    printf 'ok: %s\n' "$1"
+	printf 'ok: %s\n' "$1"
 }
 
 # Emit one line of facts per job in a workflow file:
@@ -35,7 +35,7 @@ ok() {
 # and counting those would let the guard pass on a workflow whose real `needs:`
 # had been deleted.
 scan_jobs() {
-    awk '
+	awk '
         /^[[:space:]]*#/ { next }
         /^  [A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*$/ {
             job = $1
@@ -71,11 +71,11 @@ scan_jobs() {
 #    Removing either `needs:` is the abuse path the ephemeral-launch approval
 #    exists to close.
 for job in launch_ephemeral_runners build_docker_image; do
-    if scan_jobs "$PIPELINE" | awk -v j="$job" '$1 == j && $5 == 1 { found = 1 } END { exit !found }'; then
-        ok "$job gates on await_approval"
-    else
-        err "$job in $PIPELINE no longer depends on await_approval; unapproved fork PRs could spend CI resources"
-    fi
+	if scan_jobs "$PIPELINE" | awk -v j="$job" '$1 == j && $5 == 1 { found = 1 } END { exit !found }'; then
+		ok "$job gates on await_approval"
+	else
+		err "$job in $PIPELINE no longer depends on await_approval; unapproved fork PRs could spend CI resources"
+	fi
 done
 
 # 2. Credential concentration. Exactly one job in the reusable pipeline may hold
@@ -84,24 +84,24 @@ done
 cred_jobs="$(scan_jobs "$PIPELINE" | awk '$3 == 1 || $4 == 1 { print $1 }')"
 cred_count="$(printf '%s' "$cred_jobs" | grep -c . || true)"
 if [ "$cred_count" = "1" ] && [ "$cred_jobs" = "launch_ephemeral_runners" ]; then
-    ok "credentials confined to launch_ephemeral_runners"
+	ok "credentials confined to launch_ephemeral_runners"
 else
-    # Flattened to one line: a GitHub error annotation captures only its first
-    # line, so a multi-line job list would hide every name after the first.
-    cred_list="$(printf '%s' "$cred_jobs" | tr '\n' ' ')"
-    err "expected exactly one credential-bearing job (launch_ephemeral_runners) in $PIPELINE, found: ${cred_list:-none}"
+	# Flattened to one line: a GitHub error annotation captures only its first
+	# line, so a multi-line job list would hide every name after the first.
+	cred_list="$(printf '%s' "$cred_jobs" | tr '\n' ' ')"
+	err "expected exactly one credential-bearing job (launch_ephemeral_runners) in $PIPELINE, found: ${cred_list:-none}"
 fi
 
 # 3. Environment scoping. Any job anywhere that reads OCI or GitHub App
 #    credentials must name an environment, so access is a property of the
 #    environment rather than of the repository secret store.
 for workflow in .github/workflows/*.yml; do
-    while read -r job has_env reads_oci reads_app _gated _calls _inherits; do
-        [ -n "${job:-}" ] || continue
-        if [ "$reads_oci$reads_app" != "00" ] && [ "$has_env" = "0" ]; then
-            err "$workflow job '$job' reads privileged credentials without naming an environment"
-        fi
-    done <<EOF
+	while read -r job has_env reads_oci reads_app _gated _calls _inherits; do
+		[ -n "${job:-}" ] || continue
+		if [ "$reads_oci$reads_app" != "00" ] && [ "$has_env" = "0" ]; then
+			err "$workflow job '$job' reads privileged credentials without naming an environment"
+		fi
+	done <<EOF
 $(scan_jobs "$workflow")
 EOF
 done
@@ -113,12 +113,12 @@ ok "every credential-reading job names an environment"
 #    config as malformed (runs 30495007422 and 30498890544). Guarded because the
 #    line reads like redundant over-sharing and invites deletion.
 for caller in .github/workflows/ci.yml .github/workflows/ci-fork-pr.yml; do
-    while read -r job _has_env _reads_oci _reads_app _gated calls inherits; do
-        [ -n "${job:-}" ] || continue
-        if [ "$calls" = "1" ] && [ "$inherits" = "0" ]; then
-            err "$caller job '$job' calls the integration pipeline without 'secrets: inherit'; the launch job would see empty credentials"
-        fi
-    done <<EOF
+	while read -r job _has_env _reads_oci _reads_app _gated calls inherits; do
+		[ -n "${job:-}" ] || continue
+		if [ "$calls" = "1" ] && [ "$inherits" = "0" ]; then
+			err "$caller job '$job' calls the integration pipeline without 'secrets: inherit'; the launch job would see empty credentials"
+		fi
+	done <<EOF
 $(scan_jobs "$caller")
 EOF
 done
@@ -160,30 +160,30 @@ ocid_required=".github/workflows/ci-runner-reaper.yml"
 ocid_optional=".github/workflows/merge-recovery-soak.yml"
 ocid_values=""
 for ocid_file in $ocid_optional; do
-    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
-        "$ocid_file" 2>/dev/null \
-        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
-    [ -n "$ocid_found" ] && ocid_values="${ocid_values}${ocid_found}
+	ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+		"$ocid_file" 2>/dev/null |
+		sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+	[ -n "$ocid_found" ] && ocid_values="${ocid_values}${ocid_found}
 "
 done
 for ocid_file in $ocid_required; do
-    ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
-        "$ocid_file" 2>/dev/null \
-        | sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
-    ocid_count="$(printf '%s' "$ocid_found" | grep -c . || true)"
-    if [ "$ocid_count" -ne 1 ]; then
-        err "$ocid_file must pin exactly one literal CI_RUNNER_COMPARTMENT_OCID, found $ocid_count (an Actions variable trades a compile-time guarantee for an admin-mutable one — see the note in ci-runner-reaper.yml)"
-    else
-        ocid_values="${ocid_values}${ocid_found}
+	ocid_found="$(grep -hoE 'CI_RUNNER_COMPARTMENT_OCID:[[:space:]]*"ocid1\.compartment\.[A-Za-z0-9._-]+"' \
+		"$ocid_file" 2>/dev/null |
+		sed -E 's/.*"(ocid1\.compartment\.[A-Za-z0-9._-]+)"/\1/' || true)"
+	ocid_count="$(printf '%s' "$ocid_found" | grep -c . || true)"
+	if [ "$ocid_count" -ne 1 ]; then
+		err "$ocid_file must pin exactly one literal CI_RUNNER_COMPARTMENT_OCID, found $ocid_count (an Actions variable trades a compile-time guarantee for an admin-mutable one — see the note in ci-runner-reaper.yml)"
+	else
+		ocid_values="${ocid_values}${ocid_found}
 "
-    fi
+	fi
 done
 if [ "$fail" -eq 0 ]; then
-    if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
-        err "CI_RUNNER_COMPARTMENT_OCID differs across the workflows that pin it ($ocid_required $ocid_optional); every literal must name the same compartment"
-    else
-        ok "CI_RUNNER_COMPARTMENT_OCID pinned as a literal in $ocid_required, and consistent wherever else it appears"
-    fi
+	if [ "$(printf '%s' "$ocid_values" | sort -u | grep -c .)" -ne 1 ]; then
+		err "CI_RUNNER_COMPARTMENT_OCID differs across the workflows that pin it ($ocid_required $ocid_optional); every literal must name the same compartment"
+	else
+		ok "CI_RUNNER_COMPARTMENT_OCID pinned as a literal in $ocid_required, and consistent wherever else it appears"
+	fi
 fi
 
 # 6. Fork-checkout hygiene. Every checkout of the code under test must set
@@ -204,14 +204,14 @@ fi
 fork_bad_persist=""
 fork_bad_optin=""
 while read -r line_no flags; do
-    case "$flags" in
-        *P*) ;;
-        *) fork_bad_persist="$fork_bad_persist $PIPELINE:$line_no" ;;
-    esac
-    case "$flags" in
-        *A*) ;;
-        *) fork_bad_optin="$fork_bad_optin $PIPELINE:$line_no" ;;
-    esac
+	case "$flags" in
+	*P*) ;;
+	*) fork_bad_persist="$fork_bad_persist $PIPELINE:$line_no" ;;
+	esac
+	case "$flags" in
+	*A*) ;;
+	*) fork_bad_optin="$fork_bad_optin $PIPELINE:$line_no" ;;
+	esac
 done <<EOF
 $(awk '
     function flush() {
@@ -232,13 +232,13 @@ $(awk '
 ' "$PIPELINE")
 EOF
 if [ -n "$fork_bad_persist" ]; then
-    err "checkout of fork-authored code without 'persist-credentials: false' at:${fork_bad_persist}; a writable token must never reach a workspace holding untrusted code"
+	err "checkout of fork-authored code without 'persist-credentials: false' at:${fork_bad_persist}; a writable token must never reach a workspace holding untrusted code"
 fi
 if [ -n "$fork_bad_optin" ]; then
-    err "checkout of fork-authored code without 'allow-unsafe-pr-checkout: true' at:${fork_bad_optin}; actions/checkout refuses fork code under pull_request_target without it, which breaks every fork PR at clone"
+	err "checkout of fork-authored code without 'allow-unsafe-pr-checkout: true' at:${fork_bad_optin}; actions/checkout refuses fork code under pull_request_target without it, which breaks every fork PR at clone"
 fi
 if [ -z "$fork_bad_persist$fork_bad_optin" ]; then
-    ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
+	ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
 fi
 
 # 8. Every `run:` block in every workflow must be parseable by its shell.
@@ -263,11 +263,11 @@ skipped_shells=""
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 while IFS= read -r wf; do
-    # Extract every run: block with its job/step identity. Ruby is already a
-    # hard dependency of this repo's tooling and ships with a YAML parser, so
-    # the blocks come from a real parse rather than an indentation heuristic
-    # that block scalars would defeat.
-    ruby -ryaml -e '
+	# Extract every run: block with its job/step identity. Ruby is already a
+	# hard dependency of this repo's tooling and ships with a YAML parser, so
+	# the blocks come from a real parse rather than an indentation heuristic
+	# that block scalars would defeat.
+	ruby -ryaml -e '
       wf = ARGV[0]; out = ARGV[1]
       doc = YAML.load_file(wf) rescue nil
       exit 0 unless doc.is_a?(Hash) && doc["jobs"].is_a?(Hash)
@@ -287,32 +287,35 @@ while IFS= read -r wf; do
         end
       end' "$wf" "$scratch" 2>/dev/null || continue
 
-    [ -f "$scratch/index.txt" ] || continue
-    while IFS=$'\t' read -r blockfile kind label; do
-        case "$kind" in
-            bash | sh | "") ;;
-            *) skipped_shells="${skipped_shells}
-  ${wf}: ${label} (shell: ${kind})"; continue ;;
-        esac
-        if ! errout="$(bash -n "$scratch/$blockfile" 2>&1)"; then
-            bad_syntax="${bad_syntax}
+	[ -f "$scratch/index.txt" ] || continue
+	while IFS=$'\t' read -r blockfile kind label; do
+		case "$kind" in
+		bash | sh | "") ;;
+		*)
+			skipped_shells="${skipped_shells}
+  ${wf}: ${label} (shell: ${kind})"
+			continue
+			;;
+		esac
+		if ! errout="$(bash -n "$scratch/$blockfile" 2>&1)"; then
+			bad_syntax="${bad_syntax}
   ${wf}: ${label}
     ${errout}"
-        fi
-    done < "$scratch/index.txt"
-    rm -f "$scratch"/index.txt "$scratch"/block-*.sh
+		fi
+	done <"$scratch/index.txt"
+	rm -f "$scratch"/index.txt "$scratch"/block-*.sh
 done < <(find .github/workflows -name '*.yml' -o -name '*.yaml' | sort)
 
 if [ -n "$bad_syntax" ]; then
-    err "workflow run: block(s) fail 'bash -n' and will die at runtime:${bad_syntax}"
+	err "workflow run: block(s) fail 'bash -n' and will die at runtime:${bad_syntax}"
 else
-    ok "every workflow run: block parses under bash -n"
+	ok "every workflow run: block parses under bash -n"
 fi
 if [ -n "$skipped_shells" ]; then
-    printf 'note: non-bash run: blocks not syntax-checked:%s\n' "$skipped_shells"
+	printf 'note: non-bash run: blocks not syntax-checked:%s\n' "$skipped_shells"
 fi
 
-cat > "$scratch/check-canary.rb" <<'RUBY'
+cat >"$scratch/check-canary.rb" <<'RUBY'
 require "yaml"
 doc = YAML.load_file(ARGV[0])
 jobs = doc.fetch("jobs")
@@ -332,14 +335,14 @@ puts "protection injection step is missing or not gate-controlled" unless inject
 RUBY
 canary_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
 if [ -n "$canary_errors" ]; then
-    err "soak canary isolation invariants failed: $(printf '%s' "$canary_errors" | tr '\n' ';')"
+	err "soak canary isolation invariants failed: $(printf '%s' "$canary_errors" | tr '\n' ';')"
 else
-    ok "soak canaries are bounded and cannot retry, checkpoint-publish, dashboard-publish, or notify"
+	ok "soak canaries are bounded and cannot retry, checkpoint-publish, dashboard-publish, or notify"
 fi
 
 if [ "$fail" -ne 0 ]; then
-    printf '::error::%s\n' "workflow security invariants violated; see errors above"
-    exit 1
+	printf '::error::%s\n' "workflow security invariants violated; see errors above"
+	exit 1
 fi
 
 echo "All workflow security invariants hold."

@@ -20,8 +20,8 @@ SH
 chmod +x "$TMP/bin/poetry"
 
 PATH="$TMP/bin:$PATH" \
-FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
-SOAK_DURATION_SECONDS=120 \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
+	SOAK_DURATION_SECONDS=120 \
 	SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
 	SOAK_OUTPUT_DIR="$TMP/output" \
 	SOAK_RSS_CEILING_MB=0 \
