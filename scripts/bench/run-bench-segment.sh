@@ -42,7 +42,7 @@ command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
 # made every soak bench segment die on its first line (run 30713818751:
 # bench_segments=1 bench_failures=1, every week, silently).
 if [ -z "${DEPLOYER_KEY:-}" ]; then
-  DEPLOYER_KEY="$(awk -F= '$1 == "BOOTSTRAP_PRIVATE_KEY" { print $2; exit }' \
+  DEPLOYER_KEY="$(awk -F= '$1 == "BOOTSTRAP_PRIVATE_KEY" { gsub(/^["'\'']|["'\'']$/, "", $2); print $2; exit }' \
     "$NODE_REPO_DIR/docker/.env" 2>/dev/null || true)"
   if [ -z "$DEPLOYER_KEY" ]; then
     echo "DEPLOYER_KEY not set and no BOOTSTRAP_PRIVATE_KEY in $NODE_REPO_DIR/docker/.env" >&2

@@ -432,10 +432,14 @@ if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
       fi
       over=$((over + 1))
       [ "$over" -lt 3 ] && continue
+      # Kill first, marker second: the marker asserts the host was defended,
+      # so it must not exist before the kills have run. `|| true` on each —
+      # pkill exits 1 with no matching process (normal when only containers
+      # are up), and neither miss may stop the other mitigation.
+      pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+      docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
       printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB for 3 consecutive samples (5s each); killed all node processes and containers to protect the host\n' \
         "$free_mb" "$HOST_FREE_FLOOR_MB" > "$HOST_GUARDIAN_BREACH"
-      pkill -9 -f '/tmp/rnode' 2>/dev/null
-      docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null
       exit 0
     done
   ) &
@@ -593,6 +597,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   fi
 
 done
+
+# A breach during the final iteration (or one that still exited 0) ends the
+# loop by deadline without passing the top-of-loop check, which would let the
+# run finish green with the host guardian's marker never surfaced.
+if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
+  EARLY_EXIT_REASON="host_protection_breach"
+  printf 'orchestrator host guardian fired during the final iteration; recording fail-closed exit\n'
+  head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+  printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+    > "$OUTPUT_DIR/early-exit.txt"
+  FAILURES="$((FAILURES + 1))"
+fi
 
 FINISHED_AT="$(date +%s)"
 
