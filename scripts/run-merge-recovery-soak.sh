@@ -419,6 +419,19 @@ fi
 HOST_GUARDIAN_BREACH="$OUTPUT_DIR/host-guardian-breach.txt"
 rm -f "$HOST_GUARDIAN_BREACH"
 HOST_GUARDIAN_PID=""
+ITERATION_PID=""
+ITERATION_TEE_PID=""
+ITERATION_FIFO=""
+cleanup_soak_processes() {
+  [ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
+  if [ -n "$ITERATION_PID" ]; then
+    kill "$ITERATION_PID" 2>/dev/null || true
+    pkill -KILL -f 'integration-tests/test/tests/custom/test_load.py' 2>/dev/null || true
+  fi
+  [ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
+  [ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
+}
+trap cleanup_soak_processes EXIT
 if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
   (
     over=0
@@ -444,7 +457,6 @@ if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
     done
   ) &
   HOST_GUARDIAN_PID=$!
-  trap '[ -n "$HOST_GUARDIAN_PID" ] && kill "$HOST_GUARDIAN_PID" 2>/dev/null' EXIT
   printf 'orchestrator host guardian watching MemAvailable floor %sMB (pid %s)\n' \
     "$HOST_FREE_FLOOR_MB" "$HOST_GUARDIAN_PID"
 fi
@@ -501,9 +513,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
   ITER_STARTED="$(date +%s)"
   touch "$ITERATION_DIR/.started"
+  ITERATION_FIFO="$ITERATION_DIR/.pytest-output.fifo"
+  rm -f "$ITERATION_FIFO"
+  mkfifo "$ITERATION_FIFO"
+  tee "$ITERATION_DIR/pytest.log" < "$ITERATION_FIFO" &
+  ITERATION_TEE_PID=$!
   (
     cd "$SYSTEM_INTEGRATION_DIR"
-    timeout --signal=TERM --kill-after=120 "${REMAINING}s" \
+    exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
       poetry run pytest \
       integration-tests/test/tests/custom/test_load.py \
       --provider="$PROVIDER" \
@@ -512,8 +529,34 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
       --host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
       -v --tb=short --instafail --maxfail=20 \
       --timeout=1200
-  ) 2>&1 | tee "$ITERATION_DIR/pytest.log"
-  STATUS="${PIPESTATUS[0]}"
+  ) > "$ITERATION_FIFO" 2>&1 &
+  ITERATION_PID=$!
+  GUARDIAN_INTERRUPTED=0
+  while kill -0 "$ITERATION_PID" 2>/dev/null; do
+    if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+      GUARDIAN_INTERRUPTED=1
+      kill -TERM "$ITERATION_PID" 2>/dev/null || true
+      for _ in $(seq 1 15); do
+        kill -0 "$ITERATION_PID" 2>/dev/null || break
+        sleep 1
+      done
+      kill -KILL "$ITERATION_PID" 2>/dev/null || true
+      break
+    fi
+    sleep "${SOAK_GUARDIAN_POLL_SECONDS:-2}"
+  done
+  wait "$ITERATION_PID" 2>/dev/null
+  STATUS=$?
+  wait "$ITERATION_TEE_PID" 2>/dev/null || true
+  rm -f "$ITERATION_FIFO"
+  ITERATION_PID=""
+  ITERATION_TEE_PID=""
+  ITERATION_FIFO=""
+  if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
+    STATUS=1
+    pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+    docker ps -aq --filter 'name=rnode.' 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true
+  fi
   # No `set -e` restore: this script never enables errexit (line 2 is
   # `set -uo pipefail`), and turning it on here made the first failed
   # iteration fatal — the metric pipelines return nonzero when a failed

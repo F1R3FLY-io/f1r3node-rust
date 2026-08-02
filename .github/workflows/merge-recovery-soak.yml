@@ -47,6 +47,16 @@ on:
         required: false
         default: "0"
         type: string
+      canary:
+        description: Run a 30-minute non-publishing OCI protection canary
+        required: false
+        default: false
+        type: boolean
+      inject_protection_breach:
+        description: Force a canary host-floor breach after workload startup
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -138,6 +148,8 @@ jobs:
       # restarted run to this instant so it conforms to the original slot.
       end_epoch: ${{ steps.resolve.outputs.end_epoch }}
       retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
+      canary: ${{ steps.resolve.outputs.canary }}
+      inject_protection_breach: ${{ steps.resolve.outputs.inject_protection_breach }}
       # Pacific 07:30/13:00 instants inside the run, as epoch seconds. Empty
       # slots are skipped; see the resolve step for why there are five.
       checkpoint_1: ${{ steps.resolve.outputs.checkpoint_1 }}
@@ -156,10 +168,22 @@ jobs:
           INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
           INPUT_SERIES: ${{ inputs.series }}
           INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+          INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
           # Read-only, for the "did anything land since the last window?" check.
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
+          case "${INPUT_INJECT_PROTECTION_BREACH:-false}" in
+            true)
+              if [ "${INPUT_CANARY:-false}" != "true" ]; then
+                echo "::error::inject_protection_breach requires canary"
+                exit 1
+              fi
+              ;;
+            false|"") ;;
+            *) echo "::error::inject_protection_breach must be true or false"; exit 1 ;;
+          esac
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
@@ -179,7 +203,13 @@ jobs:
             # scheduled run would have — it can never spill into the next
             # slot. The checkpoint enumeration below then yields exactly the
             # original window's remaining Pacific instants.
-            if [ -n "$INPUT_WINDOW_END" ]; then
+            if [ "$INPUT_CANARY" = "true" ]; then
+              if [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
+                echo "::error::canary cannot be combined with window_end_epoch, series, or a retry attempt"
+                exit 1
+              fi
+              duration_seconds=1800
+            elif [ -n "$INPUT_WINDOW_END" ]; then
               case "$INPUT_WINDOW_END" in
                 *[!0-9]*) echo "::error::window_end_epoch must be epoch seconds"; exit 1 ;;
               esac
@@ -340,6 +370,9 @@ jobs:
               fi
             done
           done
+          if [ "${INPUT_CANARY:-false}" = "true" ]; then
+            checkpoints=()
+          fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
           [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
           [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
@@ -408,6 +441,8 @@ jobs:
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
             echo "retry_attempt=$retry_attempt"
+            echo "canary=${INPUT_CANARY:-false}"
+            echo "inject_protection_breach=${INPUT_INJECT_PROTECTION_BREACH:-false}"
             echo "checkpoint_1=$cp1"
             echo "checkpoint_2=$cp2"
             echo "checkpoint_3=$cp3"
@@ -739,6 +774,7 @@ jobs:
       !cancelled() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.schedule_gate.outputs.retry_attempt == '0' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
       (needs.launch_runner.result == 'failure' ||
        (needs.soak.result == 'failure' &&
         needs.soak.outputs.completed != 'true'))
@@ -984,6 +1020,14 @@ jobs:
         run: |
           poetry lock --no-update
           poetry install --with integration
+
+      - name: Configure injected protection breach
+        if: needs.schedule_gate.outputs.inject_protection_breach == 'true'
+        shell: bash -euo pipefail {0}
+        run: |
+          total_mb="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+          test "$total_mb" -gt 0
+          echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
       # The soak runs as consecutive segments sharing one output directory, so
       # results can be published part-way through. The script resumes from its
@@ -1265,7 +1309,7 @@ jobs:
     # Both series publish. Gating this on run_benchmarks made it weekend-only,
     # so the dashboard's Daily tab had no producer and nightly results expired
     # with the artifact.
-    if: needs.schedule_gate.outputs.should_run == 'true' && !cancelled()
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1828,6 +1872,7 @@ jobs:
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
+      needs.schedule_gate.outputs.canary != 'true' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     environment: oci-credentials

@@ -312,6 +312,31 @@ if [ -n "$skipped_shells" ]; then
     printf 'note: non-bash run: blocks not syntax-checked:%s\n' "$skipped_shells"
 fi
 
+cat > "$scratch/check-canary.rb" <<'RUBY'
+require "yaml"
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+%w[retry_within_window perf_report notify_failure].each do |job_id|
+  condition = jobs.dig(job_id, "if").to_s
+  expected = "outputs.canary != #{39.chr}true#{39.chr}"
+  puts "#{job_id} does not exclude canaries" unless condition.include?(expected)
+end
+gate = jobs.dig("schedule_gate", "steps").find { |step| step["id"] == "resolve" }
+body = gate && gate["run"].to_s
+puts "canary duration is not bounded to 1800s" unless body&.include?("duration_seconds=1800")
+puts "canary checkpoint slots are not cleared" unless body&.include?("checkpoints=()")
+puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY_ATTEMPT")
+puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
+injection = jobs.dig("soak", "steps").find { |step| step["name"] == "Configure injected protection breach" }
+puts "protection injection step is missing or not gate-controlled" unless injection&.dig("if").to_s == "needs.schedule_gate.outputs.inject_protection_breach == 'true'"
+RUBY
+canary_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
+if [ -n "$canary_errors" ]; then
+    err "soak canary isolation invariants failed: $(printf '%s' "$canary_errors" | tr '\n' ';')"
+else
+    ok "soak canaries are bounded and cannot retry, checkpoint-publish, dashboard-publish, or notify"
+fi
+
 if [ "$fail" -ne 0 ]; then
     printf '::error::%s\n' "workflow security invariants violated; see errors above"
     exit 1
