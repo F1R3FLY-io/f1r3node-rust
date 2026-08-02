@@ -27,15 +27,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # --- Defaults (overridable via flags or env) ---
-DURATION="${DURATION:-60}"                  # seconds
-DEPLOYS_PER_SEC="${DEPLOYS_PER_SEC:-2}"     # target rate; capped per cache size
+DURATION="${DURATION:-60}"              # seconds
+DEPLOYS_PER_SEC="${DEPLOYS_PER_SEC:-2}" # target rate; capped per cache size
 PHLO_LIMIT="${PHLO_LIMIT:-500000}"
 PHLO_PRICE="${PHLO_PRICE:-1}"
 SHARD_ID="${SHARD_ID:-root}"
 CONTAINER="${CONTAINER:-rnode.validator1}"
-HOST=""                                     # empty = local (docker exec); set = ssh to that host
+HOST="" # empty = local (docker exec); set = ssh to that host
 SSH_USER="${SSH_USER:-opc}"
-KEY_FILE="${KEY_FILE:-}"                    # SSH key for remote host; auto-picked from testbed-state if empty
+KEY_FILE="${KEY_FILE:-}" # SSH key for remote host; auto-picked from testbed-state if empty
 APPLY=0
 OUT_DIR="${OUT_DIR:-/tmp/f1r3fly-bench-$(date +%Y%m%d-%H%M%S)}"
 
@@ -46,17 +46,20 @@ DEPLOYER_KEY="${DEPLOYER_KEY:?DEPLOYER_KEY must be set}"
 # Status polling
 POLL_INTERVAL="${POLL_INTERVAL:-3}"
 PREFLIGHT_TIMEOUT="${PREFLIGHT_TIMEOUT:-120}"
-HTTP_PORT="${HTTP_PORT:-40413}"             # validator1 HTTP port in local shard.yml
+HTTP_PORT="${HTTP_PORT:-40413}" # validator1 HTTP port in local shard.yml
 
 # --- Logging ---
-log()  { echo "[$(date +%H:%M:%S)] $*" >&2; }
+log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 info() { log "[info] $*"; }
 warn() { log "[warn] $*"; }
-err()  { log "[err ] $*"; }
-die()  { err "$@"; exit 1; }
+err() { log "[err ] $*"; }
+die() {
+	err "$@"
+	exit 1
+}
 
 usage() {
-  cat <<EOF
+	cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
@@ -83,41 +86,72 @@ EOF
 }
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --duration)  DURATION="$2"; shift 2 ;;
-    --rate)      DEPLOYS_PER_SEC="$2"; shift 2 ;;
-    --host)      HOST="$2"; shift 2 ;;
-    --container) CONTAINER="$2"; shift 2 ;;
-    --http-port) HTTP_PORT="$2"; shift 2 ;;
-    --out-dir)   OUT_DIR="$2"; shift 2 ;;
-    --apply)     APPLY=1; shift ;;
-    --dry-run)   APPLY=0; shift ;;
-    -h|--help)   usage; exit 0 ;;
-    *)           err "Unknown argument: $1"; usage; exit 2 ;;
-  esac
+	case "$1" in
+	--duration)
+		DURATION="$2"
+		shift 2
+		;;
+	--rate)
+		DEPLOYS_PER_SEC="$2"
+		shift 2
+		;;
+	--host)
+		HOST="$2"
+		shift 2
+		;;
+	--container)
+		CONTAINER="$2"
+		shift 2
+		;;
+	--http-port)
+		HTTP_PORT="$2"
+		shift 2
+		;;
+	--out-dir)
+		OUT_DIR="$2"
+		shift 2
+		;;
+	--apply)
+		APPLY=1
+		shift
+		;;
+	--dry-run)
+		APPLY=0
+		shift
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		err "Unknown argument: $1"
+		usage
+		exit 2
+		;;
+	esac
 done
 
 # --- Auto-pick SSH key from testbed-state.json when remote ---
 if [[ -n "$HOST" && -z "$KEY_FILE" ]]; then
-  STATE_FILE="${REPO_ROOT}/scripts/remote/testbed-state.json"
-  DEFAULT_KEY="${REPO_ROOT}/scripts/remote/testbed.pem"
-  if [[ -f "$DEFAULT_KEY" ]]; then
-    KEY_FILE="$DEFAULT_KEY"
-  fi
+	STATE_FILE="${REPO_ROOT}/scripts/remote/testbed-state.json"
+	DEFAULT_KEY="${REPO_ROOT}/scripts/remote/testbed.pem"
+	if [[ -f "$DEFAULT_KEY" ]]; then
+		KEY_FILE="$DEFAULT_KEY"
+	fi
 fi
 
 # --- Command builder: runs a command inside the target container ---
 EXEC_CMD=()
 if [[ -n "$HOST" ]]; then
-  [[ -f "$KEY_FILE" ]] || die "Remote run requires SSH key at KEY_FILE (tried $KEY_FILE)"
-  EXEC_CMD=(ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${SSH_USER}@${HOST}" docker exec "$CONTAINER")
-  API_BASE="http://${HOST}:${HTTP_PORT}"
-  LOG_CMD=(ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${SSH_USER}@${HOST}" docker logs "$CONTAINER")
+	[[ -f "$KEY_FILE" ]] || die "Remote run requires SSH key at KEY_FILE (tried $KEY_FILE)"
+	EXEC_CMD=(ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${SSH_USER}@${HOST}" docker exec "$CONTAINER")
+	API_BASE="http://${HOST}:${HTTP_PORT}"
+	LOG_CMD=(ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${SSH_USER}@${HOST}" docker logs "$CONTAINER")
 else
-  command -v docker >/dev/null || die "docker not found"
-  EXEC_CMD=(docker exec "$CONTAINER")
-  API_BASE="http://localhost:${HTTP_PORT}"
-  LOG_CMD=(docker logs "$CONTAINER")
+	command -v docker >/dev/null || die "docker not found"
+	EXEC_CMD=(docker exec "$CONTAINER")
+	API_BASE="http://localhost:${HTTP_PORT}"
+	LOG_CMD=(docker logs "$CONTAINER")
 fi
 
 info "=== F1R3FLY latency benchmark ==="
@@ -127,36 +161,39 @@ info "API base:   $API_BASE"
 info "Duration:   ${DURATION}s @ ${DEPLOYS_PER_SEC} deploys/sec"
 info "Output:     $OUT_DIR"
 
-[[ "$APPLY" == "1" ]] || { info "DRY-RUN complete. Add --apply to actually run."; exit 0; }
+[[ "$APPLY" == "1" ]] || {
+	info "DRY-RUN complete. Add --apply to actually run."
+	exit 0
+}
 
 # --- Prereqs ---
 command -v curl >/dev/null || die "curl not found"
-command -v jq   >/dev/null || die "jq not found"
-command -v awk  >/dev/null || die "awk not found"
+command -v jq >/dev/null || die "jq not found"
+command -v awk >/dev/null || die "awk not found"
 
 mkdir -p "$OUT_DIR"
 SUBMITS_FILE="$OUT_DIR/submits.tsv"
 FINALS_FILE="$OUT_DIR/finals.tsv"
 SUMMARY="$OUT_DIR/load-summary.txt"
 REPORT="$OUT_DIR/latency-report.txt"
-: > "$SUBMITS_FILE"
-: > "$FINALS_FILE"
+: >"$SUBMITS_FILE"
+: >"$FINALS_FILE"
 
 # --- Deploy the benchmark contract file into the container ---
 BENCH_RHO_LOCAL="$OUT_DIR/bench.rho"
-cat > "$BENCH_RHO_LOCAL" <<'RHO'
+cat >"$BENCH_RHO_LOCAL" <<'RHO'
 // Minimal no-op contract for latency benchmarking
 new unused in { Nil }
 RHO
 
 info "Staging bench.rho into $CONTAINER"
 if [[ -n "$HOST" ]]; then
-  scp -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "$BENCH_RHO_LOCAL" "${SSH_USER}@${HOST}:/tmp/bench.rho"
-  ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "${SSH_USER}@${HOST}" "docker cp /tmp/bench.rho ${CONTAINER}:/tmp/bench.rho"
+	scp -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+		"$BENCH_RHO_LOCAL" "${SSH_USER}@${HOST}:/tmp/bench.rho"
+	ssh -i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+		"${SSH_USER}@${HOST}" "docker cp /tmp/bench.rho ${CONTAINER}:/tmp/bench.rho"
 else
-  docker cp "$BENCH_RHO_LOCAL" "${CONTAINER}:/tmp/bench.rho"
+	docker cp "$BENCH_RHO_LOCAL" "${CONTAINER}:/tmp/bench.rho"
 fi
 
 # --- Preflight: confirm node is reachable ---
@@ -166,41 +203,41 @@ PEERS="$(echo "$STATUS_JSON" | jq -r '.peers')"
 NODES="$(echo "$STATUS_JSON" | jq -r '.nodes')"
 info "Node healthy: peers=$PEERS nodes=$NODES"
 
-PREFLIGHT_DEADLINE=$(( $(date +%s) + PREFLIGHT_TIMEOUT ))
+PREFLIGHT_DEADLINE=$(($(date +%s) + PREFLIGHT_TIMEOUT))
 CASPER_READY=0
 while [[ $(date +%s) -lt $PREFLIGHT_DEADLINE ]]; do
-  if "${EXEC_CMD[@]}" /opt/docker/bin/node show-blocks 1 >/dev/null 2>&1; then
-    CASPER_READY=1
-    break
-  fi
-  sleep "$POLL_INTERVAL"
+	if "${EXEC_CMD[@]}" /opt/docker/bin/node show-blocks 1 >/dev/null 2>&1; then
+		CASPER_READY=1
+		break
+	fi
+	sleep "$POLL_INTERVAL"
 done
 [[ "$CASPER_READY" == "1" ]] || die "Casper instance was not available within ${PREFLIGHT_TIMEOUT}s"
 
 harvest_finalizations() {
-  while true; do
-    while IFS=$'\t' read -r _ sig; do
-      [[ -z "$sig" ]] && continue
-      grep -q -F "$sig" "$FINALS_FILE" && continue
-      FINALIZATION="$(curl -fsS --max-time 5 \
-        "${API_BASE}/api/deploy-finalization-status/${sig}" 2>/dev/null || true)"
-      if [[ "$(jq -r '.state // empty' <<<"$FINALIZATION" 2>/dev/null)" == "Finalized" ]]; then
-        FINAL_MS="$(date +%s%3N)"
-        BLOCK_HASH="$(jq -r '.latest_block_hash // "unknown"' <<<"$FINALIZATION")"
-        printf '%s\t%s\t%s\n' "$FINAL_MS" "$sig" "$BLOCK_HASH" >> "$FINALS_FILE"
-      fi
-    done < "$SUBMITS_FILE"
-    sleep "$POLL_INTERVAL"
-  done
+	while true; do
+		while IFS=$'\t' read -r _ sig; do
+			[[ -z "$sig" ]] && continue
+			grep -q -F "$sig" "$FINALS_FILE" && continue
+			FINALIZATION="$(curl -fsS --max-time 5 \
+				"${API_BASE}/api/deploy-finalization-status/${sig}" 2>/dev/null || true)"
+			if [[ "$(jq -r '.state // empty' <<<"$FINALIZATION" 2>/dev/null)" == "Finalized" ]]; then
+				FINAL_MS="$(date +%s%3N)"
+				BLOCK_HASH="$(jq -r '.latest_block_hash // "unknown"' <<<"$FINALIZATION")"
+				printf '%s\t%s\t%s\n' "$FINAL_MS" "$sig" "$BLOCK_HASH" >>"$FINALS_FILE"
+			fi
+		done <"$SUBMITS_FILE"
+		sleep "$POLL_INTERVAL"
+	done
 }
 
 HARVEST_PID=""
 stop_harvester() {
-  if [[ -n "$HARVEST_PID" ]]; then
-    kill "$HARVEST_PID" 2>/dev/null || true
-    wait "$HARVEST_PID" 2>/dev/null || true
-    HARVEST_PID=""
-  fi
+	if [[ -n "$HARVEST_PID" ]]; then
+		kill "$HARVEST_PID" 2>/dev/null || true
+		wait "$HARVEST_PID" 2>/dev/null || true
+		HARVEST_PID=""
+	fi
 }
 trap stop_harvester EXIT
 harvest_finalizations &
@@ -210,43 +247,43 @@ HARVEST_PID=$!
 INTERVAL_SEC="$(awk -v r="$DEPLOYS_PER_SEC" 'BEGIN{printf "%.3f", 1.0/r}')"
 info "Starting flood: interval=${INTERVAL_SEC}s"
 
-DEADLINE=$(( $(date +%s) + DURATION ))
+DEADLINE=$(($(date +%s) + DURATION))
 SUBMITTED=0
 FAILED=0
 
 while [[ $(date +%s) -lt $DEADLINE ]]; do
-  SUBMIT_MS="$(date +%s%3N)"
-  RESULT="$("${EXEC_CMD[@]}" /opt/docker/bin/node deploy \
-    "$PHLO_LIMIT" "$PHLO_PRICE" 0 "$DEPLOYER_KEY" /dev/null /tmp/bench.rho "$SHARD_ID" 2>&1 || true)"
-  DEPLOY_ID="$(echo "$RESULT" | awk -F': ' '/DeployId is/{print $2}' | tr -d '[:space:]')"
-  if [[ -n "$DEPLOY_ID" ]]; then
-    printf '%s\t%s\n' "$SUBMIT_MS" "$DEPLOY_ID" >> "$SUBMITS_FILE"
-    SUBMITTED=$((SUBMITTED + 1))
-  else
-    FAILED=$((FAILED + 1))
-    echo "$RESULT" >> "$OUT_DIR/deploy-errors.log"
-  fi
-  sleep "$INTERVAL_SEC"
+	SUBMIT_MS="$(date +%s%3N)"
+	RESULT="$("${EXEC_CMD[@]}" /opt/docker/bin/node deploy \
+		"$PHLO_LIMIT" "$PHLO_PRICE" 0 "$DEPLOYER_KEY" /dev/null /tmp/bench.rho "$SHARD_ID" 2>&1 || true)"
+	DEPLOY_ID="$(echo "$RESULT" | awk -F': ' '/DeployId is/{print $2}' | tr -d '[:space:]')"
+	if [[ -n "$DEPLOY_ID" ]]; then
+		printf '%s\t%s\n' "$SUBMIT_MS" "$DEPLOY_ID" >>"$SUBMITS_FILE"
+		SUBMITTED=$((SUBMITTED + 1))
+	else
+		FAILED=$((FAILED + 1))
+		echo "$RESULT" >>"$OUT_DIR/deploy-errors.log"
+	fi
+	sleep "$INTERVAL_SEC"
 done
 
 info "Flood complete: submitted=$SUBMITTED failed=$FAILED"
 
 # --- Wait for finalization + match deploys ---
 info "Waiting up to 90s for remaining deploys to finalize"
-WAIT_DEADLINE=$(( $(date +%s) + 90 ))
+WAIT_DEADLINE=$(($(date +%s) + 90))
 
 while [[ $(date +%s) -lt $WAIT_DEADLINE ]]; do
-  MATCHED="$(wc -l < "$FINALS_FILE" | tr -d ' ')"
-  [[ "$MATCHED" -ge "$SUBMITTED" ]] && break
-  sleep "$POLL_INTERVAL"
+	MATCHED="$(wc -l <"$FINALS_FILE" | tr -d ' ')"
+	[[ "$MATCHED" -ge "$SUBMITTED" ]] && break
+	sleep "$POLL_INTERVAL"
 done
 stop_harvester
 
 # --- Emit load-summary.txt ---
-MATCHED="$(wc -l < "$FINALS_FILE" | tr -d ' ')"
+MATCHED="$(wc -l <"$FINALS_FILE" | tr -d ' ')"
 THROUGHPUT="$(awk -v s="$SUBMITTED" -v d="$DURATION" 'BEGIN{if(d>0)printf "%.3f",s/d; else print "0"}')"
 
-cat > "$SUMMARY" <<EOF
+cat >"$SUMMARY" <<EOF
 F1R3FLY latency benchmark — load summary
 =========================================
 Target:             ${HOST:-localhost} / $CONTAINER
@@ -264,11 +301,11 @@ cat "$SUMMARY" >&2
 
 # --- Emit latency-report.txt (p50/p95 via sort+awk) ---
 # Join submit with final on DeployId (= sig), compute latency ms
-awk -F'\t' 'NR==FNR{s[$2]=$1; next} ($2 in s){print $1-s[$2]}' "$SUBMITS_FILE" "$FINALS_FILE" \
-  | sort -n > "$OUT_DIR/latencies.raw"
+awk -F'\t' 'NR==FNR{s[$2]=$1; next} ($2 in s){print $1-s[$2]}' "$SUBMITS_FILE" "$FINALS_FILE" |
+	sort -n >"$OUT_DIR/latencies.raw"
 
 if [[ -s "$OUT_DIR/latencies.raw" ]]; then
-  awk '
+	awk '
     { a[NR]=$1; sum+=$1 }
     END {
       n=NR
@@ -280,9 +317,9 @@ if [[ -s "$OUT_DIR/latencies.raw" ]]; then
       printf "p95_ms:     %d\n", p95
       printf "max_ms:     %d\n", a[n]
       printf "avg_ms:     %.1f\n", sum/n
-    }' "$OUT_DIR/latencies.raw" > "$REPORT"
+    }' "$OUT_DIR/latencies.raw" >"$REPORT"
 else
-  echo "no deploys were matched to finalized blocks; try longer --duration or check deploy errors" > "$REPORT"
+	echo "no deploys were matched to finalized blocks; try longer --duration or check deploy errors" >"$REPORT"
 fi
 
 info "Wrote $REPORT"
@@ -291,26 +328,26 @@ cat "$REPORT" >&2
 # --- Emit metrics.json (machine-readable companion to the txt reports) ---
 METRICS_JSON="$OUT_DIR/metrics.json"
 if [[ -s "$OUT_DIR/latencies.raw" ]]; then
-  awk '
+	awk '
     { a[NR]=$1; sum+=$1 }
     END {
       n=NR
       p50=a[int((n+1)*0.5)]; p95=a[int((n+1)*0.95)]
       printf "{\"samples\":%d,\"min_ms\":%d,\"p50_ms\":%d,\"p95_ms\":%d,\"max_ms\":%d,\"avg_ms\":%.1f}", n, a[1], p50, p95, a[n], sum/n
-    }' "$OUT_DIR/latencies.raw" > "$OUT_DIR/latency-stats.json"
+    }' "$OUT_DIR/latencies.raw" >"$OUT_DIR/latency-stats.json"
 else
-  printf '{"samples":0}' > "$OUT_DIR/latency-stats.json"
+	printf '{"samples":0}' >"$OUT_DIR/latency-stats.json"
 fi
 jq -n \
-  --slurpfile lat "$OUT_DIR/latency-stats.json" \
-  --arg target "${HOST:-localhost}/$CONTAINER" \
-  --argjson duration "$DURATION" \
-  --argjson rate "$DEPLOYS_PER_SEC" \
-  --argjson submitted "$SUBMITTED" \
-  --argjson failed "$FAILED" \
-  --argjson finalized "$MATCHED" \
-  --argjson throughput "$THROUGHPUT" \
-  '{
+	--slurpfile lat "$OUT_DIR/latency-stats.json" \
+	--arg target "${HOST:-localhost}/$CONTAINER" \
+	--argjson duration "$DURATION" \
+	--argjson rate "$DEPLOYS_PER_SEC" \
+	--argjson submitted "$SUBMITTED" \
+	--argjson failed "$FAILED" \
+	--argjson finalized "$MATCHED" \
+	--argjson throughput "$THROUGHPUT" \
+	'{
     target: $target,
     duration_s: $duration,
     target_rate: $rate,
@@ -320,15 +357,15 @@ jq -n \
     finalization_rate: (if $submitted > 0 then ($finalized / $submitted) else 0 end),
     observed_throughput: $throughput,
     latency: $lat[0]
-  }' > "$METRICS_JSON"
+  }' >"$METRICS_JSON"
 info "Wrote $METRICS_JSON"
 
 # Also run the log-level profiler for per-validator propose/replay latencies
 if [[ -x "${SCRIPT_DIR}/profile-casper-latency.sh" ]]; then
-  info "Running profile-casper-latency.sh for per-validator timings"
-  HOST="$HOST" KEY_FILE="$KEY_FILE" SSH_USER="$SSH_USER" \
-    "${SCRIPT_DIR}/profile-casper-latency.sh" "$CONTAINER" > "$OUT_DIR/casper-profile.txt" 2>&1 || true
-  info "Wrote $OUT_DIR/casper-profile.txt"
+	info "Running profile-casper-latency.sh for per-validator timings"
+	HOST="$HOST" KEY_FILE="$KEY_FILE" SSH_USER="$SSH_USER" \
+		"${SCRIPT_DIR}/profile-casper-latency.sh" "$CONTAINER" >"$OUT_DIR/casper-profile.txt" 2>&1 || true
+	info "Wrote $OUT_DIR/casper-profile.txt"
 fi
 
 info "=== Benchmark complete ==="

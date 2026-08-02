@@ -318,6 +318,24 @@ mod tests {
     }
 
     #[test]
+    fn test_byte_capacity_eviction_honors_lru_access() {
+        let cache = InMemoryReplayCache::with_limits(10, 8);
+        let k1 = make_key("p1", "a", 1);
+        let k2 = make_key("p2", "b", 2);
+        let k3 = make_key("p3", "c", 3);
+
+        cache.put(k1.clone(), make_entry("four"));
+        cache.put(k2.clone(), make_entry("five"));
+        assert!(cache.get(&k1).is_some());
+        cache.put(k3.clone(), make_entry("six!"));
+
+        assert!(cache.get(&k2).is_none());
+        assert!(cache.get(&k1).is_some());
+        assert!(cache.get(&k3).is_some());
+        assert_eq!(cache.stats(), (2, 8));
+    }
+
+    #[test]
     fn test_oversized_entry_is_not_cached() {
         let cache = InMemoryReplayCache::with_limits(10, 3);
         let key = make_key("p", "s", 1);
@@ -354,6 +372,18 @@ mod tests {
 
         assert_eq!(cache.get(&key).unwrap().post_state.as_ref(), b"four");
         assert_eq!(cache.stats(), (1, 4));
+    }
+
+    #[test]
+    fn test_replacement_updates_retained_bytes() {
+        let cache = InMemoryReplayCache::with_limits(10, 10);
+        let key = make_key("p", "s", 1);
+
+        assert!(cache.put(key.clone(), make_entry("four")));
+        assert!(cache.put(key.clone(), make_entry("larger")));
+
+        assert_eq!(cache.get(&key).unwrap().post_state.as_ref(), b"larger");
+        assert_eq!(cache.stats(), (1, 6));
     }
 
     #[test]

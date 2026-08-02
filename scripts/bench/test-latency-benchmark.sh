@@ -59,7 +59,7 @@ PATH="$TMP/bin:$PATH" \
 	PREFLIGHT_TIMEOUT=2 \
 	OUT_DIR="$TMP/out" \
 	bash "$ROOT/scripts/bench/latency-benchmark.sh" \
-		--apply --duration 1 --rate 1 --out-dir "$TMP/out" >/dev/null 2>&1
+	--apply --duration 1 --rate 1 --out-dir "$TMP/out" >/dev/null 2>&1
 
 jq -e '
   .submitted == 1

@@ -7,6 +7,10 @@ use std::sync::{Arc, OnceLock};
 use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_ACTIVE_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+    BLOCK_PROCESSOR_METRICS_SOURCE,
+};
 use casper::rust::{ProposeFunction, ValidBlockProcessing};
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
@@ -17,6 +21,8 @@ use tokio::sync::mpsc;
 
 const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
 const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
+const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
+const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 #[cfg(target_os = "linux")]
 static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
@@ -48,6 +54,17 @@ fn max_blocks_in_processing() -> usize {
             .filter(|v| *v > 0)
             .unwrap_or(MAX_BLOCKS_IN_PROCESSING_DEFAULT)
     })
+}
+
+fn configured_max_parallel_blocks(value: Option<&str>) -> usize {
+    value
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(MAX_PARALLEL_BLOCKS_DEFAULT)
+}
+
+fn max_parallel_blocks() -> usize {
+    configured_max_parallel_blocks(std::env::var(MAX_PARALLEL_BLOCKS_ENV).ok().as_deref())
 }
 
 fn trigger_propose_after_block_processing_enabled() -> bool {
@@ -101,6 +118,29 @@ impl Drop for InFlightBlockGuard {
     fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
 }
 
+struct ActiveBlockProcessingGuard;
+
+impl ActiveBlockProcessingGuard {
+    fn new() -> Self {
+        metrics::gauge!(
+            BLOCK_PROCESSING_ACTIVE_METRIC,
+            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+        )
+        .increment(1.0);
+        Self
+    }
+}
+
+impl Drop for ActiveBlockProcessingGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(
+            BLOCK_PROCESSING_ACTIVE_METRIC,
+            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+        )
+        .decrement(1.0);
+    }
+}
+
 /// Configuration for BlockProcessorInstance
 pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub blocks_queue_rx: mpsc::Receiver<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
@@ -125,7 +165,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
         trigger_propose_f: Option<Arc<ProposeFunction>>,
-        max_parallel_blocks: usize,
     ) -> Self {
         Self {
             blocks_queue_rx,
@@ -133,7 +172,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
             block_processor,
             blocks_in_processing,
             trigger_propose_f,
-            max_parallel_blocks,
+            max_parallel_blocks: max_parallel_blocks(),
         }
     }
 
@@ -162,6 +201,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 max_parallel_blocks,
             } = self;
 
+            tracing::info!(max_parallel_blocks, "Starting bounded block processing");
+            metrics::gauge!(
+                BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .set(max_parallel_blocks as f64);
             let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel_blocks));
 
             while let Some((casper, block)) = blocks_queue_rx.recv().await {
@@ -176,6 +221,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                 // Spawn task to process the block
                 tokio::spawn(async move {
+                    let _active_guard = ActiveBlockProcessingGuard::new();
                     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
                     if !blocks_in_processing.contains(&block.block_hash) {
                         // Fallback for legacy enqueue paths: mark before processing.
@@ -508,4 +554,23 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
     Ok((block, validation_result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parallel_block_limit_defaults_to_two() {
+        assert_eq!(configured_max_parallel_blocks(None), 2);
+        assert_eq!(configured_max_parallel_blocks(Some("")), 2);
+        assert_eq!(configured_max_parallel_blocks(Some("0")), 2);
+        assert_eq!(configured_max_parallel_blocks(Some("invalid")), 2);
+    }
+
+    #[test]
+    fn parallel_block_limit_accepts_positive_values() {
+        assert_eq!(configured_max_parallel_blocks(Some("1")), 1);
+        assert_eq!(configured_max_parallel_blocks(Some("4")), 4);
+    }
 }

@@ -14,19 +14,54 @@ cat >"$TMP/bin/poetry" <<'SH'
 #!/usr/bin/env bash
 trap 'exit 143' TERM INT
 printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
+mkdir -p "$FAKE_DATA_DIR/session"
+cat >"$FAKE_DATA_DIR/session/resource-timeseries.csv" <<'CSV'
+elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
+1.0,rnode.test.validator1,256.0,10.0,0
+1.0,rnode.test.validator2,512.0,20.0,0
+CSV
+cat >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv" <<'CSV'
+elapsed_s,node,metric,value
+1.0,rnode.test.validator1,replay_cache_entries,12
+1.0,rnode.test.validator1,replay_cache_retained_bytes,1048576
+CSV
 printf 'fake pytest started\n'
 while :; do sleep 1; done
 SH
-chmod +x "$TMP/bin/poetry"
+cat >"$TMP/bin/docker" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+	ps)
+		if printf '%s\n' "$*" | grep -q -- '--format' && [ -s "$FAKE_POETRY_PID_FILE" ]; then
+			printf 'rnode.test.validator1\n'
+		fi
+		;;
+	inspect) cat "$FAKE_POETRY_PID_FILE" ;;
+	port) printf '0.0.0.0:40413\n' ;;
+	rm|kill) exit 0 ;;
+esac
+SH
+cat >"$TMP/bin/curl" <<'SH'
+#!/usr/bin/env bash
+cat <<'METRICS'
+replay_cache_entries{source="casper"} 12
+replay_cache_retained_bytes{source="casper"} 1048576
+block_processing_active{source="block-processor"} 2
+block_processing_parallel_limit{source="block-processor"} 2
+METRICS
+SH
+chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
+	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
 	SOAK_DURATION_SECONDS=120 \
 	SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
 	SOAK_OUTPUT_DIR="$TMP/output" \
 	SOAK_RSS_CEILING_MB=0 \
 	SOAK_HOST_FREE_FLOOR_MB=0 \
 	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
 	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver.log" 2>&1 &
 DRIVER_PID=$!
 
@@ -35,6 +70,16 @@ for _ in $(seq 1 20); do
 	sleep 0.25
 done
 test -e "$TMP/output/iteration-00001-docker/.started"
+for _ in $(seq 1 20); do
+	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
+		grep -q 'test.validator1.*12.*1048576.*2.*2' \
+			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
+	sleep 0.25
+done
+test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
+test -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
+grep -q 'test.validator1.*12.*1048576.*2.*2' \
+	"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv"
 printf '%s\n' 'injected orchestrator host guardian breach' \
 	>"$TMP/output/host-guardian-breach.txt"
 
@@ -57,8 +102,15 @@ DRIVER_PID=""
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output/summary.txt"
-jq -e '.iterations == 1 and .failures == 1 and .iteration_metrics[0].exit_code == 1' \
-	"$TMP/output/summary.json" >/dev/null
+jq -e '
+  .iterations == 1
+  and .failures == 1
+  and .rss_peak_mb == 768
+  and .iteration_metrics[0].exit_code == 1
+  and .iteration_metrics[0].rss_peak_mb == 768
+' "$TMP/output/summary.json" >/dev/null
+grep -q 'replay_cache_retained_bytes,1048576' \
+	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
 test ! -e "$TMP/output/iteration-00001-docker/.pytest-output.fifo"
 test -s "$TMP/fake-poetry.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry.pid")" 2>/dev/null
