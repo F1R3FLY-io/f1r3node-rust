@@ -1800,6 +1800,30 @@ window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 78 — changes the par_children EPathMap and zipper arms from x.ps().iter() to an EntryTrie read-zipper borrow. At that commit both paths enumerated the same PathMap<Par> values through to_next_get_val in the same order; only the deep-cloned compatibility projection and its retained allocation disappear. The landing models matrix passed 459/459 across 36 targets. Later homogeneous-mode specialization supersedes the helper, not this historical classification. [DERIVED]"
 
+[[exempt]]
+commit = "e2cf939f"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 79 — changes only the node response JSON boundary plus owned EPathMap traversal accessors; no scoring, reduction, storage, event, protobuf, bincode, state, or acceptance path changes. Recursive-oracle equivalence covers 36/36 ExprInstance arms and 3/3 Par fixtures; all 40 RhoExpr JSON shapes are pinned; the mixed unary/map lifecycle reaches depth 16384 on 256 KiB; node library 117/117 and focused final gate 5/5 pass under MemoryMax=4G with zero swap. [DERIVED]"
+
+[[exempt]]
+commit = "f04f64ac"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 80 — re-exports the same already-public PathFrameError type carried by an existing public enum variant, repairing name reachability only. No runtime branch, value, byte, input, or consensus axis changes; landing models matrix 469/469 across 37 targets. [DERIVED]"
+
+[[exempt]]
+commit = "edfc56d6"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 81 — three sorter EPathMap reads replace the deep-cloned ps() projection with EntryTrie traversal over the same trie-ordered entries; sort_match, re-filing, and scoring bodies remain identical. Landing models matrix 459/459 across 36 targets. [DERIVED]"
+
+[[exempt]]
+commit = "8522316d"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 82 — five reducer EPathMap readers replace ps() with equivalent fallible, first-match, borrowed, or reversed trie-order walks. The consumer bodies and encoder/input paths are unchanged; landing evidence 182/182 named rholang tests and 459/459 models. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`

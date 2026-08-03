@@ -48,6 +48,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A6** | staged | f1r3node | `PrettyPrinter` pushdown driver | ⌀ $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap) |
+| **SS-A9** | `e2cf939f` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513--2026-08-03-closure--the-node-json-boundary-ss-a9) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -132,12 +133,18 @@ Headline results, all **MEASURED**:
 | end-to-end `env_get_deploy` — **the control** | 283 levels | **274** levels (2026-07-29) | **$`\approx 1\times`$, as predicted** |
 | cold-store encode, production-weighted wall clock | — | **faster**; magnitude **NOW UNKNOWN**, bracketed $`1.07\times`$–$`1.19\times`$ | ⚠ see §5.4.1 — the $`\pm 0.005`$ is **RETRACTED** |
 | cold-store encode, allocations (reused-buffer form) | 20,022 blocks / 20k calls | **26** blocks / 20k calls | $`770\times`$ fewer |
+| node JSON `RhoExpr` boundary, mixed unary/map chain | recursive conversion/traits | depth **16,384** on a **256 KiB** test stack | class change |
 
 The costs are reported with the same candour. The single-walk encoder performs **$`3.25\times`$ more heap writes** than the derive it replaces and **doubles peak heap** on the production shape, because it retains two thread-local arenas (**MEASURED (f)**, DHAT (dynamic heap analysis tool)). The prost network encoder's memoised rewrite trades $`O(1)`$ space for $`\Theta(n)`$ space to buy $`\Theta(d^2) \rightarrow \Theta(n)`$ work, and is **dormant** — not wired into any `src/` tree (**DERIVED**, `56fb1fd0`).
 
 Three predictions were **falsified by measurement and are reported as results**: that `Env::get` was the deploy path's bound (§5.5.1), that the ingress slope was 84.3 B/level (§5.5.2), and — in the companion repository — that the Rholang parser was depth-independent (§5.6.3). Two recorded constants have **drifted at HEAD** and are corrected here (§5.5.4, §5.5.5).
 
-The residual is named, not implied. **The protobuf network format is still recursive on both sides** — 302 B/level writing, 4,096 B/level reading — and its reader is capped at term depth **33 / 32 / 31** by a private `prost` constant while its writer has no cap at all. That is the **write/read asymmetry** (§6.4): a term that can be built, reduced and serialised, and cannot be read back. It has now surfaced four independent times.
+★★ **Living-status correction.** The paragraph formerly here reported the protobuf network writer and
+reader as recursive and the node JSON boundary was not yet inventoried. That statement remains the
+historical baseline measured by the original report, but it is **superseded at HEAD**: generated protobuf
+PDAs and homogeneous PathMap-native EPathMap landed in SS-A8/SS-C9 (§5.12), and the last audited node
+JSON conversion/trait boundary landed in SS-A9 (§5.13). Neither closure increases `RUST_MIN_STACK`, adds
+`stacker`, or imposes a traversal-depth ceiling.
 
 ---
 
@@ -164,6 +171,8 @@ The residual is named, not implied. **The protobuf network format is still recur
   - [5.9 Measurements that could not be obtained](#59-measurements-that-could-not-be-obtained)
   - [5.10 ★★ The generated trait implementations, and the `Clone` question](#510--the-generated-trait-implementations-and-the-clone-question)
   - [5.11 ★★ SS-G1 — the Arc fix](#511--ss-g1--the-arc-fix-eliminating-a-traversal-instead-of-converting-it)
+  - [5.12 ★ 2026-08-01 closure — generated `Par` PDAs and PathMap-native `EPathMap`](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap)
+  - [5.13 ★ 2026-08-03 closure — the node JSON boundary](#513--2026-08-03-closure--the-node-json-boundary-ss-a9)
 - [6. Discussion](#6-discussion)
 - [7. Threats to validity](#7-threats-to-validity)
 - [8. Residuals and future work](#8-residuals-and-future-work)
@@ -2355,14 +2364,11 @@ where they are not traversal-depth proxies. The last audited integration-side cu
 `STABILITY_DESCEND_BUDGET`, was replaced on 2026-08-01 by the allocation-minimal explicit classifier
 PDA and is guarded against reintroduction by `par_read_stack_safety_registry`.
 
-⚠ **Scope correction found by the 2026-08-03 whole-worktree audit.** The preceding “none” is true of
-the generated/hand-written `Par` registry, not yet of every production consumer in the worktree:
-`node/src/rust/api/web_api.rs` still converts nested `Par` values to recursive JSON `RhoExpr` values by
-mutually calling `expr_from_par_proto`, `expr_from_expr_proto`, `par_to_expr`, and the bundle/PathMap
-helpers. Commit `ce4dfbe9` has already removed that boundary's lossy set-only projection and preserves
-neutral, set, and typed map modes, with 113/113 node library tests green under the 4 GiB cap. The
-conversion/ownership traversal remains an open stack-safety obligation tracked as pgmcp task 5059;
-the campaign is not complete while this paragraph remains open.
+★★ **Scope correction closed on 2026-08-03.** The whole-worktree audit found one production consumer
+outside the generated/hand-written `Par` registry: the node JSON boundary in `web_api.rs`. Commit
+`e2cf939f` converts that boundary and its recursive `RhoExpr` traits to explicit machines (§5.13). The
+earlier `ce4dfbe9` mode-preservation repair remains the semantic prerequisite: neutral empty, homogeneous
+set, and typed homogeneous map remain distinct through the conversion.
 
 #### 5.12.7 Anti-vacuity and equivalence
 
@@ -2378,6 +2384,80 @@ specified map subtraction as a value comparison. The Rust test specified the int
 The theorem was changed to `subtract_overlap_is_value_independent_key_mask`, and the kernel check then
 passed. A second theorem, `distinct_topology_or_values_remain_observable`, is bound to the Rust witness
 that value-free topology participates in Eq/Hash/Ord. No admission was added.
+
+### 5.13 ★ 2026-08-03 closure — the node JSON boundary [SS-A9]
+
+#### 5.13.1 The defect
+
+**DERIVED**, before `e2cf939f`: `expr_from_par_proto`, `expr_from_expr_proto`, `par_to_expr`, and the
+bundle and EPathMap helpers formed a recursive conversion over user-controlled `Par` nesting. The
+response enum then derived recursive `Clone`, `Drop`, `Serialize`, `Deserialize`, and `Debug` behavior.
+The EPathMap map arm also borrowed each trie value and cloned its complete `Par` before conversion. A
+nested unary or map value therefore consumed native stack both while converting and again while cloning,
+formatting, serializing, or destroying the response.
+
+#### 5.13.2 The architecture of the repair, and why this shape
+
+The conversion is now a defunctionalized work/value machine. Work items own protobuf nodes; finish items
+carry only arity and scalar metadata; a value stack reconstructs `RhoExpr` bottom-up. `EPathMap` is never
+flattened to a `Vec<Par>`: set mode consumes `PathMap<()>` keys, map mode consumes `PathMap<Par>` keys and
+**moves** values, and neutral empty remains an explicit third state. Trie order is reversed only on the
+machine's work stack so LIFO execution reproduces the same forward PathMap order.
+
+`RhoExpr::Clone`, `Drop`, JSON `Serialize`, and `Debug` use explicit machines as well. The legacy
+`HashMap<String, RhoExpr>` arm preserves the source map's capacity and cloned `RandomState` while cloning
+children through continuations; delegating to `HashMap::clone` was rejected because a map-inside-map chain
+would synchronously re-enter `RhoExpr::clone`. Response-only `Deserialize` implementations were removed
+rather than replaced by a new recursive parser that has no production caller.
+
+The rejected alternatives are the same ones excluded elsewhere in this report: no enlarged thread stack,
+no `stacker`, no artificial depth limit, and no EPathMap list projection. A `Vec<Par>` projection would
+discard prefix compression, allocate and decode every key, and clone every map value before the PDA even
+began.
+
+#### 5.13.3 How the fix was made
+
+Production code lives in `node/src/rust/api/rho_expr_pda.rs`. The bounded recursive specification was
+moved to `node/tests/support/rho_expr_conversion_oracle.rs`, and the pre-existing inline web API tests were
+moved to `node/tests/support/web_api_tests.rs`; test recursion is not compiled into production. Models
+gained consuming raw-entry visitors whose implementation delegates to PathMap's owned zipper iterator;
+the PathMap crate itself was not modified.
+
+#### 5.13.4 Results
+
+All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`.
+
+| metric | before | after | provenance |
+|---|---:|---:|---|
+| conversion semantics | recursive implementation | **36/36** `ExprInstance` arms and **3/3** Par boundary fixtures equal to the retained recursive oracle | **MEASURED**, `rho_expr_pda_tests` |
+| JSON shape | derived serializer | all **40** `RhoExpr` arms match their derived JSON shape; Clone preserves bytes | **MEASURED**, `stack_safe_traits_preserve_derived_json_shapes` |
+| deep lifecycle | recursive conversion and traits | conversion + Clone + Serialize + Debug + Drop at depth **16,384** on a **256 KiB** stack | **MEASURED**, mixed unary/map chain |
+| focused node gate | — | **5/5**, 2.3 GiB peak RSS, zero swap | **MEASURED**, warm capped run |
+| full node library | 113/113 before the conversion | **117/117** after conversion and source/test separation, 2.4 GiB peak RSS, zero swap | **MEASURED**, capped run before the final fifth regression was added |
+| owned trie visitor | borrowed forward view | owned set/map stream equals borrowed trie order; wrong mode rejected; neutral empty accepted by both | **MEASURED**, 1/1; warm peak 87.8 MiB |
+| B/level | NOT MEASURED — no pre-change frame bisection was retained for this boundary | NOT MEASURED — the explicit-loop class and 256 KiB deep probe establish bounded execution but not a byte slope | stated limitation |
+| throughput / allocation profile | NOT MEASURED — no stable boundary benchmark exists | NOT MEASURED — correctness and depth closure were gated first | stated limitation |
+
+#### 5.13.5 What it cost
+
+The machines use $`\Theta(d)`$ heap work/value storage and $`O(1)`$ native stack in nesting depth. JSON
+serialization builds one contiguous JSON string and validates it iteratively before handing it to serde's
+raw-value adapter; this is bounded but allocates proportional to output size. Map conversion removes the
+larger prior cost: it no longer constructs a compatibility entry projection or clones `Par` values.
+
+#### 5.13.6 What is still recursive
+
+Within this boundary: **none in production**. The recursive conversion oracle is test-only, shallow-bounded,
+and deliberately excluded from the deep test. This row does not substitute for the repository-wide
+generated traversal registry in SS-E2; it closes the additional production consumer found outside that
+registry.
+
+#### 5.13.7 Anti-vacuity
+
+The corpus asserts the exact **36-arm** oneof count, so silently omitting a protobuf variant fails before
+comparison. The deep witness alternates unary and legacy-map nodes; a unary-only witness would not detect
+the `HashMap::clone` re-entry defect found during review. The owned EPathMap test checks both wrong-mode
+errors and neutral-empty dual validity, preventing a set-only implementation from passing on empty input.
 
 ---
 
