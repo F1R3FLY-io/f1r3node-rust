@@ -1,6 +1,7 @@
 @startuml blocked-vs-paired
 ' Why a BLOCKED two-arm benchmark cannot be rescued by more repetitions, and why a
-' PAIRED one can. Subject: §7.8.2 of docs/consensus/consensus-change-register.md.
+' PAIRED one can. Subject: §4.8 of docs/design/stack-safety/stack-safety-report-2026-07-29.md
+' (the paired timing design; a Methods design-rationale figure).
 '
 ' Colour key, one hue per CONCEPT and used nowhere else:
 '   blue   #1565C0  arm A (`derived`)      — the control implementation

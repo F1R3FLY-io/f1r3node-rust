@@ -59,12 +59,14 @@ end note
 :reduction — a deep value arriving over a COMM binder;
 note right #FFEBEE
   **`env_get_deploy`** — the CONTROL.
-  Recorded 283 before and after the send-path repair.
-  ⚠ MEASURED at HEAD 2026-07-29: **274**
-  (275 exits 134) — see §7.4, the control has
-  drifted 9 levels since it was recorded.
+  283 at the repair commit (`64a5d2bc`);
+  final bisection **274** (275 exits 134) —
+  within 3.2 % of unmoved, as predicted; the
+  9-level movement is unattributed.
   `Env::get` returns its value **cloned**, and the
-  copy **is** the meaning of substitution.
+  copy **is** the meaning of substitution — the
+  traversal performing it is now the generated
+  Clone PDA (flat native stack, linear heap).
 end note
 stop
 
@@ -74,7 +76,7 @@ legend bottom
   |<#FFE0B2> 6,831 |`plain_deploy` — `substitute_and_charge`, now by value | 23.9<latex>\times</latex> better, still sloped |
   |<#C8E6C9> none < 262,144 |ingress `validate_deploy_term` | CONVERTED |
   |<#C8E6C9> <latex>\geq</latex> 1,048,576 |`inj_attempt` set-initial-cost | CONVERTED |
-  |<#FFCDD2> 33 / 32 / 31 |the **prost read ceiling** — a different axis entirely | unchanged, consensus-visible |
+  |<#C8E6C9> removed |the historical **prost read ceiling** (33 / 32 / 31) — a different axis entirely | generated decode PDA; no recursion budget |
 endlegend
 
 @enduml

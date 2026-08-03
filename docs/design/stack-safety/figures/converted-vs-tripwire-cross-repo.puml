@@ -1,19 +1,17 @@
 @startuml converted-vs-tripwire-cross-repo
 ' ============================================================================
-' THE CROSS-REPOSITORY STATUS MAP.  Every traversal, both repositories, with the
-' gate constant that adjudicates it.
+' THE CROSS-REPOSITORY STATUS MAP AT THE FINAL ANCHOR
+' (f1r3node-rust-mettail@e67a6aaa · mettail-rust@98901e33).
 '
 ' Diagram type: a PACKAGE DIAGRAM partitioned by REPOSITORY and by GATE
 ' CONSTANT.  Chosen over a flat table because the load-bearing fact is a
 ' *containment* one: the two repositories are adjudicated by DIFFERENT gate
-' constants in DIFFERENT test files, which is precisely why #43 is NOT
-' superseded by #162/#189.  Packages make the disjointness structural; a table
-' would let a reader slide the two families together.
+' constants in DIFFERENT test files — no fix on either side discharges the
+' other.  Packages make the disjointness structural.
 '
-' Colour convention — the report's Appendix E.3 mapping:
+' Colour convention — the report's Appendix E.1 mapping:
 '   GREEN  #2E7D32 converted — measured depth-independent
-'   AMBER  #EF6C00 tripwire — still Theta(d), held under a ceiling
-'   RED    #C62828 a LIVE, UNREPAIRED defect
+'   AMBER  #EF6C00 live residual — still Theta(d), held under a ceiling
 '   TEAL   #00695C the gate / the measuring instrument
 '   SLATE  #455A64 structural relations
 ' ============================================================================
@@ -23,62 +21,57 @@ skinparam shadowing false
 skinparam roundcorner 8
 skinparam ArrowThickness 1.4
 
-title <b>Converted vs tripwire — both repositories, with the adjudicating gate</b>\n⚠ **#43 is NOT superseded by #162/#189**: disjoint families, different repositories, different gate constants
+title <b>Converted subjects and live residuals — both repositories, at the anchor</b>\ndisjoint families, different repositories, different gate constants
 
-package "**`f1r3node-rust-mettail@feature/mettail`**\nhand-written `Par` traversals\ngate: `rholang/tests/stack_depth_gate.rs`" as F1 #ECEFF1 {
+package "**`f1r3node-rust-mettail@e67a6aaa`**\nhand-written + generated `Par` traversals\ngate: `rholang/tests/stack_depth_gate.rs`" as F1 #ECEFF1 {
 
-  package "**CONVERTED** — 21 subjects\n`CONVERTED_DEPTH` (15) <latex>\cup</latex> `CONVERTED_WIDTH` (6)" as FC #E8F5E9 {
-    card "**depth (15)**\n`substitute_no_sort` `substitute_binders` `substitute`\n`sort` `score_cmp` `tree_drop` `tree_clone`\n`eval_with_nots` `bincode_de` `bincode_ser` `pretty`\n`normalize` `inj_attempt_clone` **`clone`** `clone_send_chain`" as FCD #A5D6A7
-    card "**width (6)**\n`substitute_wide` `sort_wide` `score_cmp_wide`\n`free_check` `pretty_wide` `normalize_wide`" as FCW #A5D6A7
+  package "**CONVERTED — 40 subjects**\n`CONVERTED_DEPTH` (34) <latex>\cup</latex> `CONVERTED_WIDTH` (6)" as FC #E8F5E9 {
+    card "**depth (34)** — the cores, the cold-store codec pair,\nthe generated trait family (`clone` `par_drop` `eq` `hash`\n`ord` `debug` `message_clear`), the collection arms,\nthe PathMap pair (`hash_pathmap_set` · `hash_pathmap_map`),\nand every former tripwire member at **0 B/level**" as FCD #A5D6A7
+    card "**width (6)**\n`substitute_wide` `sort_wide` `score_cmp_wide`\n`free_check` `pretty_wide` `normalize_wide`\nflat to width **65,536**" as FCW #A5D6A7
   }
 
-  package "**TRIPWIRE** — 8 members, all depth\n`TRIPWIRE_DEPTH`; `TRIPWIRE_WIDTH` is EMPTY" as FT #FFF3E0 {
-    card "`subst_and_charge`         **146**\n`substitute_deep_binding`  **7,460**\n`par_drop`                 **144**\n`normalize_drop`           <i>flat debug, sloped release</i>\n`encode`                   **302**\n`sort_nested_set`          **4,778**\n`sort_nested_map`          **7,509**\n`clone_nested_set`         **4,096**" as FTD #FFCC80
-  }
+  card "**TRIPWIRE LISTS: EMPTY on both axes** — an executed claim;\nthe synthetic sloped controls still run and are still rejected" as FT #C8E6C9
 
-  card "⚠★ **`min_stack_for` here still returns a bare `usize`**\nthe #187 `MinStack` repair is **`mettail-rust`-only**\n<latex>\Rightarrow</latex> this repository's endpoint byte figures are still\nfloor-affected; its SLOPES are not" as FFLOOR #FFCDD2
+  card "★ `min_stack_for` returns typed `MinStack::{Bytes, BelowResolution}`\n— a floor reading renders as a refusal, **never a number**" as FFLOOR #80CBC4
 }
 
-package "**`mettail-rust@feature/rho-native-set-automata`**\nGENERATED `ast_*` drivers\ngate: `rholang-runtime/tests/stack_depth_gate.rs`" as MT #ECEFF1 {
+package "**`mettail-rust@98901e33`**\nGENERATED `ast_*` drivers\ngate: `rholang-runtime/tests/stack_depth_gate.rs`" as MT #ECEFF1 {
 
-  package "**CONVERTED** — all 11 generated drivers\n`EXPECTED_DRIVER_SHAPE`, every row `Shape::Flat`" as MC #E8F5E9 {
-    card "`ast_cmp` 10,590 <latex>\rightarrow</latex> **0**   `ast_debug` 10,542 <latex>\rightarrow</latex> **0**\n`ast_eq` 6,144 <latex>\rightarrow</latex> **0**   `ast_match_pattern` 6,136 <latex>\rightarrow</latex> **0**\n`ast_term_depth` 3,408 <latex>\rightarrow</latex> **0**  `ast_is_ground` 2,225 <latex>\rightarrow</latex> **0**\n`ast_hash` `ast_semantic_hash` `ast_drop`\n`ast_subst` `ast_normalize`\n<i>both profiles, alternating AND pure ladders</i>" as MCD #A5D6A7
+  package "**CONVERTED — all 12 generated drivers**\n`EXPECTED_DRIVER_SHAPE`, every production row `Shape::Flat`" as MC #E8F5E9 {
+    card "`ast_cmp` 10,590 <latex>\rightarrow</latex> **0**   `ast_debug` 10,542 <latex>\rightarrow</latex> **0**\n`ast_eq` 6,144 <latex>\rightarrow</latex> **0**   `ast_match_pattern` 6,136 <latex>\rightarrow</latex> **0**\n`ast_term_depth` 3,408 <latex>\rightarrow</latex> **0**  `ast_is_ground` 2,225 <latex>\rightarrow</latex> **0**\n`ast_hash` `ast_semantic_hash` `ast_drop`\n`ast_subst` `ast_normalize` `ast_try_eval`\n<i>both profiles, alternating AND pure ladders</i>" as MCD #A5D6A7
     card "★ `ast_recursion_control` — **`Shape::Sloped`**\n<i>the CLASSIFIER's non-vacuity anchor.</i>\nWith the sloped set empty, `measured_shape` would\nreturn `Flat` for everything and the partition would\npass **vacuously**. Never to be converted." as MANCHOR #80CBC4
   }
 
-  package "**LIVE RESIDUALS** — not adjudicated flat" as MR #FFEBEE {
-    card "★★ **#197 — LIVE AND UNREPAIRED**\n`fab6de24`, #162's OWN commit, mishandles the\noptional-collection shape:\n `Option::len` on `Option<Vec<Proc>>` (**E0624**)\n `&Vec<Proc>` cast as `*const Proc` (**E0606**)\n<latex>\Rightarrow</latex> blocks `--all-targets` REPO-WIDE" as MDEF #EF5350
-    card "`render` **3,665 / 911**\n`lower_formula` **4,094 / 978**\n`map_pair_lower` **10,491** (#174, unattributed)\n`try_eval` — `Int` has a worklist,\n**15 categories do not** (#189)\n`UNMEASURED_TRAVERSALS = 7` <i>(live ratchet)</i>" as MRES #FFCC80
+  package "**LIVE RESIDUALS** — the only sloped production subjects\nin either register" as MR #FFF3E0 {
+    card "`render`        **3,665 / 911** B/level (debug / release)\n`lower_formula` **4,094 / 978** B/level\neach with its own gate subject and named owner" as MRES #FFCC80
   }
 }
 
-FT -[#C62828,thickness=3]right-> MR : ⚠ **NOT the same family.**\nNo fix on either side\ndischarges the other.
+FC -[hidden]down-> FT
+FT -[#455A64,thickness=2]right-> MR : **disjoint families** —\nno fix on either side\ndischarges the other
 
-note bottom of F1 #FFF3E0
-  **`clone` LEFT the tripwire by being CONVERTED** (`0eac9c3a`, stage F-4:
-  `models/build.rs` strips the derive, `models/codegen/schema_codegen.rs`
-  generates the impl over `drive_with`) — **never by having its ceiling
-  raised.** Its `assert_slope_below` call was DELETED rather than relaxed.
-  <latex>\Rightarrow</latex> The report's earlier claim that
-  <latex>\mathtt{\langle Par\ as\ Clone\rangle::clone}</latex> "remains in
-  `TRIPWIRE_DEPTH` at **3,254** B/level" is **SUPERSEDED**.
+note bottom of F1 #E8F5E9
+  **Every former tripwire member left by being CONVERTED, never by a raised
+  ceiling** — `clone` via stage F-4 + SS-A8's generated trait family, the
+  collection arms via the generated sorter PDA (SS-Y3), the compositions with
+  them. The deterministic-time axis fits all 40 subjects at Ir exponents
+  <latex>0.9462</latex>–<latex>1.0970</latex>; the largest data counter is
+  <latex>1.4007</latex> Dw (`score_cmp_wide`).
 end note
 
-note bottom of MT #FFEBEE
-  ★ **The eleven conversions are real and the work is still NOT complete.**
-  #162's own commit carries #197, so the repository that reports
-  **0 B/level on every generated driver** cannot currently build
-  `--all-targets`. A gate whose advertised coverage exceeds its real
-  coverage is worse than none.
+note bottom of MT #FFF3E0
+  ★ The optional-collection generator defect that once blocked
+  `--all-targets` (#197 / SS-Y1) is **repaired** (`6248f156`); the derived
+  traversal table carries **zero unmeasured members**, retiring the
+  `UNMEASURED_TRAVERSALS` ratchet by derivation.
 end note
 
 legend bottom
   |= cell |= meaning |
   |<#A5D6A7>| **converted** — measured depth-independent, both profiles |
-  |<#FFCC80>| **tripwire / residual** — still <latex>\Theta(d)</latex>, held under a ceiling |
-  |<#EF5350>| a **LIVE, UNREPAIRED** defect |
-  |<#FFCDD2>| an instrument limitation that survives in this repository |
-  |<#80CBC4>| control / non-vacuity anchor — runs no production driver |
+  |<#C8E6C9>| an executed empty-set claim |
+  |<#FFCC80>| **live residual** — still <latex>\Theta(d)</latex>, held under a ceiling |
+  |<#80CBC4>| control / instrument — runs no production driver |
 endlegend
 
 @enduml
