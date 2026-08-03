@@ -208,7 +208,8 @@ iteration_cpu_peak_percent() {
 }
 
 snapshot_iteration_monitor_outputs() {
-	local iteration_dir="$1" filename source tmp
+	local iteration_dir="$1" started_epoch filename source tmp
+	started_epoch="$(date +%s)"
 	while :; do
 		for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
 			source="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
@@ -222,8 +223,52 @@ snapshot_iteration_monitor_outputs() {
 				rm -f "$tmp"
 			fi
 		done
+		scrape_node_memory_timeseries "$iteration_dir" "$started_epoch"
 		sleep "${SOAK_MONITOR_SNAPSHOT_SECONDS:-2}"
 	done
+}
+
+# Per-node memory attribution for the RSS-runaway defect: joins each running
+# rnode container's RSS (from the harness resource-timeseries.csv snapshot)
+# with the replay-cache and block-processing gauges scraped from the node's
+# own /metrics endpoint. This is what turns "total RSS breached the ceiling"
+# into "validator3's replay cache retained N bytes at breach time". Appends to
+# node-memory-timeseries.tsv in the iteration dir; every lookup is fail-soft
+# so a node mid-restart or a missing gauge yields '-' columns, never a dead
+# snapshot loop.
+NODE_METRICS_HTTP_PORT="${SOAK_NODE_METRICS_HTTP_PORT:-40403}"
+scrape_node_memory_timeseries() {
+	local iteration_dir="$1" started_epoch="$2" tsv="$1/node-memory-timeseries.tsv" \
+		node port_line host_port metrics_body elapsed rss
+	command -v docker >/dev/null 2>&1 || return 0
+	command -v curl >/dev/null 2>&1 || return 0
+	while IFS= read -r node; do
+		[ -n "$node" ] || continue
+		port_line="$(docker port "$node" "$NODE_METRICS_HTTP_PORT" 2>/dev/null | head -1 || true)"
+		host_port="${port_line##*:}"
+		[[ "$host_port" =~ ^[0-9]+$ ]] || continue
+		metrics_body="$(curl -fsS --max-time 5 "http://127.0.0.1:${host_port}/metrics" 2>/dev/null || true)"
+		[ -n "$metrics_body" ] || continue
+		elapsed="$(($(date +%s) - started_epoch))"
+		rss="$(awk -F, -v node="$node" \
+			'NR > 1 && $2 == node { v = $3 } END { if (v == "") v = "-"; print v }' \
+			"$iteration_dir/resource-timeseries.csv" 2>/dev/null || printf '%s\n' '-')"
+		if [ ! -s "$tsv" ]; then
+			printf 'elapsed_s\tnode\tmemory_mb\treplay_cache_entries\treplay_cache_retained_bytes\tblock_processing_active\tblock_processing_parallel_limit\n' >"$tsv"
+		fi
+		printf '%s\n' "$metrics_body" | awk -v elapsed="$elapsed" -v node="$node" -v rss="$rss" '
+			/^replay_cache_entries/ { entries = $NF }
+			/^replay_cache_retained_bytes/ { retained = $NF }
+			/^block_processing_active/ { active = $NF }
+			/^block_processing_parallel_limit/ { limit = $NF }
+			END {
+				if (entries == "") entries = "-"
+				if (retained == "") retained = "-"
+				if (active == "") active = "-"
+				if (limit == "") limit = "-"
+				printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", elapsed, node, rss, entries, retained, active, limit
+			}' >>"$tsv"
+	done < <(docker ps --filter 'name=rnode.' --format '{{.Names}}' 2>/dev/null || true)
 }
 
 # Propose-timing latency samples (total_ms) from node JSON logs written after

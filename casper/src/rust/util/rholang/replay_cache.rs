@@ -395,4 +395,108 @@ mod tests {
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.stats(), (0, 0));
     }
+
+    mod invariants {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            Put {
+                key: u8,
+                payload_len: usize,
+                with_event: bool,
+            },
+            Get {
+                key: u8,
+            },
+            Clear,
+        }
+
+        fn op_strategy() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (0u8..4, 0usize..64, any::<bool>()).prop_map(|(key, payload_len, with_event)| {
+                    Op::Put {
+                        key,
+                        payload_len,
+                        with_event,
+                    }
+                }),
+                (0u8..4).prop_map(|key| Op::Get { key }),
+                Just(Op::Clear),
+            ]
+        }
+
+        fn prop_key(i: u8) -> ReplayCacheKey { make_key("prop-parent", "prop-sender", i as i64) }
+
+        fn sized_entry(payload_len: usize, with_event: bool) -> ReplayCacheEntry {
+            let event_log = if with_event {
+                vec![Event::Produce(ProduceEvent {
+                    channels_hash: prost::bytes::Bytes::from_static(b"channel"),
+                    hash: prost::bytes::Bytes::from_static(b"hash"),
+                    persistent: false,
+                    times_repeated: 1,
+                    is_deterministic: true,
+                    output_value: vec![prost::bytes::Bytes::from(vec![0u8; payload_len])],
+                    failed: false,
+                })]
+            } else {
+                vec![]
+            };
+            ReplayCacheEntry::new(event_log, prost::bytes::Bytes::from(vec![0u8; payload_len]))
+        }
+
+        proptest! {
+            // The invariants that make the byte cap an actual bound on
+            // retained memory, for every reachable op sequence: len never
+            // exceeds max_entries, retained_bytes never exceeds max_bytes,
+            // the accounting equals the sum over live entries (no drift
+            // through the eviction/replacement saturating arithmetic),
+            // admission follows the documented contract, and a hit moves its
+            // key to most-recently-used position.
+            #[test]
+            fn cache_invariants_hold_for_any_op_sequence(
+                max_entries in 0usize..5,
+                max_bytes in 0usize..512,
+                ops in prop::collection::vec(op_strategy(), 1..48),
+            ) {
+                let cache = InMemoryReplayCache::with_limits(max_entries, max_bytes);
+                for op in ops {
+                    match op {
+                        Op::Put { key, payload_len, with_event } => {
+                            let entry = sized_entry(payload_len, with_event);
+                            let entry_bytes = entry.retained_bytes();
+                            let admitted = cache.put(prop_key(key), entry);
+                            prop_assert_eq!(
+                                admitted,
+                                max_entries > 0 && entry_bytes <= max_bytes
+                            );
+                        }
+                        Op::Get { key } => {
+                            if cache.get(&prop_key(key)).is_some() {
+                                let state = cache.state.lock().unwrap();
+                                let (last_key, _) =
+                                    state.map.get_index(state.map.len() - 1).unwrap();
+                                prop_assert!(last_key == &prop_key(key));
+                            }
+                        }
+                        Op::Clear => {
+                            cache.clear();
+                            prop_assert_eq!(cache.stats(), (0, 0));
+                        }
+                    }
+                    let state = cache.state.lock().unwrap();
+                    prop_assert!(state.map.len() <= max_entries);
+                    prop_assert!(state.retained_bytes <= max_bytes);
+                    let live_sum: usize = state
+                        .map
+                        .values()
+                        .map(ReplayCacheEntry::retained_bytes)
+                        .sum();
+                    prop_assert_eq!(state.retained_bytes, live_sum);
+                }
+            }
+        }
+    }
 }
