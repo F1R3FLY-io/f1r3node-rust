@@ -962,6 +962,9 @@ pub enum RhoExpr {
     ExprMap {
         data: HashMap<String, RhoExpr>,
     },
+    ExprPathMap {
+        data: RhoPathMap,
+    },
 
     // === Primitives ===
     ExprBool {
@@ -1113,6 +1116,21 @@ pub enum RhoExpr {
     ExprUnknown {
         type_name: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(no_recursion)]
+pub enum RhoPathMap {
+    Empty,
+    Set { entries: Vec<RhoExpr> },
+    Map { entries: Vec<RhoPathMapBinding> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(no_recursion)]
+pub struct RhoPathMapBinding {
+    pub key: RhoExpr,
+    pub value: RhoExpr,
 }
 
 /// Unforgeable name types
@@ -1575,7 +1593,8 @@ fn to_cosigned_deploy(
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{Bundle, EPathMap, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rust::epathmap_trie_codec::EPathMapMode;
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1721,29 +1740,14 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
             }
             RhoExpr::ExprMap { data }
         }
-        ExprInstance::EPathmapBody(pm) => RhoExpr::ExprList {
-            // Display-boundary conversion over canonical trie order. The
-            // temporary vector is consumed here and never retained by EPathMap.
-            data: pm
-                .entry_trie()
-                .entries_owned()
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
+        ExprInstance::EPathmapBody(pm) => expr_from_epathmap_proto(pm),
         ExprInstance::EZipperBody(z) => {
-            let pathmap = z.pathmap.map(|pm| RhoExpr::ExprList {
-                // Same explicit display-boundary conversion as the EPathmap arm.
-                data: pm
-                    .entry_trie()
-                    .entries_owned()
-                    .into_iter()
-                    .filter_map(expr_from_par_proto)
-                    .collect(),
-            });
+            let pathmap = z.pathmap.map(expr_from_epathmap_proto);
             RhoExpr::ExprTuple {
                 data: vec![
-                    pathmap.unwrap_or(RhoExpr::ExprList { data: vec![] }),
+                    pathmap.unwrap_or(RhoExpr::ExprPathMap {
+                        data: RhoPathMap::Empty,
+                    }),
                     RhoExpr::ExprList {
                         data: z
                             .current_path
@@ -1868,6 +1872,40 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
             RhoExpr::ExprVar { index }
         }
     })
+}
+
+fn expr_from_epathmap_proto(pathmap: EPathMap) -> RhoExpr {
+    let data = match pathmap.mode() {
+        EPathMapMode::Empty => RhoPathMap::Empty,
+        EPathMapMode::Set => {
+            let mut entries = Vec::with_capacity(pathmap.len());
+            pathmap
+                .entry_trie()
+                .for_each_raw_set_entry(|key| {
+                    let entry = models::rust::canonical_path::decode_trie_path(key)
+                        .expect("set-mode EPathMap keys are canonical Par paths");
+                    entries.push(par_to_expr(Some(entry)));
+                })
+                .expect("set-mode EPathMap exposes set entries");
+            RhoPathMap::Set { entries }
+        }
+        EPathMapMode::Map => {
+            let mut entries = Vec::with_capacity(pathmap.len());
+            pathmap
+                .entry_trie()
+                .for_each_raw_map_entry(|key, value| {
+                    let key = models::rust::canonical_path::decode_trie_path(key)
+                        .expect("map-mode EPathMap keys are canonical Par paths");
+                    entries.push(RhoPathMapBinding {
+                        key: par_to_expr(Some(key)),
+                        value: par_to_expr(Some(value.clone())),
+                    });
+                })
+                .expect("map-mode EPathMap exposes map entries");
+            RhoPathMap::Map { entries }
+        }
+    };
+    RhoExpr::ExprPathMap { data }
 }
 
 /// Convert an optional Par to RhoExpr, falling back to ExprUnknown for None.
@@ -2442,3 +2480,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/web_api_epathmap.rs"]
+mod epathmap_tests;
