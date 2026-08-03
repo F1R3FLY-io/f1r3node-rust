@@ -55,3 +55,13 @@ num-integer = "0.1"
 
 [profile.dev]
 debug = true
+
+# Local integration override. Mirrors the base `feature/cost-accounted-rho` worktree's parser
+# patch (see f1r3node-rust/Cargo.toml): points the rholang-rs parser crates at the local
+# cost-accounted-grammar worktree carrying Proc::SignedTerm, TokenStack, and Bind::Signed, which
+# the cost-accounting normalizers require. Replace these paths with the published revision before
+# distributing the branch; the parser revision is part of normalized-Par byte identity.
+[patch."https://github.com/F1R3FLY-io/rholang-rs"]
+rholang-parser = { path = "../rholang-rs-cost-accounting-transpiler/rholang-parser" }
+rholang-tree-sitter = { path = "../rholang-rs-cost-accounting-transpiler/rholang-tree-sitter" }
+rholang-tree-sitter-proc-macro = { path = "../rholang-rs-cost-accounting-transpiler/rholang-tree-sitter-proc-macro" }

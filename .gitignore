@@ -163,3 +163,4 @@ formal/rocq/*/.Makefile.d
 
 # Apalache symbolic-checker scratch
 _apalache-out/
+rustc-ice-*.txt
