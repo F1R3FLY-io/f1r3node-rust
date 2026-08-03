@@ -1197,6 +1197,24 @@ at = "26876b65"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "contains_encoded_key"
 
+# CBR-044's generated Ord reachability seam for overlapping PathMap<Par> values.
+[[citation]]
+owner = "CBR-044"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 1049
+at = "26876b65"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "exact_map_value_eq"
+
+# CBR-044's production evaluator edge into map-mode EPathMap algebra.
+[[citation]]
+owner = "CBR-044"
+cited = "rholang/src/rust/interpreter/reduce.rs"
+line = 4696
+at = "26876b65"
+path = "rholang/src/rust/interpreter/reduce.rs"
+token = "try_join"
+
 # CBR-045's one production call site: canonicalise before constructing Body.
 [[citation]]
 owner = "CBR-045"

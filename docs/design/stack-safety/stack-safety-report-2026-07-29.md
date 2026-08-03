@@ -2626,6 +2626,48 @@ both codec differentials, generated protobuf encoder/decoder differentials, EPM1
 fixtures, and full PathMap integration at **1.8 GiB** peak and zero swap. No change was made in the PathMap
 repository.
 
+#### 5.15.5 Generated `Ord` is consensus-reachable
+
+Phase 7's `Ord::cmp` question is not answered by the canonical sorter. That sorter compares its structural
+score and then the generated protobuf byte stream; it does not call `Par::cmp`. The production reachability
+edge is EPathMap map algebra instead. `EntryTrie::exact_map_value_eq` compares overlapping `PathMap<Par>`
+values through the generated `Par` ordering. The ordinary metered evaluator reaches that predicate through
+pathmap `union`, `intersection`, `graft`, and `joinInto`. A non-equal value at an overlapping key changes the
+operation from a successful algebraic result to `ReduceError`. The generated ordering therefore affects
+both computed value and verdict on a consensus path.
+
+This is not a new consensus change beside [CBR-044](../../consensus/consensus-change-register.md#cbr-044).
+It is a reachability result for one of that transition's generated PDAs. At the registered commit,
+`exact_map_value_eq` is the direct comparison seam and the evaluator's `union` method is a production
+caller; the machine register pins both coordinates. The same generated cut set is checked in three
+independent ways:
+
+1. `generated_ord_matches_the_recursive_oracle` compares every pair in a deterministic 48-term corpus
+   against the descriptor-generated recursive oracle;
+2. `generated_ord_is_stack_safe_at_depth_4096` runs the generated comparator on a 256 KiB thread stack;
+3. the generic Rocq `compile_run_equivalence` theorem proves that compilation to the explicit PDA
+   preserves the recursive specification, with no admissions.
+
+The classification consequence is conservative: `Ord` stays inside the consensus-visible generated-PDA
+closure and its deep ladder remains mandatory. The audit found no reason to change the sorter, flatten an
+EPathMap, or add a PathMap-side comparison.
+
+#### 5.15.6 Legacy #57 and #114 scope closure
+
+The two one-line legacy summaries in Phase 7 were deliberately insufficient; the full records and current
+sources give the following disposition:
+
+| legacy item | full finding | stack-safety disposition | reachable campaign home |
+|---|---|---|---|
+| **#57** | A numbered display/parse series: projection-constructor borrowing (`f23e4418`) and the display-fixpoint loop (`d04e6160`) are landed; the remaining member is the same three-way eval-equal reading collision tracked as #38. | **Not depth-related.** It concerns elected syntax and term-preserving rendering. Its remaining work is not a recursive traversal and is not duplicated here. | E5, `e5-display-printer-render-fidelity-absorbs-38-57-202-177-ebd338`, whose parent and root are epic 4131. |
+| **#114** | `SepSeam::Single` is a symptom amplifier for two distinct transparent-grouping classes tied on all five grammar-weight components. Candidate reordering can silently re-elect a representative while preserving the reading set. | **Not depth-related.** It is a grammar-priority stability defect and cannot reach a block in the recorded model. | E3, `e3-grammar-surface-method-api-collapse-early-disambiguation-kv-slot-carriers-absorbs-123-132-122-151-828661`, whose parent and root are epic 4131. |
+
+This closes Phase 7's classification obligation without losing either residual and without importing
+grammar/rendering work into the stack-safety acceptance set. The production pretty-printer's separate
+historical allocation finding is already bounded by a test-only mutation refusal; its recursive oracle
+lives under `rholang/tests/support`, and the formerly suspected `nested_list_expr` helper is live in
+`stack_depth_probe`. None is an unclassified production recursion site.
+
 ---
 
 ## 6. Discussion

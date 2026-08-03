@@ -5880,6 +5880,19 @@ is identical to the retained absolute-key scan, including result order.
   `models/src/rust/epathmap_trie_codec.rs:547`, the exact-key PathMap query seam is
   `models/src/rust/rhoapi_ext.rs:699`, and the kernel-checked generic PDA equivalence theorem is
   `compile_run_equivalence` at line 84 of `formal/rocq/stack_safe_pda/theories/StackSafePDA.v`.
+- The generated `Par::Ord` PDA is consensus-reachable through map-mode EPathMap algebra. At the
+  registered commit, `EntryTrie::exact_map_value_eq` compares values at overlapping PathMap keys and
+  the ordinary metered evaluator reaches it through pathmap union, intersection, graft, and
+  `joinInto`. A differing value changes success into `ReduceError`, so both value and verdict are
+  observable. The canonical sorter is not this edge: its tie-break compares generated protobuf bytes.
+  The machine index pins the comparison seam and a production evaluator caller rather than inferring
+  reachability from the generated impl's existence. At the registered commit those fixed-SHA
+  coordinates are `models/src/rust/rhoapi_ext.rs:1049` for the value comparison and
+  `rholang/src/rust/interpreter/reduce.rs:4696` for the evaluator's union edge.
+- The generated comparator is checked against the recursive descriptor oracle for every pair in a
+  deterministic 48-term corpus, carries depth 4,096 on a 256 KiB thread stack, and is an instance of the
+  admission-free Rocq `compile_run_equivalence` theorem. This closes the reachability question inside
+  CBR-044; it does not create a second consensus entry or change any axis classification.
 
 **2026-08-03 byte-neutral allocation refinement.** Commit `9b3792ac` changes the pausable decoder's
 ACTree03 owner from a copied `Vec<u8>` to a byte range inside the already-owned EPM1 snapshot and passes
@@ -8650,11 +8663,11 @@ designed for**.
 | artefact | path | status |
 |---|---|---|
 | the prose register | `docs/consensus/consensus-change-register.md` | this document |
-| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **61** entries, **86** exemptions, **113** citations, 10 open questions |
+| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **61** entries, **86** exemptions, **115** citations, 10 open questions |
 | the anchor | header fields of `register.toml` | ★ **BUILT** as `register_base` / `partition_head`, not as a separate `REGISTER_BASE` file |
 | the gate | `casper/tests/consensus_change_register_gate.rs` | ★ **BUILT** — **31** cells: 1 accept, **28** refusals, 2 derivation guards |
 
-⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and have since drifted by **16 / 48 / 46 / 0**, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
+⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and have since drifted by **16 / 48 / 48 / 0**, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
 
 #### 7.7.1 Where the gate lives, and what that choice costs
 
@@ -8808,7 +8821,7 @@ enumeration* — here, `register.toml`'s entry set.
 | class | witness | clause, as built | decidable? |
 |---|---|---|---|
 | **1 · in-flight staleness** | [CBR-027](#cbr-027) read *"IN FLIGHT"* while `6ff46f8a` had landed; **CBR-007** drifted the same way | no entry whose status is not `LANDED` may name a SHA that is an ancestor of `HEAD` | ✅ `git merge-base --is-ancestor`, one call per SHA |
-| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **88 of 113** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`88 + 25 = 113`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 78\,\%`$ |
+| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **90 of 115** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`90 + 25 = 115`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 78\,\%`$ |
 | **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the **61** rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally. ⚠ A projection is only as complete as the table it reads, which is why [clause 7b](#774-three-specified-clauses-that-were-wrong--and-a-fourth-that-was-never-specified) now asserts that §4.1 holds **every** entry — [CBR-040](#cbr-040)'s missing glyph row made all of these figures short *and self-consistent* | ✅ no `git`, no build |
 | **4 · a stale prose claim about the world** | [CBR-L09](#cbr-l09) residual 3, falsified **46 minutes** after the commit it was written against | §6.3's rows carry **typed falsifiers**; 3 of 10 decidable, 7 typed `UNDECIDABLE_HERE__*` and asserted **exactly** | ⚠ **PARTLY** — see [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) |
 | **5 · a justification wrong when written** | [CBR-006](#cbr-006) §(c), refuted by its own commit message | **none** | ❌ **NOT DECIDABLE.** [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5; remedies (a) and (b) make it *falsifiable*, not *checkable* |
