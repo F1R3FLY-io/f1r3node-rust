@@ -1,0 +1,81 @@
+@startuml epathmap-serialization-pipeline
+' ============================================================================
+' PathMap report §5.2 — before → after: how an EPathMap reaches the wire.
+'
+' Diagram type: an ACTIVITY DIAGRAM with a split between the deleted BEFORE
+' pipeline and the current AFTER pipeline, chosen because the improvement is a
+' change of PROCESS SHAPE — a hereditary per-entry re-encode walk performed on
+' every encode versus a memoized snapshot copied on every encode — and an
+' activity diagram shows repetition and memoization boundaries directly.
+'
+' Colour convention — one hue per concept:
+'   RED    #FFCDD2/#C62828  the deleted per-entry walk (before)
+'   TEAL   #B2DFDB/#00695C  the cold path (first serialization)
+'   GREEN  #C8E6C9/#2E7D32  the warm path (every later serialization)
+'   PURPLE #E1BEE7/#6A1B9A  the generated stack-safe protobuf PDA
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+
+title <b>Serialization pipeline, before → after</b>\nbefore: <latex>\Theta\!\left(\sum_{e\in m}|\mathrm{prost}(e)|\right)</latex> re-derived per encode · after: one cold build, then <latex>\Theta(|EPM1(m)|)</latex> memcpy
+
+start
+:`EPathMap` serialization requested;
+split
+  -> **BEFORE** — the tag-1 entry walk,\n**deleted by SS-C5** (`1b576c90`);
+  :flatten the trie to a `repeated Par`
+  list at **tag 1**;<<#FFCDD2>>
+  :re-encode **each entry from scratch**,
+  hereditarily through nested maps —
+  on **every** encode AND every `encoded_len`;<<#FFCDD2>>
+  :far side re-files the list,
+  one `encode_trie_path` per entry,
+  under prost's 100-level read budget
+  (ceiling measured at 31–33 levels);<<#FFCDD2>>
+  note right #FFEBEE
+    ⚠ **No remaining caller.** The arm was
+    deleted, not converted — removing the
+    traversal removed both the per-encode
+    walk and the inherited read ceiling.
+  end note
+  kill
+split again
+  -> **AFTER** — the EPM1 snapshot (SS-C9, `26876b65`);
+  if (snapshot memoized?) then (no — **COLD**, once per clone family)
+    :take PathMap's compact-tree accessor →
+    **ACTree03 arena**, verbatim;<<#B2DFDB>>
+    :enumerate map values in arena value order,
+    encode each on the **generated protobuf PDA**
+    (explicit work/value stacks — flat native stack);<<#E1BEE7>>
+    :assemble EPM1 = magic · version · mode ·
+    arena · value table, stored in
+    `OnceLock<Vec<u8>>` on the `EntryTrie`;<<#B2DFDB>>
+  else (yes — **WARM**)
+  endif
+  :**one memcpy** of the snapshot into the carrier:
+  prost **field 9** (`bytes`) / bincode **first field**;<<#C8E6C9>>
+  note right #E8F5E9
+    ★ Shared by every clone of the trie: warm
+    encode is <latex>\mathcal{O}(1)</latex> work before the
+    caller's required copy — measured **20 ns**
+    warm accessor at 1,024 entries.  A cached
+    `EpmLayout` keeps only the topology prefix,
+    so nested map-value chains do not retain
+    <latex>\Theta(d^2)</latex> suffix bytes.
+  end note
+  stop
+end split
+
+legend bottom
+  |= cell |= meaning |
+  |<#FFCDD2>| the deleted hereditary per-entry walk |
+  |<#B2DFDB>| cold path — first serialization of a clone family |
+  |<#E1BEE7>| generated stack-safe protobuf PDA (value stream) |
+  |<#C8E6C9>| warm path — memoized snapshot memcpy |
+endlegend
+
+@enduml

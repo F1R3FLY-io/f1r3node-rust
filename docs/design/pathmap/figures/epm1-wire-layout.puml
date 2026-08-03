@@ -1,0 +1,81 @@
+@startuml epm1-wire-layout
+' ============================================================================
+' PathMap report §5.2 — the EPM1 wire layout and where it embeds on each lane.
+'
+'   EPM1 ::= "EPM1" | version | mode | varint(|ACTree03|) | ACTree03
+'            | varint(value_count) | value_count × (varint(|Par|) | protobuf(Par))
+'
+' Diagram type: a COMPONENT/RECTANGLE layout diagram, chosen because the fact
+' being illustrated is BYTE ORDER AND CONTAINMENT — which segments appear, in
+' which order, and inside which carrier field on each of the two lanes.  Flow
+' arrows would misstate it; the wire is a static layout, not a process.
+'
+' Colour convention — one hue per concept:
+'   TEAL   #B2DFDB/#00695C  the EPM1 magic/version/mode prefix
+'   GREEN  #C8E6C9/#2E7D32  the ACTree03 topology arena (set AND map)
+'   PURPLE #E1BEE7/#6A1B9A  the map-value table (map mode only)
+'   BLUE   #BBDEFB/#1565C0  Lane P (prost / network-consensus) carrier
+'   ORANGE #FFE0B2/#E65100  Lane B (bincode / cold-store) carrier
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam rectangleBorderColor #455A64
+skinparam ArrowThickness 1.4
+
+title <b>EPM1 — one versioned trie snapshot, embedded verbatim on both lanes</b>\nset mode has NO value table; map values are enumerated in the arena's value order
+
+rectangle "**The EPM1 snapshot** — one contiguous byte string, memoized `OnceLock<Vec<u8>>`, shared by the clone family" as EPM1 #FAFAFA {
+  rectangle "`\"EPM1\"`\n4-byte magic" as Magic #B2DFDB
+  rectangle "`version`\n= 1" as Version #B2DFDB
+  rectangle "`mode`\nset | map" as Mode #B2DFDB
+  rectangle "`varint(|ACTree03|)`\narena length" as ALen #C8E6C9
+  rectangle "**ACTree03 arena**\nPathMap's compact-tree topology,\nverbatim from the accessor" as Arena #C8E6C9
+  rectangle "`varint(value_count)`\n**map mode only**" as VCount #E1BEE7
+  rectangle "`value_count ×`\n`(varint(|Par|) ‖ protobuf(Par))`\nvalues in **arena value order**,\nencoded by the **generated protobuf PDA**" as Values #E1BEE7
+}
+
+Magic -[hidden]right-> Version
+Version -[hidden]right-> Mode
+Mode -[hidden]right-> ALen
+ALen -[hidden]right-> Arena
+Arena -[hidden]right-> VCount
+VCount -[hidden]right-> Values
+
+rectangle "**Lane P — prost, network / consensus**\n`EPathMap` **field 9**, wiretype 2 (`bytes`)\ncopies the SAME snapshot byte string" as LaneP #BBDEFB
+rectangle "**Lane B — bincode, cold store / LMDB**\nthe first `EPathMap` field\ncopies the SAME snapshot byte string" as LaneB #FFE0B2
+
+EPM1 -[#1565C0,bold]-> LaneP : verbatim copy
+EPM1 -[#E65100,bold]-> LaneB : verbatim copy
+
+note bottom of LaneP #E3F2FD
+  ★ **Neither surface reconstructs a `Vec<Par>`.**  A tag-9 `bytes`
+  field costs prost **zero** message levels, and the generated
+  decode PDA reads the snapshot without a recursion ceiling —
+  depth 4,096 round-trips on a 256 KiB test stack.
+end note
+
+note bottom of LaneB #FFF8E1
+  ★ **Set mode ends at the arena** — there is no value table to
+  parse, and value-free terminating topology is representable
+  (something a `ps: Vec<Par>` projection structurally cannot say).
+end note
+
+note right of Values #F3E5F5
+  ★ The cold snapshot cost is linear in trie nodes plus encoded
+  values.  A cached `EpmLayout` retains only the topology prefix,
+  avoiding <latex>\Theta(d^2)</latex> retained suffix bytes in
+  nested map-value chains.  Warm access is
+  <latex>\mathcal{O}(1)</latex> before the caller's required copy.
+end note
+
+legend bottom
+  |= cell |= meaning |
+  |<#B2DFDB>| EPM1 prefix: magic · version · mode |
+  |<#C8E6C9>| ACTree03 topology arena (both modes) |
+  |<#E1BEE7>| map-value table (map mode only; generated-PDA encoded) |
+  |<#BBDEFB>| Lane P carrier — prost field 9 |
+  |<#FFE0B2>| Lane B carrier — bincode first field |
+endlegend
+
+@enduml

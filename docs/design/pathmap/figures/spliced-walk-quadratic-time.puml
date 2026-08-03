@@ -1,7 +1,12 @@
 @startuml spliced-walk-quadratic-time
 ' ============================================================================
-' #124 — the three event-hash legs are MEASURED, NOT CONVERTED, and the spliced
-' path is Theta(depth^2) in TIME as well as Theta(depth) in STACK.
+' HISTORICAL BEFORE-STATE (PathMap report, "The dissolved store") — the
+' spliced event-hash path was Theta(depth^2) in TIME as well as Theta(depth)
+' in STACK.  The dispatch site this diagram depicts was DELETED with the
+' InternedEPathMap store (SS-Y6, c0385b79): `contains_par` is constant-false,
+' the spliced emitter is unreachable, and the surviving branch is the
+' trampolined depth-flat `cold_encode`.  Retained as the measured
+' before-mechanism of a before→after result, not as a live path.
 '
 ' Diagram type: a SEQUENCE DIAGRAM with an explicit per-level repetition frame.
 ' Chosen because the quadratic cost is a fact about CALL MULTIPLICITY over
@@ -24,7 +29,7 @@ skinparam sequenceArrowThickness 1.4
 skinparam ParticipantBorderColor #455A64
 skinparam SequenceLifeLineBorderColor #90A4AE
 
-title <b>#124 — the spliced walk is <latex>\Theta(d^2)</latex> in TIME, not only <latex>\Theta(d)</latex> in STACK</b>\nMEASURED, NOT CONVERTED — and the repair is nearly free
+title <b>HISTORICAL — the spliced walk was <latex>\Theta(d^2)</latex> in TIME, not only <latex>\Theta(d)</latex> in STACK</b>\nThe site was deleted with its store (SS-Y6, c0385b79); the surviving branch is the flat cold encoder
 
 participant "`hash_produce` /\n`hash_consume`" as H #ECEFF1
 participant "`event_hash_bytes_<leg>`\n`models/src/rust/`\n`spliced_event_bytes.rs`" as L #FFCDD2

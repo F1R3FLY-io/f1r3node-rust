@@ -1,0 +1,26 @@
+# EPM1 fixed-scale benchmark — transcription of record (durable copy of the report table)
+# Report: docs/design/pathmap/pathmap-report-2026-08-03.md §5.4
+# Measured on the warm 2026-08-03 rerun anchored at f1r3node-rust-mettail@e67a6aaa
+#   (paths added by 26876b65 and 9b3792ac; supersedes the earlier seven-sample rows while
+#   reproducing the exact serialized sizes).
+# Workload: 1024 entries, 3 shared prefix segments, 64-byte map values, 11 median samples,
+#   release profile, one Cargo job, systemd-run MemoryMax=4G MemorySwapMax=0 (zero swap).
+# Command-level: warm run 6.34 s / 104036 KiB peak RSS; preceding cold build+run
+#   4 min 34.55 s / 957940 KiB peak RSS; both without swap.
+# Regenerate: see report Appendix A (models bench epathmap_pathmap_native under the same caps).
+# Columns: measurement = row id; unit = B, ns, ns/key, or x (dimensionless ratio);
+#   set / map = the value for the set-mode and map-mode subject at this fixed scale.
+measurement	unit	set	map
+epm1_bytes	B	6252	87669
+list_projection_bytes	B	491528	662536
+size_ratio_projection_over_epm1	x	78.619	7.557
+native_indexed_lookup	ns/key	32.00	41.86
+linear_projected_lookup	ns/key	257975.03	258842.32
+lookup_ratio_projected_over_native	x	8060.736	6183.905
+cold_epm1_encode	ns	105990	478094
+warm_snapshot_accessor	ns	20	20
+direct_epm1_decode	ns	407751	1576672
+generated_protobuf_decode_shared_bytes	ns	2704396	4044712
+bincode_decode_generated_encoder_bytes	ns	2711680	4093684
+native_join	ns	84830	853895
+merkleize	ns	60204	197864

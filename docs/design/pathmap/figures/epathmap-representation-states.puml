@@ -1,0 +1,73 @@
+@startuml epathmap-representation-states
+' ============================================================================
+' PathMap report §5.1 — the homogeneous EPathMap representation
+'   EPathMap = Empty | Set(PathMap<()>) | Map(PathMap<Par>)
+'
+' Diagram type: a STATE DIAGRAM, chosen because the representation's defining
+' property is a one-way MODE SELECTION: a neutral Empty commits to exactly one
+' algebra (set or map) at the first membership operation, mixed membership is
+' rejected, and a mode-dependent mutation on neutral Empty is refused with
+' AmbiguousEmpty rather than guessed.  A state diagram is the only type that
+' makes "which operations are answerable in which mode" legible at a glance.
+'
+' Colour convention — one hue per concept:
+'   BLUE-GREY #ECEFF1/#455A64  the mode-neutral Empty
+'   GREEN     #C8E6C9/#2E7D32  set mode — PathMap<()>
+'   PURPLE    #E1BEE7/#6A1B9A  map mode — PathMap<Par>
+'   AMBER     #FFE082/#EF6C00  the AmbiguousEmpty refusal
+'   RED       #FFCDD2/#C62828  the mixed-membership rejection
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateBackgroundColor #ECEFF1
+
+title <b>The homogeneous EPathMap representation</b>\none representation at a time: <latex>\mathtt{Empty}\;|\;\mathtt{Set}(\mathrm{PathMap}\langle()\rangle)\;|\;\mathtt{Map}(\mathrm{PathMap}\langle\mathrm{Par}\rangle)</latex>
+
+state "**Empty**\nmode-neutral" as Empty #ECEFF1
+
+state "**Set(PathMap<()>)**\nset algebra — lawful lattice\ntyped alias: `RholangSetPathMap`" as SetMode #C8E6C9
+state "**Map(PathMap<Par>)**\nmap algebra — value slots\ntyped alias: `RholangMapPathMap`" as MapMode #E1BEE7
+
+state "**AmbiguousEmpty**\nthe refusal, not a state of the value" as Ambiguous #FFE082
+
+[*] --> Empty : `{| |}`
+
+Empty -[#2E7D32,bold]-> SetMode : first **set** membership\noperation selects the mode
+Empty -[#6A1B9A,bold]-> MapMode : first **map** operation\n(e.g. `set(k, v)`) selects the mode
+
+Empty -[#EF6C00,dashed]-> Ambiguous : mode-dependent mutation\n(e.g. `setSubtrie`) on neutral empty
+Ambiguous -[#EF6C00,dashed]-> Empty : caller must select a mode first;\nthe value is unchanged
+
+SetMode -[#2E7D32]-> SetMode : set ops over the `PathMap<()>` lattice:\njoin · meet · subtract · restrict · zipper walks
+MapMode -[#6A1B9A]-> MapMode : map ops over `PathMap<Par>`:\n`get` · `set` · `delete` · join/meet with\n`ValueConflict` on unequal overlap · key-mask subtraction
+
+SetMode -[#C62828,dashed]-> SetMode : **map** membership op → **rejected**\n(mixed set/map membership is unspellable)
+MapMode -[#C62828,dashed]-> MapMode : **set** membership op → **rejected**
+
+note bottom of SetMode #E8F5E9
+  ★ **An empty selected trie stays selected** when it carries explicit
+  value-free terminating topology: `PathMap::is_empty` distinguishes
+  *"no terminating path"* from *"no associated value"*.  Value-free
+  topology therefore survives Eq / Hash / Ord and every wire round trip.
+end note
+
+note bottom of Ambiguous #FFF3E0
+  ★ **Why refuse rather than guess.** An entirely neutral `{| |}` cannot
+  answer a mode-dependent mutation without silently choosing an algebra.
+  `AmbiguousEmpty` is the edge case that prevents empty from selecting
+  the wrong lattice on the caller's behalf.
+end note
+
+legend bottom
+  |= cell |= meaning |
+  |<#ECEFF1>| mode-neutral empty |
+  |<#C8E6C9>| set mode — `PathMap<()>`, lawful lattice |
+  |<#E1BEE7>| map mode — `PathMap<Par>`, value-bearing |
+  |<#FFE082>| `AmbiguousEmpty` refusal on neutral empty |
+  |<#FFCDD2>| mixed set/map membership rejection |
+endlegend
+
+@enduml
