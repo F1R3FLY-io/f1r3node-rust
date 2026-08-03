@@ -2242,6 +2242,19 @@ paths and corrupted dense maps. The iterative reader now emits only structural l
 values; internal compression nodes remain structural. **MEASURED**: all 15 EPM1 snapshot tests pass,
 including compact line, branch, dense, malformed, legacy-read, and depth-4,096 shapes.
 
+**2026-08-03 zero-copy ACT decode refinement (`9b3792ac`).** The hypothesis was that the pausable
+protobuf decoder did not need to copy the ACTree03 arena out of the owned EPM1 `Bytes`, and that the
+iterative ACT visitor did not need to clone the accumulated path at every value or dangling endpoint.
+The method replaced the arena `Vec<u8>` with an in-snapshot byte range and changed the visitor boundary
+from owned `Vec<u8>` to borrowed `&[u8]`; the PathMap reconstruction API already accepts borrowed byte
+paths. A pointer-identity regression proves that the decoded arena aliases the owned snapshot rather
+than a second allocation. **MEASURED** under a 4 GiB RSS hard maximum, zero swap, and one Cargo job:
+the codec unit set is 7/7; EPM1, cache, bincode-shape, and native-zipper integration is 42/42; and the
+independent protobuf/bincode differentials, canonical fixtures, and byte goldens are 59/59. The result
+changes neither EPM1 bytes nor accepted inputs. It removes one arena-sized allocation and one path-sized
+allocation per reconstructed endpoint. This is an allocation refinement inside the already-iterative
+SS-C9 traversal, not a new class change, so it adds no §0 identifier.
+
 A second defect was found by the retained native-query scan oracle. PathMap's zipper-rooted iterator
 reports keys relative to its focus; `collect_subtrie_values` decoded those suffixes as if they were
 absolute canonical keys. The corrected traversal reattaches the borrowed prefix in one reused byte
@@ -2261,6 +2274,7 @@ The focused closure matrix is **MEASURED**:
 |---|---:|
 | `epathmap_algebra` | 6 passed |
 | `epathmap_epm1_snapshot` | 15 passed |
+| zero-copy ACT refinement | codec 7/7; EPM1/cache/bincode-shape/native-zipper 42/42; independent byte differentials and goldens 59/59 |
 | `epathmap_pathmap_native_zipper` | 7 passed |
 | `epathmap_collection_methods_spec` | 2 passed; map/set methods stay `EPathmapBody`, neutral empty specializes on first insertion |
 | `formal_equivalence_manifest` | 4 passed |
@@ -2305,6 +2319,9 @@ The snapshot cache retains one completed byte string per clone family after firs
 `EpmLayout` adds one topology prefix so the generated encoder can stream nested map values without
 caching complete nested suffixes. Cold serialization still performs one compact-tree build and one
 stack-safe value pass; the gain is that repeated serialization becomes a shared O(1) lookup plus copy.
+The pausable decoder stores only a byte range into its owned snapshot, so ACT validation/reconstruction
+does not retain a second arena image; reconstruction still allocates the destination PathMap and its
+explicit validation/work stacks, which are the output and safety state rather than duplicate wire data.
 Map algebra must compare overlapping `Par` values because `Par` is not a lattice; that comparison is
 generated and stack-safe.
 

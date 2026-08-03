@@ -5866,6 +5866,16 @@ is identical to the retained absolute-key scan, including result order.
   `models/src/rust/rhoapi_ext.rs:699`, and the kernel-checked generic PDA equivalence theorem is
   `compile_run_equivalence` at line 84 of `formal/rocq/stack_safe_pda/theories/StackSafePDA.v`.
 
+**2026-08-03 byte-neutral allocation refinement.** Commit `9b3792ac` changes the pausable decoder's
+ACTree03 owner from a copied `Vec<u8>` to a byte range inside the already-owned EPM1 snapshot and passes
+the iterative visitor's current path by borrowed slice rather than cloning it per endpoint. The encoder,
+EPM1 grammar, validation predicates, ordinal mapping, and destination PathMap operations are unchanged.
+The new pointer-identity regression proves the arena is borrowed. Under a 4 GiB RSS hard maximum, zero
+swap, and one Cargo job, the codec and integration sets pass 49/49, while 59/59 independent protobuf,
+bincode, canonical-fixture, and byte-golden cases pin identical output. All seven consensus axes are
+therefore **NO**; Appendix B.3 row 69 and `register.toml` record the measured exemption instead of
+inventing a second CBR entry for unchanged behavior.
+
 #### Authority and residuals
 
 The owner required direct trie serialization, specialized set/map modes, ordinary Rust stacks, no
@@ -9642,6 +9652,7 @@ it.
 | 66 | `3fb4e21b` | thread-scope genesis-cache counters used by tests | `TESTS_ONLY` | The source hunk is in `casper/src/rust/test_utils`, behind the test-support feature, and the remaining files are tests. It prevents process-wide counters from observing neighboring tests; no node artifact, genesis value, or consensus byte changes. **DERIVED**. |
 | 67 | `d958b3b3` | **C7a** — the fused chain stops interning and reads the maintained trie values directly | `BYTE_NEUTRAL_MEASURED` | `FusedChain` already owns `source_map`; its cached `.map`, `.locally_free`, `.connective_used`, and `.eval_stable` reads become the identical `EntryTrie::trie()`, `union_locally_free()`, `any_connective_used()` plus `remainder.is_some()`, and `eval_stable_epathmap(source_map)` reads. This removes the intern store's **only production caller**, including its digest walk and global-mutex rendezvous. ⚠ Fusion is byte-invisible by design, so the named live-match/replay/differential/subtrie/zipper/charge suites establish fallback equivalence but cannot prove the fused path remained live; the absent vitality assertion is recorded as a separate obligation rather than represented as evidence it cannot supply. `models --lib` **99/99**; live match **5/5**; replay **1/1**; differential **2/2**; getSubtrie **4/4**; setSubtrie **5/5**; zipper navigation **10/10**; charge trace **9/9**. **DERIVED**. |
 | 68 | `120083be` | **C7b** — the encoder's two intern-cell cache arms are deleted | `BYTE_NEUTRAL_MEASURED` | `encode_raw` and `encoded_len` read a `OnceLock` whose contents were populated only by running the same canonical encoder arms that now run unconditionally. After C7a removed the only production interning call, no production path fills that cell, so the removed fast paths were unreachable in production; the now-unused imports are removed with them. ★ The byte set is pinned independently: spliced events **11/11**, cold event-hash identity **6/6**, canonical fixtures **13/13**, serialized-Par goldens **7/7**, bincode decoder differential **13/13**, bincode encoder differential **13/13**, EPathMap canonicalization **7/7**, `models --lib` **99/99**, intern-store isolation **44/44**. ⚠ The cost statement is explicit: `encoded_len` is O(map) without a filled cell, but C7a made the prior O(1) filled-cell state unreachable in production. **DERIVED**. |
+| 69 | `9b3792ac` | EPM1 decode borrows the ACTree03 arena and current path instead of copying them | `BYTE_NEUTRAL_MEASURED` | The pausable decoder replaces an arena `Vec<u8>` with a range into its owned EPM1 snapshot; the ACT visitor replaces an endpoint `Vec<u8>` clone with `&[u8]`. Encoder code, EPM1 grammar, validation decisions, ordinal mapping, and PathMap insert/create operations are unchanged. A pointer-identity regression proves the arena aliases the input snapshot. Under `MemoryMax=4G`, zero swap, and one Cargo job: codec 7/7; EPM1/cache/bincode-shape/native-zipper integration 42/42; protobuf encoder differential 13/13; bincode encoder differential 13/13; bincode decoder differential 13/13; canonical fixtures 13/13; byte goldens 7/7. The change removes duplicate allocation only; every consensus axis is unchanged. **DERIVED**. |
 
 ⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031). Neither are `7c0cfd0a`
 ([CBR-034](#cbr-034)) nor `87ee699c` ([CBR-035](#cbr-035)).

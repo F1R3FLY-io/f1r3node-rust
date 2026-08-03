@@ -1740,6 +1740,12 @@ window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 68 — C7b removes encode_raw and encoded_len cache arms whose OnceLock contents were produced only by the same encoder paths that now run unconditionally; after C7a, no production caller fills the cell. Byte identity is measured by epathmap_spliced_event_bytes 11/11, event_hash_leg_cold_encode_identity 6/6, epathmap_canonical_fixtures 13/13, serializer_par_byte_goldens 7/7, bincode_decoder_differential 13/13, bincode_encoder_differential 13/13, epathmap_canonicalization 7/7, models --lib 99/99, and epathmap_intern_store 44/44. The documented cost is that encoded_len is O(map), but C7a made the prior O(1) filled-cell state unreachable in production. [DERIVED]"
 
+[[exempt]]
+commit = "9b3792ac"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 69 — the pausable EPM1 decoder replaces a copied ACTree03 Vec<u8> with a byte range inside its already-owned snapshot, and the iterative ACT visitor passes the current path as &[u8] rather than cloning a Vec at each endpoint. Encoder code, EPM1 grammar, validation decisions, ordinal mapping, and PathMap insert/create operations are unchanged. A pointer-identity regression proves zero-copy ownership. Under MemoryMax=4G, MemorySwapMax=0, and one Cargo job: codec 7/7; EPM1/cache/bincode-shape/native-zipper 42/42; protobuf encoder differential 13/13; bincode encoder differential 13/13; bincode decoder differential 13/13; canonical fixtures 13/13; byte goldens 7/7. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`
