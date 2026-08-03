@@ -283,9 +283,9 @@ pub struct RunOptions {
     #[arg(long = "api-keep-alive-timeout", value_parser = ValueParser::new(parse_duration))]
     pub api_keep_alive_timeout: Option<Duration>,
 
-    /// The most aggressive keep-alive time clients are permitted to configure
-    #[arg(long = "api-permit-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
-    pub api_permit_keep_alive_time: Option<Duration>,
+    /// TCP-level SO_KEEPALIVE idle duration for accepted API sockets
+    #[arg(long = "api-tcp-keepalive-time", value_parser = ValueParser::new(parse_duration))]
+    pub api_tcp_keepalive_time: Option<Duration>,
 
     /// Sets the deadline applied to every request handler
     #[arg(long = "api-request-timeout", value_parser = ValueParser::new(parse_duration))]

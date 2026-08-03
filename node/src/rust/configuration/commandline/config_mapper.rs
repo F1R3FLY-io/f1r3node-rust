@@ -135,8 +135,8 @@ impl ConfigMapper<Options> for NodeConf {
                 run.api_keep_alive_timeout,
             );
             Self::try_override_value(
-                &mut self.api_server.permit_keep_alive_time,
-                run.api_permit_keep_alive_time,
+                &mut self.api_server.tcp_keepalive_time,
+                run.api_tcp_keepalive_time,
             );
             Self::try_override_value(
                 &mut self.api_server.request_timeout,
@@ -454,7 +454,7 @@ mod tests {
         "--api-enable-reporting",
         "--api-keep-alive-time=111111seconds",
         "--api-keep-alive-timeout=111111seconds",
-        "--api-permit-keep-alive-time=111111seconds",
+        "--api-tcp-keepalive-time=111111seconds",
         "--api-request-timeout=111111seconds",
         "--api-max-connection-age=111111seconds",
         "--api-max-connection-age-grace=111111seconds",
@@ -626,7 +626,7 @@ mod tests {
                 api_enable_reporting: true,
                 api_keep_alive_time: Some(Duration::from_secs(111111)),
                 api_keep_alive_timeout: Some(Duration::from_secs(111111)),
-                api_permit_keep_alive_time: Some(Duration::from_secs(111111)),
+                api_tcp_keepalive_time: Some(Duration::from_secs(111111)),
                 api_request_timeout: Some(Duration::from_secs(111111)),
                 api_max_connection_age: Some(Duration::from_secs(111111)),
                 api_max_connection_age_grace: Some(Duration::from_secs(111111)),
@@ -738,7 +738,7 @@ mod tests {
                 enable_reporting: false,
                 keep_alive_time: Duration::from_secs(2),
                 keep_alive_timeout: Duration::from_secs(20),
-                permit_keep_alive_time: Duration::from_secs(5),
+                tcp_keepalive_time: Duration::from_secs(5),
                 request_timeout: Duration::from_secs(300),
                 max_connection_age: Duration::from_secs(3600),
                 max_connection_age_grace: Duration::from_secs(5),
@@ -921,7 +921,7 @@ mod tests {
             Duration::from_secs(111111)
         );
         assert_eq!(
-            default_config.api_server.permit_keep_alive_time,
+            default_config.api_server.tcp_keepalive_time,
             Duration::from_secs(111111)
         );
         assert_eq!(

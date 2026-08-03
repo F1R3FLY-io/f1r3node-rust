@@ -24,13 +24,13 @@ fn configure_server(
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
-    permit_keep_alive_time: Duration,
+    tcp_keepalive_time: Duration,
     request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
 ) -> TonicServer {
     TonicServer::builder()
-        .tcp_keepalive(Some(permit_keep_alive_time))
+        .tcp_keepalive(Some(tcp_keepalive_time))
         .max_frame_size(Some(max_message_size as u32))
         .http2_keepalive_interval(Some(keep_alive_time))
         .http2_keepalive_timeout(Some(keep_alive_timeout))
@@ -59,7 +59,7 @@ fn configure_server(
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - TCP keep-alive duration
+/// * `tcp_keepalive_time` - TCP keep-alive duration
 /// * `request_timeout` - Per-request timeout
 /// * `max_connection_age` - Maximum age of a connection before it is recycled
 /// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
@@ -71,7 +71,7 @@ pub async fn acquire_internal_server(
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
-    permit_keep_alive_time: Duration,
+    tcp_keepalive_time: Duration,
     request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
@@ -93,7 +93,7 @@ pub async fn acquire_internal_server(
         max_message_size,
         keep_alive_time,
         keep_alive_timeout,
-        permit_keep_alive_time,
+        tcp_keepalive_time,
         request_timeout,
         max_connection_age,
         max_connection_age_grace,
@@ -119,7 +119,7 @@ pub async fn acquire_internal_server(
 /// * `max_message_size` - Maximum inbound message size in bytes
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
-/// * `permit_keep_alive_time` - TCP keep-alive duration
+/// * `tcp_keepalive_time` - TCP keep-alive duration
 /// * `request_timeout` - Per-request timeout
 /// * `max_connection_age` - Maximum age of a connection before it is recycled
 /// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
@@ -128,7 +128,7 @@ pub fn acquire_external_server(
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
-    permit_keep_alive_time: Duration,
+    tcp_keepalive_time: Duration,
     request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
@@ -147,7 +147,7 @@ pub fn acquire_external_server(
         max_message_size,
         keep_alive_time,
         keep_alive_timeout,
-        permit_keep_alive_time,
+        tcp_keepalive_time,
         request_timeout,
         max_connection_age,
         max_connection_age_grace,
