@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use models::rust::rholang::schema_meta::{
-    Disposition, EquivalenceEvidence, EPATHMAP_FORMAL_EVIDENCE, PDA_EQUIVALENCE_EVIDENCE,
+    BOUNDARY_PDA_EQUIVALENCE_EVIDENCE, BoundaryEquivalenceEvidence, Disposition,
+    EPATHMAP_FORMAL_EVIDENCE, EquivalenceEvidence, PDA_EQUIVALENCE_EVIDENCE,
 };
 use models::rust::rholang::schema_meta_tables::{
     DERIVE_DISPOSITION_REGISTRY, HAND_WRITTEN_TRAVERSALS,
@@ -85,6 +86,60 @@ fn every_binding_resolves_to_a_checked_theorem_and_executable_oracle() {
         let executable = executable_cache
             .entry(item.executable_file)
             .or_insert_with(|| read_repository_file(item.executable_file));
+        assert!(
+            executable.contains(item.executable_marker),
+            "{} names absent executable marker `{}` in {}",
+            item.surface,
+            item.executable_marker,
+            item.executable_file
+        );
+    }
+}
+
+#[test]
+fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
+    const REQUIRED: &[&str] = &[
+        "node::Par-to-RhoExpr conversion",
+        "node::EPathMap-to-RhoExpr mode conversion",
+        "node::RhoExpr::Clone",
+        "node::RhoExpr::Serialize",
+        "node::RhoExpr::Debug",
+        "node::RhoExpr::Drop",
+    ];
+
+    let mut evidence = BTreeMap::<&str, &BoundaryEquivalenceEvidence>::new();
+    for item in BOUNDARY_PDA_EQUIVALENCE_EVIDENCE {
+        assert!(
+            evidence.insert(item.surface, item).is_none(),
+            "duplicate boundary formal-equivalence evidence for `{}`",
+            item.surface
+        );
+    }
+    assert_eq!(
+        evidence.keys().copied().collect::<BTreeSet<_>>(),
+        REQUIRED.iter().copied().collect(),
+        "the closed boundary-PDA inventory and its evidence table differ"
+    );
+
+    for item in evidence.values() {
+        let production = read_repository_file(item.production_file);
+        assert!(
+            production.contains(item.production_marker),
+            "{} names absent production marker `{}` in {}",
+            item.surface,
+            item.production_marker,
+            item.production_file
+        );
+        let proof = read_repository_file(item.proof_file);
+        assert!(
+            proof.contains(&format!("Theorem {}", item.theorem))
+                || proof.contains(&format!("Corollary {}", item.theorem)),
+            "{} names absent theorem `{}` in {}",
+            item.surface,
+            item.theorem,
+            item.proof_file
+        );
+        let executable = read_repository_file(item.executable_file);
         assert!(
             executable.contains(item.executable_marker),
             "{} names absent executable marker `{}` in {}",

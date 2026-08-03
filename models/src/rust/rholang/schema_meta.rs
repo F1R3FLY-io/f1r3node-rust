@@ -121,6 +121,21 @@ pub struct EquivalenceEvidence {
     pub executable_marker: &'static str,
 }
 
+/// Formal and executable binding for a hand-written PDA outside the generated
+/// rhoapi schema. `production_file` and `production_marker` prevent the generic
+/// theorem and a passing oracle from being cited for an implementation that is
+/// no longer present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundaryEquivalenceEvidence {
+    pub surface: &'static str,
+    pub production_file: &'static str,
+    pub production_marker: &'static str,
+    pub proof_file: &'static str,
+    pub theorem: &'static str,
+    pub executable_file: &'static str,
+    pub executable_marker: &'static str,
+}
+
 const PDA_PROOF: &str = "formal/rocq/stack_safe_pda/theories/StackSafePDA.v";
 
 /// Complete evidence map for every generated or hand-written recursive
@@ -242,6 +257,67 @@ pub static PDA_EQUIVALENCE_EVIDENCE: &[EquivalenceEvidence] = &[
         theorem: "drop_machine_reaches_one_completion",
         executable_file: "models/tests/par_protobuf_stack_safety.rs",
         executable_marker: "message_clear_tears_down_a_deep_term_iteratively",
+    },
+];
+
+/// Repository-boundary PDAs that are not generated rhoapi traversals. The
+/// formal manifest checks this table against an independent closed surface set,
+/// resolves every production marker, theorem, and executable marker, and
+/// rejects duplicate rows.
+pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &[
+    BoundaryEquivalenceEvidence {
+        surface: "node::Par-to-RhoExpr conversion",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "pub(super) fn from_par(par: Par) -> Option<RhoExpr>",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "conversion_pda_matches_recursive_oracle_for_every_expr_variant",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "node::EPathMap-to-RhoExpr mode conversion",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "Work::PathMap(pathmap) => match pathmap.mode()",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "conversion_pda_matches_recursive_oracle_for_every_epathmap_mode",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "node::RhoExpr::Clone",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "impl Clone for RhoExpr",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "stack_safe_traits_preserve_derived_json_shapes",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "node::RhoExpr::Serialize",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "impl serde::Serialize for RhoExpr",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "stack_safe_traits_preserve_derived_json_shapes",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "node::RhoExpr::Debug",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "impl std::fmt::Debug for RhoExpr",
+        proof_file: PDA_PROOF,
+        theorem: "pda_fold_equivalent_to_recursive_fold",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "stack_safe_traits_preserve_derived_json_shapes",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "node::RhoExpr::Drop",
+        production_file: "node/src/rust/api/rho_expr_pda.rs",
+        production_marker: "impl Drop for RhoExpr",
+        proof_file: PDA_PROOF,
+        theorem: "drop_machine_reaches_one_completion",
+        executable_file: "node/tests/support/rho_expr_pda_tests.rs",
+        executable_marker: "deep_conversion_clone_json_debug_and_drop_fit_small_stack",
     },
 ];
 

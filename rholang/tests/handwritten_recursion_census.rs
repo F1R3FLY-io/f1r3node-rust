@@ -74,6 +74,7 @@ const CRATE_ROOTS: &[&str] = &[
     "crypto/src",
     "block-storage/src",
     "rho-pure-eval/src",
+    "node/src",
 ];
 
 /// The recursive term family. A component is IN SCOPE when any of its functions mentions one
@@ -273,6 +274,25 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     (
         "casper/src/rust/api/block_api.rs",
         Disposition::NotATermDepthCycle("API surface over block messages"),
+    ),
+    (
+        "node/src/rust/api/rho_expr_pda.rs",
+        Disposition::Measured(
+            "the production conversion, Clone, Serialize, Debug, and Drop implementations are \
+             explicit worklist machines; `rho_expr_pda_tests::deep_conversion_clone_json_debug_and_drop_fit_small_stack` \
+             drives their complete lifecycle to depth 16,384 on 256 KiB. The reported \
+             clone/serialize SCCs are conservative name-collision over-reports: scalar \
+             `String::clone` and `RawValue::serialize` calls share method names with the local \
+             trait entry points but do not re-enter them",
+        ),
+    ),
+    (
+        "node/src/rust/runtime/servers_instances.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `Send` is `std::marker::Send` in async server bounds, not \
+             rhoapi::Send, and the builder methods called by `ServersInstances::build` do not \
+             recursively invoke that constructor",
+        ),
     ),
     (
         "comm/src/rust/transport/grpc_transport.rs",

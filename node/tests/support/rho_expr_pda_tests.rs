@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EMap, ENeg, Expr, KeyValuePair, Par};
+use models::rhoapi::{EMap, ENeg, EPathMap, Expr, KeyValuePair, Par};
 
 use super::{
-    rho_expr_conversion_oracle as oracle, rho_expr_pda, RhoExpr, RhoPathMap, RhoPathMapBinding,
-    RhoUnforg,
+    RhoExpr, RhoPathMap, RhoPathMapBinding, RhoUnforg, rho_expr_conversion_oracle as oracle,
+    rho_expr_pda,
 };
 
 #[path = "../../../models/tests/par_corpus/mod.rs"]
@@ -73,6 +73,60 @@ fn conversion_pda_matches_recursive_oracle_for_par_boundaries() {
             expected.as_ref().map(json),
             actual.as_ref().map(json),
             "recursive/PDA Par mismatch at fixture {index}",
+        );
+    }
+}
+
+#[test]
+fn conversion_pda_matches_recursive_oracle_for_every_epathmap_mode() {
+    let cases = [
+        ("neutral empty", EPathMap::default()),
+        (
+            "set PathMap<()> storage",
+            EPathMap::new(
+                vec![par_of(ExprInstance::GInt(1)), par_of(ExprInstance::GInt(2))],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        (
+            "map PathMap<Par> storage",
+            EPathMap::new_map(
+                [
+                    (
+                        par_of(ExprInstance::GInt(1)),
+                        par_of(ExprInstance::GString("one".to_owned())),
+                    ),
+                    (
+                        par_of(ExprInstance::GInt(2)),
+                        par_of(ExprInstance::ENegBody(ENeg {
+                            p: Some(par_of(ExprInstance::GInt(2))),
+                        })),
+                    ),
+                ],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+    ];
+    assert_eq!(
+        cases.len(),
+        3,
+        "neutral, set, and map modes are all required"
+    );
+
+    for (name, pathmap) in cases {
+        let input = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+        };
+        let expected = oracle::from_expr(input.clone()).expect("oracle returns an EPathMap view");
+        let actual = rho_expr_pda::from_expr(input).expect("PDA returns an EPathMap view");
+        assert_eq!(
+            json(&actual),
+            json(&expected),
+            "recursive/PDA mismatch for {name}"
         );
     }
 }
