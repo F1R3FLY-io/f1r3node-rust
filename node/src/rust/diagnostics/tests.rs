@@ -135,7 +135,7 @@ mod tests {
                 keep_alive_time: Duration::from_secs(60),
                 keep_alive_timeout: Duration::from_secs(20),
                 permit_keep_alive_time: Duration::from_secs(10),
-                max_connection_idle: Duration::from_secs(60),
+                request_timeout: Duration::from_secs(60),
                 max_connection_age: Duration::from_secs(60),
                 max_connection_age_grace: Duration::from_secs(60),
             },

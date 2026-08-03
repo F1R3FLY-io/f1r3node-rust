@@ -287,9 +287,9 @@ pub struct RunOptions {
     #[arg(long = "api-permit-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
     pub api_permit_keep_alive_time: Option<Duration>,
 
-    /// Sets a custom max connection idle time
-    #[arg(long = "api-max-connection-idle", value_parser = ValueParser::new(parse_duration))]
-    pub api_max_connection_idle: Option<Duration>,
+    /// Sets the deadline applied to every request handler
+    #[arg(long = "api-request-timeout", value_parser = ValueParser::new(parse_duration))]
+    pub api_request_timeout: Option<Duration>,
 
     /// Sets a custom max connection age
     #[arg(long = "api-max-connection-age", value_parser = ValueParser::new(parse_duration))]

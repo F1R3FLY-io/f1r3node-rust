@@ -198,7 +198,7 @@ impl ServersInstances {
             node_conf.api_server.keep_alive_time,
             node_conf.api_server.keep_alive_timeout,
             node_conf.api_server.permit_keep_alive_time,
-            node_conf.api_server.max_connection_idle,
+            node_conf.api_server.request_timeout,
             node_conf.api_server.max_connection_age,
             node_conf.api_server.max_connection_age_grace,
         )
@@ -227,7 +227,7 @@ impl ServersInstances {
             node_conf.api_server.keep_alive_time,
             node_conf.api_server.keep_alive_timeout,
             node_conf.api_server.permit_keep_alive_time,
-            node_conf.api_server.max_connection_idle,
+            node_conf.api_server.request_timeout,
             node_conf.api_server.max_connection_age,
             node_conf.api_server.max_connection_age_grace,
         )

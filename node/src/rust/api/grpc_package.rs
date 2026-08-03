@@ -25,7 +25,7 @@ fn configure_server(
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
     permit_keep_alive_time: Duration,
-    max_connection_idle: Duration,
+    request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
 ) -> TonicServer {
@@ -35,7 +35,7 @@ fn configure_server(
         .http2_keepalive_interval(Some(keep_alive_time))
         .http2_keepalive_timeout(Some(keep_alive_timeout))
         .http2_adaptive_window(Some(true))
-        .timeout(max_connection_idle)
+        .timeout(request_timeout)
         .max_connection_age(max_connection_age)
         .max_connection_age_grace(max_connection_age_grace)
         .concurrency_limit_per_connection(1024)
@@ -60,7 +60,7 @@ fn configure_server(
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
 /// * `permit_keep_alive_time` - TCP keep-alive duration
-/// * `max_connection_idle` - Per-request timeout
+/// * `request_timeout` - Per-request timeout
 /// * `max_connection_age` - Maximum age of a connection before it is recycled
 /// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
 pub async fn acquire_internal_server(
@@ -72,7 +72,7 @@ pub async fn acquire_internal_server(
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
     permit_keep_alive_time: Duration,
-    max_connection_idle: Duration,
+    request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
 ) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
@@ -94,7 +94,7 @@ pub async fn acquire_internal_server(
         keep_alive_time,
         keep_alive_timeout,
         permit_keep_alive_time,
-        max_connection_idle,
+        request_timeout,
         max_connection_age,
         max_connection_age_grace,
     )
@@ -120,7 +120,7 @@ pub async fn acquire_internal_server(
 /// * `keep_alive_time` - Duration for keep-alive ping interval
 /// * `keep_alive_timeout` - Duration to wait for keep-alive ping acknowledgment
 /// * `permit_keep_alive_time` - TCP keep-alive duration
-/// * `max_connection_idle` - Per-request timeout
+/// * `request_timeout` - Per-request timeout
 /// * `max_connection_age` - Maximum age of a connection before it is recycled
 /// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age
 pub fn acquire_external_server(
@@ -129,7 +129,7 @@ pub fn acquire_external_server(
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
     permit_keep_alive_time: Duration,
-    max_connection_idle: Duration,
+    request_timeout: Duration,
     max_connection_age: Duration,
     max_connection_age_grace: Duration,
 ) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
@@ -148,7 +148,7 @@ pub fn acquire_external_server(
         keep_alive_time,
         keep_alive_timeout,
         permit_keep_alive_time,
-        max_connection_idle,
+        request_timeout,
         max_connection_age,
         max_connection_age_grace,
     )
