@@ -92,17 +92,17 @@
 //!
 //! `EPathMap` is `extern_path`'d, so the descriptor-driven generator emits no
 //! program for it and [`crate::rust::rholang::bincode_schema::EPATHMAP_PROGRAM`] is
-//! hand-written. Its `ps` is the canonical projection of the map's entry trie
-//! (`EPathMap::ps()`), memoized on the value, which is the same choice its
-//! `Serialize` impl makes.
+//! hand-written. Its first field is the canonical EPM1 byte snapshot borrowed
+//! directly from the value. EPM1 contains PathMap's compact ACTree03 topology
+//! and, in map mode, its generated stack-safe `Par` value table. No decoded
+//! entry projection participates.
 //!
-//! ⚠ ★ **This section used to describe an ARENA.** A ground map's canonical
-//! `ps` was *constructed* by re-reading a trie, and a constructed vector cannot
-//! be served by a borrow-returning accessor, so the machine leaked it into a
+//! ⚠ ★ **This section used to describe an owned entry arena.** A ground map's
+//! canonical entry vector was constructed by re-reading a trie, and a
+//! constructed vector cannot be served by a borrow-returning accessor, so the machine leaked it into a
 //! `Vec<*mut Vec<Par>>` and released it with an `Op::DropOwned` pushed beneath
 //! the subtree that read it — a raw-pointer arena with a hand-written soundness
-//! argument, existing only because the canonical entries were not stored
-//! anywhere. They are stored now, so `Machine::park`, `Machine::owned`,
+//! argument. The EPM1 accessor eliminated that projection, so `Machine::park`, `Machine::owned`,
 //! `Machine::release_to`, `Op::DropOwned`, and the two `unsafe` blocks that
 //! made them work are **deleted**, and the encoder holds no raw pointers at all.
 //!
@@ -121,7 +121,7 @@ use std::collections::btree_map;
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::bincode_schema::{
-    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
+    BincodeNode, BincodeSeq, Descent, NO_RESUME, PathmapSnapshot, pathmap_snapshot, put_bytes,
 };
 
 // ===========================================================================
@@ -170,41 +170,6 @@ enum Op<'a> {
     /// Emit the remaining entries of the `BTreeMap` iterator on top of
     /// `map_iters`: one key, then descend into its value.
     MapEntries,
-    // ── PARKED, not deleted: the trie cursor. ────────────────────────────────
-    //
-    // /// Emit the remaining entries of the trie read-zipper on top of
-    // /// `entry_zippers` — one `Par` per step, each an arbitrarily deep node.
-    // ///
-    // /// ★ The exact shape of [`Op::MapEntries`], and for the same reason: the cursor is
-    // /// too big to live in a four-word `Op`, so it lives in the machine and the op is a
-    // /// bare tag. That is what lets an `EPathMap` be emitted **without materialising its
-    // /// entries** — `to_next_get_val` hands back `&'trie Par`, a borrow that outlives the
-    // /// call, so no `Vec<Par>` has to exist for `&dyn BincodeNode` to point into.
-    // EntryPaths,
-    //
-    // WHY IT IS PARKED. It works and is byte-identical to the entry walk it replaced
-    // (`bincode_encoder_differential` 13/13, every golden unmoved at the time), but it
-    // costs 3 allocations / 1408 B on a warm encode where
-    // `bincode_encoder_space::the_steady_state_allocation_table` requires ZERO — one for
-    // the cursor `Vec`, two inside `read_zipper()` itself, which cannot be pooled
-    // away. It only ever paid for itself as a step toward emitting `U(m)` at this
-    // seam, which needs no cursor at all.
-    //
-    // ★ THE DESTINATION IS NOW PARTLY REACHED — see `open_pathmap`. FORM ② emits
-    // `U(m)` as ONE `put_bytes` of the memoized key stream, followed by the value
-    // sequence: the trie IS serialized as its own byte array, contiguously, and the
-    // encoder still allocates nothing warm. So the cursor is not merely unpaid for,
-    // it is unnecessary — an interleaved key/value form is the ONLY shape that would
-    // need it, and interleaving is exactly what would stop `U(m)` from appearing
-    // contiguously.
-    //
-    // ⚠ What is still owed is `U(m)` ALONE, without the values beside it, and that
-    // remains blocked for a MEASURED reason: `rholang/tests/
-    // pathmap_escape_depth_reachability.rs` shows the escape arm's read ceiling is 32
-    // while ordinary Rholang compiles a ¬eval_stable pathmap entry at depth 40. A
-    // reader reconstructing entries from keys alone would refuse terms a deploy can
-    // write. FORM ② sidesteps that completely by never calling `decode_trie_path`;
-    // dropping the values awaits the unbounded prost reader (Phase 4 S2).
 }
 
 // ===========================================================================
@@ -443,36 +408,25 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Open an `EPathMap`: emit `U(m)` and the `ps` count, then arrange for
-    /// fields 2..5.
+    /// Open an `EPathMap`: emit its EPM1 snapshot, then arrange for the three
+    /// metadata fields.
     ///
     /// ⚠ It is still opened HERE rather than at field 0 of the generated
-    /// walker, because `EPathMap`'s entries are reached through `pathmap_ps`
-    /// (two accessors, two memos) rather than a plain field read, and emitting
-    /// the wrong one changes the event-hash preimage silently.
-    /// `BincodeNode::bincode_emit` refuses fields 0 and 1 for exactly that reason.
+    /// walker because `EPathMap`'s first field is an accessor-reached EPM1 byte
+    /// snapshot rather than a plain generated field read. Emitting anything else
+    /// changes the event-hash preimage silently.
     fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, map: &'a EPathMap) {
-        // ★★ THIS SEAM IS TRIE-NATIVE — FORM ②.
+        // ★★ THIS SEAM IS TRIE-NATIVE.
         //
         // The mandate is that a pathmap serializes as its own byte array on every
-        // surface, and here that is `put_bytes(out, U(m))`: one memoized slice,
+        // surface, and here that is `put_bytes(out, EPM1(m))`: one cached slice,
         // emitted VERBATIM and CONTIGUOUSLY, with no cursor and no per-key walk.
         //
-        // The VALUES follow it, and that is not a hedge — it is what makes the move
-        // total. `U(m)` alone would make `decode_trie_path` the reader, whose escape
-        // arm re-decodes a ¬eval_stable entry through prost's recursion-limited
-        // decoder; `rholang/tests/pathmap_escape_depth_reachability.rs` measures that
-        // ceiling at depth 32 and measures ordinary Rholang compiling such an entry at
-        // depth 40. Carrying the values keeps the reader on the existing iterative,
-        // depth-UNLIMITED machinery (`EntryTrie::from_path_stream_and_values` never
-        // calls `decode_trie_path`), so nothing that round-trips today stops.
-        //
-        // ⚠ SPLIT, never interleaved. Interleaving would need a live trie cursor here
-        // — built, measured at 3 allocations / 1408 B against `bincode_encoder_space::
-        // the_steady_state_allocation_table`'s required ZERO, and parked as
-        // `Op::EntryPaths` — and would stop `U(m)` from appearing contiguously.
-        // Split, the encoder emits one borrowed memo plus the projection it was
-        // already emitting, and the space gate stays at zero.
+        // Map values are already inside EPM1 after the ACTree03 prefix, encoded
+        // by the generated iterative protobuf PDA. They are neither split into a
+        // second bincode field nor interleaved with keys. This keeps the complete
+        // trie snapshot contiguous and leaves the steady-state bincode driver at
+        // zero owned entry projections.
         let PathmapSnapshot::Stored { trie_snapshot } = pathmap_snapshot(map);
         put_bytes(out, trie_snapshot);
         self.suspend(node, 1);

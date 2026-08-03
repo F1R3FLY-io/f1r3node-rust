@@ -456,8 +456,8 @@ impl EntryTrie {
     /// no-op on the set, which is what makes `setLeaf` and `graft` unable to
     /// create duplicates.
     ///
-    /// Takes the memo (the projection must be recomputed) but never hands out a
-    /// `&mut Vec<Par>`: the only thing a caller can do is name an entry.
+    /// Invalidates both serialization caches but never hands out a mutable
+    /// collection view: the only thing a caller can do is name an entry.
     pub fn insert_entry(&mut self, par: Par) {
         let consumed = self.insert_entry_replacing(par);
         // Set mode stores only the canonical key. The supplied Par can itself
@@ -516,10 +516,10 @@ impl EntryTrie {
     ///
     /// ★ The whole of [`EntryTrie::insert_entry`]'s body below the encode, so
     /// the fold maintenance (`entries_stable`, `any_connective_used`,
-    /// `union_locally_free`, `len`) and the two memo invalidations are stated
-    /// ONCE. It exists for [`EntryTrie::from_path_stream_and_values`], which
-    /// needs the key in its own hand to compare against the peer's frame and
-    /// must not pay a second `encode_trie_path` to hand it back.
+    /// `union_locally_free`, `len`) and the two cache invalidations are stated
+    /// once. The generated sorter also needs the key in its own hand before it
+    /// files the canonical term and must not pay a second
+    /// `encode_trie_path` to hand it back.
     ///
     /// ⚠ `key` must be `encode_trie_path(&par)` and `stable` its companion
     /// verdict. It is `pub(crate)` and takes both together — never a bare key —
@@ -1278,9 +1278,8 @@ impl EntryTrie {
     /// and the failure short-circuits.
     ///
     /// ★ Exists because `for_each_entry` cannot carry a `?`. A caller that evaluates
-    /// each entry — and evaluation can fail — otherwise has no borrowing option at all
-    /// and falls back to `ps()`, forcing the deep-clone memo to get a `Vec` it only
-    /// wanted in order to iterate it once.
+    /// each entry — and evaluation can fail — otherwise has no fallible streaming
+    /// surface and is tempted to materialize an owned compatibility projection.
     pub fn try_for_each_entry<E>(
         &self,
         mut visit: impl FnMut(&Par) -> Result<(), E>,
@@ -1305,10 +1304,9 @@ impl EntryTrie {
     /// The EARLY-EXIT walk: the first entry satisfying `pred`, in trie order.
     ///
     /// ★ Exists because `for_each_entry` cannot `break`. A search expressed through it
-    /// would visit every entry after the answer was already known — and a caller who
-    /// notices that reaches for `ps().iter().find(..)` instead, forcing the deep-clone
-    /// memo. The borrow carries the TRIE's lifetime (`to_next_get_val`), so the hit can
-    /// be returned rather than cloned.
+    /// would visit every entry after the answer was already known. Returning the
+    /// decoded hit by value keeps the trie compressed and avoids retaining a decoded
+    /// shadow collection.
     pub fn find_entry(&self, mut pred: impl FnMut(&Par) -> bool) -> Option<Par> {
         let map = match &self.repr {
             EPathMapRepr::Empty => return None,
@@ -1355,14 +1353,11 @@ impl EntryTrie {
     /// `EntryTrie` that can hold a `Par` becomes a COMPILE ERROR here rather than a silent leak
     /// back onto the recursive destructor. The wrong form is unspellable.
     ///
-    /// Two retainers, and both are drained:
-    ///
-    /// * **the memo** — a full second copy of the entries. [`OnceLock::into_inner`] plus
-    ///   [`Arc::into_inner`] IS the uniqueness test, and here it is expressible: `Some` means we
-    ///   own the `Vec` and move it; `None` means another handle survives, so dropping ours is an
-    ///   O(1) refcount decrement and there is nothing to tear down.
-    /// * **the store** — `PathMap`'s by-move `IntoIterator`. On a uniquely-owned trie this is a
-    ///   true move and clones nothing. On a SHARED root the crate copies-on-write, one
+    /// There is exactly one `Par` retainer to drain: map-mode PathMap values.
+    /// The snapshot/layout caches contain bytes only, and set mode stores unit
+    /// values, so neither can reintroduce recursive `Par` destruction.
+    /// `PathMap`'s by-move `IntoIterator` is a true move on a uniquely-owned trie and
+    /// clones nothing. On a shared root the crate copies-on-write, one
     ///   `<Par as Clone>::clone` per value — but that clone is **converted and stack-flat**
     ///   (`CONVERTED_DEPTH`), so it cannot overflow, and it is exactly what the `.cloned()` this
     ///   replaces paid *unconditionally*. ⇒ never a regression, and strictly better whenever the
@@ -1612,9 +1607,9 @@ impl From<&Vec<Par>> for EntryTrie {
 }
 
 impl Clone for EntryTrie {
-    /// O(1) at the node: the trie clone is a refcount bump on the root
-    /// `TrieNodeODRc`, and the memoized view is an `Arc` bump. Only the small
-    /// `locally_free` bitset copies.
+    /// O(1) at the trie root: PathMap clone is a refcount bump and both
+    /// serialization caches are shared by `Arc`. Only the small `locally_free`
+    /// bitset copies.
     fn clone(&self) -> Self {
         EntryTrie {
             repr: self.repr.clone(),
@@ -1812,15 +1807,13 @@ impl EntryTrie {
     ///
     /// # Why the walk and not `path_stream().cmp(...)`
     ///
-    /// Comparing `U(m)` byte-for-byte would be O(1) after the memo and would
-    /// read literally the wire's bytes — tempting, and **rejected**: `U(m)`
-    /// frames each key with a `u32-LE` length *prefix*, so the framing would
-    /// outrank the content. Keys `["B"]` and `["AB"]` order one way by key and
-    /// the other way by `U(m)`, because `1u32` and `2u32` compare before the
-    /// first key byte is ever reached. That is a valid total order but an
-    /// arbitrary one — it sorts by an artifact of the framing rather than by the
-    /// trie's own byte-lexicographic structure. The walk costs what `eq`
-    /// already costs and orders by the thing that actually means something.
+    /// Comparing the cached snapshot byte-for-byte would be O(1) after a cache
+    /// hit and would read literally the wire's bytes — tempting, and rejected:
+    /// EPM1 orders first by its header and ACTree03's child-before-parent arena
+    /// layout, not by the trie's byte-lexicographic key order. That is a valid
+    /// total order but an arbitrary serialization artifact. The walk costs what
+    /// equality already costs and orders by the structure that has semantic
+    /// meaning.
     fn recursive_cmp_oracle(&self, other: &Self) -> Ordering {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
         let (a_map, b_map) = match (&self.repr, &other.repr) {
@@ -2381,7 +2374,7 @@ impl prost::Message for EPathMap {
 impl EPathMap {
     /// AlwaysEqual semantics: `locally_free` is a transient analysis field
     /// and does NOT participate (scalapb `AlwaysEqual[BitSet]` parity). The
-    /// shadow cell does not participate either (it is derived state).
+    /// serialization caches do not participate either (they are derived state).
     ///
     /// # ★ The two-arm relation is GONE — there is one comparison again
     ///
@@ -2394,13 +2387,11 @@ impl EPathMap {
     /// `entries_in_ground_domain` existed solely to stop the two arms from
     /// making `==` non-transitive.
     ///
-    /// `self.ps` is now the trie, so the projection [`EPathMap::ps`] returns is
-    /// already in trie order, already deduplicated, and already recursively
-    /// canonical. **A positional comparison of two canonical projections IS set
-    /// comparison** — there is no permutation left to be fooled by — so the
-    /// second arm has nothing left to add and `entries_in_ground_domain` is
-    /// deleted along with it. Defect #83 is not fixed here; it is
-    /// unrepresentable, for every map rather than for ground maps only.
+    /// `self.ps` is now the trie itself: already construction-order independent,
+    /// deduplicated, and recursively canonical. The generated PDA compares that
+    /// trie directly, so the second arm has nothing left to add and
+    /// `entries_in_ground_domain` is deleted with it. Defect #83 is not merely
+    /// checked here; it is unrepresentable for every map.
     ///
     /// ⚠ One consequence, stated rather than buried: entries are keyed by
     /// `encode_trie_path`, whose escape arm is the entry's **canonical protobuf
@@ -2421,10 +2412,9 @@ impl EPathMap {
 #[cfg(test)]
 impl EPathMap {
     /// AlwaysEqual semantics: consistent with `==` (`locally_free` and the
-    /// cell excluded). Both now read the same canonical projection, so this is
-    /// the plain element-wise `Vec<Par>` hash again — it is a function of the
-    /// entry SET not because it does anything clever but because the thing it
-    /// reads has no order of its own to leak.
+    /// caches excluded). Equality and hashing now read the same trie stream, so
+    /// the hash is a function of the entry set/map and cannot leak construction
+    /// order.
     fn recursive_hash_oracle<H: Hasher>(&self, state: &mut H) {
         self.ps.recursive_hash_oracle(state);
         self.connective_used.hash(state);
@@ -2456,7 +2446,7 @@ impl EPathMap {
     /// read the canonical trie stream, so `Ord` and `Eq` disagreed **twice**: once about
     /// `locally_free` (deliberately) and once about entry order (accidentally,
     /// and in a way that made two maps the wire calls identical sort apart).
-    /// Both now read the same canonical projection, so exactly one deliberate
+    /// Both now read the same canonical trie order, so exactly one deliberate
     /// inconsistency remains and the accidental one is gone.
     ///
     /// ⚠ Consensus consequence, stated plainly: for NON-ground maps this moves

@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 
+use pathmap::PathMap;
 use pathmap::arena_compact::{ArenaCompactTree, COMPACT_TREE_MAGIC};
 use pathmap::zipper::ZipperReadOnlyIteration;
 #[cfg(test)]
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
-use pathmap::PathMap;
 use prost::bytes::Bytes;
 
 use crate::rhoapi::Par;
@@ -262,7 +262,10 @@ pub(crate) fn encode_with_layout(repr: &EPathMapRepr<Par>, layout: &EpmLayout) -
 pub(crate) struct PendingEpmDecode<S: AsRef<[u8]>> {
     snapshot: S,
     mode: EPathMapMode,
-    arena: Vec<u8>,
+    /// ACTree03's byte range inside `snapshot`. Keeping an index rather than a
+    /// copied `Vec<u8>` makes the pausable protobuf decoder zero-copy for the
+    /// compact trie arena while remaining valid for every owned snapshot type.
+    arena: Range<usize>,
     next_value_at: usize,
     remaining_values: usize,
     expected_values: usize,
@@ -293,7 +296,9 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
                 .expect("a one-byte slice has a first byte"),
         )?;
         let arena_len = read_len(bytes, &mut cursor, "ACTree03 length")?;
-        let arena = take(bytes, &mut cursor, arena_len, "ACTree03 payload")?.to_vec();
+        let arena_start = cursor;
+        take(bytes, &mut cursor, arena_len, "ACTree03 payload")?;
+        let arena = arena_start..cursor;
         let value_count = read_len(bytes, &mut cursor, "map value count")?;
         let remaining = bytes.len() - cursor;
         if value_count > remaining {
@@ -348,15 +353,24 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
         self,
         validate_canonical: bool,
     ) -> Result<EPathMapRepr<Par>, TrieCodecError> {
-        if self.remaining_values != 0 || self.values.len() != self.expected_values {
+        let Self {
+            snapshot,
+            mode,
+            arena,
+            next_value_at: _,
+            remaining_values,
+            expected_values,
+            values,
+        } = self;
+        if remaining_values != 0 || values.len() != expected_values {
             return Err(TrieCodecError::new(
                 "fewer map values were decoded than the EPM1 value count",
             ));
         }
-        let repr = build_repr(self.mode, &self.arena, self.values)?;
+        let repr = build_repr(mode, &snapshot.as_ref()[arena], values)?;
         if validate_canonical {
             let canonical_layout = layout(&repr);
-            if encode_with_layout(&repr, &canonical_layout) != self.snapshot.as_ref() {
+            if encode_with_layout(&repr, &canonical_layout) != snapshot.as_ref() {
                 return Err(TrieCodecError::new("EPM1 payload is not canonical"));
             }
         }
@@ -511,7 +525,7 @@ pub fn decode(bytes: &[u8]) -> Result<EPathMapRepr<Par>, TrieCodecError> {
 
 fn visit_act(
     bytes: &[u8],
-    mut visit: impl FnMut(Vec<u8>, Option<u64>) -> Result<(), TrieCodecError>,
+    mut visit: impl FnMut(&[u8], Option<u64>) -> Result<(), TrieCodecError>,
 ) -> Result<(), TrieCodecError> {
     if bytes.len() < ACT_HEADER_LEN {
         return Err(TrieCodecError::new(
@@ -570,7 +584,7 @@ fn visit_act(
             // those are the only endpoints required to reconstruct the same
             // PathMap topology.
             if frame.node.value.is_some() || child_count == 0 {
-                visit(path.clone(), frame.node.value)?;
+                visit(&path, frame.node.value)?;
             }
         }
 
@@ -870,6 +884,25 @@ mod tests {
     }
 
     #[test]
+    fn pending_decoder_borrows_act_region_from_owned_snapshot() {
+        let mut map = PathMap::new();
+        map.insert(b"shared/prefix/a", int(1));
+        map.insert(b"shared/prefix/b", int(2));
+        let snapshot = Bytes::from(encode(&EPathMapRepr::Map(map)));
+        let storage_start = snapshot.as_ptr();
+
+        let pending = PendingEpmDecode::new(snapshot).expect("EPM1 header is valid");
+        let arena = &pending.snapshot.as_ref()[pending.arena.clone()];
+
+        assert_eq!(
+            arena.as_ptr(),
+            storage_start.wrapping_add(pending.arena.start),
+            "the pausable decoder must index the owned snapshot, not copy the ACT arena"
+        );
+        assert!(arena.starts_with(&COMPACT_TREE_MAGIC));
+    }
+
+    #[test]
     fn sibling_offset_cannot_reenter_its_parent() {
         // A two-child root whose first child occupies bytes 16..18. Advancing
         // to the alleged second sibling lands exactly on the root at byte 18.
@@ -905,9 +938,11 @@ mod tests {
             panic!("set EPM1 payload changed mode");
         };
         assert_eq!(paths(&map), expected);
-        assert!(bytes
-            .windows(COMPACT_TREE_MAGIC.len())
-            .any(|w| w == COMPACT_TREE_MAGIC));
+        assert!(
+            bytes
+                .windows(COMPACT_TREE_MAGIC.len())
+                .any(|w| w == COMPACT_TREE_MAGIC)
+        );
     }
 
     #[test]
