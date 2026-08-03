@@ -673,6 +673,7 @@ impl BlockAPI {
                         runtime_manager.clone(),
                         &sorted_listening_name,
                         block,
+                        false,
                     )
                 }))
                 .await?;
@@ -783,10 +784,15 @@ impl BlockAPI {
         runtime_manager: Arc<RuntimeManager>,
         sorted_listening_name: &Par,
         block: &BlockMessage,
+        use_pre_state_hash: bool,
     ) -> ApiErr<Option<DataWithBlockInfo>> {
         // TODO: Scala For Produce it doesn't make sense to have multiple names
         if BlockAPI::is_listening_name_reduced(block, &[sorted_listening_name.clone()]) {
-            let state_hash = proto_util::post_state_hash(block);
+            let state_hash = if use_pre_state_hash {
+                proto_util::pre_state_hash(block)
+            } else {
+                proto_util::post_state_hash(block)
+            };
             let data = runtime_manager
                 .get_data(state_hash, sorted_listening_name)
                 .await?;
@@ -1782,12 +1788,13 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         par: &Par,
         block_hash: String,
-        _use_pre_state_hash: bool,
+        use_pre_state_hash: bool,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
         async fn casper_response(
             casper: &dyn MultiParentCasper,
             par: &Par,
             block_hash: &str,
+            use_pre_state_hash: bool,
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
             let padded_hash = pad_hex_string(block_hash);
             let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
@@ -1808,9 +1815,14 @@ impl BlockAPI {
                 })?;
             let sorted_par = ParSortMatcher::sort_match(par).term;
             let runtime_manager = casper.runtime_manager();
-            let data =
-                BlockAPI::get_data_with_block_info(casper, runtime_manager, &sorted_par, &block)
-                    .await?;
+            let data = BlockAPI::get_data_with_block_info(
+                casper,
+                runtime_manager,
+                &sorted_par,
+                &block,
+                use_pre_state_hash,
+            )
+            .await?;
             if let Some(data_with_block_info) = data {
                 Ok((
                     data_with_block_info.post_block_data,
@@ -1825,7 +1837,7 @@ impl BlockAPI {
         let error_message = "Could not get data at par, casper instance was not available yet.";
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
-            casper_response(casper.as_ref(), par, &block_hash).await
+            casper_response(casper.as_ref(), par, &block_hash, use_pre_state_hash).await
         } else {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
