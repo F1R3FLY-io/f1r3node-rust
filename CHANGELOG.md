@@ -4,6 +4,25 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.45] - 2026-08-02
+
+### Bug Fixes
+
+- enforce scheduled branch routing
+- harden canary recovery and dashboard repair
+- harden host guardian per PR #190 review
+- fail closed on host protection; repair checkpoint, bench, and dashboard paths
+
+### Miscellaneous
+
+- align remaining SYSTEM_INTEGRATION_REF pin sites to 66de4f95
+- pin soak harness to system-integration 66de4f95 (breach marker contract)
+
+### Style
+
+- format soak validation scripts
+
+
 ## [0.4.44] - 2026-08-01
 
 ### Bug Fixes
