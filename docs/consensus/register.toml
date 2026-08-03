@@ -1830,6 +1830,24 @@ window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 83 — changes only test corpora, source-scanning tests, and inert formal-evidence metadata. The SCC census now includes node/src and finds 580 recursive components, 54 term-family components, 20 mutual components, 30 dispositioned files, and zero unmeasured. Six node boundary surfaces resolve to production markers, Rocq theorems, and executable evidence. The new differential independently covers neutral empty, PathMap<()>, and PathMap<Par>. Capped gates: formal manifest 5/5; census 3/3; retired mechanisms 4/4; focused node 6/6; full node 119/119; stack depth 8/8 active plus 3 ignored measurement probes; Rocq/Z3/TLC pass, TLC 2816 distinct states/depth 8; zero swap. No production or consensus axis changes. [DERIVED]"
 
+[[exempt]]
+commit = "b2d84064"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 84 — changes only rholang/tests/stack_depth_gate.rs and its mechanically bound audit block. Independent subjects cover legacy nested ESet Hash, homogeneous PathMap<()> set Hash, homogeneous PathMap<Par> map Hash, and generated Message::clear. Full register: 40 converted, zero tripwires; new depth-4 to 4096 endpoints flat at 48/48, 52/52, 60/60, and 48/48 KiB; 406.6 MiB peak, zero swap. No production or generated source changes. [DERIVED]"
+
+[[exempt]]
+commit = "68e8290d"
+window = "FRONTIER"
+reason = "INFRA"
+evidence = "Appendix B.3 row 85 — adds a self-capped measurement script, usage-guide entry, and test-only manifest/fixture/invariant controls. Subjects are derived from the executable register; MemoryMax=4G, zero swap, one Cargo job. Cachegrind covers all 40 subjects at four rungs with every Ir/Dr/Dw exponent below 1.80. Matched-control Massif records linear live-heap transfers for substitution, sorting, normalization, and evaluation. No production/generated source or consensus axis changes. [DERIVED]"
+
+[[exempt]]
+commit = "cc616c3c"
+window = "FRONTIER"
+reason = "DORMANT"
+evidence = "Appendix B.3 row 86 — generates the iterative protobuf unknown-field group skipper and adds differential/depth evidence, but the generated header, module documentation, and commit-level call-graph audit establish that no production decoder calls it at this stage. Commit 26876b65 later generates the per-message decode PDA and activates the call sites. With no caller at cc616c3c, no value, verdict, byte, post-state, accepted-input, or metering axis changes. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`

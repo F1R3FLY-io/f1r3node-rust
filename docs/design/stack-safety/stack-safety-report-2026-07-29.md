@@ -34,7 +34,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** `$`B_0 \rightarrow B_1`$` is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), and RHOLANG (reflective higher-order language).
+Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are defects that are OPEN at the pinned HEAD**, they are never "class change: yes", and a `SS-Y` row is discharged only by a commit that repairs it — never by the row being deleted. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -77,6 +77,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-Y2** | `3276c1ee` | f1r3node | ⚠★★ **A live, unrepaired defect NAMED by `SS-G6`** — `impl Hash for Par` (`models/src/lib.rs:284`) and `impl PartialEq for Par` (`:265`) are **hand-written host-recursive** traversals on a **consensus-adjacent** path (`SortedParMap` feeds the canonical sort `cost_accounting/sig.rs` signs) | 625 debug / 113 release B/level | ⛔ **open**; invisible to **both** existing censuses | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence and EPathMap laws, SMT mode dispatch, TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap) |
+| **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) |
 | **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
 | **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; ⚠ `drop_in_place::<Par>` itself is untouched (Family D) | **n/a** — discharged by deletion | [5.6.10](#5610-ss-y6--the-lru-eviction-crash-dissolved-with-its-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
@@ -183,7 +184,7 @@ JSON conversion/trait boundary landed in SS-A9 (§5.13). Neither closure increas
     - [8.6.3 #124 — the event-hash legs, and the $`\Theta(d^2)`$ in TIME](#863--124--the-event-hash-legs-measured-not-converted-and-quadratic-in-time)
     - [8.6.4 #189 residual — `try_eval` partially converted](#864--189-residual--try_eval-is-partially-converted-and-the-ratchet-that-says-so)
     - [8.6.5 #119/#120 — the prost read ceiling and the trap in removing it](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it)
-    - [8.6.6 #174 — 10,491 B/level that belongs to no measured driver](#866--174--10491-blevel-that-belongs-to-no-measured-driver)
+    - [8.6.6 #174 — attributed, stale figures withdrawn, generated Hash converted](#866--174--attributed-stale-figures-withdrawn-generated-hash-converted)
     - [8.6.7 #157 — a transcribed ceiling a tripwire cannot see drift](#867--157--a-transcribed-ceiling-and-a-tripwire-that-cannot-see-it-drift)
     - [8.6.8 The instrument floor, and the wrong shape](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number)
     - [8.6.9 #121 — the gate that overflowed, and the frame that was not the encoder](#869--121--the-gate-built-to-demonstrate-a-fix-overflowed-and-the-frame-was-not-the-encoder)
@@ -1787,7 +1788,7 @@ Seven, each with its reason. None is estimated.
 |---|---|---|
 | 1 | **`spawn_detached` per-spawn overhead** (`catch_unwind`, the atomic, the `Arc` clone) | No isolated micro-benchmark exists in the tree and none was constructed. The end-to-end CPU figure of §5.2.2 includes it but cannot separate it. |
 | 2 | **`protobuf_encoder` wall-clock vs `prost`'s own encoder** | The code is **dormant** (§5.3.5); a number from a path production does not execute would be misleading. The $`\Theta(d^2) \rightarrow \Theta(n)`$ claim is checked structurally instead. |
-| 3 | **massif/DHAT profiles for the substitution, sorter, normaliser and evaluator conversions** | No heap-profiling harness exists for those subjects. Building four correct ones — each needing an off-thread $`\Theta(d)`$ set-up so the harness does not measure itself, per §5.7 — was out of scope for this report. Their heap costs are therefore **unquantified**; only their native-stack slopes are measured. |
+| 3 | ~~**massif/DHAT profiles for the substitution, sorter, normaliser and evaluator conversions**~~ | ★★ **OBTAINED 2026-08-03**, [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3). The superseded finding was: *"No heap-profiling harness exists … their heap costs are unquantified."* Commit `68e8290d` adds one self-capped harness with matched fixture-only controls. Fixture-subtracted live-heap growth is 6,341.25 / 1,440.00 / 3,640.42 / 128.00 B per level for substitution / sorting / normalization / evaluation. |
 | 4 | **`perf record --call-graph lbr`** | ⚠ **The stated reason was wrong — corrected in §4.4.** `--call-graph lbr` does fail on this part, but *not* because "the PMU refused every cycles event": plain `cycles` always counted, and what failed was the **precise** modifier `cycles:P`, whose Intel implementation (PEBS) **does not exist on this AMD Zen 3 host**. Substituted with software `cpu-clock` + DWARF, which remains a recorded deviation. ★ `perf record --call-graph dwarf -e cycles:P` now works (`perf_event_paranoid = 0`), and for byte-movement questions `valgrind --tool=cachegrind` is the better instrument because it is deterministic. |
 | 5 | **A cycle-accurate CPU profile of the decoder** | ⚠ The "same PMU limitation" is likewise misattributed — see §4.4; a cycle-accurate profile IS available on this host (plain `cycles`, and `cycles:P` since `perf_event_paranoid = 0`). What genuinely blocks this row is the second clause: **no decode benchmark harness exists** (only the massif arm). |
 | 6 | **Attribution of the `env_get_deploy` 283 $`\rightarrow`$ 274 drift** | Requires bisecting four `rholang` commits through a 6-second end-to-end runtime bisection each; the drift is *reported* (§5.5.4) and its cause is **not** asserted. |
@@ -2455,7 +2456,7 @@ All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`
 | owned trie visitor | borrowed forward view | owned set/map stream equals borrowed trie order; wrong mode rejected; neutral empty accepted by both | **MEASURED**, 1/1; warm peak 87.8 MiB |
 | whole-worktree recursion census | node crate absent from source roots | **580** recursive components; **54** term-family components, **20** mutual, **30** files, **0** unmeasured | **MEASURED**, 3/3; 2.0 GiB peak RSS, zero swap |
 | formal binding | no row for this boundary | six production surfaces resolve to the generic Rocq theorem and executable evidence; manifest **5/5** | **MEASURED**, 1.4 GiB peak RSS, zero swap |
-| complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width), zero tripwires; **8/8** active tests, 3 measurement probes ignored | **MEASURED**, 2.3 GiB peak RSS, zero swap |
+| complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width) at `26d3e3b9`; ★ current register **40** (34 + 6) after the independent EPathMap hash/`Message::clear` controls, zero tripwires | **MEASURED**, original 2.3 GiB peak RSS; current full register 406.6 MiB, zero swap ([§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3)) |
 | deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks both files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script |
 | B/level | NOT MEASURED — no pre-change frame bisection was retained for this boundary | NOT MEASURED — the explicit-loop class and 256 KiB deep probe establish bounded execution but not a byte slope | stated limitation |
 | throughput / allocation profile | NOT MEASURED — no stable boundary benchmark exists | NOT MEASURED — correctness and depth closure were gated first | stated limitation |
@@ -2483,6 +2484,79 @@ errors and neutral-empty dual validity, while the conversion differential indepe
 three cases—neutral, `PathMap<()>`, and `PathMap<Par>`—so neither the map branch nor the empty-mode edge can
 be represented by set-only evidence. The formal manifest compares its closed six-surface inventory in
 both directions and resolves the production marker as well as the proof and executable markers.
+
+---
+
+### 5.14 ★ 2026-08-03 resource closure — heap and deterministic time [SS-E3]
+
+#### 5.14.1 Instrument and anti-vacuity
+
+Commit `68e8290d` adds `scripts/bench/stack-safety-phase7.sh`; commit `b2d84064` adds the
+independent `hash_nested_set`, `hash_pathmap_set`, `hash_pathmap_map`, and `message_clear` subjects. The
+harness does not carry a second traversal list: the ignored `phase7_measurement_manifest` test exports
+`CONVERTED_DEPTH` and `CONVERTED_WIDTH`, emits their derived count, and the harness refuses a missing row.
+The resulting population is **40** subjects: 34 depth and 6 width, with zero tripwires.
+
+Every run self-relaunches under `MemoryMax=4G`, `MemorySwapMax=0`, `TasksMax=256`, and one Cargo job.
+Cachegrind supplies deterministic Ir, Dr, and Dw counters at parameters 128, 256, 512, and 768. A
+parameter-invariant child is measured and subtracted at every rung. Its complete observed span was
+**142 Ir (0.0176 %), 26 Dr (0.0131 %), and 12 Dw (0.0129 %)**, below the predeclared 0.1 % instrument
+validity ceiling. Thus the control was both rebuilt and live; an input-shaped startup cost could not be
+silently fitted as traversal work.
+
+Massif uses two rungs, depth 256 and 1,024, one arm per process. Each operation has a matched fixture-only
+control: substitution and sorting share the same nested `Par`; normalization's control retains only the
+source text; evaluation's control retains the same ENot input without calling the evaluator. Reported heap
+growth is operation peak minus the matched control peak at the same rung. Raw fitted time data and heap
+peaks are retained in
+[`phase7-cachegrind-fits-2026-08-03.tsv`](measurements/phase7-cachegrind-fits-2026-08-03.tsv) and
+[`phase7-massif-2026-08-03.tsv`](measurements/phase7-massif-2026-08-03.tsv).
+
+#### 5.14.2 Heap transfer, beside the native stack it replaced
+
+**MEASURED**, release instrument, 2026-08-03:
+
+| traversal | prior native stack B/level, debug / release | current native stack | fixture-subtracted live heap B/level | net live heap at depth 256 $`\rightarrow`$ 1,024 |
+|---|---:|---:|---:|---:|
+| substitution | 195,728 / 27,179 | **0 B/level** | **6,341.25** | 1,875,352 $`\rightarrow`$ 6,745,432 |
+| sorting | 78,592 / 6,495 | **0 B/level** | **1,440.00** | 393,048 $`\rightarrow`$ 1,498,968 |
+| normalization | 43,542 / 7,261 | **0 B/level** | **3,640.42** | 909,368 $`\rightarrow`$ 3,705,208 |
+| evaluation | 21,584 / 3,359 | **0 B/level** | **128.00** | 42,712 $`\rightarrow`$ 141,016 |
+
+The transfer is therefore linear and finite for all four conversions. The largest replacement is
+substitution at about 6.19 KiB/level, **30.9 times smaller** than its former debug native frame and
+**4.29 times smaller** than its former release frame. This does not prove a universal process-memory
+ceiling—the term and output themselves remain input-sized—but it falsifies the feared failure mode in
+which stack elimination merely moved a superlinear traversal state to the heap.
+
+#### 5.14.3 Deterministic time axis over the complete converted register
+
+The predeclared failure bar is a fitted exponent at least 1.80 on any of Ir, Dr, or Dw: evidence of
+quadratic-or-worse growth is red and cannot be rounded down to “linear.” All 40 subjects passed. Ir fits
+range from **0.9462 to 1.0970**; the largest data-counter fit is **1.4007 Dw** for `score_cmp_wide`, still
+below the quadratic bar. The full per-subject table is the linked TSV; the most integration-sensitive
+rows are:
+
+| subject | axis | Ir exponent | Dr exponent | Dw exponent | disposition |
+|---|---|---:|---:|---:|---|
+| `sort_nested_set` | depth | 1.0068 | 1.0323 | 1.0375 | linear observed |
+| `sort_nested_map` | depth | 1.0023 | 1.0143 | 1.0168 | linear observed |
+| `hash_pathmap_set` (`PathMap<()>`) | depth | 0.9918 | 0.9948 | 0.9882 | linear observed |
+| `hash_pathmap_map` (`PathMap<Par>`) | depth | 1.0175 | 1.0190 | 1.0152 | linear observed |
+| `message_clear` | depth | 0.9892 | 0.9914 | 0.9881 | linear observed |
+| `score_cmp_wide` | width | 1.0970 | 1.3921 | 1.4007 | subquadratic observed; largest data-counter fit |
+
+The EPathMap rows are representation-specific. Set mode hashes canonical PathMap byte paths without
+decoding a `Par` projection. Map mode borrows each `Par` value from the PathMap zipper and schedules it on
+the generated Hash PDA. Neither route constructs a `Vec<Par>`, and the two modes are not inferred from one
+another.
+
+#### 5.14.4 Command-level resource result
+
+The complete Cachegrind campaign finished in **91.398 s**, peaked at **119.7 MiB**, and used zero swap.
+The complete Massif campaign finished in **8.309 s**, peaked at **170.5 MiB**, and used zero swap. The
+preceding complete native-stack register run passed in **123.47 s**, peaked at **406.6 MiB**, and used zero
+swap: 40 converted subjects, zero tripwires.
 
 ---
 
@@ -2689,7 +2763,9 @@ Call-site interception is measurably incomplete as an alternative: `Compiler::no
 
 ### 8.4 Not measured, and worth measuring
 
-The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(d)`$ state from stack to heap and **none has a heap profile**. Given that the codec conversions turned out to need 5–42 $`\times`$ *fewer* bytes per level in heap than they had used in stack, the analogous figures for substitution — whose frames were **195 kB per level** in debug — would be the most interesting number in the campaign, and it does not exist.
+> ★★ **SUPERSEDED 2026-08-03; wording retained under Appendix G.4 rule 2.** This section read: *"The heap cost of the four non-codec conversions … none has a heap profile … the most interesting number in the campaign … does not exist."*
+
+It now exists. [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) records matched-control Massif profiles at depths 256 and 1,024: substitution **6,341.25**, sorting **1,440.00**, normalization **3,640.42**, and evaluation **128.00** live heap bytes per level. The same harness adds the previously absent deterministic time axis over all 40 converted subjects; every fitted Ir/Dr/Dw exponent is below 1.80. The remaining unmeasured high-value quantity is §5.9 #12's **before/after allocation churn** for the two earlier de-copying fixes, which a profile of the final implementation alone cannot reconstruct.
 
 ### 8.5 The `mettail-rust` residue
 
@@ -2715,13 +2791,13 @@ The heap cost of the four non-codec conversions (§5.9 #3). Each moved $`\Theta(
 |---|---|---|---|
 | **#162 / #189** | all eleven generated `ast_*` drivers | ✅ **CONVERTED**, 0 B/level both profiles | [§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
 | **#197** | the optional-collection shape inside #162's own commit | ⛔ **live and unrepaired** — blocks `--all-targets` repo-wide | [§8.6.1a](#861a--197--the-defect-inside-162s-own-commit-live-at-head) |
-| **#43** | f1r3node's hand-written `Par` traversals | ⚠ **21 converted, 8 tripwire members REMAIN**; **NOT** superseded by #162/#189 | [§8.6.2](#862--43--f1r3nodes-hand-written-par-traversals-8-tripwire-members-remain) |
+| **#43** | f1r3node's hand-written/generated `Par` traversals | ✅ **CURRENT: 40 converted, zero tripwires** after schema-generated term/codec PDAs and the four independent Phase 7 controls; the linked fixed-SHA analysis is historical | [§5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap), [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) |
 | **#124** | the three `spliced_event_bytes` event-hash legs | ⚠ **MEASURED, NOT CONVERTED**; repair already implemented and never called | [§8.6.3](#863--124--the-event-hash-legs-measured-not-converted-and-quadratic-in-time) |
 | **#189** residual | `try_eval` | ⚠ **PARTIAL** — `Int` has a worklist, **15 categories do not** | [§8.6.4](#864--189-residual--try_eval-is-partially-converted-and-the-ratchet-that-says-so) |
-| **#119 / #120** | the prost depth-33 read ceiling | ⚠ **DESIGNED, NOT BUILT** — and naive removal *introduces* a `SIGSEGV` | [§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it) |
-| **#174** | 10,491 B/level of parse-phase cost | ⚠ **UNATTRIBUTED** — matches no driver measured in isolation | [§8.6.6](#866--174--10491-blevel-that-belongs-to-no-measured-driver) |
+| **#119 / #120** | the prost depth-33 read ceiling | ✅ **CURRENT: generated protobuf decode PDA is unbounded by native recursion context**; the linked section preserves why simply deleting prost's guard would have been wrong | [§5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap), [§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it) |
+| **#174** | historical 10,491 / 950 B/level figures | ✅ **ATTRIBUTED, figures withdrawn, mechanism converted** — `3276c1ee` isolated the old hand-written `Par::hash`; generated Hash is now flat and linear | [§5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee), [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) |
 | **#157** | the ceiling inventory's transcribed value | ⚠ **STALE AND STRUCTURALLY INVISIBLE** — the tripwire cannot see the drift | [§8.6.7](#867--157--a-transcribed-ceiling-and-a-tripwire-that-cannot-see-it-drift) |
-| **instrument** | the 12,288 B floor; the 3,254 B/level shape | ⚠ **two method corrections**, one repaired in only one of the two repositories | [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number) |
+| **instrument** | the 12,288 B floor; the 3,254 B/level shape | ✅ **CURRENT f1r3node gate uses typed below-resolution readings and long discriminating ladders**; the historical diagnosis remains in the linked section | [§8.6.8](#868--the-instrument-floor-and-the-wrong-shape--two-corrections-that-change-the-method-not-just-a-number), [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) |
 | **#121** | `eval_stable_par` ⇄ `eval_stable_expr` | ✅ converted — ★ found by **bisection**, present in **no audit and no tripwire list** | [§8.6.9](#869--121--the-gate-built-to-demonstrate-a-fix-overflowed-and-the-frame-was-not-the-encoder) |
 
 ---
@@ -2957,7 +3033,19 @@ $`\Rightarrow`$ **A time cost, distinct from and additional to the stack cost**,
 
 ### 8.6.5 ⚠★★ #119/#120 — the prost read ceiling, and the trap in removing it
 
-The protobuf **reader** is capped at term depth **33 / 32 / 31** per envelope by a private `prost` constant, while the **writer** has no cap at all — the *write/read asymmetry* of [§6.4](#64--the-writeread-asymmetry--one-section-because-it-is-one-class). The redesign is **designed, not built**.
+> ★★ **CLOSED; the original asymmetry and sequencing trap below are retained as engineering evidence.**
+> Commit `cc616c3c` first generated the iterative unknown-field group skipper and proved it against prost,
+> but deliberately left it dormant. Commit `26876b65` then generated the complete per-message protobuf
+> decode PDA and routed both known fields and unknown-field skipping through explicit work stacks. The
+> current reader therefore has no native-recursion depth ceiling, and the formerly recursive group arm
+> became iterative before the prost limit ceased to govern production decoding. The closure gates include
+> `par_protobuf_stack_safety` 6/6, `protobuf_decoder_group_bomb`, the generated-decoder differential, and
+> `par_read_stack_safety_registry` 4/4.
+
+**Historical baseline.** The protobuf reader was capped at term depth **33 / 32 / 31** per envelope by a
+private `prost` constant, while the writer had no cap at all — the *write/read asymmetry* of
+[§6.4](#64--the-writeread-asymmetry--one-section-because-it-is-one-class). At the report's original
+measurement point, the replacement was designed but not yet built.
 
 ⚠★★★ **The trap, and it is the reason "just raise the limit" is wrong.** **Read from source**, `prost-0.14.4/src/encoding.rs:178–189`: `skip_field`'s `StartGroup` arm **recurses**.
 
@@ -2984,7 +3072,9 @@ $`\Rightarrow`$ **The recursion limit is not merely a *cap on legitimate depth*;
 
 ---
 
-### 8.6.6 ⚠ #174 — 10,491 B/level that belongs to no measured driver
+### 8.6.6 ★★ #174 — attributed, stale figures withdrawn, generated Hash converted
+
+> ★★ **CLOSED; the fixed-SHA diagnosis below is retained as historical evidence under Appendix G.4 rule 2.** Commit `3276c1ee` separated `par_hash`, `par_hashmap`, and the unhashed `lower_depth` control. The old 10,491 / 950 B/level pair re-measured as 227 / 0 on its original ladder, so the 11.0× ratio is withdrawn. The discriminating 512 $`\rightarrow`$ 4,096 ladder attributed the remaining slope to f1r3node's then-hand-written `impl Hash for Par`. Commit `26876b65` replaced that surface with the schema-generated Hash PDA. Current gates read flat through depth 4,096; [§5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) additionally fits `hash`, legacy `hash_nested_set`, `PathMap<()>` set hashing, and `PathMap<Par>` map hashing at Ir exponents 1.0059, 1.0100, 0.9918, and 1.0175 respectively.
 
 **Read from source**, `mettail-rust@7fad51db`, `rholang-runtime/src/bin/stack_depth_probe.rs:820–821`: bisected debug, ladder $`16 \rightarrow 1{,}024`$, `list_pair_lower` reads **950 B/level** while `map_pair_lower` reads **10,491** — an **11.0$`\times`$** jump from replacing a list literal with a hash-keyed one.
 

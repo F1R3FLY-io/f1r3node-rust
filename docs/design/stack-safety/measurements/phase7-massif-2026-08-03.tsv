@@ -1,0 +1,5 @@
+subject	lo_depth	hi_depth	peak_lo_bytes	peak_hi_bytes	control	control_lo_bytes	control_hi_bytes	net_lo_bytes	net_hi_bytes	bytes_per_level
+substitute	256	1024	2091088	7563280	heap_fixture_par	215736	817848	1875352	6745432	6341.25
+sort	256	1024	608784	2316816	heap_fixture_par	215736	817848	393048	1498968	1440.00
+normalize	256	1024	924416	3721792	heap_fixture_normalize	15048	16584	909368	3705208	3640.42
+eval_with_nots	256	1024	190864	688528	heap_fixture_eval	148152	547512	42712	141016	128.00
