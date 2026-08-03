@@ -500,17 +500,30 @@ pub trait ColdStoreEncode {
 }
 
 macro_rules! cold_store_encode {
-    ($($t:ty),* $(,)?) => {$(
+    ($(($t:ty, $record:ident)),* $(,)?) => {$(
         impl ColdStoreEncode for $t {
             #[inline]
-            fn cold_encode(&self) -> Vec<u8> { encode(self) }
+            fn cold_encode(&self) -> Vec<u8> {
+                #[cfg(feature = "phase7-depth-histograms")]
+                crate::rust::rholang::phase7_depth_histogram::$record("bincode_encoder", self);
+                encode(self)
+            }
             #[inline]
-            fn cold_encode_into(&self, out: &mut Vec<u8>) { encode_into(self, out) }
+            fn cold_encode_into(&self, out: &mut Vec<u8>) {
+                #[cfg(feature = "phase7-depth-histograms")]
+                crate::rust::rholang::phase7_depth_histogram::$record("bincode_encoder", self);
+                encode_into(self, out)
+            }
         }
     )*};
 }
 
-cold_store_encode!(Par, BindPattern, ListParWithRandom, TaggedContinuation);
+cold_store_encode!(
+    (Par, record_par),
+    (BindPattern, record_bind_pattern),
+    (ListParWithRandom, record_list_par_with_random),
+    (TaggedContinuation, record_tagged_continuation),
+);
 
 // ===========================================================================
 // §F  Introspection for the space gate

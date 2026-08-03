@@ -223,7 +223,7 @@ use crate::rhoapi::{
 };
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::par_children::{
-    CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT, dismantle_all,
+    dismantle_all, CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
 };
 
 type Res<T> = Result<T, ColdStoreDecodeError>;
@@ -250,7 +250,7 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 use crate::rust::rholang::bincode_schema_tables::{
     CN_CONN_AND_BODY, CN_CONN_BOOL, CN_CONN_BYTE_ARRAY, CN_CONN_INT, CN_CONN_NOT_BODY,
     CN_CONN_OR_BODY, CN_CONN_STRING, CN_CONN_URI, CN_VAR_REF_BODY, EX_E_AND_BODY, EX_E_DIV_BODY,
-    EX_E_EQ_BODY, EX_E_GT_BODY, EX_E_GTE_BODY, EX_E_LIST_BODY, EX_E_LT_BODY, EX_E_LTE_BODY,
+    EX_E_EQ_BODY, EX_E_GTE_BODY, EX_E_GT_BODY, EX_E_LIST_BODY, EX_E_LTE_BODY, EX_E_LT_BODY,
     EX_E_MAP_BODY, EX_E_MATCHES_BODY, EX_E_METHOD_BODY, EX_E_MINUS_BODY, EX_E_MINUS_MINUS_BODY,
     EX_E_MOD_BODY, EX_E_MULT_BODY, EX_E_NEG_BODY, EX_E_NEQ_BODY, EX_E_NOT_BODY, EX_E_OR_BODY,
     EX_E_PATHMAP_BODY, EX_E_PERCENT_PERCENT_BODY, EX_E_PLUS_BODY, EX_E_PLUS_PLUS_BODY,
@@ -2089,6 +2089,8 @@ impl ColdStoreDecode for Par {
         m.assert_drained(DrainedRoot::Par)?;
         let consumed = m.r.consumed();
         let value = take_one(&mut m.pars, "Par (root)")?;
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_par("bincode_decoder", &value);
         Ok((value, consumed))
     }
 }
@@ -2101,6 +2103,11 @@ impl ColdStoreDecode for ListParWithRandom {
         m.assert_drained(DrainedRoot::ListParWithRandom)?;
         let consumed = m.r.consumed();
         let value = take_one(&mut m.list_par_with_randoms, "ListParWithRandom (root)")?;
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_list_par_with_random(
+            "bincode_decoder",
+            &value,
+        );
         Ok((value, consumed))
     }
 }
@@ -2113,6 +2120,11 @@ impl ColdStoreDecode for BindPattern {
         m.assert_drained(DrainedRoot::BindPattern)?;
         let consumed = m.r.consumed();
         let value = take_one(&mut m.bind_patterns, "BindPattern (root)")?;
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_bind_pattern(
+            "bincode_decoder",
+            &value,
+        );
         Ok((value, consumed))
     }
 }
@@ -2125,6 +2137,11 @@ impl ColdStoreDecode for TaggedContinuation {
         m.assert_drained(DrainedRoot::TaggedContinuation)?;
         let consumed = m.r.consumed();
         let value = take_one(&mut m.tagged_continuations, "TaggedContinuation (root)")?;
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_tagged_continuation(
+            "bincode_decoder",
+            &value,
+        );
         Ok((value, consumed))
     }
 }

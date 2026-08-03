@@ -117,6 +117,37 @@ fn decode_set_entries(map: &RholangSetPathMap) -> Vec<Par> {
     ps
 }
 
+/// Move to the previous sibling using PathMap's public primitive operations.
+///
+/// This is the documented default semantics of
+/// `ZipperMoving::to_prev_sibling_byte`, spelled out here because PathMap
+/// 0.2.2's optimized `ReadZipperUntracked` override can underflow while
+/// searching the mask word before word zero. Keeping the composition here
+/// avoids a dependency fork while retaining an allocation-free zipper walk.
+fn to_prev_sibling_byte_composed<Z>(zipper: &mut Z) -> bool
+where Z: pathmap::zipper::ZipperMoving {
+    let current = match zipper.path().last() {
+        Some(byte) => *byte,
+        None => return false,
+    };
+    if !zipper.ascend_byte() {
+        return false;
+    }
+
+    match zipper.child_mask().prev_bit(current) {
+        Some(previous) => {
+            zipper.descend_to_byte(previous);
+            debug_assert!(zipper.path_exists());
+            true
+        }
+        None => {
+            zipper.descend_to_byte(current);
+            debug_assert!(zipper.path_exists());
+            false
+        }
+    }
+}
+
 /// Visit value-bearing paths in descending byte-lexicographic order.
 ///
 /// PathMap exposes forward value iteration and both directions of sibling
@@ -143,7 +174,7 @@ fn for_each_raw_value_reverse<'trie, V>(
         if zipper.at_root() {
             break;
         }
-        if zipper.to_prev_sibling_byte() {
+        if to_prev_sibling_byte_composed(&mut zipper) {
             while zipper.descend_last_byte() {}
         } else {
             let ascended = zipper.ascend_byte();

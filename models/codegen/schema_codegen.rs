@@ -3940,6 +3940,16 @@ fn emit_par_message_impl(src: &mut String, fields: &[Field]) {
          \x20   fn encode_raw(&self, buf: &mut impl prost::bytes::BufMut) {\n\
          \x20       crate::rust::rholang::protobuf_encoder::encode_into(self, buf);\n\
          \x20   }\n\n\
+         \x20   #[cfg(feature = \"phase7-depth-histograms\")]\n\
+         \x20   fn merge(&mut self, mut buf: impl prost::bytes::Buf) -> Result<(), prost::DecodeError> {\n\
+         \x20       let ctx = prost::encoding::DecodeContext::default();\n\
+         \x20       while buf.has_remaining() {\n\
+         \x20           let (tag, protobuf_wire_type) = prost::encoding::decode_key(&mut buf)?;\n\
+         \x20           self.merge_field(tag, protobuf_wire_type, &mut buf, ctx.clone())?;\n\
+         \x20       }\n\
+         \x20       crate::rust::rholang::phase7_depth_histogram::record_par(\"protobuf_decoder\", self);\n\
+         \x20       Ok(())\n\
+         \x20   }\n\n\
          \x20   fn merge_field(\n\
          \x20       &mut self,\n\
          \x20       tag: u32,\n\
@@ -10657,7 +10667,11 @@ pub fn decode_par_with_stats<B: Buf>(
         .pop()
         .expect("the single checked Par root exists")
     {
-        Value::Par(value) => Ok((value, stats)),
+        Value::Par(value) => {
+            #[cfg(feature = "phase7-depth-histograms")]
+            crate::rust::rholang::phase7_depth_histogram::record_par("protobuf_decoder", &value);
+            Ok((value, stats))
+        }
         other => {
             let found = other.kind_name();
             machine.values.push(other);

@@ -27,6 +27,9 @@ autotests = false
 [features]
 default = []
 schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
+# Phase 7 measurement only. The implementation lives under `tests/support` and
+# production call sites compile to nothing unless this feature is selected.
+phase7-depth-histograms = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

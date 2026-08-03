@@ -9,6 +9,7 @@ Helper scripts intended to be run from the repository root.
 | `scripts/check-fmt.sh` | The formatting check, decided by EXIT CODE (0 clean / 1 diffs / 2 tool error). `--self-test` proves it separates all three — a grep for `^Diff in` cannot, because a crashing rustfmt prints no diffs and reads as clean |
 | `scripts/gate-router-post-commit` | The gate ROUTER. `--install` puts it where hooks actually fire; `--census` lists gates that declare no `@watches:`. A red fence is delivered to the agent that CAUSED it, because a post-commit hook's stdout goes to the committer's terminal — and git identity cannot route here, since every concurrent agent commits under one identity. Runs no cargo: 20.5 ms. ⚠ Do **not** "install the hooks" by setting `core.hooksPath=.githooks` — the tracked `.githooks/pre-commit` there runs `cargo fmt --check` and `cargo clippy --workspace -- -D warnings`, which is #82/#86 (sequenced last) and would block every commit immediately |
 | `scripts/bench/stack-safety-phase7.sh` | Self-capped Phase 7 resource harness. It derives the converted register from `stack_depth_gate`, fits fixture-subtracted Cachegrind `Ir`/`Dr`/`Dw` ladders, and profiles substitution/sorting/normalization/evaluation peak heap with Massif and matched fixture controls. Results go under `target/phase7-stack-safety/` |
+| `scripts/bench/stack-safety-phase7-histograms.sh` | Self-capped, feature-gated production-corpus depth histograms for the EPathMap escape arm, bincode encoder, bincode decoder, and protobuf decoder. Raw observations and summaries go under `target/phase7-stack-safety/`; the script refuses an unobserved subject |
 | `scripts/run_rust_tests.sh` | Runs the release test suite crate by crate |
 | `scripts/build_rust_libraries.sh` | Builds shared library artifacts under `rust_libraries/release/` |
 | `scripts/build_rust_libraries_docker.sh` | Cross-builds shared libraries for Linux Docker targets |
@@ -25,6 +26,7 @@ Examples:
 ./scripts/build_rust_libraries.sh
 ./scripts/delete_data.sh
 ./scripts/bench/stack-safety-phase7.sh all
+./scripts/bench/stack-safety-phase7-histograms.sh
 ```
 
 ## Notes

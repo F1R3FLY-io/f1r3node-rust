@@ -11,6 +11,13 @@ pub mod sorter;
 pub mod bincode_schema;
 pub mod bincode_encoder;
 
+// Measurement support is physically separated from production sources. The
+// selected feature includes it into the library only so production entry points
+// can report the shapes the interpreter corpus actually sends through them.
+#[cfg(feature = "phase7-depth-histograms")]
+#[path = "../../../tests/support/phase7_depth_histogram.rs"]
+pub(crate) mod phase7_depth_histogram;
+
 // ---------------------------------------------------------------------------
 // ★ THE FIVE GENERATED MODULES — ONE build-script pass, five outputs
 //

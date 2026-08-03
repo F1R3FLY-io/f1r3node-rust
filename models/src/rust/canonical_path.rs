@@ -608,6 +608,8 @@ impl<'p> EncMachine<'p> {
     ) -> Result<(), CodecError> {
         let stable = known_stable || eval_stable_par(par);
         if !stable {
+            #[cfg(feature = "phase7-depth-histograms")]
+            crate::rust::rholang::phase7_depth_histogram::record_par("escape_arm", par);
             // The trie escape arm (`0x0F`) is legal ONLY at top-level segment
             // positions (hereditary rule): nested positions are inside stable
             // subtrees where `stable` always holds.

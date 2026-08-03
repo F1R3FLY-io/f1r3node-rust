@@ -35,9 +35,20 @@ impl StableHashSerialize for TaggedContinuation {
 }
 
 impl StableHashSerialize for Par {
-    fn stable_hash_bytes(&self) -> Vec<u8> { bincode_encoder::encode(self) }
+    fn stable_hash_bytes(&self) -> Vec<u8> {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_par("bincode_encoder", self);
+        bincode_encoder::encode(self)
+    }
 }
 
 impl StableHashSerialize for ParWithRandom {
-    fn stable_hash_bytes(&self) -> Vec<u8> { bincode_encoder::encode(self) }
+    fn stable_hash_bytes(&self) -> Vec<u8> {
+        #[cfg(feature = "phase7-depth-histograms")]
+        crate::rust::rholang::phase7_depth_histogram::record_par_with_random(
+            "bincode_encoder",
+            self,
+        );
+        bincode_encoder::encode(self)
+    }
 }

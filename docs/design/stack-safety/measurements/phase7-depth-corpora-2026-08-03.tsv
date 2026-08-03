@@ -1,0 +1,9 @@
+subject	corpus	observations
+bincode_decoder	interpreter_spec	1
+bincode_encoder	demo_verification	132
+bincode_encoder	interpreter_spec	1031
+bincode_encoder	reduce_spec	5155
+bincode_encoder	rholang_numeric_eval_spec	3099
+bincode_encoder	where_examples_compile	234
+escape_arm	drop_head_spec	9
+protobuf_decoder	rspace_rhotypes_ffi	6

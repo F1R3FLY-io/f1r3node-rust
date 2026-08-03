@@ -1969,6 +1969,38 @@ fn reverse_raw_visitors_are_the_exact_reverse_of_forward_trie_order() {
     );
 }
 
+/// PathMap 0.2.2's optimized previous-sibling implementation underflows when
+/// a dense byte node has no sibling in a mask word before word zero. This
+/// production-shaped key set exercised that topology in the pretty-printer;
+/// the EntryTrie reverse visitor must retain exact order without calling the
+/// faulty dependency override.
+#[test]
+fn reverse_raw_set_visitor_handles_dense_zero_word_boundary() {
+    let set = EPathMap::new(
+        vec![
+            make_list_par(vec!["backend", "api", "done"]),
+            make_list_par(vec!["backend", "database", "in-progress"]),
+            make_list_par(vec!["frontend", "ui", "done"]),
+            make_list_par(vec!["frontend", "ui", "todo"]),
+            make_list_par(vec!["frontend", "tests", "todo"]),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+
+    let mut forward = Vec::new();
+    set.entry_trie()
+        .for_each_raw_set_entry(|key| forward.push(key.to_vec()))
+        .unwrap();
+    let mut reverse = Vec::new();
+    set.entry_trie()
+        .for_each_raw_set_entry_reverse(|key| reverse.push(key.to_vec()))
+        .unwrap();
+
+    assert_eq!(reverse, forward.into_iter().rev().collect::<Vec<_>>());
+}
+
 /// Consuming visitors are the ownership-preserving bridge into PDAs: set keys
 /// and map values must move out in the same trie order as the borrowed view,
 /// without first materializing a `Vec<Par>` projection.

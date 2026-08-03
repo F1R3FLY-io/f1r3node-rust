@@ -1,0 +1,17 @@
+subject	root_kind	depth	count	share_percent
+bincode_decoder	ListParWithRandom	1	1	100.000000
+bincode_encoder	BindPattern	0	1	0.010362
+bincode_encoder	BindPattern	1	1029	10.662108
+bincode_encoder	BindPattern	2	2	0.020723
+bincode_encoder	ListParWithRandom	1	1770	18.340068
+bincode_encoder	ListParWithRandom	2	32	0.331572
+bincode_encoder	Par	1	5795	60.045591
+bincode_encoder	TaggedContinuation	0	950	9.843540
+bincode_encoder	TaggedContinuation	1	14	0.145063
+bincode_encoder	TaggedContinuation	2	24	0.248679
+bincode_encoder	TaggedContinuation	3	17	0.176148
+bincode_encoder	TaggedContinuation	4	12	0.124339
+bincode_encoder	TaggedContinuation	5	5	0.051808
+escape_arm	Par	1	4	44.444444
+escape_arm	Par	2	5	55.555556
+protobuf_decoder	Par	2	6	100.000000

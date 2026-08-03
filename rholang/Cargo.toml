@@ -83,6 +83,9 @@ chromadb = ["dep:chroma", "dep:rust-bert"]
 # paths. NEVER enabled in production builds — without it no runtime-flippable fusion path
 # exists (a runtime flag would be a node-divergence hazard under a latent parity bug).
 epathmap-fusion-differential = []
+# Pass the Phase 7 measurement-only hooks through to `models` while running the
+# interpreter corpus. Disabled in every production/default build.
+phase7-depth-histograms = ["models/phase7-depth-histograms"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
