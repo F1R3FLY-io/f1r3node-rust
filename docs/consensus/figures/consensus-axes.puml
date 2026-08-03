@@ -21,7 +21,7 @@ rectangle "**A DEPLOY**\n<size:10>signed source, admitted by a node</size>" as D
 package "What a node COMPUTES" #FAFAFA {
   rectangle "**Axis 1 — COMPUTED VALUE**\n<size:10>the term a redex reduces to</size>\n<size:10><latex>e \longrightarrow_\beta v</latex></size>" as A1 #line:0D47A1;back:BBDEFB
   rectangle "**Axis 2 — VERDICT**\n<size:10>which COMM fires; which //match// branch reduces;</size>\n<size:10>whether a guard admits</size>\n<size:10><latex>\mathrm{fire} : S \times P \to \{\top,\bot\}</latex></size>" as A2 #line:1B5E20;back:C8E6C9
-  rectangle "**Axis 6 — METERING**\n<size:10>phlogiston charged: count, order, amount</size>\n<size:10><latex>\mathrm{cost} : \mathrm{Op} \to \mathbb{N}</latex></size>" as A6 #line:E65100;back:FFE0B2
+  rectangle "**Axis 6 — METERING**\n<size:10>token model: committed COMM count; funding surface</size>\n<size:10><latex>\mathrm{cost} = |\{\mathrm{committed\ COMMs}\}|</latex></size>" as A6 #line:E65100;back:FFE0B2
 }
 
 package "What a node COMMITS" #FAFAFA {
@@ -45,7 +45,7 @@ DEPLOY --> A6
 
 A1 --> A3 : <size:10>the value is serialised</size>
 A2 --> A4 : <size:10>a different COMM leaves</size>\n<size:10>a different tuplespace</size>
-A6 --> A2 : <size:10>out-of-phlogiston</size>\n<size:10>aborts the deploy</size>
+A6 --> A2 : <size:10>token-budget boundary</size>\n<size:10>(latent under OD-1)</size>
 A3 --> A4 : <size:10>the bytes are the</size>\n<size:10>hash preimage</size>
 A4 --> REPLAY
 A3 --> REPLAY

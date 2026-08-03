@@ -78,7 +78,7 @@ Consensus classification of the byte-moving transitions:
 [CBR-044](../../consensus/consensus-change-register.md#cbr-044) (the EPM1 activation itself).
 The reverse-zipper repair's former entry (CBR-046) is retired as a bug fix under the register's
 2026-08-03 inclusion criterion; its record is the register's
-[exemption appendix](../../consensus/consensus-change-register.md#appendix-b--the-exemption-table).
+[exemption appendix](../../consensus/consensus-change-register.md#b1-retired-register-entries).
 
 ---
 
@@ -651,7 +651,7 @@ swap; the recursive oracle lives under `rholang/tests/support`, outside producti
 
 The repair's consensus classification was CBR-046, retired 2026-08-03 as a bug fix under the
 register's inclusion criterion; the record is the register's
-[exemption appendix](../../consensus/consensus-change-register.md#appendix-b--the-exemption-table).
+[exemption appendix](../../consensus/consensus-change-register.md#b1-retired-register-entries).
 
 ### 5.8 The dissolved intern store
 

@@ -32,7 +32,7 @@ endif
 
 partition "PLAY — the proposer" #E3F2FD {
   :Normalize the deploy source\n<size:10>Axis 5 can refuse here</size>;
-  :Reduce; charge phlogiston\n<size:10>Axes 1, 2, 6</size>;
+  :Reduce; count committed COMMs\n<size:10>Axes 1, 2, 6</size>;
   :Serialise events and state\n<size:10>Axis 3 — bincode lane</size>;
   :Commit the post-state root\n<size:10>Axis 4</size>;
   :Encode the block\n<size:10>Axis 3 — prost lane</size>;
