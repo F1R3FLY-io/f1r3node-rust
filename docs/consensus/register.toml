@@ -1746,6 +1746,42 @@ window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
 evidence = "Appendix B.3 row 69 — the pausable EPM1 decoder replaces a copied ACTree03 Vec<u8> with a byte range inside its already-owned snapshot, and the iterative ACT visitor passes the current path as &[u8] rather than cloning a Vec at each endpoint. Encoder code, EPM1 grammar, validation decisions, ordinal mapping, and PathMap insert/create operations are unchanged. A pointer-identity regression proves zero-copy ownership. Under MemoryMax=4G, MemorySwapMax=0, and one Cargo job: codec 7/7; EPM1/cache/bincode-shape/native-zipper 42/42; protobuf encoder differential 13/13; bincode encoder differential 13/13; bincode decoder differential 13/13; canonical fixtures 13/13; byte goldens 7/7. [DERIVED]"
 
+[[exempt]]
+commit = "2902f0d0"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 70 — the pretty-printer PDA removes its temporary forward-order Vec<&Par> and pushes EPathMap children directly from a reverse canonical zipper walk over PathMap<()> or PathMap<Par>. A direct shared-prefix regression proves set and map reverse streams equal reversed-forward and neutral empty accepts either typed visitor. The independent recursive oracle uses a forward PathMap traversal, covers map-mode EPathMap and EZipper, and now lives in rholang/tests/support outside production sources. Under MemoryMax=4G, MemorySwapMax=0, and one Cargo job: pretty-printer family 44/44; PathMap integration 62/62; provenance 2/2; recursion census 3/3. No serializer, EPM1, score, cost, event, or state path changes. [DERIVED]"
+
+[[exempt]]
+commit = "f749774a"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 71 — EntryTrie Ord moves from flattened Vec<Par> ordering to the same canonical PathMap key relation already used by equality and hashing. No encoder changes; total ScoredTerm sorting makes input iteration order byte-invisible. Landing evidence: serialized-Par goldens 7/7, EPathMap canonical fixtures/canonicalization and canonical-form identity green, models library 95/95, PathMap integration 61/61, and three codec differentials 13/13. [DERIVED]"
+
+[[exempt]]
+commit = "9478ffca"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Appendix B.3 row 72 — adds 73 comment lines and zero executable tokens describing a parked EntryPaths cursor experiment; the live encoder remains unchanged. The obsolete scaffold is deleted by 37e047a9 after direct EPM1 supersedes it. [DERIVED]"
+
+[[exempt]]
+commit = "698406a3"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 73 — memoizes the exact U(m) byte vector the existing ground protobuf arm already emitted, shares it through Arc<OnceLock<_>>, and invalidates it on every mutation. Field selection and byte construction do not change; models library passed 95/95. EPM1 later supersedes this cache with trie_snapshot/epm_layout. [DERIVED]"
+
+[[exempt]]
+commit = "0ddac646"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 74 — encode_trie_path_with_stability returns the canonical encoder’s already-computed exact stability bit instead of independently walking the Par again. A forced-false mutation failed six selector tests. Restored evidence: models library 95/95, PathMap integration 61/61, canonical fixtures 13/13, identity 4/4, serialized-Par goldens 7/7, decoder differential 13/13, serialized paths 9/9, and rholang/casper all-target checks. [DERIVED]"
+
+[[exempt]]
+commit = "37e047a9"
+window = "FRONTIER"
+reason = "HYGIENE"
+evidence = "Appendix B.3 row 75 — deletes only obsolete commented EntryPaths cursor scaffolding and applies rustfmt import ordering; the live encoder still emits one contiguous cached EPM1 snapshot. Under MemoryMax=4G, MemorySwapMax=0, and one Cargo job: bincode differential 13/13, space 9/9, EPM1 15/15. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`
