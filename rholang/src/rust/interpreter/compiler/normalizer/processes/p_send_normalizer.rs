@@ -133,7 +133,6 @@ pub(crate) fn combine_p_send<'ast>(
     })))
 }
 
-
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {

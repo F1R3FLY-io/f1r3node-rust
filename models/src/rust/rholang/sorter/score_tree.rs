@@ -445,16 +445,12 @@ impl EmittedBytes for (crate::rhoapi::Par, crate::rhoapi::Par) {
 /// source order. That is sound by the same argument that makes the key total without requiring
 /// injectivity — if the emitted bytes are identical, swapping them is invisible.
 impl<X> EmittedBytes for (crate::rhoapi::ReceiveBind, X) {
-    fn emitted_bytes(&self) -> Vec<u8> {
-        prost::Message::encode_to_vec(&self.0)
-    }
+    fn emitted_bytes(&self) -> Vec<u8> { prost::Message::encode_to_vec(&self.0) }
 }
 
 /// ⚠ Used only by `ScoredTerm<String>` in the sorter's own tests. Real terms never reach it.
 impl EmittedBytes for String {
-    fn emitted_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
+    fn emitted_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
 }
 
 /// ⚠ Test-only, and its presence is deliberate rather than incidental.
@@ -466,9 +462,7 @@ impl EmittedBytes for String {
 /// exists. Encoding as big-endian bytes keeps the byte order agreeing with the numeric order,
 /// so a tie between two markers breaks the same way a reader would expect.
 impl EmittedBytes for usize {
-    fn emitted_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
-    }
+    fn emitted_bytes(&self) -> Vec<u8> { self.to_be_bytes().to_vec() }
 }
 
 impl<T: EmittedBytes> ScoredTerm<T> {
@@ -655,15 +649,11 @@ mod differential_score_comparator {
 
     use super::*;
 
-    fn leaf(n: i64) -> Tree<ScoreAtom> {
-        Tree::Leaf(ScoreAtom::create_from_i64(n))
-    }
+    fn leaf(n: i64) -> Tree<ScoreAtom> { Tree::Leaf(ScoreAtom::create_from_i64(n)) }
     fn sleaf(s: &str) -> Tree<ScoreAtom> {
         Tree::Leaf(ScoreAtom::create_from_string(s.to_string()))
     }
-    fn bleaf(b: &[u8]) -> Tree<ScoreAtom> {
-        Tree::Leaf(ScoreAtom::create_from_bytes(b.to_vec()))
-    }
+    fn bleaf(b: &[u8]) -> Tree<ScoreAtom> { Tree::Leaf(ScoreAtom::create_from_bytes(b.to_vec())) }
 
     /// A corpus that reaches every arm of the comparator: leaves of all three
     /// tagged-atom kinds, empty and non-empty nodes, leaf-vs-node mismatches,
@@ -740,7 +730,12 @@ mod differential_score_comparator {
         let corpus = corpus();
 
         for x in &corpus {
-            assert_eq!(compare_score(x, x), Ordering::Equal, "not reflexive: {:?}", x);
+            assert_eq!(
+                compare_score(x, x),
+                Ordering::Equal,
+                "not reflexive: {:?}",
+                x
+            );
         }
 
         for x in &corpus {

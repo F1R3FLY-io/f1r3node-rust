@@ -8,12 +8,11 @@ use std::{env, fs};
 
 use prost::Message as _;
 
-/// The wire-schema generator: ONE table, emitted from the protobuf descriptor,
-/// consumed by BOTH the serializer (`bincode_encoder`) and the deserializer
-/// (`bincode_decoder`). See its module docs for why this is a build-script pass and
-/// not a proc-macro.
-#[path = "build/wire_schema.rs"]
-mod wire_schema;
+/// The schema-code generator: one descriptor pass emits the bincode and
+/// protobuf tables plus the generated term-operation and decode PDAs. See its
+/// module docs for why this is a build-script pass rather than a proc-macro.
+#[path = "codegen/schema_codegen.rs"]
+mod schema_codegen;
 
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
@@ -49,17 +48,17 @@ fn main() {
     // ⚠ AND the generator's own source. Emitting ANY `cargo:rerun-if-changed`
     // switches cargo from "rerun when anything in the package changed" to
     // "rerun only for these paths" — so without this line, editing
-    // `build/wire_schema.rs` leaves a STALE generated table in `OUT_DIR` while
+    // `codegen/schema_codegen.rs` leaves a STALE generated table in `OUT_DIR` while
     // the build reports success. That is a silent, byte-visible divergence
     // between the generator in the tree and the table in the binary; it was
     // observed once, during this module's development, and cost a confusing
     // benchmark result.
     println!(
         "cargo:rerun-if-changed={}",
-        manifest_dir.join("build/wire_schema.rs").display()
+        manifest_dir.join("codegen/schema_codegen.rs").display()
     );
 
-    // The descriptor set is what the wire-schema generator reads. It carries
+    // The descriptor set is what the schema-code generator reads. It carries
     // FIELD DECLARATION ORDER, which is the bincode/serde layout — a fact the
     // `#[prost(...)]` attributes (which describe the *protobuf* wire) and
     // serde's derive (which exposes nothing at run time) both fail to provide.
@@ -71,13 +70,10 @@ fn main() {
         .build_client(true)
         .build_server(true)
         .btree_map(".")
-        // EPathMap fix P3 (stage L1.5): `.rhoapi.EPathMap` is EXTERN — prost
-        // does not generate the struct; every generated reference (the
-        // `EPathmapBody` oneof variant, `EZipper.pathmap`) resolves to the
-        // hand-maintained wrapper in models/src/rust/rhoapi_ext.rs, which
-        // replicates the generated type's prost/serde/Ord/Debug behavior
-        // byte-identically (P0-golden-gated) and adds the private shadow
-        // cell for O(1) intern rendezvous + cached canonical-bytes encodes.
+        // `.rhoapi.EPathMap` is external: generated references resolve to the
+        // PathMap-native implementation in `rhoapi_ext.rs`. It specializes
+        // empty/set/map storage and supplies stack-safe generated term and
+        // protobuf operations while preserving the public schema path.
         // `crate::rhoapi` re-exports it (models/src/lib.rs), so downstream
         // import paths are unchanged. The textual post-processing below
         // continues to apply to the REMAINING generated types.
@@ -105,10 +101,30 @@ fn main() {
         )
         .expect("Failed to compile proto files");
 
+    let descriptor_bytes = fs::read(&descriptor_path).expect("read the protobuf descriptor set");
+    let descriptor_set = prost_types::FileDescriptorSet::decode(&descriptor_bytes[..])
+        .expect("decode the protobuf descriptor set");
+    let generated = schema_codegen::generate(&descriptor_set);
+    let counts = &generated.counts;
+
     // Remove PartialEq from specific generated structs from rhoapi.rs
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let file_path = format!("{}/rhoapi.rs", out_dir);
     let content = fs::read_to_string(&file_path).expect("Unable to read file");
+
+    // Preserve prost-build's untouched recursive implementation as an
+    // independent, test-only semantic oracle.  The production module below is
+    // rewritten to replace every feedback-vertex-set traversal with a generated
+    // PDA; differential tests must not compare that PDA with `Par::decode`,
+    // because `Par::decode` is one of the very surfaces the PDA implements.
+    // Keeping the pre-rewrite source makes the two implementations originate
+    // from independent code paths while retaining the exact schema and Prost
+    // error semantics used before the conversion.
+    fs::write(
+        out_dir_path.join("rhoapi_recursive_oracle.rs"),
+        prepare_recursive_oracle(&content),
+    )
+    .expect("write the recursive protobuf oracle source");
 
     // ★★ THE DERIVE-STRIP PASS, and the RECORD of what it stripped.
     //
@@ -135,6 +151,9 @@ fn main() {
     let lines: Vec<&str> = content.lines().collect();
     let mut rewritten: Vec<String> = Vec::with_capacity(lines.len());
     let mut clone_stripped: Vec<String> = Vec::with_capacity(64);
+    let mut ord_stripped: Vec<String> = Vec::with_capacity(counts.clone_cut_set.len());
+    let mut debug_stripped: Vec<String> = Vec::with_capacity(counts.clone_cut_set.len());
+    let mut message_stripped: Vec<String> = Vec::with_capacity(counts.clone_cut_set.len());
     for (i, line) in lines.iter().enumerate() {
         let mut out = if line.contains("#[derive(Clone, PartialEq, ::prost::Message)]")
             || line.contains("#[derive(Clone, PartialEq, ::prost::Oneof)]")
@@ -151,13 +170,44 @@ fn main() {
         } else {
             line.to_string()
         };
-        if is_prost_derive_line(line) && !line.contains("Copy") {
+        let protobuf_item = is_protobuf_derive_line(line).then(|| item_declared_after(&lines, i));
+        let manual_message = protobuf_item.as_ref().is_some_and(|item| {
+            line.contains("::prost::Message") && counts.clone_cut_set.contains(item)
+        });
+        if let Some(item) = protobuf_item.as_ref().filter(|_| !line.contains("Copy")) {
             out = out.replace("Clone,", "");
-            clone_stripped.push(item_declared_after(&lines, i));
+            clone_stripped.push(item.clone());
+        }
+        if manual_message {
+            message_stripped.push(
+                protobuf_item
+                    .as_ref()
+                    .expect("manual Message derive has an attributed item")
+                    .clone(),
+            );
+            out.clear();
+        }
+        if line.trim() == "#[derive(Eq, Ord, PartialOrd)]" {
+            let item = item_declared_after(&lines, i);
+            if counts.clone_cut_set.contains(&item) {
+                out = "#[derive(Eq)]".to_string();
+                ord_stripped.push(item);
+            }
         }
         rewritten.push(out);
+        // `Debug` is emitted *inside* prost's Message/Oneof derive rather than
+        // as a token we can remove.  Prost's own `#[prost(skip_debug)]` switch
+        // suppresses it.  Inject the switch at the descriptor-derived feedback
+        // vertex set only; every residual generated formatter reaches this cut
+        // within `clone_residual_height` frames.
+        if let Some(item) = protobuf_item.filter(|item| counts.clone_cut_set.contains(item)) {
+            if !manual_message {
+                rewritten.push("#[prost(skip_debug)]".to_string());
+            }
+            debug_stripped.push(item);
+        }
     }
-    let modified_content = rewritten.join("\n");
+    let modified_content = strip_prost_field_attributes(&rewritten.join("\n"), &message_stripped);
 
     // Normalize locally_free in serde serialization — always serialize as empty vec.
     // This matches Scala's AlwaysEqual semantics where locally_free is a transient
@@ -172,18 +222,12 @@ fn main() {
     fs::write(&file_path, &modified_content).expect("Unable to write file");
 
     // -----------------------------------------------------------------------
-    // Stage 2: the wire-schema pass — ONE walk, FIVE outputs
+    // Stage 2: the schema-codegen pass — ONE walk, FIVE outputs
     // -----------------------------------------------------------------------
     //
     // This extends an existing two-stage pipeline: the textual pass above
     // already post-processes prost's output, and this pass reads the same
     // compilation's descriptor set.
-    let descriptor_bytes = fs::read(&descriptor_path).expect("read the protobuf descriptor set");
-    let descriptor_set = prost_types::FileDescriptorSet::decode(&descriptor_bytes[..])
-        .expect("decode the protobuf descriptor set");
-    let generated = wire_schema::generate(&descriptor_set);
-    let counts = &generated.counts;
-
     // ★ THE ANTI-DRIFT CROSS-CHECK. The textual pass above and the generator
     // must be applying the SAME rule to the SAME fields. The textual pass
     // counts the `locally_free` declarations it rewrote; the generator counts
@@ -194,7 +238,7 @@ fn main() {
     assert_eq!(
         locally_free_sites, counts.empty_bytes_fields,
         "models/build.rs: the serialize_as_empty_bytes TEXTUAL pass rewrote {} \
-         `locally_free` declarations, but the wire-schema generator classified {} fields as \
+         `locally_free` declarations, but schema codegen classified {} fields as \
          EmptyBytes. The two rules have drifted apart; one of them no longer covers every \
          `locally_free` field, and the serialize-only blanking is a consensus-visible \
          normalization.",
@@ -206,7 +250,7 @@ fn main() {
     // The campaign's driver list must be DERIVED from what is actually
     // `#[derive]`d, never hand-picked: a hand-picked list of four missed `Hash`
     // entirely, and the enumeration that replaced it additionally found
-    // `Ord`/`PartialOrd`, which nobody had named. `wire_schema.rs` holds the
+    // `Ord`/`PartialOrd`, which nobody had named. `models/codegen/schema_codegen.rs` holds the
     // closed `DERIVE_DISPOSITIONS` table; this scans the post-processed
     // `rhoapi.rs` for the tokens actually present and requires the two to agree
     // as SETS, in both directions.
@@ -228,13 +272,16 @@ fn main() {
     // and a conflicting impl, not the rule that diverged, so the failure is made
     // to land here and to name the item.
     check_clone_join(&clone_stripped, &generated.clone_impls);
+    check_ord_join(&ord_stripped, &counts.clone_cut_set);
+    check_debug_join(&debug_stripped, &counts.clone_cut_set);
+    check_message_join(&message_stripped, &counts.clone_cut_set);
 
     // ── the five outputs of the one pass ──
     assert_eq!(
         generated.sources.len(),
         5,
-        "models/build.rs: the wire-schema pass must produce exactly five outputs \
-         (bincode table, prost table, term-op slot, schema meta, protobuf deserializer); \
+        "models/build.rs: schema codegen must produce exactly five outputs \
+         (bincode table, protobuf table, term-op slot, schema meta, protobuf deserializer); \
          it produced {}. `models/src/rust/rholang/mod.rs` includes five modules and a \
          missing file is a compile error whose message names `OUT_DIR`, not this pass.",
         generated.sources.len()
@@ -242,7 +289,7 @@ fn main() {
     for (name, source) in &generated.sources {
         assert!(
             !source.is_empty(),
-            "models/build.rs: the wire-schema pass produced an EMPTY `{name}`. Even the \
+            "models/build.rs: schema codegen produced an EMPTY `{name}`. Even the \
              term-op slot carries its own explanation of why it has no code; a zero-byte \
              file means the emitter returned nothing."
         );
@@ -254,7 +301,7 @@ fn main() {
     // rather than as a `cargo:warning`, so the evidence is retained without
     // decorating every build of every dependent crate.
     println!(
-        "wire_schema: {} generated messages + {} extern, {} oneofs, {} serialize-only \
+        "schema_codegen: {} generated messages + {} extern, {} oneofs, {} serialize-only \
          `locally_free` fields (cross-checked against the textual pass); {} SCCs, {} \
          self-containing types, {} derive-disposition rows (cross-checked against the \
          `#[derive]` scan); {} outputs written",
@@ -268,7 +315,7 @@ fn main() {
         generated.sources.len()
     );
     println!(
-        "wire_schema: clone cut set [{}] (residual height {}), {} items entered by the driver, \
+        "schema_codegen: clone cut set [{}] (residual height {}), {} items entered by the driver, \
          {} `impl Clone`s emitted (cross-checked against {} textually stripped `Clone` derives)",
         counts.clone_cut_set.join(", "),
         counts.clone_residual_height,
@@ -278,13 +325,32 @@ fn main() {
     );
 }
 
+/// Make prost-build's untouched recursive output independently compilable.
+///
+/// `message_attribute` adds `Eq`/`Ord` to every generated item, while Prost
+/// also adds `Eq`/`Hash` to bytewise-equatable leaf messages.  Production has
+/// hand-written equality and therefore removes Prost's entire equality group;
+/// the oracle must retain Prost's `PartialEq` but remove only the duplicate
+/// `Eq` (and the unneeded `Hash`).  No traversal implementation is changed.
+fn prepare_recursive_oracle(source: &str) -> String {
+    source
+        .replace(
+            "PartialEq, Eq, Hash, ::prost::Message",
+            "PartialEq, ::prost::Message",
+        )
+        .replace(
+            "PartialEq, Eq, Hash, ::prost::Oneof",
+            "PartialEq, ::prost::Oneof",
+        )
+}
+
 /// Is `line` one of the `#[derive(...)]` lines prost-build writes for a generated
 /// message or oneof?
 ///
 /// ⚠ Matched on `::prost::Message` / `::prost::Oneof` rather than on the whole
 /// literal, because the `PartialEq` / `Eq` / `Hash` strip above has already run
 /// on the same line in the same pass and leaves DOUBLE SPACES behind.
-fn is_prost_derive_line(line: &str) -> bool {
+fn is_protobuf_derive_line(line: &str) -> bool {
     line.contains("#[derive(Clone,")
         && (line.contains("::prost::Message") || line.contains("::prost::Oneof"))
 }
@@ -329,6 +395,94 @@ fn item_declared_after(lines: &[&str], i: usize) -> String {
     )
 }
 
+fn strip_prost_field_attributes(source: &str, items: &[String]) -> String {
+    use std::collections::BTreeSet;
+
+    let wanted: BTreeSet<&str> = items.iter().map(String::as_str).collect();
+    let mut seen = BTreeSet::new();
+    let mut active = false;
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !active {
+            if let Some(rest) = trimmed.strip_prefix("pub struct ") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if wanted.contains(name.as_str()) {
+                    active = true;
+                    seen.insert(name);
+                }
+            }
+            out.push(line);
+            continue;
+        }
+        if trimmed.starts_with("#[prost(") {
+            continue;
+        }
+        out.push(line);
+        if trimmed == "}" {
+            active = false;
+        }
+    }
+    assert!(
+        !active,
+        "models/build.rs: unterminated manually driven message struct"
+    );
+    let seen: BTreeSet<&str> = seen.iter().map(String::as_str).collect();
+    assert_eq!(
+        seen, wanted,
+        "models/build.rs: the prost-field-attribute strip did not find exactly the manual \
+         Message cut set"
+    );
+    out.join("\n")
+}
+
+fn check_ord_join(stripped: &[String], cut_set: &[String]) {
+    use std::collections::BTreeSet;
+
+    let stripped: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
+    let cut_set: BTreeSet<&str> = cut_set.iter().map(String::as_str).collect();
+    assert!(
+        !cut_set.is_empty(),
+        "models/build.rs: the schema feedback-vertex set is empty, so no recursive `Ord` \
+         implementation can have been replaced"
+    );
+    assert_eq!(
+        stripped, cut_set,
+        "models/build.rs: the `Ord`/`PartialOrd` derive strip and the descriptor-derived \
+         feedback-vertex set disagree. A stripped-only item has no ordering implementation; \
+         a cut-set-only item retains recursive derived ordering."
+    );
+}
+
+fn check_debug_join(stripped: &[String], cut_set: &[String]) {
+    use std::collections::BTreeSet;
+
+    let stripped: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
+    let cut_set: BTreeSet<&str> = cut_set.iter().map(String::as_str).collect();
+    assert_eq!(
+        stripped, cut_set,
+        "models/build.rs: the prost `skip_debug` injection and the descriptor-derived \
+         feedback-vertex set disagree. A stripped-only item has no Debug implementation; \
+         a cut-set-only item retains recursive prost-derived Debug."
+    );
+}
+
+fn check_message_join(stripped: &[String], cut_set: &[String]) {
+    use std::collections::BTreeSet;
+
+    let stripped: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
+    let cut_set: BTreeSet<&str> = cut_set.iter().map(String::as_str).collect();
+    assert_eq!(
+        stripped, cut_set,
+        "models/build.rs: the prost Message derive strip and the descriptor-derived feedback \
+         vertex set disagree. A stripped-only item has no Message implementation; a cut-set-only \
+         item retains recursive generated Message methods."
+    );
+}
+
 /// ★★ Require the textual strip and the descriptor-derived emission to name the
 /// SAME set of items.
 ///
@@ -361,7 +515,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
     assert!(
         !emitted.is_empty(),
         "models/build.rs: the term-op pass emitted ZERO `impl Clone`s. See the non-vacuity \
-         assertions in `wire_schema::generate`, which refuse this at the source."
+         assertions in `schema_codegen::generate`, which refuse this at the source."
     );
 
     let stripped_set: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
@@ -385,7 +539,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
          \n\
          Those types now have no `Clone` at all. The two rules for \"which items are \
          non-`Copy`\" have diverged: the textual pass looks for a derive line naming `Clone` \
-         and not `Copy`; `wire_schema.rs`'s `ClonePlan` reproduces prost's own rule \
+         and not `Copy`; `models/codegen/schema_codegen.rs`'s `ClonePlan` reproduces prost's own rule \
          (`prost-build-0.14.3/src/context.rs:183-233`) from the descriptor. Fix whichever is \
          wrong — do not paper over it by narrowing the strip, because the strip is what makes \
          the driven `Clone` reachable.",
@@ -400,7 +554,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
          \n\
          That is two `Clone` impls for one type (`E0119`). Either prost stopped deriving `Copy` \
          for an item `ClonePlan` still believes is `Copy`, or the strip's line-shape match \
-         missed a line. See the `Copy` reproduction in `wire_schema.rs` §4b.",
+         missed a line. See the `Copy` reproduction in `models/codegen/schema_codegen.rs` §4b.",
         emitted_only
     );
 }
@@ -430,7 +584,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
 ///   file's — if `.extern_path` grows another entry, or a message stops being
 ///   generated, the tables would silently cover a different set of types than
 ///   the crate compiles.
-fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
+fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
     use std::collections::BTreeSet;
 
     // Every token inside every `#[derive(...)]` in the generated file.
@@ -467,7 +621,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
          function is reading the wrong string."
     );
 
-    let dispositioned: BTreeSet<&str> = wire_schema::DERIVE_DISPOSITIONS
+    let dispositioned: BTreeSet<&str> = schema_codegen::DERIVE_DISPOSITIONS
         .iter()
         .map(|d| d.token)
         .collect();
@@ -477,7 +631,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
     // set this check assembled for itself.
     let undispositioned: Vec<&&str> = found
         .iter()
-        .filter(|token| wire_schema::disposition_of(token).is_none())
+        .filter(|token| schema_codegen::disposition_of(token).is_none())
         .collect();
     assert!(
         undispositioned.is_empty(),
@@ -489,7 +643,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
          driver list is DERIVED from this table precisely so that a new trait cannot join \
          the schema unnoticed — a hand-picked list of four missed `Hash` entirely.\n\
          \n\
-         Add a row to `DERIVE_DISPOSITIONS` in `models/build/wire_schema.rs` naming the \
+         Add a row to `DERIVE_DISPOSITIONS` in `models/codegen/schema_codegen.rs` naming the \
          trait's surfaces and what has been decided about each. `Disposition::NotATraversal` \
          is available and requires only that you say WHY.",
         undispositioned
@@ -499,7 +653,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
     assert!(
         stale.is_empty(),
         "models/build.rs: STALE disposition(s) {:?} — `DERIVE_DISPOSITIONS` in \
-         `models/build/wire_schema.rs` classifies {} trait tokens, but {:?} appear nowhere \
+         `models/codegen/schema_codegen.rs` classifies {} trait tokens, but {:?} appear nowhere \
          in the generated `rhoapi.rs`.\n\
          \n\
          A disposition for a derive that is no longer applied is a claim about code that \
@@ -511,22 +665,25 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &wire_schema::Counts) {
     );
 
     // ── the item counts, so the tables and the crate cover the same types ──
-    let prost_messages = rhoapi_rs.matches("::prost::Message").count();
-    let prost_oneofs = rhoapi_rs.matches("::prost::Oneof").count();
+    let protobuf_messages = rhoapi_rs.matches("::prost::Message").count();
+    let protobuf_oneofs = rhoapi_rs.matches("::prost::Oneof").count();
     assert_eq!(
-        prost_messages, counts.message_count,
+        protobuf_messages,
+        counts.message_count - counts.clone_cut_set.len(),
         "models/build.rs: the generated `rhoapi.rs` carries {} `::prost::Message` derives \
-         but the wire-schema pass emitted programs for {} messages ({} more are \
-         `.extern_path`'d). The tables would cover a different set of types than the crate \
-         compiles, and the difference would show up as a byte-level surprise rather than a \
-         compile error.",
-        prost_messages, counts.message_count, counts.extern_count
+         but schema codegen emitted programs for {} messages, stripped {} feedback-vertex \
+         Message derives, and extern-path'd {} more. The tables would otherwise cover a \
+         different set of types than the crate compiles.",
+        protobuf_messages,
+        counts.message_count,
+        counts.clone_cut_set.len(),
+        counts.extern_count
     );
     assert_eq!(
-        prost_oneofs, counts.oneof_count,
+        protobuf_oneofs, counts.oneof_count,
         "models/build.rs: the generated `rhoapi.rs` carries {} `::prost::Oneof` derives but \
-         the wire-schema pass resolved {} oneofs. The variant index tables are what the \
+         schema codegen resolved {} oneofs. The variant index tables are what the \
          bincode decoder dispatches on, so a missing oneof is a mis-decode, not a gap.",
-        prost_oneofs, counts.oneof_count
+        protobuf_oneofs, counts.oneof_count
     );
 }

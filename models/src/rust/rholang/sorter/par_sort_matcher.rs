@@ -19,9 +19,7 @@ impl Sortable<Par> for ParSortMatcher {
     /// so this function's output IS the consensus-visible canonical form. See
     /// `sort_drive`'s module documentation for the conversion's neutrality
     /// argument and the three checks behind it.
-    fn sort_match(par: &Par) -> ScoredTerm<Par> {
-        sort_par(par)
-    }
+    fn sort_match(par: &Par) -> ScoredTerm<Par> { sort_par(par) }
 }
 
 /// Retained at its original path because callers outside the sorter use it.

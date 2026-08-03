@@ -181,7 +181,9 @@ use rholang_parser::ast::{
 use rholang_parser::{RholangParser, SourceSpan};
 
 use super::bound_map_chain::BoundMapChain;
-use super::exports::{FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs};
+use super::exports::{
+    FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
+};
 use super::normalize::VarSort;
 use super::normalizer::cost_accounting::ir::Sig;
 use super::utils::{BinaryExpr, UnaryExpr};
@@ -295,7 +297,9 @@ impl NormWork<'_> {
     fn into_pars(self) -> Vec<Par> {
         match self {
             NormWork::Proc { input, .. } => vec![input.par],
-            NormWork::Name { .. } | NormWork::CanonQuote { .. } | NormWork::Sig { .. } => Vec::new(),
+            NormWork::Name { .. } | NormWork::CanonQuote { .. } | NormWork::Sig { .. } => {
+                Vec::new()
+            }
             NormWork::Combine(k) => k.into_pars(),
         }
     }
@@ -715,7 +719,10 @@ impl NormKont<'_> {
             // every formal of every bind, then every channel, then the optional
             // guard, then the body
             NormKont::Input(k) => {
-                k.patterns.iter().map(|(names, _)| names.len()).sum::<usize>()
+                k.patterns
+                    .iter()
+                    .map(|(names, _)| names.len())
+                    .sum::<usize>()
                     + k.sources.len()
                     + usize::from(k.guard.is_some())
                     + 1
@@ -811,21 +818,23 @@ impl NormKont<'_> {
     /// Every `Par` this continuation owns, for iterative teardown on the error
     /// path. `Drop` for `Par` is Θ(depth); see the module docs.
     fn into_pars(self) -> Vec<Par> {
-        fn push_opt(out: &mut Vec<Par>, p: Option<Par>) {
-            out.extend(p);
-        }
+        fn push_opt(out: &mut Vec<Par>, p: Option<Par>) { out.extend(p); }
         let mut out = Vec::new();
         match self {
             NormKont::Unary { input_par, .. } => out.push(input_par),
             NormKont::Binary {
-                input_par, left_par, ..
+                input_par,
+                left_par,
+                ..
             } => {
                 out.push(input_par);
                 push_opt(&mut out, left_par);
             }
             NormKont::ParSeq { .. } => {}
             NormKont::Collect {
-                acc_pars, input_par, ..
+                acc_pars,
+                input_par,
+                ..
             } => {
                 out.extend(acc_pars);
                 out.push(input_par);
@@ -1143,11 +1152,7 @@ pub(crate) fn norm_drive_from<'ast>(
 /// `vals` fall out of scope would therefore re-introduce the class on precisely
 /// the path a hostile input takes.
 #[inline(never)]
-fn unwind(
-    err: InterpreterError,
-    work: Vec<NormWork<'_>>,
-    vals: Vec<NormVal>,
-) -> InterpreterError {
+fn unwind(err: InterpreterError, work: Vec<NormWork<'_>>, vals: Vec<NormVal>) -> InterpreterError {
     let mut pars: Vec<Par> = Vec::new();
     for item in work {
         pars.extend(item.into_pars());
@@ -1202,10 +1207,10 @@ fn run_combine<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Step<'ast>, InterpreterError> {
-    use super::normalizer::collection_normalize_matcher as collect;
     use super::normalizer::cost_accounting::{recognize, sig};
-    use super::normalizer::name_normalize_matcher as name;
-    use super::normalizer::processes as p;
+    use super::normalizer::{
+        collection_normalize_matcher as collect, name_normalize_matcher as name, processes as p,
+    };
 
     match kont {
         NormKont::Unary {
@@ -1291,13 +1296,17 @@ fn run_combine<'ast>(
             input,
             span,
             left_par,
-        } => p::p_conjunction_normalizer::combine_p_conjunction(right, input, span, left_par, value),
+        } => {
+            p::p_conjunction_normalizer::combine_p_conjunction(right, input, span, left_par, value)
+        }
         NormKont::Disjunction {
             right,
             input,
             span,
             left_par,
-        } => p::p_disjunction_normalizer::combine_p_disjunction(right, input, span, left_par, value),
+        } => {
+            p::p_disjunction_normalizer::combine_p_disjunction(right, input, span, left_par, value)
+        }
         NormKont::Matches { right, input, left } => {
             p::p_matches_normalizer::combine_p_matches(right, input, left, value)
         }
@@ -1356,7 +1365,14 @@ fn run_combine<'ast>(
             idx,
             bound_map_chain,
             input,
-        } => recognize::combine_signed_join(plain_for, clause_sigs, idx, bound_map_chain, input, value),
+        } => recognize::combine_signed_join(
+            plain_for,
+            clause_sigs,
+            idx,
+            bound_map_chain,
+            input,
+            value,
+        ),
         NormKont::TokenStack { layers, idx, input } => {
             recognize::combine_token_stack(layers, idx, input, value)
         }

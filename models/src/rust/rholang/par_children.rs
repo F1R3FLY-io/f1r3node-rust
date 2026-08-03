@@ -53,21 +53,19 @@ use std::collections::BTreeMap;
 use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{Connective, Expr, Par};
-
+/// The number of variants `connective.ConnectiveInstance` has.
+/// ★ GENERATED, never a literal. See [`EXPR_INSTANCE_VARIANT_COUNT`].
+pub use crate::rust::rholang::bincode_schema_tables::CONNECTIVE_INSTANCE_VARIANT_COUNT;
 /// The number of variants `expr.ExprInstance` has in `RhoTypes.proto`.
 ///
 /// Bumping this without extending every corpus that asserts against it is the
 /// mistake this constant exists to prevent.
-/// ★ GENERATED, never a literal. Re-exported from the wire-schema table
-/// (`models/build/wire_schema.rs`) so the count IS
+/// ★ GENERATED, never a literal. Re-exported from the schema-codegen table
+/// (`models/codegen/schema_codegen.rs`) so the count IS
 /// `EXPR_INSTANCE_VARIANTS.len()`. It used to read `= 36`, which meant a 37th
 /// arm would leave every assertion measured against it passing while the new
 /// arm went untested — the exact failure mode generation exists to remove.
-pub use crate::rust::rholang::wire_schema::EXPR_INSTANCE_VARIANT_COUNT;
-
-/// The number of variants `connective.ConnectiveInstance` has.
-/// ★ GENERATED, never a literal. See [`EXPR_INSTANCE_VARIANT_COUNT`].
-pub use crate::rust::rholang::wire_schema::CONNECTIVE_INSTANCE_VARIANT_COUNT;
+pub use crate::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT;
 
 // ===========================================================================
 // STRUCTURAL children, by reference
@@ -178,14 +176,13 @@ pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>)
                 out.extend(kv.value.iter());
             }
         }
-        // ★ Read the TRIE, not the projection. `x.ps()` forces `EntryTrie::view`, whose
-        // materialisation deep-clones every entry and then retains a full second copy —
-        // paid here only to hand out borrows the trie can hand out itself, through
-        // `to_next_get_val`'s `&'trie Par`.
-        ExprInstance::EPathmapBody(x) => x.entry_trie().extend_entry_refs(out),
+        // Structural ownership, not logical set membership: `PathMap<()>`
+        // owns byte keys and contributes no borrowed `Par`; `PathMap<Par>`
+        // contributes only its associated values.
+        ExprInstance::EPathmapBody(x) => x.entry_trie().extend_owned_par_refs(out),
         ExprInstance::EZipperBody(x) => {
             for pm in x.pathmap.iter() {
-                pm.entry_trie().extend_entry_refs(out);
+                pm.entry_trie().extend_owned_par_refs(out);
             }
         }
 
@@ -516,6 +513,21 @@ pub fn dismantle_injections(injections: BTreeMap<String, Par>) {
     dismantle_all(injections.into_values());
 }
 
+/// Detach and release every recursive child of an already borrowed [`Par`].
+///
+/// This is the implementation primitive for the generated `Drop for Par`.
+/// `Drop::drop` cannot move `self`, so the root is emptied in place and all
+/// detached children are processed on one explicit heap worklist. Each child
+/// shell reaches its own generated `Drop` only after its recursive fields have
+/// been taken, making that nested call constant-depth and allocation-free.
+pub(crate) fn dismantle_in_place(root: &mut Par) {
+    let mut work = Vec::new();
+    take_par_child_pars(root, &mut work);
+    while let Some(mut child) = work.pop() {
+        take_par_child_pars(&mut child, &mut work);
+    }
+}
+
 // ===========================================================================
 // PER-TRAVERSAL DISPOSITION
 // ===========================================================================
@@ -800,7 +812,7 @@ mod tests {
     /// A `Par` with a distinguishing `locally_free` tag, so a table that
     /// returned the WRONG child (rather than none) is still caught.
     fn tagged(tag: u8) -> Par {
-        Par {
+        par_from_default! {
             locally_free: vec![tag],
             ..Default::default()
         }
@@ -810,6 +822,25 @@ mod tests {
         // `EPathMap` has a private intern cell, so it is built through its
         // constructor rather than a struct literal.
         EPathMap::new(ps, Vec::new(), false, None)
+    }
+
+    fn pathmap_map_of(values: Vec<Par>) -> EPathMap {
+        EPathMap::new_map(
+            values.into_iter().enumerate().map(|(index, value)| {
+                (
+                    par_from_default! {
+                        exprs: vec![Expr {
+                            expr_instance: Some(ExprInstance::GInt(index as i64)),
+                        }],
+                        ..Default::default()
+                    },
+                    value,
+                )
+            }),
+            Vec::new(),
+            false,
+            None,
+        )
     }
 
     /// One representative of every `ExprInstance` variant, each paired with the
@@ -847,26 +878,21 @@ mod tests {
             ),
             (ExprInstance::ENotBody(ENot { p: a() }), vec![1]),
             (ExprInstance::ENegBody(ENeg { p: a() }), vec![1]),
-            (
-                ExprInstance::EMultBody(EMult { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
-            (
-                ExprInstance::EDivBody(EDiv { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
-            (
-                ExprInstance::EModBody(EMod { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
-            (
-                ExprInstance::EPlusBody(EPlus { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
-            (
-                ExprInstance::EMinusBody(EMinus { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
+            (ExprInstance::EMultBody(EMult { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
+            (ExprInstance::EDivBody(EDiv { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
+            (ExprInstance::EModBody(EMod { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
+            (ExprInstance::EPlusBody(EPlus { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
+            (ExprInstance::EMinusBody(EMinus { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
             (
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1: a(), p2: b() }),
                 vec![1, 2],
@@ -880,24 +906,20 @@ mod tests {
                 vec![1, 2],
             ),
             (ExprInstance::ELtBody(ELt { p1: a(), p2: b() }), vec![1, 2]),
-            (
-                ExprInstance::ELteBody(ELte { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
+            (ExprInstance::ELteBody(ELte { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
             (ExprInstance::EGtBody(EGt { p1: a(), p2: b() }), vec![1, 2]),
-            (
-                ExprInstance::EGteBody(EGte { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
+            (ExprInstance::EGteBody(EGte { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
             (ExprInstance::EEqBody(EEq { p1: a(), p2: b() }), vec![1, 2]),
-            (
-                ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
-            (
-                ExprInstance::EAndBody(EAnd { p1: a(), p2: b() }),
-                vec![1, 2],
-            ),
+            (ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
+            (ExprInstance::EAndBody(EAnd { p1: a(), p2: b() }), vec![
+                1, 2,
+            ]),
             (ExprInstance::EOrBody(EOr { p1: a(), p2: b() }), vec![1, 2]),
             (
                 ExprInstance::EMatchesBody(EMatches {
@@ -938,12 +960,12 @@ mod tests {
                 vec![1, 2],
             ),
             (
-                ExprInstance::EPathmapBody(pathmap_of(vec![tagged(1), tagged(2)])),
+                ExprInstance::EPathmapBody(pathmap_map_of(vec![tagged(1), tagged(2)])),
                 vec![1, 2],
             ),
             (
                 ExprInstance::EZipperBody(EZipper {
-                    pathmap: Some(pathmap_of(vec![tagged(1)])),
+                    pathmap: Some(pathmap_map_of(vec![tagged(1)])),
                     ..Default::default()
                 }),
                 vec![1],
@@ -975,10 +997,7 @@ mod tests {
             ),
             (ConnectiveInstance::ConnNotBody(tagged(4)), vec![4]),
             (
-                ConnectiveInstance::VarRefBody(VarRef {
-                    index: 0,
-                    depth: 0,
-                }),
+                ConnectiveInstance::VarRefBody(VarRef { index: 0, depth: 0 }),
                 vec![],
             ),
             (ConnectiveInstance::ConnBool(true), vec![]),
@@ -1030,6 +1049,21 @@ mod tests {
     }
 
     #[test]
+    fn set_mode_pathmap_keys_are_bytes_not_owned_par_children() {
+        for instance in [
+            ExprInstance::EPathmapBody(pathmap_of(vec![tagged(1), tagged(2)])),
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(pathmap_of(vec![tagged(1)])),
+                ..Default::default()
+            }),
+        ] {
+            let mut out = Vec::new();
+            expr_instance_child_pars(&instance, &mut out);
+            assert!(out.is_empty());
+        }
+    }
+
+    #[test]
     fn every_connective_instance_reports_the_expected_child_slots() {
         for (instance, expected) in connective_instance_corpus() {
             let mut out: Vec<&Par> = Vec::new();
@@ -1066,10 +1100,10 @@ mod tests {
     /// difference became observable:
     ///
     /// * **by-reference** reports the **logical children** — what a matcher or a collector wants.
-    /// * **by-move** must release every **owned `Par`**, and a memoised representation *owns*
-    ///   more than it logically *contains*. An `EPathMap` holds its entries in the trie AND in
-    ///   the projection memo (and, when interned, in the handle) — every one of which must reach
-    ///   the iterative worklist, or it falls back onto the recursive destructor.
+    /// * **by-move** must release every **owned `Par`**. A set-mode `EPathMap`'s
+    ///   `PathMap<()>` owns byte keys rather than `Par`s, while its legacy
+    ///   projection owns decoded entries once forced; a map-mode
+    ///   `PathMap<Par>` owns its values directly.
     ///
     /// ⚠ So strict equality is the WRONG assertion here: it would force the by-move table to
     /// leak whichever retainers it declined to drain. What must hold instead is **containment
@@ -1105,8 +1139,8 @@ mod tests {
             "{table}: the by-move table yielded {} `Par`s; the by-reference table reports {} \
              children and the value declares {retainers} live retainer(s), so {} were \
              expected.\n\n\
-             by-move must release EVERY owned `Par` — the trie, the projection memo once forced, \
-             and the interned handle each own a full copy. A shortfall is a retainer left to the \
+             by-move must release EVERY owned `Par` — only value-carrying trie slots and a forced \
+             projection count. A shortfall is a retainer left to the \
              RECURSIVE destructor; a surplus is one drained twice.\n\
              moved = {actual:?}\n  borrowed = {expected:?}",
             actual.len(),
@@ -1173,12 +1207,7 @@ mod tests {
             // No `ConnectiveInstance` arm holds an `EPathMap`, so every child has exactly one
             // owner. If that ever stops being true this call site must learn the same trick the
             // `ExprInstance` one uses.
-            assert_containment_with_counted_allowance(
-                &actual,
-                &expected,
-                1,
-                "ConnectiveInstance",
-            );
+            assert_containment_with_counted_allowance(&actual, &expected, 1, "ConnectiveInstance");
         }
     }
 
@@ -1187,7 +1216,7 @@ mod tests {
     /// a missing tag rather than as nothing at all.
     #[test]
     fn par_child_table_reaches_every_par_bearing_field() {
-        let p = Par {
+        let p = par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(tagged(1)) })),
             }],
@@ -1255,7 +1284,7 @@ mod tests {
         // thread's stack, so a `dismantle` that missed a slot would abort here.
         let mut p = Par::default();
         for _ in 0..512 {
-            p = Par {
+            p = par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![p],

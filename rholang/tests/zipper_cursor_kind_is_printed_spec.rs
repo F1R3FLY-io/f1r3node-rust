@@ -10,7 +10,7 @@
 //! `cursor_kind` participates in `EZipper`'s `PartialEq` and `Hash`, whose own
 //! comment says *"two zippers agreeing on the segments but differing on the arm
 //! are focused on DIFFERENT entries … and must not compare equal"* — and
-//! `models/src/rust/spliced_event_bytes.rs` emits it into the event hash.
+//! `models/src/rust/event_hash_bytes.rs` emits it into the event hash.
 //!
 //! The pretty printer did not read it. The consequence is stated as a
 //! three-way conjunction below, and the third conjunct is the one that was
@@ -47,7 +47,7 @@ use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 const SEGMENT_FIVE: [u8; 2] = [0x03, 0x0a];
 
 fn gint(i: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(i)),
         }],
@@ -56,7 +56,7 @@ fn gint(i: i64) -> Par {
 }
 
 fn zipper_at_five(cursor_kind: u32) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EZipperBody(EZipper {
                 pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
@@ -77,9 +77,7 @@ fn hash_of(par: &Par) -> u64 {
     hasher.finish()
 }
 
-fn print(par: &Par) -> String {
-    PrettyPrinter::new().build_string_from_message(par)
-}
+fn print(par: &Par) -> String { PrettyPrinter::new().build_string_from_message(par) }
 
 /// ★ THE RED. The three-way conjunction, on a pair that differs in
 /// `cursor_kind` and in nothing else.
@@ -89,14 +87,8 @@ fn a_bare_cursor_and_a_split_cursor_over_the_same_segments_print_differently() {
     let bare = zipper_at_five(CursorKind::Bare.to_wire());
 
     // The mutation is exactly one field.
-    match (
-        &split.exprs[0].expr_instance,
-        &bare.exprs[0].expr_instance,
-    ) {
-        (
-            Some(ExprInstance::EZipperBody(l)),
-            Some(ExprInstance::EZipperBody(r)),
-        ) => {
+    match (&split.exprs[0].expr_instance, &bare.exprs[0].expr_instance) {
+        (Some(ExprInstance::EZipperBody(l)), Some(ExprInstance::EZipperBody(r))) => {
             assert_eq!(
                 l.current_path, r.current_path,
                 "the two zippers must agree on the segments, or the test is \
@@ -145,7 +137,7 @@ fn the_split_rendering_is_byte_identical_to_the_segment_only_printer() {
     );
 
     // The empty cursor at the root, same obligation.
-    let root = Par {
+    let root = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EZipperBody(EZipper {
                 pathmap: Some(EPathMap::new(vec![gint(5)], vec![], false, None)),
@@ -226,7 +218,10 @@ fn a_bare_cursor_at_an_uninhabited_depth_is_marked_rather_than_rejected() {
         render_cursor_position(CursorKind::Split.to_wire(), &two),
         "[5, 6]"
     );
-    assert_eq!(render_cursor_position(CursorKind::Split.to_wire(), &[]), "[]");
+    assert_eq!(
+        render_cursor_position(CursorKind::Split.to_wire(), &[]),
+        "[]"
+    );
     assert_eq!(
         render_cursor_position(CursorKind::Split.to_wire(), &["5".to_string()]),
         "[5]"

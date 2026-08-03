@@ -411,7 +411,7 @@ pub fn hash_string(b: &BlockMessage) -> BlockHash {
 pub fn compute_code_hash(dd: &DeployData) -> Par {
     let term = dd.term.as_bytes();
     let hash = Blake2b256::hash(term.to_vec());
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GByteArray(hash)),
         }],
@@ -420,7 +420,7 @@ pub fn compute_code_hash(dd: &DeployData) -> Par {
 }
 
 pub fn get_rholang_deploy_params(dd: &Signed<DeployData>) -> DeployParameters {
-    let user_id: Par = Par {
+    let user_id: Par = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GByteArray(dd.pk.bytes.to_vec())),
         }],

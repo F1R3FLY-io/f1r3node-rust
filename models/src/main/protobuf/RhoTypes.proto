@@ -360,6 +360,10 @@ message EPathMap {
   //
   // Omitted when the map holds no entries, by proto3's own omit-at-default rule.
   bytes serialized_paths = 8;
+  // Canonical EPM1 snapshot: versioned mode plus PathMap's prefix-compressed
+  // ACTree03 arena. New writers emit only this entry representation; fields 1
+  // and 8 remain accepted for compatibility with stored and peer data.
+  bytes trie_snapshot = 9;
 }
 
 /**

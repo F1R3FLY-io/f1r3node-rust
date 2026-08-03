@@ -43,9 +43,9 @@
 //! # The byte-visibility row is separate on purpose
 //!
 //! `locally_free` is blanked on the **bincode** path (`models/build.rs` injects
-//! `serialize_with = serialize_as_empty_bytes`, and `wire.rs` gives it a
+//! `serialize_with = serialize_as_empty_bytes`, and `bincode_schema.rs` gives it a
 //! dedicated `FieldKind::EmptyBytes`), and RETAINED on the **protobuf** path
-//! (`prost_wire.rs` §B.1). Those are two different consensus lanes with two
+//! (`protobuf_schema.rs` §B.1). Those are two different consensus lanes with two
 //! different answers, and the last two tests here measure each rather than
 //! asserting either.
 
@@ -401,7 +401,7 @@ fn with_nested_receive_bitset(par: &Par, replacement: Vec<u8>) -> Par {
 }
 
 /// ⚠ Lane P (protobuf / prost) DOES see it. `RhoTypes.proto:123` declares
-/// `bytes locallyFree = 5` on `Receive`, and `prost_wire.rs` §B.1 records that
+/// `bytes locallyFree = 5` on `Receive`, and `protobuf_schema.rs` §B.1 records that
 /// the field is retained on this lane. `cost_accounting/sig.rs:255,291` signs
 /// `sort_match(&par).term.encode_to_vec()` — this encoder, on the canonical
 /// form — so the byte is inside a signed preimage.
@@ -422,7 +422,7 @@ fn the_protobuf_lane_sees_the_bitset() {
 /// ★ Lane B (bincode / the RSpace channel-hash preimage) does NOT see it.
 /// `models/build.rs:162-170` injects `serialize_with =
 /// serialize_as_empty_bytes` on every `locally_free` declaration and asserts its
-/// own rewrite count against the wire-schema generator's `EmptyBytes` count, so
+/// own rewrite count against the schema-code generator's `EmptyBytes` count, so
 /// the blanking is total rather than per-message.
 #[test]
 fn the_bincode_lane_does_not_see_the_bitset() {

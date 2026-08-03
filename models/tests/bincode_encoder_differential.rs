@@ -47,8 +47,8 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::rholang::bincode_encoder::{encode, ColdStoreEncode};
-use models::rust::rholang::wire::WireNode;
-use models::rust::rholang::wire_schema::{
+use models::rust::rholang::bincode_schema::BincodeNode;
+use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANT_COUNT,
 };
 use models::rust::test_utils::test_utils::generate_par;
@@ -101,9 +101,7 @@ fn byte_identity_verdict(label: &str, machine: &[u8], oracle: &[u8]) -> Result<(
 
 /// Property §1 — byte-identical WRITE.
 fn assert_writes_identically<T>(label: &str, value: &T)
-where
-    T: WireNode + Serialize,
-{
+where T: BincodeNode + Serialize {
     let oracle = bincode::serialize(value).expect("oracle: serialize");
     let machine = encode(value);
     if let Err(why) = byte_identity_verdict(label, &machine, &oracle) {
@@ -113,9 +111,12 @@ where
 
 /// Properties §1 + §2 + §3 together, for a root type.
 fn assert_all_properties<T>(label: &str, value: &T)
-where
-    T: WireNode + Serialize + for<'de> Deserialize<'de> + ColdStoreDecode + PartialEq + std::fmt::Debug,
-{
+where T: BincodeNode
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + ColdStoreDecode
+        + PartialEq
+        + std::fmt::Debug {
     // §1 WRITE: byte-identical to the derived encoder.
     let oracle_bytes = bincode::serialize(value).expect("oracle: serialize");
     let machine_bytes = encode(value);
@@ -255,8 +256,8 @@ fn the_awkward_wire_shapes_write_identically() {
         plain
     };
     assert_eq!(
-        ground.ps(),
-        non_ground_twin.ps(),
+        ground.trie_snapshot(),
+        non_ground_twin.trie_snapshot(),
         "the entry order must not depend on the ground predicate any more — both \
          arms read the same trie"
     );
@@ -292,7 +293,7 @@ fn the_structural_cross_product_writes_identically() {
         for &arity in &arities {
             for &connective_used in &[false, true] {
                 for &with_remainder in &[false, true] {
-                    let par = Par {
+                    let par = models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(instance.clone()),
                         }],
@@ -394,7 +395,10 @@ fn the_awkward_ground_literals_write_identically() {
         "GBigInt(high-bit)".into(),
         ExprInstance::GBigInt(vec![0x80, 0xff]),
     ));
-    instances.push(("GString(empty)".into(), ExprInstance::GString(String::new())));
+    instances.push((
+        "GString(empty)".into(),
+        ExprInstance::GString(String::new()),
+    ));
     instances.push((
         "GString(multibyte)".into(),
         // Deliberately mixes 2-, 3- and 4-byte UTF-8, so a byte-vs-char length
@@ -411,12 +415,9 @@ fn the_awkward_ground_literals_write_identically() {
     ));
 
     for (label, instance) in instances {
-        assert_writes_identically(
-            &label,
-            &Expr {
-                expr_instance: Some(instance),
-            },
-        );
+        assert_writes_identically(&label, &Expr {
+            expr_instance: Some(instance),
+        });
     }
 }
 
@@ -452,7 +453,7 @@ fn the_encode_differential_can_go_red() {
         locally_free: vec![],
         connective_used: false,
     };
-    let par = Par {
+    let par = models::par_from_default! {
         sends: vec![send],
         ..Default::default()
     };
@@ -501,13 +502,12 @@ fn the_encode_differential_can_go_red() {
     assert_eq!(expr_truth[0], 1, "Some(..) is Option tag 1");
     assert_eq!(
         u32::from_le_bytes([expr_truth[1], expr_truth[2], expr_truth[3], expr_truth[4]]),
-        models::rust::rholang::wire_schema::EX_G_BOOL,
+        models::rust::rholang::bincode_schema_tables::EX_G_BOOL,
         "the fixture must actually be the GBool arm"
     );
     let mut relabelled = expr_truth.clone();
-    relabelled[1..5].copy_from_slice(
-        &models::rust::rholang::wire_schema::EX_G_INT.to_le_bytes(),
-    );
+    relabelled[1..5]
+        .copy_from_slice(&models::rust::rholang::bincode_schema_tables::EX_G_INT.to_le_bytes());
     let why = byte_identity_verdict("relabelled-variant", &relabelled, &expr_truth)
         .expect_err("MUTATION 2 must be REJECTED");
     assert!(
@@ -608,7 +608,7 @@ proptest! {
     /// Wide sequences: the counted-repeat path with many siblings.
     #[test]
     fn wide_sequences_write_identically(n in 0usize..64) {
-        let par = Par {
+        let par = models::par_from_default! {
             exprs: (0..n).map(|i| Expr { expr_instance: Some(ExprInstance::GInt(i as i64)) }).collect(),
             sends: (0..n).map(|i| models::rhoapi::Send {
                 chan: Some(corpus::gint(i as i64)),

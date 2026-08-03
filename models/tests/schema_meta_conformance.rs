@@ -1,8 +1,8 @@
 //! # The SCHEMA-META conformance probe — what the generator says about itself
 //!
-//! `models/build/wire_schema.rs` makes one walk of the protobuf descriptor and
+//! `models/codegen/schema_codegen.rs` makes one walk of the protobuf descriptor and
 //! emits four files. Two of them are field tables whose bytes are checked
-//! elsewhere (`wire_schema_conformance.rs` against serde's own derive,
+//! elsewhere (`bincode_schema_tables_conformance.rs` against serde's own derive,
 //! `serializer_par_byte_goldens.rs` against recorded bytes). This file checks the
 //! other two — the **prost order** and the **schema meta** — and it checks the
 //! claims the generator's own documentation makes, because a comment that is not
@@ -24,14 +24,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use models::rust::rholang::prost_wire::{ProstField, ProstKind};
+use models::rust::rholang::bincode_schema_tables::CONFORMANCE_REGISTRY;
+use models::rust::rholang::protobuf_schema::{ProtobufField, ProtobufKind};
+use models::rust::rholang::protobuf_schema_tables::PROTOBUF_CONFORMANCE_REGISTRY;
 use models::rust::rholang::schema_meta::Disposition;
-use models::rust::rholang::prost_wire_schema::PROST_CONFORMANCE_REGISTRY;
 use models::rust::rholang::schema_meta_tables::{
     DERIVE_DISPOSITION_REGISTRY, DISPOSITIONED_DERIVES, HAND_WRITTEN_TRAVERSALS, RECURSIVE_TYPES,
     SCHEMA_CHILDREN, SCHEMA_SCC,
 };
-use models::rust::rholang::wire_schema::CONFORMANCE_REGISTRY;
 
 // ===========================================================================
 // §0  The four outputs exist and are not degenerate
@@ -51,36 +51,39 @@ fn the_four_generated_tables_are_populated() {
         CONFORMANCE_REGISTRY.len()
     );
     assert_eq!(
-        PROST_CONFORMANCE_REGISTRY.len(),
+        PROTOBUF_CONFORMANCE_REGISTRY.len(),
         CONFORMANCE_REGISTRY.len(),
         "★ ONE walk, TWO tables: the prost registry and the bincode registry must cover \
          EXACTLY the same messages. A difference means one emitter skipped a type the other \
          kept, and the tables would describe two different schemas."
     );
     assert!(
-        SCHEMA_CHILDREN.len() > PROST_CONFORMANCE_REGISTRY.len(),
+        SCHEMA_CHILDREN.len() > PROTOBUF_CONFORMANCE_REGISTRY.len(),
         "the child relation must additionally carry the `extern_path`'d types ({} rows vs {} \
          generated messages) — they are nodes of the containment graph even though they have \
          no descriptor-driven program",
         SCHEMA_CHILDREN.len(),
-        PROST_CONFORMANCE_REGISTRY.len()
+        PROTOBUF_CONFORMANCE_REGISTRY.len()
     );
     assert!(
         !SCHEMA_SCC.is_empty() && !RECURSIVE_TYPES.is_empty(),
         "the SCC decomposition is empty, so every claim about recursion below is vacuous"
     );
     assert!(
-        DERIVE_DISPOSITION_REGISTRY.len() >= 8 * PROST_CONFORMANCE_REGISTRY.len(),
+        DERIVE_DISPOSITION_REGISTRY.len() >= 8 * PROTOBUF_CONFORMANCE_REGISTRY.len(),
         "the derive registry has {} rows for {} messages — fewer than eight surfaces per \
          type, which cannot cover `::prost::Message` alone",
         DERIVE_DISPOSITION_REGISTRY.len(),
-        PROST_CONFORMANCE_REGISTRY.len()
+        PROTOBUF_CONFORMANCE_REGISTRY.len()
     );
     // Every message in one registry is in the other, BY NAME.
     let bincode: BTreeSet<&str> = CONFORMANCE_REGISTRY.iter().map(|(n, _, _)| *n).collect();
-    let prost: BTreeSet<&str> = PROST_CONFORMANCE_REGISTRY.iter().map(|(n, _)| *n).collect();
+    let protobuf: BTreeSet<&str> = PROTOBUF_CONFORMANCE_REGISTRY
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
     assert_eq!(
-        bincode, prost,
+        bincode, protobuf,
         "the two registries must name the same messages"
     );
 }
@@ -101,9 +104,9 @@ fn the_four_generated_tables_are_populated() {
 /// impossible — and a table that admitted them would have an ambiguous order
 /// that no assertion could pin.
 #[test]
-fn every_prost_program_is_in_ascending_tag_order() {
+fn every_protobuf_program_is_in_ascending_tag_order() {
     let mut checked = 0usize;
-    for (name, program) in PROST_CONFORMANCE_REGISTRY {
+    for (name, program) in PROTOBUF_CONFORMANCE_REGISTRY {
         for pair in program.windows(2) {
             assert!(
                 pair[0].tag < pair[1].tag,
@@ -127,7 +130,7 @@ fn every_prost_program_is_in_ascending_tag_order() {
         }
         checked += 1;
     }
-    assert_eq!(checked, PROST_CONFORMANCE_REGISTRY.len());
+    assert_eq!(checked, PROTOBUF_CONFORMANCE_REGISTRY.len());
 }
 
 /// The prost table and the bincode table must be a PERMUTATION of one another,
@@ -138,10 +141,10 @@ fn every_prost_program_is_in_ascending_tag_order() {
 /// and no ordering assertion would notice.
 #[test]
 fn the_two_tables_are_permutations_of_one_another() {
-    let prost: BTreeMap<&str, &[ProstField]> =
-        PROST_CONFORMANCE_REGISTRY.iter().copied().collect();
+    let protobuf: BTreeMap<&str, &[ProtobufField]> =
+        PROTOBUF_CONFORMANCE_REGISTRY.iter().copied().collect();
     for (name, kinds, field_names) in CONFORMANCE_REGISTRY {
-        let program = prost
+        let program = protobuf
             .get(name)
             .unwrap_or_else(|| panic!("`{name}` has a bincode program but no prost program"));
         assert_eq!(
@@ -159,9 +162,9 @@ fn the_two_tables_are_permutations_of_one_another() {
             field_names.len()
         );
         let serde_names: BTreeSet<&str> = field_names.iter().copied().collect();
-        let prost_names: BTreeSet<&str> = program.iter().map(|f| f.name).collect();
+        let protobuf_names: BTreeSet<&str> = program.iter().map(|f| f.name).collect();
         assert_eq!(
-            serde_names, prost_names,
+            serde_names, protobuf_names,
             "`{name}`'s two programs name different fields"
         );
     }
@@ -192,14 +195,14 @@ fn the_two_tables_are_permutations_of_one_another() {
 ///   introduces a third.
 #[test]
 fn exactly_two_messages_order_differently_under_the_two_formats() {
-    let prost: BTreeMap<&str, &[ProstField]> =
-        PROST_CONFORMANCE_REGISTRY.iter().copied().collect();
+    let protobuf: BTreeMap<&str, &[ProtobufField]> =
+        PROTOBUF_CONFORMANCE_REGISTRY.iter().copied().collect();
 
     let mut differing: Vec<&str> = Vec::new();
     for (name, _, field_names) in CONFORMANCE_REGISTRY {
-        let program = prost[name];
-        let prost_order: Vec<&str> = program.iter().map(|f| f.name).collect();
-        if prost_order != *field_names {
+        let program = protobuf[name];
+        let protobuf_order: Vec<&str> = program.iter().map(|f| f.name).collect();
+        if protobuf_order != *field_names {
             differing.push(name);
         }
     }
@@ -241,9 +244,9 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
         ],
         "`Par`'s SERDE order is declaration order: tags 1,2,4,5,6,7,11,8,12,9,10"
     );
-    let par_prost: Vec<u32> = prost["Par"].iter().map(|f| f.tag).collect();
+    let par_protobuf: Vec<u32> = protobuf["Par"].iter().map(|f| f.tag).collect();
     assert_eq!(
-        par_prost,
+        par_protobuf,
         vec![1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12],
         "`Par`'s PROTOBUF order is ascending tag — `bundles` (11) and `conditionals` (12) move \
          to the END, past `connectives` (8), `locally_free` (9) and `connective_used` (10)"
@@ -260,9 +263,12 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
         "`TaggedContinuation`'s SERDE order puts the plain field FIRST — prost-build writes \
          every plain field before every oneof, whatever the `.proto` declared"
     );
-    let tc_prost: Vec<&str> = prost["TaggedContinuation"].iter().map(|f| f.name).collect();
+    let tc_protobuf: Vec<&str> = protobuf["TaggedContinuation"]
+        .iter()
+        .map(|f| f.name)
+        .collect();
     assert_eq!(
-        tc_prost,
+        tc_protobuf,
         vec!["tagged_cont", "guard"],
         "★★ `TaggedContinuation`'s PROTOBUF order is THE OPPOSITE: the oneof occupies tags \
          1-2 and `guard` is tag 3, and prost places a oneof at the position of its LOWEST \
@@ -270,12 +276,12 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
          its halves exchanged; here the correct order is the reverse of that fix."
     );
     assert_eq!(
-        prost["TaggedContinuation"][0].kind,
-        ProstKind::Oneof,
+        protobuf["TaggedContinuation"][0].kind,
+        ProtobufKind::Oneof,
         "the field that sorts first must be the ONEOF"
     );
-    assert_eq!(prost["TaggedContinuation"][0].tag, 1);
-    assert_eq!(prost["TaggedContinuation"][1].tag, 3);
+    assert_eq!(protobuf["TaggedContinuation"][0].tag, 1);
+    assert_eq!(protobuf["TaggedContinuation"][1].tag, 3);
 }
 
 /// ⚠ `locally_free` reaches the PROTOBUF wire unblanked.
@@ -288,12 +294,12 @@ fn exactly_two_messages_order_differently_under_the_two_formats() {
 #[test]
 fn locally_free_is_ordinary_bytes_on_the_protobuf_wire() {
     let mut seen = 0usize;
-    for (name, program) in PROST_CONFORMANCE_REGISTRY {
+    for (name, program) in PROTOBUF_CONFORMANCE_REGISTRY {
         for field in *program {
             if field.name == "locally_free" {
                 assert_eq!(
                     field.kind,
-                    ProstKind::Bytes,
+                    ProtobufKind::Bytes,
                     "`{name}.locally_free` is {:?} in the prost table. It must be ordinary \
                      `Bytes`: the eight-zero-bytes normalization is serde-only, and \
                      `bincode_encoder_differential.rs` pins that prost keeps the real value.",
@@ -378,7 +384,9 @@ fn cyclic_components(nodes: &BTreeSet<&'static str>) -> Vec<Vec<&'static str>> {
                     }
                 }
                 let self_loop = component.len() == 1
-                    && adjacency.get(component[0]).is_some_and(|k| k.contains(&component[0]));
+                    && adjacency
+                        .get(component[0])
+                        .is_some_and(|k| k.contains(&component[0]));
                 if component.len() > 1 || self_loop {
                     out.push(component);
                 }
@@ -616,7 +624,10 @@ fn the_derived_prelude_before_reaching_a_par_is_bounded_by_the_schema() {
 /// exists to prevent.
 #[test]
 fn every_derive_surface_is_dispositioned_with_a_reason() {
-    let types: BTreeSet<&str> = DERIVE_DISPOSITION_REGISTRY.iter().map(|(t, _, _)| *t).collect();
+    let types: BTreeSet<&str> = DERIVE_DISPOSITION_REGISTRY
+        .iter()
+        .map(|(t, _, _)| *t)
+        .collect();
     let messages: BTreeSet<&str> = CONFORMANCE_REGISTRY.iter().map(|(n, _, _)| *n).collect();
     for message in &messages {
         assert!(
@@ -677,18 +688,11 @@ fn every_derive_surface_is_dispositioned_with_a_reason() {
 /// exactly what this refuses. The list grows by one, with the driver named,
 /// which is the intended cost of landing a conversion.
 #[test]
-fn the_converted_surfaces_are_the_three_this_campaign_has_landed() {
+fn every_recursive_derive_surface_has_a_driver_or_a_bounded_cut_set_path() {
     let mut converted: BTreeSet<&str> = BTreeSet::new();
-    let mut remaining: BTreeSet<&str> = BTreeSet::new();
     for (_, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
-        match disposition {
-            Disposition::Converted(_) => {
-                converted.insert(surface);
-            }
-            Disposition::Remaining(_) => {
-                remaining.insert(surface);
-            }
-            _ => {}
+        if matches!(disposition, Disposition::Converted(_)) {
+            converted.insert(surface);
         }
     }
     assert_eq!(
@@ -701,21 +705,23 @@ fn the_converted_surfaces_are_the_three_this_campaign_has_landed() {
             // ★ Stage F-4 — `term_ops::clone`, `drive_with` over the CLONE CUT
             // SET. Gate subject `clone`, in `CONVERTED_DEPTH`.
             "Clone::clone",
+            // Stage F-6 — declaration-order formatter PDA at the feedback
+            // vertex set. Gate subject `debug`.
+            "Debug::fmt",
+            "Message::clear",
+            "Message::encode_raw",
+            "Message::encoded_len",
+            "Message::merge_field",
+            // Stage F-5 — descriptor-generated lexicographic PDA at the same
+            // feedback vertex set. Gate subject `ord`.
+            "Ord::cmp",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>(),
-        "three derive surfaces have been converted: the bincode decoder (Stage F, \
-         `bincode_decoder`), the bincode encoder (Stage H, `bincode_encoder`), and `Clone` (Stage F-4, \
-         `term_ops::clone`)"
-    );
-    assert!(
-        remaining.contains("Message::encode_raw") && remaining.contains("Message::encoded_len"),
-        "the protobuf encoder's two surfaces must still be `Remaining` until a driver lands \
-         AND production call sites route through it; a table that marked them converted while \
-         `prost::Message::encode_to_vec` is still what the node calls would be a claim about \
-         code nobody runs"
+        "the converted surfaces must include both bincode PDAs, the generated Clone/Ord/Debug \
+         PDAs, and all four generated Message methods at the schema feedback vertex"
     );
 }
 
@@ -751,7 +757,7 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
     assert!(
         !emitted.is_empty(),
         "`EMITTED_TRAVERSALS` is empty — see the non-vacuity floors in \
-         `wire_schema::generate`."
+         `bincode_schema_tables::generate`."
     );
 
     let mut rows = 0usize;
@@ -839,12 +845,104 @@ fn the_clone_disposition_agrees_with_what_the_emitter_actually_did() {
         "NO item was dispositioned `NotATraversal`, which would mean prost derived `Copy` for \
          nothing — but `Var`, `EVar`, `VarRef`, `PCost`, `GSysAuthToken`, `Var.WildcardMsg` and \
          `VarInstance` are all scalar-only. Zero here means the `Copy` reproduction in \
-         `wire_schema.rs` §4b has stopped agreeing with prost, and the three-way split has \
+         `bincode_schema_tables.rs` §4b has stopped agreeing with prost, and the three-way split has \
          silently collapsed into two."
     );
     println!(
         "  Clone::clone — {converted} Converted (the cut set), {follows} FollowsFrom \
          (field-wise), {not_a_traversal} NotATraversal (`Copy`); {rows} rows"
+    );
+}
+
+#[test]
+fn the_ord_disposition_agrees_with_the_schema_cut_set() {
+    use models::rust::rholang::term_ops::{CLONE_CUT_SET, EMITTED_TRAVERSALS};
+
+    let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
+    let non_copy: BTreeSet<&str> = EMITTED_TRAVERSALS.iter().map(|(item, _)| *item).collect();
+    let mut rows = 0usize;
+    let mut converted = 0usize;
+    for (item, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
+        if *surface != "Ord::cmp" {
+            continue;
+        }
+        rows += 1;
+        if cut.contains(item) {
+            assert!(
+                matches!(disposition, Disposition::Converted(_)),
+                "`{item}` is in the schema feedback vertex set, so its Ord implementation must \
+                 be the generated PDA; found {disposition:?}"
+            );
+            converted += 1;
+        } else if non_copy.contains(item) {
+            assert!(
+                matches!(disposition, Disposition::FollowsFrom(_)),
+                "non-cut recursive-capable `{item}` retains field-wise ordering bounded by the \
+                 residual graph; found {disposition:?}"
+            );
+        } else {
+            assert!(
+                matches!(disposition, Disposition::NotATraversal(_)),
+                "scalar-only Copy item `{item}` has no recursive ordering walk; found \
+                 {disposition:?}"
+            );
+        }
+    }
+    assert_eq!(converted, cut.len());
+    assert_eq!(
+        rows,
+        DERIVE_DISPOSITION_REGISTRY
+            .iter()
+            .map(|(item, _, _)| *item)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        "every generated item must have exactly one Ord::cmp disposition"
+    );
+}
+
+#[test]
+fn the_debug_disposition_agrees_with_the_schema_cut_set() {
+    use models::rust::rholang::term_ops::{CLONE_CUT_SET, EMITTED_TRAVERSALS};
+
+    let cut: BTreeSet<&str> = CLONE_CUT_SET.iter().copied().collect();
+    let non_copy: BTreeSet<&str> = EMITTED_TRAVERSALS.iter().map(|(item, _)| *item).collect();
+    let mut rows = 0usize;
+    let mut converted = 0usize;
+    for (item, surface, disposition) in DERIVE_DISPOSITION_REGISTRY {
+        if *surface != "Debug::fmt" {
+            continue;
+        }
+        rows += 1;
+        if cut.contains(item) {
+            assert!(
+                matches!(disposition, Disposition::Converted(_)),
+                "`{item}` is in the schema feedback vertex set, so its Debug implementation \
+                 must be the generated PDA; found {disposition:?}"
+            );
+            converted += 1;
+        } else if non_copy.contains(item) {
+            assert!(
+                matches!(disposition, Disposition::FollowsFrom(_)),
+                "non-cut recursive-capable `{item}` retains field-wise Debug bounded by the \
+                 residual graph; found {disposition:?}"
+            );
+        } else {
+            assert!(
+                matches!(disposition, Disposition::NotATraversal(_)),
+                "scalar-only Copy item `{item}` has no recursive Debug walk; found \
+                 {disposition:?}"
+            );
+        }
+    }
+    assert_eq!(converted, cut.len());
+    assert_eq!(
+        rows,
+        DERIVE_DISPOSITION_REGISTRY
+            .iter()
+            .map(|(item, _, _)| *item)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        "every generated item must have exactly one Debug::fmt disposition"
     );
 }
 
@@ -894,7 +992,13 @@ fn the_hand_written_traversals_are_named_and_not_in_the_derive_registry() {
         "the closed derive set is empty, so `models/build.rs`'s cross-check compares against \
          nothing and passes vacuously"
     );
-    for token in ["Clone", "Ord", "PartialOrd", "::prost::Message", "::prost::Oneof"] {
+    for token in [
+        "Clone",
+        "Ord",
+        "PartialOrd",
+        "::prost::Message",
+        "::prost::Oneof",
+    ] {
         assert!(
             DISPOSITIONED_DERIVES.contains(&token),
             "`{token}` must be in the closed disposition set"

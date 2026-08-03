@@ -57,7 +57,7 @@
 //! | candidate | verdict | the evidence that settles it |
 //! |---|---|---|
 //! | `084c93b5` — `util::filter_and_adjust_bitset` emitted the shifted *position* where a one-byte-per-index bitset requires the *suffix*, so every non-empty `locally_free` carried wrong VALUES at the right LENGTH | ★ **THE CAUSE** | the digest moves *exactly* across this one commit |
-//! | the landed `models/` wire-schema work — five commits touching `models/build/wire_schema.rs`, `models/build.rs`, `drive.rs`, `sort_drive.rs` before it, and `9560a068` / `87ee699c` after | **EXCLUDED** | `084c93b5^` reproduces the OLD pin and `084c93b5` the NEW value, so no `models/` commit on either side is visible in this term |
+//! | the landed `models/` schema-codegen work — five commits touching `models/codegen/schema_codegen.rs`, `models/build.rs`, `drive.rs`, `sort_drive.rs` before it, and `9560a068` / `87ee699c` after | **EXCLUDED** | `084c93b5^` reproduces the OLD pin and `084c93b5` the NEW value, so no `models/` commit on either side is visible in this term |
 //! | the then-uncommitted normalizer work in `rholang/src/rust/interpreter/compiler/` — 23 files, +735 lines, 25 of them touching `locally_free` / `connective_used` | **EXCLUDED TWICE** | the clean `HEAD` export equals the dirty tree byte for byte; and independently, 17 of the 23 files are **token-identical** to `HEAD` (pure `rustfmt` reflow), among them all four files that carry those 25 lines, while the other 6 differ only by brace-vs-expression forms and one `use` reorder |
 //!
 //! ⇒ the whole delta traces to **landed commits**, so the pins below encode no phantom work.

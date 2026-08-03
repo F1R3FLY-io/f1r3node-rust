@@ -96,26 +96,48 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
     }
 }
 
-pub fn concatenate_pars(p: Par, that: Par) -> Par {
+pub fn concatenate_pars(mut p: Par, mut that: Par) -> Par {
     Par {
-        sends: that.sends.into_iter().chain(p.sends).collect(),
-        receives: that.receives.into_iter().chain(p.receives).collect(),
-        news: that.news.into_iter().chain(p.news).collect(),
-        exprs: that.exprs.into_iter().chain(p.exprs).collect(),
-        matches: that.matches.into_iter().chain(p.matches).collect(),
-        unforgeables: that
-            .unforgeables
+        sends: std::mem::take(&mut that.sends)
             .into_iter()
-            .chain(p.unforgeables)
+            .chain(std::mem::take(&mut p.sends))
             .collect(),
-        bundles: that.bundles.into_iter().chain(p.bundles).collect(),
-        connectives: that.connectives.into_iter().chain(p.connectives).collect(),
-        conditionals: that
-            .conditionals
+        receives: std::mem::take(&mut that.receives)
             .into_iter()
-            .chain(p.conditionals)
+            .chain(std::mem::take(&mut p.receives))
             .collect(),
-        locally_free: union(that.locally_free, p.locally_free),
+        news: std::mem::take(&mut that.news)
+            .into_iter()
+            .chain(std::mem::take(&mut p.news))
+            .collect(),
+        exprs: std::mem::take(&mut that.exprs)
+            .into_iter()
+            .chain(std::mem::take(&mut p.exprs))
+            .collect(),
+        matches: std::mem::take(&mut that.matches)
+            .into_iter()
+            .chain(std::mem::take(&mut p.matches))
+            .collect(),
+        unforgeables: std::mem::take(&mut that.unforgeables)
+            .into_iter()
+            .chain(std::mem::take(&mut p.unforgeables))
+            .collect(),
+        bundles: std::mem::take(&mut that.bundles)
+            .into_iter()
+            .chain(std::mem::take(&mut p.bundles))
+            .collect(),
+        connectives: std::mem::take(&mut that.connectives)
+            .into_iter()
+            .chain(std::mem::take(&mut p.connectives))
+            .collect(),
+        conditionals: std::mem::take(&mut that.conditionals)
+            .into_iter()
+            .chain(std::mem::take(&mut p.conditionals))
+            .collect(),
+        locally_free: union(
+            std::mem::take(&mut that.locally_free),
+            std::mem::take(&mut p.locally_free),
+        ),
         connective_used: that.connective_used || p.connective_used,
     }
 }

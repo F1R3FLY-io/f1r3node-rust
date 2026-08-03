@@ -986,7 +986,7 @@ extern "C" fn get_data(
     channel_bytes_len: usize,
 ) -> *const u8 {
     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer, channel_bytes_len) };
-    let channel = Par::decode(channel_slice).unwrap();
+    let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
     // let rt = tokio::runtime::Runtime::new().unwrap();
     // let datums =
@@ -1034,7 +1034,7 @@ extern "C" fn get_joins(
     channel_bytes_len: usize,
 ) -> *const u8 {
     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer, channel_bytes_len) };
-    let channel = Par::decode(channel_slice).unwrap();
+    let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
     // TODO: FFI not used — block_on wrapper for async ISpace methods
     let rt = tokio::runtime::Runtime::new().unwrap();

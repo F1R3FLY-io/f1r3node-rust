@@ -31,7 +31,7 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 // confound the measurement. Here every step MOVES the accumulator (no clone), so build
 // is genuinely O(1) stack per level and the only deep recursion measured is the evaluator.
 fn gint_par(v: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(v)),
         }],
@@ -48,7 +48,7 @@ fn build_plus(depth: usize) -> Par {
                 p2: Some(gint_par(1)),
             })),
         };
-        t = Par {
+        t = models::par_from_default! {
             exprs: vec![e],
             ..Default::default()
         };
@@ -67,7 +67,7 @@ fn build_list(depth: usize) -> Par {
                 remainder: None,
             })),
         };
-        u = Par {
+        u = models::par_from_default! {
             exprs: vec![e],
             ..Default::default()
         };
@@ -93,26 +93,27 @@ fn build_methodchain(depth: usize) -> Par {
                 connective_used: false,
             })),
         };
-        t = Par { exprs: vec![e], ..Default::default() };
+        t = models::par_from_default! {
+            exprs: vec![e],
+            ..Default::default()
+        };
     }
     t
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let kind = args.get(1).map(|s| s.as_str()).unwrap_or("plus").to_string();
-    let depth: usize = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1000);
+    let kind = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("plus")
+        .to_string();
+    let depth: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
     // Optional arg 3: eval-thread stack size in MiB (default 8 = the process default).
     // Used to demonstrate that the overflow ceiling is a pure linear function of
     // available stack — i.e. a heap-bounded evaluator (whose recursion "stack"
     // lives in the heap) has no fixed depth ceiling.
-    let stack_mib: usize = args
-        .get(3)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8);
+    let stack_mib: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8);
 
     // Reducer setup only (async — needs the store). eval runs off-runtime below.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -120,10 +121,9 @@ fn main() {
         .build()
         .expect("tokio runtime");
     let reducer = rt.block_on(async {
-        let (_space, reducer) = create_test_space::<
-            RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-        >()
-        .await;
+        let (_space, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
         reducer
     });
 
@@ -143,7 +143,9 @@ fn main() {
                 _ => build_plus(depth),
             };
             let env: Env<Par> = Env::new();
-            let result = reducer.eval_expr(&par, &env).map_err(|e| format!("{:?}", e));
+            let result = reducer
+                .eval_expr(&par, &env)
+                .map_err(|e| format!("{:?}", e));
             // `result` (deep for `list`) and `par` drop here, on the worker thread.
             result.map(|_p| ())
         })

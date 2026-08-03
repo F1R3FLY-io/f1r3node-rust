@@ -98,7 +98,10 @@ pub fn sig_key(sig: &Sig) -> SigKey { sig.lane_hash() }
 /// that COMM to the envelope — never inventing a foreign lane (§3.4).
 ///
 /// [`Sig::signer_channels`]: super::Sig::signer_channels
-pub fn match_channel_to_lane(channel: &Par, signer_channels: &[(Vec<u8>, SigKey)]) -> Option<SigKey> {
+pub fn match_channel_to_lane(
+    channel: &Par,
+    signer_channels: &[(Vec<u8>, SigKey)],
+) -> Option<SigKey> {
     let encoded = channel.encode_to_vec();
     signer_channels
         .iter()
@@ -806,7 +809,8 @@ mod tests {
     fn unknown_is_sticky_across_parallel_composition() {
         // send | *x  ⇒ known 1 send, unknown true.
         let mut par = par_with_sends(1);
-        par.exprs = eval_of_bound_var(0).exprs;
+        let mut eval = eval_of_bound_var(0);
+        par.exprs = std::mem::take(&mut eval.exprs);
         let entry = demand(&par, &atom(1));
         assert_eq!(entry.known_lower_bound, 1);
         assert!(entry.unknown);

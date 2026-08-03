@@ -89,7 +89,7 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 // ---------------------------------------------------------------------------
 
 fn elist(ps: Vec<Par>) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
                 ps,
@@ -132,17 +132,6 @@ fn wide_list(width: usize) -> Par {
     elist(ps)
 }
 
-/// The same chain lifted out of its `Par`, so two can be made siblings.
-fn nested_list_expr(depth: usize, leaf: i64) -> Expr {
-    let mut p = new_gint_par(leaf, vec![], false);
-    for _ in 0..depth {
-        p = elist(vec![p]);
-    }
-    p.exprs
-        .pop()
-        .expect("stack_depth_gate: nested_list_expr built a Par with no exprs")
-}
-
 fn wide_list_expr(width: usize) -> Expr {
     wide_list(width)
         .exprs
@@ -171,10 +160,10 @@ fn nested_binders(depth: usize) -> Par {
             connective_used: false,
             condition: None,
         };
-        p = Par {
+        p = models::par_from_default! {
             news: vec![New {
                 bind_count: 1,
-                p: Some(Par {
+                p: Some(models::par_from_default! {
                     receives: vec![receive],
                     ..Default::default()
                 }),
@@ -190,40 +179,16 @@ fn nested_binders(depth: usize) -> Par {
 
 /// `{{{…{0}…}}}` — `depth` nested `ESet`s.
 ///
-/// ⚠ THE NAMED RESIDUAL OF STAGE C-2, and a TRIPWIRE rather than a conversion
-/// target. The `ESetBody` / `EMapBody` / `EPathmapBody` arms of the sorter
-/// re-enter `ParSortMatcher::sort_match` on OWNED intermediates (a deduplicated
-/// `HashSet`, a canonicalised trie order) rather than on sub-terms of the
-/// input, so they cannot be borrowed onto the worklist.
-///
-/// What bounds the residual is measured, not asserted: each of those arms sorts
-/// every element THREE times, so a chain of `n` nested sets costs `3^n` sorts.
-/// Depth 10 finishes; depth 20 (3.5e9 sorts) did NOT terminate in either
-/// profile. Deep set nesting is infeasible in *time* long before the stack
-/// residual could bite — hence a ceiling, not a conversion.
-///
-/// ⚠★★ **The floor argument is SUPERSEDED, and the superseded wording is kept
-/// verbatim so it cannot be restored as a bug fix.** This paragraph read:
-/// *"Underneath the sorter sits a floor no conversion of it can lift:
-/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each Θ(depth) in
-/// its own right. `clone_nested_set` is that control, and `sort_nested_set` now
-/// measures BELOW it."*
-///
-/// **Both halves are false at HEAD.** `Par: Clone` is no longer DERIVED — stage
-/// F-4 (`0eac9c3a`) strips the derive and generates the impl over `drive_with` —
-/// and `clone_nested_set` is no longer a FLOOR: it is flat across 4 → 4,096 in
-/// both profiles, while `sort_nested_set` is not, so the sorter measures ABOVE
-/// its former control rather than below it. A flat control cannot bound a sloped
-/// subject, and the two sorter arms are at HEAD **uncontrolled**.
-///
-/// What genuinely remains underneath is narrower than the superseded sentence
-/// claimed: of the three traits `HashSet<Par>` invokes, `Clone` is converted and
-/// `Hash` + `Eq` are not. A `hash_nested_set` control is the honest replacement.
-/// See the note on the sorters' `assert_slope_below` calls.
+/// Stage C-2b exposes each raw set member to the same explicit-worklist sorter
+/// that handles every other `Par` child. Post-order combination canonical-sorts
+/// and deduplicates the already-scored children without re-entering
+/// `ParSortMatcher`. A unary chain therefore performs one sort per level, not
+/// an exponential cascade of nested sorts, and this shape is a converted-depth
+/// subject rather than a residual tripwire.
 fn nested_sets(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ESetBody(models::rhoapi::ESet {
                     ps: vec![p],
@@ -242,7 +207,7 @@ fn nested_sets(depth: usize) -> Par {
 fn nested_maps(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EMapBody(models::rhoapi::EMap {
                     kvs: vec![models::rhoapi::KeyValuePair {
@@ -267,33 +232,6 @@ fn substitute_instance() -> Substitute {
             "stack_depth_gate".to_string(),
         ))),
     }
-}
-
-// ---------------------------------------------------------------------------
-// ⚠ Some subject SETUPS are themselves Θ(depth)
-//
-// The score-tree subjects (`score_cmp`, `score_cmp_wide`, `tree_drop`,
-// `tree_clone`) need a score tree before they can measure anything, and
-// building one means running `sort_match` — which is the very traversal they
-// are meant to be independent of (78,579 B/level, debug). Building the input
-// on the gated thread would make every reading `max(sort_match, subject)`, and
-// the first run of this gate proved it: `score_cmp` reported 78,573 B/level,
-// i.e. the sorter's constant to within 0.01%, not the comparator's 1,329.
-//
-// Setups therefore run on a stack that is never the constraint, exactly as
-// `stack_depth_probe.rs` does. One traversal per number.
-// ---------------------------------------------------------------------------
-
-/// Run `f` on a thread whose stack is large enough never to bind.
-/// 1 GiB is address space, not resident memory.
-fn on_a_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    std::thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
-        .name("gate-setup".to_string())
-        .spawn(f)
-        .expect("stack_depth_gate: failed to spawn the setup thread")
-        .join()
-        .expect("stack_depth_gate: setup thread panicked")
 }
 
 /// A score tree of nesting `depth`, built ITERATIVELY.
@@ -639,12 +577,10 @@ fn subject(name: &str) -> fn(usize) {
         "encode" => encode_body,
         // ── ★ The four-quadrant S0 baseline subjects. ──
         //
-        // Five traversals over the `Par` family that this gate had NEVER
-        // measured. `eq`, `hash`, `ord` and `debug` appear nowhere in
-        // `CONVERTED_DEPTH`, nowhere in `TRIPWIRE_DEPTH`, and in no
-        // `assert_slope_below` call — and absence in this file means UNMEASURED,
-        // never FLAT. `prost_de` is the read half of the `encode` subject, whose
-        // ceiling `models/tests/par_prost_depth_ceiling.rs` pins at depth 33.
+        // Five traversals over the `Par` family that this gate had never
+        // measured at S0. All five have since moved into `CONVERTED_DEPTH`:
+        // generated PDAs now implement Eq, Hash, Ord, Debug, and protobuf
+        // decode. Historical absence meant UNMEASURED, never FLAT.
         //
         // They are deliberately in NEITHER register list: `four_quadrant_s0_
         // baseline` measures them and records the numbers, it does not yet claim
@@ -655,7 +591,7 @@ fn subject(name: &str) -> fn(usize) {
         "hash" => hash_body,
         "ord" => ord_body,
         "debug" => debug_body,
-        "prost_de" => prost_de_body,
+        "protobuf_de" => protobuf_de_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_ser_derived" => bincode_ser_derived_body,
         "bincode_de" => bincode_de_body,
@@ -763,6 +699,10 @@ const CONVERTED_DEPTH: &[&str] = &[
     "substitute",
     // Stage C-2 — ParSortMatcher
     "sort",
+    // Stage C-2b — ESet/EMap members are children of the same PDA; their
+    // combines consume already-scored children and never re-enter the sorter.
+    "sort_nested_set",
+    "sort_nested_map",
     // Stage C-1 — the score-tree comparator
     "score_cmp",
     // Stage C-1 — Tree's hand-written Drop
@@ -796,7 +736,7 @@ const CONVERTED_DEPTH: &[&str] = &[
     // ★★ Stage F-4 — `<Par as Clone>::clone`. It LEFT `TRIPWIRE_DEPTH` below by
     // being CONVERTED, never by having its ceiling raised: `models/build.rs`
     // STRIPS the `Clone` derive from the 55 non-`Copy` `rhoapi` items and
-    // `models/build/wire_schema.rs` GENERATES the impls, `Par`'s over
+    // `models/codegen/schema_codegen.rs` GENERATES the impls, `Par`'s over
     // `drive::drive_with`. The derived form measured 16,493 B/level debug and
     // 3,254 release (`four_quadrant_s0_baseline`, re-measured at HEAD before the
     // conversion); the driven form holds its native stack flat from depth 16 to
@@ -813,6 +753,18 @@ const CONVERTED_DEPTH: &[&str] = &[
     // repo's eight Θ(depth) "iterative" drivers all escaped through exactly this
     // boundary — `Category → Vec<Elem> → Elem`.
     "clone_send_chain",
+    // Stage F-5 — `<Par as Ord>::cmp`. `models/build.rs` strips `Ord` and
+    // `PartialOrd` exactly at the descriptor-derived feedback vertex set and
+    // `models/codegen/schema_codegen.rs` emits the lexicographic PDA. Its recursive
+    // oracle is test-only; the generated differential and this gate cover
+    // semantic equivalence and native-stack flatness through depth 4,096.
+    "ord",
+    // Stage F-6 — `<Par as Debug>::fmt`. `models/build.rs` injects prost's
+    // `skip_debug` exactly at the descriptor-derived feedback vertex set and
+    // `models/codegen/schema_codegen.rs` emits a declaration-order formatting PDA.
+    // A generated recursive builder oracle checks both compact and alternate
+    // output on a shallow corpus; this gate checks stack flatness through 4,096.
+    "debug",
     // ★★ Stage F-4, SECOND ORDER — `Env::get`'s deep splice. It LEFT
     // `TRIPWIRE_DEPTH` below by being CONVERTED, never by having a ceiling
     // raised, and the conversion is the one `0eac9c3a` already landed: this
@@ -857,70 +809,31 @@ const CONVERTED_DEPTH: &[&str] = &[
     // measures; it is NOT true of this subject, which never shifts. The map
     // here holds ONE binding and `Env::get` clones that one value.
     "substitute_deep_binding",
-    // ★★ Stage F-4, THIRD ORDER — `<Par as Clone>::clone` over the nested-`ESet`
+    // Stage F-4, THIRD ORDER — `<Par as Clone>::clone` over the nested-`ESet`
     // shape. Same conversion as `clone` and `clone_send_chain`, reached through
     // a third container field: `Par -> Expr -> ESetBody -> ESet.ps: Vec<Par>`.
     // The generated driver enters it (`clone_push_children_e_set`), the cut set
     // is `["Par"]` and `CLONE_RESIDUAL_HEIGHT` is 3, so the chain reaches a
     // driven clone after a bounded native prefix and the ladder is flat.
     //
-    // ⚠★ IT WAS THE `sort_nested_*` CONTROL, and that role is now VOID rather
-    // than merely restated. The two sorter arms were admitted on the argument
-    // that they "measure BELOW the derived `clone_nested_set` control"; both
-    // halves of that sentence have failed. `Clone` is no longer DERIVED — stage
-    // F-4 strips the derive and `models/build/wire_schema.rs` generates the
-    // impl — and the control is no longer a FLOOR, because it is flat while the
-    // two sorters are not. A flat control cannot bound a sloped subject. What
-    // remains under the sorter arms is `Par: Hash + Eq`, which `HashSet<Par>`
-    // also invokes and which stage F-4 did NOT convert; naming a control for
-    // that is open work, recorded on the sorters' own assertions below.
-    //
-    // ⚠★ Admitted only on the 4 -> 4,096 span. On the 2 -> 8 tripwire ladder this
-    // subject read 3,413 B/level in DEBUG — a FALSE SLOPE, and the mirror of the
-    // false ZERO that hid `substitute_deep_binding`.
-    //
-    // ★ The mechanism is a PLATEAU, and it is worth naming precisely because
-    // "short ladder, bad resolution" is the wrong diagnosis. Minimum stack,
-    // debug: 64 KiB at depth 2, 84 KiB at depth 12, 84 KiB at depth 4,096. The
-    // growth is a ONE-TIME 20 KiB step — the driven clone reaching its working
-    // set — after which the ladder is flat forever. Divide that step by six
-    // steps and it reads 3,413 B/level; by ten, 2,048. **A quotient that moves
-    // with where the ladder is cut is the signature of a plateau**, and no
-    // choice of resolution fixes it: only a span long enough for a real slope to
-    // dominate does, which is what `assert_no_slope`'s ~1,000x ladder is for.
-    //
-    // ⚠ The same suspicion was raised against the two sorter arms below and was
-    // REFUTED by measurement — their slopes reproduce to the byte in debug from
-    // 2 -> 8 to 2 -> 11. The table is on their assertions.
+    // It is measured independently from nested collection sorting; all three
+    // subjects now satisfy the same full 4 → 4,096 depth-independence bar.
     "clone_nested_set",
+    // Generated stack-safe trait and codec surfaces over the same schema cut
+    // set. Each is held to the full 4 -> 4,096 depth-independence ladder.
+    "subst_and_charge",
+    "par_drop",
+    "normalize_drop",
+    "encode",
+    "protobuf_de",
+    "eq",
+    "hash",
+    // PathMap<Par>-specific clone and teardown ladders. Their fixtures use map
+    // values rather than recursively re-encoding set keys, so construction and
+    // validation are linear in depth and need no capped ladder or large stack.
+    "clone_pathmap_chain",
+    "pathmap_chain_drop",
 ];
-
-/// ⚠★ **`clone_pathmap_chain` and `pathmap_chain_drop` are MEASURED but are NOT in
-/// [`CONVERTED_DEPTH`], and the reason is the FIXTURE, not the traversal.**
-///
-/// Both are flat — 0 B/level across 16 → 128 in BOTH profiles, asserted by
-/// [`the_clone_conversion_is_visible_against_its_own_derived_control`]'s leg 4.
-/// What they cannot do is clear [`assert_depth_independent`]'s mandated
-/// **4 → 4,096** bar, because building the ladder is Θ(depth²): `EPathMap::new`
-/// keys every entry by its canonical bytes, so nesting `d` path maps encodes
-/// `Σ k = O(d²)` nodes. At `d = 4,096` that is ~8.4 million node-encodes **per
-/// probe point**, and `min_stack_for` runs ~15 child processes per bisection.
-/// Measured: the subject did not finish a single 4,096 rung in four minutes.
-///
-/// ★ This is the same disposition [`S0_LADDERS`] gives `prost_de`, whose `hi_max`
-/// is 32 because *"widening past 33 would measure the error path"*. Here, widening
-/// past ~128 would measure the CONSTRUCTOR. A subject whose fixture costs more than
-/// its traversal cannot be put on a 1,000× ladder, and pretending otherwise would
-/// make `converted_traversals_are_depth_independent` — which CI runs on every push
-/// — effectively hang.
-///
-/// ⚠ They are therefore in the same position as `bincode_ser_derived` and the four
-/// S0 baseline subjects: measured, registered in [`subject`], asserted by a named
-/// test, and deliberately in NEITHER register list. "Absence means UNMEASURED" is
-/// the rule this file enforces, so the exception is stated here rather than left
-/// for a reader to infer.
-const CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE: &[(&str, usize, usize)] =
-    &[("clone_pathmap_chain", 16, 128), ("pathmap_chain_drop", 16, 128)];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
 const CONVERTED_WIDTH: &[&str] = &[
@@ -932,44 +845,18 @@ const CONVERTED_WIDTH: &[&str] = &[
     "normalize_wide",  // Stage G — the same driver, collection-element axis
 ];
 
-/// Depth-axis traversals still Θ(depth), held under a ceiling that certifies
-/// only "not worse". Every member's rationale is on its `assert_slope_below`
-/// call in [`theta_depth_tripwire`]; this list exists so the audit can be
-/// checked against it, and the tripwire asserts it drove exactly these.
-const TRIPWIRE_DEPTH: &[&str] = &[
-    // ★★ The METERED WRAPPER, and the deploy path's binding constraint:
-    // `substitute_and_charge` takes `&A` and opens with `term.clone()`, on the
-    // ordinary send path, with no binder and no COMM. See
-    // `subst_and_charge_body`.
-    "subst_and_charge",
-    // ⚠★ `substitute_deep_binding` IS GONE FROM THIS LIST — see
-    // [`CONVERTED_DEPTH`] above, where its departure and the superseded
-    // rationale are both recorded. It left by being CONVERTED (stage F-4, at
-    // second order: its whole slope was `<Par as Clone>::clone`), never by
-    // having its ceiling raised, and its `assert_slope_below` call is deleted
-    // rather than relaxed.
-    // ⚠★ `clone` IS GONE FROM THIS LIST — see [`CONVERTED_DEPTH`] above. It left
-    // by being CONVERTED (stage F-4: `models/build.rs` strips the derive,
-    // `models/build/wire_schema.rs` generates the impl over `drive_with`), never
-    // by having its ceiling raised. The `assert_slope_below("clone", …)` call
-    // that pinned it at `ceiling(25_000, 5_000)` is deleted with it, because
-    // `theta_depth_tripwire` RECORDS every subject it drives and refuses to
-    // finish unless the recorded set is exactly this list — so a name cannot be
-    // removed here without removing its assertion, or vice versa.
-    "par_drop",                // derived `drop_in_place::<Par>`
-    "normalize_drop",          // ★ the DEPLOY composition: flat build, sloped release
-    "encode",                  // prost encoder (capped by RECURSION_LIMIT on decode)
-    "sort_nested_set",         // Stage C-2 residual, self-contained set arm
-    "sort_nested_map",         // Stage C-2 residual, self-contained map arm
-];
+/// No production depth traversal remains under a slope ceiling. The tripwire
+/// test still executes its recursive and iterative synthetic controls so an
+/// accidentally permissive checker cannot turn this empty register vacuous.
+const TRIPWIRE_DEPTH: &[&str] = &[];
 
 /// Width-axis traversals still Θ(width). Empty, and that is an EXECUTED claim —
 /// see `theta_width_tripwire`'s `UNCONVERTED_WIDTH_SUBJECTS`.
 const TRIPWIRE_WIDTH: &[&str] = &[];
 
-/// Every subject [`assert_slope_below`] was driven with on this thread. Each
-/// `#[test]` runs on its own thread, so a thread-local is both correct and
-/// lock-free here — no shared state to interleave, no mutex to contend.
+// Every subject [`assert_slope_below`] was driven with on this thread. Each
+// `#[test]` runs on its own thread, so a thread-local is both correct and
+// lock-free here — no shared state to interleave, no mutex to contend.
 thread_local! {
     static SLOPE_SUBJECTS_DRIVEN: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -1120,7 +1007,9 @@ fn clears_tolerance_by_an_order_of_magnitude(l: Ladder) -> bool {
     // not read the ladder has not established that. The effect is that a POSITIVE control
     // built on an unreadable ladder fails loudly rather than certifying itself — which is
     // what a control that cannot be read should do.
-    l.growth().map(|g| g > 8 * ZERO_SLOPE_TOLERANCE).unwrap_or(false)
+    l.growth()
+        .map(|g| g > 8 * ZERO_SLOPE_TOLERANCE)
+        .unwrap_or(false)
 }
 
 /// **The real bar, depth axis.**
@@ -1288,16 +1177,17 @@ impl Ladder {
             // holds, it is simply uninformative about the subject. What must not happen is
             // for it to be REPORTED as a measurement — and that is `MinStack`'s `Display`'s
             // job, which renders both ends as `<12 KiB (BELOW THE INSTRUMENT FLOOR)`.
-            (MinStack::BelowResolution, MinStack::BelowResolution) => {
-                Ok(SMALLEST_POSEABLE_STACK)
-            }
+            (MinStack::BelowResolution, MinStack::BelowResolution) => Ok(SMALLEST_POSEABLE_STACK),
             // Shallow end below the floor ⇒ growth ≤ hi (the floor end is at worst 0).
             (MinStack::BelowResolution, MinStack::Bytes(hi)) => Ok(hi),
             // Deep end below the floor while the shallow end resolved ABOVE it: the deep end
             // needs strictly less than the shallow one. Not an interval — the readings
             // disagree about direction.
             (MinStack::Bytes(lo), MinStack::BelowResolution) => {
-                Err(Unresolved::NegativeDifference { lo, hi: SMALLEST_POSEABLE_STACK })
+                Err(Unresolved::NegativeDifference {
+                    lo,
+                    hi: SMALLEST_POSEABLE_STACK,
+                })
             }
             (MinStack::Bytes(lo), MinStack::Bytes(hi)) if hi < lo => {
                 Err(Unresolved::NegativeDifference { lo, hi })
@@ -1340,14 +1230,14 @@ impl Ladder {
         self.growth_at_least()
             .map(|g| g / (self.hi_param - self.lo_param))
             .unwrap_or_else(|why| {
-            panic!(
-                "CONTROL `{subject}` produced an UNREADABLE ladder: {why}.\n\
+                panic!(
+                    "CONTROL `{subject}` produced an UNREADABLE ladder: {why}.\n\
                  A control that cannot be read is not a control. Move the ladder's ends so \
                  both clear the {} KiB instrument floor; do not relax the assertion that \
                  depends on it.",
-                SMALLEST_POSEABLE_STACK / 1024
-            )
-        })
+                    SMALLEST_POSEABLE_STACK / 1024
+                )
+            })
     }
 
     /// The growth of a CONTROL subject, or a panic naming why it could not be read.
@@ -1477,13 +1367,7 @@ fn slope_below_verdict(
          ({} @ depth {} -> {} @ depth {}).\n\
          Either a traversal regressed, or codegen changed materially. See\n\
          docs/design/audits/theta-depth-traversals-2026-07-26.md.",
-        name,
-        per_step,
-        ceiling_bytes_per_level,
-        l.lo_stack,
-        l.lo_param,
-        l.hi_stack,
-        l.hi_param
+        name, per_step, ceiling_bytes_per_level, l.lo_stack, l.lo_param, l.hi_stack, l.hi_param
     ))
 }
 
@@ -1496,7 +1380,10 @@ fn assert_no_slope(name: &str, lo_param: usize, hi_param: usize, axis: &str) {
     }
     // ★ The readings print through `MinStack`'s `Display`, so a floor reading renders as
     // `<12 KiB (BELOW THE INSTRUMENT FLOOR)` rather than as the number 12.
-    println!("  {name} ({axis}): O(1) — {} at {lo_param}, {} at {hi_param}", l.lo_stack, l.hi_stack);
+    println!(
+        "  {name} ({axis}): O(1) — {} at {lo_param}, {} at {hi_param}",
+        l.lo_stack, l.hi_stack
+    );
 }
 
 /// **Tripwire for traversals not yet converted.** Bisects the minimum stack at
@@ -1525,16 +1412,6 @@ fn assert_slope_below(name: &str, ceiling_bytes_per_level: usize, lo: usize, hi_
         Err(why) => println!(
             "  {name}: UNRESOLVED — {why} (ceiling {ceiling_bytes_per_level}, not applied)"
         ),
-    }
-}
-
-/// Per-profile ceiling. Debug frames are ~2–12× release because `-O0` does not
-/// overlap `match`-arm stack slots; see the module docs.
-fn ceiling(debug: usize, release: usize) -> usize {
-    if cfg!(debug_assertions) {
-        debug
-    } else {
-        release
     }
 }
 
@@ -1697,10 +1574,8 @@ fn substitute_binders_body(depth: usize) {
     //
     // The environment is BUILT on a big stack because `Env::put` clones the map
     // too; the gated thread must measure the traversal, not the fixture.
-    let env = on_a_big_stack(move || {
-        let mut base: Env<Par> = Env::new();
-        base.put(nested_list(depth))
-    });
+    let mut base: Env<Par> = Env::new();
+    let env = base.put(nested_list(depth));
     let term = nested_binders(depth);
     assert_carries("the binder-scope nesting", binder_depth(&term), depth);
     // The bound value must be deep too — that is the whole point of this
@@ -1743,11 +1618,9 @@ fn substitute_binders_body(depth: usize) {
 fn substitute_deep_binding_body(depth: usize) {
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::{EVar, Var};
-    let env = on_a_big_stack(move || {
-        let mut base: Env<Par> = Env::new();
-        base.put(nested_list(depth))
-    });
-    let term = Par {
+    let mut base: Env<Par> = Env::new();
+    let env = base.put(nested_list(depth));
+    let term = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(EVar {
                 v: Some(Var {
@@ -1828,20 +1701,8 @@ fn sort_nested_map_body(depth: usize) {
 /// `<Par as Clone>::clone` over the nested-`ESet` shape — a third `Vec`-nested
 /// ladder for the stage F-4 driver, alongside `clone` and `clone_send_chain`.
 ///
-/// ⚠★ **It is no longer the `sort_nested_set` CONTROL, and the superseded
-/// wording is kept verbatim so it cannot be restored as a bug fix.** This
-/// paragraph read: *"The DERIVED control for [`sort_nested_set_body`]:
-/// `<Par as Clone>::clone` over the same shape. If the sorter subject sits at or
-/// below this, what is left in the set arm is the derived-traversal class and
-/// not the sorter."*
-///
-/// The premise failed on both sides. `Clone` is not DERIVED at HEAD (stage F-4
-/// generates it over `drive_with`), and this subject is FLAT while the sorter is
-/// not — so "the sorter sits at or below this" is not merely unproven, it is
-/// false, and the conclusion it licensed cannot be drawn. The set arm's residual
-/// is now attributable to `Par: Hash + Eq`, the two traits `HashSet<Par>`
-/// invokes that stage F-4 did not convert, and a control for THAT does not yet
-/// exist. See the note on `theta_depth_tripwire`'s sorter assertions.
+/// It is independent of the sorter subjects: all three are now converted and
+/// independently admitted by the full-depth gate.
 fn clone_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
     assert_carries(
@@ -1858,7 +1719,7 @@ fn clone_nested_set_body(depth: usize) {
 fn sort_wide_body(width: usize) {
     // TWO wide lists, so the sorter has siblings to order and its comparator
     // has `width` score-tree children to walk.
-    let term = Par {
+    let term = models::par_from_default! {
         exprs: vec![wide_list_expr(width), wide_list_expr(width)],
         ..Default::default()
     };
@@ -2411,20 +2272,7 @@ fn clone_send_chain_body(depth: usize) {
 /// child process, which exits immediately afterwards. `models/benches/bincode_encoder_bench.rs`
 /// uses `std::mem::forget` for the same reason.
 fn clone_pathmap_chain_body(depth: usize) {
-    // ⚠★ THE FIXTURE IS BUILT ON A BIG STACK, and that is the second measured
-    // correction to this subject. With the teardown removed it was STILL sloped —
-    // 49,152 -> 278,528, i.e. 2,048 B/level — and the deep end was UNCHANGED at
-    // 278,528, so whatever was sloped was in the part both readings shared: the
-    // BUILDER. `EPathMap::new` keys each entry by its canonical bytes, so
-    // constructing an `EPathMap` around a depth-`d` `Par` encodes that `Par`, and
-    // the prost encoder is audit row 7 — still Θ(depth) and in `TRIPWIRE_DEPTH`
-    // as `encode`. The ladder was measuring the ENCODER.
-    //
-    // ★ `on_a_big_stack` is the gate's existing instrument for exactly this, and
-    // the reason it exists is the same one: the score-tree subjects would have
-    // read `max(sort_match, subject)` if their fixtures had been built by scoring
-    // a deep `Par`.
-    let term = on_a_big_stack(move || nested_pathmap_chain(depth));
+    let term = nested_pathmap_chain(depth);
     assert_carries(
         "the clone_pathmap_chain input's nesting",
         pathmap_chain_depth(&term),
@@ -2432,11 +2280,8 @@ fn clone_pathmap_chain_body(depth: usize) {
     );
     let c = term.clone();
     assert_carries("the CLONE's nesting", pathmap_chain_depth(&c), depth);
-    // ⚠ NOT `dismantle` — see the section above. The teardown of this shape is a
-    // DIFFERENT, still-Θ(depth) traversal, and including it here would attribute
-    // its slope to the clone.
-    std::mem::forget(c);
-    std::mem::forget(term);
+    dismantle(c);
+    dismantle(term);
 }
 
 /// ★★ **The DERIVED CONTROL for [`clone_body`]** — `term_ops::oracle_clone_par`,
@@ -2451,7 +2296,7 @@ fn clone_pathmap_chain_body(depth: usize) {
 /// already frozen a deliberately-broken probe form into history once by
 /// committing mid-measurement.
 ///
-/// `models/build/wire_schema.rs` §F therefore retains the derive's own body as a
+/// `models/codegen/schema_codegen.rs` §F therefore retains the derive's own body as a
 /// free function, and `models/tests/clone_equivalence_corpus.rs` proves it
 /// byte-identical to the driven form on eight axes over 67 enumerated shapes. So
 /// the control and the subject live in the SAME binary, run on the SAME ladder, in
@@ -2570,11 +2415,7 @@ fn clone_oracle_body(depth: usize) {
 /// formality"* is about **matching and substitution descent**, not about
 /// teardown. Nothing here bears on it.
 fn pathmap_chain_drop_body(depth: usize) {
-    // Built on a BIG stack, for the same reason [`clone_pathmap_chain_body`] is:
-    // `EPathMap::new` encodes each entry to key the trie, and the prost encoder
-    // is still Θ(depth) (audit row 7, gate subject `encode`). A fixture built on
-    // the sized stack would make this reading `max(build, teardown)`.
-    let term = on_a_big_stack(move || nested_pathmap_chain(depth));
+    let term = nested_pathmap_chain(depth);
     assert_carries(
         "the pathmap_chain_drop input's nesting",
         pathmap_chain_depth(&term),
@@ -2589,7 +2430,7 @@ fn pathmap_chain_drop_body(depth: usize) {
 fn nested_send_chain(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for level in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             sends: vec![models::rhoapi::Send {
                 chan: Some(p),
                 data: vec![],
@@ -2622,16 +2463,20 @@ fn send_chain_depth(p: &Par) -> usize {
     }
 }
 
-/// `Par { exprs: [EPathmapBody(EPathMap { ps: [<inner>] })] }`, nested `depth`
-/// times.
+/// `Par { exprs: [EPathmapBody({| key: <inner> |})] }`, nested `depth` times.
+///
+/// The recursive edge is a borrowed `PathMap<Par>` value. Constant-size keys
+/// keep construction linear and exercise the map specialization directly;
+/// using each inner term as a set key would repeatedly encode every suffix.
 fn nested_pathmap_chain(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for level in 0..depth {
-        p = Par {
+        let key = new_gint_par(level as i64, vec![], false);
+        p = models::par_from_default! {
             exprs: vec![models::rhoapi::Expr {
                 expr_instance: Some(ExprInstance::EPathmapBody(
-                    models::rust::rhoapi_ext::EPathMap::new(
-                        vec![p],
+                    models::rust::rhoapi_ext::EPathMap::new_map(
+                        [(key, p)],
                         vec![(level % 251) as u8],
                         false,
                         None,
@@ -2649,13 +2494,18 @@ fn pathmap_chain_depth(p: &Par) -> usize {
     let mut n = 0usize;
     let mut cur = p;
     loop {
-        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EPathmapBody(pm)) if !pm.ps().is_empty() => {
-                n += 1;
-                cur = &pm.ps()[0];
-            }
-            _ => return n,
-        }
+        let next = match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EPathmapBody(pm)) if !pm.is_empty() => pm
+                .entry_trie()
+                .map_trie()
+                .and_then(|map| map.iter().next().map(|(_, value)| value)),
+            _ => None,
+        };
+        let Some(next) = next else {
+            return n;
+        };
+        n += 1;
+        cur = next;
     }
 }
 
@@ -2687,7 +2537,7 @@ fn encode_body(depth: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// ★ THE FOUR-QUADRANT S0 SUBJECTS — five traversals this gate never measured
+// ★ THE FOUR-QUADRANT S0 SUBJECTS — the five traversals absent at S0
 //
 // ⚠ Their absence from `CONVERTED_DEPTH`, `TRIPWIRE_DEPTH` and every
 // `assert_slope_below` call meant they were UNMEASURED, not FLAT. That
@@ -2703,7 +2553,7 @@ fn encode_body(depth: usize) {
 //                                                        LEAF and nowhere else
 //   hash   never short-circuits, but is invisible     → two leaves, two digests
 //   debug  produces a string, so length is the guard
-//   prost_de is CAPPED by prost's own RECURSION_LIMIT → depth ≤ 33
+//   protobuf_de is a generated, unbounded protobuf-decoder PDA
 // ---------------------------------------------------------------------------
 
 /// `<Par as PartialEq>::eq` — the **hand-written** structural comparison
@@ -2762,11 +2612,10 @@ fn hash_body(depth: usize) {
     dismantle(one);
 }
 
-/// `<Par as Ord>::cmp` — **derived** (`models/build.rs` injects
-/// `#[derive(Eq, Ord, PartialOrd)]` on every `.rhoapi` message), and a surface
-/// nobody had named before the derive enumeration found it.
+/// `<Par as Ord>::cmp` — generated from the schema as an explicit-worklist
+/// lexicographic comparator at the descriptor-derived feedback vertex set.
 ///
-/// ⚠ Derived `cmp` returns at the first field that differs, so the twins differ
+/// `cmp` returns at the first field that differs, so the twins differ
 /// at the LEAF and only there — every level above must compare `Equal` for the
 /// descent to continue. `Less` is therefore a verdict only a full descent can
 /// reach.
@@ -2785,10 +2634,10 @@ fn ord_body(depth: usize) {
     dismantle(larger);
 }
 
-/// `<Par as Debug>::fmt` — emitted by the `::prost::Message` derive, built from
-/// prost-derive's UNSORTED field list (`prost-derive-0.14.3/src/lib.rs:85,214`)
-/// rather than the tag-sorted one its encoder uses. Two orders inside one
-/// derive; this subject measures the walk, not the order.
+/// `<Par as Debug>::fmt` — now generated as a declaration-order explicit-
+/// worklist formatter at the schema feedback vertex set. The declaration order
+/// remains prost-derive compatible; the generated shallow differential checks
+/// the output, while this subject measures the deep walk.
 fn debug_body(depth: usize) {
     let term = nested_list(depth);
     assert_carries("the debug input's nesting", par_depth(&term), depth);
@@ -2804,35 +2653,13 @@ fn debug_body(depth: usize) {
     dismantle(term);
 }
 
-/// `<Par as prost::Message>::merge` — the protobuf DECODER.
-///
-/// ⚠ **This subject cannot be laddered past depth 33.** `prost` caps decode
-/// recursion, and `models/tests/par_prost_depth_ceiling.rs` exhibits the
-/// boundary: a depth-34 `nested_list` builds, writes, and fails to read with a
-/// recursion-limit `Err`. A probe that accepted that `Err` would "survive" any
-/// stack at all and report a flat, meaningless zero — so this body REQUIRES a
-/// successful decode and the S0 ladder stops at 32.
-fn prost_de_body(depth: usize) {
+/// `<Par as prost::Message>::merge` — the generated protobuf decoder PDA.
+fn protobuf_de_body(depth: usize) {
     use prost::Message;
-    assert!(
-        depth <= 33,
-        "the `prost_de` subject was asked for depth {depth}, but `prost` refuses to decode \
-         past 33 (`models/tests/par_prost_depth_ceiling.rs`). A deeper probe would measure \
-         the error path, not the decoder."
-    );
-    // ⚠ Encode on a stack that never binds, so this subject isolates the
-    // DECODER — the same discipline as `bincode_de_body`. `encode_to_vec` is
-    // itself Θ(depth) (the `encode` subject measures it), so encoding on the
-    // gated thread would make every reading `max(encode, decode)`.
-    let bytes = on_a_big_stack(move || {
-        let term = nested_list(depth);
-        let b = term.encode_to_vec();
-        dismantle(term);
-        b
-    });
-    let decoded = Par::decode(&bytes[..]).expect(
-        "stack_depth_gate: prost_de failed to decode a term inside its own recursion limit",
-    );
+    let term = nested_list(depth);
+    let bytes = term.encode_to_vec();
+    dismantle(term);
+    let decoded = Par::decode(&bytes[..]).expect("stack_depth_gate: protobuf_de failed");
     assert_carries(
         "the prost-DECODED term's nesting",
         par_depth(&decoded),
@@ -3010,16 +2837,17 @@ fn printed_bracket_depth(s: &str) -> usize { s.chars().take_while(|c| *c == '[')
 ///
 /// `models/build.rs` attaches `serde::Serialize`/`Deserialize` to every
 /// `.rhoapi` message, and RSpace serialises datums and continuations with
-/// **bincode 1.3.3** (`rspace++/src/rspace/serializers/serializers.rs`), which
-/// — unlike `prost`, capped at 100 nested messages — has **no recursion limit
-/// at all**. Bisected directly: bincode round-trips at depths 33, 34, 40, 100,
-/// 200, 400 and 800, where `prost` returns `Err` from 34 onward.
+/// **bincode 1.3.3** (`rspace++/src/rspace/serializers/serializers.rs`). Before
+/// conversion, stock prost rejected this shape from depth 34 while the derived
+/// bincode reader remained unbounded and recursively consumed native stack.
+/// The production protobuf and bincode readers are now generated, unbounded
+/// explicit-state PDAs; this paragraph records the defect that selected the
+/// subject, not the current implementation.
 ///
-/// The encode side is ~9x (debug) to ~39x (release) cheaper per level than the
-/// decode side, so a term can be *written* on a stack that cannot *read it
-/// back* — and the read-back failure is an `abort()`, not an `Err`. A datum
-/// written to LMDB above the decode ceiling therefore aborts the node on every
-/// restart, because the datum persists.
+/// In the pre-conversion implementation the encode side was ~9x (debug) to
+/// ~39x (release) cheaper per level than the decode side, so a term could be
+/// *written* on a stack that could not *read it back*. The paired generated
+/// PDAs close that persistence hazard.
 ///
 /// Measured 2026-07-26: encode 3,052 / 329 B/level (debug / release), decode
 /// 28,362 / 12,894.
@@ -3069,19 +2897,10 @@ fn bincode_ser_derived_body(depth: usize) {
 /// decoder is to measure the DECODER: a probe that silently became
 /// `max(encode, decode)` would still be wrong even when both are flat.
 fn bincode_de_body(depth: usize) {
-    // ⚠ Encode on a stack that never binds, so this subject isolates the
-    // DECODER. Encoding on the gated thread would make every reading
-    // `max(encode, decode)` — the same defect that once made the score-tree
-    // subjects report 78,573 B/level (the SORTER's constant) instead of the
-    // comparator's 1,329. The DERIVED encoder is used here deliberately: it is
-    // the oracle whose bytes the decoder must read, and it is Θ(depth), which
-    // is precisely why it must not run on the gated thread.
-    let bytes = on_a_big_stack(move || {
-        let term = nested_list(depth);
-        let b = bincode::serialize(&term).expect("stack_depth_gate: bincode encode failed");
-        dismantle(term);
-        b
-    });
+    use models::rust::rholang::bincode_encoder::ColdStoreEncode;
+    let term = nested_list(depth);
+    let bytes = term.cold_encode();
+    dismantle(term);
     let decoded: Par = Par::cold_decode(&bytes).expect("stack_depth_gate: bincode_de failed");
     assert_carries("the DECODED term's nesting", par_depth(&decoded), depth);
     dismantle(decoded);
@@ -3118,14 +2937,14 @@ fn free_check_body(width: usize) {
 /// measured 21,584 B/level debug / 3,359 release before the conversion.
 fn eval_with_nots_body(depth: usize) {
     use rho_pure_eval::{eval_with, NoSpatialMatch};
-    let mut p = Par {
+    let mut p = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GBool(true)),
         }],
         ..Default::default()
     };
     for _ in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot { p: Some(p) })),
             }],
@@ -3247,7 +3066,11 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     // on the stack that suffices for the FLAT control at parameter 4,096, the
     // SLOPED one does not survive.
     assert!(
-        !runs_within(flat.hi_stack.bytes_upper_bound("flat"), 4096, "synthetic_sloped"),
+        !runs_within(
+            flat.hi_stack.bytes_upper_bound("flat"),
+            4096,
+            "synthetic_sloped"
+        ),
         "the two synthetic subjects must be separable at all: `synthetic_flat` needs \
          {} KiB at 4,096 and `synthetic_sloped` survived the same stack, so the \
          control has no slope and every rejection below is vacuous",
@@ -3294,13 +3117,22 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     // Ceilings are derived from the control's measured slope rather than
     // hardcoded, so this leg is profile-independent exactly like the rest of the
     // file — no `cfg!(debug_assertions)` constant to drift.
-    let why = slope_below_verdict("synthetic_sloped", sloped.per_step_of_control("sloped") / 2, sloped)
-        .expect_err("the tripwire must reject a slope twice its ceiling");
+    let why = slope_below_verdict(
+        "synthetic_sloped",
+        sloped.per_step_of_control("sloped") / 2,
+        sloped,
+    )
+    .expect_err("the tripwire must reject a slope twice its ceiling");
     assert!(
         why.contains("Θ(DEPTH) TRIPWIRE"),
         "the rejection must come from the tripwire clause; got: {why}"
     );
-    slope_below_verdict("synthetic_sloped", sloped.per_step_of_control("sloped") * 2, sloped).expect(
+    slope_below_verdict(
+        "synthetic_sloped",
+        sloped.per_step_of_control("sloped") * 2,
+        sloped,
+    )
+    .expect(
         "the tripwire must ACCEPT a slope at half its ceiling — a checker that rejects \
          unconditionally is no checker",
     );
@@ -3415,7 +3247,11 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     // moving [`DESTRUCTOR_CONTROL_HI`] cannot leave this comparison probing a
     // depth neither subject was measured at.
     assert!(
-        !runs_within(iterative.hi_stack.bytes_upper_bound("iterative"), iterative.hi_param, "synthetic_drop"),
+        !runs_within(
+            iterative.hi_stack.bytes_upper_bound("iterative"),
+            iterative.hi_param,
+            "synthetic_drop"
+        ),
         "the two destructors must be separable at all: `synthetic_drop_flat` needs {} KiB \
          at {} links and the recursive destructor survived the same stack, so the \
          control has no slope and every rejection below is vacuous",
@@ -3475,13 +3311,22 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     // ── Checker 2: the tripwire — the checker `par_drop` and `normalize_drop`
     // are actually asserted with — BOTH directions. Ceilings derived from the
     // control's own slope, so this leg carries no profile-dependent constant.
-    let why = slope_below_verdict("synthetic_drop", recursive.per_step_of_control("recursive") / 2, recursive)
-        .expect_err("the tripwire must reject a destructor whose slope is twice its ceiling");
+    let why = slope_below_verdict(
+        "synthetic_drop",
+        recursive.per_step_of_control("recursive") / 2,
+        recursive,
+    )
+    .expect_err("the tripwire must reject a destructor whose slope is twice its ceiling");
     assert!(
         why.contains("Θ(DEPTH) TRIPWIRE"),
         "the rejection must come from the tripwire clause; got: {why}"
     );
-    slope_below_verdict("synthetic_drop", recursive.per_step_of_control("recursive") * 2, recursive).expect(
+    slope_below_verdict(
+        "synthetic_drop",
+        recursive.per_step_of_control("recursive") * 2,
+        recursive,
+    )
+    .expect(
         "the tripwire must ACCEPT a destructor at half its ceiling — a checker that rejects \
          unconditionally is no checker",
     );
@@ -3613,7 +3458,6 @@ fn theta_depth_tripwire() {
     // (56 KiB @ depth 16 -> 368 KiB @ depth 128)`. 2,852 is precisely the
     // pre-repair reading, so the lowered ceiling refuses the exact regression it
     // was lowered to refuse, and not merely something.
-    assert_slope_below("subst_and_charge", ceiling(3_000, 700), 16, 128);
     // ⚠★ `assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000),
     // 16, 128)` USED TO BE HERE, and it is deleted rather than relaxed.
     //
@@ -3643,7 +3487,7 @@ fn theta_depth_tripwire() {
     //
     // Stage F-4 converted `<Par as Clone>::clone`: `models/build.rs` strips the
     // `Clone` derive from the 55 non-`Copy` `rhoapi` items and
-    // `models/build/wire_schema.rs` generates the impls, `Par`'s as an
+    // `models/codegen/schema_codegen.rs` generates the impls, `Par`'s as an
     // explicit-worklist traversal over `drive::drive_with`. The subject is in
     // [`CONVERTED_DEPTH`] and `converted_traversals_are_depth_independent` now
     // drives it, so a ceiling here would be a weaker statement about the same
@@ -3653,7 +3497,6 @@ fn theta_depth_tripwire() {
     // ceiling raised** — the same rule and the same words as `bincode_ser`'s
     // departure. Pre-conversion baselines, by direct bisection of this subject:
     // 16,493 B/level debug and 3,254 release.
-    assert_slope_below("par_drop", ceiling(1_500, 800), 256, 4096);
     // ★★ THE DEPLOY-REACHABLE COMPOSITION — see `normalize_drop_body`.
     //
     // `normalize` is converted (0 B/level) and `par_drop` is not (~470), so a
@@ -3670,8 +3513,6 @@ fn theta_depth_tripwire() {
     // destructor, is untouched, and that is what this subject stands for. A name
     // leaves this list when its traversal is gone, never when a sibling call site
     // is fixed.
-    assert_slope_below("normalize_drop", ceiling(1_500, 800), 256, 4096);
-    assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
     // ⚠ THE RSpace CODEC HAS LEFT THIS LIST ENTIRELY — both halves.
     //
     // `bincode_de` left first (Stage F: `models/src/rust/rholang/bincode_decoder.rs`,
@@ -3691,72 +3532,11 @@ fn theta_depth_tripwire() {
     // Pre-conversion baselines, by direct bisection of this subject:
     // ENCODE 3,052 B/level debug and 329 B/level release; DECODE 28,331 and
     // 12,971. As always, a traversal leaves this list only by being converted.
-    // ⚠ THE NAMED STAGE C-2 RESIDUAL. Ceilings are the MEASURED PRE-CONVERSION
-    // BASELINES (79,053 / 82,534 B/level, debug), so this list can only ever
-    // certify that the self-contained set/map arms did not get worse. Measured
-    // after the per-arm frame split: 14,336 / 17,818 — 5.5x and 4.6x BELOW
-    // those baselines. Probed on a SHORT ladder because of the 3^n sort blow-up
-    // documented on `nested_sets`.
-    //
-    // ⚠★ The clause *"and below the derived `clone_nested_set` control (16,384)
-    // as well"* USED TO FOLLOW, and it is struck rather than re-stated: at HEAD
-    // that control is FLAT in both profiles and is in [`CONVERTED_DEPTH`], so
-    // these two measure ABOVE it, not below. See the note under the assertions.
-    assert_slope_below("sort_nested_set", ceiling(79_053, 7_680), 2, 8);
-    assert_slope_below("sort_nested_map", ceiling(82_534, 10_394), 2, 8);
-    // ⚠★ `assert_slope_below("clone_nested_set", ceiling(25_000, 9_000), 2, 8)`
-    // USED TO BE HERE, and it is deleted rather than relaxed: the subject is in
-    // [`CONVERTED_DEPTH`], flat over 4 -> 4,096 in both profiles.
-    //
-    // ⚠★★ ITS DEPARTURE LEAVES THE TWO ASSERTIONS ABOVE WITHOUT A CONTROL, and
-    // that is a MEASUREMENT DEBT this comment records rather than hides. The
-    // sentence those two were admitted on — "`sort_nested_set` now measures
-    // BELOW its derived control" — is false in both of its parts at HEAD:
-    // `Clone` is no longer derived, and the control is FLAT, so the sorters
-    // measure ABOVE it and not below. The residual under them is `Par: Hash +
-    // Eq`, which `HashSet<Par>` invokes and which stage F-4 did not touch; a
-    // `hash_nested_set` control is the honest replacement and is not built here.
-    //
-    // ★★ THE LADDER WAS PUT UNDER SUSPICION AND THE SUSPICION IS REFUTED — for
-    // THESE two subjects, and the refutation is a measurement.
-    //
-    // Both are probed on 2 -> 8, six steps at 4 KiB bisection resolution, which
-    // is the same instrument that reported a FALSE SLOPE of 3,413 B/level for
-    // `clone_nested_set`. The hypothesis was that these two figures are
-    // intercept artefacts of the same kind. They are NOT. Re-measured on longer
-    // ladders through the gate's own `gate_child` protocol:
-    //
-    //   subject            profile   2 -> 8    2 -> 11/12   8 -> 14
-    //   sort_nested_set    debug     19,114      19,114        —
-    //   sort_nested_map    debug     21,845      21,845        —
-    //   sort_nested_set    release    6,826       6,963      7,509
-    //   sort_nested_map    release   10,240       9,830      9,557
-    //
-    // The debug columns agree TO THE BYTE across ladder lengths and the release
-    // columns to within 10 %. These arms are linear in nesting depth and the
-    // gate's short ladder reports that slope correctly.
-    //
-    // ★ What separates them from `clone_nested_set` is not ladder length but
-    // SHAPE. That subject's minimum stack went 64 KiB at depth 2 -> 84 KiB at
-    // depth 12 -> 84 KiB at depth 4,096 (debug): a one-time 20 KiB PLATEAU STEP,
-    // not a slope. Dividing a plateau by the ladder length yields 3,413 at six
-    // steps and 2,048 at ten — a quotient that moves with where the ladder is
-    // cut is the signature, and it is why `assert_no_slope`'s ~1,000x span is
-    // the discriminating instrument and a short ladder is not.
-    //
-    // ⚠ So the short ladder is retained here deliberately, not tolerated: these
-    // two cannot be widened far anyway — `nested_sets` documents the 3^n sort
-    // blow-up (depth 20 is 3.5e9 sorts and did not terminate in either profile)
-    // — and it has now been SHOWN that they do not need to be.
-    //
-    // ⚠ The measured values have MOVED since the report of 2026-07-29 recorded
-    // them, in the direction that matters: release 4,778 -> 6,826 (set) and
-    // 7,509 -> 10,240 (map), against unchanged ceilings of 7,680 and 10,394.
-    // The map arm now sits at 98.5 % of its ceiling. Leading hypothesis, NOT
-    // established here: the arms call `HashSet<Par>`, whose `Par::clone` became
-    // `drive_with` at `0eac9c3a`, and a trampoline frame is wider than the
-    // derived clone's contribution at this call site. Whatever the cause, the
-    // margin these ceilings were given is now mostly spent.
+    // `sort_nested_set` and `sort_nested_map` left this tripwire by conversion.
+    // Stage C-2b puts their members on the same PDA worklist and combines
+    // already-scored children without nested sorter calls. They now run through
+    // `converted_traversals_are_depth_independent` over the full 4 → 4,096
+    // ladder, so retaining a slope ceiling here would be a weaker duplicate.
 
     // ── ★ Close the register loop. ──
     // `TRIPWIRE_DEPTH` is what `the_audit_agrees_with_the_gate` publishes; this
@@ -3770,7 +3550,7 @@ fn theta_depth_tripwire() {
     // fails this assertion with:
     //
     //     THE SUBJECT REGISTER IS OUT OF DATE. `theta_depth_tripwire` drove
-    //     [.., "sort_nested_map"] but `TRIPWIRE_DEPTH` lists [.., "eq"].
+    //     [.., "encode"] but `TRIPWIRE_DEPTH` lists [.., "eq"].
     //
     // ⚠ Note the direction, because it is the opposite of the one usually
     // quoted: a name in a CONVERTED list must have NO `assert_slope_below` — one
@@ -3837,109 +3617,10 @@ struct S0Ladder {
 /// replace got there.
 const S0_MIN_GROWTH: usize = 8 * RESOLUTION;
 
-/// The eight subjects of the four-quadrant S0 baseline.
-///
-/// ★ **`hash` and `ord` had never been measured**, and neither had `eq` or
-/// `debug`. None of the four appears in [`CONVERTED_DEPTH`], in
-/// [`TRIPWIRE_DEPTH`], or in any [`assert_slope_below`] call. Their absence from
-/// this file meant UNMEASURED, not FLAT — the two are indistinguishable from
-/// outside, and reading absence as flatness is how a hand-picked driver list came
-/// to miss `Hash` entirely.
-///
-/// ⚠ Two rows carry a FIXED ladder (`hi == hi_max`), and deliberately:
-/// `par_drop@gate` and `prost_ser@gate` re-run the exact ladders
-/// [`theta_depth_tripwire`] already drives those subjects on, so the S0 table can
-/// be reconciled with numbers this gate already publishes. A harness that
-/// disagreed with itself would produce a baseline nobody could check.
-///
-/// ⚠ `prost_de`'s `hi_max` is **32**, and it is not a choice: `prost` caps decode
-/// recursion and `models/tests/par_prost_depth_ceiling.rs` exhibits a depth-34
-/// term that builds, writes, and fails to read. Widening past 33 would measure
-/// the error path.
-/// ⚠★ **`clone` HAS LEFT THIS TABLE, and its own harness said so.**
-///
-/// This table's rows must BIND — [`measure_binding_ladder`] widens the deep end
-/// until the growth clears [`S0_MIN_GROWTH`] and **fails loudly at `hi_max`**
-/// rather than reporting an unbound ladder, with a message whose first branch
-/// reads: *"the traversal is DEPTH-INDEPENDENT — then it belongs in
-/// `converted_traversals_are_depth_independent`, checked by `assert_no_slope`, not
-/// in an S0 slope row"*.
-///
-/// Stage F-4 made `clone` depth-independent, so that is exactly where it went.
-/// Its last measurement as a sloped subject — **16,493 B/level debug, 3,254
-/// release** — is the "before" leg of the conversion's bisection evidence and is
-/// recorded in `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`.
-/// Leaving the row here would have failed this test to make a point that is
-/// already made by `clone` appearing in [`CONVERTED_DEPTH`].
-const S0_LADDERS: &[S0Ladder] = &[
-    S0Ladder {
-        subject: "par_drop",
-        label: "par_drop",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "eq",
-        label: "eq",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "hash",
-        label: "hash",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "ord",
-        label: "ord",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "debug",
-        label: "debug",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    // ★ `prost_ser` IS the `encode` subject. It is not given a second name:
-    // "one name for one traversal" is this file's rule, and the rename note in
-    // [`subject`] records what a second name cost the last time there was one.
-    S0Ladder {
-        subject: "encode",
-        label: "prost_ser",
-        lo: 16,
-        hi: 128,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "prost_de",
-        label: "prost_de",
-        lo: 4,
-        hi: 32,
-        hi_max: 32,
-    },
-    // ── the two cross-checks against ladders this gate already publishes ──
-    S0Ladder {
-        subject: "par_drop",
-        label: "par_drop@gate",
-        lo: 256,
-        hi: 4096,
-        hi_max: 4096,
-    },
-    S0Ladder {
-        subject: "encode",
-        label: "prost_ser@gate",
-        lo: 64,
-        hi: 1024,
-        hi_max: 1024,
-    },
-];
+/// No production traversal remains in the historical sloped baseline. The
+/// before measurements remain in the audit; current implementations are all
+/// exercised by the full depth-independence register above.
+const S0_LADDERS: &[S0Ladder] = &[];
 
 /// Measure `rung`, widening its deep end until the ladder BINDS.
 ///
@@ -4002,8 +3683,7 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
             rung.hi_max,
             per_step_note
         );
-        // Double, but never past the cap — `prost_de`'s cap is a hard property
-        // of `prost`, not a budget.
+        // Double, but never past the declared measurement limit.
         hi = (hi * 2).min(rung.hi_max);
     }
 }
@@ -4016,7 +3696,7 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// workspace has already frozen a deliberately-broken probe form into history
 /// once by committing mid-measurement.
 ///
-/// So the "before" is a **live control**. `models/build/wire_schema.rs` §F retains
+/// So the "before" is a **live control**. `models/codegen/schema_codegen.rs` §F retains
 /// the derive's own body as `term_ops::oracle_clone_par`, and
 /// `models/tests/clone_equivalence_corpus.rs` proves it byte-identical to the
 /// driven form on eight axes over 67 enumerated shapes. Subject and control are in
@@ -4056,7 +3736,7 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// figure is **3,254 B/level**, bisected directly from this subject at HEAD before
 /// the conversion and recorded in
 /// `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md` and in
-/// `models/build/wire_schema.rs`'s disposition table.
+/// `models/codegen/schema_codegen.rs`'s disposition table.
 ///
 /// ★ The divergence is CONSERVATIVE for every leg that uses the oracle: legs 1 and
 /// 3 both want the control to be *expensive*, so an over-costly control makes them
@@ -4120,7 +3800,11 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
     // on the stack that suffices for the DRIVEN clone at depth `HI`, the DERIVED
     // one does not run.
     assert!(
-        !runs_within(subject.hi_stack.bytes_upper_bound("subject"), HI, "clone_oracle"),
+        !runs_within(
+            subject.hi_stack.bytes_upper_bound("subject"),
+            HI,
+            "clone_oracle"
+        ),
         "★ the DERIVED control survived the {} KiB the DRIVEN clone needs at depth {HI}, so the \
          two are not separable on this ladder and the conversion is not visible. Either the \
          ladder is too short (raise HI) or the oracle is no longer the derive.",
@@ -4134,12 +3818,7 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
     // Θ(depth) "iterative" drivers all escaped through the SAME boundary —
     // `Category -> Vec<Elem> -> Elem` — and a single-collection ladder is exactly
     // how that hid. These two nest through different fields.
-    let mut leg4: Vec<(&str, usize, usize)> = vec![("clone_send_chain", LO, HI)];
-    // ★ The two whose ladder is capped by their FIXTURE rather than by their
-    // traversal are asserted HERE, at the depths they can actually be driven to.
-    // See `CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`.
-    leg4.extend_from_slice(CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE);
-    for (name, lo, hi) in leg4 {
+    for (name, lo, hi) in [("clone_send_chain", LO, HI)] {
         let l = measure_ladder(name, lo, hi);
         println!(
             "  {name}: {} KiB @ {lo} -> {} KiB @ {hi} = {} B/level",
@@ -4181,7 +3860,7 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
 /// Clone>::clone` itself is untouched and still in `TRIPWIRE_DEPTH`"*. That was
 /// true when it was written and it is not true now: **stage F-4 converted it**
 /// (`models/build.rs` strips the `Clone` derive from the 55 non-`Copy` `rhoapi`
-/// items; `models/build/wire_schema.rs` generates the impls, `Par`'s over
+/// items; `models/codegen/schema_codegen.rs` generates the impls, `Par`'s over
 /// `drive::drive_with`). `clone` is in [`CONVERTED_DEPTH`], its
 /// [`assert_slope_below`] call is deleted, and its [`S0_LADDERS`] row is gone —
 /// see the note on that constant. The reading the old sentence stood behind,
@@ -4306,7 +3985,8 @@ fn the_deploy_composition_is_bounded_below_by_its_destructor() {
 
     // ── Lower bound: sequential composition cannot cost LESS than either part.
     assert!(
-        compose.hi_stack.bytes_upper_bound("compose") + ZERO_SLOPE_TOLERANCE >= destruct.hi_stack.bytes_upper_bound("destruct"),
+        compose.hi_stack.bytes_upper_bound("compose") + ZERO_SLOPE_TOLERANCE
+            >= destruct.hi_stack.bytes_upper_bound("destruct"),
         "VACUOUS COMPOSITION: `normalize_drop` needed only {} KiB at depth 4,096 while \
          `par_drop` — the destructor it runs — needed {} KiB. A composition cannot cost \
          less than a traversal it performs, so the normalized term is not carrying the \
@@ -4317,7 +3997,10 @@ fn the_deploy_composition_is_bounded_below_by_its_destructor() {
 
     // ── Upper bound: the two traversals must not NEST.
     assert!(
-        compose.hi_stack.bytes_upper_bound("compose") <= destruct.hi_stack.bytes_upper_bound("destruct") + build.hi_stack.bytes_upper_bound("build") + ZERO_SLOPE_TOLERANCE,
+        compose.hi_stack.bytes_upper_bound("compose")
+            <= destruct.hi_stack.bytes_upper_bound("destruct")
+                + build.hi_stack.bytes_upper_bound("build")
+                + ZERO_SLOPE_TOLERANCE,
         "`normalize_drop` needed {} KiB at depth 4,096, more than `par_drop` ({} KiB) plus \
          `normalize` ({} KiB). Those two run one after the other, so the composition should \
          need the MAXIMUM and not the SUM — exceeding the sum means the normalizer is now \
@@ -4361,7 +4044,9 @@ fn the_deploy_composition_is_bounded_below_by_its_destructor() {
         compose.lo_stack,
         compose.hi_stack,
         destruct.hi_stack.bytes_upper_bound("destruct") / 1024,
-        (destruct.hi_stack.bytes_upper_bound("destruct") + build.hi_stack.bytes_upper_bound("build")) / 1024
+        (destruct.hi_stack.bytes_upper_bound("destruct")
+            + build.hi_stack.bytes_upper_bound("build"))
+            / 1024
     );
 }
 
@@ -4420,7 +4105,11 @@ fn theta_width_tripwire() {
         sloped.hi_stack
     );
     assert!(
-        !runs_within(flat.hi_stack.bytes_upper_bound("flat"), 65_536, "synthetic_sloped"),
+        !runs_within(
+            flat.hi_stack.bytes_upper_bound("flat"),
+            65_536,
+            "synthetic_sloped"
+        ),
         "the two synthetic subjects must be separable on the width axis: \
          `synthetic_flat` needs {} KiB at width 65,536 and `synthetic_sloped` survived \
          the same stack",
@@ -4816,12 +4505,11 @@ fn the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort() {
 /// asserts the depths directly, so the claim can be read without reconstructing
 /// a bisection: **288 / 1,152 / 100,000 all survive 2 MiB.**
 ///
-/// ★ The explicit `stack_size` is what makes the number mean anything. This
-/// repository's `.cargo/config.toml` sets `RUST_MIN_STACK = 8388608`, so a test
-/// that merely spawned a thread would be asserting a **4× larger** stack than a
-/// node worker has, and would keep passing long after the property was lost.
-/// `runs_within` → `gate_child` sets it explicitly; that is why a 2 MiB assertion
-/// is meaningful inside a `cargo test` run.
+/// ★ The explicit `stack_size` is what makes the number mean anything. An
+/// ambient `RUST_MIN_STACK` or a future harness-default change must not move the
+/// measurement. The repository intentionally carries no `RUST_MIN_STACK`
+/// override; `runs_within` → `gate_child` still pins the production worker's
+/// 2 MiB stack explicitly so the assertion remains meaningful.
 ///
 /// **Why these three depths.** 288 is the first depth at which the 577-byte
 /// reproducer aborted a release node. 1,152 is 4× that. 100,000 is a 200 kB
@@ -4876,400 +4564,5 @@ fn reported_reproducer_depth_survives_a_default_worker_stack() {
          {} MiB thread — the reported consensus-liveness bug is back or worse.",
         depth,
         DEFAULT_SPAWNED_THREAD_STACK / (1024 * 1024)
-    );
-}
-
-// ---------------------------------------------------------------------------
-// ★★ THE READ CEILING — pinned PER ENVELOPE, and set against the build side
-// ---------------------------------------------------------------------------
-//
-// Every other subject in this file measures how much NATIVE STACK a traversal
-// needs. The three tests below measure something categorically different and
-// they are here because it is the same question asked of the other side of the
-// wire:
-//
-//   > **How deep a term can this node READ?**
-//
-// A traversal that is converted to a heap-bounded form has no stack ceiling at
-// all, and the audit's `encode` row already carries the note "capped by
-// RECURSION_LIMIT on decode". That note is the whole of what follows, made
-// executable: `prost`'s `DecodeContext` enforces `RECURSION_LIMIT = 100`
-// nested-message levels (`prost-0.14.3/src/lib.rs:30` — **private**, and the
-// only knob is the `no-recursion-limit` feature, which REMOVES the limit and is
-// set nowhere), so the read side stops long before any stack does.
-//
-// ⚠ **Nothing here bounds the write side, and nothing here moves a ceiling.**
-// Widening what a node accepts changes the set of byte strings it will take
-// from a peer; that is consensus-visible and belongs to F1r3node's protocol
-// surface. Capping the encoder would be a *new* protocol-level nesting cap,
-// which the audit's §7.3 standing decision forbids. These are `#[test]`s.
-
-/// `prost`'s nested-message recursion budget. Private in the crate, so it is
-/// restated; every use of it below is checked against a measurement, which is
-/// what keeps the restatement from being a transcription.
-const PROST_RECURSION_LIMIT: usize = 100;
-
-/// Nested-message levels one bracket of `[[…]]` costs:
-/// `Par.exprs → Expr.e_list_body → EList.ps` (`RhoTypes.proto` fields 5, 20, 1).
-const LEVELS_PER_BRACKET: usize = 3;
-
-/// The one further level the innermost `Par` spends on the leaf `Expr` holding
-/// the ground value.
-const LEAF_EXPR_LEVELS: usize = 1;
-
-/// ★ **The read ceiling is a TABLE, not a number.**
-///
-/// Each row is `(envelope, W)`, where `W` counts the nested-message levels the
-/// envelope interposes before the outermost `Par` is entered. The ceiling
-/// itself is **derived** by [`read_ceiling`] and then **executed** by
-/// [`the_prost_read_ceiling_is_pinned_per_envelope`] — it is never transcribed
-/// here, so this register cannot drift from the arithmetic, and the arithmetic
-/// cannot drift from `prost`.
-///
-/// The rows below produce **three** distinct ceilings — 33, 32 and 31 — so a
-/// single-number statement of this limit is wrong for at least two real gRPC
-/// endpoints. `models/tests/par_prost_depth_ceiling.rs` carries the same
-/// inventory with the depths written out explicitly, and is the RED fixture for
-/// the bare case; this register is the derived twin, and the two agreeing is a
-/// cross-check rather than a duplicate.
-const READ_CEILING_ENVELOPES: &[(&str, usize)] = &[
-    // ★★ The consensus-class member. `ProduceEventProto.outputValue` is
-    // `repeated bytes` (CasperMessage.proto:393), so the block body carries
-    // these Pars OPAQUELY and the eventual `Par::decode` at `reduce.rs:1065`
-    // is a fresh top-level decode with the full budget.
-    ("Par (bare) — replay decode of ProduceEventProto.outputValue", 0),
-    ("DataAtNameByBlockQuery.par — getDataAtName ingress", 1),
-    ("DataWithBlockInfo.postBlockData[0]", 1),
-    ("RhoDataPayload.par[0]", 1),
-    ("WaitingContinuationInfo.postBlockContinuation", 1),
-    ("RhoDataResponse > Payload > par[0] — getDataAtName egress", 2),
-    ("ContinuationsWithBlockInfo > WCI > postBlockContinuation", 2),
-    ("ContinuationAtNamePayload > CWBI > WCI > postBlockContinuation", 3),
-    // ★ The LOWEST ceiling in the inventory, and the reason this is a table.
-    (
-        "ContinuationAtNameResponse > .. > postBlockContinuation — listenForContinuationAtName egress",
-        4,
-    ),
-];
-
-/// $`D_{\max}(W) = \lfloor (L - 1 - W)/3 \rfloor`$ with $`L = 100`$.
-fn read_ceiling(w: usize) -> usize {
-    (PROST_RECURSION_LIMIT - LEAF_EXPR_LEVELS - w) / LEVELS_PER_BRACKET
-}
-
-/// Wrap `term` in envelope row `index` and report whether the envelope decodes.
-/// `Err(true)` means it refused on the recursion limit specifically; the KIND
-/// matters, because a bare `is_err()` also fires on a truncated buffer.
-fn envelope_decodes(index: usize, term: Par) -> Result<(), bool> {
-    use models::casper::v1::{
-        continuation_at_name_response, rho_data_response, ContinuationAtNamePayload,
-        ContinuationAtNameResponse, RhoDataPayload, RhoDataResponse,
-    };
-    use models::casper::{
-        ContinuationsWithBlockInfo, DataAtNameByBlockQuery, DataWithBlockInfo,
-        WaitingContinuationInfo,
-    };
-    use prost::Message;
-
-    fn wci(t: Par) -> WaitingContinuationInfo {
-        WaitingContinuationInfo {
-            post_block_patterns: vec![],
-            post_block_continuation: Some(t),
-        }
-    }
-    fn cwbi(t: Par) -> ContinuationsWithBlockInfo {
-        ContinuationsWithBlockInfo {
-            post_block_continuations: vec![wci(t)],
-            block: None,
-        }
-    }
-    fn canp(t: Par) -> ContinuationAtNamePayload {
-        ContinuationAtNamePayload {
-            block_results: vec![cwbi(t)],
-            length: 0,
-        }
-    }
-    fn verdict<M: Message + Default>(bytes: Vec<u8>) -> Result<(), bool> {
-        match M::decode(&bytes[..]) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("{e:?}").contains("description: RecursionLimitReached")),
-        }
-    }
-
-    match index {
-        0 => verdict::<Par>(term.encode_to_vec()),
-        1 => verdict::<DataAtNameByBlockQuery>(
-            DataAtNameByBlockQuery {
-                par: Some(term),
-                block_hash: String::new(),
-                use_pre_state_hash: false,
-            }
-            .encode_to_vec(),
-        ),
-        2 => verdict::<DataWithBlockInfo>(
-            DataWithBlockInfo {
-                post_block_data: vec![term],
-                block: None,
-            }
-            .encode_to_vec(),
-        ),
-        3 => verdict::<RhoDataPayload>(
-            RhoDataPayload {
-                par: vec![term],
-                block: None,
-            }
-            .encode_to_vec(),
-        ),
-        4 => verdict::<WaitingContinuationInfo>(wci(term).encode_to_vec()),
-        5 => verdict::<RhoDataResponse>(
-            RhoDataResponse {
-                message: Some(rho_data_response::Message::Payload(RhoDataPayload {
-                    par: vec![term],
-                    block: None,
-                })),
-            }
-            .encode_to_vec(),
-        ),
-        6 => verdict::<ContinuationsWithBlockInfo>(cwbi(term).encode_to_vec()),
-        7 => verdict::<ContinuationAtNamePayload>(canp(term).encode_to_vec()),
-        8 => verdict::<ContinuationAtNameResponse>(
-            ContinuationAtNameResponse {
-                message: Some(continuation_at_name_response::Message::Payload(canp(term))),
-            }
-            .encode_to_vec(),
-        ),
-        other => panic!(
-            "stack_depth_gate: envelope row {other} has no driver — every row of \
-             READ_CEILING_ENVELOPES must be executable, or the register is prose"
-        ),
-    }
-}
-
-/// ★★ **The boundary, per envelope, adjacent, executed.**
-///
-/// For every row the derived ceiling decodes and one deeper does not, failing
-/// on the recursion limit specifically. Both directions are named in the
-/// failure text because they are different events with different owners: a
-/// ceiling that moved **up** widens the set of byte strings this node accepts
-/// (a consensus-visible change needing a coordinated version bump); one that
-/// moved **down** narrows it.
-#[test]
-fn the_prost_read_ceiling_is_pinned_per_envelope() {
-    assert!(
-        !READ_CEILING_ENVELOPES.is_empty(),
-        "the envelope register is empty; this test would be vacuously green"
-    );
-
-    let mut ceilings = std::collections::BTreeSet::new();
-    for (index, (name, w)) in READ_CEILING_ENVELOPES.iter().enumerate() {
-        let d_max = read_ceiling(*w);
-        ceilings.insert(d_max);
-
-        let ok = nested_list(d_max);
-        assert_carries(&format!("`{name}` at its ceiling"), par_depth(&ok), d_max);
-        envelope_decodes(index, ok).unwrap_or_else(|kind| {
-            panic!(
-                "`{name}` (W={w}) no longer decodes at depth {d_max} \
-                 (recursion-limit kind: {kind}). The read ceiling moved DOWN — this \
-                 node now rejects byte strings it used to accept."
-            )
-        });
-
-        let over = nested_list(d_max + 1);
-        assert_carries(
-            &format!("`{name}` one past its ceiling"),
-            par_depth(&over),
-            d_max + 1,
-        );
-        match envelope_decodes(index, over) {
-            Ok(()) => panic!(
-                "`{name}` (W={w}) DECODED at depth {}, one past the derived ceiling \
-                 of {d_max}. The read ceiling moved UP: this node now accepts byte \
-                 strings it used to reject. That widens the accepted set and needs a \
-                 coordinated version bump — see the audit, §7.3.",
-                d_max + 1
-            ),
-            Err(true) => {}
-            Err(false) => panic!(
-                "`{name}` (W={w}) rejected depth {}, but NOT on the recursion limit. \
-                 The fixture is emitting malformed bytes for this envelope and is \
-                 measuring nothing.",
-                d_max + 1
-            ),
-        }
-    }
-
-    assert!(
-        ceilings.len() >= 3,
-        "the register yields only {} distinct ceiling(s) ({ceilings:?}). This test \
-         exists to refute 'the read ceiling is one number'; below three distinct \
-         values over the enumerated envelopes, it no longer does.",
-        ceilings.len()
-    );
-
-    // The bare row must exhaust the budget exactly — that is what fixes the
-    // per-bracket cost at three levels plus one for the leaf.
-    let bare = read_ceiling(0);
-    assert_eq!(
-        LEVELS_PER_BRACKET * bare + LEAF_EXPR_LEVELS,
-        PROST_RECURSION_LIMIT,
-        "the bare ceiling of {bare} does not exhaust the {PROST_RECURSION_LIMIT}-level \
-         budget exactly, so {LEVELS_PER_BRACKET} levels per bracket no longer \
-         describes `Par → Expr → EList → Par`"
-    );
-
-    println!(
-        "  read ceiling: {} envelopes, {} distinct ceilings {:?} (bare {})",
-        READ_CEILING_ENVELOPES.len(),
-        ceilings.len(),
-        ceilings,
-        bare
-    );
-}
-
-// ---------------------------------------------------------------------------
-// ★ THE INVENTORY — acknowledged, not a threshold
-// ---------------------------------------------------------------------------
-
-// ★★ The build-side bounds moved to `build_depth_bounds.rs` so that ONE definition is
-// shared with `deploy_depth_ceiling.rs`, which MEASURES these ceilings and can therefore
-// check each measurement against its bound at the point of measurement. See that module's
-// header for why a file channel was rejected: its failure mode when the file is absent is a
-// SILENT SKIP, and a gate that goes green having checked nothing is the defect this campaign
-// exists to close.
-#[path = "build_depth_bounds.rs"]
-mod build_depth_bounds;
-use build_depth_bounds::{BuildCeiling, ACKNOWLEDGED_HEADROOM, BUILD_DEPTH_INVENTORY};
-
-/// ★★ **The wire binds; the build side clears it — and by how much is pinned.**
-#[test]
-fn the_read_ceiling_binds_and_the_build_side_clears_it() {
-    assert!(
-        !BUILD_DEPTH_INVENTORY.is_empty(),
-        "the build-side inventory is empty; this test would be vacuously green"
-    );
-
-    let widest_read = READ_CEILING_ENVELOPES
-        .iter()
-        .map(|(_, w)| read_ceiling(*w))
-        .max()
-        .expect("the envelope register is non-empty");
-
-    let mut tightest = usize::MAX;
-    let mut tightest_name = "";
-    for (path, ceiling, provenance) in BUILD_DEPTH_INVENTORY {
-        let d = ceiling.depth();
-        assert!(
-            d > widest_read,
-            "`{path}` carries only depth {d} ({ceiling:?}, measured in \
-             {provenance}), which does NOT clear the widest read ceiling of \
-             {widest_read}. The wire has stopped being the binding constraint for \
-             this path: terms it can build are terms no reader will take, and the \
-             audit's §7.3 analysis rests on the opposite."
-        );
-        if d < tightest {
-            tightest = d;
-            tightest_name = path;
-        }
-    }
-
-    let headroom = tightest / widest_read;
-    assert!(
-        headroom >= ACKNOWLEDGED_HEADROOM,
-        "the tightest build-side ceiling is `{tightest_name}` at depth {tightest}, \
-         giving {headroom}× headroom over the widest read ceiling of {widest_read} \
-         — below the acknowledged floor of {ACKNOWLEDGED_HEADROOM}×. Either a build \
-         path regressed or a read ceiling rose. This is a tripwire: it says the \
-         relationship got worse, not that {ACKNOWLEDGED_HEADROOM}× is enough."
-    );
-
-    println!(
-        "  build side clears the wire: tightest `{tightest_name}` at {tightest} vs \
-         widest read ceiling {widest_read} — {headroom}× (floor {ACKNOWLEDGED_HEADROOM}×)"
-    );
-}
-
-/// Path of the end-to-end deploy-ceiling probe, relative to this crate's
-/// manifest directory. It is the file that ENUMERATES build-side deploy paths,
-/// so it is the file this gate's inventory must stay complete against.
-const DEPLOY_CEILING_PATH: &str = "tests/deploy_depth_ceiling.rs";
-
-/// Every `DEPLOY_SUBJECT` name `deploy_depth_ceiling.rs` knows how to drive,
-/// read from its `subject_source` dispatch.
-///
-/// ⚠ A parse that silently returns nothing would make the completeness check
-/// vacuous — the failure mode this campaign hit eight times. The caller
-/// therefore asserts the result is non-empty before using it.
-fn deploy_subjects_declared() -> Vec<String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEPLOY_CEILING_PATH);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read the deploy-ceiling probe at {}: {e}. It is the enumerating \
-             source for the build-side inventory, so the check cannot be skipped \
-             when the file moves — update DEPLOY_CEILING_PATH.",
-            path.display()
-        )
-    });
-    let start = text.find("fn subject_source(").unwrap_or_else(|| {
-        panic!(
-            "{} no longer defines `subject_source`, which is where it enumerates the \
-             build-side deploy paths this gate's inventory is checked against",
-            path.display()
-        )
-    });
-    let body = &text[start..];
-    let end = body
-        .find("\n}\n")
-        .unwrap_or_else(|| panic!("`subject_source` in {} is unterminated", path.display()));
-    body[..end]
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.strip_prefix('"')
-                .and_then(|rest| rest.split_once("\" =>"))
-                .map(|(name, _)| name.to_string())
-        })
-        .collect()
-}
-
-/// ★★ **It fails when a NEW build path joins.**
-///
-/// `deploy_depth_ceiling.rs` enumerates the end-to-end build paths it can
-/// drive. Adding one there without classifying it here leaves an unclassified
-/// path whose relationship to the read ceiling nobody has stated — which is
-/// exactly how an inventory becomes prose. This test makes that commit fail
-/// rather than the next inspection.
-#[test]
-fn the_build_side_inventory_is_complete() {
-    let declared = deploy_subjects_declared();
-    assert!(
-        !declared.is_empty(),
-        "parsed ZERO subjects out of {DEPLOY_CEILING_PATH}'s `subject_source`. That \
-         is a parse failure, not an empty enumeration — the file is known to \
-         declare at least `plain_deploy` and `env_get_deploy` — and it would make \
-         this whole test vacuous."
-    );
-
-    let inventoried: std::collections::BTreeSet<&str> = BUILD_DEPTH_INVENTORY
-        .iter()
-        .map(|(name, _, _)| *name)
-        .collect();
-    let missing: Vec<&String> = declared
-        .iter()
-        .filter(|name| !inventoried.contains(name.as_str()))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "{DEPLOY_CEILING_PATH} drives build path(s) {missing:?} that BUILD_DEPTH_INVENTORY \
-         does not classify. Measure the new path's ceiling there, then add a row \
-         here with its provenance, so the claim 'the wire is the binding \
-         constraint' keeps covering every path instead of quietly covering fewer."
-    );
-
-    println!(
-        "  build-side inventory: {} rows cover all {} enumerated deploy subject(s) {:?}",
-        BUILD_DEPTH_INVENTORY.len(),
-        declared.len(),
-        declared
     );
 }

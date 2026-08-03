@@ -2,7 +2,7 @@
 //!
 //! The write-side twin of [`crate::rust::rholang::bincode_decoder`]. Same
 //! trampolining discipline, same generated table
-//! ([`crate::rust::rholang::wire_schema`]), opposite direction — and one
+//! ([`crate::rust::rholang::bincode_schema_tables`]), opposite direction — and one
 //! structural asymmetry, spelled out in §2.
 //!
 //! ---
@@ -91,7 +91,7 @@
 //! ## 4. ⚠ `EPathMap` — the one program the descriptor cannot express
 //!
 //! `EPathMap` is `extern_path`'d, so the descriptor-driven generator emits no
-//! program for it and [`crate::rust::rholang::wire::EPATHMAP_PROGRAM`] is
+//! program for it and [`crate::rust::rholang::bincode_schema::EPATHMAP_PROGRAM`] is
 //! hand-written. Its `ps` is the canonical projection of the map's entry trie
 //! (`EPathMap::ps()`), memoized on the value, which is the same choice its
 //! `Serialize` impl makes.
@@ -120,8 +120,8 @@ use std::collections::btree_map;
 
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
-use crate::rust::rholang::wire::{
-    pathmap_ps, put_bytes, put_u64, Descent, PathmapPs, WireNode, WireSeq, NO_RESUME,
+use crate::rust::rholang::bincode_schema::{
+    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
 };
 
 // ===========================================================================
@@ -129,12 +129,12 @@ use crate::rust::rholang::wire::{
 // ===========================================================================
 //
 // ⚠ There is none here. Every layout primitive lives in
-// [`crate::rust::rholang::wire`] (§A2) and is called from the GENERATED
-// `wire_emit` bodies, so bincode's layout is written in exactly one place and
+// [`crate::rust::rholang::bincode_schema`] (§A2) and is called from the GENERATED
+// `bincode_emit` bodies, so bincode's layout is written in exactly one place and
 // the emission of a node's bounded fields is monomorphic — which is what makes
 // it competitive with serde's derive. This module owns the TRAMPOLINE: the op
 // stack, the counted repeat, the suspension discipline, the map iterator and
-// the `EPathMap` interception. See `wire.rs` §A2 for the profile that forced
+// the `EPathMap` interception. See `bincode_schema.rs` §A2 for the profile that forced
 // the split.
 
 // ===========================================================================
@@ -149,12 +149,15 @@ use crate::rust::rholang::wire::{
 #[derive(Clone, Copy)]
 enum Op<'a> {
     /// Emit fields `[field..]` of `node`.
-    Node { node: &'a dyn WireNode, field: u16 },
+    Node {
+        node: &'a dyn BincodeNode,
+        field: u16,
+    },
     /// Emit elements `[index..]` of `seq`. The count was written when the
     /// field was opened, and `len` is carried so the driver never makes a
     /// virtual call to re-ask — those calls were ~8.6% of the first profile.
     Seq {
-        seq: &'a dyn WireSeq,
+        seq: &'a dyn BincodeSeq,
         /// ⚠ `u32`, not `usize`, so `Op` stays four words. A sequence with more
         /// than 4,294,967,295 elements cannot exist in memory (each `Par` is
         /// far more than one byte), and [`Machine::open_seq`] refuses one
@@ -176,7 +179,7 @@ enum Op<'a> {
     // /// too big to live in a four-word `Op`, so it lives in the machine and the op is a
     // /// bare tag. That is what lets an `EPathMap` be emitted **without materialising its
     // /// entries** — `to_next_get_val` hands back `&'trie Par`, a borrow that outlives the
-    // /// call, so no `Vec<Par>` has to exist for `&dyn WireNode` to point into.
+    // /// call, so no `Vec<Par>` has to exist for `&dyn BincodeNode` to point into.
     // EntryPaths,
     //
     // WHY IT IS PARKED. It works and is byte-identical to the entry walk it replaced
@@ -234,7 +237,7 @@ const MAX_POOLED_OPS: usize = 4096;
 // findable.
 crate::pooled_stack! {
     // The pooled op-stack **allocation** for the bincode encoder.
-    // 
+    //
     // ★ This is the last per-encode allocation. The output buffer is already reused;
     // without this, every `hash_produce` would still pay one `Vec::with_capacity(64)`
     // malloc/free pair — small, but per produce, and "zero allocation in the steady state"
@@ -260,9 +263,7 @@ impl<'a> Drop for Machine<'a> {
     /// This used to also drain the parked-vector arena on a panic unwinding out
     /// of the loop. There is no arena any more, so teardown is one `mem::take`
     /// and touches no term structure — there is no deep `Par` here to dismantle.
-    fn drop(&mut self) {
-        give_ops(std::mem::take(&mut self.ops));
-    }
+    fn drop(&mut self) { give_ops(std::mem::take(&mut self.ops)); }
 }
 
 impl<'a> Machine<'a> {
@@ -309,7 +310,7 @@ impl<'a> Machine<'a> {
                             });
                         }
                         self.ops.push(Op::Node {
-                            node: seq.wire_get(index as usize),
+                            node: seq.bincode_get(index as usize),
                             field: 0,
                         });
                     }
@@ -335,52 +336,54 @@ impl<'a> Machine<'a> {
                             self.map_iters.pop();
                         }
                     }
-                }
-                // Parked with `Op::EntryPaths` — see the note at its definition.
-                //
-                // Op::EntryPaths => {
-                //     use pathmap::zipper::ZipperReadOnlyIteration;
-                //     let next = self
-                //         .entry_zippers
-                //         .last_mut()
-                //         .expect("bincode_encoder: EntryPaths with no live zipper")
-                //         .to_next_get_val();
-                //     match next {
-                //         Some(par) => {
-                //             self.ops.push(Op::EntryPaths);
-                //             self.ops.push(Op::Node {
-                //                 node: par,
-                //                 field: 0,
-                //             });
-                //         }
-                //         None => {
-                //             self.entry_zippers.pop();
-                //         }
-                //     }
-                // }
+                } // Parked with `Op::EntryPaths` — see the note at its definition.
+                  //
+                  // Op::EntryPaths => {
+                  //     use pathmap::zipper::ZipperReadOnlyIteration;
+                  //     let next = self
+                  //         .entry_zippers
+                  //         .last_mut()
+                  //         .expect("bincode_encoder: EntryPaths with no live zipper")
+                  //         .to_next_get_val();
+                  //     match next {
+                  //         Some(par) => {
+                  //             self.ops.push(Op::EntryPaths);
+                  //             self.ops.push(Op::Node {
+                  //                 node: par,
+                  //                 field: 0,
+                  //             });
+                  //         }
+                  //         None => {
+                  //             self.entry_zippers.pop();
+                  //         }
+                  //     }
+                  // }
             }
         }
     }
 
     /// Emit fields `[field..]` of `node`, suspending at the first descent.
     ///
-    /// ★ ONE virtual call — `wire_emit` — however many bounded fields it runs
+    /// ★ ONE virtual call — `bincode_emit` — however many bounded fields it runs
     /// through. The first design asked the node for each field in turn and cost
-    /// 21 indirect calls per `Par`; see `wire.rs` §A2.
+    /// 21 indirect calls per `Par`; see `bincode_schema.rs` §A2.
     #[inline]
-    fn run_node(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, field: usize) {
+    fn run_node(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, field: usize) {
         // ⚠ `EPathMap` cannot be entered at field 0: its `ps` may have to be
         // CONSTRUCTED in canonical order (§4), which no borrow-returning
         // emission can serve. Intercept, park, and rejoin at field 1.
         if field == 0 {
-            if let Some(map) = node.wire_as_pathmap() {
+            if let Some(map) = node.bincode_as_pathmap() {
                 self.open_pathmap(out, node, map);
                 return;
             }
         }
-        match node.wire_emit(field, out) {
+        match node.bincode_emit(field, out) {
             Descent::Done => {}
-            Descent::Node { resume, node: child } => {
+            Descent::Node {
+                resume,
+                node: child,
+            } => {
                 self.suspend(node, resume);
                 self.ops.push(Op::Node {
                     node: child,
@@ -405,7 +408,7 @@ impl<'a> Machine<'a> {
     /// is one compare against a constant, perfectly predicted, and it refuses
     /// rather than silently truncating a cursor.
     #[inline]
-    fn open_seq(&mut self, seq: &'a dyn WireSeq, len: usize) {
+    fn open_seq(&mut self, seq: &'a dyn BincodeSeq, len: usize) {
         assert!(
             len <= u32::MAX as usize,
             "bincode_encoder: a sequence of {len} elements exceeds the u32 cursor. The count \
@@ -423,7 +426,7 @@ impl<'a> Machine<'a> {
     ///
     /// ★ A pure comparison against [`NO_RESUME`] — no virtual call. The
     /// generator knows each program's length, so "is this the last field?" is
-    /// answered at build time. Asking the node instead (`wire_program().len()`)
+    /// answered at build time. Asking the node instead (`bincode_program().len()`)
     /// cost one indirect call per DESCENT, which is what a deep term is made
     /// of: it was the whole of the residual 2.75% regression.
     ///
@@ -431,7 +434,7 @@ impl<'a> Machine<'a> {
     /// in `Op::Seq` (the last element of a sequence) it halves the per-level op
     /// cost of the deep-nesting shape, 4.000 → 2.000 entries.
     #[inline(always)]
-    fn suspend(&mut self, node: &'a dyn WireNode, resume: u16) {
+    fn suspend(&mut self, node: &'a dyn BincodeNode, resume: u16) {
         if resume != NO_RESUME {
             self.ops.push(Op::Node {
                 node,
@@ -447,8 +450,8 @@ impl<'a> Machine<'a> {
     /// walker, because `EPathMap`'s entries are reached through `pathmap_ps`
     /// (two accessors, two memos) rather than a plain field read, and emitting
     /// the wrong one changes the event-hash preimage silently.
-    /// `WireNode::wire_emit` refuses fields 0 and 1 for exactly that reason.
-    fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, map: &'a EPathMap) {
+    /// `BincodeNode::bincode_emit` refuses fields 0 and 1 for exactly that reason.
+    fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn BincodeNode, map: &'a EPathMap) {
         // ★★ THIS SEAM IS TRIE-NATIVE — FORM ②.
         //
         // The mandate is that a pathmap serializes as its own byte array on every
@@ -470,16 +473,9 @@ impl<'a> Machine<'a> {
         // `Op::EntryPaths` — and would stop `U(m)` from appearing contiguously.
         // Split, the encoder emits one borrowed memo plus the projection it was
         // already emitting, and the space gate stays at zero.
-        let PathmapPs::Stored {
-            path_stream,
-            entries,
-        } = pathmap_ps(map);
-        put_bytes(out, path_stream);
-        put_u64(out, entries.len() as u64);
-        self.suspend(node, 2);
-        if !entries.is_empty() {
-            self.open_seq(entries, entries.len());
-        }
+        let PathmapSnapshot::Stored { trie_snapshot } = pathmap_snapshot(map);
+        put_bytes(out, trie_snapshot);
+        self.suspend(node, 1);
     }
 }
 
@@ -508,7 +504,7 @@ const SHRINK_THRESHOLD: usize = 1 << 20; // 1 MiB
 ///
 /// The lowest-level entry point: it is what composes, and it is what an
 /// intern-aware splicing emitter needs.
-pub fn encode_into<T: WireNode>(value: &T, out: &mut Vec<u8>) {
+pub fn encode_into<T: BincodeNode>(value: &T, out: &mut Vec<u8>) {
     let mut m = Machine::new();
     m.ops.push(Op::Node {
         node: value,
@@ -526,9 +522,7 @@ pub fn encode_into<T: WireNode>(value: &T, out: &mut Vec<u8>) {
 /// Byte-identical to `bincode::serialize(value).expect(..)`, in one traversal.
 /// Prefer [`with_encoded`] on a hot path: this one hands out ownership and so
 /// cannot reuse the thread-local buffer.
-pub fn encode<T: WireNode>(value: &T) -> Vec<u8> {
-    with_encoded(value, <[u8]>::to_vec)
-}
+pub fn encode<T: BincodeNode>(value: &T) -> Vec<u8> { with_encoded(value, <[u8]>::to_vec) }
 
 /// Encode `value` into the **reused thread-local buffer** and hand the bytes
 /// to `f`.
@@ -537,9 +531,7 @@ pub fn encode<T: WireNode>(value: &T) -> Vec<u8> {
 /// dropped, so after the first calls on a thread it has converged to the
 /// high-water mark and an encode allocates nothing.
 pub fn with_encoded<T, R>(value: &T, f: impl FnOnce(&[u8]) -> R) -> R
-where
-    T: WireNode,
-{
+where T: BincodeNode {
     OUT.with(|cell| {
         // ⚠ Re-entrancy: `f` may itself encode. A borrow conflict would panic,
         // so fall back to a private buffer rather than assume `f` is a leaf.
@@ -605,7 +597,7 @@ cold_store_encode!(Par, BindPattern, ListParWithRandom, TaggedContinuation);
 ///
 /// The measurement runs the production loop with `TRACK = true`, so it cannot
 /// drift into describing a different machine.
-pub fn op_stack_high_water<T: WireNode>(value: &T) -> usize {
+pub fn op_stack_high_water<T: BincodeNode>(value: &T) -> usize {
     let mut out = Vec::with_capacity(OUT_CAPACITY);
     let mut m = Machine::new();
     m.ops.push(Op::Node {
@@ -617,9 +609,7 @@ pub fn op_stack_high_water<T: WireNode>(value: &T) -> usize {
 }
 
 /// `size_of::<Op>()`, exposed so the space gate can pin it.
-pub const fn op_size() -> usize {
-    std::mem::size_of::<Op<'static>>()
-}
+pub const fn op_size() -> usize { std::mem::size_of::<Op<'static>>() }
 
 /// The ADDRESS of `node`'s program, as an opaque integer.
 ///
@@ -628,8 +618,6 @@ pub const fn op_size() -> usize {
 /// merged by the linker, and `EPATHMAP_PROGRAM` is byte-for-byte
 /// `ELIST_PROGRAM`. A downcast built on address identity therefore
 /// reinterprets an `EList` as an `EPathMap` — which is exactly the `SIGSEGV`
-/// that produced [`WireNode::wire_as_pathmap`]. The gate keeps that fact
+/// that produced [`BincodeNode::bincode_as_pathmap`]. The gate keeps that fact
 /// executable so the "optimization" cannot be reintroduced.
-pub fn program_address(node: &dyn WireNode) -> usize {
-    node.wire_program().as_ptr() as usize
-}
+pub fn program_address(node: &dyn BincodeNode) -> usize { node.bincode_program().as_ptr() as usize }

@@ -43,8 +43,10 @@ use super::sort_combine::{
     empty_par, expr_child_pars, sort_unforgeable, ParParts,
 };
 use crate::rhoapi::{
-    Bundle, Connective, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
+    Bundle, Connective, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
+use crate::rust::canonical_path::decode_trie_path;
+use crate::rust::epathmap_trie_codec::EPathMapMode;
 
 // ===========================================================================
 // the recursive traversal — the ORACLE
@@ -174,6 +176,46 @@ pub fn sort_connective_recursive(c: &Connective) -> ScoredTerm<Connective> {
 }
 
 pub fn sort_expr_recursive(e: &Expr) -> ScoredTerm<Expr> {
+    fn sort_pathmap_children(pathmap: &EPathMap) -> Vec<ScoredTerm<Par>> {
+        let mut scored = Vec::with_capacity(match pathmap.mode() {
+            EPathMapMode::Map => pathmap.len() * 2,
+            EPathMapMode::Empty | EPathMapMode::Set => pathmap.len(),
+        });
+        match pathmap.mode() {
+            EPathMapMode::Empty => {}
+            EPathMapMode::Set => pathmap
+                .entry_trie()
+                .for_each_raw_set_entry(|key| {
+                    let key = decode_trie_path(key)
+                        .expect("set-mode EPathMap keys are canonical Par paths");
+                    scored.push(sort_par_recursive(&key));
+                })
+                .expect("set-mode dispatch checked before traversal"),
+            EPathMapMode::Map => pathmap
+                .entry_trie()
+                .for_each_raw_map_entry(|key, value| {
+                    let key = decode_trie_path(key)
+                        .expect("map-mode EPathMap keys are canonical Par paths");
+                    scored.push(sort_par_recursive(&key));
+                    scored.push(sort_par_recursive(value));
+                })
+                .expect("map-mode dispatch checked before traversal"),
+        }
+        scored
+    }
+
+    if let Some(instance) = e.expr_instance.as_ref() {
+        match instance {
+            crate::rhoapi::expr::ExprInstance::EPathmapBody(pathmap) => {
+                return combine_expr(e, sort_pathmap_children(pathmap));
+            }
+            crate::rhoapi::expr::ExprInstance::EZipperBody(zipper) => {
+                let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+                return combine_expr(e, sort_pathmap_children(pathmap));
+            }
+            _ => {}
+        }
+    }
     let mut kids: Vec<&Par> = Vec::new();
     expr_child_pars(e, &mut kids);
     let scored = kids.into_iter().map(sort_par_recursive).collect();
@@ -194,6 +236,10 @@ mod differential_sorter {
     //! obligation, and it is asserted on the encoded bytes (what `sig.rs`
     //! signs) rather than on a structural `==`.
 
+    use std::collections::BTreeMap;
+
+    use prost::Message;
+
     use super::*;
     use crate::rhoapi::connective::ConnectiveInstance;
     use crate::rhoapi::expr::ExprInstance;
@@ -208,11 +254,9 @@ mod differential_sorter {
     use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
     use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
     use crate::rust::rholang::sorter::sortable::Sortable;
-    use prost::Message;
-    use std::collections::BTreeMap;
 
     fn gint(v: i64) -> Par {
-        Par {
+        par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GInt(v)),
             }],
@@ -221,7 +265,7 @@ mod differential_sorter {
     }
 
     fn gstring(v: &str) -> Par {
-        Par {
+        par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GString(v.to_string())),
             }],
@@ -230,7 +274,7 @@ mod differential_sorter {
     }
 
     fn expr_par(ei: ExprInstance) -> Par {
-        Par {
+        par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ei),
             }],
@@ -241,16 +285,10 @@ mod differential_sorter {
     /// ⚠ Three children with pairwise distinct scores, in an order the sorter
     /// will have to change. A `Combine` that pops in the wrong order produces
     /// the same multiset and would be invisible on fewer.
-    fn three() -> Vec<Par> {
-        vec![gint(9), gstring("m"), gint(3)]
-    }
+    fn three() -> Vec<Par> { vec![gint(9), gstring("m"), gint(3)] }
 
-    fn a() -> Option<Par> {
-        Some(gint(1))
-    }
-    fn b() -> Option<Par> {
-        Some(gint(2))
-    }
+    fn a() -> Option<Par> { Some(gint(1)) }
+    fn b() -> Option<Par> { Some(gint(2)) }
 
     fn expr_instances() -> Vec<ExprInstance> {
         vec![
@@ -531,6 +569,35 @@ mod differential_sorter {
         p
     }
 
+    fn nested_set(depth: usize) -> Par {
+        let mut p = gint(0);
+        for _ in 0..depth {
+            p = expr_par(ExprInstance::ESetBody(ESet {
+                ps: vec![p],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            }));
+        }
+        p
+    }
+
+    fn nested_map(depth: usize) -> Par {
+        let mut p = gint(0);
+        for _ in 0..depth {
+            p = expr_par(ExprInstance::EMapBody(EMap {
+                kvs: vec![KeyValuePair {
+                    key: Some(p),
+                    value: Some(gint(1)),
+                }],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            }));
+        }
+        p
+    }
+
     fn par_corpus() -> Vec<Par> {
         let mut out: Vec<Par> = Vec::new();
         out.push(Par::default());
@@ -542,26 +609,26 @@ mod differential_sorter {
             out.push(expr_par(ei));
         }
         for ci in connective_instances() {
-            out.push(Par {
+            out.push(par_from_default! {
                 connectives: vec![Connective {
                     connective_instance: Some(ci),
                 }],
                 ..Default::default()
             });
         }
-        out.push(Par {
+        out.push(par_from_default! {
             exprs: vec![Expr {
                 expr_instance: None,
             }],
             ..Default::default()
         });
-        out.push(Par {
+        out.push(par_from_default! {
             connectives: vec![Connective {
                 connective_instance: None,
             }],
             ..Default::default()
         });
-        out.push(Par {
+        out.push(par_from_default! {
             unforgeables: vec![GUnforgeable { unf_instance: None }],
             ..Default::default()
         });
@@ -571,20 +638,22 @@ mod differential_sorter {
         let wrapped: Vec<Par> = out
             .iter()
             .take(12)
-            .map(|p| Par {
-                sends: vec![Send {
-                    chan: Some(p.clone()),
-                    data: vec![p.clone(), gint(3)],
-                    persistent: false,
-                    locally_free: vec![],
-                    connective_used: false,
-                }],
-                bundles: vec![Bundle {
-                    body: Some(p.clone()),
-                    write_flag: true,
-                    read_flag: false,
-                }],
-                ..Default::default()
+            .map(|p| {
+                par_from_default! {
+                    sends: vec![Send {
+                        chan: Some(p.clone()),
+                        data: vec![p.clone(), gint(3)],
+                        persistent: false,
+                        locally_free: vec![],
+                        connective_used: false,
+                    }],
+                    bundles: vec![Bundle {
+                        body: Some(p.clone()),
+                        write_flag: true,
+                        read_flag: false,
+                    }],
+                    ..Default::default()
+                }
             })
             .collect();
         out.extend(wrapped);
@@ -808,5 +877,22 @@ mod differential_sorter {
         // the irreducible member), so the terms are dismantled iteratively.
         crate::rust::rholang::par_children::dismantle(sorted.term);
         crate::rust::rholang::par_children::dismantle(deep);
+    }
+
+    #[test]
+    fn nested_set_and_map_sorting_are_stack_safe_on_a_256_kib_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                for deep in [nested_set(4_096), nested_map(4_096)] {
+                    let sorted = ParSortMatcher::sort_match(&deep);
+                    assert_eq!(sorted.term.exprs.len(), 1);
+                    crate::rust::rholang::par_children::dismantle(sorted.term);
+                    crate::rust::rholang::par_children::dismantle(deep);
+                }
+            })
+            .expect("spawn the small-stack collection-sort probe")
+            .join()
+            .expect("collection sorting must not overflow the 256 KiB stack");
     }
 }

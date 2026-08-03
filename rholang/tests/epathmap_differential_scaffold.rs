@@ -70,7 +70,7 @@ enum QueryRunMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ChannelObservation {
     channel: String,
-    /// PROST bytes of each datum Par (the value-domain observable).
+    /// PROTOBUF bytes of each datum Par (the value-domain observable).
     par_bytes: Vec<Vec<u8>>,
     /// The datum's `random_state` (deterministic under the fixed rand).
     random_state: Vec<Vec<u8>>,
@@ -140,9 +140,7 @@ async fn observe(
         use rholang::rust::interpreter::fused_pathmap_chain::fusion_test_support;
         struct ToggleGuard;
         impl Drop for ToggleGuard {
-            fn drop(&mut self) {
-                fusion_test_support::set_force_disabled(false);
-            }
+            fn drop(&mut self) { fusion_test_support::set_force_disabled(false); }
         }
         fusion_test_support::set_force_disabled(matches!(mode, QueryRunMode::FusedDisabled));
         ToggleGuard
@@ -186,7 +184,10 @@ async fn observe(
                             .collect()
                     })
                     .collect(),
-                random_state: data.iter().map(|datum| datum.a.random_state.clone()).collect(),
+                random_state: data
+                    .iter()
+                    .map(|datum| datum.a.random_state.clone())
+                    .collect(),
                 persist: data.iter().map(|datum| datum.persist).collect(),
                 produce_hash: data
                     .iter()
@@ -196,7 +197,11 @@ async fn observe(
         }
 
         QueryObservation {
-            errors: res.errors.iter().map(|error| format!("{error:?}")).collect(),
+            errors: res
+                .errors
+                .iter()
+                .map(|error| format!("{error:?}"))
+                .collect(),
             consumed: res.cost.value,
             charge_trace,
             channels: channel_observations,
@@ -709,7 +714,11 @@ mod fused_differentials {
             r#"@"out"!( {| ["a"] |}.readZipper().ascend("x") )"#,
             vec!["out"],
             true,
-            vec!["MethodNotDefined", "ascend (requires integer argument)", "non-integer"],
+            vec![
+                "MethodNotDefined",
+                "ascend (requires integer argument)",
+                "non-integer",
+            ],
         ));
         rows.push(error_row(
             // MethodNotDefined("ascend (steps must be non-negative)",
@@ -718,7 +727,11 @@ mod fused_differentials {
             r#"@"out"!( {| ["a"] |}.readZipper().ascend(-1) )"#,
             vec!["out"],
             true,
-            vec!["MethodNotDefined", "ascend (steps must be non-negative)", "negative: -1"],
+            vec![
+                "MethodNotDefined",
+                "ascend (steps must be non-negative)",
+                "negative: -1",
+            ],
         ));
         rows.push(error_row(
             // MethodNotDefined("descendTo", "pathmap") — a zipper-only link
@@ -992,7 +1005,10 @@ mod fused_differentials {
             fused, unfused,
             "control: byte-identical results and charges with zero PathMap methods"
         );
-        assert_eq!(fused_hits, 0, "control: the name gate must reject every method");
+        assert_eq!(
+            fused_hits, 0,
+            "control: the name gate must reject every method"
+        );
         assert_eq!(unfused_hits, 0, "control: force-disabled must never fuse");
     }
 
@@ -1044,8 +1060,7 @@ mod fused_differentials {
                 // paths must stay inside the captured envelope.
                 for (side, obs) in [("fused", &fused), ("unfused", &unfused)] {
                     assert!(
-                        (obs.consumed as usize..=FULL_TRACE_ROWS)
-                            .contains(&obs.charge_trace.len()),
+                        (obs.consumed as usize..=FULL_TRACE_ROWS).contains(&obs.charge_trace.len()),
                         "{label} k={k} ({side}): committed rows {} outside the envelope",
                         obs.charge_trace.len()
                     );

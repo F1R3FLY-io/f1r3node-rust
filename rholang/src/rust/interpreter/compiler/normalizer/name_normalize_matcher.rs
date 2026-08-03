@@ -195,14 +195,15 @@ pub fn normalize_names<'ast>(
     // Process each name in the names vector
     for name in &names.names {
         let name_result = normalize_name(name, current_input.clone(), env, parser)?;
+        let mut name_par = name_result.par;
 
         // Accumulate results using prepend_expr for proper Par composition
-        accumulated_par = Par {
-            exprs: [accumulated_par.exprs, name_result.par.exprs].concat(),
-            locally_free: union(accumulated_par.locally_free, name_result.par.locally_free),
-            connective_used: accumulated_par.connective_used || name_result.par.connective_used,
-            ..Par::default()
-        };
+        accumulated_par.exprs.append(&mut name_par.exprs);
+        accumulated_par.locally_free = union(
+            std::mem::take(&mut accumulated_par.locally_free),
+            std::mem::take(&mut name_par.locally_free),
+        );
+        accumulated_par.connective_used |= name_par.connective_used;
 
         // Update free map for next iteration
         current_input.free_map = name_result.free_map;
@@ -234,7 +235,6 @@ pub fn normalize_names<'ast>(
         free_map: current_input.free_map,
     })
 }
-
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/NameMatcherSpec.scala
 #[cfg(test)]

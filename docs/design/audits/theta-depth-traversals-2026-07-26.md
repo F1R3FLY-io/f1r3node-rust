@@ -56,15 +56,16 @@ test that runs, and a test that runs is a name here.
      Checked by `the_audit_agrees_with_the_gate`; edit the gate's constants first. -->
 ```text
 converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
-                 tree_drop, tree_clone, eval_with_nots, bincode_de, bincode_ser, pretty,
-                 normalize, inj_attempt_clone, clone, clone_send_chain,
-                 substitute_deep_binding, clone_nested_set
+                 sort_nested_set, sort_nested_map, tree_drop, tree_clone, eval_with_nots,
+                 bincode_de, bincode_ser, pretty, normalize, inj_attempt_clone, clone,
+                 clone_send_chain, ord, debug, substitute_deep_binding, clone_nested_set,
+                 subst_and_charge, par_drop, normalize_drop, encode, protobuf_de, eq, hash,
+                 clone_pathmap_chain, pathmap_chain_drop
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
-tripwire-depth:  subst_and_charge, par_drop,
-                 normalize_drop, encode, sort_nested_set, sort_nested_map
+tripwire-depth:
 tripwire-width:
-totals:          converted=23, tripwired=6
+totals:          converted=36, tripwired=0
 ```
 <!-- GATE-SUBJECTS:END -->
 
@@ -621,7 +622,7 @@ Consequences, both of which matter for anyone converting the rest of the family:
 
 | artefact | what it holds | tests |
 |---|---|---|
-| `models/tests/par_prost_depth_ceiling.rs` | the staged RED fixture (build / write / read) with its **adjacent** depth-33 control; the per-envelope register with the depths written out; the anchoring to `COLLECTION_DEPTH_LIMIT` | 4 |
+| `models/tests/par_protobuf_depth_ceiling.rs` | the staged RED fixture (build / write / read) with its **adjacent** depth-33 control; the per-envelope register with the depths written out; the anchoring to `COLLECTION_DEPTH_LIMIT` | 4 |
 | `rholang/tests/replay_output_value_depth_ceiling.rs` | ★★ the consensus leg — **red on replay, green on play**, same binary, same term, one bool apart | 1 |
 | `rholang/tests/stack_depth_gate.rs` (new section) | the per-envelope boundary with the depths **derived** rather than transcribed; the acknowledged build-side inventory and its headroom tripwire; the completeness check that fails when a new build path joins | 3 |
 
@@ -786,7 +787,7 @@ is named.** Raise the prost ceiling alone and the trie decoder becomes the
 binding constraint one level lower; raise `COLLECTION_DEPTH_LIMIT` alone and
 prost becomes it. Either move buys nothing. **They move together or not at
 all.** Held by execution in
-`models/tests/par_prost_depth_ceiling.rs::the_two_read_ceilings_are_anchored_together`.
+`models/tests/par_protobuf_depth_ceiling.rs::the_two_read_ceilings_are_anchored_together`.
 
 #### 7.3.6 The build side clears the wire — an inventory, not a threshold
 
@@ -3654,8 +3655,8 @@ stays compiled as the oracle, instead of by *being* the derive.
 
 `models/src/rust/rholang/bincode_encoder.rs` — a single-walk, O(1)-native-stack
 emitter driven by the same generated table as the decoder
-(`models/build/wire_schema.rs`, emitted from the protobuf
-`FileDescriptorSet`). One obligation stack of `(&'a dyn WireNode, field)`; no
+(`models/codegen/schema_codegen.rs`, emitted from the protobuf
+`FileDescriptorSet`). One obligation stack of `(&'a dyn BincodeNode, field)`; no
 value stacks, no clones, no `Drop` obligation, and therefore no teardown
 problem — the asymmetry with `bincode_decoder`, which must reassemble bottom-up.
 

@@ -256,7 +256,7 @@ impl RestSite {
                     .map(|channel| PrettyPrinter::new().build_string_from_message(channel))
                     .collect();
                 format!("the join ({})", rendered.join(" & "))
-            },
+            }
         };
         match &self.reason {
             RestReason::NoReader { sent, count } => format!(
@@ -299,9 +299,7 @@ impl RestSite {
 }
 
 impl fmt::Display for RestSite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.describe())
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.describe()) }
 }
 
 /// `Exactly(2)`, `AtLeast(3)` → `"2 payload(s), or 3 or more payload(s)"`.
@@ -312,7 +310,7 @@ fn render_admitted(admitted: &[Admits]) -> String {
         many => {
             let rendered: Vec<String> = many.iter().map(Admits::to_string).collect();
             format!("{} payload(s)", rendered.join(" or "))
-        },
+        }
     }
 }
 
@@ -324,10 +322,13 @@ fn admits_at(
     continuation: &WaitingContinuation<BindPattern, TaggedContinuation>,
     index: usize,
 ) -> Option<Admits> {
-    continuation.patterns.get(index).map(|bind| match bind.remainder {
-        None => Admits::Exactly(bind.patterns.len()),
-        Some(_) => Admits::AtLeast(bind.patterns.len()),
-    })
+    continuation
+        .patterns
+        .get(index)
+        .map(|bind| match bind.remainder {
+            None => Admits::Exactly(bind.patterns.len()),
+            Some(_) => Admits::AtLeast(bind.patterns.len()),
+        })
 }
 
 /// The distinct payload counts resting in a row, ascending, each with how many
@@ -386,7 +387,7 @@ pub fn diagnose_row(
                     join_arity: channels.len(),
                     pattern_lists: continuation.patterns.len(),
                 })]
-            },
+            }
         }
     }
     admitted.sort_unstable();
@@ -463,13 +464,13 @@ pub fn report(sites: &[RestSite]) -> String {
                     // the rest are ordinary information about a resting term.
                     RestReason::ArityMismatch { .. } | RestReason::MalformedRow { .. } => {
                         tracing::warn!(target: "rholang::rest", "{line}")
-                    },
+                    }
                     _ => tracing::debug!(target: "rholang::rest", "{line}"),
                 }
                 out.push_str(&line);
                 out.push('\n');
             }
             out
-        },
+        }
     }
 }

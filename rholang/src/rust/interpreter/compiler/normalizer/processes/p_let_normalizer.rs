@@ -230,7 +230,10 @@ pub(crate) fn descend_p_let<'ast>(
         };
 
         // Hand the constructed `new` process back to the driver.
-        Step::Tail(NormWork::Proc { proc: new_proc, input })
+        Step::Tail(NormWork::Proc {
+            proc: new_proc,
+            input,
+        })
     } else {
         // Sequential let declarations - similar to LinearDecls in original
         // Transform into match process
@@ -298,7 +301,10 @@ pub(crate) fn descend_p_let<'ast>(
                 span: match_span, // Use derived match span
             };
 
-            Step::Tail(NormWork::Proc { proc: match_proc, input })
+            Step::Tail(NormWork::Proc {
+                proc: match_proc,
+                input,
+            })
         } else {
             // Multiple binding: let x <- (rhs1, rhs2, ...) in body
             // becomes: match [rhs1, rhs2, ...] { [x, _, _, ...] => body }
@@ -374,7 +380,10 @@ pub(crate) fn descend_p_let<'ast>(
                 span: match_span, // Use span from rhs to body
             };
 
-            Step::Tail(NormWork::Proc { proc: match_proc, input })
+            Step::Tail(NormWork::Proc {
+                proc: match_proc,
+                input,
+            })
         }
     }
 }
@@ -392,7 +401,6 @@ pub fn normalize_p_let<'ast>(
     let step = descend_p_let(bindings, *body, concurrent, let_span, input, parser);
     norm_drive_from(step, env, parser).map(NormVal::into_proc)
 }
-
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala
 #[cfg(test)]

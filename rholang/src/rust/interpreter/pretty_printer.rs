@@ -6,15 +6,17 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
-    EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
+    ETuple, EVar, EZipper, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
 };
 use models::rust::bundle_ops::BundleOps;
+use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_integration::render_cursor_position;
 use shared::rust::shared::printer::{Audience, Printer};
 use shared::rust::shared::string_ops::wrap_with_braces;
+use typed_arena::Arena;
 
 use super::errors::InterpreterError;
 
@@ -1632,6 +1634,9 @@ mod drive {
 
     /// A pending unit of work. Every reference borrows the input term (`'a`).
     enum PpWork<'a> {
+        /// A pre-rendered leaf used when a zipper cursor segment is not a
+        /// decodable channel value.
+        Literal(String),
         /// `_build_string_from_message(node, indent)`
         Node(PpNode<'a>, usize),
         /// `_build_string_from_expr(e)`
@@ -1889,14 +1894,30 @@ mod drive {
     const STACK_HINT: usize = 64;
 
     /// The single LIFO loop.
-    fn run<'a>(pp: &mut PrettyPrinter, seed: PpWork<'a>) -> Result<String, InterpreterError> {
+    fn run<'root>(pp: &mut PrettyPrinter, seed: PpWork<'root>) -> Result<String, InterpreterError> {
+        let decoded_entries = Arena::new();
+        run_with_arena(pp, seed, &decoded_entries)
+    }
+
+    fn run_with_arena<'a>(
+        pp: &mut PrettyPrinter,
+        seed: PpWork<'a>,
+        decoded_entries: &'a Arena<Par>,
+    ) -> Result<String, InterpreterError> {
         let mut work: Vec<PpWork<'a>> = Vec::with_capacity(STACK_HINT);
         let mut vals: Vec<String> = Vec::with_capacity(STACK_HINT);
         let mut catches: Vec<CatchFrame> = Vec::new();
 
         work.push(seed);
         while let Some(item) = work.pop() {
-            if let Err(err) = step(pp, item, &mut work, &mut vals, &mut catches) {
+            if let Err(err) = step(
+                pp,
+                item,
+                decoded_entries,
+                &mut work,
+                &mut vals,
+                &mut catches,
+            ) {
                 // The recursive form's `?`: unwind to the innermost catching
                 // entry point on the call path, or out of the drive entirely.
                 match catches.last_mut() {
@@ -1934,14 +1955,17 @@ mod drive {
     fn step<'a>(
         pp: &mut PrettyPrinter,
         item: PpWork<'a>,
+        decoded_entries: &'a Arena<Par>,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
         catches: &mut Vec<CatchFrame>,
     ) -> Result<(), InterpreterError> {
         match item {
+            PpWork::Literal(value) => vals.push(value),
+
             PpWork::Node(node, indent) => descend_node(pp, node, indent, work, vals)?,
 
-            PpWork::ExprBody(e) => descend_expr(pp, e, work, vals)?,
+            PpWork::ExprBody(e) => descend_expr(pp, e, decoded_entries, work, vals)?,
 
             PpWork::Channel(p, indent) => {
                 // ⚠ Set, never reset. See the module documentation.
@@ -2490,6 +2514,13 @@ mod drive {
             open: &'static str,
             close: &'static str,
         },
+        /// `{|entries remainder|}` over a `PathMap<()>`. Descent decodes
+        /// entries into the traversal-local PDA arena rather than forcing a
+        /// persistent flat projection on the EPathMap.
+        PathMap { pathmap: &'a EPathMap },
+        /// `ReadZipper` / `WriteZipper`. Both the underlying set entries and
+        /// decodable cursor segments are worklisted in the same PDA.
+        Zipper { zipper: &'a EZipper },
         /// `({elements})`
         Tuple { ps: &'a [Par] },
         /// `({target}).{name}({args})` — arguments first, THEN the target.
@@ -2637,17 +2668,12 @@ mod drive {
                 close: "]",
             },
             ExprInstance::ETupleBody(ETuple { ps, .. }) => ExprPlan::Tuple { ps: ps.as_slice() },
-            ExprInstance::EPathmapBody(pathmap) => ExprPlan::Bracketed {
-                ps: pathmap.ps().as_slice(),
-                remainder: &pathmap.remainder,
-                open: "{|",
-                close: "|}",
-            },
+            ExprInstance::EPathmapBody(pathmap) => ExprPlan::PathMap { pathmap },
+            ExprInstance::EZipperBody(zipper) => ExprPlan::Zipper { zipper },
             ExprInstance::EMethodBody(method) => ExprPlan::Method { m: method },
-            // The re-entrant three, plus every leaf. See [`inline_expr`].
+            // The remaining re-entrant collections, plus every leaf. See [`inline_expr`].
             ExprInstance::ESetBody(_)
             | ExprInstance::EMapBody(_)
-            | ExprInstance::EZipperBody(_)
             | ExprInstance::EVarBody(_)
             | ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
@@ -2664,6 +2690,7 @@ mod drive {
     fn descend_expr<'a>(
         pp: &mut PrettyPrinter,
         e: &'a Expr,
+        decoded_entries: &'a Arena<Par>,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
     ) -> Result<(), InterpreterError> {
@@ -2675,6 +2702,51 @@ mod drive {
                 message,
                 render: OptRender::Message,
                 indent: 0,
+            }
+        }
+
+        fn push_pathmap_children<'a>(
+            pathmap: &'a EPathMap,
+            decoded_entries: &'a Arena<Par>,
+            work: &mut Vec<PpWork<'a>>,
+        ) {
+            let mut children: Vec<&Par> = Vec::with_capacity(match pathmap.mode() {
+                EPathMapMode::Empty | EPathMapMode::Set => pathmap.len(),
+                EPathMapMode::Map => pathmap
+                    .len()
+                    .checked_mul(2)
+                    .expect("an addressable EPathMap cannot overflow its child count"),
+            });
+            match pathmap.mode() {
+                EPathMapMode::Empty => {}
+                EPathMapMode::Set => {
+                    pathmap
+                        .entry_trie()
+                        .for_each_raw_set_entry(|key| {
+                            let entry = models::rust::canonical_path::decode_trie_path(key)
+                                .expect("set-mode EPathMap keys are canonical Par paths");
+                            children.push(decoded_entries.alloc(entry));
+                        })
+                        .expect("set-mode dispatch checked before traversal");
+                }
+                EPathMapMode::Map => {
+                    pathmap
+                        .entry_trie()
+                        .for_each_raw_map_entry(|key, value| {
+                            let key = models::rust::canonical_path::decode_trie_path(key)
+                                .expect("map-mode EPathMap keys are canonical Par paths");
+                            children.push(decoded_entries.alloc(key));
+                            children.push(value);
+                        })
+                        .expect("map-mode dispatch checked before traversal");
+                }
+            }
+            for child in children.into_iter().rev() {
+                push_catch(
+                    work,
+                    CatchKind::Message,
+                    PpWork::Node(PpNode::Par(child), 0),
+                );
             }
         }
 
@@ -2709,6 +2781,41 @@ mod drive {
                 for p in ps.iter().rev() {
                     push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(p), 0));
                 }
+            }
+
+            ExprPlan::PathMap { pathmap } => {
+                work.push(PpWork::Combine(PpKont::ExprK { expr: e }));
+                push_pathmap_children(pathmap, decoded_entries, work);
+            }
+
+            ExprPlan::Zipper { zipper } => {
+                let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+                work.push(PpWork::Combine(PpKont::ExprK { expr: e }));
+
+                // Cursor segments render after the map entries. Push them first
+                // (in reverse) so the LIFO machine preserves that order.
+                use models::rust::canonical_path::{decode_trie_path, tag};
+                for segment in zipper.current_path.iter().rev() {
+                    let mut framed = segment.clone();
+                    framed.push(tag::TERM);
+                    let channel = decode_trie_path(&framed).ok().and_then(|par| {
+                        let par = decoded_entries.alloc(par);
+                        match par.exprs.first().and_then(|ex| ex.expr_instance.as_ref()) {
+                            Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
+                                Some(&list.ps[0])
+                            }
+                            _ => None,
+                        }
+                    });
+                    match channel {
+                        Some(channel) => {
+                            push_catch(work, CatchKind::Channel, PpWork::Channel(channel, 0));
+                        }
+                        None => work.push(PpWork::Literal(format!("0x{}", hex::encode(segment)))),
+                    }
+                }
+
+                push_pathmap_children(pathmap, decoded_entries, work);
             }
 
             ExprPlan::Method { m } => {
@@ -2781,71 +2888,8 @@ mod drive {
                 Ok(result)
             }
 
-            ExprInstance::EZipperBody(zipper) => {
-                // Print zipper showing the underlying PathMap and current position
-                let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                let elements = pp.build_vec(pathmap.ps());
-                let remainder_string = pp.build_remainder_string(&pathmap.remainder);
-                let zipper_type = if zipper.is_write_zipper {
-                    "WriteZipper"
-                } else {
-                    "ReadZipper"
-                };
-
-                let pathmap_repr = if pathmap.remainder.is_some() && !elements.is_empty() {
-                    format!("{{|{}{}|}}", elements, remainder_string)
-                } else if pathmap.remainder.is_some() {
-                    format!("{{|{}|}}", remainder_string)
-                } else {
-                    format!("{{|{}|}}", elements)
-                };
-
-                // Format current_path as a readable list. W2b-1: each
-                // segment is a codec `encode_trie_segment(element)`; frame
-                // it as a 1-element split path (`seg ∥ 0x00`) to recover
-                // the element Par faithfully (ANY eval_stable element, vs
-                // the former lossy GString-only SExpr decode) and render
-                // it. Zipper display strings move accordingly (re-pinned).
-                //
-                // ⚠ The segments are only HALF the cursor. `cursor_kind` is the
-                // other half — it participates in `EZipper`'s `PartialEq`/`Hash`
-                // and reaches the event hash — so rendering the segments alone
-                // printed ONE string for two zippers that are `!=`, hash
-                // differently, and address different entries. The arm is spent
-                // by `render_cursor_position`, whose `Split` row (proto value 0,
-                // hence every zipper representable before the discriminator
-                // existed) is byte-identical to what this printed before.
-                let current_path_repr = if zipper.current_path.is_empty() {
-                    render_cursor_position(zipper.cursor_kind, &[])
-                } else {
-                    use models::rust::canonical_path::{decode_trie_path, tag};
-
-                    let mut path_segments: Vec<String> =
-                        Vec::with_capacity(zipper.current_path.len());
-                    for segment in &zipper.current_path {
-                        let mut framed = segment.clone();
-                        framed.push(tag::TERM);
-                        let rendered = match decode_trie_path(&framed) {
-                            Ok(par) => {
-                                match par.exprs.first().and_then(|ex| ex.expr_instance.as_ref()) {
-                                    Some(ExprInstance::EListBody(list)) if !list.ps.is_empty() => {
-                                        pp.build_channel_string(&list.ps[0])
-                                    }
-                                    _ => format!("0x{}", hex::encode(segment)),
-                                }
-                            }
-                            Err(_) => format!("0x{}", hex::encode(segment)),
-                        };
-                        path_segments.push(rendered);
-                    }
-                    render_cursor_position(zipper.cursor_kind, &path_segments)
-                };
-
-                // Format: ReadZipper(at: ["books", "fiction"], {| ... |})
-                Ok(format!(
-                    "{}(at: {}, {})",
-                    zipper_type, current_path_repr, pathmap_repr
-                ))
+            ExprInstance::EZipperBody(_) => {
+                unreachable!("EZipper is worklisted by ExprPlan::Zipper")
             }
 
             ExprInstance::EVarBody(EVar { v }) => Ok(pp.build_string_from_var(
@@ -3169,6 +3213,40 @@ mod drive {
         Ok(())
     }
 
+    fn take_pathmap_repr(pp: &PrettyPrinter, pathmap: &EPathMap, vals: &mut Vec<String>) -> String {
+        let child_count = match pathmap.mode() {
+            EPathMapMode::Empty | EPathMapMode::Set => pathmap.len(),
+            EPathMapMode::Map => pathmap
+                .len()
+                .checked_mul(2)
+                .expect("an addressable EPathMap cannot overflow its child count"),
+        };
+        let rendered = take(vals, child_count);
+        let elements = match pathmap.mode() {
+            EPathMapMode::Empty | EPathMapMode::Set => rendered.join(", "),
+            EPathMapMode::Map => {
+                let mut result = String::new();
+                for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                    if index != 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&pair[0]);
+                    result.push_str(" : ");
+                    result.push_str(&pair[1]);
+                }
+                result
+            }
+        };
+        let remainder_string = pp.build_remainder_string(&pathmap.remainder);
+        if pathmap.remainder.is_some() && !elements.is_empty() {
+            format!("{{|{}{}|}}", elements, remainder_string)
+        } else if pathmap.remainder.is_some() {
+            format!("{{|{}|}}", remainder_string)
+        } else {
+            format!("{{|{}|}}", elements)
+        }
+    }
+
     fn combine_expr(pp: &mut PrettyPrinter, e: &Expr, vals: &mut Vec<String>) {
         match expr_plan(e) {
             ExprPlan::Inline => unreachable!(
@@ -3211,6 +3289,27 @@ mod drive {
                     format!("{}{}{}", open, elements, close)
                 };
                 vals.push(full_result);
+            }
+
+            ExprPlan::PathMap { pathmap } => {
+                let rendered = take_pathmap_repr(pp, pathmap, vals);
+                vals.push(rendered);
+            }
+
+            ExprPlan::Zipper { zipper } => {
+                let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+                let path_segments = take(vals, zipper.current_path.len());
+                let pathmap_repr = take_pathmap_repr(pp, pathmap, vals);
+                let zipper_type = if zipper.is_write_zipper {
+                    "WriteZipper"
+                } else {
+                    "ReadZipper"
+                };
+                let current_path_repr = render_cursor_position(zipper.cursor_kind, &path_segments);
+                vals.push(format!(
+                    "{}(at: {}, {})",
+                    zipper_type, current_path_repr, pathmap_repr
+                ));
             }
 
             ExprPlan::Tuple { ps } => {
@@ -3746,7 +3845,7 @@ mod differential {
     /// `build_variables`-then-mutate site at all.
     #[test]
     fn corpus_0_a_new_binding_three_names_around_an_empty_par() {
-        let term = Par {
+        let term = models::par_from_default! {
             news: vec![New {
                 bind_count: 3,
                 p: Some(Par::default()),
@@ -3778,9 +3877,9 @@ mod differential {
     /// interaction between bundle framing and the name-shift bookkeeping.
     #[test]
     fn corpus_1_a_new_reached_through_a_bundle() {
-        let term = Par {
+        let term = models::par_from_default! {
             bundles: vec![Bundle {
-                body: Some(Par {
+                body: Some(models::par_from_default! {
                     news: vec![New {
                         bind_count: 1,
                         p: Some(Par::default()),
@@ -3823,10 +3922,10 @@ mod differential {
     /// shift bookkeeping.
     #[test]
     fn corpus_2_a_negative_bind_count_wrapped_around_a_well_formed_new() {
-        let term = Par {
+        let term = models::par_from_default! {
             news: vec![New {
                 bind_count: -389_915_091,
-                p: Some(Par {
+                p: Some(models::par_from_default! {
                     news: vec![New {
                         bind_count: 1,
                         p: Some(Par::default()),
@@ -3903,7 +4002,7 @@ mod differential {
     // -----------------------------------------------------------------------
 
     fn gint(i: i64) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GInt(i)),
             }],
@@ -3912,7 +4011,7 @@ mod differential {
     }
 
     fn gstring(s: &str) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GString(s.to_string())),
             }],
@@ -3921,7 +4020,7 @@ mod differential {
     }
 
     fn bound_var(level: i32) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
                     v: Some(Var {
@@ -3934,7 +4033,7 @@ mod differential {
     }
 
     fn free_var(level: i32) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
                     v: Some(Var {
@@ -3947,7 +4046,7 @@ mod differential {
     }
 
     fn expr_par(instance: ExprInstance) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(instance),
             }],
@@ -3959,7 +4058,7 @@ mod differential {
     /// `bound_shift` *mid-traversal*, which is the whole point of the
     /// two-bind corpus below.
     pub(super) fn new_par(bind_count: i32, body: Par) -> Par {
-        Par {
+        models::par_from_default! {
             news: vec![New {
                 bind_count,
                 p: Some(body),
@@ -3978,7 +4077,7 @@ mod differential {
         // Par / Expr / Send / Receive / New / Match / Bundle / Connective /
         // Unforgeable, all inside ONE term so that the state they thread
         // interacts.
-        let term = Par {
+        let term = models::par_from_default! {
             bundles: vec![Bundle {
                 body: Some(gint(1)),
                 write_flag: true,
@@ -4386,7 +4485,7 @@ mod differential {
             // Again with the printer in a NON-default state, so any arm that
             // reads `free_shift` / `bound_shift` / `base_id` is compared under
             // a shift rather than at zero.
-            let shifted = Par {
+            let shifted = models::par_from_default! {
                 news: vec![New {
                     bind_count: 2,
                     p: Some(expr_par(instance)),
@@ -4400,7 +4499,7 @@ mod differential {
         }
 
         // The absent instance, which is its own arm.
-        agree("expr arm: absent instance", &Par {
+        agree("expr arm: absent instance", &models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: None,
             }],
@@ -4493,7 +4592,7 @@ mod differential {
              mid-fold and the fixture would be vacuous"
         );
 
-        let term = Par {
+        let term = models::par_from_default! {
             receives: vec![receive],
             ..Default::default()
         };
@@ -4574,7 +4673,7 @@ mod differential {
         // Two binds, so "after every bind" is distinguishable from "after the
         // first". The guard names a variable BOTH binds contribute to, which is
         // what makes the environment observable.
-        let term = Par {
+        let term = models::par_from_default! {
             receives: vec![Receive {
                 binds: vec![
                     ReceiveBind {
@@ -4695,7 +4794,7 @@ mod differential {
         // pushes `String::new()`), so that is what reaches it. It is a separate
         // line of code and was separately capable of dropping the clause.
         let mut empty_body = term.clone();
-        empty_body.receives[0].body = Some(Par {
+        empty_body.receives[0].body = Some(models::par_from_default! {
             connectives: vec![Connective {
                 connective_instance: None,
             }],
@@ -5280,12 +5379,12 @@ mod differential {
     /// in that same mid-traversal position.
     #[test]
     fn a_match_nested_in_a_send() {
-        let term = Par {
+        let term = models::par_from_default! {
             sends: vec![Send {
                 chan: Some(gstring("out")),
                 data: vec![
                     gint(1),
-                    Par {
+                    models::par_from_default! {
                         matches: vec![Match {
                             target: Some(gint(2)),
                             cases: vec![
@@ -5372,7 +5471,7 @@ mod differential {
     /// protobuf-decoded `Par` can. See the report accompanying this change.
     #[test]
     fn a_match_with_no_target_panics_like_every_other_absent_required_field() {
-        let no_target = Par {
+        let no_target = models::par_from_default! {
             matches: vec![Match {
                 target: None,
                 cases: vec![],
@@ -5401,7 +5500,7 @@ mod differential {
         // ANTI-VACUITY: the SAME fixture with a target present must NOT panic,
         // so the `Err` above is attributable to the absent field and not to
         // something else in the fixture.
-        let with_target = Par {
+        let with_target = models::par_from_default! {
             matches: vec![Match {
                 target: Some(gint(1)),
                 cases: vec![],
@@ -5419,7 +5518,7 @@ mod differential {
         // And this is the same discipline as its siblings — a `New` with no
         // `p` panics too, which is what "like every other absent required
         // field" means.
-        let no_p = Par {
+        let no_p = models::par_from_default! {
             news: vec![New {
                 bind_count: 1,
                 p: None,
@@ -5786,7 +5885,7 @@ mod differential {
             ("a long ground", long.clone()),
             (
                 "a send whose data and channel are both capped sub-renders",
-                Par {
+                models::par_from_default! {
                     sends: vec![Send {
                         chan: Some(long.clone()),
                         data: vec![long.clone(), gint(7)],
@@ -5803,7 +5902,7 @@ mod differential {
             // that panics for every `trim > 1` — which is why it still earns
             // its place in the straddle. The fallback side moved to the splice
             // probe below.
-            ("a match beside a long sibling", Par {
+            ("a match beside a long sibling", models::par_from_default! {
                 exprs: long.exprs.clone(),
                 matches: vec![Match {
                     target: Some(gint(1)),
@@ -5921,7 +6020,7 @@ mod differential {
     /// ALREADY rendered a channel.
     #[test]
     fn the_sticky_is_building_channel_flag_is_reproduced() {
-        let bound_new = Par {
+        let bound_new = models::par_from_default! {
             news: vec![New {
                 bind_count: 1,
                 p: Some(bound_var(0)),
@@ -6067,7 +6166,7 @@ mod tests {
         use models::rhoapi::{Expr, Match, Par, Send};
 
         fn gint(i: i64) -> Par {
-            Par {
+            models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::GInt(i)),
                 }],
@@ -6118,7 +6217,7 @@ mod tests {
         let targets = vec![
             gint(42),
             gint(-7),
-            Par {
+            models::par_from_default! {
                 sends: vec![Send {
                     chan: Some(gint(1)),
                     data: vec![gint(2), gint(3)],
@@ -6491,7 +6590,7 @@ mod drive_mutations {
     // -----------------------------------------------------------------------
 
     fn gint(n: i64) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GInt(n)),
             }],
@@ -6500,7 +6599,7 @@ mod drive_mutations {
     }
 
     fn gstring(s: &str) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GString(s.to_string())),
             }],
@@ -6509,7 +6608,7 @@ mod drive_mutations {
     }
 
     fn bound_var(level: i32) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
                     v: Some(Var {
@@ -6522,7 +6621,7 @@ mod drive_mutations {
     }
 
     fn free_var(level: i32) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
                     v: Some(Var {
@@ -6551,44 +6650,50 @@ mod drive_mutations {
             // Two binds, the first introducing free variables: the ONLY shape
             // where a sequenced `bound_shift`/`free_shift` differs from a
             // precomputed one.
-            ("two_binds_that_bind_different_counts", Par {
-                receives: vec![Receive {
-                    binds: vec![
-                        bind(gint(1), vec![free_var(0), free_var(1)], 2),
-                        bind(gint(2), vec![free_var(0)], 1),
-                    ],
-                    body: Some(gstring("body")),
-                    persistent: false,
-                    peek: false,
-                    bind_count: 3,
-                    locally_free: vec![],
-                    connective_used: false,
-                    condition: None,
-                }],
-                ..Default::default()
-            }),
+            (
+                "two_binds_that_bind_different_counts",
+                models::par_from_default! {
+                    receives: vec![Receive {
+                        binds: vec![
+                            bind(gint(1), vec![free_var(0), free_var(1)], 2),
+                            bind(gint(2), vec![free_var(0)], 1),
+                        ],
+                        body: Some(gstring("body")),
+                        persistent: false,
+                        peek: false,
+                        bind_count: 3,
+                        locally_free: vec![],
+                        connective_used: false,
+                        condition: None,
+                    }],
+                    ..Default::default()
+                },
+            ),
             // A case whose pattern binds, so the interposed `AddBoundShift`
             // separates the pattern's level from the source's.
-            ("match_case_with_a_binding_pattern", Par {
-                matches: vec![Match {
-                    target: Some(gint(7)),
-                    cases: vec![MatchCase {
-                        pattern: Some(free_var(0)),
-                        source: Some(bound_var(0)),
-                        free_count: 2,
-                        guard: None,
+            (
+                "match_case_with_a_binding_pattern",
+                models::par_from_default! {
+                    matches: vec![Match {
+                        target: Some(gint(7)),
+                        cases: vec![MatchCase {
+                            pattern: Some(free_var(0)),
+                            source: Some(bound_var(0)),
+                            free_count: 2,
+                            guard: None,
+                        }],
+                        locally_free: vec![],
+                        connective_used: false,
                     }],
-                    locally_free: vec![],
-                    connective_used: false,
-                }],
-                ..Default::default()
-            }),
+                    ..Default::default()
+                },
+            ),
             // A send whose data move printer state before the channel is read.
-            ("send_whose_data_bind", Par {
+            ("send_whose_data_bind", models::par_from_default! {
                 sends: vec![Send {
                     chan: Some(bound_var(0)),
                     data: vec![
-                        Par {
+                        models::par_from_default! {
                             news: vec![New {
                                 bind_count: 2,
                                 p: Some(bound_var(0)),
@@ -6607,10 +6712,10 @@ mod drive_mutations {
                 ..Default::default()
             }),
             // A `New` whose body reads the variables it introduced.
-            ("new_binding_two_names", Par {
+            ("new_binding_two_names", models::par_from_default! {
                 news: vec![New {
                     bind_count: 2,
-                    p: Some(Par {
+                    p: Some(models::par_from_default! {
                         exprs: vec![bound_var(0).exprs[0].clone(), bound_var(1).exprs[0].clone()],
                         ..Default::default()
                     }),
@@ -6621,7 +6726,7 @@ mod drive_mutations {
                 ..Default::default()
             }),
             // Two distinguishable exprs in one category.
-            ("par_with_two_distinct_exprs", Par {
+            ("par_with_two_distinct_exprs", models::par_from_default! {
                 exprs: vec![
                     Expr {
                         expr_instance: Some(ExprInstance::GInt(1)),
@@ -6635,66 +6740,75 @@ mod drive_mutations {
             // A `New`-bound name used INSIDE a receive whose source is rendered
             // as a channel first: the `*` prefix is suppressed only while
             // `is_building_channel` is still set.
-            ("new_name_read_after_a_channel_render", Par {
-                news: vec![New {
-                    bind_count: 1,
-                    p: Some(Par {
-                        receives: vec![Receive {
-                            binds: vec![bind(bound_var(0), vec![free_var(0)], 1)],
-                            body: Some(bound_var(0)),
-                            persistent: false,
-                            peek: false,
-                            bind_count: 1,
-                            locally_free: vec![],
-                            connective_used: false,
-                            condition: None,
-                        }],
-                        ..Default::default()
-                    }),
-                    uri: vec![],
-                    injections: std::collections::BTreeMap::new(),
-                    locally_free: vec![],
-                }],
-                ..Default::default()
-            }),
+            (
+                "new_name_read_after_a_channel_render",
+                models::par_from_default! {
+                    news: vec![New {
+                        bind_count: 1,
+                        p: Some(models::par_from_default! {
+                            receives: vec![Receive {
+                                binds: vec![bind(bound_var(0), vec![free_var(0)], 1)],
+                                body: Some(bound_var(0)),
+                                persistent: false,
+                                peek: false,
+                                bind_count: 1,
+                                locally_free: vec![],
+                                connective_used: false,
+                                condition: None,
+                            }],
+                            ..Default::default()
+                        }),
+                        uri: vec![],
+                        injections: std::collections::BTreeMap::new(),
+                        locally_free: vec![],
+                    }],
+                    ..Default::default()
+                },
+            ),
             // ★ A receive whose `where` guard NAMES the variable its bind
             // introduces. The guard is normalized in the body's environment
             // (`p_input_normalizer`'s `InputPhase::Guard`), so it must render
             // after the interposed `AddBoundShift`; rendering it before prints
             // the same binder at a different level. The guard has to mention a
             // bound variable or the two orderings are indistinguishable.
-            ("receive_with_a_where_guard_over_its_binder", Par {
-                receives: vec![Receive {
-                    binds: vec![bind(gstring("chan"), vec![free_var(0)], 1)],
-                    body: Some(bound_var(0)),
-                    persistent: false,
-                    peek: false,
-                    bind_count: 1,
-                    locally_free: vec![],
-                    connective_used: false,
-                    condition: Some(bound_var(0)),
-                }],
-                ..Default::default()
-            }),
+            (
+                "receive_with_a_where_guard_over_its_binder",
+                models::par_from_default! {
+                    receives: vec![Receive {
+                        binds: vec![bind(gstring("chan"), vec![free_var(0)], 1)],
+                        body: Some(bound_var(0)),
+                        persistent: false,
+                        peek: false,
+                        bind_count: 1,
+                        locally_free: vec![],
+                        connective_used: false,
+                        condition: Some(bound_var(0)),
+                    }],
+                    ..Default::default()
+                },
+            ),
             // A bind with two patterns and a source that is distinguishable
             // from them, so swapping the pop order is observable.
-            ("bind_with_two_patterns_and_a_distinct_source", Par {
-                receives: vec![Receive {
-                    binds: vec![bind(
-                        gstring("SOURCE"),
-                        vec![gstring("P0"), gstring("P1")],
-                        0,
-                    )],
-                    body: Some(gstring("body")),
-                    persistent: false,
-                    peek: false,
-                    bind_count: 0,
-                    locally_free: vec![],
-                    connective_used: false,
-                    condition: None,
-                }],
-                ..Default::default()
-            }),
+            (
+                "bind_with_two_patterns_and_a_distinct_source",
+                models::par_from_default! {
+                    receives: vec![Receive {
+                        binds: vec![bind(
+                            gstring("SOURCE"),
+                            vec![gstring("P0"), gstring("P1")],
+                            0,
+                        )],
+                        body: Some(gstring("body")),
+                        persistent: false,
+                        peek: false,
+                        bind_count: 0,
+                        locally_free: vec![],
+                        connective_used: false,
+                        condition: None,
+                    }],
+                    ..Default::default()
+                },
+            ),
         ]
     }
 

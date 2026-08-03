@@ -71,7 +71,7 @@ fn the_op_stack_entry_is_four_words() {
     assert_eq!(
         op_size(),
         expected,
-        "PROST `Op` CHANGED WIDTH: {} B against the pinned {} B (4 × {} B word).\n\n\
+        "PROTOBUF `Op` CHANGED WIDTH: {} B against the pinned {} B (4 × {} B word).\n\n\
          The op stack is the encoder's per-level heap, so a wider `Op` multiplies the only \
          per-call allocation there is — at depth 4,096 each extra word costs 32 KiB.\n\n\
          ⚠ This width is also what the codec exemption at `models/src/rust/rholang/drive.rs` \
@@ -92,11 +92,11 @@ fn the_op_stack_entry_is_four_words() {
 #[test]
 fn the_frame_is_two_words() {
     let word = std::mem::size_of::<usize>();
-    let expected = 2 * word;   // bound once; see `the_op_stack_entry_is_four_words`
+    let expected = 2 * word; // bound once; see `the_op_stack_entry_is_four_words`
     assert_eq!(
         frame_size(),
         expected,
-        "PROST `Frame` CHANGED WIDTH: {} B against the pinned {} B.\n\
+        "PROTOBUF `Frame` CHANGED WIDTH: {} B against the pinned {} B.\n\
          The frame stack is Θ(depth), so this is a per-level cost: at depth 4,096 each extra \
          word is 32 KiB.",
         frame_size(),

@@ -3153,7 +3153,7 @@ async fn cross_deploy_bridge_full_admin_flow() {
     let uri_regex = regex::Regex::new(r"rho:id:[a-zA-Z0-9]+").unwrap();
 
     let make_deploy_id_par = |sig: &[u8]| -> models::rhoapi::Par {
-        models::rhoapi::Par {
+        models::par_from_default! {
             unforgeables: vec![models::rhoapi::GUnforgeable {
                 unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(
                     models::rhoapi::GDeployId { sig: sig.to_vec() },
@@ -3524,7 +3524,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     };
 
     let make_deploy_id_par = |sig: &[u8]| -> models::rhoapi::Par {
-        models::rhoapi::Par {
+        models::par_from_default! {
             unforgeables: vec![models::rhoapi::GUnforgeable {
                 unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(
                     models::rhoapi::GDeployId { sig: sig.to_vec() },
@@ -4216,7 +4216,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
 
     // Verify both URIs accessible from merged state
     let make_deploy_id_par = |sig: &[u8]| -> models::rhoapi::Par {
-        models::rhoapi::Par {
+        models::par_from_default! {
             unforgeables: vec![models::rhoapi::GUnforgeable {
                 unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(
                     models::rhoapi::GDeployId { sig: sig.to_vec() },
@@ -4609,7 +4609,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     };
 
     let make_deploy_id_par = |sig: &[u8]| -> models::rhoapi::Par {
-        models::rhoapi::Par {
+        models::par_from_default! {
             unforgeables: vec![models::rhoapi::GUnforgeable {
                 unf_instance: Some(models::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(
                     models::rhoapi::GDeployId { sig: sig.to_vec() },

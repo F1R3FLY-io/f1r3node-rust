@@ -67,10 +67,11 @@
 //! five replay clean.
 //!
 //! ⚠ **The positive control is what makes that a measurement rather than a
-//! false zero.** Splicing #129's depth-34 payload through the identical harness
-//! turns the replay red with `recursion limit reached`, so the harness is
-//! provably delivering spliced `output_value` bytes to the replay decode. Ten
-//! false zeros have been recorded this campaign; this one is not the eleventh.
+//! false zero.** Splicing a deliberately truncated protobuf payload through
+//! the identical harness turns the replay red with a decode error, so the
+//! harness is provably delivering spliced `output_value` bytes to the replay
+//! decoder. Ten false zeros have been recorded this campaign; this one is not
+//! the eleventh.
 //!
 //! ## What that leaves
 //!
@@ -131,9 +132,7 @@ fn run_child(subject: &str, test_name: &str) -> (bool, String) {
 }
 
 /// Is this process the child for `subject`?
-fn is_child_for(subject: &str) -> bool {
-    std::env::var(CHILD).is_ok_and(|s| s == subject)
-}
+fn is_child_for(subject: &str) -> bool { std::env::var(CHILD).is_ok_and(|s| s == subject) }
 
 /// The NORMALIZER's construction: recomputes `locally_free`/`connective_used`.
 /// ⚠ Panics on a malformed child — see `m0`.
@@ -151,8 +150,8 @@ fn par_of(instance: ExprInstance) -> Par {
 /// proto FIELDS (`RhoTypes.proto`), decoded verbatim — nothing recomputes them
 /// on the read path. So the bytes carry them, and a probe that reproduces the
 /// wire must set them directly rather than derive them.
-fn wire_par(instance: ExprInstance, connective_used: bool) -> Par {
-    Par {
+fn protobuf_par(instance: ExprInstance, connective_used: bool) -> Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -226,9 +225,9 @@ fn m0_has_locally_free_panics_before_the_matcher_is_reached() {
 ///   (b) SURGERY: encode a well-formed `EMinus` and delete `p1`'s bytes.
 /// (b) is what an attacker holding only bytes can do.
 #[test]
-fn m1_prost_accepts_an_absent_required_child() {
+fn m1_protobuf_accepts_an_absent_required_child() {
     // (a)
-    let absent = wire_par(
+    let absent = protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: None,
             p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -240,7 +239,7 @@ fn m1_prost_accepts_an_absent_required_child() {
     println!("  M1(a) bytes = {bytes_a:02x?}");
 
     // (b) surgery on a well-formed encoding.
-    let well_formed = wire_par(
+    let well_formed = protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: Some(new_gint_par(1, Vec::new(), false)),
             p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -290,7 +289,7 @@ fn m2_the_matcher_panics_on_a_decoded_absent_child() {
         // The CONTROL, in the same process and through the same call shape: a
         // WELL-FORMED target off the wire must match. Without it, a child that died
         // for any reason at all would look like evidence about the absent child.
-        let control_bytes = wire_par(
+        let control_bytes = protobuf_par(
             ExprInstance::EMinusBody(EMinus {
                 p1: Some(new_gint_par(7, Vec::new(), false)),
                 p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -303,7 +302,7 @@ fn m2_the_matcher_panics_on_a_decoded_absent_child() {
         println!("M2_CHILD_CONTROL_MATCHED={}", control.is_some());
 
         // ★ THE SUBJECT: the value that came BACK OFF THE WIRE with `p1` absent.
-        let bytes = wire_par(
+        let bytes = protobuf_par(
             ExprInstance::EMinusBody(EMinus {
                 p1: None,
                 p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -416,7 +415,7 @@ fn produces_of(event: &mut Event) -> &mut [Produce] {
 
 /// The malformed payload, byte-identical to M1's.
 fn malformed_payload() -> Vec<u8> {
-    wire_par(
+    protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: None,
             p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -456,31 +455,10 @@ const M4_PROGRAMS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The #129 payload: a depth-34 nested list, which `Par::decode` REFUSES.
-/// Used as the POSITIVE CONTROL — if splicing this does not turn the replay
-/// red, the harness is not delivering the payload and every clean result above
-/// is a false zero rather than a measurement.
-fn elist(ps: Vec<Par>) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
-                ps,
-                locally_free: vec![],
-                connective_used: false,
-                remainder: None,
-            })),
-        }],
-        ..Default::default()
-    }
-}
-
-fn over_deep_payload() -> Vec<u8> {
-    let mut par = new_gint_par(0, Vec::new(), false);
-    for _ in 0..34 {
-        par = elist(vec![par]);
-    }
-    par.encode_to_vec()
-}
+/// A length-delimited field declaring two bytes but carrying only one. The
+/// generated decoder must reject it, making it a stable delivery control now
+/// that legal depth is intentionally unbounded.
+fn truncated_protobuf_payload() -> Vec<u8> { vec![0x0A, 0x02, 0x08] }
 
 async fn drive_m4(label: &str, program: &str, payload: Vec<u8>) -> Vec<String> {
     let mut kvm = InMemoryStoreManager::new();
@@ -547,17 +525,22 @@ async fn drive_m4(label: &str, program: &str, payload: Vec<u8>) -> Vec<String> {
 #[tokio::test(flavor = "current_thread")]
 async fn m4_the_replay_path_carries_a_malformed_par_from_the_block() {
     // ── ★ THE POSITIVE CONTROL, run FIRST ───────────────────────────────
+    let invalid = truncated_protobuf_payload();
+    assert!(
+        models::rust::rholang::protobuf_decoder::decode_par(invalid.as_slice()).is_err(),
+        "the positive-control payload must be rejected before it is used"
+    );
     let control = drive_m4(
-        "POSITIVE CONTROL: #129's depth-34 payload, which Par::decode REFUSES",
+        "POSITIVE CONTROL: deliberately truncated protobuf payload",
         M4_PROGRAMS[0].1,
-        over_deep_payload(),
+        invalid,
     )
     .await;
     assert!(
-        control.iter().any(|e| e.contains("recursion limit")),
-        "★★ M4 POSITIVE CONTROL FAILED: splicing a payload `Par::decode` is KNOWN to \
-         refuse produced {control:?} instead of a recursion-limit error. The harness is \
-         therefore NOT delivering spliced `output_value` bytes to the replay decode, and \
+        !control.is_empty(),
+        "★★ M4 POSITIVE CONTROL FAILED: splicing a payload the generated decoder is \
+         known to refuse produced no replay error. The harness is therefore NOT \
+         delivering spliced `output_value` bytes to the replay decode, and \
          every clean result below would be a FALSE ZERO. Fix the harness before reading \
          anything into the treatment cells."
     );

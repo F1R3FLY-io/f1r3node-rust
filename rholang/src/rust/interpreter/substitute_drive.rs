@@ -484,20 +484,18 @@ impl Substitute {
 // is what makes an early `?` return the identical error.
 // ---------------------------------------------------------------------------
 
-fn descend_par(term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
-    let Par {
-        sends,
-        receives,
-        news,
-        exprs,
-        matches,
-        unforgeables,
-        bundles,
-        connectives,
-        conditionals,
-        locally_free,
-        connective_used,
-    } = term;
+fn descend_par(mut term: Par, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
+    let sends = std::mem::take(&mut term.sends);
+    let receives = std::mem::take(&mut term.receives);
+    let news = std::mem::take(&mut term.news);
+    let exprs = std::mem::take(&mut term.exprs);
+    let matches = std::mem::take(&mut term.matches);
+    let unforgeables = std::mem::take(&mut term.unforgeables);
+    let bundles = std::mem::take(&mut term.bundles);
+    let connectives = std::mem::take(&mut term.connectives);
+    let conditionals = std::mem::take(&mut term.conditionals);
+    let locally_free = std::mem::take(&mut term.locally_free);
+    let connective_used = term.connective_used;
 
     work.push(SubWork::Combine(SubKont::ParK {
         unforgeables,

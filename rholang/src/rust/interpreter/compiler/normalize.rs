@@ -219,9 +219,12 @@ pub(crate) fn descend_proc<'ast>(
                 ),
 
                 // Arithmetic
-                rholang_parser::ast::BinaryExpOp::Add => {
-                    Ok(descend_binary(*left, *right, input, Box::new(EPlus::default())))
-                }
+                rholang_parser::ast::BinaryExpOp::Add => Ok(descend_binary(
+                    *left,
+                    *right,
+                    input,
+                    Box::new(EPlus::default()),
+                )),
                 rholang_parser::ast::BinaryExpOp::Sub => Ok(descend_binary(
                     *left,
                     *right,
@@ -230,41 +233,86 @@ pub(crate) fn descend_proc<'ast>(
                 )),
                 rholang_parser::ast::BinaryExpOp::Mult => {
                     use models::rhoapi::EMult;
-                    Ok(descend_binary(*left, *right, input, Box::new(EMult::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EMult::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Div => {
                     use models::rhoapi::EDiv;
-                    Ok(descend_binary(*left, *right, input, Box::new(EDiv::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EDiv::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Mod => {
                     use models::rhoapi::EMod;
-                    Ok(descend_binary(*left, *right, input, Box::new(EMod::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EMod::default()),
+                    ))
                 }
 
                 // Comparison operators
                 rholang_parser::ast::BinaryExpOp::Eq => {
                     use models::rhoapi::EEq;
-                    Ok(descend_binary(*left, *right, input, Box::new(EEq::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EEq::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Neq => {
                     use models::rhoapi::ENeq;
-                    Ok(descend_binary(*left, *right, input, Box::new(ENeq::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(ENeq::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Lt => {
                     use models::rhoapi::ELt;
-                    Ok(descend_binary(*left, *right, input, Box::new(ELt::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(ELt::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Lte => {
                     use models::rhoapi::ELte;
-                    Ok(descend_binary(*left, *right, input, Box::new(ELte::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(ELte::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Gt => {
                     use models::rhoapi::EGt;
-                    Ok(descend_binary(*left, *right, input, Box::new(EGt::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EGt::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Gte => {
                     use models::rhoapi::EGte;
-                    Ok(descend_binary(*left, *right, input, Box::new(EGte::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EGte::default()),
+                    ))
                 }
 
                 // Set/String operations
@@ -290,11 +338,21 @@ pub(crate) fn descend_proc<'ast>(
                 // Boolean operators
                 rholang_parser::ast::BinaryExpOp::Or => {
                     use models::rhoapi::EOr;
-                    Ok(descend_binary(*left, *right, input, Box::new(EOr::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EOr::default()),
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::And => {
                     use models::rhoapi::EAnd;
-                    Ok(descend_binary(*left, *right, input, Box::new(EAnd::default())))
+                    Ok(descend_binary(
+                        *left,
+                        *right,
+                        input,
+                        Box::new(EAnd::default()),
+                    ))
                 }
 
                 // String interpolation
@@ -321,10 +379,7 @@ pub(crate) fn descend_proc<'ast>(
             if_true,
             if_false,
         } => Ok(p::p_if_normalizer::descend_p_if(
-            *condition,
-            *if_true,
-            *if_false,
-            input,
+            *condition, *if_true, *if_false, input,
         )),
 
         // Method - handle method calls
@@ -337,7 +392,10 @@ pub(crate) fn descend_proc<'ast>(
         )),
 
         // Bundle - handle bundle constructs
-        Proc::Bundle { bundle_type, proc: body } => Ok(p::p_bundle_normalizer::descend_p_bundle(
+        Proc::Bundle {
+            bundle_type,
+            proc: body,
+        } => Ok(p::p_bundle_normalizer::descend_p_bundle(
             *bundle_type,
             *body,
             input,
@@ -363,9 +421,7 @@ pub(crate) fn descend_proc<'ast>(
         )),
 
         // New - handle name declarations and scoping
-        Proc::New { decls, proc: body } => {
-            p::p_new_normalizer::descend_p_new(decls, *body, input)
-        }
+        Proc::New { decls, proc: body } => p::p_new_normalizer::descend_p_new(decls, *body, input),
 
         // Contract - handle contract declarations
         Proc::Contract {
@@ -429,7 +485,12 @@ pub(crate) fn descend_proc<'ast>(
             body,
             concurrent,
         } => Ok(p::p_let_normalizer::descend_p_let(
-            bindings, *body, *concurrent, proc.span, input, parser,
+            bindings,
+            *body,
+            *concurrent,
+            proc.span,
+            input,
+            parser,
         )),
 
         // VarRef - handle variable references
@@ -593,7 +654,6 @@ pub(crate) fn combine_binary<'ast>(
     }
 }
 
-
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 // inside this source file we tested unary and binary operations, because we don't have separate normalizers for them.
 #[cfg(test)]
@@ -680,7 +740,7 @@ mod tests {
             let mut par = inputs.par.clone();
             par.connectives.push(models::rhoapi::Connective {
                 connective_instance: Some(
-                    models::rhoapi::connective::ConnectiveInstance::ConnNotBody(Par {
+                    models::rhoapi::connective::ConnectiveInstance::ConnNotBody(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(models::rhoapi::expr::ExprInstance::GBool(false)),
                         }],
@@ -1005,7 +1065,7 @@ mod tests {
             Expr {
                 expr_instance: Some(ExprInstance::EMinusBody(EMinus {
                     p1: Some(new_boundvar_par(2, create_bit_vector(&vec![2]), false)),
-                    p2: Some(Par {
+                    p2: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EMultBody(EMult {
                                 p1: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),

@@ -59,7 +59,7 @@ end note
 note bottom of BORDER #F3E5F5
   <b><latex>\mathrm{locally\_free}</latex> is blanked to eight zero bytes on the bincode lane ONLY.</b>
   It is real <i>bytes</i> on the protobuf wire
-  (12 fields, asserted <i>ProstKind::Bytes</i>). A shared table would
+  (12 fields, asserted <i>ProtobufKind::Bytes</i>). A shared table would
   have erased the asymmetry. (<i>7c74260d</i>.)
 end note
 

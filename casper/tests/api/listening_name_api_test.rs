@@ -44,7 +44,7 @@ async fn get_listening_name_data_response_should_work_with_unsorted_channels() {
         .await
         .unwrap();
 
-    let listening_name = Par {
+    let listening_name = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(2)),
@@ -59,7 +59,7 @@ async fn get_listening_name_data_response_should_work_with_unsorted_channels() {
         ..Default::default()
     };
 
-    let result_data = Par {
+    let result_data = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(0)),
         }],
@@ -119,14 +119,14 @@ async fn get_listening_name_data_response_should_work_across_a_chain() {
         .await
         .unwrap();
 
-    let listening_name = Par {
+    let listening_name = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(0)),
         }],
         ..Default::default()
     };
 
-    let result_data = Par {
+    let result_data = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(0)),
         }],
@@ -314,7 +314,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
         .unwrap();
 
     let listening_names_shuffled1 = vec![
-        Par {
+        models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(1)),
@@ -325,7 +325,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
             ],
             ..Default::default()
         },
-        Par {
+        models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(2)),
@@ -344,7 +344,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
     let desired_result = WaitingContinuationInfo {
         post_block_patterns: vec![
             BindPattern {
-                patterns: vec![Par {
+                patterns: vec![models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GInt(1)),
                     }],
@@ -354,7 +354,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
                 free_count: 0,
             },
             BindPattern {
-                patterns: vec![Par {
+                patterns: vec![models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GInt(0)),
                     }],
@@ -364,7 +364,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
                 free_count: 0,
             },
         ],
-        post_block_continuation: Some(Par {
+        post_block_continuation: Some(models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GInt(0)),
             }],
@@ -394,7 +394,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
     assert_eq!(length1, 1);
 
     let listening_names_shuffled2 = vec![
-        Par {
+        models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(2)),
@@ -408,7 +408,7 @@ async fn get_listening_name_continuation_response_should_work_with_unsorted_chan
             ],
             ..Default::default()
         },
-        Par {
+        models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(1)),

@@ -1,7 +1,5 @@
-//! Zipper wrapper types for integrating PathMap zippers with Rholang Par types.
-//!
-//! This module provides wrapper types that bridge PathMap's zipper API with Rholang's process-oriented
-//! data model. Operations work on Par values as the unit of operation rather than raw bytes.
+//! Lossless conversion between canonical PathMap byte keys and Rholang zipper
+//! cursors.
 //!
 //! # ★ WHAT IS DELIBERATELY ABSENT, AND WHY IT CANNOT BE WRITTEN HERE
 //!
@@ -37,114 +35,12 @@
 //! `models/tests/pathmap_integration_tests.rs`'s
 //! `the_retired_unconditional_terminate_rule_is_unspellable` pins that.
 //!
-//! ★ A replacement cursor move is not forbidden — it is *re-typed*. It must
-//! take `(cursor_segments, path_par, map)` and call `entry_key_at`, which is a
-//! DIFFERENT signature from the deleted `(&mut self, path: &Par)`. The
-//! deletion therefore corrects the capability rather than removing it: a
-//! caller cannot re-acquire the old answer by re-adding the old name.
-//!
-//! `RholangWriteZipper` and `RholangZipperHead` went with them. Both had
-//! zero users of any method, and both existed only to host the deleted move;
-//! keeping constructors that no code calls, for a type whose only positioning
-//! API was the retired rule, is how the rule survived its own refutation the
-//! first time.
+//! The former wrapper objects were removed: their unused `to_par` method
+//! returned an empty EPathMap placeholder rather than the represented cursor.
+//! Runtime operations retain the real `EPathMap` plus `(segments,
+//! CursorKind)` and dispatch directly to its set/map-specialized PathMap APIs.
 
-use pathmap::zipper::ReadZipperUntracked;
-
-use super::pathmap_integration::{entry_key_at, CursorKind, RholangPathMap};
-use crate::rhoapi::{EPathMap, Par};
-
-/// Wrapper for PathMap ReadZipper that maintains Rholang context
-pub struct RholangReadZipper<'a, 'path> {
-    pub(crate) zipper: ReadZipperUntracked<'a, 'path, Par>,
-    pub(crate) connective_used: bool,
-    pub(crate) locally_free: Vec<u8>,
-}
-
-impl<'a, 'path> RholangReadZipper<'a, 'path> {
-    /// Create a new read zipper from a PathMap at root
-    pub fn new(map: &'a RholangPathMap, connective_used: bool, locally_free: Vec<u8>) -> Self {
-        RholangReadZipper {
-            zipper: map.read_zipper(),
-            connective_used,
-            locally_free,
-        }
-    }
-
-    /// Create a new read zipper at a specific path
-    ///
-    /// `path` is the WHOLE path, so its key is the codec's own
-    /// [`entry_key_at`] at the root — bit for bit the key
-    /// `create_pathmap_from_elements` inserted the entry under, whichever arm
-    /// it took. Reconstructing it from the path's per-element segments and
-    /// appending the split terminator unconditionally is the retired rule this
-    /// module's documentation names; for a bare (non-list) path it addresses
-    /// the SINGLETON LIST instead.
-    ///
-    /// ★ **Retained deliberately with no caller.** It is this module's only
-    /// exemplar of the corrected law, and it is the sanctioned replacement for
-    /// the deleted `descend_to` at the root. Deleting it would leave the module
-    /// with no positioning API at all — which is the state in which the retired
-    /// rule was written the first time. Being `pub` in a library crate, it
-    /// costs no `dead_code` diagnostic to keep.
-    pub fn new_at_path(
-        map: &'a RholangPathMap,
-        path: &Par,
-        connective_used: bool,
-        locally_free: Vec<u8>,
-    ) -> Result<RholangReadZipper<'a, 'static>, String> {
-        let key = entry_key_at(&[], path, map);
-        // Use the owned version since we can't return a reference to local key
-        Ok(RholangReadZipper {
-            zipper: map.read_zipper_at_path(key),
-            connective_used,
-            locally_free,
-        })
-    }
-
-    /// Get the value at the current position
-    pub fn get_val(&self) -> Option<&Par> {
-        use pathmap::zipper::ZipperValues;
-        self.zipper.val()
-    }
-
-    /// Check if there's a value at current position
-    pub fn has_val(&self) -> bool {
-        use pathmap::zipper::Zipper;
-        self.zipper.is_val()
-    }
-
-    /// Check if the current path exists
-    pub fn path_exists(&self) -> bool {
-        use pathmap::zipper::Zipper;
-        self.zipper.path_exists()
-    }
-
-    /// Convert zipper to Par representation
-    /// This creates a special Par that represents the zipper state
-    pub fn to_par(&self) -> Par {
-        // For now, we'll represent the zipper as a special PathMap
-        // In a full implementation, we'd need a custom Expr type for zippers
-        // We'll create an empty PathMap as a placeholder since we can't easily
-        // extract the underlying PathMap from the zipper
-        // EPathMap fix P3 (PM-2): constructor instead of a struct literal
-        // (the wrapper's shadow cell is private).
-        let empty_pathmap = EPathMap::new(
-            vec![],
-            self.locally_free.clone(),
-            self.connective_used,
-            None,
-        );
-
-        // Create a special Par that represents a read zipper
-        // We'll use a special marker to identify it as a zipper
-        Par::default().with_exprs(vec![crate::rhoapi::Expr {
-            expr_instance: Some(crate::rhoapi::expr::ExprInstance::EPathmapBody(
-                empty_pathmap,
-            )),
-        }])
-    }
-}
+use super::pathmap_integration::CursorKind;
 
 /// Split a codec trie key back into its per-element segments (W2b-1): the
 /// parser-state successor to the retired `split(0xFF)`. Segment boundaries
@@ -162,9 +58,7 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
 /// retired unconditional-terminate rule, verbatim. The forward direction is
 /// [`cursor_entry_key`](super::pathmap_integration::cursor_entry_key), which
 /// spends the split/bare discriminator this function recovers.
-pub(crate) fn unflatten_segments(flattened: &[u8]) -> Vec<Vec<u8>> {
-    decode_cursor(flattened).0
-}
+pub(crate) fn unflatten_segments(flattened: &[u8]) -> Vec<Vec<u8>> { decode_cursor(flattened).0 }
 
 /// Split a codec trie key back into the CURSOR that names it: the per-element
 /// segments AND the split/bare discriminator.

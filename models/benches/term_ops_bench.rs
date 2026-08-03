@@ -273,7 +273,7 @@ const IR_RATIO_CEILING: f64 = 1.20;
 const IR_RATIO_MEASURED: f64 = 1.1079;
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -282,7 +282,7 @@ fn gint(n: i64) -> Par {
 }
 
 fn gstr(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -298,7 +298,7 @@ fn gstr(s: &str) -> Par {
 /// benchmarks' shallow readings are about the same terms. Returns the `Par`
 /// directly rather than a `ListParWithRandom`, because `Clone` is the subject.
 fn datum(depth: usize) -> Par {
-    let mut body = Par {
+    let mut body = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(42)),
@@ -319,7 +319,7 @@ fn datum(depth: usize) -> Par {
         ..Default::default()
     };
     for level in 1..depth {
-        body = Par {
+        body = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(if level % 2 == 0 {
                     ExprInstance::ETupleBody(ETuple {
@@ -347,7 +347,7 @@ fn datum(depth: usize) -> Par {
 fn spine(depth: usize) -> Par {
     let mut p = gint(0);
     for _ in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![p],

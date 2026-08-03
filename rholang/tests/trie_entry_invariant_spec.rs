@@ -1,102 +1,15 @@
-//! ★ THE TRIE ENTRY INVARIANT, over the tries the INTERPRETER produces.
+//! Set-mode PathMap integration through the interpreter.
 //!
-//! ```math
-//! \forall (k, v) \in m .\quad \mathrm{encode\_trie\_path}(v) = k
-//! ```
-//!
-//! # What the invariant is, and why the whole read side rests on it
-//!
-//! A `RholangPathMap` is not a general map. It is a *set of Par entries indexed
-//! by their own codec path*: `create_pathmap_from_elements`
-//! (`models/src/rust/pathmap_integration.rs`) writes
-//! `map.insert(encode_trie_path(par), par.clone())`, so **the value is a
-//! redundant mirror of the key** — as `reduce.rs` states it at the `setSubtrie`
-//! step-3b insert, *"A PathMap entry is both its own key and its own value."*
-//!
-//! That redundancy is spent in two OPPOSITE directions by two readers:
-//!
-//! ```text
-//!                          ┌────────────────────────────────┐
-//!                          │   RholangPathMap  (k ↦ v)      │
-//!                          └───────────┬────────────────────┘
-//!            reads the VALUE           │          reads the KEYS
-//!            AT ONE KEY                │      (to_next_val + decode_trie_path)
-//!         (PathMap::get)               │                 ▼
-//!                    ▼                 │       canonical_ps_from_trie
-//!   getLeaf (reduce.rs), the fused     │       → EVERY EPathMap the reducer
-//!   chain's get, values_with_prefix    │         hands back to a program, AND
-//!   (pathmap_native_query.rs)          │         the serde / EVENT-HASH preimage
-//! ```
-//!
-//! The two agree on a map **exactly when this invariant holds**, and there is
-//! no other reason for them to agree. A producer that files a value under a key
-//! the value does not encode to therefore makes a program's `getLeaf` disagree
-//! with the same program's enumeration of the same map.
-//!
-//! # ⚠ What changed, and why this file is still load-bearing
-//!
-//! The left-hand side of that diagram used to be
-//! `rholang_pathmap_to_e_pathmap`, the BULK converter behind every
-//! `EPathMap`-returning method in the reducer. It walked `PathMap::iter()` and
-//! dropped the keys. It now walks the keys, so the two BULK readers have become
-//! one and **cannot disagree — there is no second bulk reader to be wrong**
-//! (defects #89 and #91 are unrepresentable, not fixed).
-//!
-//! What survives on the value side is the **point lookup**: `getLeaf`, the fused
-//! chain's `get`, and `values_with_prefix` all return `map.get(key)`. Those
-//! answers equal `decode_trie_path(key)` only while this invariant holds, so the
-//! invariant is not vacuous and this file is not obsolete — its subject has
-//! narrowed from "two bulk traversals" to "the point lookups versus the bulk
-//! one".
-//!
-//! # Why the failure is entry LOSS, not merely disagreement
-//!
-//! A value read is lossy under re-insertion. Two DISTINCT keys carrying the SAME
-//! value yield two identical entries — the cardinality still looks right — and
-//! the very next `e_pathmap_to_rholang_pathmap` re-keys both to
-//! `encode_trie_path(v)` and merges them:
-//!
-//! ```text
-//!   k₁ ↦ v          ps = [v, v]        encode_trie_path(v) ↦ v
-//!   k₂ ↦ v   ────▶  (len 2 — looks    ────▶   ONE entry.
-//!                    correct!)                 ENTRIES ARE LOST.
-//! ```
-//!
-//! This is why every cardinality assertion on `ps` is blind to the defect, and
-//! why the assertions in this file are on ENTRIES.
-//!
-//! # How this file checks "every trie the interpreter produces"
-//!
-//! Two layers, both required:
-//!
-//! 1. **The guard.** `rholang_pathmap_to_e_pathmap` is the single point every
-//!    trie in the system passes through on its way back to a value, and it
-//!    asserts the invariant under `#[cfg(debug_assertions)]` (release builds —
-//!    consensus nodes — compile it out). Every test in the workspace therefore
-//!    exercises the invariant on every map it touches, and a producer bug is
-//!    named at the first moment it is visible rather than at the distant point
-//!    where entries go missing. The guard SURVIVED the converter's move to the
-//!    key side — deleting it would have been tidy and wrong, because the point
-//!    lookups it now protects still read values.
-//! 2. **The matrix below.** The guard proves nothing about a case no test
-//!    drives, and until this file existed *no test drove a `setSubtrie` whose
-//!    source held a non-list entry* — `rholang/tests/setsubtrie_spec.rs` has
-//!    five tests, every one of which asserts only that evaluation raised no
-//!    errors, and every source entry in all of them is a ground list. The
-//!    matrix drives BOTH codec arms on both sides of the composition and
-//!    asserts the resulting ENTRIES.
-//!
-//! The model-level twin (the invariant over every trie the `models` crate can
-//! build, exhaustively) is
-//! `models/tests/pathmap_integration_tests.rs::every_trie_this_crate_builds_upholds_the_entry_invariant`.
+//! `RholangSetPathMap` is a prefix-compressed `PathMap<()>`: membership lives in
+//! canonical byte keys and there is no redundant `Par` value slot. These tests
+//! drive the reducer's set-subtrie, union, and restriction paths and verify the
+//! exact program-visible EPathMap members after each algebraic composition.
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::{
-    create_pathmap_from_elements, render_trie_entry_divergences, trie_entry_divergences,
-};
+use models::rust::pathmap_integration::create_set_pathmap_from_elements;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
@@ -178,7 +91,7 @@ fn entries_by_key(entries: &[Par]) -> Vec<(Vec<u8>, Par)> {
 /// entries survive a re-insertion (i.e. no two of them are the same entry).
 #[track_caller]
 fn assert_entries(case: &str, actual: &EPathMap, expected: &[Par]) {
-    let actual_entries: Vec<Par> = actual.ps().iter().cloned().collect();
+    let actual_entries = actual.entry_trie().entries_owned();
 
     assert_eq!(
         entries_by_key(&actual_entries),
@@ -188,23 +101,14 @@ fn assert_entries(case: &str, actual: &EPathMap, expected: &[Par]) {
 
     // The re-insertion leg: a map holding two copies of one entry has already
     // lost an entry, and `ps.len()` cannot see it.
-    let rebuilt = create_pathmap_from_elements(&actual_entries, None);
+    let rebuilt = create_set_pathmap_from_elements(&actual_entries, None);
     assert_eq!(
         rebuilt.map.val_count(),
         expected.len(),
         "{case}: {} entries came back but only {} survive re-insertion — \
-         distinct keys shared a value and the map has lost entries",
+         canonical set members collapsed unexpectedly",
         actual_entries.len(),
         rebuilt.map.val_count()
-    );
-
-    // …and the rebuilt trie upholds the invariant (it must: it was built by the
-    // codec — this is the anchor that makes the comparison above meaningful).
-    let divergences = trie_entry_divergences(&rebuilt.map);
-    assert!(
-        divergences.is_empty(),
-        "{case}: {}",
-        render_trie_entry_divergences(&divergences)
     );
 }
 
@@ -216,18 +120,12 @@ fn assert_entries(case: &str, actual: &EPathMap, expected: &[Par]) {
 //
 //     key(entry) = concat(cursor segments) ‖ concat(source segments) ‖ 0x00
 //
-// The key route asks `par_to_path` — the codec's own split/bare classifier —
-// which yields one segment per element for a ground-list carrier and ONE
-// segment for anything else. The value stored under that key must therefore be
-// the ground list of the cursor's elements followed by the source entry's
-// elements, where a BARE source entry contributes ITSELF as a single element.
-//
-// The composed key always carries the `0x00` terminator, so it always names a
-// ground LIST; that is what makes the value a list even when the source entry
-// was not one, and it is why the root-cursor case below is a `witness_`.
+// The codec's split/bare classifier yields one segment per element for a
+// ground-list carrier and one segment for anything else. `setSubtrie` composes
+// those segments and stores only the resulting canonical set key. The composed
+// key carries the `0x00` terminator and therefore denotes a ground-list member.
 
-/// A single-entry source on the BARE arm. The key gains the element's segment;
-/// the value must gain the element.
+/// A single-entry source on the BARE arm. The composed member gains the element.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn set_subtrie_with_one_bare_source_entry_keeps_the_element() {
     let map = out_pathmap(
@@ -243,9 +141,7 @@ async fn set_subtrie_with_one_bare_source_entry_keeps_the_element() {
 }
 
 /// ★ **THE ENTRY-LOSS CASE.** Two BARE source entries produce two DISTINCT
-/// keys. If the value route does not follow the key route, both keys receive
-/// the SAME value — the cursor path alone — and the two entries collapse into
-/// one the moment the map is re-inserted anywhere.
+/// keys and therefore two distinct absolute set members.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn set_subtrie_with_two_bare_source_entries_keeps_both() {
     let map = out_pathmap(
@@ -381,16 +277,12 @@ async fn witness_set_subtrie_at_the_root_wraps_a_bare_source_entry() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The guard's own coverage — that the invariant check is REACHED
+// Reducer-to-PathMap conversion coverage
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The guard in `rholang_pathmap_to_e_pathmap` is only worth anything if the
-/// reducer actually routes through it. A `setSubtrie` result is produced by
-/// that converter, so the map returned above passed the check — and this test
-/// says so by re-running the check on the value the program observed, which is
-/// the same statement from the outside.
+/// Every returned map remains a lossless set when adopted and rebuilt.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_map_the_reducer_returns_upholds_the_invariant() {
+async fn every_map_the_reducer_returns_round_trips_losslessly() {
     for (prefix, program) in [
         (
             "trie-inv-guard-a-",
@@ -410,14 +302,8 @@ async fn every_map_the_reducer_returns_upholds_the_invariant() {
         ),
     ] {
         let map = out_pathmap(prefix, program).await;
-        let entries: Vec<Par> = map.ps().iter().cloned().collect();
-        let rebuilt = create_pathmap_from_elements(&entries, None);
-        let divergences = trie_entry_divergences(&rebuilt.map);
-        assert!(
-            divergences.is_empty(),
-            "{program}:{}",
-            render_trie_entry_divergences(&divergences)
-        );
+        let entries = map.entry_trie().entries_owned();
+        let rebuilt = create_set_pathmap_from_elements(&entries, None);
         assert_eq!(
             rebuilt.map.val_count(),
             entries.len(),
@@ -426,10 +312,12 @@ async fn every_map_the_reducer_returns_upholds_the_invariant() {
             entries.len(),
             rebuilt.map.val_count()
         );
-        // The converter is the guard's home; running the returned map back
-        // through it exercises the check on a value that has crossed the
-        // tuplespace.
-        let _ =
-            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&rebuilt.map, false, &[], None);
+        // Exercise adoption after the value has crossed the tuplespace.
+        let _ = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
+            &rebuilt.map,
+            false,
+            &[],
+            None,
+        );
     }
 }

@@ -24,7 +24,7 @@ use models::rhoapi::{EList, Expr, ListParWithRandom, Par, Send};
 use models::rust::rholang::bincode_encoder::{encode, with_encoded};
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -35,7 +35,7 @@ fn gint(n: i64) -> Par {
 /// The production shape: depth 2, which is 95.43% of measured produces.
 fn datum() -> ListParWithRandom {
     ListParWithRandom {
-        pars: vec![Par {
+        pars: vec![models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![gint(1), gint(2), gint(3)],
@@ -60,7 +60,7 @@ fn datum() -> ListParWithRandom {
 fn deep(depth: usize) -> Par {
     let mut par = Par::default();
     for _ in 0..depth {
-        par = Par {
+        par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![par],

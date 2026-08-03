@@ -56,10 +56,7 @@ const EPATHMAP_HEAVY_PROGRAM: &str = r#"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
     let mut kvm = InMemoryStoreManager::new();
-    let store = kvm
-        .r_space_stores()
-        .await
-        .expect("in-memory rspace store");
+    let store = kvm.r_space_stores().await.expect("in-memory rspace store");
     let mut additional_system_processes = Vec::new();
     let (mut runtime, mut replay_runtime, _history) =
         create_runtimes(store, false, &mut additional_system_processes).await;

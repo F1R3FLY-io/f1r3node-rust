@@ -154,7 +154,7 @@ mod zipper_advanced_navigation_tests {
     #[test]
     fn test_child_count() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Count children at root. W2b-1 re-key (why bytes moved): child
@@ -170,7 +170,7 @@ mod zipper_advanced_navigation_tests {
     #[test]
     fn test_child_count_at_branch() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Count children at ["a"]
@@ -222,7 +222,7 @@ mod zipper_advanced_navigation_tests {
     #[test]
     fn test_descend_first() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Get first child at root. W2b-1 re-key (why bytes moved): the codec
@@ -240,7 +240,7 @@ mod zipper_advanced_navigation_tests {
     #[test]
     fn test_descend_indexed_branch() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Get all children at root

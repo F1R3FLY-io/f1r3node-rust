@@ -35,6 +35,9 @@
 //!   cargo test -p rholang --test stack_depth_probe -- --ignored --exact probe
 //! ```
 
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Connective, ConnectiveBody, EList, Expr, New, Par, Receive, ReceiveBind};
@@ -52,37 +55,13 @@ use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
-use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
-
-// ---------------------------------------------------------------------------
-// ⚠ Some probe SETUPS are themselves Θ(depth)
-//
-// `bincode::serialize`, `sort_match` and `Env::put` all recurse with the term,
-// so performing them on the bisected probe thread would make the reading
-// `max(setup, subject)` rather than the subject. Running the setup on a stack
-// that is never the constraint restores the isolation discipline the module
-// documentation promises: ONE traversal per number.
-// ---------------------------------------------------------------------------
-
-/// Run `f` on a thread whose stack is large enough never to bind, and hand back
-/// its result. 1 GiB is address space, not resident memory.
-fn on_a_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    std::thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
-        .name("probe-setup".to_string())
-        .spawn(f)
-        .expect("stack_depth_probe: failed to spawn the setup thread")
-        .join()
-        .expect("stack_depth_probe: setup thread panicked")
-}
 
 // ---------------------------------------------------------------------------
 // term builders — all ITERATIVE (bottom-up), so O(1) native stack.
 // ---------------------------------------------------------------------------
 
 fn expr_par(ei: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ei),
         }],
@@ -164,7 +143,7 @@ fn nested_binders(depth: usize) -> Par {
             connective_used: false,
             condition: None,
         };
-        let inner = Par {
+        let inner = models::par_from_default! {
             receives: vec![receive],
             ..Default::default()
         };
@@ -175,7 +154,7 @@ fn nested_binders(depth: usize) -> Par {
             injections: BTreeMap::new(),
             locally_free: vec![],
         };
-        p = Par {
+        p = models::par_from_default! {
             news: vec![new_scope],
             ..Default::default()
         };
@@ -190,7 +169,7 @@ fn nested_binders(depth: usize) -> Par {
 fn nested_conn_and(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
-        p = Par {
+        p = models::par_from_default! {
             connectives: vec![Connective {
                 connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
                     ps: vec![p],
@@ -217,7 +196,7 @@ fn wide_list(width: usize) -> Par {
 /// siblings to order and its comparator has `width` score-tree children to
 /// walk. The width analogue of `nested_list` for the sorter family.
 fn wide_pair(width: usize) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![wide_list_expr(width), wide_list_expr(width)],
         ..Default::default()
     }
@@ -238,16 +217,9 @@ fn nested_nots(depth: usize) -> Par {
 
 /// `{{{…{0}…}}}` — `depth` nested `ESet`s.
 ///
-/// ⚠ THE NAMED RESIDUAL OF LEG-2 STAGE C-2. The `ESetBody` arm of the sorter
-/// is deliberately NOT worklisted: it routes its elements through
-/// `SortedParHashSet`, which re-enters `ParSortMatcher::sort_match` on OWNED
-/// intermediates (the deduplicated set) rather than on sub-terms of the input.
-/// Each re-entry is its own bounded drive, so a chain of `n` nested sets costs
-/// `n` drive frames rather than `n` sorter frames — and, underneath that,
-/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each of which
-/// is Θ(depth) in its own right (audit row 5, disposition "Leg-1 only: remove
-/// the call sites, not the impl"). No conversion of the SORTER can remove
-/// those. This probe measures what is left instead of assuming it away.
+/// Its sole member is exposed to the same explicit-worklist sorter at every
+/// level. This is the depth-axis measurement for the collection combine and
+/// the fast path that avoids hashing a unary set.
 fn nested_sets(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
@@ -261,7 +233,7 @@ fn nested_sets(depth: usize) -> Par {
     p
 }
 
-/// The `EMap` counterpart of [`nested_sets`], for the same reason.
+/// The `EMap` counterpart of [`nested_sets`].
 fn nested_maps(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
@@ -372,9 +344,9 @@ fn run_probe(what: &str, depth: usize) {
             std::mem::forget(t);
         }
         "clone_nested_set" => {
-            // The CONTROL for `sort_nested_set`: the derived `<Par as Clone>`
-            // over the same shape. If the two agree, what is left in the set
-            // arm is the derived-traversal class and not the sorter.
+            // An independent generated-Clone subject over the same ESet shape.
+            // The sorter subjects are now converted in their own right; this
+            // probe remains useful for guarding the container arm of `Par::clone`.
             let t = nested_sets(depth);
             let c = t.clone();
             std::mem::forget(c);
@@ -420,12 +392,10 @@ fn run_probe(what: &str, depth: usize) {
             // element performs ZERO comparisons — so `compare_score` is never
             // entered and a gate built on `nested_list` alone would pass with
             // the comparator untouched.
-            let mut scored = on_a_big_stack(move || {
-                vec![
-                    ExprSortMatcher::sort_match(&nested_list_expr(depth, 1)),
-                    ExprSortMatcher::sort_match(&nested_list_expr(depth, 0)),
-                ]
-            });
+            let mut scored = vec![
+                ExprSortMatcher::sort_match(&nested_list_expr(depth, 1)),
+                ExprSortMatcher::sort_match(&nested_list_expr(depth, 0)),
+            ];
             ScoredTerm::sort_vec(&mut scored);
             std::mem::forget(scored);
         }
@@ -434,33 +404,31 @@ fn run_probe(what: &str, depth: usize) {
             // IDENTICAL lists: every head pair compares `Equal`, so
             // `compare_score_nodes` must recurse over the whole tail.
             let width = depth;
-            let mut scored = on_a_big_stack(move || {
-                vec![
-                    ExprSortMatcher::sort_match(&wide_list_expr(width)),
-                    ExprSortMatcher::sort_match(&wide_list_expr(width)),
-                ]
-            });
+            let mut scored = vec![
+                ExprSortMatcher::sort_match(&wide_list_expr(width)),
+                ExprSortMatcher::sort_match(&wide_list_expr(width)),
+            ];
             ScoredTerm::sort_vec(&mut scored);
             std::mem::forget(scored);
         }
         "tree_drop" => {
-            let score = on_a_big_stack(move || score_of(depth));
+            let score = score_of(depth);
             drop(score);
         }
         "tree_clone" => {
-            let score = on_a_big_stack(move || score_of(depth));
+            let score = score_of(depth);
             let c = score.clone();
             std::mem::forget(c);
             std::mem::forget(score);
         }
         "tree_eq" => {
-            let (a, b) = on_a_big_stack(move || (score_of(depth), score_of(depth)));
+            let (a, b) = (score_of(depth), score_of(depth));
             assert!(a == b, "stack_depth_probe: tree_eq built unequal scores");
             std::mem::forget(a);
             std::mem::forget(b);
         }
 
-        // ---- derived Clone / Drop / PartialEq for the recursive prost types ----
+        // ---- generated Clone/Eq and destructor subjects for recursive messages ----
         "clone" => {
             let t = nested_list(depth);
             let c = t.clone();
@@ -570,10 +538,8 @@ fn run_probe(what: &str, depth: usize) {
         // differ ONLY in how deep the bound value is, so their difference
         // isolates the environment clone from the binder recursion itself.
         "subst_binders" => {
-            let env = on_a_big_stack(move || {
-                let mut base: Env<Par> = Env::new();
-                base.put(nested_list(depth))
-            });
+            let mut base: Env<Par> = Env::new();
+            let env = base.put(nested_list(depth));
             let t = nested_binders(depth);
             let s = substitute_instance();
             let out = s
@@ -586,10 +552,8 @@ fn run_probe(what: &str, depth: usize) {
             // The DRIVER alone: `substitute` ends in one `sort_match`, which is
             // still Θ(depth) until Stage C, so the sorted entry point cannot
             // attribute a residual to the driver.
-            let env = on_a_big_stack(move || {
-                let mut base: Env<Par> = Env::new();
-                base.put(nested_list(depth))
-            });
+            let mut base: Env<Par> = Env::new();
+            let env = base.put(nested_list(depth));
             let t = nested_binders(depth);
             let s = substitute_instance();
             let out = s
@@ -606,10 +570,8 @@ fn run_probe(what: &str, depth: usize) {
             // BOUND VALUE), not of the term being traversed. Identical in the
             // recursive form; this arm exists so the residual is measured
             // rather than assumed.
-            let env = on_a_big_stack(move || {
-                let mut base: Env<Par> = Env::new();
-                base.put(nested_list(depth))
-            });
+            let mut base: Env<Par> = Env::new();
+            let env = base.put(nested_list(depth));
             let t = expr_par(ExprInstance::EVarBody(models::rhoapi::EVar {
                 v: Some(models::rhoapi::Var {
                     var_instance: Some(models::rhoapi::var::VarInstance::BoundVar(0)),
@@ -672,17 +634,11 @@ fn run_probe(what: &str, depth: usize) {
         // before/after comparison stays available in one run instead of
         // requiring a checkout of an older commit.
         "bincode_de" | "bincode_de_derived" => {
+            use models::rust::rholang::bincode_encoder::ColdStoreEncode;
             use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
-            // Encode on a stack that never binds, so this arm isolates the
-            // DECODER (the same discipline the `decode` arm above uses). It
-            // matters twice as much now: the ENCODER is still Θ(depth), so an
-            // un-isolated probe would report the encoder's slope.
-            let bytes = on_a_big_stack(move || {
-                let t = nested_list(depth);
-                let b = bincode::serialize(&t).expect("stack_depth_probe: bincode encode failed");
-                std::mem::forget(t);
-                b
-            });
+            let t = nested_list(depth);
+            let bytes = t.cold_encode();
+            std::mem::forget(t);
             let p: Par = if what == "bincode_de_derived" {
                 bincode::deserialize(&bytes).expect("stack_depth_probe: bincode_de failed")
             } else {
@@ -801,8 +757,8 @@ fn run_probe(what: &str, depth: usize) {
             use rho_pure_eval::{eval_with, NoSpatialMatch};
             let t = nested_list(depth);
             let e: Env<Par> = Env::new();
-            let out = eval_with(&t, &e, &NoSpatialMatch)
-                .expect("stack_depth_probe: eval_with failed");
+            let out =
+                eval_with(&t, &e, &NoSpatialMatch).expect("stack_depth_probe: eval_with failed");
             std::mem::forget(out);
             std::mem::forget(t);
         }

@@ -114,29 +114,24 @@
 //! Sorting *reads* its input and builds a fresh output — unlike substitution,
 //! which consumes. Borrowing means the worklist performs **zero** deep copies
 //! on the structural spine: pushing a child is a reference move, never a
-//! `<Par as Clone>::clone` (which is itself Θ(depth) at 15,914 B/level, debug,
-//! and would have re-introduced the very class this conversion removes).
+//! `<Par as Clone>::clone`. Clone is generated as a separate stack-safe PDA,
+//! but avoiding unnecessary copies remains important for time and allocation.
 //!
-//! ## ⚠ Three arms run their own bounded drive
+//! ## Collection arms remain inside the same machine
 //!
-//! `ESetBody`, `EMapBody` and `EPathmapBody` re-enter `ParSortMatcher::
-//! sort_match` on **owned intermediates** (a deduplicated `HashSet`, a
-//! canonicalised trie order) rather than on sub-terms of the input, so they
-//! cannot be borrowed onto this worklist. They are kept verbatim in
-//! [`super::sort_combine`], each re-entry starting a fresh bounded drive.
-//!
-//! That residual is a **tripwire, not a conversion target**, and the
-//! justification is measured rather than asserted: those arms sort each element
-//! three times, so a chain of `n` nested sets costs `3^n` sorts — depth 20 is
-//! 3.5 × 10⁹ sorts and did not terminate in either profile. Deep set nesting is
-//! infeasible in *time* long before the stack residual could bite. What the
-//! tripwire must guarantee is that it does not **regress**: see
-//! `sort_nested_set` / `sort_nested_map` in `rholang/tests/stack_depth_gate.rs`,
-//! pinned at the measured pre-conversion baselines (79,053 / 82,534 B/level,
-//! debug).
+//! `ESetBody` and `EMapBody` expose raw members after their collection-level
+//! duplicate semantics are applied. Set- and map-mode `EPathMap` entries are
+//! enumerated from PathMap in trie order; canonical keys are decoded into arena
+//! storage only for the duration of the PDA walk. Every member is therefore a
+//! normal `NodeKind::Par` child, and each collection combine consumes
+//! already-scored children without starting a nested sorter. The permanent
+//! `sort_nested_set` and `sort_nested_map` ratchets in
+//! `rholang/tests/stack_depth_gate.rs` exercise the full 4 → 4,096 ladder.
 //!
 //! Full analysis, measured constants and proof standard:
 //! `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
+
+use typed_arena::Arena;
 
 use super::score_tree::ScoredTerm;
 use super::sort_combine::{
@@ -144,10 +139,13 @@ use super::sort_combine::{
     combine_match, combine_new, combine_par, combine_receive, combine_send, connective_child_pars,
     empty_par, expr_child_pars, sort_unforgeable, ParParts,
 };
+use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{
-    Bundle, Connective, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind,
-    Send,
+    Bundle, Connective, EPathMap, Expr, GUnforgeable, If, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send,
 };
+use crate::rust::canonical_path::decode_trie_path;
+use crate::rust::epathmap_trie_codec::EPathMapMode;
 use crate::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
 // ===========================================================================
@@ -382,9 +380,7 @@ sort_pop_ix!(pop_unforgeable_ix, Unforgeable, GUnforgeable);
 /// Pop one `Par` value, discarding its index. The whole child run has already
 /// been checked by [`assert_children_are_in_source_order`].
 #[inline]
-fn pop_par(vals: &mut Vec<ValItem>) -> ScoredTerm<Par> {
-    pop_par_ix(vals).1
-}
+fn pop_par(vals: &mut Vec<ValItem>) -> ScoredTerm<Par> { pop_par_ix(vals).1 }
 
 macro_rules! sort_pop_n {
     ($name:ident, $one:ident, $ty:ty) => {
@@ -493,7 +489,7 @@ fn assert_children_are_in_source_order(vals: &[ValItem], arity: usize) {
 /// first (and popped last) carries the highest index.
 #[inline]
 fn push_reversed<'t, T, F>(
-    work: &mut Vec<Step<'t, SortTraversal>>,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
     next: &mut u32,
     items: &'t [T],
     mut f: F,
@@ -519,7 +515,7 @@ fn push_reversed<'t, T, F>(
 
 /// Push one child, tagging it with the next (descending) source index.
 #[inline]
-fn push_one<'t>(work: &mut Vec<Step<'t, SortTraversal>>, next: &mut u32, kind: NodeKind<'t>) {
+fn push_one<'t>(work: &mut Vec<Step<'t, SortTraversal<'_>>>, next: &mut u32, kind: NodeKind<'t>) {
     *next -= 1;
     work.push(Step::Descend(SortNode { idx: *next, kind }));
 }
@@ -528,7 +524,7 @@ fn push_one<'t>(work: &mut Vec<Step<'t, SortTraversal>>, next: &mut u32, kind: N
 // descent — pushes `Combine` first, then children in REVERSE
 // ===========================================================================
 
-fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let kont = SortKont::ParK {
         par,
         n_sends: par.sends.len(),
@@ -558,7 +554,7 @@ fn descend_par<'t>(par: &'t Par, idx: u32, work: &mut Vec<Step<'t, SortTraversal
     debug_assert_eq!(next, 0, "descend_par: slot list and arity disagree");
 }
 
-fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let chan = send
         .chan
         .as_ref()
@@ -574,7 +570,7 @@ fn descend_send<'t>(send: &'t Send, idx: u32, work: &mut Vec<Step<'t, SortTraver
     debug_assert_eq!(next, 0, "descend_send: slot list and arity disagree");
 }
 
-fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     // ⚠ The pre-conversion `sort_bind` evaluates this `expect` BEFORE it sorts
     // any pattern, so a bind with a missing source panics with this message
     // rather than with anything a pattern might raise. Evaluating it here
@@ -594,7 +590,7 @@ fn descend_bind<'t>(bind: &'t ReceiveBind, idx: u32, work: &mut Vec<Step<'t, Sor
     debug_assert_eq!(next, 0, "descend_bind: slot list and arity disagree");
 }
 
-fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let body = recv
         .body
         .as_ref()
@@ -622,7 +618,7 @@ fn descend_receive<'t>(recv: &'t Receive, idx: u32, work: &mut Vec<Step<'t, Sort
     debug_assert_eq!(next, 0, "descend_receive: slot list and arity disagree");
 }
 
-fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let p = new
         .p
         .as_ref()
@@ -643,7 +639,7 @@ fn descend_new<'t>(new: &'t New, idx: u32, work: &mut Vec<Step<'t, SortTraversal
     debug_assert_eq!(next, 0, "descend_new: slot list and arity disagree");
 }
 
-fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let pattern = case
         .pattern
         .as_ref()
@@ -665,7 +661,7 @@ fn descend_case<'t>(case: &'t MatchCase, idx: u32, work: &mut Vec<Step<'t, SortT
     debug_assert_eq!(next, 0, "descend_case: slot list and arity disagree");
 }
 
-fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let target = m
         .target
         .as_ref()
@@ -681,7 +677,7 @@ fn descend_match<'t>(m: &'t Match, idx: u32, work: &mut Vec<Step<'t, SortTravers
     debug_assert_eq!(next, 0, "descend_match: slot list and arity disagree");
 }
 
-fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let condition = cond
         .condition
         .as_ref()
@@ -703,7 +699,7 @@ fn descend_if<'t>(cond: &'t If, idx: u32, work: &mut Vec<Step<'t, SortTraversal>
     debug_assert_eq!(next, 0, "descend_if: slot list and arity disagree");
 }
 
-fn descend_bundle<'t>(bundle: &'t Bundle, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_bundle<'t>(bundle: &'t Bundle, idx: u32, work: &mut Vec<Step<'t, SortTraversal<'_>>>) {
     let body = bundle
         .body
         .as_ref()
@@ -715,7 +711,11 @@ fn descend_bundle<'t>(bundle: &'t Bundle, idx: u32, work: &mut Vec<Step<'t, Sort
     debug_assert_eq!(next, 0, "descend_bundle: slot list and arity disagree");
 }
 
-fn descend_connective<'t>(conn: &'t Connective, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_connective<'t>(
+    conn: &'t Connective,
+    idx: u32,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
+) {
     let mut kids: Vec<&'t Par> = Vec::new();
     connective_child_pars(conn, &mut kids);
     let kont = SortKont::ConnK {
@@ -730,9 +730,55 @@ fn descend_connective<'t>(conn: &'t Connective, idx: u32, work: &mut Vec<Step<'t
     debug_assert_eq!(next, 0, "descend_connective: slot list and arity disagree");
 }
 
-fn descend_expr<'t>(expr: &'t Expr, idx: u32, work: &mut Vec<Step<'t, SortTraversal>>) {
+fn descend_expr<'t>(
+    expr: &'t Expr,
+    idx: u32,
+    decoded_entries: &'t Arena<Par>,
+    work: &mut Vec<Step<'t, SortTraversal<'_>>>,
+) {
+    fn extend_pathmap_children<'t>(
+        pathmap: &'t EPathMap,
+        decoded_entries: &'t Arena<Par>,
+        kids: &mut Vec<&'t Par>,
+    ) {
+        match pathmap.mode() {
+            EPathMapMode::Empty => {}
+            EPathMapMode::Set => {
+                pathmap
+                    .entry_trie()
+                    .for_each_raw_set_entry(|key| {
+                        let entry = decode_trie_path(key)
+                            .expect("set-mode EPathMap keys are canonical Par paths");
+                        kids.push(decoded_entries.alloc(entry));
+                    })
+                    .expect("set-mode dispatch checked before traversal");
+            }
+            EPathMapMode::Map => {
+                pathmap
+                    .entry_trie()
+                    .for_each_raw_map_entry(|key, value| {
+                        let key = decode_trie_path(key)
+                            .expect("map-mode EPathMap keys are canonical Par paths");
+                        kids.push(decoded_entries.alloc(key));
+                        kids.push(value);
+                    })
+                    .expect("map-mode dispatch checked before traversal");
+            }
+        }
+    }
+
     let mut kids: Vec<&'t Par> = Vec::new();
     expr_child_pars(expr, &mut kids);
+    match expr.expr_instance.as_ref() {
+        Some(ExprInstance::EPathmapBody(pathmap)) => {
+            extend_pathmap_children(pathmap, decoded_entries, &mut kids);
+        }
+        Some(ExprInstance::EZipperBody(zipper)) => {
+            let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+            extend_pathmap_children(pathmap, decoded_entries, &mut kids);
+        }
+        _ => {}
+    }
     let kont = SortKont::ExprK {
         expr,
         n: kids.len(),
@@ -772,16 +818,22 @@ fn descend_expr<'t>(expr: &'t Expr, idx: u32, work: &mut Vec<Step<'t, SortTraver
 // it — before any pop.
 
 /// The sorter as a [`Traversal`]. Zero-sized: sorting reads no ambient state.
-pub(crate) struct SortTraversal;
+pub(crate) struct SortTraversal<'arena> {
+    decoded_entries: &'arena Arena<Par>,
+}
 
 /// Sorting cannot fail. `Infallible` states that in the type system rather than
 /// in a comment, and it is what lets [`sort_drive`] have no panic path at all.
 type Never = std::convert::Infallible;
 
-impl Traversal for SortTraversal {
-    type Node<'t> = SortNode<'t>;
+impl<'arena> Traversal for SortTraversal<'arena> {
+    type Node<'t>
+        = SortNode<'t>
+    where Self: 't;
     type Val = ValItem;
-    type Kont<'t> = IxKont<'t>;
+    type Kont<'t>
+        = IxKont<'t>
+    where Self: 't;
     /// Nothing is threaded: the score and the term are both built on the value
     /// stack, and the input is only read.
     type State = ();
@@ -797,7 +849,7 @@ impl Traversal for SortTraversal {
         let SortNode { idx, kind } = node;
         match kind {
             NodeKind::Par(p) => descend_par(p, idx, work),
-            NodeKind::Expr(e) => descend_expr(e, idx, work),
+            NodeKind::Expr(e) => descend_expr(e, idx, self.decoded_entries, work),
             NodeKind::Send(s) => descend_send(s, idx, work),
             NodeKind::Receive(r) => descend_receive(r, idx, work),
             NodeKind::Bind(b) => descend_bind(b, idx, work),
@@ -843,9 +895,7 @@ impl Traversal for SortTraversal {
     /// ★ Delegates to [`SortKont::arity`], which deliberately duplicates the
     /// pop counts in the per-arm combines so the driver's invariants can
     /// cross-check them. Exhaustive there, with no `_` arm.
-    fn arity(kont: &IxKont<'_>) -> usize {
-        kont.kont.arity()
-    }
+    fn arity(kont: &IxKont<'_>) -> usize { kont.kont.arity() }
 }
 
 /// Sort one node, starting a fresh bounded drive.
@@ -853,7 +903,10 @@ impl Traversal for SortTraversal {
 /// Native stack is `O(1)` in both nesting depth and sibling width; the
 /// recursion lives in the driver's heap work stack.
 pub(crate) fn sort_drive(root: NodeKind<'_>) -> SortVal {
-    let mut visitor = SortTraversal;
+    let decoded_entries = Arena::new();
+    let mut visitor = SortTraversal {
+        decoded_entries: &decoded_entries,
+    };
     let mut state = ();
     match drive(
         &mut visitor,
@@ -872,13 +925,10 @@ pub(crate) fn sort_drive(root: NodeKind<'_>) -> SortVal {
 // post-order reassembly — one `#[inline(never)]` function per continuation
 // ===========================================================================
 //
-// ★ Same rationale as the per-arm split of `combine_expr` (see
-// `sort_combine.rs`): at `-O0` rustc does not overlap the stack slots of
-// mutually exclusive `match` arms, and the draft's single `run_combine` was
-// measured by `gdb` at **22,768 bytes**. That frame is harmless on the flat
-// spine but sits on the re-entrant chain of the three self-contained `Expr`
-// arms, once per nesting level. Splitting bounds each arm's frame by its own
-// locals *by construction*, and it is pure code motion.
+// One function per continuation keeps debug-profile frames local to the active
+// arm. At `-O0`, rustc does not overlap stack slots belonging to mutually
+// exclusive match arms; the split therefore minimizes the constant frame of
+// the flat PDA without changing traversal or canonicalization semantics.
 
 /// Post-order reassembly — the **dispatcher**.
 ///
@@ -950,20 +1000,17 @@ fn combine_par_k(par: &Par, counts: [usize; 9], vals: &mut Vec<ValItem>) -> Sort
     let exprs = pop_n_expr(vals, counts[N_EXPRS]);
     let receives = pop_n_receive(vals, counts[N_RECEIVES]);
     let sends = pop_n_send(vals, counts[N_SENDS]);
-    SortVal::Par(combine_par(
-        par,
-        ParParts {
-            sends,
-            receives,
-            exprs,
-            news,
-            matches,
-            bundles,
-            connectives,
-            unforgeables,
-            conditionals,
-        },
-    ))
+    SortVal::Par(combine_par(par, ParParts {
+        sends,
+        receives,
+        exprs,
+        news,
+        matches,
+        bundles,
+        connectives,
+        unforgeables,
+        conditionals,
+    }))
 }
 
 #[inline(never)]

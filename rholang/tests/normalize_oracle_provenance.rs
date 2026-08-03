@@ -1341,6 +1341,27 @@ const ARM_TABLE_COLLAPSE_FLOOR: usize = 3;
 const ARM_TABLE_FN: &str = "eval_expr_to_expr";
 
 const REDUCE: &str = "rholang/src/rust/interpreter/reduce.rs";
+const REDUCE_EXPRESSION_ORACLE: &str = "rholang/src/rust/interpreter/reduce_expression_oracle.rs";
+
+/// The live evaluator implementation plus the source-only recursive oracle it
+/// expands in test builds. Keeping these separate lets the recursion census
+/// distinguish production from reference recursion; concatenating them here
+/// preserves this provenance gate's token/sharing analysis.
+fn live_reduce_with_expression_oracle() -> String {
+    let mut source = std::fs::read_to_string(repo_root().join(REDUCE))
+        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+    source.push('\n');
+    let oracle = std::fs::read_to_string(repo_root().join(REDUCE_EXPRESSION_ORACLE))
+        .unwrap_or_else(|e| panic!("cannot read {REDUCE_EXPRESSION_ORACLE}: {e}"));
+    // The macro body is indented one extra level in its source file. The
+    // provenance parser deliberately recognizes impl-level functions by their
+    // four-space indentation, so analyze the macro expansion's indentation.
+    for line in oracle.lines() {
+        source.push_str(line.strip_prefix("    ").unwrap_or(line));
+        source.push('\n');
+    }
+    source
+}
 
 /// The lines of the `impl`-level function named `name`, or `None`.
 fn impl_fn_lines(text: &str, name: &str) -> Option<(usize, usize)> {
@@ -1681,8 +1702,7 @@ fn expected_banner_rows() -> Vec<BannerRow> {
 fn the_trampoline_banner_table_is_a_checkable_citation() {
     let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
     let measured = git_show_path(TWIN_MEASUREMENT_COMMIT, REDUCE);
-    let now = std::fs::read_to_string(repo_root().join(REDUCE))
-        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+    let now = live_reduce_with_expression_oracle();
 
     // (i) THE BANNER SAYS WHAT THIS TEST THINKS IT SAYS.
     let rows = banner_rows(&now);
@@ -1782,8 +1802,7 @@ fn the_trampoline_banner_table_is_a_checkable_citation() {
 #[test]
 fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
     let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
-    let now = std::fs::read_to_string(repo_root().join(REDUCE))
-        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+    let now = live_reduce_with_expression_oracle();
 
     let a = assess_twin(&before, &now);
     if let Err(bad) = a.verdict() {
@@ -1835,8 +1854,7 @@ fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
 #[test]
 fn the_rewrite_check_can_go_red() {
     let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
-    let now = std::fs::read_to_string(repo_root().join(REDUCE))
-        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+    let now = live_reduce_with_expression_oracle();
 
     // The baseline, so both cells below are measured against a known-green state.
     assert!(

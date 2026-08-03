@@ -106,12 +106,16 @@ Test files: `scored_term_sort_test.rs`, `sorted_par_map_test.rs`, `var_sort_matc
 ## PathMap Integration
 
 Supports indexed Rholang structures:
-- `RholangPathMap = PathMap<Par>` type alias
+- `EPathMapRepr::Set(PathMap<()>)` stores membership-only keys.
+- `EPathMapRepr::Map(PathMap<Par>)` stores homogeneous key/value associations.
+- `EPathMapRepr::Empty` is neutral until the first value-bearing insertion;
+  explicit value-free topology retains an already-selected Set or Map mode.
 - `par_to_path()` -- Converts Par to byte segment path via S-expression encoding
 - `SExpr` encoding with compact byte tags (NewVar, Symbol, VarRef, Arity)
-- `RholangReadZipper` -- the read cursor. `new` opens it at the root;
-  `new_at_path` opens it at an entry, keyed by `entry_key_at`.
-- ⚠ There is no `descend_to` and no `RholangWriteZipper`. Both encoded the
+- Runtime cursors retain the real EPathMap with `(segments, CursorKind)` and
+  dispatch through the selected PathMap specialization; no wrapper projects
+  the trie into a list or fabricates a placeholder value.
+- ⚠ There is no wrapper-level `descend_to`. The former wrappers encoded the
   retired rule *"a descended path's entry key is the split arm,
   unconditionally"*, which for a bare (non-list) path names the SINGLETON LIST
   — a different entry the same map may hold. A cursor move must take

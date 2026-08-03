@@ -3,7 +3,7 @@
 //! Hand-built mirrors of the E-6a subject-index shapes from
 //! `mettail-rust/rholang-runtime/src/e6a_support.rs:305-409` (READ-ONLY
 //! reference; nothing here links against mettail). The fixtures exist to pin
-//! the 84a0fbe4 derived truths — canonical PROST bytes, SERDE bytes
+//! the 84a0fbe4 derived truths — canonical PROTOBUF bytes, SERDE bytes
 //! (bincode + JSON, including the `locally_free`-as-empty serialize-only
 //! normalization), produce/consume event hashes, and the derived
 //! declaration-order `Ord` — that later phases of the principled EPathMap
@@ -51,9 +51,7 @@ pub fn reflect_tag(language_fingerprint: &str, constructor: &str) -> String {
 }
 
 /// A ground `GString` Par (mirror of `e6a_support::quoted`).
-pub fn gstring_par(value: &str) -> Par {
-    new_gstring_par(value.to_string(), Vec::new(), false)
-}
+pub fn gstring_par(value: &str) -> Par { new_gstring_par(value.to_string(), Vec::new(), false) }
 
 /// A ground `EList` of the given elements — no free vars, no remainder
 /// (mirror of `e6a_support::ground_list`).
@@ -64,7 +62,7 @@ pub fn ground_list(elements: Vec<Par>) -> Par {
 /// A ground 1-`ETuple` wrapping `inner` — the σ-carrier wrapper (mirror of
 /// `e6a_support::ground_tuple`).
 pub fn ground_tuple(inner: Par) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                 ps: vec![inner],
@@ -223,7 +221,7 @@ pub fn ezipper_value() -> EZipper {
 /// would otherwise confound this fixture were its entries ground by content).
 ///
 /// This is the fixture family that separates the regimes the harness pins:
-/// PROST bytes INCLUDE `locally_free` (field 3), SERDE serializes it as EMPTY
+/// PROTOBUF bytes INCLUDE `locally_free` (field 3), SERDE serializes it as EMPTY
 /// bytes (models/build.rs `serialize_as_empty_bytes`), `==`/`Hash` IGNORE it
 /// (AlwaysEqual, models/src/lib.rs:613-627), and the derived `Ord` COMPARES it
 /// (declaration order).
@@ -235,10 +233,7 @@ pub fn epathmap_locally_free_entries() -> EPathMap {
     // content alone.
     let var_entry = new_boundvar_par(1, create_bit_vector(&[1]), false);
     EPathMap::new(
-        vec![
-            ground_list(vec![gstring_par("plain")]),
-            var_entry,
-        ],
+        vec![ground_list(vec![gstring_par("plain")]), var_entry],
         create_bit_vector(&[0]),
         false,
         None,

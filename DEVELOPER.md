@@ -125,10 +125,9 @@ export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
 export OPENSSL_LIB_DIR=$(brew --prefix openssl)/lib
 ```
 
-The workspace already sets:
-
-- `RUST_MIN_STACK=8388608` in `.cargo/config.toml`
-- `-C target-cpu=native` for local builds
+The workspace sets `-C target-cpu=native` for local builds. Recursive term
+operations use generated or explicit stack-safe traversal machines, so the
+workspace does not set a global minimum thread stack size.
 
 If you are cross-compiling, review `.cargo/config.toml` and `Cross.toml` before reusing those defaults.
 
@@ -260,13 +259,11 @@ export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
 export OPENSSL_LIB_DIR=$(brew --prefix openssl)/lib
 ```
 
-### Stack Overflow In Debug Tests
+### Stack-Safety Regressions
 
-The workspace already raises stack size for test threads. If a specific test still overflows:
-
-```bash
-RUST_MIN_STACK=16777216 cargo test -p rholang
-```
+A stack overflow is a traversal defect, not an environment-tuning problem. Run
+the focused fixed-small-stack probe and repair the recursive surface; do not
+raise the process or thread stack size to make the test pass.
 
 ### LMDB Lock Or Leftover Test Data
 

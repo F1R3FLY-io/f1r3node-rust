@@ -35,7 +35,7 @@ async fn eval_err(runtime: &mut RhoRuntimeImpl, term: &str) {
 }
 
 async fn channel_data(runtime: &RhoRuntimeImpl, channel_expr: ExprInstance) -> HashSet<Par> {
-    let ch = vec![Par {
+    let ch = vec![models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(channel_expr),
         }],

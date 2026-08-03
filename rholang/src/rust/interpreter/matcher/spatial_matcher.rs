@@ -264,7 +264,7 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
-    fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
+    fn spatial_match(&mut self, target: Par, mut pattern: Par) -> Option<()> {
         // println!("\nhit Par, Par");
         // println!("\ntarget in Par, Par: {:?}", target);
         // println!("\npattern in Par, Par: {:?}", pattern);
@@ -441,7 +441,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 None
             }
 
-            let remainder = connectives_with_bounds.iter().try_fold(
+            let mut remainder = connectives_with_bounds.iter().try_fold(
                 target,
                 |acc, &(connective, bounds1, bounds2)| {
                     match_connective_with_bounds(
@@ -454,16 +454,16 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             // println!("\nRemainder: {:?}", remainder);
 
             self.list_match_single_(
-                remainder.sends,
-                pattern.sends,
+                std::mem::take(&mut remainder.sends),
+                std::mem::take(&mut pattern.sends),
                 &|p, s| p.with_sends(s),
                 var_level,
                 wildcard,
             )
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.receives,
-                    pattern.receives,
+                    std::mem::take(&mut remainder.receives),
+                    std::mem::take(&mut pattern.receives),
                     &|p, s| p.with_receives(s),
                     var_level,
                     wildcard,
@@ -471,8 +471,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.news,
-                    pattern.news,
+                    std::mem::take(&mut remainder.news),
+                    std::mem::take(&mut pattern.news),
                     &|p, s| p.with_news(s),
                     var_level,
                     wildcard,
@@ -480,7 +480,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.exprs,
+                    std::mem::take(&mut remainder.exprs),
                     no_frees_exprs(&pattern.exprs),
                     &|p, s| p.with_exprs(s),
                     var_level,
@@ -489,8 +489,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.matches,
-                    pattern.matches,
+                    std::mem::take(&mut remainder.matches),
+                    std::mem::take(&mut pattern.matches),
                     &|p, s| p.with_matches(s),
                     var_level,
                     wildcard,
@@ -498,8 +498,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.bundles,
-                    pattern.bundles,
+                    std::mem::take(&mut remainder.bundles),
+                    std::mem::take(&mut pattern.bundles),
                     &|p, s| p.with_bundles(s),
                     var_level,
                     wildcard,
@@ -507,8 +507,8 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
-                    remainder.unforgeables,
-                    pattern.unforgeables,
+                    std::mem::take(&mut remainder.unforgeables),
+                    std::mem::take(&mut pattern.unforgeables),
                     &|p, s| p.with_unforgeables(s),
                     var_level,
                     wildcard,

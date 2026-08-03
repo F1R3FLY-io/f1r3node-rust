@@ -112,8 +112,8 @@ distinguishes the two causes, because they call for opposite responses:
                                    └──────────► (re-measure)
 ```
 
-`prost_de`'s maximum is **32**, and it is not a budget: `prost` caps decode
-recursion, and `models/tests/par_prost_depth_ceiling.rs` exhibits a depth-34
+`protobuf_de`'s maximum is **32**, and it is not a budget: `prost` caps decode
+recursion, and `models/tests/par_protobuf_depth_ceiling.rs` exhibits a depth-34
 `Par` that builds, writes, and fails to read with a recursion-limit `Err`. A
 probe that accepted that `Err` would "survive" any stack and report a flat zero.
 
@@ -131,7 +131,7 @@ only a **full descent** can satisfy:
 | `ord` | derived `cmp` returns at the first unequal field | the twins differ **only at the leaf**, so `Less` is a verdict only a full descent reaches |
 | `hash` | cannot short-circuit, but a digest is produced whatever the walk did | two leaves must produce **different digests** |
 | `debug` | produces a string | the rendering must be at least `` $d$ `` characters |
-| `prost_de` | a recursion-limit `Err` costs no stack | the decode must **succeed** and the decoded term must carry `` $d$ `` levels |
+| `protobuf_de` | a recursion-limit `Err` costs no stack | the decode must **succeed** and the decoded term must carry `` $d$ `` levels |
 
 ### 1.4 Reproducing
 
@@ -166,10 +166,10 @@ Hardware: AMD Ryzen Threadripper PRO 5975WX (32 cores), 125 GiB RAM, Linux
 | `hash` | `hash` | 16 → 128 | 49,152 | 143,360 | 94,208 | **841** |
 | `ord` | `ord` | 16 → 128 | 49,152 | 270,336 | 221,184 | **1,974** |
 | `debug` | `debug` | 16 → 128 | 69,632 | 475,136 | 405,504 | **3,620** |
-| `encode` | `prost_ser` | 16 → 128 | 49,152 | 258,048 | 208,896 | **1,865** |
-| `prost_de` | `prost_de` | 4 → 32 | 147,456 | 925,696 | 778,240 | **27,794** |
+| `encode` | `protobuf_ser` | 16 → 128 | 49,152 | 258,048 | 208,896 | **1,865** |
+| `protobuf_de` | `protobuf_de` | 4 → 32 | 147,456 | 925,696 | 778,240 | **27,794** |
 | `par_drop` | `par_drop@gate` | 256 → 4096 | 126,976 | 1,908,736 | 1,781,760 | **464** |
-| `encode` | `prost_ser@gate` | 64 → 1024 | 135,168 | 1,994,752 | 1,859,584 | **1,937** |
+| `encode` | `protobuf_ser@gate` | 64 → 1024 | 135,168 | 1,994,752 | 1,859,584 | **1,937** |
 
 ### 2.2 release (`-O2`)
 
@@ -181,10 +181,10 @@ Hardware: AMD Ryzen Threadripper PRO 5975WX (32 cores), 125 GiB RAM, Linux
 | `hash` | `hash` | 16 → **256** | 12,288 | 45,056 | 32,768 | **136** |
 | `ord` | `ord` | 16 → 128 | 12,288 | 61,440 | 49,152 | **438** |
 | `debug` | `debug` | 16 → 128 | 28,672 | 167,936 | 139,264 | **1,243** |
-| `encode` | `prost_ser` | 16 → 128 | 12,288 | 45,056 | 32,768 | **292** |
-| `prost_de` | `prost_de` | 4 → 32 | 12,288 | 126,976 | 114,688 | **4,096** |
+| `encode` | `protobuf_ser` | 16 → 128 | 12,288 | 45,056 | 32,768 | **292** |
+| `protobuf_de` | `protobuf_de` | 4 → 32 | 12,288 | 126,976 | 114,688 | **4,096** |
 | `par_drop` | `par_drop@gate` | 256 → 4096 | 45,056 | 598,016 | 552,960 | **144** |
-| `encode` | `prost_ser@gate` | 64 → 1024 | 28,672 | 319,488 | 290,816 | **302** |
+| `encode` | `protobuf_ser@gate` | 64 → 1024 | 28,672 | 319,488 | 290,816 | **302** |
 
 The bolded ladder ends are the ones the self-selecting rule **widened**; the
 release profile's cheap traversals do not bind at depth 128.
@@ -193,11 +193,11 @@ release profile's cheap traversals do not bind at depth 128.
 
 ```text
    B/level, release, log scale
-        4096 ┤ ███████████████████████████████████████████  prost_de   4096
+        4096 ┤ ███████████████████████████████████████████  protobuf_de   4096
         3254 ┤ ████████████████████████████████████         clone      3254
         1243 ┤ ██████████████████                           debug      1243
          438 ┤ ██████████                                   ord         438
-         302 ┤ ████████                                     prost_ser   302 (gate ladder)
+         302 ┤ ████████                                     protobuf_ser   302 (gate ladder)
          221 ┤ ██████                                       eq          221
          144 ┤ █████                                        par_drop    144 (gate ladder)
          136 ┤ █████                                        hash        136
@@ -206,7 +206,7 @@ release profile's cheap traversals do not bind at depth 128.
 Three facts the table makes visible, none of which was previously stated
 anywhere:
 
-1. **`prost_de` is the most expensive per level of the eight**, by a factor of
+1. **`protobuf_de` is the most expensive per level of the eight**, by a factor of
    `` $\approx 1.26$ `` over `clone` in release and `` $\approx 1.68$ `` in
    debug — and it is the *only* one of the eight that prost itself caps.
 2. **`hash` is the cheapest**, at parity with `par_drop`. It had never been
@@ -226,9 +226,9 @@ already publishes:
 | subject | this table | `stack_depth_gate.rs`'s own ceiling | audit §12.6's recorded value |
 |---|---|---|---|
 | `par_drop@gate` | 464 / 144 | `ceiling(1_500, 800)` — both clear | ~470 (release, prose) |
-| `prost_ser@gate` | 1,937 / 302 | `ceiling(4_000, 1_500)` — both clear | 1,932 / 302 ("audit row 7") |
+| `protobuf_ser@gate` | 1,937 / 302 | `ceiling(4_000, 1_500)` — both clear | 1,932 / 302 ("audit row 7") |
 
-`prost_ser` reproduces the audit's release figure **exactly** and its debug
+`protobuf_ser` reproduces the audit's release figure **exactly** and its debug
 figure to within 0.26%. A harness that disagreed with itself would have produced
 a baseline nobody could reconcile with the gate.
 
@@ -259,9 +259,9 @@ corrections:
    │  Ord::cmp             → ord           Hash::hash     → hash      → par_drop        │
    │  PartialOrd::partial_cmp                                                           │
    │  Debug::fmt           → debug                                                      │
-   │  Message::encode_raw  → prost_ser                                                  │
+   │  Message::encode_raw  → protobuf_ser                                                  │
    │  Message::encoded_len ↗                                                            │
-   │  Message::merge_field → prost_de                                                   │
+   │  Message::merge_field → protobuf_de                                                   │
    │  Message::clear                                                                    │
    │  Serialize::serialize     ✅ CONVERTED (bincode_encoder, Stage H)                       │
    │  Deserialize::deserialize ✅ CONVERTED (bincode_decoder,  Stage F)                        │
@@ -372,7 +372,7 @@ not collapse into S3. Concretely:
 
 ### 5.1 What was computed, and where it lives
 
-`models/build/wire_schema.rs` now derives the schema's **child relation** from
+`models/codegen/schema_codegen.rs` now derives the schema's **child relation** from
 the same resolved fields the wire tables are generated from — a singular or
 repeated message field contributes its type, a map contributes its *value* type,
 a oneof contributes every message-payload arm — and runs an **iterative**
@@ -480,7 +480,7 @@ the ground field-8 `` $U(m)$ `` form, and the ordinary field walk — of which o
 the last is a field walk at all, and which one fires depends on a `OnceLock`
 another thread may fill. Any protobuf driver must therefore treat it as one
 node, at exact parity with `prost::encoding::message::encode`. This is recorded
-in `models/src/rust/rholang/prost_wire.rs` §D as a **named residual**: correct,
+in `models/src/rust/rholang/protobuf_schema.rs` §D as a **named residual**: correct,
 and not depth-independent, which are two separate statements.
 
 ---
@@ -489,7 +489,7 @@ and not depth-independent, which are two separate statements.
 
 | path | change |
 |---|---|
-| `rholang/tests/stack_depth_gate.rs` | five new subjects (`eq`, `hash`, `ord`, `debug`, `prost_de`), `nested_list_leaf`, the self-selecting ladder, and `four_quadrant_s0_baseline` |
+| `rholang/tests/stack_depth_gate.rs` | five new subjects (`eq`, `hash`, `ord`, `debug`, `protobuf_de`), `nested_list_leaf`, the self-selecting ladder, and `four_quadrant_s0_baseline` |
 | this file | the record |
 
 **Nothing else.** No ceiling was asserted, no subject entered `CONVERTED_DEPTH`

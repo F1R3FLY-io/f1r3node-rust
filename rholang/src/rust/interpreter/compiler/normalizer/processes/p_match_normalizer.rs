@@ -226,9 +226,7 @@ pub(crate) fn combine_p_match<'ast>(
             // guard into the `MatchCase`.
             let body_locally_free = case_body_result.par.locally_free.clone();
             let body_connective_used = case_body_result.par.connective_used;
-            let guard_locally_free = guard_result
-                .as_ref()
-                .map(|gr| gr.par.locally_free.clone());
+            let guard_locally_free = guard_result.as_ref().map(|gr| gr.par.locally_free.clone());
             let guard_connective_used = guard_result
                 .as_ref()
                 .map(|gr| gr.par.connective_used)
@@ -241,7 +239,10 @@ pub(crate) fn combine_p_match<'ast>(
             });
             k.known_free = case_body_result.free_map;
             k.acc_locally_free = union(
-                union(std::mem::take(&mut k.acc_locally_free), pattern_locally_free),
+                union(
+                    std::mem::take(&mut k.acc_locally_free),
+                    pattern_locally_free,
+                ),
                 filter_and_adjust_bitset(
                     {
                         let mut lf = body_locally_free;
@@ -261,7 +262,6 @@ pub(crate) fn combine_p_match<'ast>(
         }
     }
 }
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

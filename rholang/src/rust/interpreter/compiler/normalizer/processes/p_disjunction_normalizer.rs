@@ -126,7 +126,6 @@ pub(crate) fn combine_p_disjunction<'ast>(
     })))
 }
 
-
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {

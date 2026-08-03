@@ -34,87 +34,6 @@
 //!   *value* equality, and the *stack* claim is the separate concern of
 //!   `stack_depth_gate.rs`.
 
-use models::rhoapi::{Connective, Expr, Par};
-use rholang::rust::interpreter::matcher::has_locally_free::{
-    connective_connective_used_ref, connective_locally_free_ref, expr_connective_used_ref,
-    expr_locally_free_ref, HasLocallyFree,
-};
-
-/// Collect every `Expr` and `Connective` in a term, iteratively — a recursive
-/// collector would itself be a Θ(depth) traversal (see the audit).
-fn collect_nodes(root: &Par) -> (Vec<Expr>, Vec<Connective>) {
-    use models::rhoapi::connective::ConnectiveInstance;
-    use models::rhoapi::expr::ExprInstance;
-
-    let mut exprs: Vec<Expr> = Vec::new();
-    let mut conns: Vec<Connective> = Vec::new();
-    let mut work: Vec<&Par> = vec![root];
-
-    while let Some(p) = work.pop() {
-        conns.extend(p.connectives.iter().cloned());
-        for c in &p.connectives {
-            match &c.connective_instance {
-                Some(ConnectiveInstance::ConnAndBody(b))
-                | Some(ConnectiveInstance::ConnOrBody(b)) => work.extend(b.ps.iter()),
-                Some(ConnectiveInstance::ConnNotBody(inner)) => work.push(inner),
-                _ => {}
-            }
-        }
-
-        exprs.extend(p.exprs.iter().cloned());
-        for e in &p.exprs {
-            match &e.expr_instance {
-                Some(ExprInstance::EListBody(l)) => work.extend(l.ps.iter()),
-                Some(ExprInstance::ETupleBody(t)) => work.extend(t.ps.iter()),
-                Some(ExprInstance::ENotBody(n)) => work.extend(n.p.iter()),
-                Some(ExprInstance::ENegBody(n)) => work.extend(n.p.iter()),
-                Some(ExprInstance::EMethodBody(m)) => {
-                    work.extend(m.target.iter());
-                    work.extend(m.arguments.iter());
-                }
-                Some(ExprInstance::EMatchesBody(m)) => {
-                    work.extend(m.target.iter());
-                    work.extend(m.pattern.iter());
-                }
-                _ => {}
-            }
-        }
-
-        for s in &p.sends {
-            work.extend(s.chan.iter());
-            work.extend(s.data.iter());
-        }
-        for r in &p.receives {
-            work.extend(r.body.iter());
-            work.extend(r.condition.iter());
-            for b in &r.binds {
-                work.extend(b.source.iter());
-                work.extend(b.patterns.iter());
-            }
-        }
-        for n in &p.news {
-            work.extend(n.p.iter());
-        }
-        for m in &p.matches {
-            work.extend(m.target.iter());
-            for c in &m.cases {
-                work.extend(c.pattern.iter());
-                work.extend(c.source.iter());
-                work.extend(c.guard.iter());
-            }
-        }
-        for b in &p.bundles {
-            work.extend(b.body.iter());
-        }
-        for i in &p.conditionals {
-            work.extend(i.condition.iter());
-            work.extend(i.if_true.iter());
-            work.extend(i.if_false.iter());
-        }
-    }
-    (exprs, conns)
-}
-
 // ---------------------------------------------------------------------------
 // EXHAUSTIVE ARM COVERAGE
 //
@@ -130,14 +49,17 @@ fn collect_nodes(root: &Par) -> (Vec<Expr>, Vec<Connective>) {
 // the same cached field the by-value trait method returns". The corresponding
 // empirical obligation is therefore ARM coverage, not random terms.
 // ---------------------------------------------------------------------------
-
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
 use models::rhoapi::{
-    ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ESet,
-    ETuple, EVar, GBigRational, KeyValuePair, Var, VarRef,
+    Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches,
+    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
+    EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational, KeyValuePair, Par, Var, VarRef,
+};
+use rholang::rust::interpreter::matcher::has_locally_free::{
+    HasLocallyFree, connective_connective_used_ref, connective_locally_free_ref,
+    expr_connective_used_ref, expr_locally_free_ref,
 };
 
 /// Every `ExprInstance` variant that `RhoTypes.proto` defines. If a variant is
@@ -151,7 +73,7 @@ const CONNECTIVE_INSTANCE_VARIANT_COUNT: usize = 9;
 /// that a reader which returned the WRONG child's cached field (rather than no
 /// field at all) would still be caught.
 fn marked_par(tag: u8, connective_used: bool) -> Par {
-    Par {
+    models::par_from_default! {
         locally_free: vec![tag],
         connective_used,
         ..Default::default()
@@ -240,9 +162,8 @@ fn every_expr_instance() -> Vec<Expr> {
             remainder: None,
         }),
         ExprInstance::EPathmapBody({
-            // `EPathMap` carries a private intern cell, so it is built via
-            // Default and then filled — the reader only ever consults the two
-            // cached public fields.
+            // `EPathMap` keeps its specialized trie representation private, so
+            // this cached-field reader fixture starts from the neutral default.
             let mut m = models::rust::rhoapi_ext::EPathMap::default();
             m.locally_free = vec![0b0101_0000];
             m.connective_used = true;

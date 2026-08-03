@@ -43,7 +43,7 @@
 //! depth 4,096.
 
 // Three test binaries share this module (`bincode_decoder_differential`,
-// `bincode_decoder_malformed`, `bincode_decoder_wire_shapes`) and each uses a different
+// `bincode_decoder_malformed`, `bincode_decoder_shapes`) and each uses a different
 // subset of the builders. Rust's dead-code analysis is per-binary, so without
 // this every binary warns about the builders the *other* two use.
 #![allow(dead_code)]
@@ -69,33 +69,22 @@ use models::rust::rhoapi_ext::EPathMap;
 // Small builders
 // ---------------------------------------------------------------------------
 
-pub fn nil() -> Par {
-    Par::default()
-}
+pub fn nil() -> Par { Par::default() }
 
-pub fn gint(n: i64) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(n)),
-        }],
-        ..Default::default()
-    }
-}
+pub fn gint(n: i64) -> Par { par_of(ExprInstance::GInt(n)) }
 
 pub fn tagged(tag: u8) -> Par {
-    Par {
-        locally_free: vec![tag],
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.locally_free.push(tag);
+    out
 }
 
 fn par_of(instance: ExprInstance) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(instance),
-        }],
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.exprs.push(Expr {
+        expr_instance: Some(instance),
+    });
+    out
 }
 
 fn some_var() -> Option<Var> {
@@ -137,7 +126,10 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             "EMultBody",
             ExprInstance::EMultBody(EMult { p1: a(), p2: b() }),
         ),
-        ("EDivBody", ExprInstance::EDivBody(EDiv { p1: a(), p2: b() })),
+        (
+            "EDivBody",
+            ExprInstance::EDivBody(EDiv { p1: a(), p2: b() }),
+        ),
         (
             "EPlusBody",
             ExprInstance::EPlusBody(EPlus { p1: a(), p2: b() }),
@@ -147,12 +139,24 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             ExprInstance::EMinusBody(EMinus { p1: a(), p2: b() }),
         ),
         ("ELtBody", ExprInstance::ELtBody(ELt { p1: a(), p2: b() })),
-        ("ELteBody", ExprInstance::ELteBody(ELte { p1: a(), p2: b() })),
+        (
+            "ELteBody",
+            ExprInstance::ELteBody(ELte { p1: a(), p2: b() }),
+        ),
         ("EGtBody", ExprInstance::EGtBody(EGt { p1: a(), p2: b() })),
-        ("EGteBody", ExprInstance::EGteBody(EGte { p1: a(), p2: b() })),
+        (
+            "EGteBody",
+            ExprInstance::EGteBody(EGte { p1: a(), p2: b() }),
+        ),
         ("EEqBody", ExprInstance::EEqBody(EEq { p1: a(), p2: b() })),
-        ("ENeqBody", ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() })),
-        ("EAndBody", ExprInstance::EAndBody(EAnd { p1: a(), p2: b() })),
+        (
+            "ENeqBody",
+            ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() }),
+        ),
+        (
+            "EAndBody",
+            ExprInstance::EAndBody(EAnd { p1: a(), p2: b() }),
+        ),
         ("EOrBody", ExprInstance::EOrBody(EOr { p1: a(), p2: b() })),
         (
             "EVarBody",
@@ -250,7 +254,10 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             "EMinusMinusBody",
             ExprInstance::EMinusMinusBody(EMinusMinus { p1: a(), p2: b() }),
         ),
-        ("EModBody", ExprInstance::EModBody(EMod { p1: a(), p2: b() })),
+        (
+            "EModBody",
+            ExprInstance::EModBody(EMod { p1: a(), p2: b() }),
+        ),
         (
             "GDouble",
             // A NaN with a non-canonical payload: `fixed64` carries the raw
@@ -325,9 +332,7 @@ pub fn every_unforgeable() -> Vec<GUnforgeable> {
         GUnforgeable {
             unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
         },
-        GUnforgeable {
-            unf_instance: None,
-        },
+        GUnforgeable { unf_instance: None },
     ]
 }
 
@@ -335,9 +340,7 @@ pub fn every_unforgeable() -> Vec<GUnforgeable> {
 pub fn every_opt_var() -> Vec<Option<Var>> {
     vec![
         None,
-        Some(Var {
-            var_instance: None,
-        }),
+        Some(Var { var_instance: None }),
         Some(Var {
             var_instance: Some(VarInstance::BoundVar(i32::MIN)),
         }),
@@ -511,18 +514,20 @@ pub fn deep_mixed_par(depth: usize) -> Par {
     let mut p = gint(0);
     for level in 0..depth {
         p = match level % 8 {
-            0 => Par {
-                sends: vec![Send {
+            0 => {
+                let mut out = Par::default();
+                out.sends.push(Send {
                     chan: Some(p),
                     data: vec![],
                     persistent: false,
                     locally_free: vec![level as u8],
                     connective_used: false,
-                }],
-                ..Default::default()
-            },
-            1 => Par {
-                receives: vec![Receive {
+                });
+                out
+            }
+            1 => {
+                let mut out = Par::default();
+                out.receives.push(Receive {
                     binds: vec![ReceiveBind {
                         patterns: vec![p],
                         source: None,
@@ -536,11 +541,12 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     locally_free: vec![],
                     connective_used: false,
                     condition: None,
-                }],
-                ..Default::default()
-            },
-            2 => Par {
-                news: vec![New {
+                });
+                out
+            }
+            2 => {
+                let mut out = Par::default();
+                out.news.push(New {
                     bind_count: 1,
                     p: None,
                     uri: vec![],
@@ -550,11 +556,12 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         m
                     },
                     locally_free: vec![],
-                }],
-                ..Default::default()
-            },
-            3 => Par {
-                matches: vec![Match {
+                });
+                out
+            }
+            3 => {
+                let mut out = Par::default();
+                out.matches.push(Match {
                     target: None,
                     cases: vec![MatchCase {
                         pattern: None,
@@ -564,25 +571,27 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     }],
                     locally_free: vec![],
                     connective_used: false,
-                }],
-                ..Default::default()
-            },
-            4 => Par {
-                conditionals: vec![If {
+                });
+                out
+            }
+            4 => {
+                let mut out = Par::default();
+                out.conditionals.push(If {
                     condition: None,
                     if_true: None,
                     if_false: Some(p),
                     locally_free: vec![],
                     connective_used: false,
-                }],
-                ..Default::default()
-            },
-            5 => Par {
-                connectives: vec![Connective {
+                });
+                out
+            }
+            5 => {
+                let mut out = Par::default();
+                out.connectives.push(Connective {
                     connective_instance: Some(ConnectiveInstance::ConnNotBody(p)),
-                }],
-                ..Default::default()
-            },
+                });
+                out
+            }
             6 => par_of(ExprInstance::EMapBody(EMap {
                 kvs: vec![KeyValuePair {
                     key: None,
@@ -614,15 +623,11 @@ pub fn par_corpus() -> Vec<(String, Par)> {
     }
     // One `Par` per `ConnectiveInstance` arm.
     for (name, instance) in every_connective_instance() {
-        out.push((
-            format!("connective::{name}"),
-            Par {
-                connectives: vec![Connective {
-                    connective_instance: Some(instance),
-                }],
-                ..Default::default()
-            },
-        ));
+        let mut par = Par::default();
+        par.connectives.push(Connective {
+            connective_instance: Some(instance),
+        });
+        out.push((format!("connective::{name}"), par));
     }
     // Every `Option<Var>` shape, through `EList.remainder`.
     for (i, v) in every_opt_var().into_iter().enumerate() {
@@ -638,13 +643,9 @@ pub fn par_corpus() -> Vec<(String, Par)> {
     }
     // Every `GUnforgeable` shape.
     for (i, u) in every_unforgeable().into_iter().enumerate() {
-        out.push((
-            format!("unforgeable::{i}"),
-            Par {
-                unforgeables: vec![u],
-                ..Default::default()
-            },
-        ));
+        let mut par = Par::default();
+        par.unforgeables.push(u);
+        out.push((format!("unforgeable::{i}"), par));
     }
 
     for depth in [1usize, 2, 7, 48] {
@@ -653,21 +654,17 @@ pub fn par_corpus() -> Vec<(String, Par)> {
     }
 
     // Wide, to exercise the counted repeat past its first iteration.
-    out.push((
-        "wide_sends".to_string(),
-        Par {
-            sends: (0..64)
-                .map(|i| Send {
-                    chan: Some(gint(i)),
-                    data: (0..3).map(gint).collect(),
-                    persistent: i % 2 == 0,
-                    locally_free: vec![i as u8],
-                    connective_used: i % 3 == 0,
-                })
-                .collect(),
-            ..Default::default()
-        },
-    ));
+    let mut wide = Par::default();
+    wide.sends = (0..64)
+        .map(|i| Send {
+            chan: Some(gint(i)),
+            data: (0..3).map(gint).collect(),
+            persistent: i % 2 == 0,
+            locally_free: vec![i as u8],
+            connective_used: i % 3 == 0,
+        })
+        .collect();
+    out.push(("wide_sends".to_string(), wide));
 
     out
 }
@@ -678,117 +675,81 @@ pub fn par_corpus() -> Vec<(String, Par)> {
 
 pub fn list_par_with_random_corpus() -> Vec<(String, ListParWithRandom)> {
     vec![
-        (
-            "empty".to_string(),
-            ListParWithRandom {
-                pars: vec![],
-                random_state: vec![],
-            },
-        ),
-        (
-            "loaded".to_string(),
-            ListParWithRandom {
-                pars: vec![all_par_fields(), deep_mixed_par(16), nil()],
-                random_state: vec![0xF1, 0xF2, 0xF3],
-            },
-        ),
+        ("empty".to_string(), ListParWithRandom {
+            pars: vec![],
+            random_state: vec![],
+        }),
+        ("loaded".to_string(), ListParWithRandom {
+            pars: vec![all_par_fields(), deep_mixed_par(16), nil()],
+            random_state: vec![0xF1, 0xF2, 0xF3],
+        }),
     ]
 }
 
 pub fn bind_pattern_corpus() -> Vec<(String, BindPattern)> {
-    let mut out = vec![(
-        "empty".to_string(),
-        BindPattern {
-            patterns: vec![],
-            remainder: None,
-            free_count: 0,
-        },
-    )];
+    let mut out = vec![("empty".to_string(), BindPattern {
+        patterns: vec![],
+        remainder: None,
+        free_count: 0,
+    })];
     for (i, v) in every_opt_var().into_iter().enumerate() {
-        out.push((
-            format!("remainder::{i}"),
-            BindPattern {
-                patterns: vec![all_par_fields(), gint(1)],
-                remainder: v,
-                free_count: i32::MIN,
-            },
-        ));
+        out.push((format!("remainder::{i}"), BindPattern {
+            patterns: vec![all_par_fields(), gint(1)],
+            remainder: v,
+            free_count: i32::MIN,
+        }));
     }
     out
 }
 
 pub fn tagged_continuation_corpus() -> Vec<(String, TaggedContinuation)> {
     vec![
-        (
-            "absent_cont".to_string(),
-            TaggedContinuation {
-                guard: None,
-                tagged_cont: None,
-            },
-        ),
-        (
-            "par_body".to_string(),
-            TaggedContinuation {
-                guard: Some(all_par_fields()),
-                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-                    body: Some(deep_mixed_par(12)),
-                    random_state: vec![1, 2, 3],
-                })),
-            },
-        ),
-        (
-            "par_body_absent_inner".to_string(),
-            TaggedContinuation {
-                guard: None,
-                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-                    body: None,
-                    random_state: vec![],
-                })),
-            },
-        ),
-        (
-            "scala_ref".to_string(),
-            TaggedContinuation {
-                guard: Some(gint(1)),
-                tagged_cont: Some(TaggedCont::ScalaBodyRef(i64::MIN)),
-            },
-        ),
+        ("absent_cont".to_string(), TaggedContinuation {
+            guard: None,
+            tagged_cont: None,
+        }),
+        ("par_body".to_string(), TaggedContinuation {
+            guard: Some(all_par_fields()),
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(deep_mixed_par(12)),
+                random_state: vec![1, 2, 3],
+            })),
+        }),
+        ("par_body_absent_inner".to_string(), TaggedContinuation {
+            guard: None,
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: None,
+                random_state: vec![],
+            })),
+        }),
+        ("scala_ref".to_string(), TaggedContinuation {
+            guard: Some(gint(1)),
+            tagged_cont: Some(TaggedCont::ScalaBodyRef(i64::MIN)),
+        }),
     ]
 }
 
 pub fn par_with_random_corpus() -> Vec<(String, ParWithRandom)> {
     vec![
-        (
-            "empty".to_string(),
-            ParWithRandom {
-                body: None,
-                random_state: vec![],
-            },
-        ),
-        (
-            "loaded".to_string(),
-            ParWithRandom {
-                body: Some(all_par_fields()),
-                random_state: vec![7; 32],
-            },
-        ),
+        ("empty".to_string(), ParWithRandom {
+            body: None,
+            random_state: vec![],
+        }),
+        ("loaded".to_string(), ParWithRandom {
+            body: Some(all_par_fields()),
+            random_state: vec![7; 32],
+        }),
     ]
 }
 
 pub fn list_bind_patterns_corpus() -> Vec<(String, ListBindPatterns)> {
     vec![
-        (
-            "empty".to_string(),
-            ListBindPatterns { patterns: vec![] },
-        ),
-        (
-            "loaded".to_string(),
-            ListBindPatterns {
-                patterns: bind_pattern_corpus()
-                    .into_iter()
-                    .map(|(_, bp)| bp)
-                    .collect(),
-            },
-        ),
+        ("empty".to_string(), ListBindPatterns { patterns: vec![] }),
+        ("loaded".to_string(), ListBindPatterns {
+            patterns: bind_pattern_corpus()
+                .into_iter()
+                .map(|(_, bp)| bp)
+                .collect(),
+        }),
     ]
 }

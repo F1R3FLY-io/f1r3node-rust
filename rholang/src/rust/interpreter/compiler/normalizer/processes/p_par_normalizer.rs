@@ -1,10 +1,10 @@
 use models::rhoapi::Par;
 use rholang_parser::ast::{AnnProc, Proc};
 
-use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
+use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::errors::InterpreterError;
 
 /// Flatten a `|` spine into its operands. Already iterative before the
@@ -112,7 +112,6 @@ pub(crate) fn combine_p_par<'ast>(
 type _ProcVisitOutputs = ProcVisitOutputs;
 #[allow(dead_code)]
 type _Par = Par;
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

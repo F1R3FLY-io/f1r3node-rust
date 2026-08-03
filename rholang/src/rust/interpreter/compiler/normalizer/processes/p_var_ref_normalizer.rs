@@ -141,7 +141,7 @@ mod tests {
 
                     cases: vec![MatchCase {
                         pattern: Some(
-                            Par {
+                            models::par_from_default! {
                                 connectives: vec![Connective {
                                     connective_instance: Some(VarRefBody(model_VarRef {
                                         index: 0,
@@ -215,7 +215,7 @@ mod tests {
             .clone()
             .with_receives(vec![Receive {
                 binds: vec![ReceiveBind {
-                    patterns: vec![Par {
+                    patterns: vec![models::par_from_default! {
                         connectives: vec![Connective {
                             connective_instance: Some(VarRefBody(model_VarRef {
                                 index: 0,

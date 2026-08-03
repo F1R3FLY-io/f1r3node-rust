@@ -2,7 +2,7 @@
 //!
 //! Stage F-4 replaced `<Par as Clone>::clone` — a `#[derive(Clone)]` expansion —
 //! with an explicit-worklist traversal over the shared `drive_with` trampoline
-//! (`models/build/wire_schema.rs` §7, emitted into
+//! (`models/codegen/schema_codegen.rs` §7, emitted into
 //! `OUT_DIR/rhoapi_term_ops.rs`). `Clone` is a structural copy, so the expected
 //! answer is **byte-identical, no consensus axis moves**.
 //!
@@ -61,7 +61,7 @@
 //!
 //! In the idiom of `models/tests/variant_exhaustiveness_gate.rs`: the constructed
 //! variant names are checked, in order, against the GENERATED
-//! `wire_schema::*_VARIANTS` tables. All **36** `ExprInstance` arms, all **9**
+//! `bincode_schema_tables::*_VARIANTS` tables. All **36** `ExprInstance` arms, all **9**
 //! `ConnectiveInstance` arms, all **4** `UnfInstance` arms, all **3**
 //! `VarInstance` arms and both `TaggedCont` arms are covered by construction — a
 //! 37th arm added to the `.proto` fails this file rather than silently escaping
@@ -111,13 +111,13 @@ use models::rhoapi::{
 };
 use models::rust::rhoapi_ext::EPathMap;
 use models::rust::rholang::bincode_encoder::encode;
+use models::rust::rholang::bincode_schema_tables::{
+    CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
+    UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
+};
 use models::rust::rholang::term_ops::{
     oracle_clone_par, CLONE_CUT_SET, CLONE_DESCEND_SET, CLONE_EXTERN_BOUNDED,
     CLONE_RESIDUAL_HEIGHT, EMITTED_TRAVERSALS,
-};
-use models::rust::rholang::wire_schema::{
-    CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
-    UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
 };
 
 // ---------------------------------------------------------------------------
@@ -139,7 +139,8 @@ struct Axes {
 impl Axes {
     fn of(p: &Par) -> Axes {
         use prost::Message as _;
-        let bincode = bincode::serialize(p).expect("bincode: the serde derive cannot fail on `Par`");
+        let bincode =
+            bincode::serialize(p).expect("bincode: the serde derive cannot fail on `Par`");
         let mut hasher = DefaultHasher::new();
         p.hash(&mut hasher);
         Axes {
@@ -210,7 +211,7 @@ fn axes_agree(label: &str, original: &Par) {
              oracle Debug: {}\n\
              \n\
              `Clone` is a structural copy, so no axis may move. A difference here is a \
-             GENERATED-CODE defect in `models/build/wire_schema.rs` §7 — most likely a \
+             GENERATED-CODE defect in `models/codegen/schema_codegen.rs` §7 — most likely a \
              `clone_rebuild_*` that places a field the matching `clone_push_children_*` never \
              pushed, or the two disagreeing about DECLARATION order.",
             a.debug, b.debug
@@ -265,7 +266,7 @@ fn axes_agree(label: &str, original: &Par) {
 // ---------------------------------------------------------------------------
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -274,7 +275,7 @@ fn gint(n: i64) -> Par {
 }
 
 fn gstr(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -291,9 +292,7 @@ fn marked(mut p: Par) -> Par {
 }
 
 /// Two child `Par`s that differ, so a rebuild that swapped them would be visible.
-fn two_children() -> (Par, Par) {
-    (gint(-7), gstr("second"))
-}
+fn two_children() -> (Par, Par) { (gint(-7), gstr("second")) }
 
 /// One value of every [`ExprInstance`] arm, with **payloads that carry children**
 /// wherever the arm has room for them.
@@ -529,10 +528,7 @@ fn expr_instance_values() -> Vec<(&'static str, ExprInstance)> {
                 p2: r.clone(),
             }),
         ),
-        (
-            "EModBody",
-            ExprInstance::EModBody(EMod { p1: l, p2: r }),
-        ),
+        ("EModBody", ExprInstance::EModBody(EMod { p1: l, p2: r })),
         // The IEEE-754 BIT PATTERN as `u64`, not `f64` — see the same note in
         // `variant_exhaustiveness_gate.rs`: `f64::NAN != f64::NAN` would break
         // `x == x` for a reason unrelated to cloning.
@@ -647,7 +643,7 @@ fn tagged_cont_values() -> Vec<(&'static str, TaggedCont)> {
     ]
 }
 
-fn names_of(table: &[models::rust::rholang::wire::VariantProgram]) -> Vec<&str> {
+fn names_of(table: &[models::rust::rholang::bincode_schema::VariantProgram]) -> Vec<&str> {
     table.iter().map(|v| v.name).collect()
 }
 
@@ -657,7 +653,7 @@ fn assert_enumerated<T>(enum_name: &str, table: Vec<&str>, values: &[(&'static s
     let constructed: Vec<&str> = values.iter().map(|(n, _)| *n).collect();
     assert_eq!(
         constructed, table,
-        "★ `{enum_name}`'s corpus no longer matches the GENERATED `wire_schema` variant table. \
+        "★ `{enum_name}`'s corpus no longer matches the GENERATED `bincode_schema_tables` variant table. \
          The schema grew or shrank and this file's coverage silently stopped being exhaustive — \
          which is precisely how a hand-maintained list of \"the traversals that matter\" came to \
          miss `Hash` entirely. Regenerate the corpus, do not adjust the table."
@@ -684,7 +680,7 @@ fn corpus() -> Vec<(String, Par)> {
     for (name, instance) in exprs {
         out.push((
             format!("ExprInstance::{name}"),
-            marked(Par {
+            marked(models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(instance),
                 }],
@@ -702,7 +698,7 @@ fn corpus() -> Vec<(String, Par)> {
     for (name, instance) in connectives {
         out.push((
             format!("ConnectiveInstance::{name}"),
-            marked(Par {
+            marked(models::par_from_default! {
                 connectives: vec![Connective {
                     connective_instance: Some(instance),
                 }],
@@ -716,7 +712,7 @@ fn corpus() -> Vec<(String, Par)> {
     for (name, instance) in unfs {
         out.push((
             format!("UnfInstance::{name}"),
-            marked(Par {
+            marked(models::par_from_default! {
                 unforgeables: vec![GUnforgeable {
                     unf_instance: Some(instance),
                 }],
@@ -732,7 +728,7 @@ fn corpus() -> Vec<(String, Par)> {
         // message, i.e. one of the seven that kept its derive.
         out.push((
             format!("VarInstance::{name}"),
-            marked(Par {
+            marked(models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
                         ps: vec![a.clone()],
@@ -820,7 +816,10 @@ fn corpus() -> Vec<(String, Par)> {
                 // ⚠ NEGATIVE `sint32`.
                 bind_count: -3,
                 p: Some(gint(3)),
-                uri: vec!["rho:io:stdout".to_string(), "rho:rchain:deployId".to_string()],
+                uri: vec![
+                    "rho:io:stdout".to_string(),
+                    "rho:rchain:deployId".to_string(),
+                ],
                 injections: injections_with_duplicate_key(),
                 locally_free: vec![3],
             }],
@@ -886,7 +885,7 @@ fn corpus() -> Vec<(String, Par)> {
     // ── `New.injections`: the schema's ONLY map, with a duplicate-key overwrite ──
     out.push((
         "New.injections (BTreeMap, duplicate-key overwrite)".to_string(),
-        marked(Par {
+        marked(models::par_from_default! {
             news: vec![New {
                 bind_count: 2,
                 p: Some(gint(1)),
@@ -905,7 +904,7 @@ fn corpus() -> Vec<(String, Par)> {
     // first. It is the field the RED probe for this file drops.
     out.push((
         "Par.conditionals only".to_string(),
-        marked(Par {
+        marked(models::par_from_default! {
             conditionals: vec![
                 If {
                     condition: Some(gint(1)),
@@ -929,7 +928,7 @@ fn corpus() -> Vec<(String, Par)> {
     // ── WIDE: the value stack is sized by the FRONTIER, not by the depth ──
     out.push((
         "wide: 512 siblings under one EList".to_string(),
-        marked(Par {
+        marked(models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: (0..512).map(|i| gint(i as i64 - 256)).collect(),
@@ -945,7 +944,7 @@ fn corpus() -> Vec<(String, Par)> {
     // ── SHALLOW BUT BROAD: 64 sends, each with 4 data — the production shape ──
     out.push((
         "broad: 64 sends x 4 data".to_string(),
-        marked(Par {
+        marked(models::par_from_default! {
             sends: (0..64)
                 .map(|i| Send {
                     chan: Some(gstr(&format!("c{i}"))),
@@ -963,7 +962,7 @@ fn corpus() -> Vec<(String, Par)> {
     for depth in 1..=6usize {
         let mut p = marked(gint(depth as i64));
         for level in 0..depth {
-            p = marked(Par {
+            p = marked(models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(if level % 2 == 0 {
                         ExprInstance::EListBody(EList {
@@ -993,7 +992,7 @@ fn corpus() -> Vec<(String, Par)> {
     {
         let mut p = marked(gint(0));
         for level in 0..8usize {
-            p = marked(Par {
+            p = marked(models::par_from_default! {
                 sends: vec![Send {
                     chan: Some(p),
                     data: vec![gint(level as i64)],
@@ -1074,7 +1073,7 @@ fn every_enumerated_shape_clones_identically_on_every_axis() {
 /// store's fixed point rather than "the terms differ".
 #[test]
 fn dropping_a_field_from_the_rebuild_is_caught_and_names_the_axis() {
-    let term = marked(Par {
+    let term = marked(models::par_from_default! {
         conditionals: vec![If {
             condition: Some(gint(1)),
             if_true: Some(gint(2)),
@@ -1154,7 +1153,7 @@ fn dropping_a_field_from_the_rebuild_is_caught_and_names_the_axis() {
     assert_eq!(
         lf_axis, "prost bytes (the protobuf wire)",
         "⚠★ A `locally_free`-only difference is invisible to `PartialEq` AND to bincode AND to \
-         the Blake2b-256 over bincode. The PROST axis is the only byte axis that retains the \
+         the Blake2b-256 over bincode. The PROTOBUF axis is the only byte axis that retains the \
          field, so it is the only one that can catch a clone which dropped it. A corpus carrying \
          `eq` + bincode alone — which is what the plan proposed — would pass such a clone."
     );

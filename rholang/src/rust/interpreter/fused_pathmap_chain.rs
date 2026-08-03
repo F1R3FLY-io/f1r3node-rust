@@ -103,8 +103,8 @@
 //! mirrors its today-impl arm-for-arm — the same
 //! `collect_child_segments`/`collect_subtrie_values`/`path_prefix_exists`
 //! helpers on the same (now shared, uncloned) trie, the same
-//! `RholangReadZipper::new(…).get_val()` for `getLeaf`'s raw-map root
-//! variant (:3938-3950), the same `pathExists` empty-focus special case
+//! root PathMap lookup for `getLeaf`'s raw-map variant, the same
+//! `pathExists` empty-focus special case
 //! (:5011-5013), the same message-level `ps.is_empty()` reads, the same Nil
 //! productions (getLeaf-no-value :3929, descendFirst-no-children :5536,
 //! ascendOne-at-root :5292, descendIndexedBranch-negative :5598, sibling
@@ -124,17 +124,12 @@
 //! builds contain NO runtime-flippable fusion path (a runtime flag would be
 //! a node-divergence hazard under a latent parity bug).
 
-
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_integration::{
-    composed_cursor_kind, cursor_entry_key, entry_key_at, par_to_path, segments_to_key, CursorKind,
+    composed_cursor_kind, par_to_path, segments_to_key, CursorKind,
 };
-use models::rust::pathmap_native_query::{
-    collect_child_segments, collect_subtrie_values, path_prefix_exists,
-};
-use models::rust::pathmap_zipper::RholangReadZipper;
 
 use super::accounting::costs::{lookup_cost, method_call_cost, union_cost, var_eval_cost};
 use super::env::Env;
@@ -319,7 +314,7 @@ struct FusedChain<'a> {
     // ⛔ The `interned: Arc<InternedEPathMap>` field is GONE.
     //
     // It cached four things, and every one of them is an O(1) read off `source_map`
-    // itself: `.map` is `source_map.entry_trie().trie()` (13 of the 16 reads, all
+    // itself: `.map` is `source_map.entry_trie().set_trie()` (13 of the 16 reads, all
     // borrows — so not even the refcount bump a clone would cost), `.locally_free`
     // and `.connective_used` are the entry trie's maintained folds, and
     // `.eval_stable` is `eval_stable_epathmap(source_map)` — the very function the
@@ -761,11 +756,9 @@ impl DebruijnInterpreter {
                     let transition = match &mut mode {
                         ViewMode::Zipper { focus, kind, .. } => {
                             // :5526 — first (byte-lex smallest) child.
-                            let children = collect_child_segments(
-                                chain.source_map.entry_trie().trie(),
-                                &segments_to_key(focus, false),
-                                Some(1),
-                            );
+                            let children = chain
+                                .source_map
+                                .collect_child_segments(&segments_to_key(focus, false), Some(1));
                             match children.into_iter().next() {
                                 Some(first) => {
                                     focus.push(first);
@@ -819,8 +812,7 @@ impl DebruijnInterpreter {
                                 // emissions (saturating: a saturated limit
                                 // enumerates all children and `.get` still
                                 // yields None).
-                                let children = collect_child_segments(
-                                    chain.source_map.entry_trie().trie(),
+                                let children = chain.source_map.collect_child_segments(
                                     &segments_to_key(focus, false),
                                     Some((idx as usize).saturating_add(1)),
                                 );
@@ -943,7 +935,7 @@ impl DebruijnInterpreter {
                                 // :5713/:5803 — all siblings, ascending
                                 // byte-lex, deduplicated.
                                 let siblings =
-                                    collect_child_segments(chain.source_map.entry_trie().trie(), &parent_key, None);
+                                    chain.source_map.collect_child_segments(&parent_key, None);
                                 match siblings.iter().position(|s| s == &current_segment) {
                                     Some(current_idx) => {
                                         let target_idx = if kind == LinkKind::ToNextSibling {
@@ -1015,7 +1007,7 @@ impl DebruijnInterpreter {
                                 !chain.source_map.entry_trie().is_empty()
                             } else {
                                 // :5019 — native trie-path lookup.
-                                path_prefix_exists(chain.source_map.entry_trie().trie(), &key)
+                                chain.source_map.path_prefix_exists(&key)
                             }
                         }
                         // :5022-5024 — a raw map exists iff non-empty.
@@ -1037,26 +1029,13 @@ impl DebruijnInterpreter {
                             // `[1]` (key `03 02 00`). Byte-identical to the
                             // retired `segments_to_key(focus, true)` for a
                             // SPLIT cursor, which every ground-list chain has.
-                            let key = cursor_entry_key(focus, *kind, chain.source_map.entry_trie().trie());
-                            match chain.source_map.entry_trie().trie().get(&key) {
-                                Some(value) => value.clone(),
-                                None => Par::default(),
-                            }
+                            let key = chain.source_map.cursor_entry_key(focus, *kind);
+                            chain
+                                .source_map
+                                .leaf_at_encoded_key(&key)
+                                .unwrap_or_default()
                         }
-                        ViewMode::Map => {
-                            // :3938-3950 — the raw-map ROOT variant, through
-                            // the same RholangReadZipper path (root value or
-                            // Nil).
-                            let read_zipper = RholangReadZipper::new(
-                                chain.source_map.entry_trie().trie(),
-                                chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some(),
-                                chain.source_map.entry_trie().union_locally_free().to_vec(),
-                            );
-                            match read_zipper.get_val() {
-                                Some(value) => value.clone(),
-                                None => Par::default(),
-                            }
-                        }
+                        ViewMode::Map => Par::default(),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :3976 — apply returns the leaf Par UNWRAPPED.
@@ -1069,21 +1048,9 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, .. } => {
                             // :3999-4013 — native subtrie descent below the
                             // focus prefix.
-                            let elements = collect_subtrie_values(
-                                chain.source_map.entry_trie().trie(),
-                                &segments_to_key(focus, false),
-                            );
-                            // :4016-4023 — locally_free/connective_used from
-                            // the CONVERSION result (the interned entry),
-                            // remainder None.
-                            // EPathMap fix P3 (PM-2): constructor instead
-                            // of a struct literal (private shadow cell).
-                            single_expr_par(ExprInstance::EPathmapBody(EPathMap::new(
-                                elements,
-                                chain.source_map.entry_trie().union_locally_free().to_vec(),
-                                chain.source_map.entry_trie().any_connective_used() || chain.source_map.remainder.is_some(),
-                                None,
-                            )))
+                            single_expr_par(ExprInstance::EPathmapBody(
+                                chain.source_map.subtrie(&segments_to_key(focus, false)),
+                            ))
                         }
                         ViewMode::Map => {
                             // :4025-4029 — the whole map back; today's arm
@@ -1102,16 +1069,14 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, .. } => {
                             // :5428-5444 — distinct immediate children below
                             // the focus.
-                            collect_child_segments(
-                                chain.source_map.entry_trie().trie(),
-                                &segments_to_key(focus, false),
-                                None,
-                            )
-                            .len() as i64
+                            chain
+                                .source_map
+                                .collect_child_segments(&segments_to_key(focus, false), None)
+                                .len() as i64
                         }
                         ViewMode::Map => {
                             // :5446-5457 — distinct first segments.
-                            collect_child_segments(chain.source_map.entry_trie().trie(), &[], None).len() as i64
+                            chain.source_map.collect_child_segments(&[], None).len() as i64
                         }
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
@@ -1135,16 +1100,15 @@ impl DebruijnInterpreter {
                     // stays byte-for-byte the same function.
                     let key = match &mode {
                         ViewMode::Zipper { focus, .. } => {
-                            entry_key_at(focus, path_par, chain.source_map.entry_trie().trie())
+                            chain.source_map.entry_key_at(focus, path_par)
                         }
-                        ViewMode::Map => entry_key_at(&[], path_par, chain.source_map.entry_trie().trie()),
+                        ViewMode::Map => chain.source_map.entry_key_at(&[], path_par),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
-                    // :4922-4925/:4945-4948 — value or Nil, UNWRAPPED.
-                    return Ok(match chain.source_map.entry_trie().trie().get(&key) {
-                        Some(value) => value.clone(),
-                        None => Par::default(),
-                    });
+                    return Ok(chain
+                        .source_map
+                        .leaf_at_encoded_key(&key)
+                        .unwrap_or_default());
                 }
             }
         }
@@ -1233,5 +1197,70 @@ pub mod fusion_test_support {
             .expect("fusion-hit shape map mutex poisoned")
             .entry(shape_key)
             .or_insert(0) += 1;
+    }
+}
+
+#[cfg(test)]
+mod stack_safety_tests {
+    use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
+    use rspace_plus_plus::rspace::rspace::RSpace;
+
+    use super::*;
+    use crate::rust::interpreter::env::Env;
+    use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+
+    fn expr(instance: ExprInstance) -> Par {
+        models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(instance),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn call(target: Par, method_name: &str) -> Par {
+        expr(ExprInstance::EMethodBody(EMethod {
+            method_name: method_name.to_owned(),
+            target: Some(target),
+            arguments: Vec::new(),
+            locally_free: Vec::new(),
+            connective_used: false,
+        }))
+    }
+
+    #[test]
+    fn fused_chain_depth_4096_uses_a_fixed_small_native_stack() {
+        std::thread::Builder::new()
+            .name("fused-pathmap-depth-4096".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let (_, reducer) = create_test_space::<
+                        RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+                    >()
+                    .await;
+
+                    let mut chain = expr(ExprInstance::EPathmapBody(EPathMap::default()));
+                    chain = call(chain, "readZipper");
+                    for _ in 0..4_096 {
+                        chain = call(chain, "reset");
+                    }
+                    chain = call(chain, "pathExists");
+
+                    let result = reducer
+                        .eval_expr(&chain, &Env::new())
+                        .expect("the fused PathMap chain must evaluate");
+                    assert_eq!(result.exprs.len(), 1);
+                    models::rust::rholang::par_children::dismantle(chain);
+                    models::rust::rholang::par_children::dismantle(result);
+                });
+            })
+            .expect("spawn fixed-stack fused-chain probe")
+            .join()
+            .expect("fixed-stack fused-chain probe panicked");
     }
 }

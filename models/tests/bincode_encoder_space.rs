@@ -23,7 +23,7 @@ use models::rhoapi::{EList, Expr, Par, Send};
 use models::rust::rholang::bincode_encoder::{
     encode, encode_into, op_size, op_stack_high_water, program_address, with_encoded,
 };
-use models::rust::rholang::wire::WireNode;
+use models::rust::rholang::bincode_schema::BincodeNode;
 
 mod par_corpus;
 use par_corpus as corpus;
@@ -36,7 +36,7 @@ use par_corpus as corpus;
 fn deep(depth: usize) -> Par {
     let mut par = Par::default();
     for _ in 0..depth {
-        par = Par {
+        par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![par],
@@ -52,7 +52,7 @@ fn deep(depth: usize) -> Par {
 /// One node with `width` children: SHALLOW and wide. Same node COUNT as
 /// `deep(width)`, so the two shapes isolate depth from size exactly.
 fn wide(width: usize) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: (0..width).map(|i| corpus::gint(i as i64)).collect(),
@@ -144,7 +144,10 @@ fn the_op_stack_grows_only_with_depth_and_only_by_a_bounded_amount() {
         hi,
         op_size()
     );
-    println!("  op stack (depth {hi_depth}): {bytes} B = {hi} × {} B", op_size());
+    println!(
+        "  op stack (depth {hi_depth}): {bytes} B = {hi} × {} B",
+        op_size()
+    );
 }
 
 #[test]
@@ -256,11 +259,14 @@ fn the_steady_state_allocation_table() {
         ("gint", corpus::gint(1)),
         ("wide(64)", wide(64)),
         ("deep(16)", deep(16)),
-        ("nonground_pathmap", pathmap_par(corpus::nonground_pathmap())),
+        (
+            "nonground_pathmap",
+            pathmap_par(corpus::nonground_pathmap()),
+        ),
         // ★★ THE CBR-043 ROW, and it is not a duplicate of the one above it.
         //
         // `nonground_pathmap`'s entries are `GInt`s — `entries_stable`, so
-        // `EntryTrie::wire_path_stream` answers O(1) off the fold and the memo
+        // `EntryTrie::bincode_path_stream` answers O(1) off the fold and the memo
         // cell is never touched. This shape's entry is lf-bearing and NOT
         // `eval_stable`, which is the only route into `blanked_stream()`: the
         // blanked entries are built through the cold-store codec pair, a
@@ -333,7 +339,7 @@ fn the_steady_state_allocation_table() {
     // The direct evidence the allocation count used to stand in for: a permuted
     // construction of the same entry set writes the SAME bytes.
     {
-        let mut permuted_entries = corpus::ground_pathmap().ps().clone();
+        let mut permuted_entries = corpus::ground_pathmap().entry_trie().entries_owned();
         permuted_entries.reverse();
         let permuted = pathmap_par(models::rhoapi::EPathMap::new(
             permuted_entries,
@@ -365,7 +371,7 @@ fn the_steady_state_allocation_table() {
 /// entry's `locally_free` used to reach the bincode wire, and therefore the
 /// exact route the memo now covers.
 fn lf_bearing_pathmap() -> models::rust::rhoapi_ext::EPathMap {
-    let entry = Par {
+    let entry = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
                 v: Some(models::rhoapi::Var {
@@ -381,7 +387,7 @@ fn lf_bearing_pathmap() -> models::rust::rhoapi_ext::EPathMap {
 
 /// One node holding one `EPathMap`.
 fn pathmap_par(map: models::rust::rhoapi_ext::EPathMap) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EPathmapBody(map)),
         }],
@@ -484,7 +490,7 @@ fn the_op_stack_pool_does_not_pin_a_deep_terms_high_water() {
 // §3  ⚠ Program addresses do NOT identify a type
 // ===========================================================================
 
-/// The measured fact behind [`models::rust::rholang::wire::WireNode::wire_as_pathmap`].
+/// The measured fact behind [`models::rust::rholang::bincode_schema::BincodeNode::bincode_as_pathmap`].
 ///
 /// If this test ever *fails* — i.e. the addresses become distinct — that is not
 /// permission to reintroduce the pointer trick. Constant merging is a linker
@@ -496,40 +502,43 @@ fn program_addresses_do_not_identify_a_type() {
     let pathmap = corpus::ground_pathmap();
     let elist = EList::default();
 
-    let same = program_address(&pathmap as &dyn WireNode) == program_address(&elist as &dyn WireNode);
+    let same = program_address(&pathmap as &dyn BincodeNode)
+        == program_address(&elist as &dyn BincodeNode);
     println!(
         "  EPATHMAP_PROGRAM @ {:#x}, ELIST_PROGRAM @ {:#x} — merged: {same}",
-        program_address(&pathmap as &dyn WireNode),
-        program_address(&elist as &dyn WireNode),
+        program_address(&pathmap as &dyn BincodeNode),
+        program_address(&elist as &dyn BincodeNode),
     );
 
     // Whatever the addresses are, the TYPE question must be answered by the
     // trait, and it must answer correctly.
     assert!(
-        (&pathmap as &dyn WireNode).wire_as_pathmap().is_some(),
+        (&pathmap as &dyn BincodeNode)
+            .bincode_as_pathmap()
+            .is_some(),
         "an EPathMap must identify itself"
     );
     assert!(
-        (&elist as &dyn WireNode).wire_as_pathmap().is_none(),
+        (&elist as &dyn BincodeNode).bincode_as_pathmap().is_none(),
         "an EList must NOT identify as an EPathMap — this is the type confusion that \
          SIGSEGV'd the differential on its first run"
     );
     for node in [
-        &Par::default() as &dyn WireNode,
+        &Par::default() as &dyn BincodeNode,
         &Send::default(),
         &Expr::default(),
         &models::rhoapi::ESet::default(),
         &models::rhoapi::EMap::default(),
     ] {
         assert!(
-            node.wire_as_pathmap().is_none(),
-            "only EPathMap may answer to `wire_as_pathmap`"
+            node.bincode_as_pathmap().is_none(),
+            "only EPathMap may answer to `bincode_as_pathmap`"
         );
     }
 
     // And the encoder survives the exact shape that used to crash: an `EList`
     // whose program is (content-)identical to `EPathMap`'s, nested under one.
-    let mixed = Par {
+    let mixed = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {

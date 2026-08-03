@@ -46,41 +46,22 @@
 //! 3. `rholang/tests/stack_depth_gate.rs` proves the driver is the one with
 //!    `O(1)` native stack.
 //!
-//! ## ⚠ Three arms are deliberately NOT worklisted
+//! ## Collection arms are worklisted and deterministic
 //!
-//! `ESetBody`, `EMapBody` and `EPathmapBody` route their elements through
-//! `SortedParHashSet` / `SortedParMap` / `canonicalize_ground_epathmap`, which
-//! **re-enter** `ParSortMatcher::sort_match` on *owned intermediates* (the
-//! deduplicated set, the canonicalised trie order) rather than on sub-terms of
-//! the input. Those intermediates cannot be borrowed from the root, so they
-//! cannot become worklist children without either an arena or an extra deep
-//! copy of the whole term.
-//!
-//! They are therefore kept **verbatim**, and each re-entry is its own bounded
-//! drive — the discipline `reduce.rs` already uses for owned intermediates. Two
-//! consequences, both measured rather than assumed and both named in the gate:
-//!
-//! * a chain of `n` nested sets/maps costs `n` *drive frames* rather than `n`
-//!   *sorter frames* — the subject `sort_nested_set` in
-//!   `rholang/tests/stack_depth_gate.rs`;
-//! * `HashSet<Par>` / `HashMap<Par, Par>` operations invoke the **derived**
-//!   `Par: Clone + Hash + Eq`, each of which is itself Θ(depth)
-//!   (`<Par as Clone>::clone` measured at 15,875 B/level, debug). Those are row
-//!   5 of the audit's table, whose disposition is explicitly "Leg-1 only:
-//!   remove the call sites, not the impl", so no conversion of the *sorter*
-//!   can remove them. Keeping the arms verbatim keeps that residual exactly
-//!   where it already was instead of relocating it.
-//!
-//! ⚠ It also preserves something subtler that a restructuring would silently
-//! break: `HashSet`'s iteration order comes from a `RandomState` seeded per
-//! instance from a thread-local counter, so the *number and order* of
-//! `HashSet` constructions is observable whenever two distinct elements have
-//! equal scores (the sorter is a normalizer, hence not injective). Verbatim
-//! arms construct exactly the same sets in exactly the same order.
+//! `ESetBody` and `EMapBody` expose raw members after applying their
+//! collection-level duplicate semantics. Homogeneous EPathMap modes enumerate
+//! entries from PathMap in trie order; set keys are decoded into traversal-arena
+//! storage and map values remain borrowed from the trie. Their combines consume
+//! already-scored children, canonical-sort with the total term order, and never
+//! re-enter `ParSortMatcher`. Randomized HashMap iteration cannot affect the
+//! result because every unordered intermediate is followed by that total sort.
+//! The converted nested-set/map subjects run through the permanent full-depth
+//! gate.
 //!
 //! Full analysis, measured constants and proof standard:
 //! `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
@@ -89,19 +70,15 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
+    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    EMethod, ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GUnforgeable, If, Match,
-    MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    ETuple, EVar, EZipper, Expr, GBigRational, GFixedPoint, GUnforgeable, If, Match, MatchCase,
+    New, Par, Receive, ReceiveBind, Send, Var,
 };
-use crate::rust::par_map::ParMap;
-use crate::rust::par_map_type_mapper::ParMapTypeMapper;
-use crate::rust::par_set::ParSet;
-use crate::rust::par_set_type_mapper::ParSetTypeMapper;
+use crate::rust::canonical_path::encode_trie_path_with_stability;
+use crate::rust::epathmap_trie_codec::EPathMapMode;
 use crate::rust::pathmap_crate_type_mapper::eval_stable_epathmap;
-use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use crate::rust::rholang::sorter::sortable::Sortable;
-use crate::rust::sorted_par_hash_set::SortedParHashSet;
+use crate::rust::rhoapi_ext::EntryTrie;
 
 // ===========================================================================
 // small shared helpers
@@ -201,34 +178,27 @@ pub fn sort_unforgeable(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
                 term: GUnforgeable {
                     unf_instance: Some(UnfInstance::GPrivateBody(gpriv.clone())),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(
-                    Score::PRIVATE,
-                    vec![Tree::<ScoreAtom>::create_leaf_from_bytes(gpriv.id.clone())],
-                ),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::PRIVATE, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(gpriv.id.clone()),
+                ]),
             },
 
             UnfInstance::GDeployerIdBody(id) => ScoredTerm {
                 term: GUnforgeable {
                     unf_instance: Some(UnfInstance::GDeployerIdBody(id.clone())),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(
-                    Score::DEPLOYER_AUTH,
-                    vec![Tree::<ScoreAtom>::create_leaf_from_bytes(
-                        id.public_key.clone(),
-                    )],
-                ),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOYER_AUTH, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(id.public_key.clone()),
+                ]),
             },
 
             UnfInstance::GDeployIdBody(deploy_id) => ScoredTerm {
                 term: GUnforgeable {
                     unf_instance: Some(UnfInstance::GDeployIdBody(deploy_id.clone())),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(
-                    Score::DEPLOY_ID,
-                    vec![Tree::<ScoreAtom>::create_leaf_from_bytes(
-                        deploy_id.sig.clone(),
-                    )],
-                ),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::DEPLOY_ID, vec![
+                    Tree::<ScoreAtom>::create_leaf_from_bytes(deploy_id.sig.clone()),
+                ]),
             },
 
             UnfInstance::GSysAuthTokenBody(token) => ScoredTerm {
@@ -255,10 +225,11 @@ pub fn sort_unforgeable(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
 
 /// The sub-`Par`s of an `Expr`, in evaluation order.
 ///
-/// ⚠ Returns **nothing** for `ESetBody`, `EMapBody` and `EPathmapBody`: those
-/// arms are self-contained (module docs). It also returns nothing for
-/// `EVarBody`, whose child is a `Var` — a leaf — scored inside
-/// [`combine_expr`].
+/// `ESetBody` and `EMapBody` expose their raw-container members after applying
+/// the same raw equality semantics as their mathematical collection. PathMap
+/// keys remain a separate trie traversal because set keys must be decoded into
+/// arena-owned `Par`s; the generated driver and recursive oracle each supply
+/// that storage explicitly.
 pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
     let Some(instance) = e.expr_instance.as_ref() else {
         return;
@@ -276,10 +247,9 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
         | ExprInstance::GFixedPoint(_)
         | ExprInstance::EVarBody(_) => {}
 
-        // ---- self-contained arms; see the module docs ----
-        ExprInstance::ESetBody(_)
-        | ExprInstance::EMapBody(_)
-        | ExprInstance::EPathmapBody(_) => {}
+        ExprInstance::ESetBody(eset) => extend_eset_children(eset, out),
+        ExprInstance::EMapBody(emap) => extend_emap_children(emap, out),
+        ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => {}
 
         // ---- unary ----
         ExprInstance::ENegBody(x) => out.push(required(&x.p)),
@@ -366,14 +336,6 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
         // ---- n-ary, order-preserving ----
         ExprInstance::EListBody(x) => out.extend(x.ps.iter()),
         ExprInstance::ETupleBody(x) => out.extend(x.ps.iter()),
-        // ★ Reads the TRIE. `ps()` forces the deep-clone projection memo to hand back
-        // borrows the trie can hand out itself, at the trie's own lifetime.
-        ExprInstance::EZipperBody(x) => x
-            .pathmap
-            .as_ref()
-            .expect("zipper pathmap was None")
-            .entry_trie()
-            .extend_entry_refs(out),
 
         // ---- ⚠ arguments BEFORE target: that is the pre-conversion order ----
         ExprInstance::EMethodBody(x) => {
@@ -384,6 +346,35 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
                     .expect("target field on EMethod was None, should be Some"),
             );
         }
+    }
+}
+
+fn extend_eset_children<'t>(eset: &'t crate::rhoapi::ESet, out: &mut Vec<&'t Par>) {
+    if eset.ps.len() <= 1 {
+        out.extend(eset.ps.iter());
+        return;
+    }
+    let unique: HashSet<&Par> = eset.ps.iter().collect();
+    out.reserve(unique.len());
+    out.extend(unique);
+}
+
+fn extend_emap_children<'t>(emap: &'t crate::rhoapi::EMap, out: &mut Vec<&'t Par>) {
+    if let [pair] = emap.kvs.as_slice() {
+        out.push(pair.key.as_ref().expect("KeyValuePair.key"));
+        out.push(pair.value.as_ref().expect("KeyValuePair.value"));
+        return;
+    }
+    let mut unique: HashMap<&Par, &Par> = HashMap::with_capacity(emap.kvs.len());
+    for pair in &emap.kvs {
+        let key = pair.key.as_ref().expect("KeyValuePair.key");
+        let value = pair.value.as_ref().expect("KeyValuePair.value");
+        unique.insert(key, value);
+    }
+    out.reserve(unique.len() * 2);
+    for (key, value) in unique {
+        out.push(key);
+        out.push(value);
     }
 }
 
@@ -650,7 +641,9 @@ pub fn combine_new(
             .map(|s| Tree::<ScoreAtom>::create_leaf_from_string(s.clone()))
             .collect()
     } else {
-        vec![Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64)]
+        vec![Tree::<ScoreAtom>::create_leaf_from_i64(
+            Score::ABSENT as i64,
+        )]
     };
 
     let injections_score: Vec<Tree<ScoreAtom>> = if !n.injections.is_empty() {
@@ -662,7 +655,9 @@ pub fn combine_new(
             })
             .collect()
     } else {
-        vec![Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64)]
+        vec![Tree::<ScoreAtom>::create_leaf_from_i64(
+            Score::ABSENT as i64,
+        )]
     };
 
     ScoredTerm {
@@ -705,7 +700,11 @@ pub fn combine_case(
         term: guard_term,
         score: guard_score,
     } = guard;
-    let guard_term = if guard_present { Some(guard_term) } else { None };
+    let guard_term = if guard_present {
+        Some(guard_term)
+    } else {
+        None
+    };
 
     ScoredTerm {
         term: MatchCase {
@@ -767,15 +766,12 @@ pub fn combine_if(
             locally_free: i.locally_free.clone(),
             connective_used: i.connective_used,
         },
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::IF,
-            vec![
-                condition.score,
-                if_true.score,
-                if_false.score,
-                Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(i.connective_used)),
-            ],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::IF, vec![
+            condition.score,
+            if_true.score,
+            if_false.score,
+            Tree::<ScoreAtom>::create_leaf_from_i64(flag_score(i.connective_used)),
+        ]),
     }
 }
 
@@ -842,10 +838,9 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
                 term: Connective {
                     connective_instance: Some(ConnectiveInstance::ConnNotBody(scored_par.term)),
                 },
-                score: Tree::<ScoreAtom>::create_node_from_i32(
-                    Score::CONNECTIVE_NOT,
-                    vec![scored_par.score],
-                ),
+                score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_NOT, vec![
+                    scored_par.score,
+                ]),
             }
         }
 
@@ -921,7 +916,7 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
 // `Expr` — the DISPATCHER and its thirty-six per-arm functions
 // ===========================================================================
 //
-// ## ★ Why every arm is its own `#[inline(never)]` function
+// ## Why every arm is its own `#[inline(never)]` function
 //
 // At `-O0` rustc does **not** overlap the stack slots of mutually exclusive
 // `match` arms. A single function carrying all 36 `ExprInstance` arms' locals
@@ -929,29 +924,10 @@ pub fn combine_connective(c: &Connective, kids: Vec<ScoredTerm<Par>>) -> ScoredT
 // draft of this conversion, `combine_expr` was **99,888 bytes** — larger than
 // the whole recursive `ExprSortMatcher::sort_match` it replaced (69,744 B).
 //
-// That is harmless on the ordinary spine, where the driver is flat and the
-// frame is entered once (measured: **0 B/level**, parameter 4 → 4,096, both
-// profiles). It is *not* harmless on the three self-contained arms
-// (`ESetBody`, `EMapBody`, `EPathmapBody`), which re-enter
-// `ParSortMatcher::sort_match` on owned intermediates and therefore keep one
-// `combine_expr` frame alive **per nesting level**.
-//
-// ⚠ Hoisting only those three arms out of line was measured and **refuted**:
-// 130,458 → 127,4xx B/level, a 2.6 % move, because the other 33 arms' locals
-// still held the frame. The refutation refutes hoisting *three of thirty-six*,
-// not hoisting — so the split is applied to **every** arm. Each arm's frame is
-// then bounded by its own locals **by construction**, which is a structural
-// statement rather than a measured one, and the split is pure code motion, so
-// the canonical form cannot move.
-//
-// Two alternatives were considered and rejected:
-//
-// * *Boxed / uniform arm locals* — would change how many heap containers each
-//   arm builds and in what order, and `HashSet`'s iteration order is seeded
-//   from a per-thread counter, so container construction order is
-//   consensus-observable whenever two distinct elements share a score.
-// * *Eliminating the re-entrancy* — a large change for a member the `3^n`
-//   bound (below) makes unreachable in practice.
+// The driver is flat, but a needlessly large constant frame still wastes the
+// small explicit stacks used by the regression gates. Splitting all arms keeps
+// each frame bounded by only that arm's locals and preserves the exhaustiveness
+// of the dispatcher.
 
 /// The `ScoredTerm<Expr>` every arm builds.
 #[inline]
@@ -1086,10 +1062,7 @@ fn combine_ematches(kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             target: Some(target_term),
             pattern: Some(pattern_term),
         }),
-        Tree::<ScoreAtom>::create_node_from_i32(
-            Score::EMATCHES,
-            vec![target_score, pattern_score],
-        ),
+        Tree::<ScoreAtom>::create_node_from_i32(Score::EMATCHES, vec![target_score, pattern_score]),
     )
 }
 
@@ -1145,24 +1118,131 @@ fn combine_etuple(tuple: &ETuple, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr
         ),
     )
 }
+/// Rebuild one homogeneous EPathMap from already-sorted PDA children and
+/// return score trees in the rebuilt trie's canonical order.
+///
+/// Canonical terms are inserted directly into the specialized EntryTrie. A
+/// companion PathMap keyed by the same canonical bytes carries scores until the
+/// final trie-order walk; no set-member or key/value Vec projection is built.
+fn canonicalize_scored_pathmap(
+    pathmap: &EPathMap,
+    kids: Vec<ScoredTerm<Par>>,
+    preserve_stable_storage: bool,
+) -> (EPathMap, Vec<Tree<ScoreAtom>>) {
+    if preserve_stable_storage && eval_stable_epathmap(pathmap) && !pathmap.is_empty() {
+        return (
+            pathmap.clone(),
+            kids.into_iter().map(|child| child.score).collect(),
+        );
+    }
 
+    let metadata = || {
+        (
+            pathmap.locally_free.clone(),
+            pathmap.connective_used,
+            pathmap.remainder.clone(),
+        )
+    };
+
+    match pathmap.mode() {
+        EPathMapMode::Empty => {
+            assert!(kids.is_empty(), "empty EPathMap has no sorter children");
+            let (locally_free, connective_used, remainder) = metadata();
+            (
+                EPathMap::new(
+                    EntryTrie::default(),
+                    locally_free,
+                    connective_used,
+                    remainder,
+                ),
+                Vec::new(),
+            )
+        }
+        EPathMapMode::Set => {
+            let mut entries = EntryTrie::default();
+            let mut score_by_key = pathmap::PathMap::new();
+            for ScoredTerm { term, score } in kids {
+                let (key, stable) = encode_trie_path_with_stability(&term);
+                score_by_key.insert(&key, score);
+                let consumed = entries.insert_encoded(key, stable, term);
+                crate::rust::rholang::par_children::dismantle(consumed);
+            }
+
+            let (locally_free, connective_used, remainder) = metadata();
+            let canonical = EPathMap::new(entries, locally_free, connective_used, remainder);
+            let mut entry_scores = Vec::with_capacity(canonical.len());
+            canonical
+                .entry_trie()
+                .for_each_raw_set_entry(|key| {
+                    entry_scores.push(
+                        score_by_key
+                            .remove(key)
+                            .expect("every canonical set key came from a sorted child"),
+                    );
+                })
+                .expect("set-mode construction cannot select map storage");
+            (canonical, entry_scores)
+        }
+        EPathMapMode::Map => {
+            assert_eq!(
+                kids.len() % 2,
+                0,
+                "map-mode sorter produces one value for every key"
+            );
+            let mut children = kids.into_iter();
+            let mut entries = EntryTrie::default();
+            let mut score_by_key = pathmap::PathMap::new();
+
+            while let Some(ScoredTerm {
+                term: key,
+                score: key_score,
+            }) = children.next()
+            {
+                let ScoredTerm {
+                    term: value,
+                    score: value_score,
+                } = children
+                    .next()
+                    .expect("map-mode sorter produces one value for every key");
+                let (encoded_key, key_stable) = encode_trie_path_with_stability(&key);
+                score_by_key.insert(&encoded_key, (key_score, value_score));
+                if let Some(replaced) = entries
+                    .insert_encoded_map_entry_replacing(&encoded_key, key_stable, key, value)
+                    .expect("fresh map-mode construction cannot contain set entries")
+                {
+                    crate::rust::rholang::par_children::dismantle(replaced);
+                }
+            }
+
+            let (locally_free, connective_used, remainder) = metadata();
+            let canonical = EPathMap::new(entries, locally_free, connective_used, remainder);
+            let mut entry_scores = Vec::with_capacity(canonical.len() * 2);
+            canonical
+                .entry_trie()
+                .for_each_raw_map_entry(|key, _| {
+                    let (key_score, value_score) = score_by_key
+                        .remove(key)
+                        .expect("every canonical map key came from a sorted child pair");
+                    entry_scores.push(key_score);
+                    entry_scores.push(value_score);
+                })
+                .expect("map-mode construction cannot select set storage");
+            (canonical, entry_scores)
+        }
+    }
+}
 /// `EZipperBody`. Scores under `EPATHMAP + 1`; no remainder slot.
 #[inline(never)]
 fn combine_ezipper(zipper: &EZipper, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
     let connective_used_score: i64 = flag_score(zipper.connective_used);
-    let (element_terms, element_scores) = split_scored_terms(kids);
+    let (canonical, element_scores) = canonicalize_scored_pathmap(pathmap, kids, false);
 
     construct_expr(
         ExprInstance::EZipperBody(EZipper {
             // EPathMap fix P3 (PM-2): constructor instead of
             // a struct literal (private shadow cell).
-            pathmap: Some(EPathMap::new(
-                element_terms,
-                pathmap.locally_free.clone(),
-                pathmap.connective_used,
-                pathmap.remainder.clone(),
-            )),
+            pathmap: Some(canonical),
             current_path: zipper.current_path.clone(),
             is_write_zipper: zipper.is_write_zipper,
             locally_free: zipper.locally_free.clone(),
@@ -1254,10 +1334,9 @@ fn combine_gint(e: &Expr, gi: i64) -> ScoredTerm<Expr> {
 fn combine_gstring(e: &Expr, gs: &str) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::STRING,
-            vec![Tree::<ScoreAtom>::create_leaf_from_string(gs.to_string())],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::STRING, vec![
+            Tree::<ScoreAtom>::create_leaf_from_string(gs.to_string()),
+        ]),
     }
 }
 
@@ -1265,10 +1344,9 @@ fn combine_gstring(e: &Expr, gs: &str) -> ScoredTerm<Expr> {
 fn combine_guri(e: &Expr, gu: &str) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::URI,
-            vec![Tree::<ScoreAtom>::create_leaf_from_string(gu.to_string())],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::URI, vec![
+            Tree::<ScoreAtom>::create_leaf_from_string(gu.to_string()),
+        ]),
     }
 }
 
@@ -1276,10 +1354,9 @@ fn combine_guri(e: &Expr, gu: &str) -> ScoredTerm<Expr> {
 fn combine_gbytearray(e: &Expr, ba: &[u8]) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::EBYTEARR,
-            vec![Tree::<ScoreAtom>::create_leaf_from_bytes(ba.to_vec())],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::EBYTEARR, vec![
+            Tree::<ScoreAtom>::create_leaf_from_bytes(ba.to_vec()),
+        ]),
     }
 }
 
@@ -1287,10 +1364,7 @@ fn combine_gbytearray(e: &Expr, ba: &[u8]) -> ScoredTerm<Expr> {
 fn combine_gdouble(e: &Expr, bits: u64) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
-            Score::DOUBLE as i64,
-            bits as i64,
-        ]),
+        score: Tree::<ScoreAtom>::create_node_from_i64s(vec![Score::DOUBLE as i64, bits as i64]),
     }
 }
 
@@ -1298,10 +1372,9 @@ fn combine_gdouble(e: &Expr, bits: u64) -> ScoredTerm<Expr> {
 fn combine_gbigint(e: &Expr, bytes: &[u8]) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::BIG_INT,
-            vec![Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.to_vec())],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_INT, vec![
+            Tree::<ScoreAtom>::create_leaf_from_bytes(bytes.to_vec()),
+        ]),
     }
 }
 
@@ -1309,13 +1382,10 @@ fn combine_gbigint(e: &Expr, bytes: &[u8]) -> ScoredTerm<Expr> {
 fn combine_gbigrat(e: &Expr, rat: &GBigRational) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::BIG_RAT,
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
-                Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
-            ],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::BIG_RAT, vec![
+            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.numerator.clone()),
+            Tree::<ScoreAtom>::create_leaf_from_bytes(rat.denominator.clone()),
+        ]),
     }
 }
 
@@ -1323,19 +1393,14 @@ fn combine_gbigrat(e: &Expr, rat: &GBigRational) -> ScoredTerm<Expr> {
 fn combine_gfixedpoint(e: &Expr, fp: &GFixedPoint) -> ScoredTerm<Expr> {
     ScoredTerm {
         term: e.clone(),
-        score: Tree::<ScoreAtom>::create_node_from_i32(
-            Score::FIXED_POINT,
-            vec![
-                Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
-                Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
-            ],
-        ),
+        score: Tree::<ScoreAtom>::create_node_from_i32(Score::FIXED_POINT, vec![
+            Tree::<ScoreAtom>::create_leaf_from_bytes(fp.unscaled.clone()),
+            Tree::<ScoreAtom>::create_node_from_i64s(vec![fp.scale as i64]),
+        ]),
     }
 }
 
 /// The `expr_instance: None` arm.
-///
-// TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD
 #[inline(never)]
 fn combine_expr_absent(e: &Expr) -> ScoredTerm<Expr> {
     ScoredTerm {
@@ -1351,9 +1416,8 @@ fn combine_expr_absent(e: &Expr) -> ScoredTerm<Expr> {
 /// frame holds only the discriminant and the call; see the section header above
 /// for the measurement that forced that.
 ///
-/// ⚠ The `ESetBody`, `EMapBody` and `EPathmapBody` arms take **no** children
-/// and run their own bounded drives; see the module docs for why, and
-/// `stack_depth_gate.rs`'s `sort_nested_set` for the measured residual.
+/// ESet/EMap members and homogeneous EPathMap entries arrive as ordinary scored
+/// children of the same PDA; their arms perform only post-order rebuilding.
 pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     match &e.expr_instance {
         Some(expr) => match expr {
@@ -1384,10 +1448,9 @@ pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
             ExprInstance::EZipperBody(zipper) => combine_ezipper(zipper, kids),
             ExprInstance::EMethodBody(em) => combine_emethod(em, kids),
 
-            // ---- ⚠ SELF-CONTAINED ARMS (module docs) ----
-            ExprInstance::EMapBody(emap) => combine_emap(emap),
-            ExprInstance::ESetBody(eset) => combine_eset(eset),
-            ExprInstance::EPathmapBody(pathmap) => combine_epathmap(pathmap),
+            ExprInstance::EMapBody(emap) => combine_emap(emap, kids),
+            ExprInstance::ESetBody(eset) => combine_eset(eset, kids),
+            ExprInstance::EPathmapBody(pathmap) => combine_epathmap(pathmap, kids),
 
             // ---- grounds ----
             ExprInstance::GBool(gb) => combine_gbool(e, *gb),
@@ -1404,382 +1467,177 @@ pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
     }
 }
 
-
 // ===========================================================================
-// the three SELF-CONTAINED `Expr` arms
+// collection `Expr` arms
 // ===========================================================================
 //
-// ⚠ These are the arms that re-enter `ParSortMatcher::sort_match` on OWNED
-// intermediates and therefore keep one frame alive per nesting level while an
-// inner drive runs. `#[inline(never)]` and out-of-line so that the frame on
-// that chain is this arm's own locals and NOT the whole 36-arm frame of
-// `combine_expr` (at `-O0` rustc does not overlap mutually exclusive match
-// arms' stack slots — the same effect that makes every constant in the audit
-// 2–12× larger in debug than in release).
-//
-// The residual that remains is the DERIVED class and cannot be removed by any
-// conversion of the sorter: `HashSet<Par>` / `HashMap<Par, Par>` invoke
-// `Par: Clone + Hash + Eq`, each a derived recursive traversal
-// (`<Par as Clone>::clone` measured at 15,875 B/level, debug). The gate
-// measures `sort_nested_set` against `clone_nested_set` — its own derived
-// control — so the residual is attributed rather than assumed.
-//
-// ⚠ A second, independent property of these arms, recorded because it bounds
-// how much the stack residual can ever matter: each sorts its elements THREE
-// times (once inside `eset_to_par_set` / `emap_to_par_map`, once to score
-// them, once inside the `create_from_vec` that rebuilds the collection), so a
-// chain of `n` nested sets costs `3^n` sorts. That is pre-existing, it is a
-// TIME bound rather than a stack bound, and it makes deep nesting infeasible
-// long before the stack residual could bite: depth 20 is 3.5e9 sorts. It is
-// named here rather than fixed because collapsing the rounds would change the
-// number and order of `HashSet` constructions, which is observable whenever
-// two distinct elements have equal scores (see the module docs).
+// Each arm consumes children already produced by the single explicit-worklist
+// traversal. ESet/EMap canonicalization therefore performs no recursive sorter
+// calls, and EPathMap rebuilding stays within the homogeneous PathMap mode.
 
 /// The `EMapBody` arm.
 #[inline(never)]
-fn combine_emap(emap: &crate::rhoapi::EMap) -> ScoredTerm<Expr> {
-let par_map = ParMapTypeMapper::emap_to_par_map(emap.clone());
+fn combine_emap(emap: &crate::rhoapi::EMap, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+    assert_eq!(
+        kids.len() % 2,
+        0,
+        "EMap sorter receives one value for every key"
+    );
 
-fn sort_key_value_pair(key: &Par, value: &Par) -> ScoredTerm<(Par, Par)> {
-    let sorted_key = ParSortMatcher::sort_match(key);
-    let sorted_value = ParSortMatcher::sort_match(value);
-
-    ScoredTerm {
-        term: (sorted_key.term, sorted_value.term),
-        score: sorted_key.score,
+    let mut kids = kids.into_iter();
+    let mut pairs = Vec::with_capacity(kids.len() / 2);
+    while let Some(key) = kids.next() {
+        let value = kids
+            .next()
+            .expect("EMap sorter receives one value for every key");
+        pairs.push(ScoredTerm {
+            term: (key.term, value.term),
+            score: key.score,
+        });
     }
-}
+    let canonical_pairs = if pairs.len() <= 1 {
+        pairs
+    } else {
+        ScoredTerm::sort_vec(&mut pairs);
+        let mut by_canonical_key = HashMap::with_capacity(pairs.len());
+        for pair in pairs {
+            let (key, value) = pair.term;
+            by_canonical_key.insert(key, (value, pair.score));
+        }
+        let mut canonical_pairs: Vec<_> = by_canonical_key
+            .into_iter()
+            .map(|(key, (value, score))| ScoredTerm {
+                term: (key, value),
+                score,
+            })
+            .collect();
+        ScoredTerm::sort_vec(&mut canonical_pairs);
+        canonical_pairs
+    };
 
-let sorted_pars: Vec<ScoredTerm<(Par, Par)>> = par_map
-    .ps
-    .sorted_list
-    .iter()
-    .map(|kv| sort_key_value_pair(&kv.0, &kv.1))
-    .collect();
-
-let remainder_score = remainder_score(&par_map.remainder);
-let connective_used_score: i64 = flag_score(par_map.connective_used);
-let (pair_terms, pair_scores) = split_scored_terms(sorted_pars);
-
-construct_expr(
-    ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(ParMap::new(
-        pair_terms,
-        par_map.connective_used,
-        par_map.locally_free,
-        par_map.remainder,
-    ))),
-    Tree::Node(
-        vec![
-            Tree::<ScoreAtom>::create_leaf_from_i64(Score::EMAP as i64),
-            remainder_score,
-        ]
+    let remainder_score = remainder_score(&emap.remainder);
+    let connective_used_score: i64 = flag_score(emap.connective_used);
+    let (pair_terms, pair_scores) = split_scored_terms(canonical_pairs);
+    let kvs = pair_terms
         .into_iter()
-        .chain(pair_scores)
-        .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-            connective_used_score,
-        )))
-        .collect(),
-    ),
-)
-            
+        .map(|(key, value)| crate::rhoapi::KeyValuePair {
+            key: Some(key),
+            value: Some(value),
+        })
+        .collect();
+
+    construct_expr(
+        ExprInstance::EMapBody(crate::rhoapi::EMap {
+            kvs,
+            locally_free: emap.locally_free.clone(),
+            connective_used: emap.connective_used,
+            remainder: emap.remainder.clone(),
+        }),
+        Tree::Node(
+            vec![
+                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EMAP as i64),
+                remainder_score,
+            ]
+            .into_iter()
+            .chain(pair_scores)
+            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
+                connective_used_score,
+            )))
+            .collect(),
+        ),
+    )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════════════
-// ★★★ THE IDENTICAL-TOTAL-ORDER ARGUMENT — required BEFORE converting these three arms
-// ═══════════════════════════════════════════════════════════════════════════════════════
-//
-// `ESetBody`, `EMapBody` and `EPathmapBody` each re-enter `ParSortMatcher::sort_match` per
-// element — one native frame per nesting level. Converting them to the work-stack driver is
-// stack-safety Phase 3b, and this block is the argument that obligation demands, recorded
-// BEFORE any code. Sorting is ORDER-DEFINING, so the usual "evaluation order is unobservable"
-// reasoning does not apply, and `SortedParMap` feeds the canonical sort that
-// `cost_accounting/sig.rs` signs. **A conversion that reproduces the order ALMOST exactly is a
-// fork.**
-//
-// ── What actually establishes the order, read from this file ──────────────────────────
-//
-// It is NOT this arm. `combine_eset` never sorts by score. It:
-//
-//   1. maps each element through `sort_match`, in the ITERATION ORDER of
-//      `par_set.ps.sorted_pars`;
-//   2. `split_scored_terms` splits that into `(element_terms, element_scores)`, preserving
-//      that order in both;
-//   3. hands `element_terms` to `SortedParHashSet::create_from_vec` — and THE CONTAINER
-//      establishes the term order;
-//   4. chains `element_scores` into the score `Tree`, still in the order from step 1.
-//
-// ⇒ ★★ **Terms and scores are ordered by two DIFFERENT things** — the terms by the
-// container's constructor, the scores by the input iteration — and those are not the same
-// permutation. Any conversion must preserve both.
-//
-// ── The three obligations a converted form must discharge ─────────────────────────────
-//
-// **O1 · Score order is INPUT order, and a LIFO work stack does not preserve it — but the
-// driver ALREADY DISCHARGES THIS, by construction.** A work stack completes children in
-// reverse push order, so a naive conversion would chain `element_scores` reversed. That
-// changes the score tree, which is the sort key of the ENCLOSING term, so the corruption
-// would not be local to this collection.
-//
-// ★★ It cannot happen here. `SortNode.idx` / `IxKont.idx` carry the **source index** through
-// both stacks — `sort_drive.rs:209` documents the wrapper as existing for exactly this — and
-// `SortTraversal::combine` runs
-//
-//     assert_children_are_in_source_order(vals, kont.arity());
-//
-// **before any pop**, "exactly where the bespoke loop ran it… the assertion that turns 'push
-// in reverse' from a convention into a failure on every term any test sorts." The `pop_n_*`
-// helpers then restore forward order and assert the indices descend by one while doing it.
-//
-// ⇒ O1 is **not** an obligation the conversion's author must remember; it is an invariant the
-// driver fails on. ★ That is what makes 3b tractable at all — the one hazard a byte
-// differential would be blind to is the one already mechanised.
-//
-// **O2 · The container's constructor is part of the canonical form.**
-// `ParSetTypeMapper::eset_to_par_set` yields a `SortedParSet` whose order comes from
-// `create_from_vec`, not from this arm. A conversion that sorts elements itself and bypasses
-// the mapper would be a SECOND opinion about set order. It must keep handing terms to the
-// same constructor.
-//
-// **O3 · `EMapBody` keeps only the KEY's score.** `sort_key_value_pair` (`:1442-1450`) sorts
-// key and value and returns `score: sorted_key.score`; **the value's score is DISCARDED**.
-// That asymmetry is the map's ordering rule, not an implementation detail. ⚠ It is also the
-// obligation most likely to be lost in conversion, because a converted arm pushes key and
-// value as two peer children and both scores are then sitting on the value stack — combining
-// them is the *natural* thing to write and it is wrong. The conversion must drop the value's
-// score deliberately, and say so where it does.
-//
-// ── Why `NodeKind` cannot express this today ──────────────────────────────────────────
-//
-// ⚠ `sort_drive.rs`'s `NodeKind` has twelve variants (`:190-207`) and none is `ESet`, `EMap`
-// or `EPathMap`; `:1353` records the same fact from this side ("take **no** children"). The
-// elements ARE `Par`s, so `NodeKind::Par` carries the descent unchanged — what is missing is
-// a COMBINE that pops N scored children and routes the terms through the mapper (O2). That is
-// a `SortKont` variant rather than a `NodeKind` variant, and
-//
-// ★ adding one is FORCED to be complete: `SortKont::arity` is exhaustive with no `_` arm, and
-// the driver cross-checks it against the per-arm pop counts on every combine. A new variant
-// that forgot its arity does not compile; one that mis-stated it fails the assertion. ⇒ The
-// missing piece is bounded and the compiler names it.
-//
-// ⚠ Note what this does NOT give: arity is a count, so it pins how many children are popped,
-// never that the RIGHT scores were kept (O3) or that the mapper was used (O2). Those two stay
-// the human obligations, which is why they are written out above rather than left to review.
-// Continuing —
-// `IxKont` already carries an index.
-//
-// ── The falsifier — what the two existing checks CAN and CANNOT catch, measured ───────
-//
-// ⛔★★ **Neither existing check gates this conversion at depth ≥ 2, and for opposite reasons.**
-//
-// **`sort_recursive.rs` — the frozen oracle — is blind to it BY CONSTRUCTION, and says so.**
-// Its header: *"The oracle shares [`super::sort_combine`] with the driver, so the two differ
-// **only** in traversal shape… It follows that this differential **cannot** catch an error
-// transcribed into the shared table itself — both sides would be wrong together."* ⇒ These
-// three arms ARE that shared table. O2 and O3 live inside them, so converting the arms moves
-// both sides of the differential at once and the check goes quiet on exactly the change being
-// made. ★ This is not a flaw in the oracle — it is the design that makes it a sharp test of
-// traversal shape — but it means **the oracle is not 3b's gate**, and reaching for it out of
-// habit would be a vacuous pass.
-//
-// ★ `sorter_canonical_golden.rs` is the one that can see arm errors, and it is better than a
-// byte gate: `line()` (`:207`) records **both
-// columns** — `sort_match(x).term` *and* `sort_match(x).score` (header, `:29`). So it observes
-// the score tree directly, and **O3's discard is visible to it**: keeping the value's score
-// would add atoms to the recorded column even where the emitted bytes did not move. ⇒ Do not
-// repeat the "byte gates are blind" reflex here without checking; for the score it is false.
-//
-// ⛔ **What it cannot catch: the recursion 3b converts.** Measured at HEAD, every collection in
-// the corpus is DEPTH 1 and scalar-only —
-//
-//     ESetBody      ps  = [gint(9), gint(3), gstring("m")]        (`:392`)
-//     EMapBody      kvs = [9→90, 3→30]                            (`:401-410`)
-//     EPathmapBody  pathmap_of([gint(9), gint(3)])                (`:418`)
-//
-// **No element of any collection is itself a collection.** The three arms are precisely the
-// ones that re-enter `sort_match` per nesting level, and the corpus never makes them re-enter
-// even once. A conversion could be wrong at every level below the first and this golden would
-// be byte- and score-identical.
-//
-// ⚠ The `EMapBody` row is additionally **monotone** — keys 3 < 9 pair with values 30 < 90 — so
-// key-order and key⊕value-order agree, and O3's defect would not reorder it even at depth 1.
-// Discriminating O3 by ORDER (rather than by the score column) needs an ANTI-MONOTONE pair:
-// `3→90, 9→30`.
-//
-// ⇒ **The two blindnesses compose into one gap, and it is precisely 3b's target.** The oracle
-// covers traversal shape but not the arms; the golden covers the arms but only at depth 1;
-// **the arms at depth ≥ 2 are covered by neither** — and "the arms at depth ≥ 2" is the exact
-// description of the recursion this conversion removes.
-//
-// ⇒ **The prerequisite is a corpus extension, not just a diff.** Before any arm is converted,
-// `sorter_canonical_golden.rs` must carry: a set inside a map inside a set, each collection
-// ≥ 2 elements, plus an anti-monotone map (`3→90, 9→30`), captured from the PRE-conversion
-// implementation exactly as the existing rows were. ★ A one-element collection has exactly one
-// permutation, so it cannot separate any ordering hypothesis from any other; a depth-1 corpus
-// cannot separate a correct conversion from one that is right only at the root.
-//
-// ⚠ Capture order matters and is not recoverable later: the golden's authority comes from
-// being taken **before** the change. Extending it afterwards would pin whatever the conversion
-// happened to produce — a fixture that agrees with the code by construction, which is the
-// vacuous-gate shape this campaign has now hit three times.
-//
-// ★ Precedent for taking this seriously rather than as a formality: `69e67043` deleted a push
-// from `contains_par` and all 30 byte-gate tests stayed green, and this campaign then hit the
-// same shape again — an unsound memoisation caught by the predicate oracle while every byte
-// gate stayed green.
-
-// ── O4 · THE STRUCTURAL BLOCKER, found while starting the conversion ──────────────────
-//
-// ⛔★★ **The elements this arm scores are NOT the elements on the message.** Read the first
-// three lines of `combine_eset` below: it builds `par_set` with
-// `ParSetTypeMapper::eset_to_par_set(eset.clone())` and then scores
-// `par_set.ps.sorted_pars` — the elements of a container constructed **inside the arm**,
-// whose order is a PERMUTATION of `eset.ps` and which, being a set, may also DEDUPLICATE.
-//
-// ⚠ This defeats the otherwise-obvious conversion. `descend_expr` (`sort_drive.rs:733`) is
-// already generic: it collects children with [`expr_child_pars`] and pushes each as
-// `NodeKind::Par` under the existing `ExprK` kont, so at first sight the whole conversion is
-// "stop returning nothing for these three arms at `:280-282`". It is not:
-//
-//   * `expr_child_pars` yields `&'t Par` **borrowed from the message**, so it can only offer
-//     `eset.ps` — i.e. WIRE order.
-//   * the arm scores SORTED-SET order.
-//   * the score `Tree` records the order elements were scored in (O1's premise).
-//   ⇒ Pushing `eset.ps` would chain the element scores in a different order. **That is a
-//     consensus fork, and the golden's new depth-≥2 rows are what would catch it.**
-//
-// ⚠ It cannot be fixed by having the kont own the container either: a `SortKont` variant
-// *may* own a `ParSet`, but the children pushed alongside it would then have to borrow from
-// that owned value while it sits on the work stack — self-referential, and not expressible.
-//
-// ⇒ **The tractable route, and it must be written deliberately rather than discovered:** have
-// the descent build the same container (`eset_to_par_set` is deterministic in `eset`), read
-// its `sorted_pars` order, and push the corresponding **message-borrowed** `&'t Par`s in that
-// order, dropping the temporary. The arm then consumes pre-scored children and keeps calling
-// `SortedParHashSet::create_from_vec` for the term side (O2).
-//
-// ⚠⚠ Two hazards on that route, both of which the depth-≥2 golden rows now cover:
-//   1. **Dedup changes the child COUNT.** `sorted_pars` may be shorter than `eset.ps`, and the
-//      pushed count must equal `SortKont::arity`, which the driver cross-checks per combine.
-//      Take the count from `sorted_pars`, never from `eset.ps`.
-//   2. **Mapping a sorted element back to a borrowed message element is an IDENTITY question.**
-//      If `eset_to_par_set` normalizes elements rather than merely reordering them, no
-//      message-borrowed `&Par` corresponds, and this route fails outright — in which case the
-//      arm needs an owning driver (the same shape §3d's ruling adopts for `par_drop`), not
-//      this one. **Settle that before writing code**; it is the premise the whole route rests
-//      on, and it is exactly the kind of premise this campaign has been wrong about before.
-//
-// ★ `EMapBody` and `EPathmapBody` have the same shape — `par_map_to_emap`/the trie — so this
-// obligation is per-arm, not per-collection-kind, and O3 (the discarded value score) sits on
-// top of it for the map.
-
+// Collection canonicalization is part of consensus: ESet removes canonical
+// duplicates after total score ordering, and EMap retains only each key's
+// score while resolving canonical-key collisions deterministically. The PDA
+// supplies children in source order and the permanent golden/differential
+// suites pin both the rebuilt term and score tree.
 /// The `ESetBody` arm.
 #[inline(never)]
-fn combine_eset(eset: &crate::rhoapi::ESet) -> ScoredTerm<Expr> {
-let par_set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-let sorted_pars: Vec<ScoredTerm<Par>> = par_set
-    .ps
-    .sorted_pars
-    .iter()
-    .map(ParSortMatcher::sort_match)
-    .collect();
+fn combine_eset(eset: &crate::rhoapi::ESet, mut kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+    let canonical = if kids.len() <= 1 {
+        kids
+    } else {
+        ScoredTerm::sort_vec(&mut kids);
+        let mut unique = HashMap::with_capacity(kids.len());
+        for child in kids {
+            unique.entry(child.term).or_insert(child.score);
+        }
+        let mut canonical: Vec<_> = unique
+            .into_iter()
+            .map(|(term, score)| ScoredTerm { term, score })
+            .collect();
+        ScoredTerm::sort_vec(&mut canonical);
+        canonical
+    };
 
-let remainder_score = remainder_score(&par_set.remainder);
-let connective_used_score: i64 = flag_score(par_set.connective_used);
-let (element_terms, element_scores) = split_scored_terms(sorted_pars);
+    let remainder_score = remainder_score(&eset.remainder);
+    let connective_used_score: i64 = flag_score(eset.connective_used);
+    let (element_terms, element_scores) = split_scored_terms(canonical);
 
-construct_expr(
-    ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(ParSet {
-        ps: SortedParHashSet::create_from_vec(element_terms),
-        connective_used: par_set.connective_used,
-        locally_free: par_set.locally_free,
-        remainder: par_set.remainder,
-    })),
-    Tree::Node(
-        vec![
-            Tree::<ScoreAtom>::create_leaf_from_i64(Score::ESET as i64),
-            remainder_score,
-        ]
-        .into_iter()
-        .chain(element_scores)
-        .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-            connective_used_score,
-        )))
-        .collect(),
-    ),
-)
-            
+    construct_expr(
+        ExprInstance::ESetBody(crate::rhoapi::ESet {
+            ps: element_terms,
+            locally_free: eset.locally_free.clone(),
+            connective_used: eset.connective_used,
+            remainder: eset.remainder.clone(),
+        }),
+        Tree::Node(
+            vec![
+                Tree::<ScoreAtom>::create_leaf_from_i64(Score::ESET as i64),
+                remainder_score,
+            ]
+            .into_iter()
+            .chain(element_scores)
+            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
+                connective_used_score,
+            )))
+            .collect(),
+        ),
+    )
 }
 
 /// The `EPathmapBody` arm.
 #[inline(never)]
-fn combine_epathmap(pathmap: &EPathMap) -> ScoredTerm<Expr> {
-// ★ ENTRY ORDER IS NO LONGER THIS FUNCTION'S BUSINESS.
-// An `EPathMap` stores its entries in a trie, so what
-// `pathmap.ps()` hands back is already trie order,
-// deduplicated, and recursively canonical. The GROUND arm
-// therefore has nothing left to do — `canonicalize_ground_epathmap`
-// was exactly this projection, and it is deleted.
-//
-// The NON-GROUND arm still has real work, and it is NOT
-// ordering: a non-ground entry can carry an AC collection
-// (`ESet`/`EMap`) that only `sort_match` can normalize, and
-// the codec's escape arm files such an entry by its raw prost
-// bytes, so the projection returns it un-normalized. Sorting
-// an entry CHANGES ITS KEY, which is why the sorted entries
-// are handed to `EPathMap::new` — re-filing them puts the
-// normalized set back in trie order and merges any two entries
-// that AC-normalized to the same term.
-//
-// ⚠ Consensus-visible: this arm used to PRESERVE ENTRY ORDER
-// (`401ed168` measured it). It no longer can — there is no
-// order to preserve.
-let canonical = if eval_stable_epathmap(pathmap) && !pathmap.entry_trie().is_empty() {
-    pathmap.clone()
-} else {
-    EPathMap::new(
-        {
-            // ★ Walks the TRIE. These entries must be OWNED — each is AC-normalised and
-            // re-filed through `EPathMap::new`, which re-keys — but they never needed the
-            // projection to get there: `ps()` deep-clones every entry AND retains a second
-            // copy for the value's lifetime, only for `sort_match` to build its own owned
-            // term from each anyway. The walk skips both copies.
-            let mut sorted = Vec::with_capacity(pathmap.entry_trie().len());
-            pathmap
-                .entry_trie()
-                .for_each_entry(|p| sorted.push(ParSortMatcher::sort_match(p).term));
-            sorted
-        },
-        pathmap.locally_free.clone(),
-        pathmap.connective_used,
-        pathmap.remainder.clone(),
-    )
-};
-// Score the (now-canonical) entries so the enclosing sort
-// agrees with the emitted term order.
-let pars: Vec<ScoredTerm<Par>> = {
-    let mut scored = Vec::with_capacity(canonical.entry_trie().len());
-    canonical
-        .entry_trie()
-        .for_each_entry(|p| scored.push(ParSortMatcher::sort_match(p)));
-    scored
-};
-let remainder_score = remainder_score(&canonical.remainder);
-let connective_used_score: i64 = flag_score(canonical.connective_used);
+fn combine_epathmap(pathmap: &EPathMap, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
+    // ★ ENTRY ORDER IS NO LONGER THIS FUNCTION'S BUSINESS.
+    // An `EPathMap` stores its entries in a trie, so what
+    // `pathmap.ps()` hands back is already trie order,
+    // deduplicated, and recursively canonical. The GROUND arm
+    // therefore has nothing left to do — `canonicalize_ground_epathmap`
+    // was exactly this projection, and it is deleted.
+    //
+    // The NON-GROUND arm still has real work, and it is NOT
+    // ordering: a non-ground entry can carry an AC collection
+    // (`ESet`/`EMap`) that only `sort_match` can normalize, and
+    // the codec's escape arm files such an entry by its raw prost
+    // bytes, so the projection returns it un-normalized. Sorting
+    // an entry CHANGES ITS KEY, which is why the sorted entries
+    // are handed to `EPathMap::new` — re-filing them puts the
+    // normalized set back in trie order and merges any two entries
+    // that AC-normalized to the same term.
+    //
+    // ⚠ Consensus-visible: this arm used to PRESERVE ENTRY ORDER
+    // (`401ed168` measured it). It no longer can — there is no
+    // order to preserve.
+    let (canonical, entry_scores) = canonicalize_scored_pathmap(pathmap, kids, true);
+    let remainder_score = remainder_score(&canonical.remainder);
+    let connective_used_score: i64 = flag_score(canonical.connective_used);
 
-construct_expr(
-    ExprInstance::EPathmapBody(canonical),
-    Tree::Node(
-        vec![
-            Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64),
-            remainder_score,
-        ]
-        .into_iter()
-        .chain(pars.into_iter().map(|p| p.score))
-        .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
-            connective_used_score,
-        )))
-        .collect(),
-    ),
-)
-            
+    construct_expr(
+        ExprInstance::EPathmapBody(canonical),
+        Tree::Node(
+            vec![
+                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64),
+                remainder_score,
+            ]
+            .into_iter()
+            .chain(entry_scores)
+            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
+                connective_used_score,
+            )))
+            .collect(),
+        ),
+    )
 }

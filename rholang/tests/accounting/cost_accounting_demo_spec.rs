@@ -67,7 +67,10 @@ async fn cell_total(runtime: &RhoRuntimeImpl, names: &[&str]) -> i64 {
                 _ => None,
             })
             .sum();
-        assert!(value >= 0, "cell `{name}` must never go negative (got {value})");
+        assert!(
+            value >= 0,
+            "cell `{name}` must never go negative (got {value})"
+        );
         total += value;
     }
     total
@@ -89,24 +92,34 @@ async fn demo_runs_and_conserves_money_and_inventory() {
     );
 
     // MONEY ledger (cash cells) — conserved at its opening total.
-    let money = cell_total(
-        &runtime,
-        &[
-            "Ada_cash", "Ben_cash", "Cy_cash", "Di_cash", "Sue_cash", "Sam_cash", "Whse_cash",
-            "Fae_cash", "Gus_cash",
-        ],
-    )
+    let money = cell_total(&runtime, &[
+        "Ada_cash",
+        "Ben_cash",
+        "Cy_cash",
+        "Di_cash",
+        "Sue_cash",
+        "Sam_cash",
+        "Whse_cash",
+        "Fae_cash",
+        "Gus_cash",
+    ])
     .await;
     assert_eq!(money, 410, "MONEY is conserved at its opening total (410)");
 
     // INVENTORY ledger (stock/home cells) — opening 67 + produced 16 = 83.
-    let widgets = cell_total(
-        &runtime,
-        &[
-            "Fab1_out", "Fab2_out", "Whse_stk", "Sue_stk", "Sam_stk", "Flash_stk", "Ada_home",
-            "Ben_home", "Cy_home", "Fae_home", "Gus_home",
-        ],
-    )
+    let widgets = cell_total(&runtime, &[
+        "Fab1_out",
+        "Fab2_out",
+        "Whse_stk",
+        "Sue_stk",
+        "Sam_stk",
+        "Flash_stk",
+        "Ada_home",
+        "Ben_home",
+        "Cy_home",
+        "Fae_home",
+        "Gus_home",
+    ])
     .await;
     assert_eq!(
         widgets, 83,

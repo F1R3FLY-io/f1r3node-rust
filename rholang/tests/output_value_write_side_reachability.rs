@@ -1,9 +1,9 @@
 //! # ★★ THE WRITE SIDE of `output_value` — what depth can a DEPLOY reach?
 //!
-//! `rholang/tests/replay_output_value_depth_ceiling.rs` proves the READ side:
-//! a `Produce` whose `output_value` carries a depth-34 `Par` is accepted on
-//! play and refused on replay. It obtains that byte string by **splicing** one
-//! into the recorded log — legitimate, and its own header says so plainly:
+//! `rholang/tests/replay_output_value_stack_safety.rs` preserves the former
+//! read-side fault and now proves its closure: a depth-4,096 `Par` spliced into
+//! a real `Produce.output_value` is accepted on both play and replay by the
+//! generated protobuf PDA.
 //!
 //! > *"Splicing proves the decode asymmetry; it does NOT prove reachability
 //! > from a deploy."*
@@ -40,7 +40,7 @@
 //!         │
 //!         ▼  dispatch.rs `dispatch_type`, gated on
 //!            `non_deterministic_ops().contains(&body_ref)`
-//!      output.iter().map(|p| p.encode_to_vec())           prost, UNBOUNDED
+//!      protobuf_encoder::encode_to_vec(p)                 generated PDA, stack-safe
 //!         │
 //!         ▼  DispatchType::NonDeterministicCall(Vec<Vec<u8>>)
 //!            reduce.rs `produce_inner`
@@ -48,7 +48,7 @@
 //!         │
 //!         ▼  event.rs `Produce.output_value: Vec<Vec<u8>>`
 //!            → block → gossip → validator → replay
-//!      Par::decode(bytes)                                 prost, CAPPED at 100
+//!      protobuf_decoder::decode_par(bytes)                generated PDA, stack-safe
 //! ```
 //!
 //! `Produce::create` and `Produce::new` set `output_value: vec![]`;
@@ -59,20 +59,19 @@
 //!
 //! ## What is measured, and in whose units
 //!
-//! The ceiling is stated in the bracket levels of `[[[…[0]…]]]`
-//! (`models/tests/par_prost_depth_ceiling.rs::nested_list`), so the meter here
-//! must agree with that convention or the comparison is meaningless.
+//! Output shape is stated in the bracket levels of `[[[…[0]…]]]`, so the meter
+//! here must agree with that convention.
 //! [`max_par_nesting`] counts **`Par` nodes on the longest root-to-leaf chain,
 //! minus one**, over `par_child_pars` — the generated, total child enumeration,
 //! so no `Par`-bearing field can be silently skipped — and
-//! [`the_depth_meter_agrees_with_the_ceiling_fixtures_units`] calibrates it
+//! [`the_depth_meter_agrees_with_nested_list_units`] calibrates it
 //! against `nested_list` before any verdict is read off it.
 //!
 //! ## Anti-vacuity — the false zero this file is built to avoid
 //!
 //! ★ The failure mode of a test like this is a **false zero**: the driving
 //! program does not actually reach the operation, `output_value` stays `[]`,
-//! the measured depth is 0, 0 < 33, and the suite is green while measuring
+//! the measured depth is 0, and the suite is green while measuring
 //! nothing. Every driven row therefore asserts that a NON-EMPTY `output_value`
 //! was observed, and asserts the measured depth **equals** the recorded one
 //! rather than merely clearing the ceiling — so a shape change in *either*
@@ -102,12 +101,10 @@
 //!
 //! ## ⚠ What this file does NOT do
 //!
-//! It changes no production code, bounds nothing, widens nothing, and adds no
-//! feature gate. It records what the write side reaches **today** and refuses
-//! to let that go unrecorded tomorrow. Whether to lift the READ ceiling so the
-//! two sides agree at every depth is a change to the set of byte strings a node
-//! accepts, and therefore F1r3node's coordinated decision — see
-//! `docs/design/audits/theta-depth-traversals-2026-07-26.md` §7.3.
+//! It changes no production code, bounds nothing, and adds no feature gate. It
+//! records what the write side reaches today and refuses to let that shape
+//! drift silently. Reader totality is proved separately by the generated-PDA
+//! stack-safety and play/replay tests.
 
 use std::collections::{HashMap, HashSet};
 
@@ -115,8 +112,8 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::rholang::par_children::par_child_pars;
+use models::rust::rholang::protobuf_decoder;
 use models::rust::utils::new_gint_par;
-use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -134,19 +131,8 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 
 // ---------------------------------------------------------------------------
-// the ceiling this verdict is stated against
+// the depth units used by the shape register
 // ---------------------------------------------------------------------------
-
-/// The last term depth a bare `Par::decode` accepts; the first it refuses is
-/// `READ_CEILING + 1`.
-///
-/// Derived — never transcribed — by `models/tests/par_prost_depth_ceiling.rs`
-/// as `D_max(0) = ⌊(100 − 1 − 0) / 3⌋ = 33`, and executed there against the
-/// real decoder for nine envelopes. Restated here so that this file's verdict
-/// names the number that actually binds it; the two files are kept honest by
-/// [`the_depth_meter_agrees_with_the_ceiling_fixtures_units`], which rebuilds
-/// that file's `nested_list` term and re-measures it with this file's meter.
-const READ_CEILING: usize = 33;
 
 // ---------------------------------------------------------------------------
 // the depth meter — TOTAL over the `Par` grammar, and ITERATIVE
@@ -182,13 +168,11 @@ fn max_par_nesting(root: &Par) -> usize {
 }
 
 /// `[[[…[0]…]]]` with `depth` bracket levels — the same construction
-/// `models/tests/par_prost_depth_ceiling.rs` and
-/// `rholang/tests/replay_output_value_depth_ceiling.rs` build, so all three
-/// files are talking about one term shape.
+/// the stack-safety fixtures build, so the reports use one term shape.
 fn nested_list(depth: usize) -> Par {
     let mut par = new_gint_par(0, vec![], false);
     for _ in 0..depth {
-        par = Par {
+        par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![par],
@@ -224,7 +208,7 @@ enum Drive {
     ///
     /// ⚠ The row still exists. Dropping it would let the ref leave the register
     /// silently the day the feature turns on.
-    CompiledOutWithoutFeature { feature: &'static str },
+    CompiledOutWithoutFeature { _feature: &'static str },
 }
 
 /// One registered non-deterministic operation and what it may write.
@@ -367,7 +351,7 @@ const DISPOSITIONS: &[Disposition] = &[
             program: r#"new models(`rho:ollama:models`), ack in { models!(*ack) }"#,
             services: ollama_services,
         },
-        // ★ The DEEPEST of the eight, and still 32 levels clear of the ceiling.
+        // The deepest currently registered producer shape.
         max_output_value_depth: 1,
         shape: "Par{EList{ps: [Par{GString}, …]}} — one collection level over scalar leaves",
     },
@@ -389,7 +373,7 @@ const DISPOSITIONS: &[Disposition] = &[
         // deploy naming that URN cannot bind it. The ref stays in
         // `non_deterministic_ops()` either way, so the row stays too.
         drive: Drive::CompiledOutWithoutFeature {
-            feature: "chromadb",
+            _feature: "chromadb",
         },
         max_output_value_depth: 2,
         shape: "RhoList::create_par(entries) over CollectionEntry → Par (document ∥ metadata map)",
@@ -417,7 +401,7 @@ struct Written {
 }
 
 /// Every `Produce` reachable in one log entry — COMM participants and the
-/// standalone rows. Mirrors `replay_output_value_depth_ceiling.rs::produces_of`
+/// standalone rows. Mirrors `replay_output_value_stack_safety.rs::produces_of`
 /// so the two files harvest the same set.
 fn produces_of(event: &Event) -> &[Produce] {
     match event {
@@ -470,7 +454,7 @@ async fn play_and_harvest(program: &str, services: ExternalServices) -> Written 
             written.produces_with_output += 1;
             written.depths.reserve(produce.output_value.len());
             for bytes in &produce.output_value {
-                match Par::decode(&bytes[..]) {
+                match protobuf_decoder::decode_par(&bytes[..]) {
                     Ok(par) => written.depths.push(max_par_nesting(&par)),
                     Err(e) => written.undecodable.push(e.to_string()),
                 }
@@ -484,31 +468,29 @@ async fn play_and_harvest(program: &str, services: ExternalServices) -> Written 
 // 1. the meter is calibrated BEFORE any verdict is read off it
 // ---------------------------------------------------------------------------
 
-/// ★ The units check. [`READ_CEILING`] is stated in the bracket levels of
-/// `models/tests/par_prost_depth_ceiling.rs::nested_list`; this asserts that
-/// [`max_par_nesting`] counts the same thing, at the boundary and around it.
+/// The units check: this asserts that [`max_par_nesting`] counts the bracket
+/// levels used by the stack-safety fixtures, at former boundary values and
+/// around them.
 ///
 /// Without this, a meter that under-counted by a constant would make every
 /// operation look further below the ceiling than it is, and the whole file
 /// would be green and wrong.
 #[test]
-fn the_depth_meter_agrees_with_the_ceiling_fixtures_units() {
-    for depth in [0usize, 1, 2, 3, 32, READ_CEILING, READ_CEILING + 1, 64] {
+fn the_depth_meter_agrees_with_nested_list_units() {
+    for depth in [0usize, 1, 2, 3, 32, 33, 34, 64] {
         let measured = max_par_nesting(&nested_list(depth));
         assert_eq!(
             measured, depth,
             "★ the depth meter disagrees with `nested_list`: a term built with \
-             {depth} bracket levels measured {measured}. Every verdict in this \
-             file compares a measured depth against READ_CEILING = \
-             {READ_CEILING}, which is stated in `nested_list` units, so the two \
-             must count the same thing."
+             {depth} bracket levels measured {measured}. The shape register is \
+             stated in these units, so the two must count the same thing."
         );
     }
 
     // The meter must also see depth through a field that is NOT the first-expr
     // EList spine — otherwise an operation returning a deep `Par` under a send,
     // a match, or a receive body would measure 0 and pass.
-    let under_a_send = Par {
+    let under_a_send = models::par_from_default! {
         sends: vec![models::rhoapi::Send {
             chan: Some(Par::default()),
             data: vec![nested_list(7)],
@@ -568,10 +550,9 @@ fn every_non_deterministic_op_carries_a_disposition() {
         "★★ body_ref(s) {missing:?} are in `non_deterministic_ops()` and have no \
          row in DISPOSITIONS.\n\
          Every member of that set can write `output_value`, and what it writes \
-         is decoded by a validator on replay with prost's {READ_CEILING}-level \
-         ceiling. Add a row saying what this operation returns and how deep it \
-         is — that is the decision this failure is asking for, and it is the \
-         one thing that kept the ceiling unreachable for the previous eight."
+         is decoded by a validator on replay. Add a row saying what this \
+         operation returns and how deep it is; that is the decision this \
+         failure is asking for."
     );
 
     let stale: Vec<i64> = {
@@ -597,7 +578,7 @@ fn every_non_deterministic_op_carries_a_disposition() {
 // 3. the measurement — a real deploy, a real runtime, the real write site
 // ---------------------------------------------------------------------------
 
-/// ★★ **The answer to "can a deploy put a depth-34 `Par` into `output_value`?"**
+/// Measure every producer's real output shape through a deploy.
 ///
 /// For every driven row: run the deploy, harvest the recorded log's
 /// `output_value`s, decode each byte string, and measure it.
@@ -606,7 +587,7 @@ fn every_non_deterministic_op_carries_a_disposition() {
 ///
 /// * `produces_with_output > 0` — ★ the anti-vacuity assertion. A program that
 ///   does not reach its operation writes nothing, and "nothing" measures 0,
-///   which would clear the ceiling and mean nothing at all.
+///   which would make the shape measurement mean nothing at all.
 /// * `undecodable.is_empty()` — the play side writes what it can read back. A
 ///   failure here is not a fixture bug; it is the write/read asymmetry firing
 ///   on the write side's own bytes.
@@ -639,8 +620,8 @@ async fn every_driven_op_writes_output_value_at_the_recorded_depth() {
             written.produces_with_output > 0,
             "★★ `{}` ({}) wrote NO `output_value` in {} recorded produces.\n\
              This is the false zero this test is built to refuse: an unwritten \
-             `output_value` measures depth 0, 0 < {READ_CEILING}, and the \
-             suite would be green while measuring nothing. Either the program \
+             `output_value` measures depth 0, and the suite would be green \
+             while measuring nothing. Either the program \
              `{}` no longer reaches the operation, or the operation no longer \
              writes — and the second is a change to the write site.",
             disposition.urn,
@@ -676,8 +657,7 @@ async fn every_driven_op_writes_output_value_at_the_recorded_depth() {
              Recorded shape: {}\n\
              The register is an expectation the interpreter must reproduce, not \
              a transcription of it. If the operation's return shape changed on \
-             purpose, update the row AND check the new depth against the read \
-             ceiling ({READ_CEILING}) — that check is the whole point of the row.",
+             purpose, update the row and the living consensus register.",
             disposition.urn,
             disposition.body_ref,
             disposition.max_output_value_depth,
@@ -705,80 +685,5 @@ async fn every_driven_op_writes_output_value_at_the_recorded_depth() {
     );
     println!(
         "  {driven} operations driven end-to-end; deepest `output_value` observed: {deepest_seen}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// 4. THE VERDICT — and the margin, stated rather than implied
-// ---------------------------------------------------------------------------
-
-/// ★★★ **The severity finding, made executable.**
-///
-/// Every registered operation's recorded `output_value` depth clears the read
-/// ceiling, so **no deploy can drive the play/replay divergence today** — the
-/// divergence proved by `replay_output_value_depth_ceiling.rs` needs a byte
-/// string this write side cannot produce.
-///
-/// ⚠ The moment a row records a depth at or above [`READ_CEILING`], that
-/// sentence stops being true and this test says so. It does not bound anything:
-/// production is unchanged and the operation still writes whatever it writes.
-/// What changes is that somebody is told, at the moment the row is written,
-/// that the operation they just added can build a block no validator will
-/// replay.
-#[test]
-fn the_recorded_write_depths_all_clear_the_read_ceiling() {
-    assert!(
-        !DISPOSITIONS.is_empty(),
-        "DISPOSITIONS is empty; this test would be vacuously green"
-    );
-
-    let mut tightest = usize::MAX;
-    let mut tightest_urn = "";
-    for disposition in DISPOSITIONS {
-        assert!(
-            disposition.max_output_value_depth <= READ_CEILING,
-            "★★★ `{}` ({}) records `output_value` depth {}, which the replay \
-             decode REFUSES (it accepts at most {READ_CEILING}).\n\
-             Shape: {}\n\
-             A deploy reaching this operation now produces a block that plays \
-             green and replays red — `InterpreterError::DecodeError` lands in \
-             `EvaluateResult::errors`, the `is_failed != !eval_successful` \
-             check in `casper/src/rust/rholang/replay_runtime.rs` returns \
-             `ReplayFailure::ReplayStatusMismatch`, and \
-             `InvalidBlock::InvalidTransaction` is SLASHABLE \
-             (`casper/src/rust/block_status.rs::is_slashable`). The proposer is \
-             honest and is slashed for it.",
-            disposition.urn,
-            disposition.body_ref,
-            disposition.max_output_value_depth,
-            disposition.shape
-        );
-
-        let margin = READ_CEILING - disposition.max_output_value_depth;
-        if margin < tightest {
-            tightest = margin;
-            tightest_urn = disposition.urn;
-        }
-
-        // ★ A row that is not driven is still a row, and the verdict above
-        // covers it — but on a RECORDED depth rather than a measured one. Say
-        // which rows those are, so the difference is visible in the output
-        // instead of having to be inferred from the two tests' line counts.
-        if let Drive::CompiledOutWithoutFeature { feature } = &disposition.drive {
-            println!(
-                "  ⚠ `{}` ({}) is not driven here: its `Definition` is compiled out without \
-                 feature `{feature}`, so the depth {} is RECORDED from its return construction \
-                 and is re-measured only under `--features {feature}`",
-                disposition.urn, disposition.body_ref, disposition.max_output_value_depth
-            );
-        }
-    }
-
-    println!(
-        "  read ceiling {READ_CEILING}; tightest write-side margin {tightest} levels (`{tightest_urn}`)"
-    );
-    println!(
-        "  ⇒ no registered non-deterministic operation can write an `output_value` \
-         the validator's replay decode refuses"
     );
 }

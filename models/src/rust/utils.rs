@@ -25,73 +25,63 @@ pub struct OptionResult<A, K> {
 // Adding helper functions 'with_*' to protobuf message 'Par'
 impl Par {
     pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
-        Par {
-            sends: new_sends,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.sends = new_sends;
+        out
     }
 
     pub fn with_receives(&self, new_receives: Vec<Receive>) -> Par {
-        Par {
-            receives: new_receives,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.receives = new_receives;
+        out
     }
 
     pub fn with_news(&self, new_news: Vec<New>) -> Par {
-        Par {
-            news: new_news,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.news = new_news;
+        out
     }
 
     pub fn with_exprs(&self, new_exprs: Vec<Expr>) -> Par {
-        Par {
-            exprs: new_exprs,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.exprs = new_exprs;
+        out
     }
 
     pub fn with_matches(&self, new_matches: Vec<Match>) -> Par {
-        Par {
-            matches: new_matches,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.matches = new_matches;
+        out
     }
 
     pub fn with_bundles(&self, new_bundles: Vec<Bundle>) -> Par {
-        Par {
-            bundles: new_bundles,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.bundles = new_bundles;
+        out
     }
 
     pub fn with_unforgeables(&self, new_unforgeables: Vec<GUnforgeable>) -> Par {
-        Par {
-            unforgeables: new_unforgeables,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.unforgeables = new_unforgeables;
+        out
     }
 
     pub fn with_connectives(&self, new_connectives: Vec<Connective>) -> Par {
-        Par {
-            connectives: new_connectives,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.connectives = new_connectives;
+        out
     }
 
     pub fn with_locally_free(&self, new_locally_free: Vec<u8>) -> Par {
-        Par {
-            locally_free: new_locally_free,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.locally_free = new_locally_free;
+        out
     }
 
     pub fn with_connective_used(&self, new_connective_used: bool) -> Par {
-        Par {
-            connective_used: new_connective_used,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.connective_used = new_connective_used;
+        out
     }
 
     // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
@@ -108,12 +98,11 @@ impl Par {
         new_sends.push(s);
         new_sends.append(&mut self.sends);
 
-        Par {
-            sends: new_sends,
-            locally_free,
-            connective_used,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.sends = new_sends;
+        out.locally_free = locally_free;
+        out.connective_used = connective_used;
+        out
     }
 
     pub fn prepend_receive(&mut self, r: Receive) -> Par {
@@ -129,12 +118,11 @@ impl Par {
         new_receives.push(r);
         new_receives.append(&mut self.receives);
 
-        Par {
-            receives: new_receives,
-            locally_free,
-            connective_used,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.receives = new_receives;
+        out.locally_free = locally_free;
+        out.connective_used = connective_used;
+        out
     }
 
     pub fn prepend_match(&mut self, m: Match) -> Par {
@@ -150,12 +138,11 @@ impl Par {
         new_matches.push(m);
         new_matches.append(&mut self.matches);
 
-        Par {
-            matches: new_matches,
-            locally_free,
-            connective_used,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.matches = new_matches;
+        out.locally_free = locally_free;
+        out.connective_used = connective_used;
+        out
     }
 
     pub fn prepend_if(&mut self, i: If) -> Par {
@@ -171,12 +158,11 @@ impl Par {
         new_conditionals.push(i);
         new_conditionals.append(&mut self.conditionals);
 
-        Par {
-            conditionals: new_conditionals,
-            locally_free,
-            connective_used,
-            ..self.clone()
-        }
+        let mut out = self.clone();
+        out.conditionals = new_conditionals;
+        out.locally_free = locally_free;
+        out.connective_used = connective_used;
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -232,18 +218,33 @@ impl Par {
         }
     }
 
-    pub fn append(&self, other: Par) -> Par {
+    pub fn append(&self, mut other: Par) -> Par {
         Par {
-            sends: [self.sends.clone(), other.sends].concat(),
-            receives: [self.receives.clone(), other.receives].concat(),
-            news: [self.news.clone(), other.news].concat(),
-            exprs: [self.exprs.clone(), other.exprs].concat(),
-            matches: [self.matches.clone(), other.matches].concat(),
-            unforgeables: [self.unforgeables.clone(), other.unforgeables].concat(),
-            bundles: [self.bundles.clone(), other.bundles].concat(),
-            connectives: [self.connectives.clone(), other.connectives].concat(),
-            conditionals: [self.conditionals.clone(), other.conditionals].concat(),
-            locally_free: union(self.locally_free.clone(), other.locally_free),
+            sends: [self.sends.clone(), std::mem::take(&mut other.sends)].concat(),
+            receives: [self.receives.clone(), std::mem::take(&mut other.receives)].concat(),
+            news: [self.news.clone(), std::mem::take(&mut other.news)].concat(),
+            exprs: [self.exprs.clone(), std::mem::take(&mut other.exprs)].concat(),
+            matches: [self.matches.clone(), std::mem::take(&mut other.matches)].concat(),
+            unforgeables: [
+                self.unforgeables.clone(),
+                std::mem::take(&mut other.unforgeables),
+            ]
+            .concat(),
+            bundles: [self.bundles.clone(), std::mem::take(&mut other.bundles)].concat(),
+            connectives: [
+                self.connectives.clone(),
+                std::mem::take(&mut other.connectives),
+            ]
+            .concat(),
+            conditionals: [
+                self.conditionals.clone(),
+                std::mem::take(&mut other.conditionals),
+            ]
+            .concat(),
+            locally_free: union(
+                self.locally_free.clone(),
+                std::mem::take(&mut other.locally_free),
+            ),
             connective_used: self.connective_used || other.connective_used,
         }
     }
@@ -1226,34 +1227,31 @@ pub fn new_par_from_par_set(
 ) -> Par {
     let par_set = ParSet::new(elements, connective_used, locally_free, remainder);
 
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ESetBody(ParSetTypeMapper::par_set_to_eset(par_set))),
-        }],
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.exprs.push(Expr {
+        expr_instance: Some(ESetBody(ParSetTypeMapper::par_set_to_eset(par_set))),
+    });
+    out
 }
 
 pub fn new_gbytearray_par(bytes: Vec<u8>, locally_free: Vec<u8>, connective_used: bool) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(GByteArray(bytes)),
-        }],
-        locally_free,
-        connective_used,
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.exprs.push(Expr {
+        expr_instance: Some(GByteArray(bytes)),
+    });
+    out.locally_free = locally_free;
+    out.connective_used = connective_used;
+    out
 }
 
 pub fn new_gsys_auth_token_par(locally_free: Vec<u8>, connective_used: bool) -> Par {
-    Par {
-        unforgeables: vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
-        }],
-        locally_free,
-        connective_used,
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.unforgeables.push(GUnforgeable {
+        unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+    });
+    out.locally_free = locally_free;
+    out.connective_used = connective_used;
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

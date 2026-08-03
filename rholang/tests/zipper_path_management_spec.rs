@@ -72,7 +72,7 @@ mod zipper_path_management_tests {
     #[test]
     fn test_prune_path_removes_all_children() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let mut rholang_pathmap = pathmap_result.map;
 
         let initial_count = rholang_pathmap.iter().count();
@@ -113,7 +113,7 @@ mod zipper_path_management_tests {
     #[test]
     fn test_prune_path_at_leaf() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let mut rholang_pathmap = pathmap_result.map;
 
         let initial_count = rholang_pathmap.iter().count();
@@ -158,7 +158,7 @@ mod zipper_path_management_tests {
     #[test]
     fn test_prune_path_at_root() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let mut rholang_pathmap = pathmap_result.map;
 
         // Prune at root (empty prefix) - should remove everything
@@ -188,7 +188,7 @@ mod zipper_path_management_tests {
     #[test]
     fn test_prune_path_nonexistent() {
         let pathmap = create_test_pathmap();
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let mut rholang_pathmap = pathmap_result.map;
         let original_size = rholang_pathmap.iter().count();
 
@@ -288,12 +288,20 @@ mod zipper_path_management_tests {
 
     #[test]
     fn test_create_path_validates_format() {
-        // createPath is currently a no-op that validates path format
-        // This test verifies the structure is correct for potential future implementation
-        let pathmap = create_test_pathmap();
+        use models::rust::canonical_path::encode_trie_path;
+        use models::rust::epathmap_trie_codec::EPathMapMode;
 
-        // The method should accept the PathMap and return it unchanged
-        // This validates that the path format is correct
-        assert!(!pathmap.ps().is_empty(), "PathMap should not be empty");
+        let mut pathmap = create_test_pathmap();
+        let new_path = create_path_list(vec!["new".to_string(), "branch".to_string()]);
+        let key = encode_trie_path(&new_path);
+        let entry_count = pathmap.len();
+
+        assert_eq!(pathmap.leaf_at_encoded_key(&key), None);
+        assert!(pathmap.create_path(&key).unwrap());
+        assert_eq!(pathmap.mode(), EPathMapMode::Set);
+        assert_eq!(pathmap.len(), entry_count);
+        assert!(pathmap.path_prefix_exists(&key));
+        assert_eq!(pathmap.leaf_at_encoded_key(&key), None);
+        assert!(!pathmap.create_path(&key).unwrap());
     }
 }

@@ -8,7 +8,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Expr, GDeployId, GUnforgeable, Par};
+use models::rhoapi::{Expr, GDeployId, GUnforgeable};
 use models::rust::casper::protocol::casper_message::DeployData;
 
 use crate::helper::test_node::TestNode;
@@ -57,7 +57,7 @@ async fn deploy_id_should_be_equal_to_deploy_signature() {
 
         assert_eq!(result.len(), 1);
 
-        let expected = Par {
+        let expected = models::par_from_default! {
             unforgeables: vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId {
                     sig: d.sig.to_vec(),
@@ -112,7 +112,7 @@ async fn deploy_id_should_be_resolved_during_normalization() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    let expected = Par {
+    let expected = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GBool(false)),
         }],

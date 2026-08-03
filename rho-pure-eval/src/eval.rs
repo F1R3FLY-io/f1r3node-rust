@@ -83,20 +83,22 @@ pub(crate) fn eval_with_recursive(
     Ok(acc)
 }
 
-fn concatenate(a: Par, b: Par) -> Par {
-    Par {
-        sends: [a.sends, b.sends].concat(),
-        receives: [a.receives, b.receives].concat(),
-        news: [a.news, b.news].concat(),
-        exprs: [a.exprs, b.exprs].concat(),
-        matches: [a.matches, b.matches].concat(),
-        unforgeables: [a.unforgeables, b.unforgeables].concat(),
-        bundles: [a.bundles, b.bundles].concat(),
-        connectives: [a.connectives, b.connectives].concat(),
-        conditionals: [a.conditionals, b.conditionals].concat(),
-        locally_free: union_bytes(a.locally_free, b.locally_free),
-        connective_used: a.connective_used || b.connective_used,
-    }
+fn concatenate(mut a: Par, mut b: Par) -> Par {
+    a.sends.append(&mut b.sends);
+    a.receives.append(&mut b.receives);
+    a.news.append(&mut b.news);
+    a.exprs.append(&mut b.exprs);
+    a.matches.append(&mut b.matches);
+    a.unforgeables.append(&mut b.unforgeables);
+    a.bundles.append(&mut b.bundles);
+    a.connectives.append(&mut b.connectives);
+    a.conditionals.append(&mut b.conditionals);
+    a.locally_free = union_bytes(
+        std::mem::take(&mut a.locally_free),
+        std::mem::take(&mut b.locally_free),
+    );
+    a.connective_used |= b.connective_used;
+    a
 }
 
 fn union_bytes(mut a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
@@ -313,7 +315,7 @@ fn require_par(p: Option<&Par>) -> Result<Par, EvalError> {
 }
 
 fn par_with_expr(e: Expr) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![e],
         ..Par::default()
     }
@@ -1397,7 +1399,7 @@ mod differential_eval_with {
                 expr_instance: Some(ExprInstance::GInt(i as i64)),
             });
         }
-        Par { exprs, ..Par::default() }
+        models::par_from_default! { exprs, ..Par::default() }
     }
 
     /// A Par of `width` *operator* expressions, so the fold's children are
@@ -1405,9 +1407,10 @@ mod differential_eval_with {
     fn wide_par_of_operators(width: usize) -> Par {
         let mut exprs = Vec::with_capacity(width);
         for i in 0..width {
-            exprs.extend(eplus(gint(i as i64), gint(1)).exprs);
+            let mut operator = eplus(gint(i as i64), gint(1));
+            exprs.append(&mut operator.exprs);
         }
-        Par { exprs, ..Par::default() }
+        models::par_from_default! { exprs, ..Par::default() }
     }
 
     fn corpus() -> Vec<Par> {
@@ -1419,7 +1422,7 @@ mod differential_eval_with {
         }
         // A Par whose `exprs` slot holds SEVERAL expressions, so the `ParK`
         // fold over `concatenate` is exercised with more than one child.
-        out.push(Par {
+        out.push(models::par_from_default! {
             exprs: vec![
                 Expr { expr_instance: Some(ExprInstance::GInt(1)) },
                 Expr { expr_instance: Some(ExprInstance::GInt(2)) },
@@ -1464,9 +1467,10 @@ mod differential_eval_with {
         // Wide AND deep: `w` siblings each carrying a `d`-deep chain.
         let mut wide_deep = Vec::with_capacity(w);
         for i in 0..w {
-            wide_deep.extend(deep_left(d, gint(i as i64), gint(1)).exprs);
+            let mut branch = deep_left(d, gint(i as i64), gint(1));
+            wide_deep.append(&mut branch.exprs);
         }
-        out.push(Par { exprs: wide_deep, ..Par::default() });
+        out.push(models::par_from_default! { exprs: wide_deep, ..Par::default() });
 
         // ---- EMatches, which only has an arm when an oracle is AVAILABLE ----
         out.push(ematches(gint(1), gint(1)));

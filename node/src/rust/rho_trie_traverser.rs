@@ -50,7 +50,7 @@ impl RhoTrieTraverser {
     /// Create a Keccak256 hash and wrap it in a Par with GByteArray
     fn keccak_hash(input: &[u8]) -> Par {
         let hash = Keccak256::hash(input.to_vec());
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GByteArray(hash)),
             }],
@@ -111,7 +111,7 @@ impl RhoTrieTraverser {
 
     /// Create a Par containing a string
     fn par_string(s: &str) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GString(s.to_string())),
             }],
@@ -158,7 +158,7 @@ impl RhoTrieTraverser {
     pub fn node_list(nyb_list: &[i32]) -> Par {
         let ps: Vec<Par> = nyb_list
             .iter()
-            .map(|&n| Par {
+            .map(|&n| models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::GInt(n as i64)),
                 }],
@@ -166,7 +166,7 @@ impl RhoTrieTraverser {
             })
             .collect();
 
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps,
@@ -181,7 +181,7 @@ impl RhoTrieTraverser {
 
     /// Create a node map list for trie query
     fn node_map_list(map: &Par, nyb_list: &[i32]) -> Par {
-        let map_with_nyb = Par {
+        let map_with_nyb = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                     ps: vec![map.clone(), Self::node_list(nyb_list)],
@@ -196,7 +196,7 @@ impl RhoTrieTraverser {
 
     /// Wrap the map with store token for runtime query
     fn node_map_store(map_with_nyb: &Par) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![map_with_nyb.clone(), Self::store_token_unforgeable()],
@@ -232,7 +232,7 @@ impl RhoTrieTraverser {
         // Get the final target
         let target = new_rand.next();
 
-        Par {
+        models::par_from_default! {
             unforgeables: vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                     id: target.iter().map(|&b| b as u8).collect(),
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_byte_array_to_nybble_list() {
-        let byte_array = Par {
+        let byte_array = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GByteArray(vec![0x12, 0x34])),
             }],
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_nth_of_par() {
-        let byte_array = Par {
+        let byte_array = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GByteArray(vec![0x12, 0x34, 0x56])),
             }],

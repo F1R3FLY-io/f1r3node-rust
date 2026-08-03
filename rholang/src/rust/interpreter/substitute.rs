@@ -45,15 +45,19 @@ use super::env::Env;
 use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
 use super::substitute_drive::{
-    maybe_substitute_var_view, maybe_substitute_var_ref_view, EnvView, SubCtx, SubVal, SubWork,
+    maybe_substitute_var_ref_view, maybe_substitute_var_view, EnvView, SubCtx, SubVal, SubWork,
 };
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
     fn substitute(&self, term: A, depth: i32, env: &Env<Par>) -> Result<A, InterpreterError>;
 
-    fn substitute_no_sort(&self, term: A, depth: i32, env: &Env<Par>)
-        -> Result<A, InterpreterError>;
+    fn substitute_no_sort(
+        &self,
+        term: A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<A, InterpreterError>;
 }
 
 #[derive(Clone)]
@@ -303,7 +307,7 @@ macro_rules! substitute_entry {
                 let sorted = <$sorter as Sortable<$ty>>::sort_match(&unsorted).term;
                 // `dismantle` walks the whole `Par` family, so wrapping the
                 // node in the `Par` slot it belongs to reaches every child.
-                dismantle(Par {
+                dismantle(models::par_from_default! {
                     $slot: vec![unsorted],
                     ..Default::default()
                 });
@@ -345,7 +349,14 @@ impl SubstituteTrait<Par> for Substitute {
 }
 
 substitute_entry!(Send, Send, Send, SendSortMatcher, "Send", sends);
-substitute_entry!(Receive, Receive, Receive, ReceiveSortMatcher, "Receive", receives);
+substitute_entry!(
+    Receive,
+    Receive,
+    Receive,
+    ReceiveSortMatcher,
+    "Receive",
+    receives
+);
 substitute_entry!(New, New, New, NewSortMatcher, "New", news);
 substitute_entry!(Match, Match, Match, MatchSortMatcher, "Match", matches);
 substitute_entry!(If, If, If, IfSortMatcher, "If", conditionals);

@@ -7,7 +7,7 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Expr, GDeployerId, GUnforgeable, Par};
+use models::rhoapi::{Expr, GDeployerId, GUnforgeable};
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
@@ -45,7 +45,7 @@ async fn deployer_id_should_be_equal_to_the_deployers_public_key() {
 
         assert_eq!(result.len(), 1);
 
-        let expected = Par {
+        let expected = models::par_from_default! {
             unforgeables: vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
                     public_key: pk.to_vec(),
@@ -120,7 +120,7 @@ new return, auth(`rho:system:deployerId`), ret in {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    let expected = Par {
+    let expected = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GBool(is_access_granted)),
         }],

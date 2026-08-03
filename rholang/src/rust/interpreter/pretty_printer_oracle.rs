@@ -449,7 +449,8 @@ impl PrettyPrinter {
 
                 ExprInstance::EPathmapBody(pathmap) => {
                     // Similar to EListBody - print elements in pathmap syntax {| ... |}
-                    let elements = self.oracle_build_vec(&pathmap.ps());
+                    let entries = pathmap.entry_trie().entries_owned();
+                    let elements = self.oracle_build_vec(&entries);
                     let remainder_string = self.build_remainder_string(&pathmap.remainder);
 
                     let full_result = if pathmap.remainder.is_some() && !elements.is_empty() {
@@ -466,7 +467,8 @@ impl PrettyPrinter {
                 ExprInstance::EZipperBody(zipper) => {
                     // Print zipper showing the underlying PathMap and current position
                     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                    let elements = self.oracle_build_vec(&pathmap.ps());
+                    let entries = pathmap.entry_trie().entries_owned();
+                    let elements = self.oracle_build_vec(&entries);
                     let remainder_string = self.build_remainder_string(&pathmap.remainder);
                     let zipper_type = if zipper.is_write_zipper {
                         "WriteZipper"

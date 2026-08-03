@@ -55,7 +55,10 @@ pub(crate) fn descend_p_method<'ast>(
 /// Argument `i` **in reverse source order** — the `i`-th one the recursive
 /// `args.iter().rev()` fold would have visited.
 #[inline]
-fn arg_at<'ast>(args: &'ast rholang_parser::ast::ProcList<'ast>, i: usize) -> Option<AnnProc<'ast>> {
+fn arg_at<'ast>(
+    args: &'ast rholang_parser::ast::ProcList<'ast>,
+    i: usize,
+) -> Option<AnnProc<'ast>> {
     if i >= args.len() {
         return None;
     }
@@ -137,7 +140,6 @@ pub(crate) fn combine_p_method<'ast>(
         free_map,
     })))
 }
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

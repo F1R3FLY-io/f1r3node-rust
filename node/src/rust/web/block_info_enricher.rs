@@ -141,7 +141,7 @@ mod tests {
     use super::*;
 
     fn make_par_string(s: &str) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GString(s.to_string())),
             }],
@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn make_par_int(n: i64) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GInt(n)),
             }],
@@ -159,7 +159,7 @@ mod tests {
     }
 
     fn make_transfer_unforgeable() -> Par {
-        Par {
+        models::par_from_default! {
             unforgeables: vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0x42; 32] })),
             }],

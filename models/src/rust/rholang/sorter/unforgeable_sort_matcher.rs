@@ -11,7 +11,5 @@ use crate::rhoapi::GUnforgeable;
 pub struct UnforgeableSortMatcher;
 
 impl Sortable<GUnforgeable> for UnforgeableSortMatcher {
-    fn sort_match(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> {
-        sort_unforgeable(unf)
-    }
+    fn sort_match(unf: &GUnforgeable) -> ScoredTerm<GUnforgeable> { sort_unforgeable(unf) }
 }

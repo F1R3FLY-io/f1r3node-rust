@@ -4,8 +4,8 @@
 //! CANONICAL PATH CODEC bytes (`canonical_path::encode_trie_path`), not the
 //! former `ParToSExpr` + `SExpr::encode` segments joined with a `0xFF`
 //! separator. The codec is capless, injective, and prefix-free, with the
-//! `0x0F` escape arm for non-`eval_stable` trie entries (R3F-2) and a depth
-//! limit of 32 collection levels (R3F-7). Consequences of the flip
+//! `0x0F` escape arm for non-`eval_stable` trie entries (R3F-2). Encoding and
+//! decoding are iterative and impose no collection-depth limit. Consequences of the flip
 //! (design §3.1-§3.2): trie keys re-key globally, formerly-colliding paths
 //! (`"(expr)"`/`"Nil"` degenerate keys) SEPARATE (a D-2 disclosed fix), and
 //! the `0xFF`-separator machinery (this file's flatten, the
@@ -28,8 +28,16 @@ use crate::rust::canonical_path::{
     takes_split_arm,
 };
 
-/// Type alias for our standard use case: PathMap from bytes to Rholang Par.
-pub type RholangPathMap = PathMap<Par>;
+/// Prefix-compressed set of canonical Rholang entry paths.  The key is the
+/// entry; storing the same `Par` in the value slot duplicates the full term and
+/// defeats PathMap's compressed representation.
+pub type RholangSetPathMap = PathMap<()>;
+
+/// Prefix-compressed canonical Rholang keys with an associated `Par` in each
+/// value slot. This is the value-bearing EPathMap specialization; unlike the
+/// set alias above, keys and values remain distinct and no entry projection is
+/// required.
+pub type RholangMapPathMap = PathMap<Par>;
 
 /// WHICH ENTRY an `EZipper` cursor addresses — the split/bare discriminator
 /// that `current_path` alone cannot carry.
@@ -123,7 +131,7 @@ impl CursorKind {
 ///
 /// `cursor_kind` participates in `EZipper`'s `PartialEq` and `Hash`
 /// (`models/src/lib.rs`) and is emitted into the event hash
-/// (`spliced_event_bytes.rs`), because — as that impl's own comment puts it —
+/// (`event_hash_bytes.rs`), because — as that impl's own comment puts it —
 /// *two zippers agreeing on the segments but differing on the arm are focused
 /// on DIFFERENT entries and must not compare equal*. A printer that renders
 /// only the segments therefore prints ONE string for two values that are `!=`,
@@ -249,15 +257,11 @@ pub fn path_elements(par: &Par) -> &[Par] {
 /// # ★ The read-side image invariant, checked here
 ///
 /// This is the single point every ENTRY key passes through, so it is where the
-/// dual of the write-side entry invariant ([`trie_entry_divergences`]) is
-/// enforced: the key it returns is in the image of `encode_trie_path`
+/// read-side image invariant is enforced: the key it returns is in the image of `encode_trie_path`
 /// ([`entry_key_is_in_codec_image`]). See that function for why a key outside
 /// the image is a defect and not merely a miss.
-pub fn cursor_entry_key(
-    segments: &[Vec<u8>],
-    kind: CursorKind,
-    map: &RholangPathMap,
-) -> Vec<u8> {
+pub fn cursor_entry_key<V>(segments: &[Vec<u8>], kind: CursorKind, map: &PathMap<V>) -> Vec<u8>
+where V: Clone + Send + Sync + Unpin {
     let bare = segments_to_key(segments, false);
     let key = match kind {
         CursorKind::Bare => bare,
@@ -298,8 +302,8 @@ pub fn cursor_entry_key(
 ///
 /// # Why a key outside the image is a defect and not a miss
 ///
-/// Every value in a `RholangPathMap` is filed under `encode_trie_path` of
-/// itself ([`create_pathmap_from_elements`]), and `decode_trie_path` accepts
+/// Every member in a `RholangSetPathMap` is filed under its `encode_trie_path`
+/// key ([`create_set_pathmap_from_elements`]), and `decode_trie_path` accepts
 /// EXACTLY the encoder's image (`canonical_path.rs`: "decode-accepts ≡
 /// encoder-image"). So a key the decoder rejects is a key no entry can ever be
 /// stored under, and `map.get` with it **misses on every map, whatever the map
@@ -319,13 +323,6 @@ pub fn cursor_entry_key(
 /// at exactly one cursor depth — 1 — and is nonsense at every other. That is
 /// the whole content of the invariant, and it is what
 /// [`composed_cursor_kind`] exists to respect.
-///
-/// # Relationship to the write-side invariant
-///
-/// [`trie_entry_divergences`] checks PRODUCERS (`∀ (k,v) ∈ m . enc(v) = k`);
-/// this checks CONSUMERS. Neither implies the other, and #108 is the proof: the
-/// trie was perfect and every write-side check passed, while the reader asked
-/// for a key in the image of no Par.
 ///
 /// # Cost
 ///
@@ -423,7 +420,7 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
 ///
 /// * **At the root** (`cursor` empty) the argument IS the whole path, so the
 ///   key is [`crate::rust::canonical_path::encode_trie_path`] of it — bit for
-///   bit the key `create_pathmap_from_elements` inserted the entry under,
+///   bit the key `create_set_pathmap_from_elements` inserted the entry under,
 ///   split arm or bare arm or `0x0F` escape arm, with NO reconstruction. For a
 ///   split-form Par this is byte-identical to the old expression (the two
 ///   agree exactly on the split arm), so the ground-LIST corpus does not move.
@@ -445,7 +442,8 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
 /// are pinned together in
 /// `rholang/tests/relative_path_composition_spec.rs`, and the key's membership
 /// of the codec image is checked inside [`cursor_entry_key`].
-pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) -> Vec<u8> {
+pub fn entry_key_at<V>(cursor: &[Vec<u8>], path_par: &Par, map: &PathMap<V>) -> Vec<u8>
+where V: Clone + Send + Sync + Unpin {
     match cursor.is_empty() {
         // ZERO AMBIGUITY: the reader has the Par, so it can ask the codec.
         true => encode_trie_path(path_par),
@@ -459,130 +457,14 @@ pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) ->
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ★ THE TRIE ENTRY INVARIANT
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// One trie entry whose VALUE does not encode to the KEY it is stored under —
-/// a violation of the entry invariant. See [`trie_entry_divergences`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrieEntryDivergence {
-    /// The key the entry is stored under — what every KEY-side reader sees.
-    pub key: Vec<u8>,
-    /// `encode_trie_path(value)` — the key the entry's VALUE claims, i.e. the
-    /// key a VALUE-side reader's answer would be re-inserted under.
-    pub value_key: Vec<u8>,
-    /// The stored value, for diagnosis.
-    pub value: Par,
-}
-
-/// ★ **THE TRIE ENTRY INVARIANT**, stated executably:
-///
-/// ```math
-/// \forall (k, v) \in m .\quad \mathrm{encode\_trie\_path}(v) = k
-/// ```
-///
-/// The returned vector is EMPTY iff the invariant holds. Each element names one
-/// violating entry.
-///
-/// # Why this invariant is load-bearing
-///
-/// A `RholangPathMap` is not a general map: it is a *set of Par entries indexed
-/// by their own codec path*. [`create_pathmap_from_elements`] — the sole
-/// construction site for a map that came from a program — writes
-/// `map.insert(encode_trie_path(par), par.clone())`, so **the value is a
-/// redundant mirror of the key**, and everything downstream is built on that
-/// redundancy.
-///
-/// # ⚠ What this invariant guards TODAY, which is not what it guarded before
-///
-/// It used to reconcile two BULK readers pulling the redundancy in opposite
-/// directions: `rholang_pathmap_to_e_pathmap` walked the **values** and
-/// `canonical_ps_from_trie` walked the **keys**, so every `EPathMap` the reducer
-/// handed back and every event-hash preimage agreed *only* while this held.
-/// ⛔ **CORRECTED 2026-07-31.** This said *"Both bulk readers now walk the keys"*. **Both walk
-/// the VALUES.** `entries_in_trie_order` (the projection) and `EntryTrie::adopt_trie` (adoption)
-/// both read `rz.val()`; `canonical_ps_from_trie` is `#[cfg(test)]`-only and is PARTIAL on the
-/// codec's own image, because `decode_trie_path`'s escape arm inherits prost's 100-level decoder
-/// cap while the encoder has none. ⇒ The disagreement is unrepresentable because there is one
-/// **value** reader, not because both read keys. ⚠ The table row below crediting
-/// `canonical_ps_from_trie` with serving the reducer, the serde/event-hash preimage and
-/// `canonicalize_ground_epathmap` is wrong on all three: it serves none of them, and the last
-/// has been deleted. Following the original text would reintroduce a panic on a trie the system
-/// itself built.
-///
-/// What keeps it load-bearing is the **point lookups**, which still read values:
-///
-/// | reader | reads | used by |
-/// |---|---|---|
-/// | `PathMap::get` | the **value** at one key | `getLeaf` (`reduce.rs`), the fused chain's `get` (`fused_pathmap_chain.rs`), `values_with_prefix` (`pathmap_native_query.rs`) |
-/// | `pathmap_crate_type_mapper::canonical_ps_from_trie` | the **keys**, via `decode_trie_path` (`to_next_val()`) | every `EPathMap`-returning method in the reducer, the serde / event-hash preimage, `canonicalize_ground_epathmap` |
-///
-/// `map.get(k)` answers `decode_trie_path(k)` **exactly when this invariant
-/// holds**, and nothing else makes them agree. So a producer that writes a value
-/// which does not encode to its key makes a program's `getLeaf` disagree with
-/// the same program's enumeration of the same map.
-///
-/// The failure is worse than a mismatch, because a value read is *lossy under
-/// re-insertion*. Distinct keys `k₁ ≠ k₂` carrying the SAME value `v` yield two
-/// identical entries — the cardinality still looks right — and the next
-/// `e_pathmap_to_rholang_pathmap` re-keys both to `encode_trie_path(v)`, so the
-/// trie collapses them into one. **Entries are silently lost.** (Witnessed by
-/// `zz`-free fixtures in `models/tests/pathmap_integration_tests.rs`.)
-///
-/// # The root-key corollary (why an empty key is always a divergence)
-///
-/// `encode_trie_path` emits at least one byte for every Par — the bare arm
-/// emits a tag, the split arm emits the `0x00` terminator — so `[]` is in the
-/// image of no Par and a value stored at the EMPTY (root) key is *necessarily*
-/// a divergence. That is not a technicality: `PathMap::iter()` YIELDS the root
-/// value while `ZipperIteration::to_next_val()` SKIPS it, so a root value is
-/// kept by the value-side reader and dropped by the key-side reader. Today
-/// nothing can create one (every producer keys through the codec); this
-/// function is what makes that a checked fact rather than an assumption.
-///
-/// # Cost
-///
-/// One `encode_trie_path` per entry — the same order as the `value.clone()` the
-/// converter already performs per entry. It is called from production code only
-/// under `#[cfg(debug_assertions)]`; release builds (consensus nodes) do not
-/// pay for it.
-pub fn trie_entry_divergences(map: &RholangPathMap) -> Vec<TrieEntryDivergence> {
-    let mut divergences = Vec::new();
-    for (key, value) in map.iter() {
-        let value_key = encode_trie_path(value);
-        if value_key != key {
-            divergences.push(TrieEntryDivergence {
-                key: key.to_vec(),
-                value_key,
-                value: value.clone(),
-            });
-        }
-    }
-    divergences
-}
-
-/// A one-line-per-entry rendering of [`trie_entry_divergences`], for assertion
-/// messages: the key the entry is filed under, and the key its value claims.
-pub fn render_trie_entry_divergences(divergences: &[TrieEntryDivergence]) -> String {
-    let mut out = String::new();
-    for divergence in divergences {
-        out.push_str(&format!(
-            "\n  stored under {:02x?}\n  value encodes to {:02x?}\n  value = {:?}\n",
-            divergence.key, divergence.value_key, divergence.value
-        ));
-    }
-    out
-}
-
 /// Convenience return type—including the constructed map and related Rholang metadata.
-pub struct PathMapCreationResult {
-    pub map: RholangPathMap,
+pub struct SetPathMapCreationResult {
+    pub map: RholangSetPathMap,
     pub connective_used: bool,
     pub locally_free: Vec<u8>,
 }
 
-/// Construct a RholangPathMap from a list of Par elements and an optional remainder.
+/// Construct a RholangSetPathMap from a list of Par elements and an optional remainder.
 /// This mirrors what the normalizer does when producing EPathMap from parsed elements.
 ///
 /// W2b-1: each entry's key is `canonical_path::encode_trie_path(par)` — the
@@ -590,11 +472,11 @@ pub struct PathMapCreationResult {
 /// bare form otherwise, `0x0F` escape for non-`eval_stable` entries). This
 /// replaces the former `par_to_path` + `0xFF` flatten; formerly-colliding
 /// degenerate keys now separate.
-pub fn create_pathmap_from_elements(
+pub fn create_set_pathmap_from_elements(
     elements: &[Par],
     remainder: Option<Var>,
-) -> PathMapCreationResult {
-    let mut map = RholangPathMap::new();
+) -> SetPathMapCreationResult {
+    let mut map = RholangSetPathMap::new();
     let mut connective_used = false;
     let mut locally_free = Vec::new();
 
@@ -608,14 +490,14 @@ pub fn create_pathmap_from_elements(
         // The codec trie key (capless, injective, prefix-free). No separator
         // — the path is self-delimiting.
         let key = encode_trie_path(par);
-        map.insert(key, par.clone());
+        map.insert(key, ());
     }
 
     if remainder.is_some() {
         connective_used = true;
     }
 
-    PathMapCreationResult {
+    SetPathMapCreationResult {
         map,
         connective_used,
         locally_free,

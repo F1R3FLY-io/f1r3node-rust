@@ -73,23 +73,21 @@ use super::unwrap_option_safe;
 // ===========================================================================
 
 pub(crate) fn par_recursive(
-    term: Par,
+    mut term: Par,
     ctx: SubCtx,
     env: EnvView<'_>,
 ) -> Result<Par, InterpreterError> {
-    let Par {
-        sends,
-        receives,
-        news,
-        exprs,
-        matches,
-        unforgeables,
-        bundles,
-        connectives,
-        conditionals,
-        locally_free,
-        connective_used,
-    } = term;
+    let sends = std::mem::take(&mut term.sends);
+    let receives = std::mem::take(&mut term.receives);
+    let news = std::mem::take(&mut term.news);
+    let exprs = std::mem::take(&mut term.exprs);
+    let matches = std::mem::take(&mut term.matches);
+    let unforgeables = std::mem::take(&mut term.unforgeables);
+    let bundles = std::mem::take(&mut term.bundles);
+    let connectives = std::mem::take(&mut term.connectives);
+    let conditionals = std::mem::take(&mut term.conditionals);
+    let locally_free = std::mem::take(&mut term.locally_free);
+    let connective_used = term.connective_used;
 
     let exprs_par = sub_exp_recursive(exprs, ctx, env)?;
     let connectives_par = sub_conn_recursive(connectives, ctx, env)?;
@@ -806,7 +804,7 @@ mod differential_substitute_worklist {
                     for i in 0..width {
                         ps.push(gint(i as i64));
                     }
-                    let term = Par {
+                    let term = models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
                                 ps,
@@ -849,7 +847,7 @@ mod differential_substitute_worklist {
         vec![
             (
                 "expr with no instance",
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: None,
                     }],
@@ -859,7 +857,7 @@ mod differential_substitute_worklist {
             ),
             (
                 "binary operand p1 missing",
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::EPlusBody(EPlus {
                             p1: None,
@@ -872,7 +870,7 @@ mod differential_substitute_worklist {
             ),
             (
                 "binary operand p2 missing",
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::EPlusBody(EPlus {
                             p1: Some(gint(1)),
@@ -885,7 +883,7 @@ mod differential_substitute_worklist {
             ),
             (
                 "send channel missing",
-                Par {
+                models::par_from_default! {
                     sends: vec![Send {
                         chan: None,
                         data: vec![gint(1)],
@@ -902,7 +900,7 @@ mod differential_substitute_worklist {
             ),
             (
                 "second expr faulty, first fine",
-                Par {
+                models::par_from_default! {
                     exprs: vec![
                         Expr {
                             expr_instance: Some(ExprInstance::GInt(1)),
@@ -918,7 +916,7 @@ mod differential_substitute_worklist {
             (
                 "faulty operand under three levels of nesting",
                 {
-                    let mut p = Par {
+                    let mut p = models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EPlusBody(EPlus {
                                 p1: Some(gint(1)),
@@ -928,7 +926,7 @@ mod differential_substitute_worklist {
                         ..Default::default()
                     };
                     for _ in 0..3 {
-                        p = Par {
+                        p = models::par_from_default! {
                             exprs: vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(
                                     models::rhoapi::EList {
@@ -992,7 +990,7 @@ mod differential_substitute_worklist {
             ExprInstance::EPathmapBody(EPathMap::new(vec![inner.clone()], Vec::new(), false, None));
         assert!(!substitute_descends_into(&instance));
 
-        let term = Par {
+        let term = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(instance),
             }],

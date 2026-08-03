@@ -53,8 +53,8 @@ use models::rust::rholang::par_children::{
     expr_instance_child_pars, expr_instance_variant_index, spatial_match_descends_into,
     EXPR_INSTANCE_VARIANT_COUNT,
 };
-use models::rust::rholang::wire::{Descent, FieldKind, WireOneof};
-use models::rust::rholang::wire_schema::{
+use models::rust::rholang::bincode_schema::{Descent, FieldKind, BincodeOneof};
+use models::rust::rholang::bincode_schema_tables::{
     EXPR_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANT_COUNT,
 };
 use models::rust::utils::{new_freevar_par, new_gint_par};
@@ -1188,7 +1188,7 @@ fn no_unforgeable_pattern_reports_connective_used() {
 /// without it, which is also what the wire does: both fields are proto fields,
 /// decoded verbatim, and nothing recomputes them on the read path.
 fn par_of_raw(instance: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -1424,7 +1424,7 @@ fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
 /// How many elements this variant's payload carries in its `Seq`/`Map` fields,
 /// at its own level.
 ///
-/// ★ Driven by the generated emission table: `WireNode::wire_emit` reports a
+/// ★ Driven by the generated emission table: `BincodeNode::bincode_emit` reports a
 /// `Descent::Seq { len, .. }` for every repeated field, so this is the schema's
 /// own answer rather than a per-variant match written here.
 ///
@@ -1435,13 +1435,13 @@ fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
 /// child count by one, so the child count cannot tell them apart and this can.
 fn top_level_sequence_elements(instance: &ExprInstance) -> usize {
     let mut sink: Vec<u8> = Vec::new();
-    let Some(node) = instance.wire_emit(&mut sink) else {
+    let Some(node) = instance.bincode_emit(&mut sink) else {
         return 0;
     };
     let mut total = 0usize;
     let mut from = 0usize;
     loop {
-        match node.wire_emit(from, &mut sink) {
+        match node.bincode_emit(from, &mut sink) {
             Descent::Done => return total,
             Descent::Node { resume, .. } => from = resume as usize,
             Descent::Seq { resume, len, .. } => {
@@ -1459,16 +1459,16 @@ fn top_level_sequence_elements(instance: &ExprInstance) -> usize {
 /// How many `Option<Message>` slots this variant's payload declares.
 ///
 /// ★ Read from the GENERATED wire-schema program, not from a list here:
-/// `WireOneof::wire_emit` hands back the payload as a `&dyn WireNode` and
-/// `WireNode::wire_program()` is the descriptor-derived field table. A 37th
+/// `BincodeOneof::bincode_emit` hands back the payload as a `&dyn BincodeNode` and
+/// `BincodeNode::bincode_program()` is the descriptor-derived field table. A 37th
 /// variant is therefore counted correctly the moment the generator runs, and
 /// `FieldKind::Opt` is what distinguishes a *required child* from a `Seq`
 /// (an empty `EList` is a perfectly good term; an absent `EMinus.p1` is not).
 fn declared_optional_child_slots(instance: &ExprInstance) -> usize {
     let mut sink: Vec<u8> = Vec::new();
-    match instance.wire_emit(&mut sink) {
+    match instance.bincode_emit(&mut sink) {
         Some(node) => node
-            .wire_program()
+            .bincode_program()
             .iter()
             .filter(|kind| **kind == FieldKind::Opt)
             .count(),
@@ -1493,7 +1493,8 @@ enum AbsentChildOutcome {
 const ABSENT_CHILD_VARIANT: &str = "RHOLANG_ABSENT_CHILD_VARIANT";
 
 /// The name `libtest` knows the shape gate by, spelled once.
-const SHAPE_GATE_TEST: &str = "every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_match";
+const SHAPE_GATE_TEST: &str =
+    "every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_match";
 
 /// The marker the child prints BEFORE touching the subject.
 const REACHED: &str = "ABSENT-CHILD reached_subject=true";
@@ -1576,7 +1577,10 @@ fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
     {
         Some("none") => (AbsentChildOutcome::NoMatch, String::new()),
         Some("some") => (AbsentChildOutcome::Matched, String::new()),
-        Some(other) => panic!("the child for `{}` printed an unknown answer `{other}`", probe.name()),
+        Some(other) => panic!(
+            "the child for `{}` printed an unknown answer `{other}`",
+            probe.name()
+        ),
         // No answer line ⇒ the child did not return from the descent.
         None => {
             assert!(
@@ -1617,8 +1621,10 @@ fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_matc
             .into_iter()
             .find(|p| p.name() == variant)
             .unwrap_or_else(|| {
-                panic!("no child-bearing probe named `{variant}` — the parent and the child \
-                        disagree about the variant table")
+                panic!(
+                    "no child-bearing probe named `{variant}` — the parent and the child \
+                        disagree about the variant table"
+                )
             });
         match run_absent_child_probe_in_process(&probe) {
             None => println!("ABSENT-CHILD answered=none"),
@@ -1637,7 +1643,7 @@ fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_matc
     let mut sequence_shortening: Vec<&'static str> = Vec::new();
     // Variants whose children are not nested prost sub-messages at all —
     // `EPathMap`'s trie-key stream. Recorded rather than skipped.
-    let mut not_prost_nested: Vec<&'static str> = Vec::new();
+    let mut not_protobuf_nested: Vec<&'static str> = Vec::new();
 
     for probe in child_bearing_probes() {
         if declared_optional_child_slots(&probe.target) == 0 {
@@ -1646,7 +1652,7 @@ fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_matc
             continue;
         }
         let Some(stripped) = strip_first_optional_child(probe.target.clone()) else {
-            not_prost_nested.push(probe.name());
+            not_protobuf_nested.push(probe.name());
             continue;
         };
         if top_level_sequence_elements(&stripped) != top_level_sequence_elements(&probe.target) {
@@ -1698,8 +1704,8 @@ fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_matc
     );
     println!(
         "  {} variants encode their children OUTSIDE the prost sub-message tree (trie-key \
-         streams; the #130/#135 axis, not this one): {not_prost_nested:?}",
-        not_prost_nested.len()
+         streams; the #130/#135 axis, not this one): {not_protobuf_nested:?}",
+        not_protobuf_nested.len()
     );
     println!(
         "  {} variants carry child slot 0 in a repeated field (shortening is a TERM, so \

@@ -16,7 +16,7 @@ pub async fn get_data_at_public_channel(
     channel: i64,
     runtime_manager: &RuntimeManager,
 ) -> Vec<String> {
-    let channel_par = Par {
+    let channel_par = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(channel)),
         }],
@@ -41,7 +41,7 @@ pub async fn get_data_at_private_channel(
     runtime_manager: &RuntimeManager,
 ) -> Vec<String> {
     let name = StringOps::unsafe_decode_hex(channel.to_string());
-    let channel_par = Par {
+    let channel_par = models::par_from_default! {
         unforgeables: vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: name })),
         }],
@@ -63,8 +63,8 @@ pub async fn get_data_at(
         .unwrap();
 
     data.into_iter()
-        .flat_map(|par| {
-            par.exprs
+        .flat_map(|mut par| {
+            std::mem::take(&mut par.exprs)
                 .into_iter()
                 .map(|expr| PrettyPrinter::new().build_string_from_expr(&expr))
         })

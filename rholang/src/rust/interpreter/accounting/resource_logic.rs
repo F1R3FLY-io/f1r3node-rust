@@ -229,7 +229,10 @@ impl<G: GsltPresentation> ApportionmentPolicy<G> for DefaultApportionment {
                 // residual-capped (the `close_block_deploy` checked_sub is the
                 // hard underflow guard).
                 if k > 0 {
-                    out.push(PoolDraw { key: own.key, amount: k });
+                    out.push(PoolDraw {
+                        key: own.key,
+                        amount: k,
+                    });
                 }
             }
             GroupShape::Compound {
@@ -296,7 +299,10 @@ impl<G: GsltPresentation> ApportionmentPolicy<G> for FlatFeeApportionment {
         match shape {
             GroupShape::Single { own } => {
                 if k > 0 {
-                    out.push(PoolDraw { key: own.key, amount: k });
+                    out.push(PoolDraw {
+                        key: own.key,
+                        amount: k,
+                    });
                 }
             }
             GroupShape::Compound {
@@ -575,7 +581,11 @@ mod apportionment_conformance {
     const KR: SigKey = [0x12; 32];
 
     fn drawn(draws: &[PoolDraw<SigKey>], key: &SigKey) -> i64 {
-        draws.iter().filter(|d| &d.key == key).map(|d| d.amount).sum()
+        draws
+            .iter()
+            .filter(|d| &d.key == key)
+            .map(|d| d.amount)
+            .sum()
     }
 
     fn check_compound_laws<P: ApportionmentPolicy<RhoGslt>>(policy: &P) {
@@ -584,9 +594,18 @@ mod apportionment_conformance {
                 for sl in 0..=6i64 {
                     for sr in 0..=6i64 {
                         let shape = GroupShape::Compound {
-                            combined: PoolResidual { key: KC, residual: sc },
-                            left: PoolResidual { key: KL, residual: sl },
-                            right: PoolResidual { key: KR, residual: sr },
+                            combined: PoolResidual {
+                                key: KC,
+                                residual: sc,
+                            },
+                            left: PoolResidual {
+                                key: KL,
+                                residual: sl,
+                            },
+                            right: PoolResidual {
+                                key: KR,
+                                residual: sr,
+                            },
                         };
                         let draws = policy.apportion(shape, k);
                         let dc = drawn(&draws, &KC);
@@ -639,12 +658,24 @@ mod apportionment_conformance {
                 for sl in 0..=6i64 {
                     for sr in 0..=6i64 {
                         let shape = GroupShape::Compound {
-                            combined: PoolResidual { key: KC, residual: sc },
-                            left: PoolResidual { key: KL, residual: sl },
-                            right: PoolResidual { key: KR, residual: sr },
+                            combined: PoolResidual {
+                                key: KC,
+                                residual: sc,
+                            },
+                            left: PoolResidual {
+                                key: KL,
+                                residual: sl,
+                            },
+                            right: PoolResidual {
+                                key: KR,
+                                residual: sr,
+                            },
                         };
-                        let draws =
-                            ApportionmentPolicy::<RhoGslt>::apportion(&FlatFeeApportionment, shape, k);
+                        let draws = ApportionmentPolicy::<RhoGslt>::apportion(
+                            &FlatFeeApportionment,
+                            shape,
+                            k,
+                        );
                         let dc = drawn(&draws, &KC);
                         let dl = drawn(&draws, &KL);
                         let dr = drawn(&draws, &KR);
@@ -675,15 +706,36 @@ mod apportionment_conformance {
         // k=1. The COST policy doubles (left 1 + right 1 = 2 physical); the FLAT
         // FEE charges exactly 1 (left only).
         let f1 = GroupShape::Compound {
-            combined: PoolResidual { key: KC, residual: 0 },
-            left: PoolResidual { key: KL, residual: 5 },
-            right: PoolResidual { key: KR, residual: 5 },
+            combined: PoolResidual {
+                key: KC,
+                residual: 0,
+            },
+            left: PoolResidual {
+                key: KL,
+                residual: 5,
+            },
+            right: PoolResidual {
+                key: KR,
+                residual: 5,
+            },
         };
         let cost = ApportionmentPolicy::<RhoGslt>::apportion(&DefaultApportionment, f1, 1);
         let fee = ApportionmentPolicy::<RhoGslt>::apportion(&FlatFeeApportionment, f1, 1);
-        assert_eq!(drawn(&cost, &KL) + drawn(&cost, &KR), 2, "cost should double the pair");
-        assert_eq!(drawn(&fee, &KL) + drawn(&fee, &KR), 1, "flat fee must charge exactly 1");
-        assert_eq!(drawn(&fee, &KR), 0, "flat fee must not touch the right component");
+        assert_eq!(
+            drawn(&cost, &KL) + drawn(&cost, &KR),
+            2,
+            "cost should double the pair"
+        );
+        assert_eq!(
+            drawn(&fee, &KL) + drawn(&fee, &KR),
+            1,
+            "flat fee must charge exactly 1"
+        );
+        assert_eq!(
+            drawn(&fee, &KR),
+            0,
+            "flat fee must not touch the right component"
+        );
     }
 
     /// A behaviorally-different policy (components-first) must satisfy the SAME
@@ -694,21 +746,37 @@ mod apportionment_conformance {
             match shape {
                 GroupShape::Single { own } => {
                     if k > 0 {
-                        vec![PoolDraw { key: own.key, amount: k }]
+                        vec![PoolDraw {
+                            key: own.key,
+                            amount: k,
+                        }]
                     } else {
                         Vec::new()
                     }
                 }
-                GroupShape::Compound { combined, left, right } => {
+                GroupShape::Compound {
+                    combined,
+                    left,
+                    right,
+                } => {
                     let dp = k.min(left.residual).min(right.residual).max(0);
                     let dc = (k - dp).min(combined.residual).max(0);
                     let mut v = Vec::new();
                     if dp > 0 {
-                        v.push(PoolDraw { key: left.key, amount: dp });
-                        v.push(PoolDraw { key: right.key, amount: dp });
+                        v.push(PoolDraw {
+                            key: left.key,
+                            amount: dp,
+                        });
+                        v.push(PoolDraw {
+                            key: right.key,
+                            amount: dp,
+                        });
                     }
                     if dc > 0 {
-                        v.push(PoolDraw { key: combined.key, amount: dc });
+                        v.push(PoolDraw {
+                            key: combined.key,
+                            amount: dc,
+                        });
                     }
                     v
                 }
@@ -717,7 +785,5 @@ mod apportionment_conformance {
     }
 
     #[test]
-    fn alternative_policy_satisfies_the_same_contract() {
-        check_compound_laws(&ComponentsFirst);
-    }
+    fn alternative_policy_satisfies_the_same_contract() { check_compound_laws(&ComponentsFirst); }
 }

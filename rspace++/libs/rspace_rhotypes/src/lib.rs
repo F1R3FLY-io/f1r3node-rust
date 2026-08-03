@@ -141,8 +141,8 @@ pub extern "C" fn spatial_match_result(
     };
     let (target_slice, pattern_slice) = payload_slice.split_at(target_bytes_len);
 
-    let target = Par::decode(target_slice).unwrap();
-    let pattern = Par::decode(pattern_slice).unwrap();
+    let target = models::rust::rholang::protobuf_decoder::decode_par(target_slice).unwrap();
+    let pattern = models::rust::rholang::protobuf_decoder::decode_par(pattern_slice).unwrap();
 
     let mut spatial_matcher = SpatialMatcherContext::new();
     let result_option = spatial_matcher.spatial_match_result(target, pattern);
@@ -181,8 +181,9 @@ pub extern "C" fn produce(
         unsafe { std::slice::from_raw_parts(payload_pointer, channel_bytes_len + data_bytes_len) };
     let (channel_slice, data_slice) = payload_slice.split_at(channel_bytes_len);
 
-    let channel = Par::decode(channel_slice).unwrap();
-    let data = ListParWithRandom::decode(data_slice).unwrap();
+    let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
+    let data =
+        models::rust::rholang::protobuf_decoder::decode_list_par_with_random(data_slice).unwrap();
 
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
     let result_option = blocking_runtime()
@@ -491,7 +492,8 @@ pub extern "C" fn reset_rspace(
 //     channel_bytes_len: usize,
 // ) -> *const u8 {
 //     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer,
-// channel_bytes_len) };     let channel = Par::decode(channel_slice).unwrap();
+// channel_bytes_len) };     let channel =
+// models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
 //     // let rt = tokio::runtime::Runtime::new().unwrap();
 //     // let datums =
@@ -590,7 +592,8 @@ pub extern "C" fn reset_rspace(
 //     channel_bytes_len: usize,
 // ) -> *const u8 {
 //     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer,
-// channel_bytes_len) };     let channel = Par::decode(channel_slice).unwrap();
+// channel_bytes_len) };     let channel =
+// models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
 //     let joins = unsafe { (*rspace).rspace.lock().unwrap().get_joins(&channel)
 // };
@@ -1972,8 +1975,9 @@ pub extern "C" fn replay_produce(
         unsafe { std::slice::from_raw_parts(payload_pointer, channel_bytes_len + data_bytes_len) };
     let (channel_slice, data_slice) = payload_slice.split_at(channel_bytes_len);
 
-    let channel = Par::decode(channel_slice).unwrap();
-    let data = ListParWithRandom::decode(data_slice).unwrap();
+    let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
+    let data =
+        models::rust::rholang::protobuf_decoder::decode_list_par_with_random(data_slice).unwrap();
 
     let space = unsafe { (*rspace).rspace.lock().unwrap() };
     let result_option = blocking_runtime()
@@ -2371,7 +2375,7 @@ pub extern "C" fn replay_spawn(replay_rspace_ptr: *mut ReplaySpace) -> *mut Repl
 #[no_mangle]
 pub extern "C" fn hash_channel(channel_pointer: *const u8, channel_bytes_len: usize) -> *const u8 {
     let channel_slice = unsafe { std::slice::from_raw_parts(channel_pointer, channel_bytes_len) };
-    let channel = Par::decode(channel_slice).unwrap();
+    let channel = models::rust::rholang::protobuf_decoder::decode_par(channel_slice).unwrap();
 
     let hash = hash(&channel);
     let hash_proto = HashProto { hash: hash.bytes() };

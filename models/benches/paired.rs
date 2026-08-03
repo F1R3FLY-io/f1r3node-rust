@@ -87,21 +87,15 @@ pub struct Sample {
 }
 
 impl Sample {
-    pub fn mean(&self) -> f64 {
-        self.times_ns.iter().sum::<f64>() / self.times_ns.len() as f64
-    }
+    pub fn mean(&self) -> f64 { self.times_ns.iter().sum::<f64>() / self.times_ns.len() as f64 }
     pub fn variance(&self) -> f64 {
         let m = self.mean();
         self.times_ns.iter().map(|t| (t - m).powi(2)).sum::<f64>()
             / (self.times_ns.len() as f64 - 1.0)
     }
-    pub fn sd(&self) -> f64 {
-        self.variance().sqrt()
-    }
+    pub fn sd(&self) -> f64 { self.variance().sqrt() }
     /// Half-width of the α = 0.01 two-sided interval around the mean.
-    pub fn half_width(&self) -> f64 {
-        Z_001 * self.sd() / (self.times_ns.len() as f64).sqrt()
-    }
+    pub fn half_width(&self) -> f64 { Z_001 * self.sd() / (self.times_ns.len() as f64).sqrt() }
 }
 
 /// Welch's `t`, its Welch–Satterthwaite degrees of freedom, and significance at
@@ -139,13 +133,10 @@ pub struct Pair<'s> {
 }
 
 impl Pair<'_> {
-    pub fn diff_mean(&self) -> f64 {
-        self.diffs.iter().sum::<f64>() / self.diffs.len() as f64
-    }
+    pub fn diff_mean(&self) -> f64 { self.diffs.iter().sum::<f64>() / self.diffs.len() as f64 }
     pub fn diff_sd(&self) -> f64 {
         let m = self.diff_mean();
-        (self.diffs.iter().map(|d| (d - m).powi(2)).sum::<f64>()
-            / (self.diffs.len() as f64 - 1.0))
+        (self.diffs.iter().map(|d| (d - m).powi(2)).sum::<f64>() / (self.diffs.len() as f64 - 1.0))
             .sqrt()
     }
     /// Half-width of the paired α = 0.01 interval on the mean difference.
@@ -176,9 +167,7 @@ impl Pair<'_> {
     }
     /// `a / b`, i.e. how many times `b`'s throughput exceeds `a`'s, from the
     /// median per-repetition ratio.
-    pub fn median_speedup(&self) -> f64 {
-        1.0 / self.median_ratio()
-    }
+    pub fn median_speedup(&self) -> f64 { 1.0 / self.median_ratio() }
 }
 
 /// `N` arms measured in the same repetitions.
@@ -203,7 +192,12 @@ impl<const N: usize> Arms<N> {
             .zip(&b.times_ns)
             .map(|(x, y)| y / x)
             .collect();
-        Pair { a, b, diffs, ratios }
+        Pair {
+            a,
+            b,
+            diffs,
+            ratios,
+        }
     }
 
     /// Print each arm's mean, sd and interval.

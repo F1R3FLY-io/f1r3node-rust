@@ -98,7 +98,11 @@ macro_rules! pooled_stack {
                     let recycled = ::std::mem::take(&mut *parked);
                     debug_assert!(
                         recycled.is_empty(),
-                        concat!("the pooled stack `", stringify!($slot), "` must be parked empty")
+                        concat!(
+                            "the pooled stack `",
+                            stringify!($slot),
+                            "` must be parked empty"
+                        )
                     );
                     // SAFETY: `recycled` is empty (asserted), so this re-types zero live
                     // values — only the allocation crosses. `$elem<'a>` and `$elem<'static>`
@@ -124,8 +128,7 @@ macro_rules! pooled_stack {
                 return;
             }
             // SAFETY: emptied immediately above; see `$take`.
-            let parked: ::std::vec::Vec<$elem<'static>> =
-                unsafe { ::std::mem::transmute(stack) };
+            let parked: ::std::vec::Vec<$elem<'static>> = unsafe { ::std::mem::transmute(stack) };
             $slot.with(|cell| {
                 if let Ok(mut slot) = cell.try_borrow_mut() {
                     // Keep the LARGER of the two, so the pool converges upward to the working

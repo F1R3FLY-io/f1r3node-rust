@@ -395,7 +395,7 @@ fn j_the_arm_is_a_pure_union_of_the_two_cached_bitsets() {
         (&[2], &[0], &[1, 0, 1]),
     ];
     for (t_bits, p_bits, expected) in cases {
-        let target = Par {
+        let target = models::par_from_default! {
             locally_free: if t_bits.is_empty() {
                 Vec::new()
             } else {
@@ -403,7 +403,7 @@ fn j_the_arm_is_a_pure_union_of_the_two_cached_bitsets() {
             },
             ..Default::default()
         };
-        let pattern = Par {
+        let pattern = models::par_from_default! {
             locally_free: if p_bits.is_empty() {
                 Vec::new()
             } else {

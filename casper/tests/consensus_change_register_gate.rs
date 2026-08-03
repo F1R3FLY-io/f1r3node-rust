@@ -32,13 +32,13 @@
 //! ⚠ **Why the omission mattered, measured rather than argued.** Of the six obligation-set
 //! commits on the living frontier during the 2026-07-30 session, **three would NOT have been
 //! routed** by the previous set — `87ee699c`, `1eb65221` and `88ec2734`, every one of them
-//! because they touch `models/build/wire_schema.rs` while the declaration listed the *file*
-//! `models/build.rs` and no prefix covering the *directory* `models/build/`. ★ That is the
+//! because they touch `models/codegen/schema_codegen.rs` while the declaration listed the *file*
+//! `models/build.rs` and no prefix covering the *directory* `models/codegen/`. ★ That is the
 //! "too narrow" failure the routing brief warned about, and it was invisible because the
 //! recipe that produced the line never mentioned the clause it left uncovered.
 //!
 //! ⚠ **Crate ROOTS, not `<crate>/src/`** — the same reason [`obligation_pathspec`] is
-//! crate-rooted: a `src`-rooted prefix loses `models/build/`, the GENERATOR that emits the
+//! crate-rooted: a `src`-rooted prefix loses `models/codegen/`, the GENERATOR that emits the
 //! wire tables, which is precisely the path all three unrouted commits touched.
 //!
 //! Re-derive it, do not extend it by hand:
@@ -179,9 +179,16 @@ pub enum DriftBreach {
     /// A table in `register.toml` has no rows, so every assertion over it is vacuous.
     EmptyIndexTable { table: &'static str },
     /// `register.toml` violated the declared grammar. Never a silent skip.
-    Malformed { line_number: usize, line: String, why: &'static str },
+    Malformed {
+        line_number: usize,
+        line: String,
+        why: &'static str,
+    },
     /// Commits in range touching a consensus-critical path that appear in no row.
-    Unregistered { window: &'static str, commits: Vec<(String, String)> },
+    Unregistered {
+        window: &'static str,
+        commits: Vec<(String, String)>,
+    },
     /// A SHA is both an entry commit and an exemption.
     DoubleListed { commits: Vec<String> },
     /// A row names a SHA that resolves here but is **not** an ancestor of `HEAD` — what a
@@ -196,44 +203,92 @@ pub enum DriftBreach {
     /// **Class 2.** A cited coordinate no longer contains the token the prose names.
     StaleCitation { offenders: Vec<StaleCitation> },
     /// The citation corpus and the document's coordinate set disagree.
-    CitationCorpusDrift { missing_rows: Vec<String>, extra_rows: Vec<String> },
+    CitationCorpusDrift {
+        missing_rows: Vec<String>,
+        extra_rows: Vec<String>,
+    },
     /// **Class 3.** A stated figure disagrees with the projection of the summary table.
-    FigureDisagrees { site: String, quantity: String, stated: i64, projected: i64 },
+    FigureDisagrees {
+        site: String,
+        quantity: String,
+        stated: i64,
+        projected: i64,
+    },
     /// An arithmetic identity over the summary table failed: a row failed to parse, or a
     /// cell is malformed. Checked *before* any comparison — the instrument before the
     /// measurement.
-    TableIdentityFailed { quantity: String, sum: usize, rows: usize },
+    TableIdentityFailed {
+        quantity: String,
+        sum: usize,
+        rows: usize,
+    },
     /// **Class 4, decidable part.** An open question's falsifier no longer holds.
-    OpenQuestionNoLongerOpen { number: i64, path: String, line: i64, token: String },
+    OpenQuestionNoLongerOpen {
+        number: i64,
+        path: String,
+        line: i64,
+        token: String,
+    },
     /// **Class 4, decidable part.** A `CLOSED` question's falsifier still holds.
-    ClosedQuestionStillOpen { number: i64, path: String, line: i64, token: String },
+    ClosedQuestionStillOpen {
+        number: i64,
+        path: String,
+        line: i64,
+        token: String,
+    },
     /// The set of open questions the gate declines to check is not the declared set.
-    UndecidableSetDrift { expected: usize, found: usize, kinds: Vec<String> },
+    UndecidableSetDrift {
+        expected: usize,
+        found: usize,
+        kinds: Vec<String>,
+    },
     /// An exemption carries a reason outside §3.2's closed enum.
     UntypedExemption { commit: String, reason: String },
     /// An exemption carries no evidence. A row that excuses without discharging is a shrug.
     UndischargedExemption { commit: String },
     /// An entry is missing an axis cell, or a cell is outside §4.2's closed vocabulary.
-    BadAxisCell { id: String, axis: String, value: String },
+    BadAxisCell {
+        id: String,
+        axis: String,
+        value: String,
+    },
     /// §6.4's budget moved without the diff that raising it requires.
     UnverifiedBudget { stated: i64, counted: usize },
     /// The prose headings and the index ids disagree.
-    ProseIndexDivergence { prose_only: Vec<String>, index_only: Vec<String> },
+    ProseIndexDivergence {
+        prose_only: Vec<String>,
+        index_only: Vec<String>,
+    },
     /// ★ **§4.1's ROW SET and the index's entry set disagree.** Distinct from
     /// [`Self::ProseIndexDivergence`], which compares the *headings*: an entry can have a
     /// heading, a body and an index row and still be missing from the glyph table — which is
     /// exactly what happened to **CBR-040**, undetected until a human read the table.
-    SummaryTableDivergence { summary_only: Vec<String>, index_only: Vec<String> },
+    SummaryTableDivergence {
+        summary_only: Vec<String>,
+        index_only: Vec<String>,
+    },
     /// An entry's index row disagrees with the §4.1 row that displays it.
-    SummaryRowDisagrees { id: String, field: &'static str, prose: String, index: String },
+    SummaryRowDisagrees {
+        id: String,
+        field: &'static str,
+        prose: String,
+        index: String,
+    },
     /// A typed path exclusion excludes nothing, so the row is dead weight.
     VacuousPathExclusion { subdir: &'static str },
     /// A commit on the living frontier is unregistered and older than the fuse.
-    FrontierFuseBlown { commits: Vec<(String, String, i64)>, grace_days: i64 },
+    FrontierFuseBlown {
+        commits: Vec<(String, String, i64)>,
+        grace_days: i64,
+    },
     /// A stated-figure anchor does not occur exactly once, so the figure it names is
     /// ambiguous. ★ Checked because an anchor that starts matching twice would otherwise
     /// silently make the comparison a coin flip.
-    AnchorNotUnique { site: String, anchor: String, count: usize },
+    AnchorNotUnique {
+        site: String,
+        anchor: String,
+        count: usize,
+    },
 }
 
 /// One stale citation, carrying everything a reader needs to fix it without re-deriving.
@@ -262,7 +317,11 @@ impl fmt::Display for DriftBreach {
                 "non-vacuity: `register.toml` has no `[[{table}]]` rows, so every assertion \
                  over that table compared two empty sets."
             ),
-            Self::Malformed { line_number, line, why } => write!(
+            Self::Malformed {
+                line_number,
+                line,
+                why,
+            } => write!(
                 f,
                 "`register.toml` line {line_number} is not in the declared grammar ({why}): \
                  {line:?}. The parser refuses what it does not recognise rather than \
@@ -283,7 +342,7 @@ impl fmt::Display for DriftBreach {
                     "\n\nEither add a register entry, or add an `[[exempt]]` row with a typed \
                      reason from §3.2 and the evidence discharging it."
                 )
-            },
+            }
             Self::DoubleListed { commits } => write!(
                 f,
                 "double-listed: {commits:?} appear as both an entry commit and an exemption. \
@@ -298,14 +357,17 @@ impl fmt::Display for DriftBreach {
             Self::InFlightButLanded { offenders } => {
                 write!(f, "class 1 — IN-FLIGHT STALENESS:")?;
                 for (id, sha) in offenders {
-                    write!(f, "\n  {id} is not LANDED, yet {sha} is an ancestor of HEAD")?;
+                    write!(
+                        f,
+                        "\n  {id} is not LANDED, yet {sha} is an ancestor of HEAD"
+                    )?;
                 }
                 write!(
                     f,
                     "\n\nThis is CBR-027's first drift, exactly. Update the entry's Status, or \
                      remove a SHA it does not own."
                 )
-            },
+            }
             Self::ForeignShaResolvesLocally { offenders } => write!(
                 f,
                 "a Surface-L row names a SHA that resolves HERE: {offenders:?}. Surface-L \
@@ -319,7 +381,11 @@ impl fmt::Display for DriftBreach {
                  `NOT_NAMED`, which is counted."
             ),
             Self::StaleCitation { offenders } => {
-                write!(f, "class 2 — {} NON-RE-DERIVABLE citation(s):", offenders.len())?;
+                write!(
+                    f,
+                    "class 2 — {} NON-RE-DERIVABLE citation(s):",
+                    offenders.len()
+                )?;
                 for c in offenders {
                     write!(
                         f,
@@ -333,41 +399,67 @@ impl fmt::Display for DriftBreach {
                     "\n\nA coordinate a reviewer would follow no longer leads anywhere. Repair \
                      the coordinate, or repin `at` if the claim is about a pre-change state."
                 )
-            },
-            Self::CitationCorpusDrift { missing_rows, extra_rows } => write!(
+            }
+            Self::CitationCorpusDrift {
+                missing_rows,
+                extra_rows,
+            } => write!(
                 f,
                 "the citation corpus is not the document's coordinate set.\n  in the prose \
                  with no `[[citation]]` row: {missing_rows:?}\n  rows citing a coordinate the \
                  prose no longer contains: {extra_rows:?}\n\nThe corpus is DERIVED from the \
                  document so it cannot be narrowed by deleting a row."
             ),
-            Self::FigureDisagrees { site, quantity, stated, projected } => write!(
+            Self::FigureDisagrees {
+                site,
+                quantity,
+                stated,
+                projected,
+            } => write!(
                 f,
                 "class 3 — PARTIAL-UPDATE DRIFT at {site}: it states {quantity} = {stated}, \
                  the §4.1 table projects {projected}. ★ A number that is a projection of a \
                  table must be COMPUTED by a machine that reads the table."
             ),
-            Self::TableIdentityFailed { quantity, sum, rows } => write!(
+            Self::TableIdentityFailed {
+                quantity,
+                sum,
+                rows,
+            } => write!(
                 f,
                 "the instrument is broken before the measurement: the {quantity} split sums \
                  to {sum} over {rows} rows. A row failed to parse, an identifier is \
                  duplicated, or an axis cell is malformed — fix that before reading any \
                  figure comparison."
             ),
-            Self::OpenQuestionNoLongerOpen { number, path, line, token } => write!(
+            Self::OpenQuestionNoLongerOpen {
+                number,
+                path,
+                line,
+                token,
+            } => write!(
                 f,
                 "class 4 — open question {number} is recorded as still open, but its falsifier \
                  no longer holds: {token:?} is gone from {path}:{line}. The question may have \
                  been answered by a change that never came back to update the row — which is \
                  the CBR-L09 shape."
             ),
-            Self::ClosedQuestionStillOpen { number, path, line, token } => write!(
+            Self::ClosedQuestionStillOpen {
+                number,
+                path,
+                line,
+                token,
+            } => write!(
                 f,
                 "open question {number} is recorded CLOSED, but its falsifier still holds: \
                  {token:?} is still at {path}:{line}. A closure that did not happen is worse \
                  than an open question, because nobody is looking."
             ),
-            Self::UndecidableSetDrift { expected, found, kinds } => write!(
+            Self::UndecidableSetDrift {
+                expected,
+                found,
+                kinds,
+            } => write!(
                 f,
                 "the set of open questions this gate DECLINES to check has changed: expected \
                  {expected}, found {found} ({kinds:?}). ★ This set is the gate's honest \
@@ -396,12 +488,18 @@ impl fmt::Display for DriftBreach {
                  budget that can only rise is a ratchet, not a measurement — so this is \
                  asserted EXACTLY, and BOTH directions are a visible diff."
             ),
-            Self::ProseIndexDivergence { prose_only, index_only } => write!(
+            Self::ProseIndexDivergence {
+                prose_only,
+                index_only,
+            } => write!(
                 f,
                 "prose/index divergence.\n  headings with no index row: {prose_only:?}\n  index \
                  rows with no heading: {index_only:?}"
             ),
-            Self::SummaryTableDivergence { summary_only, index_only } => write!(
+            Self::SummaryTableDivergence {
+                summary_only,
+                index_only,
+            } => write!(
                 f,
                 "§4.1 GLYPH-ROW divergence — the summary table and `register.toml` do not hold \
                  the same entries.\n  §4.1 rows with no index entry: {summary_only:?}\n  index \
@@ -413,7 +511,12 @@ impl fmt::Display for DriftBreach {
                  missing row to §4.1 (or the missing `[[entry]]` to `register.toml`); do not \
                  relax this clause."
             ),
-            Self::SummaryRowDisagrees { id, field, prose, index } => write!(
+            Self::SummaryRowDisagrees {
+                id,
+                field,
+                prose,
+                index,
+            } => write!(
                 f,
                 "{id}: §4.1's row says {field} = {prose:?}, `register.toml` says {index:?}. \
                  The index is a PROJECTION of the prose; a disagreement means one of them was \
@@ -424,7 +527,10 @@ impl fmt::Display for DriftBreach {
                 "the `{subdir}` path exclusion excludes nothing in range, so the row carries \
                  no obligation and is dead weight. Delete it, or say why it must stay."
             ),
-            Self::FrontierFuseBlown { commits, grace_days } => {
+            Self::FrontierFuseBlown {
+                commits,
+                grace_days,
+            } => {
                 write!(
                     f,
                     "{} unregistered commit(s) on the living frontier are older than the \
@@ -439,8 +545,12 @@ impl fmt::Display for DriftBreach {
                     "\n\nThe fuse is measured in COMMIT DATES, not wall clock, so this verdict \
                      is reproducible on this checkout. Register them, or exempt them."
                 )
-            },
-            Self::AnchorNotUnique { site, anchor, count } => write!(
+            }
+            Self::AnchorNotUnique {
+                site,
+                anchor,
+                count,
+            } => write!(
                 f,
                 "the stated-figure anchor for {site} occurs {count} time(s), not once: \
                  {anchor:?}. A figure comparison against an ambiguous anchor is a coin flip, \
@@ -574,7 +684,9 @@ const UNFENCED_SUBCOMMANDS: &[UnfencedSubcommand] = &[
 ];
 
 fn subject(sha: &str) -> String {
-    rev_only(&["log", "-1", "--format=%s", sha]).trim().to_string()
+    rev_only(&["log", "-1", "--format=%s", sha])
+        .trim()
+        .to_string()
 }
 
 /// Committer date as a Unix timestamp.
@@ -714,7 +826,9 @@ pub fn parse_index(text: &str) -> Result<Index, DriftBreach> {
             });
         };
         if key.is_empty()
-            || !key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         {
             return Err(DriftBreach::Malformed {
                 line_number,
@@ -857,7 +971,8 @@ const PATH_EXCLUSIONS: &[PathExclusion] = &[
     },
     PathExclusion {
         subdir: "benches",
-        why: "benchmark harnesses. Same reason, and `decda6dd` is the witness that they do land in \
+        why:
+            "benchmark harnesses. Same reason, and `decda6dd` is the witness that they do land in \
               range.",
     },
     PathExclusion {
@@ -896,16 +1011,20 @@ fn path_dependencies(member: &str) -> Vec<String> {
         if line.starts_with('#') {
             continue;
         }
-        let Some(rest) = line.split_once("path = \"") else { continue };
-        let Some(raw) = rest.1.split('"').next() else { continue };
+        let Some(rest) = line.split_once("path = \"") else {
+            continue;
+        };
+        let Some(raw) = rest.1.split('"').next() else {
+            continue;
+        };
         // Normalise `member/../x` without touching the filesystem.
         let mut parts: Vec<&str> = member.split('/').collect();
         for segment in raw.split('/') {
             match segment {
-                "." | "" => {},
+                "." | "" => {}
                 ".." => {
                     parts.pop();
-                },
+                }
                 s => parts.push(s),
             }
         }
@@ -940,7 +1059,7 @@ fn closure_crates() -> BTreeSet<String> {
 /// Crate-rooted, minus [`PATH_EXCLUSIONS`], plus `Cargo.lock`.
 ///
 /// ★ **Why crate-rooted and not `<crate>/src/`.** A `src`-rooted derivation loses
-/// `models/build.rs` and `models/build/` — the GENERATOR that emits the wire tables, which
+/// `models/build.rs` and `models/codegen/` — the GENERATOR that emits the schema tables, which
 /// §3.4(4) names as a false-negative class of its own and which `903cefb3` already proved
 /// can leave a stale table in `OUT_DIR` while the build reports success. Crate-rooted is
 /// complete by construction and subtracts only what a typed row justifies.
@@ -967,7 +1086,10 @@ fn obligation_set(range: &str, pathspec: &[String]) -> Vec<String> {
     for s in pathspec {
         args.push(s);
     }
-    git_expect(&args).split_whitespace().map(str::to_string).collect()
+    git_expect(&args)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -1033,13 +1155,13 @@ fn fenced(lines: &[&str]) -> Vec<bool> {
                     fence = Some(ticks);
                     out[i] = true;
                     continue;
-                },
+                }
                 Some(open) if ticks >= open => {
                     fence = None;
                     out[i] = true;
                     continue;
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         out[i] = fence.is_some();
@@ -1078,8 +1200,12 @@ pub fn summary_rows(register: &str) -> Vec<SummaryRow> {
         if inside[i] || !l.starts_with("| [CBR-") {
             continue;
         }
-        let cells: Vec<&str> =
-            l.trim().trim_matches('|').split('|').map(str::trim).collect::<Vec<_>>();
+        let cells: Vec<&str> = l
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
         let id = cells[0]
             .trim_start_matches('[')
             .split(']')
@@ -1088,7 +1214,9 @@ pub fn summary_rows(register: &str) -> Vec<SummaryRow> {
             .to_string();
         let mut axes: [String; 7] = Default::default();
         for k in 0..7 {
-            axes[k] = glyph_to_axis(cells[4 + k]).unwrap_or("MALFORMED").to_string();
+            axes[k] = glyph_to_axis(cells[4 + k])
+                .unwrap_or("MALFORMED")
+                .to_string();
         }
         out.push(SummaryRow {
             id,
@@ -1096,7 +1224,11 @@ pub fn summary_rows(register: &str) -> Vec<SummaryRow> {
             axes,
             direction: {
                 let d = cells[11].replace('*', "").trim().to_string();
-                if d == "—" || d == "-" { "NOT_APPLICABLE".to_string() } else { d }
+                if d == "—" || d == "-" {
+                    "NOT_APPLICABLE".to_string()
+                } else {
+                    d
+                }
             },
             grade: grade_to_word(cells[12]).unwrap_or("MALFORMED").to_string(),
         });
@@ -1149,7 +1281,11 @@ pub fn document_coordinates(register: &str) -> BTreeSet<Coordinate> {
             continue;
         }
         for (cited, line) in coordinates_in(l) {
-            out.insert(Coordinate { owner: owner.clone(), cited, line });
+            out.insert(Coordinate {
+                owner: owner.clone(),
+                cited,
+                line,
+            });
         }
     }
     out
@@ -1227,7 +1363,13 @@ fn entry_commits(index: &Index, surface: Option<&str>) -> BTreeSet<String> {
         .rows("entry")
         .iter()
         .filter(|r| surface.is_none_or(|s| r.get("surface").map(Val::as_str) == Some(s)))
-        .flat_map(|r| r.get("commits").map(Val::as_list).unwrap_or(&[]).iter().cloned())
+        .flat_map(|r| {
+            r.get("commits")
+                .map(Val::as_list)
+                .unwrap_or(&[])
+                .iter()
+                .cloned()
+        })
         .collect()
 }
 
@@ -1259,7 +1401,10 @@ pub fn check_non_vacuity(
 ) -> Result<(), DriftBreach> {
     const OBLIGATION_FLOOR: usize = 78;
     if obligations < OBLIGATION_FLOOR {
-        return Err(DriftBreach::EmptyObligation { found: obligations, floor: OBLIGATION_FLOOR });
+        return Err(DriftBreach::EmptyObligation {
+            found: obligations,
+            floor: OBLIGATION_FLOOR,
+        });
     }
     for table in ["entry", "exempt", "citation", "open_question"] {
         if index.rows(table).is_empty() {
@@ -1267,10 +1412,14 @@ pub fn check_non_vacuity(
         }
     }
     if citations_checked == 0 {
-        return Err(DriftBreach::EmptyIndexTable { table: "citation (all unchecked)" });
+        return Err(DriftBreach::EmptyIndexTable {
+            table: "citation (all unchecked)",
+        });
     }
     if decidable_questions == 0 {
-        return Err(DriftBreach::EmptyIndexTable { table: "open_question (all undecidable)" });
+        return Err(DriftBreach::EmptyIndexTable {
+            table: "open_question (all undecidable)",
+        });
     }
     Ok(())
 }
@@ -1308,7 +1457,10 @@ pub fn check_partition_coverage(
         .map(|c| (c.clone(), subject(c)))
         .collect();
     if !missing.is_empty() {
-        return Err(DriftBreach::Unregistered { window: "PARTITION", commits: missing });
+        return Err(DriftBreach::Unregistered {
+            window: "PARTITION",
+            commits: missing,
+        });
     }
     Ok(())
 }
@@ -1348,7 +1500,10 @@ pub fn check_frontier_fuse(
         }
     }
     if !blown.is_empty() {
-        return Err(DriftBreach::FrontierFuseBlown { commits: blown, grace_days });
+        return Err(DriftBreach::FrontierFuseBlown {
+            commits: blown,
+            grace_days,
+        });
     }
     Ok(())
 }
@@ -1436,7 +1591,9 @@ pub fn check_in_flight_staleness(index: &Index) -> Result<(), DriftBreach> {
 pub fn check_citation_rederivability(index: &Index) -> Result<(), DriftBreach> {
     let mut offenders = Vec::new();
     for row in index.rows("citation") {
-        let Some(path) = row.get("path").map(Val::as_str) else { continue };
+        let Some(path) = row.get("path").map(Val::as_str) else {
+            continue;
+        };
         let at = row.get("at").map(Val::as_str).unwrap_or("HEAD");
         let line = row.get("line").map(Val::as_int).unwrap_or(i64::MIN);
         let token = row.get("token").map(Val::as_str).unwrap_or("");
@@ -1501,7 +1658,10 @@ pub fn check_citation_corpus(
     let missing: Vec<String> = document.difference(&rows).map(show).collect();
     let extra: Vec<String> = rows.difference(document).map(show).collect();
     if !missing.is_empty() || !extra.is_empty() {
-        return Err(DriftBreach::CitationCorpusDrift { missing_rows: missing, extra_rows: extra });
+        return Err(DriftBreach::CitationCorpusDrift {
+            missing_rows: missing,
+            extra_rows: extra,
+        });
     }
     Ok(())
 }
@@ -1560,9 +1720,11 @@ pub fn project(rows: &[SummaryRow]) -> Result<Projection, DriftBreach> {
             }
         }
     }
-    for (name, split) in
-        [("surface", &p.surface), ("direction", &p.direction), ("grade", &p.grade)]
-    {
+    for (name, split) in [
+        ("surface", &p.surface),
+        ("direction", &p.direction),
+        ("grade", &p.grade),
+    ] {
         let sum: usize = split.values().sum();
         if sum != n {
             return Err(DriftBreach::TableIdentityFailed {
@@ -1574,7 +1736,10 @@ pub fn project(rows: &[SummaryRow]) -> Result<Projection, DriftBreach> {
     }
     // Each axis column must classify every row: the seven columns each sum to n.
     for (k, key) in AXIS_KEYS.iter().enumerate() {
-        let classified = rows.iter().filter(|r| AXIS_VOCABULARY.contains(&r.axes[k].as_str())).count();
+        let classified = rows
+            .iter()
+            .filter(|r| AXIS_VOCABULARY.contains(&r.axes[k].as_str()))
+            .count();
         if classified != n {
             return Err(DriftBreach::TableIdentityFailed {
                 quantity: format!("axis column {key}"),
@@ -1614,7 +1779,11 @@ pub struct StatedFigure {
 }
 
 pub const STATED_FIGURES: &[StatedFigure] = &[
-    StatedFigure { site: "Abstract", anchor: "**Result: ", quantity: Quantity::Rows },
+    StatedFigure {
+        site: "Abstract",
+        anchor: "**Result: ",
+        quantity: Quantity::Rows,
+    },
     StatedFigure {
         site: "Abstract",
         anchor: "consensus-visible changes** — ",
@@ -1625,7 +1794,11 @@ pub const STATED_FIGURES: &[StatedFigure] = &[
         anchor: " on the F1r3node node itself, ",
         quantity: Quantity::Surface("L"),
     },
-    StatedFigure { site: "§4.1 totals", anchor: "**Totals — ", quantity: Quantity::Rows },
+    StatedFigure {
+        site: "§4.1 totals",
+        anchor: "**Totals — ",
+        quantity: Quantity::Rows,
+    },
     StatedFigure {
         site: "§4.1 totals",
         anchor: "recounted from the rows above rather than adjusted: **",
@@ -1738,14 +1911,14 @@ pub fn check_stated_figures(document: &str, p: &Projection) -> Result<(), DriftB
                         projected: want,
                     });
                 }
-            },
+            }
             Err(count) => {
                 return Err(DriftBreach::AnchorNotUnique {
                     site: f.site.to_string(),
                     anchor: f.anchor.to_string(),
                     count,
                 })
-            },
+            }
         }
     }
     Ok(())
@@ -1754,13 +1927,21 @@ pub fn check_stated_figures(document: &str, p: &Projection) -> Result<(), DriftB
 /// Rows of a `| label | **n** | … |` table between two headings.
 fn counted_table(document: &str, from: &str, to: &str) -> Vec<(String, i64)> {
     let start = document.find(from).map(|i| i + from.len()).unwrap_or(0);
-    let end = document[start..].find(to).map(|i| start + i).unwrap_or(document.len());
+    let end = document[start..]
+        .find(to)
+        .map(|i| start + i)
+        .unwrap_or(document.len());
     let mut out = Vec::new();
     for line in document[start..end].lines() {
         if !line.starts_with("| ") {
             continue;
         }
-        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').map(str::trim).collect();
+        let cells: Vec<&str> = line
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
         if cells.len() < 2 {
             continue;
         }
@@ -1917,21 +2098,6 @@ const FALSIFIER_KINDS: [&str; 7] = [
     "UNDECIDABLE_HERE__NO_CITED_SITE",
 ];
 
-/// Does `token` occur within ±[`CITATION_WINDOW`] lines of `line` in `at:path`?
-fn token_near(at: &str, path: &str, line: i64, token: &str) -> Option<(bool, String)> {
-    let text = show(at, path)?;
-    let file: Vec<&str> = text.lines().collect();
-    let lo = (line - CITATION_WINDOW).max(1);
-    let hi = (line + CITATION_WINDOW).min(file.len() as i64);
-    let hit = (lo..=hi).any(|k| file[(k - 1) as usize].contains(token));
-    let at_line = if line >= 1 && line <= file.len() as i64 {
-        file[(line - 1) as usize].trim().to_string()
-    } else {
-        String::from("<past end of file>")
-    };
-    Some((hit, at_line))
-}
-
 /// **DRIFT CLASS 4, the decidable part** — plus the exact assertion on the part that is not.
 pub fn check_open_question_freshness(index: &Index) -> Result<(), DriftBreach> {
     let mut undecidable: Vec<String> = Vec::new();
@@ -1942,7 +2108,9 @@ pub fn check_open_question_freshness(index: &Index) -> Result<(), DriftBreach> {
             return Err(DriftBreach::UndecidableSetDrift {
                 expected: UNDECIDABLE_HERE,
                 found: undecidable.len(),
-                kinds: vec![format!("question {number} carries unknown falsifier {kind:?}")],
+                kinds: vec![format!(
+                    "question {number} carries unknown falsifier {kind:?}"
+                )],
             });
         }
         if kind.starts_with("UNDECIDABLE_HERE__") {
@@ -1989,13 +2157,23 @@ pub fn check_open_question_freshness(index: &Index) -> Result<(), DriftBreach> {
         };
         match (state, want) {
             ("CLOSED", true) => {
-                return Err(DriftBreach::ClosedQuestionStillOpen { number, path, line, token })
-            },
-            ("CLOSED", false) => {},
+                return Err(DriftBreach::ClosedQuestionStillOpen {
+                    number,
+                    path,
+                    line,
+                    token,
+                })
+            }
+            ("CLOSED", false) => {}
             (_, false) => {
-                return Err(DriftBreach::OpenQuestionNoLongerOpen { number, path, line, token })
-            },
-            (_, true) => {},
+                return Err(DriftBreach::OpenQuestionNoLongerOpen {
+                    number,
+                    path,
+                    line,
+                    token,
+                })
+            }
+            (_, true) => {}
         }
     }
     if undecidable.len() != UNDECIDABLE_HERE {
@@ -2023,7 +2201,10 @@ pub fn check_typed_exemptions(index: &Index) -> Result<(), DriftBreach> {
         let commit = row.get("commit").map(Val::as_str).unwrap_or("").to_string();
         let reason = row.get("reason").map(Val::as_str).unwrap_or("");
         if !CLOSED_REASONS.contains(&reason) {
-            return Err(DriftBreach::UntypedExemption { commit, reason: reason.to_string() });
+            return Err(DriftBreach::UntypedExemption {
+                commit,
+                reason: reason.to_string(),
+            });
         }
         let evidence = row.get("evidence").map(Val::as_str).unwrap_or("");
         let discharges = evidence.contains(".rs")
@@ -2051,15 +2232,15 @@ pub fn check_axis_completeness(index: &Index) -> Result<(), DriftBreach> {
                         axis: key.to_string(),
                         value: "<absent>".to_string(),
                     })
-                },
+                }
                 Some(v) if !AXIS_VOCABULARY.contains(&v) => {
                     return Err(DriftBreach::BadAxisCell {
                         id,
                         axis: key.to_string(),
                         value: v.to_string(),
                     })
-                },
-                Some(_) => {},
+                }
+                Some(_) => {}
             }
         }
     }
@@ -2075,7 +2256,10 @@ pub fn check_axis_completeness(index: &Index) -> Result<(), DriftBreach> {
 pub fn check_unverified_budget(index: &Index, p: &Projection) -> Result<(), DriftBreach> {
     let stated = index.int("unverified_budget");
     if stated != p.unverified_cells as i64 {
-        return Err(DriftBreach::UnverifiedBudget { stated, counted: p.unverified_cells });
+        return Err(DriftBreach::UnverifiedBudget {
+            stated,
+            counted: p.unverified_cells,
+        });
     }
     Ok(())
 }
@@ -2098,10 +2282,7 @@ pub fn check_unverified_budget(index: &Index, p: &Projection) -> Result<(), Drif
 /// because it is comparing the prose against the same deficient projection.
 ///
 /// ⇒ the two sets must be **equal**, and the message must name the ids on each side.
-pub fn check_summary_table_coverage(
-    index: &Index,
-    rows: &[SummaryRow],
-) -> Result<(), DriftBreach> {
+pub fn check_summary_table_coverage(index: &Index, rows: &[SummaryRow]) -> Result<(), DriftBreach> {
     let ids: BTreeSet<String> = index
         .rows("entry")
         .iter()
@@ -2111,7 +2292,10 @@ pub fn check_summary_table_coverage(
     let summary_only: Vec<String> = summary.difference(&ids).cloned().collect();
     let index_only: Vec<String> = ids.difference(&summary).cloned().collect();
     if !summary_only.is_empty() || !index_only.is_empty() {
-        return Err(DriftBreach::SummaryTableDivergence { summary_only, index_only });
+        return Err(DriftBreach::SummaryTableDivergence {
+            summary_only,
+            index_only,
+        });
     }
     Ok(())
 }
@@ -2134,13 +2318,19 @@ pub fn check_prose_index_agreement(
     headings: &[String],
     rows: &[SummaryRow],
 ) -> Result<(), DriftBreach> {
-    let ids: BTreeSet<String> =
-        index.rows("entry").iter().map(|r| r.get("id").map(Val::as_str).unwrap_or("").to_string()).collect();
+    let ids: BTreeSet<String> = index
+        .rows("entry")
+        .iter()
+        .map(|r| r.get("id").map(Val::as_str).unwrap_or("").to_string())
+        .collect();
     let prose: BTreeSet<String> = headings.iter().cloned().collect();
     let prose_only: Vec<String> = prose.difference(&ids).cloned().collect();
     let index_only: Vec<String> = ids.difference(&prose).cloned().collect();
     if !prose_only.is_empty() || !index_only.is_empty() {
-        return Err(DriftBreach::ProseIndexDivergence { prose_only, index_only });
+        return Err(DriftBreach::ProseIndexDivergence {
+            prose_only,
+            index_only,
+        });
     }
     let by_id: BTreeMap<&str, &Row> = index
         .rows("entry")
@@ -2209,7 +2399,7 @@ pub fn check_foreign_rows(index: &Index) -> Result<(), DriftBreach> {
         match row.get("source_gate").map(Val::as_str) {
             None | Some("") => missing_gate.push(id.clone()),
             Some("NOT_NAMED") => not_named += 1,
-            Some(_) => {},
+            Some(_) => {}
         }
         for sha in row.get("commits").map(Val::as_list).unwrap_or(&[]) {
             if resolves(sha) {
@@ -2221,7 +2411,9 @@ pub fn check_foreign_rows(index: &Index) -> Result<(), DriftBreach> {
         return Err(DriftBreach::ForeignRowWithoutSourceGate { ids: missing_gate });
     }
     if !resolving.is_empty() {
-        return Err(DriftBreach::ForeignShaResolvesLocally { offenders: resolving });
+        return Err(DriftBreach::ForeignShaResolvesLocally {
+            offenders: resolving,
+        });
     }
     if not_named != NOT_NAMED {
         return Err(DriftBreach::UndecidableSetDrift {
@@ -2251,8 +2443,14 @@ pub fn check_path_exclusions_bite(_range: &str) -> Result<(), DriftBreach> {
     for x in PATH_EXCLUSIONS {
         let mut excluded_files = 0usize;
         for c in &crates {
-            let listing = git(&["ls-tree", "-r", "--name-only", "HEAD", "--",
-                &format!("{c}/{}/", x.subdir)]);
+            let listing = git(&[
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "HEAD",
+                "--",
+                &format!("{c}/{}/", x.subdir),
+            ]);
             if let Ok(text) = listing {
                 excluded_files += text.lines().filter(|l| !l.trim().is_empty()).count();
             }
@@ -2354,7 +2552,10 @@ fn the_register_as_committed_passes_every_clause() {
         .rows("open_question")
         .iter()
         .filter(|r| {
-            !r.get("falsifier").map(Val::as_str).unwrap_or("").starts_with("UNDECIDABLE_HERE__")
+            !r.get("falsifier")
+                .map(Val::as_str)
+                .unwrap_or("")
+                .starts_with("UNDECIDABLE_HERE__")
         })
         .count();
 
@@ -2378,17 +2579,29 @@ fn the_register_as_committed_passes_every_clause() {
         Ok(())
     );
     assert_eq!(
-        check_row_liveness(&f.entries_n, &f.exempt_all, &|s| resolves(s), &|s| is_ancestor(
-            s, "HEAD"
-        )),
+        check_row_liveness(&f.entries_n, &f.exempt_all, &|s| resolves(s), &|s| {
+            is_ancestor(s, "HEAD")
+        }),
         Ok(())
     );
     assert_eq!(check_in_flight_staleness(&f.index), Ok(()), "class 1");
     assert_eq!(check_citation_rederivability(&f.index), Ok(()), "class 2");
     assert_eq!(check_citation_corpus(&f.index, &f.coordinates), Ok(()));
-    assert_eq!(check_stated_figures(&f.register, &f.projection), Ok(()), "class 3");
-    assert_eq!(check_axis_exposure(&f.register, &f.projection), Ok(()), "class 3 · §5.1");
-    assert_eq!(check_direction_profile(&f.register, &f.projection), Ok(()), "class 3 · §5.3");
+    assert_eq!(
+        check_stated_figures(&f.register, &f.projection),
+        Ok(()),
+        "class 3"
+    );
+    assert_eq!(
+        check_axis_exposure(&f.register, &f.projection),
+        Ok(()),
+        "class 3 · §5.1"
+    );
+    assert_eq!(
+        check_direction_profile(&f.register, &f.projection),
+        Ok(()),
+        "class 3 · §5.3"
+    );
     assert_eq!(check_open_question_freshness(&f.index), Ok(()), "class 4");
     assert_eq!(check_typed_exemptions(&f.index), Ok(()));
     assert_eq!(check_axis_completeness(&f.index), Ok(()));
@@ -2415,7 +2628,10 @@ fn the_floor_refuses_an_empty_obligation_set() {
     let f = fixture();
     let breach = check_non_vacuity(0, &f.index, 1, 1)
         .expect_err("★★ a gate with nothing to check must FAIL, not pass");
-    assert_eq!(breach, DriftBreach::EmptyObligation { found: 0, floor: 78 });
+    assert_eq!(breach, DriftBreach::EmptyObligation {
+        found: 0,
+        floor: 78
+    });
     assert!(
         breach.to_string().starts_with("non-vacuity:"),
         "the refusal must name its reason first; got {breach}"
@@ -2456,14 +2672,15 @@ fn the_floor_refuses_a_corpus_in_which_nothing_is_checkable() {
     let f = fixture();
     let breach = check_non_vacuity(f.partition.len(), &f.index, 0, 1)
         .expect_err("a citation corpus with no checkable row must FAIL");
-    assert_eq!(breach, DriftBreach::EmptyIndexTable { table: "citation (all unchecked)" });
+    assert_eq!(breach, DriftBreach::EmptyIndexTable {
+        table: "citation (all unchecked)"
+    });
 
     let breach = check_non_vacuity(f.partition.len(), &f.index, 1, 0)
         .expect_err("an open-question set with no decidable row must FAIL");
-    assert_eq!(
-        breach,
-        DriftBreach::EmptyIndexTable { table: "open_question (all undecidable)" }
-    );
+    assert_eq!(breach, DriftBreach::EmptyIndexTable {
+        table: "open_question (all undecidable)"
+    });
 }
 
 /// ★★ **NO FILE CAN IMPERSONATE A COMMIT — asserted on the argument vectors, not on the prose.**
@@ -2533,13 +2750,10 @@ fn no_unfenced_git_call_can_be_shadowed_by_a_path() {
             if call.contains("\"--\"") {
                 continue;
             }
-            match UNFENCED_SUBCOMMANDS
-                .iter()
-                .find(|x| x.subcommand == first)
-            {
+            match UNFENCED_SUBCOMMANDS.iter().find(|x| x.subcommand == first) {
                 Some(x) => {
                     used_exceptions.insert(x.subcommand);
-                },
+                }
                 None => panic!(
                     "★★ UNFENCED REVISION ARGUMENT. `git {first} …` is invoked without a `--` \
                      fence and `{first}` is not in `UNFENCED_SUBCOMMANDS`. A file named like a \
@@ -2591,7 +2805,11 @@ fn the_path_exclusions_each_exclude_something() {
         "a path exclusion that excludes nothing is dead weight and must be deleted"
     );
 
-    assert_eq!(ROOT_CRATES.len(), 1, "★ one hand-declared input to the path set, and one only");
+    assert_eq!(
+        ROOT_CRATES.len(),
+        1,
+        "★ one hand-declared input to the path set, and one only"
+    );
     for root in ROOT_CRATES {
         assert!(
             repo_root().join(root.dir).join("Cargo.toml").is_file(),
@@ -2612,7 +2830,9 @@ fn the_path_exclusions_each_exclude_something() {
         );
     }
     assert!(
-        PATH_EXCLUSIONS.iter().any(|x| x.subdir == "src/test" && x.why.contains("src/main")),
+        PATH_EXCLUSIONS
+            .iter()
+            .any(|x| x.subdir == "src/test" && x.why.contains("src/main")),
         "★ the `src/test` row must record that `casper/src/main/resources/` is DELIBERATELY not \
          excluded — CBR-030 is a genesis contract living there"
     );
@@ -2632,8 +2852,7 @@ fn the_path_exclusions_each_exclude_something() {
 fn the_in_flight_clause_refuses_an_entry_whose_commit_has_landed() {
     let f = fixture();
     let regressed = mutated(&f.index, |i| {
-        row_mut(i, "entry", "id", "CBR-027")
-            .insert("status".into(), Val::Str("IN_FLIGHT".into()));
+        row_mut(i, "entry", "id", "CBR-027").insert("status".into(), Val::Str("IN_FLIGHT".into()));
     });
     let breach = check_in_flight_staleness(&regressed)
         .expect_err("★★ IN FLIGHT with a landed SHA must be REFUSED");
@@ -2647,7 +2866,9 @@ fn the_in_flight_clause_refuses_an_entry_whose_commit_has_landed() {
         },
         "the refusal must name the entry AND the landed SHAs, not merely that something is wrong"
     );
-    assert!(breach.to_string().starts_with("class 1 — IN-FLIGHT STALENESS:"));
+    assert!(breach
+        .to_string()
+        .starts_with("class 1 — IN-FLIGHT STALENESS:"));
 
     // ★ THE CONTROLLED COMPARISON. Flip that one field back and nothing else, and the clause
     // admits it — which is what shows the refusal is attributable to the STATUS and not to
@@ -2672,7 +2893,10 @@ fn the_in_flight_clause_does_not_fire_on_a_genuinely_unlanded_entry() {
         .expect("CBR-L08 is in the index");
     assert_eq!(l08.get("status").map(Val::as_str), Some("IN_FLIGHT"));
     assert!(
-        l08.get("commits").map(Val::as_list).unwrap_or(&[]).is_empty(),
+        l08.get("commits")
+            .map(Val::as_list)
+            .unwrap_or(&[])
+            .is_empty(),
         "CBR-L08 must name no SHA, or it is no longer this control"
     );
     assert_eq!(check_in_flight_staleness(&f.index), Ok(()));
@@ -2775,11 +2999,18 @@ fn the_citation_corpus_cannot_be_narrowed_by_deleting_a_row() {
     });
     let breach = check_citation_corpus(&regressed, &f.coordinates)
         .expect_err("★ a coordinate in the prose with no pin must be REFUSED");
-    let DriftBreach::CitationCorpusDrift { missing_rows, extra_rows } = &breach else {
+    let DriftBreach::CitationCorpusDrift {
+        missing_rows,
+        extra_rows,
+    } = &breach
+    else {
         panic!("must fail on the corpus clause; got {breach:?}");
     };
     assert_eq!(missing_rows.len(), 1);
-    assert!(extra_rows.is_empty(), "nothing extra was added, so nothing extra may be reported");
+    assert!(
+        extra_rows.is_empty(),
+        "nothing extra was added, so nothing extra may be reported"
+    );
     assert_eq!(check_citation_corpus(&f.index, &f.coordinates), Ok(()));
 }
 
@@ -2818,7 +3049,9 @@ fn the_figure_clause_refuses_a_total_that_is_not_the_projection() {
         },
         "the refusal must name the SITE and both numbers"
     );
-    assert!(breach.to_string().contains("class 3 — PARTIAL-UPDATE DRIFT at §4.1 totals"));
+    assert!(breach
+        .to_string()
+        .contains("class 3 — PARTIAL-UPDATE DRIFT at §4.1 totals"));
 
     assert_eq!(check_stated_figures(&f.register, &f.projection), Ok(()));
 }
@@ -2829,16 +3062,28 @@ fn the_axis_exposure_table_must_be_the_projection() {
     let f = fixture();
     // Perturb the post-state-hash row, which is the cell the recount found under by one.
     let truth = format!("| **{}** |", f.projection.axis_moves[4]);
-    assert!(f.register.contains(&truth), "the §5.1 H row must carry its projected count");
+    assert!(
+        f.register.contains(&truth),
+        "the §5.1 H row must carry its projected count"
+    );
     let regressed = f.register.replacen(&truth, "| **28** |", 1);
     let breach = check_axis_exposure(&regressed, &f.projection)
         .expect_err("★ a §5.1 count that is not the projection must be REFUSED");
-    let DriftBreach::FigureDisagrees { site, stated, projected, .. } = &breach else {
+    let DriftBreach::FigureDisagrees {
+        site,
+        stated,
+        projected,
+        ..
+    } = &breach
+    else {
         panic!("must fail on the §5.1 clause; got {breach:?}");
     };
     assert_eq!(*stated, 28);
     assert_eq!(*projected, f.projection.axis_moves[4] as i64);
-    assert!(site.starts_with("§5.1 row 5"), "the refusal must name the row; got {site}");
+    assert!(
+        site.starts_with("§5.1 row 5"),
+        "the refusal must name the row; got {site}"
+    );
 
     assert_eq!(check_axis_exposure(&f.register, &f.projection), Ok(()));
 }
@@ -2853,7 +3098,12 @@ fn the_direction_profile_must_be_the_projection() {
         rows.iter().any(|(l, _)| l == "Total"),
         "§5.3 must keep its Total row — it is the check that no row was double-counted"
     );
-    let corrective = f.projection.direction.get("CORRECTIVE").copied().unwrap_or(0);
+    let corrective = f
+        .projection
+        .direction
+        .get("CORRECTIVE")
+        .copied()
+        .unwrap_or(0);
     let truth = format!("| CORRECTIVE | **{corrective}** |");
     assert!(f.register.contains(&truth));
     let regressed = f.register.replacen(&truth, "| CORRECTIVE | **23** |", 1);
@@ -2881,14 +3131,11 @@ fn a_malformed_axis_cell_fails_the_identity_not_the_prose() {
     let mut rows = f.rows.clone();
     rows[3].axes[2] = "GARBAGE".to_string();
     let breach = project(&rows).expect_err("★ a cell outside the vocabulary must be REFUSED");
-    assert_eq!(
-        breach,
-        DriftBreach::BadAxisCell {
-            id: rows[3].id.clone(),
-            axis: "axis_bytes_bincode".to_string(),
-            value: "GARBAGE".to_string(),
-        }
-    );
+    assert_eq!(breach, DriftBreach::BadAxisCell {
+        id: rows[3].id.clone(),
+        axis: "axis_bytes_bincode".to_string(),
+        value: "GARBAGE".to_string(),
+    });
 
     // And a dropped row is caught by the split identity rather than by a figure comparison.
     let mut short = f.rows.clone();
@@ -2924,15 +3171,12 @@ fn the_open_question_clause_refuses_a_claim_its_falsifier_no_longer_supports() {
     });
     let breach = check_open_question_freshness(&regressed)
         .expect_err("★★ an OPEN claim whose falsifier fails must be REFUSED");
-    assert_eq!(
-        breach,
-        DriftBreach::OpenQuestionNoLongerOpen {
-            number: 10,
-            path: "casper/src/rust/test_utils/util/genesis_builder.rs".to_string(),
-            line: 174,
-            token: "a_token_that_is_not_there".to_string(),
-        }
-    );
+    assert_eq!(breach, DriftBreach::OpenQuestionNoLongerOpen {
+        number: 10,
+        path: "casper/src/rust/test_utils/util/genesis_builder.rs".to_string(),
+        line: 174,
+        token: "a_token_that_is_not_there".to_string(),
+    });
     assert!(breach.to_string().starts_with("class 4 — open question 10"));
     assert_eq!(check_open_question_freshness(&f.index), Ok(()));
 }
@@ -2955,7 +3199,10 @@ fn the_open_question_clause_refuses_a_closure_that_did_not_happen() {
     let breach = check_open_question_freshness(&regressed)
         .expect_err("★ a CLOSED question whose falsifier still holds must be REFUSED");
     assert!(
-        matches!(breach, DriftBreach::ClosedQuestionStillOpen { number: 9, .. }),
+        matches!(breach, DriftBreach::ClosedQuestionStillOpen {
+            number: 9,
+            ..
+        }),
         "must fire on the closure clause, naming question 9; got {breach:?}"
     );
 }
@@ -2983,10 +3230,16 @@ fn the_undecidable_set_is_asserted_exactly_and_cannot_grow() {
     });
     let breach = check_open_question_freshness(&regressed)
         .expect_err("★★ growing the undecidable set must be REFUSED");
-    let DriftBreach::UndecidableSetDrift { expected, found, .. } = &breach else {
+    let DriftBreach::UndecidableSetDrift {
+        expected, found, ..
+    } = &breach
+    else {
         panic!("must fail on the exactness clause; got {breach:?}");
     };
-    assert_eq!((*expected, *found), (UNDECIDABLE_HERE, UNDECIDABLE_HERE + 1));
+    assert_eq!(
+        (*expected, *found),
+        (UNDECIDABLE_HERE, UNDECIDABLE_HERE + 1)
+    );
     assert!(breach.to_string().contains("honest coverage gap"));
 
     // And an unknown falsifier kind is refused rather than ignored.
@@ -3013,7 +3266,10 @@ fn the_coverage_clause_names_the_sha_it_lost() {
     let f = fixture();
     let dropped = "6bc58743";
     let mut entries = f.entries_n.clone();
-    assert!(entries.remove(dropped), "CBR-001's fix commit must be in the index");
+    assert!(
+        entries.remove(dropped),
+        "CBR-001's fix commit must be in the index"
+    );
     let breach = check_partition_coverage(&f.partition, &entries, &f.exempt_partition)
         .expect_err("★★ an unregistered consensus-path commit must be REFUSED");
     let DriftBreach::Unregistered { window, commits } = &breach else {
@@ -3050,12 +3306,17 @@ fn the_liveness_clause_refuses_a_commit_that_is_not_an_ancestor() {
         &|s| s != phantom && is_ancestor(s, "HEAD"),
     )
     .expect_err("★ a row naming a commit outside HEAD's history must be REFUSED");
-    assert_eq!(breach, DriftBreach::AbandonedRow { commits: vec![phantom.to_string()] });
+    assert_eq!(breach, DriftBreach::AbandonedRow {
+        commits: vec![phantom.to_string()]
+    });
     assert!(breach.to_string().starts_with("stale row:"));
 
     // ★ THE CONTROL that shows §7.2's specified form was wrong: `719f2432` is a real entry
     // SHA, is an ancestor of HEAD, and is NOT in the obligation set — and it must pass.
-    assert!(f.entries_n.contains("719f2432"), "CBR-030's evidence commit is an entry SHA");
+    assert!(
+        f.entries_n.contains("719f2432"),
+        "CBR-030's evidence commit is an entry SHA"
+    );
     assert!(
         !f.partition.contains(&"719f2432".to_string())
             && !f.frontier.contains(&"719f2432".to_string()),
@@ -3063,9 +3324,9 @@ fn the_liveness_clause_refuses_a_commit_that_is_not_an_ancestor() {
          why the clause is ancestry and not `⊆`"
     );
     assert_eq!(
-        check_row_liveness(&f.entries_n, &f.exempt_all, &|s| resolves(s), &|s| is_ancestor(
-            s, "HEAD"
-        )),
+        check_row_liveness(&f.entries_n, &f.exempt_all, &|s| resolves(s), &|s| {
+            is_ancestor(s, "HEAD")
+        }),
         Ok(())
     );
 }
@@ -3078,7 +3339,9 @@ fn the_exactness_clause_refuses_a_double_listed_sha() {
     exempt.insert("6bc58743".to_string());
     let breach = check_partition_coverage(&f.partition, &f.entries_n, &exempt)
         .expect_err("★ a SHA both explained and exempted must be REFUSED");
-    assert_eq!(breach, DriftBreach::DoubleListed { commits: vec!["6bc58743".to_string()] });
+    assert_eq!(breach, DriftBreach::DoubleListed {
+        commits: vec!["6bc58743".to_string()]
+    });
 }
 
 /// ★★ §7.4 cell 3, verbatim: *"Blank one `evidence` field. The gate must fail on the
@@ -3087,11 +3350,14 @@ fn the_exactness_clause_refuses_a_double_listed_sha() {
 fn the_exemption_clause_refuses_a_shrug() {
     let f = fixture();
     let blanked = mutated(&f.index, |i| {
-        row_mut(i, "exempt", "commit", "f0eb7e5f").insert("evidence".into(), Val::Str(String::new()));
+        row_mut(i, "exempt", "commit", "f0eb7e5f")
+            .insert("evidence".into(), Val::Str(String::new()));
     });
     let breach = check_typed_exemptions(&blanked)
         .expect_err("★★ an exemption with no evidence must be REFUSED");
-    assert_eq!(breach, DriftBreach::UndischargedExemption { commit: "f0eb7e5f".to_string() });
+    assert_eq!(breach, DriftBreach::UndischargedExemption {
+        commit: "f0eb7e5f".to_string()
+    });
     assert!(breach.to_string().starts_with("undischarged exemption:"));
 
     // ★ Non-empty is not enough: evidence must name something a reader can go and check.
@@ -3101,7 +3367,9 @@ fn the_exemption_clause_refuses_a_shrug() {
     });
     assert_eq!(
         check_typed_exemptions(&shrug),
-        Err(DriftBreach::UndischargedExemption { commit: "f0eb7e5f".to_string() }),
+        Err(DriftBreach::UndischargedExemption {
+            commit: "f0eb7e5f".to_string()
+        }),
         "★ 'it is fine' satisfies non-emptiness and discharges nothing"
     );
 
@@ -3156,7 +3424,8 @@ fn the_unverified_budget_is_exact_in_both_directions() {
     let counted = f.projection.unverified_cells;
     for stated in [counted as i64 - 1, counted as i64 + 1] {
         let regressed = mutated(&f.index, |i| {
-            i.header.insert("unverified_budget".into(), Val::Int(stated));
+            i.header
+                .insert("unverified_budget".into(), Val::Int(stated));
         });
         assert_eq!(
             check_unverified_budget(&regressed, &f.projection),
@@ -3178,13 +3447,10 @@ fn the_prose_index_clause_refuses_a_row_that_lies_about_its_entry() {
     });
     let breach = check_prose_index_agreement(&dropped, &f.headings, &f.rows)
         .expect_err("★ a heading with no index row must be REFUSED");
-    assert_eq!(
-        breach,
-        DriftBreach::ProseIndexDivergence {
-            prose_only: vec!["CBR-013".to_string()],
-            index_only: Vec::new(),
-        }
-    );
+    assert_eq!(breach, DriftBreach::ProseIndexDivergence {
+        prose_only: vec!["CBR-013".to_string()],
+        index_only: Vec::new(),
+    });
 
     // ★ The strengthening: membership was right and the CONTENT was wrong.
     let lying = mutated(&f.index, |i| {
@@ -3212,7 +3478,10 @@ fn the_prose_index_clause_refuses_a_row_that_lies_about_its_entry() {
         check_prose_index_agreement(&skewed, &f.headings, &f.rows),
         Err(DriftBreach::SummaryRowDisagrees { field: "axis", .. })
     ));
-    assert_eq!(check_prose_index_agreement(&f.index, &f.headings, &f.rows), Ok(()));
+    assert_eq!(
+        check_prose_index_agreement(&f.index, &f.headings, &f.rows),
+        Ok(())
+    );
 }
 
 /// ★★ RED for clause 7b — **the missing GLYPH ROW**, which is the shape CBR-040 shipped in.
@@ -3287,18 +3556,17 @@ fn a_surface_l_row_may_not_name_a_local_commit() {
     });
     let breach = check_foreign_rows(&regressed)
         .expect_err("★ a Surface-L row naming a local SHA must be REFUSED");
-    assert_eq!(
-        breach,
-        DriftBreach::ForeignShaResolvesLocally {
-            offenders: vec![("CBR-L10".to_string(), "6bc58743".to_string())],
-        }
-    );
+    assert_eq!(breach, DriftBreach::ForeignShaResolvesLocally {
+        offenders: vec![("CBR-L10".to_string(), "6bc58743".to_string())],
+    });
     let no_gate = mutated(&f.index, |i| {
         row_mut(i, "entry", "id", "CBR-L10").remove("source_gate");
     });
     assert_eq!(
         check_foreign_rows(&no_gate),
-        Err(DriftBreach::ForeignRowWithoutSourceGate { ids: vec!["CBR-L10".to_string()] }),
+        Err(DriftBreach::ForeignRowWithoutSourceGate {
+            ids: vec!["CBR-L10".to_string()]
+        }),
         "a row this gate cannot check must at least NAME what does, or say NOT_NAMED"
     );
     assert_eq!(check_foreign_rows(&f.index), Ok(()));
@@ -3377,7 +3645,10 @@ fn the_frontier_fuse_admits_a_fresh_commit_and_refuses_a_stale_one() {
     // The live frontier's incidental registration state cannot reach the cells below, so a
     // concurrent agent's fresh commit can no longer redden this guard.
     let mut exempt = f.exempt_all.clone();
-    assert!(exempt.remove(EXEMPLAR), "the sorter conversion must be exempted");
+    assert!(
+        exempt.remove(EXEMPLAR),
+        "the sorter conversion must be exempted"
+    );
     let frontier: Vec<String> = f
         .frontier
         .iter()
@@ -3403,10 +3674,19 @@ fn the_frontier_fuse_admits_a_fresh_commit_and_refuses_a_stale_one() {
     let born = commit_time(EXEMPLAR);
 
     // ── REFUSE: one day PAST the configured fuse. ──
-    let breach =
-        check_frontier_fuse(&frontier, &f.entries_n, &exempt, born + (grace + 1) * DAY, grace)
-            .expect_err("★ an unregistered frontier commit past its fuse must be REFUSED");
-    let DriftBreach::FrontierFuseBlown { commits, grace_days } = &breach else {
+    let breach = check_frontier_fuse(
+        &frontier,
+        &f.entries_n,
+        &exempt,
+        born + (grace + 1) * DAY,
+        grace,
+    )
+    .expect_err("★ an unregistered frontier commit past its fuse must be REFUSED");
+    let DriftBreach::FrontierFuseBlown {
+        commits,
+        grace_days,
+    } = &breach
+    else {
         panic!("must fail on the frontier clause; got {breach:?}");
     };
     assert_eq!(*grace_days, grace);
@@ -3442,7 +3722,10 @@ fn the_index_parser_refuses_everything_outside_its_grammar() {
         ("[[entry]]\n  id = \"CBR-001\"\n", "indented"),
         ("[[entry]]\nid=\"CBR-001\"\n", "not `key = value`"),
         ("[[entry]]\nid = \"a\"\nid = \"b\"\n", "duplicate key"),
-        ("[[entry]]\naxes = { value = \"MOVES\" }\n", "not a quoted string"),
+        (
+            "[[entry]]\naxes = { value = \"MOVES\" }\n",
+            "not a quoted string",
+        ),
     ];
     for (text, expected_why) in cases {
         let breach = parse_index(text).expect_err("★ the parser must REFUSE, never skip");
@@ -3530,11 +3813,26 @@ fn the_derived_path_set_recovers_what_the_hand_list_lost() {
 fn the_gate_states_the_classes_it_cannot_cover() {
     let register = read_register();
     for (what, needle) in [
-        ("the task-tracker limit", "in this repository reads the task tracker"),
-        ("the cross-repository limit", "A test in f1r3node cannot read"),
-        ("class 5 — a justification wrong when written", "wrong when written"),
-        ("the genesis-instability constraint", "no artefact of the genesis build"),
-        ("the gate's built status", "casper/tests/consensus_change_register_gate.rs"),
+        (
+            "the task-tracker limit",
+            "in this repository reads the task tracker",
+        ),
+        (
+            "the cross-repository limit",
+            "A test in f1r3node cannot read",
+        ),
+        (
+            "class 5 — a justification wrong when written",
+            "wrong when written",
+        ),
+        (
+            "the genesis-instability constraint",
+            "no artefact of the genesis build",
+        ),
+        (
+            "the gate's built status",
+            "casper/tests/consensus_change_register_gate.rs",
+        ),
     ] {
         assert!(
             register.contains(needle),

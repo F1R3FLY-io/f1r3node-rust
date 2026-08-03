@@ -119,7 +119,6 @@ pub(crate) fn combine_p_new<'ast>(
     })))
 }
 
-
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
@@ -399,8 +398,8 @@ mod tests {
                 .clone()
                 .unwrap()
                 .sends
-                .into_iter()
-                .map(|x| x.locally_free)
+                .iter()
+                .map(|x| x.locally_free.clone())
                 .collect::<Vec<Vec<u8>>>(),
             vec![
                 create_bit_vector(&vec![2]),

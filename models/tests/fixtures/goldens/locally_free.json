@@ -1,105 +1,70 @@
 {
   "ps": [
-    [
-      8,
-      0,
-      0,
-      0,
-      4,
-      5,
-      112,
-      108,
-      97,
-      105,
-      110,
-      0,
-      11,
-      0,
-      0,
-      0,
-      15,
-      9,
-      42,
-      7,
-      154,
-      1,
-      4,
-      10,
-      2,
-      8,
-      2
-    ],
-    [
-      {
-        "sends": [],
-        "receives": [],
-        "news": [],
-        "exprs": [
-          {
-            "expr_instance": {
-              "EListBody": {
-                "ps": [
-                  {
-                    "sends": [],
-                    "receives": [],
-                    "news": [],
-                    "exprs": [
-                      {
-                        "expr_instance": {
-                          "GString": "plain"
-                        }
-                      }
-                    ],
-                    "matches": [],
-                    "unforgeables": [],
-                    "bundles": [],
-                    "connectives": [],
-                    "conditionals": [],
-                    "locally_free": [],
-                    "connective_used": false
-                  }
-                ],
-                "locally_free": [],
-                "connective_used": false,
-                "remainder": null
-              }
-            }
-          }
-        ],
-        "matches": [],
-        "unforgeables": [],
-        "bundles": [],
-        "connectives": [],
-        "conditionals": [],
-        "locally_free": [],
-        "connective_used": false
-      },
-      {
-        "sends": [],
-        "receives": [],
-        "news": [],
-        "exprs": [
-          {
-            "expr_instance": {
-              "EVarBody": {
-                "v": {
-                  "var_instance": {
-                    "BoundVar": 1
-                  }
-                }
-              }
-            }
-          }
-        ],
-        "matches": [],
-        "unforgeables": [],
-        "bundles": [],
-        "connectives": [],
-        "conditionals": [],
-        "locally_free": [],
-        "connective_used": false
-      }
-    ]
+    69,
+    80,
+    77,
+    49,
+    1,
+    1,
+    57,
+    65,
+    67,
+    84,
+    114,
+    101,
+    101,
+    48,
+    51,
+    45,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    7,
+    5,
+    112,
+    108,
+    97,
+    105,
+    110,
+    0,
+    14,
+    13,
+    42,
+    7,
+    154,
+    1,
+    4,
+    10,
+    2,
+    8,
+    2,
+    74,
+    2,
+    0,
+    1,
+    192,
+    0,
+    23,
+    192,
+    0,
+    18,
+    2,
+    6,
+    4,
+    15,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
   ],
   "locally_free": [],
   "connective_used": false,

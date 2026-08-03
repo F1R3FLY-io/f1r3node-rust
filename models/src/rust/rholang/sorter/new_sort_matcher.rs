@@ -10,7 +10,5 @@ use crate::rhoapi::New;
 pub struct NewSortMatcher;
 
 impl Sortable<New> for NewSortMatcher {
-    fn sort_match(n: &New) -> ScoredTerm<New> {
-        sort_new(n)
-    }
+    fn sort_match(n: &New) -> ScoredTerm<New> { sort_new(n) }
 }

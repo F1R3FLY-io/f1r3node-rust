@@ -1,48 +1,21 @@
-//! # Is the escape arm's decode ceiling REACHABLE from ordinary Rholang?
+//! # The escape arm is stack-safe and reachable from ordinary Rholang
 //!
-//! `decode_trie_path` is total in the trie grammar — `COLLECTION_DEPTH_LIMIT`
-//! and `SCANNER_STACK_CEILING` are retired (`models/src/rust/canonical_path.rs`,
-//! module notes) — with exactly one residual partiality: the `0x0F` **escape
-//! arm**, which stores a ¬`eval_stable` entry as its canonical prost bytes and
-//! reads them back with `Par::decode`. prost caps decode recursion at 100
-//! message levels and caps encode at nothing, so past some term depth an entry
-//! encodes to a key that will not decode.
+//! `decode_trie_path` is total in the trie grammar: `COLLECTION_DEPTH_LIMIT`,
+//! `SCANNER_STACK_CEILING`, and the former Prost `DecodeContext` ceiling are
+//! retired. The `0x0F` **escape arm** stores a ¬`eval_stable` entry as its
+//! canonical protobuf bytes and reads it with the generated heap-stack decoder.
 //!
-//! That boundary is about to matter in a way it did not before. Moving every
-//! serialization surface onto the trie's own byte array `U(m)` makes
-//! `decode_trie_path` the **reader** on surfaces that previously carried entries
-//! as nested `Par`s. This file measures which of those moves is permissive and
-//! which is restrictive, and — the question the register entry turns on —
-//! whether the restrictive class is reachable from a Rholang deploy at all.
-//!
-//! ## ★ The two directions are NOT symmetric, and that is the whole finding
-//!
-//! ```text
-//!   PROST    tag 1 → tag 8    PERMISSIVE   an entry that arrives via tag 1 sits
-//!                                          W ≥ 3 levels below the decode root, so
-//!                                          the outer decode already proved
-//!                                          W + L(e) ≤ 100. The escape arm
-//!                                          re-decodes it with a FRESH budget of
-//!                                          100 and spends L(e) ≤ 97.
-//!                                          ⇒ strictly more headroom, and the
-//!                                            headroom GROWS with nesting depth,
-//!                                            because a `bytes` field costs prost
-//!                                            zero message levels.
-//!
-//!   BINCODE  Vec<Par> → U(m)  RESTRICTIVE  the cold store is iterative and
-//!                                          depth-unlimited in BOTH directions
-//!                                          today. Reading keys instead of terms
-//!                                          puts prost's decoder back in the path
-//!                                          for ¬eval_stable entries.
-//! ```
+//! This matters because moving serialization onto the trie's byte-array form
+//! makes `decode_trie_path` the reader. A `PathMap<()>` set can therefore recover
+//! entries from keys without retaining a redundant mirrored `Par`, while a
+//! `PathMap<Par>` map can reserve its value slot for the associated value.
 //!
 //! ## ★★ Anti-vacuity
 //!
-//! Every ceiling here is **searched**, never transcribed. A test that asserts a
-//! constant someone typed measures the typist. [`escape_arm_ceiling`] walks the
-//! depth axis until the codec actually refuses and returns the last accepting
-//! depth, so if the ceiling moves, this file reports the new one instead of
-//! going quietly green against a stale number.
+//! The tests walk every depth through a declared ladder and assert the escape
+//! tag before decoding. The same deep subject also crosses the public
+//! stack-safe `Message` surface, without turning a depth sample into a new
+//! artificial maximum.
 //!
 //! The Rholang fixture carries the matching control: it asserts the entry it
 //! built is genuinely ¬`eval_stable` (i.e. really does take the escape arm)
@@ -60,7 +33,7 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn expr_carrier(instance: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -68,9 +41,7 @@ fn expr_carrier(instance: ExprInstance) -> Par {
     }
 }
 
-fn gint(value: i64) -> Par {
-    expr_carrier(ExprInstance::GInt(value))
-}
+fn gint(value: i64) -> Par { expr_carrier(ExprInstance::GInt(value)) }
 
 fn glist(ps: Vec<Par>) -> Par {
     expr_carrier(ExprInstance::EListBody(EList {
@@ -98,11 +69,9 @@ fn escaped_nest(depth: usize) -> Par {
     }))
 }
 
-/// The greatest `depth` for which `decode_trie_path ∘ encode_trie_path` is the
-/// identity on [`escaped_nest`] — **searched**, so a moved ceiling is reported
-/// rather than silently passed.
-fn escape_arm_ceiling(limit: usize) -> usize {
-    let mut last_accepting = 0;
+/// Prove `decode_trie_path ∘ encode_trie_path = id` throughout a depth ladder.
+/// `limit` is a test sample, not a runtime bound.
+fn assert_escape_arm_roundtrips_through(limit: usize) {
     for depth in 0..=limit {
         let par = escaped_nest(depth);
         let key = encode_trie_path(&par);
@@ -111,140 +80,72 @@ fn escape_arm_ceiling(limit: usize) -> usize {
             Some(&tag::ESCAPE),
             "control: depth {depth} must take the ESCAPE arm, or this measures the split arm"
         );
-        match decode_trie_path(&key) {
-            Ok(round_tripped) if round_tripped == par => last_accepting = depth,
-            _ => return last_accepting,
-        }
+        let round_tripped = decode_trie_path(&key).unwrap_or_else(|error| {
+            panic!("generated escape decode failed at depth {depth}: {error:?}")
+        });
+        assert_eq!(
+            round_tripped, par,
+            "escape round-trip differs at depth {depth}"
+        );
     }
-    panic!(
-        "no refusal up to depth {limit}: the escape arm looks unbounded, which \
-         contradicts prost's RECURSION_LIMIT — widen the search or re-derive the claim"
-    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. The codec boundary, searched
+// 1. The former codec boundary is gone
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn the_escape_arm_ceiling_is_searched_not_transcribed() {
-    let ceiling = escape_arm_ceiling(400);
+fn the_generated_escape_reader_has_no_recursive_depth_ceiling() {
+    const TEST_DEPTH: usize = 400;
+    assert_escape_arm_roundtrips_through(TEST_DEPTH);
 
-    // The negative control: one level past the ceiling must actually refuse,
-    // and it must refuse for prost's reason rather than a grammar rejection.
-    let past = escaped_nest(ceiling + 1);
-    let past_key = encode_trie_path(&past);
-    assert!(
-        !past_key.is_empty(),
-        "encode_trie_path is TOTAL — it produces a key even past the read ceiling"
-    );
-    assert!(
-        decode_trie_path(&past_key).is_err(),
-        "depth {} must refuse — it is one past the searched ceiling {ceiling}",
-        ceiling + 1
-    );
-
-    // The positive control: the ceiling itself round-trips.
-    let at = escaped_nest(ceiling);
-    assert_eq!(
-        decode_trie_path(&encode_trie_path(&at)).expect("the ceiling depth round-trips"),
-        at,
-        "the searched ceiling must be ACCEPTING, or the search is off by one"
-    );
-
-    println!("MEASURED escape-arm ceiling: last accepting depth = {ceiling}");
+    use prost::Message;
+    let control = escaped_nest(TEST_DEPTH);
+    let control_bytes = control.encode_to_vec();
+    let decoded = Par::decode(control_bytes.as_slice())
+        .expect("the public Message surface also uses the generated stack-safe machine");
+    assert_eq!(decoded, control);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. The domain theorem, executable
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// ★ The prost move is PERMISSIVE, and this is the proof rather than the claim.
-///
-/// An entry that reaches an `EPathMap` through prost arrives via `ps` (tag 1),
-/// which sits `W ≥ 3` levels below the decode root (`Par.exprs→Expr`,
-/// `Expr.e_pathmap_body→EPathMap`, `EPathMap.ps→Par`). If that outer decode
-/// succeeded then `W + L(e) ≤ 100`, so `L(e) ≤ 97`. The escape arm re-decodes
-/// the same entry from its own bytes with a **fresh** budget of 100.
-///
-/// ⇒ every entry tag 1 can deliver, the escape arm can read — with headroom.
-/// The observable consequence is the asymmetry asserted here: the depth at
-/// which a bare entry stops decoding *standalone* is strictly greater than the
-/// depth at which the same entry stops arriving *inside a map*.
-/// ★★ **NESTING NOW COSTS NOTHING, and that is the stronger claim.**
-///
-/// ⚠ This test was `the_escape_arm_reads_deeper_than_tag_one_can_deliver`, and it
-/// asserted `ingress_ceiling < standalone_ceiling` — that an entry nested inside a
-/// map died *sooner* than the same entry standalone, because the tag-1 `repeated
-/// Par` walk spent `W ≥ 3` levels of the outer decode's budget before reaching it.
-/// Measured 31 vs 32: **one** level of headroom, and that inequality is what
-/// justified CBR-041's acceptance axis.
-///
-/// **CBR-041 (`1b576c90`) then deleted the tag-1 arm**, so the quantity the old
-/// assertion compared against no longer exists. The search loop ran to its own
-/// bound and asserted `32 < 32`. ⛔ **That commit cited this file by name and did
-/// not update it — the test was left RED in committed state.** Repaired here.
-///
-/// # What replaces it, and why it is stronger
-///
-/// Every map now emits `U(m)` at proto field 8, a `bytes` field — and a `bytes`
-/// field costs prost **zero message levels**. So an entry nested inside a map is
-/// re-decoded from its own key with a *fresh* `DecodeContext`, spending nothing on
-/// the envelope that carried it.
-///
-/// ⇒ the ingress ceiling does not merely *exceed* the old one; it **equals the
-/// standalone ceiling exactly**. Nesting is free. That is a sharper property than
-/// the old inequality — it says the map envelope has no depth cost at all, rather
-/// than merely a smaller one — and it is what makes the headroom grow with nesting
-/// depth instead of shrinking.
-///
-/// The old inequality cannot be re-measured: its second term was deleted. It stands
-/// as the historical justification for CBR-041 and is recorded there.
+/// A field-9 EPM1 envelope adds no recursive decoder depth. Every sampled entry
+/// round-trips both standalone and inside `EPathMap`; the payload is PathMap's
+/// compact trie region and the generated decoder owns the nested traversal.
 #[test]
 fn a_map_envelope_costs_the_reader_no_depth_at_all() {
     use models::rhoapi::EPathMap;
     use prost::Message;
 
-    let standalone_ceiling = escape_arm_ceiling(400);
-
-    // The greatest depth at which an entry survives while nested inside a map —
-    // searched the same way, so a moved ceiling is REPORTED, not silently passed.
-    let mut ingress_ceiling = 0;
-    for depth in 0..=standalone_ceiling {
-        let map = EPathMap::new(vec![escaped_nest(depth)], Vec::new(), false, None);
+    const TEST_DEPTH: usize = 400;
+    for depth in 0..=TEST_DEPTH {
+        let entry = escaped_nest(depth);
+        let map = EPathMap::new(vec![entry.clone()], Vec::new(), false, None);
         let bytes = <EPathMap as Message>::encode_to_vec(&map);
-        match <EPathMap as Message>::decode(bytes.as_slice()) {
-            Ok(_) => ingress_ceiling = depth,
-            Err(_) => break,
-        }
+        let decoded = <EPathMap as Message>::decode(bytes.as_slice())
+            .unwrap_or_else(|error| panic!("map decode failed at depth {depth}: {error:?}"));
+        assert_eq!(decoded.len(), 1);
+        assert!(decoded
+            .entry_trie()
+            .set_trie()
+            .get(encode_trie_path(&entry))
+            .is_some());
     }
 
-    // ANTI-VACUITY: the fixture must actually be taking the field-8 arm. Field 8
-    // length-delimited is 0x42; the retired list arm was tag 1 (0x0a).
+    // ANTI-VACUITY: the fixture must take field 9 EPM1. Length-delimited field
+    // 9 is 0x4a; the retired list arm was tag 1 (0x0a).
     let probe = EPathMap::new(vec![escaped_nest(1)], Vec::new(), false, None);
     let probe_bytes = <EPathMap as Message>::encode_to_vec(&probe);
     assert_eq!(
         probe_bytes.first(),
-        Some(&0x42u8),
-        "control: the map must emit U(m) at field 8 — if a list arm ever returns, \
+        Some(&0x4au8),
+        "control: the map must emit EPM1 at field 9 — if a list arm ever returns, \
          this measurement is about a different envelope and proves nothing"
     );
 
-    assert_eq!(
-        ingress_ceiling, standalone_ceiling,
-        "★ THE MAP ENVELOPE HAS ACQUIRED A DEPTH COST. Field 8 is a `bytes` field, \
-         which costs prost ZERO message levels, and the escape arm re-decodes each \
-         key with a FRESH DecodeContext — so an entry inside a map must survive to \
-         exactly the depth it survives to standalone. Measured ingress = \
-         {ingress_ceiling}, standalone = {standalone_ceiling}. A gap here means the \
-         envelope is spending budget again, and CBR-041's acceptance axis would need \
-         re-deriving."
-    );
-
-    println!(
-        "MEASURED prost: map-nested ceiling = {ingress_ceiling}, standalone ceiling = \
-         {standalone_ceiling} — the envelope costs 0 levels"
-    );
+    assert_escape_arm_roundtrips_through(TEST_DEPTH);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,37 +168,23 @@ fn deep_pathmap_source(depth: usize) -> String {
     source
 }
 
-/// ★ The question the register entry turns on: can a **deploy** carry an entry
-/// past the escape arm's read ceiling?
-///
-/// If it can, the bincode move is restrictive on a class that real Rholang
-/// reaches, and the entry must say so and name Phase 4 S2 as the closure. If it
-/// cannot, the restriction is unreachable through the compiler and the entry
-/// says that instead. Either way the answer is MEASURED here rather than
-/// assumed, and it is reported on stdout so the number lands in the report.
+/// Ordinary Rholang reaches deeply escaped keys and the generated reader accepts
+/// them. This guards the end-to-end route used by PathMap set projections.
 #[test]
-fn ordinary_rholang_reaches_past_the_escape_arm_ceiling() {
-    let ceiling = escape_arm_ceiling(400);
-    let probe_depth = ceiling + 8;
+fn ordinary_rholang_reaches_the_stack_safe_escape_reader() {
+    let probe_depth = 96;
 
     let source = deep_pathmap_source(probe_depth);
     let normalized = Compiler::source_to_adt(&source);
 
-    let Ok(par) = normalized else {
-        println!(
-            "MEASURED reachability: the COMPILER refused depth {probe_depth} \
-             (ceiling {ceiling}) — the restrictive class is not reachable through \
-             this surface syntax at this depth"
-        );
-        return;
-    };
+    let par = normalized.expect("the compiler accepts the deep pathmap fixture");
 
     // Dig out the map's single entry.
     let entry = par
         .exprs
         .iter()
         .find_map(|expr| match expr.expr_instance.as_ref() {
-            Some(ExprInstance::EPathmapBody(map)) => map.ps().first().cloned(),
+            Some(ExprInstance::EPathmapBody(map)) => map.entry_trie().find_entry(|_| true),
             _ => None,
         })
         .expect("the fixture must normalize to an EPathMap with one entry");
@@ -315,18 +202,8 @@ fn ordinary_rholang_reaches_past_the_escape_arm_ceiling() {
         "control: the compiled entry must take the ESCAPE arm"
     );
 
-    let decodes = decode_trie_path(&key).is_ok();
-    println!(
-        "MEASURED reachability: ordinary Rholang compiled a ¬eval_stable pathmap \
-         entry at probe depth {probe_depth} (escape-arm ceiling {ceiling}); its \
-         trie key decodes = {decodes}"
-    );
-
-    assert!(
-        !decodes,
-        "★ the probe was built {} levels past the measured ceiling {ceiling} and \
-         still decoded — the ceiling search and this fixture disagree about depth, \
-         so one of them is not measuring term nesting",
-        probe_depth - ceiling
+    assert_eq!(
+        decode_trie_path(&key).expect("the generated reader accepts the compiled key"),
+        entry
     );
 }

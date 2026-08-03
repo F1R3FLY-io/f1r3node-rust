@@ -12,7 +12,5 @@ use crate::rhoapi::Var;
 pub struct VarSortMatcher;
 
 impl Sortable<Var> for VarSortMatcher {
-    fn sort_match(v: &Var) -> ScoredTerm<Var> {
-        sort_var(v)
-    }
+    fn sort_match(v: &Var) -> ScoredTerm<Var> { sort_var(v) }
 }

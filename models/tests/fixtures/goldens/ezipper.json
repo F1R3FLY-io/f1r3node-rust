@@ -1,210 +1,66 @@
 {
   "pathmap": {
     "ps": [
-      [
-        7,
-        0,
-        0,
-        0,
-        4,
-        1,
-        97,
-        4,
-        1,
-        120,
-        0,
-        7,
-        0,
-        0,
-        0,
-        4,
-        1,
-        97,
-        4,
-        1,
-        121,
-        0,
-        4,
-        0,
-        0,
-        0,
-        4,
-        1,
-        98,
-        0
-      ],
-      [
-        {
-          "sends": [],
-          "receives": [],
-          "news": [],
-          "exprs": [
-            {
-              "expr_instance": {
-                "EListBody": {
-                  "ps": [
-                    {
-                      "sends": [],
-                      "receives": [],
-                      "news": [],
-                      "exprs": [
-                        {
-                          "expr_instance": {
-                            "GString": "a"
-                          }
-                        }
-                      ],
-                      "matches": [],
-                      "unforgeables": [],
-                      "bundles": [],
-                      "connectives": [],
-                      "conditionals": [],
-                      "locally_free": [],
-                      "connective_used": false
-                    },
-                    {
-                      "sends": [],
-                      "receives": [],
-                      "news": [],
-                      "exprs": [
-                        {
-                          "expr_instance": {
-                            "GString": "x"
-                          }
-                        }
-                      ],
-                      "matches": [],
-                      "unforgeables": [],
-                      "bundles": [],
-                      "connectives": [],
-                      "conditionals": [],
-                      "locally_free": [],
-                      "connective_used": false
-                    }
-                  ],
-                  "locally_free": [],
-                  "connective_used": false,
-                  "remainder": null
-                }
-              }
-            }
-          ],
-          "matches": [],
-          "unforgeables": [],
-          "bundles": [],
-          "connectives": [],
-          "conditionals": [],
-          "locally_free": [],
-          "connective_used": false
-        },
-        {
-          "sends": [],
-          "receives": [],
-          "news": [],
-          "exprs": [
-            {
-              "expr_instance": {
-                "EListBody": {
-                  "ps": [
-                    {
-                      "sends": [],
-                      "receives": [],
-                      "news": [],
-                      "exprs": [
-                        {
-                          "expr_instance": {
-                            "GString": "a"
-                          }
-                        }
-                      ],
-                      "matches": [],
-                      "unforgeables": [],
-                      "bundles": [],
-                      "connectives": [],
-                      "conditionals": [],
-                      "locally_free": [],
-                      "connective_used": false
-                    },
-                    {
-                      "sends": [],
-                      "receives": [],
-                      "news": [],
-                      "exprs": [
-                        {
-                          "expr_instance": {
-                            "GString": "y"
-                          }
-                        }
-                      ],
-                      "matches": [],
-                      "unforgeables": [],
-                      "bundles": [],
-                      "connectives": [],
-                      "conditionals": [],
-                      "locally_free": [],
-                      "connective_used": false
-                    }
-                  ],
-                  "locally_free": [],
-                  "connective_used": false,
-                  "remainder": null
-                }
-              }
-            }
-          ],
-          "matches": [],
-          "unforgeables": [],
-          "bundles": [],
-          "connectives": [],
-          "conditionals": [],
-          "locally_free": [],
-          "connective_used": false
-        },
-        {
-          "sends": [],
-          "receives": [],
-          "news": [],
-          "exprs": [
-            {
-              "expr_instance": {
-                "EListBody": {
-                  "ps": [
-                    {
-                      "sends": [],
-                      "receives": [],
-                      "news": [],
-                      "exprs": [
-                        {
-                          "expr_instance": {
-                            "GString": "b"
-                          }
-                        }
-                      ],
-                      "matches": [],
-                      "unforgeables": [],
-                      "bundles": [],
-                      "connectives": [],
-                      "conditionals": [],
-                      "locally_free": [],
-                      "connective_used": false
-                    }
-                  ],
-                  "locally_free": [],
-                  "connective_used": false,
-                  "remainder": null
-                }
-              }
-            }
-          ],
-          "matches": [],
-          "unforgeables": [],
-          "bundles": [],
-          "connectives": [],
-          "conditionals": [],
-          "locally_free": [],
-          "connective_used": false
-        }
-      ]
+      69,
+      80,
+      77,
+      49,
+      1,
+      1,
+      52,
+      65,
+      67,
+      84,
+      114,
+      101,
+      101,
+      48,
+      51,
+      41,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      192,
+      0,
+      2,
+      192,
+      0,
+      5,
+      2,
+      4,
+      1,
+      2,
+      9,
+      120,
+      121,
+      129,
+      4,
+      7,
+      192,
+      0,
+      18,
+      2,
+      6,
+      97,
+      98,
+      129,
+      4,
+      17,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
     ],
     "locally_free": [],
     "connective_used": false,

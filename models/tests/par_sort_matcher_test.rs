@@ -261,7 +261,7 @@ fn par_should_keep_order_when_adding_numbers() {
 
 #[test]
 fn par_should_sort_according_to_pemdas() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eminus_expr_gint(4, 3, Vec::new(), false),
             new_ediv_expr_gint(1, 5, Vec::new(), false),
@@ -271,7 +271,7 @@ fn par_should_sort_according_to_pemdas() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_emult_expr_gint(6, 3, Vec::new(), false),
             new_ediv_expr_gint(1, 5, Vec::new(), false),
@@ -291,7 +291,7 @@ fn par_should_sort_according_to_pemdas() {
 
 #[test]
 fn par_should_sort_comparisons_in_order_of_lt_lte_gt_gte_eq_neq() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eeq_expr_gint(4, 3, Vec::new(), false),
             new_eneq_expr_gint(1, 5, Vec::new(), false),
@@ -303,7 +303,7 @@ fn par_should_sort_comparisons_in_order_of_lt_lte_gt_gte_eq_neq() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_elt_expr_gint(1, 5, Vec::new(), false),
             new_elte_expr_gint(1, 5, Vec::new(), false),
@@ -325,7 +325,7 @@ fn par_should_sort_comparisons_in_order_of_lt_lte_gt_gte_eq_neq() {
 
 #[test]
 fn par_should_sort_methods_after_other_expressions() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eor_expr(
                 new_boundvar_par(0, Vec::new(), false),
@@ -345,7 +345,7 @@ fn par_should_sort_methods_after_other_expressions() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_eor_expr(
                 new_boundvar_par(0, Vec::new(), false),
@@ -375,7 +375,7 @@ fn par_should_sort_methods_after_other_expressions() {
 
 #[test]
 fn par_should_sort_methods_based_on_method_name_target_and_arguments() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_emethod_expr(
                 "nth".to_string(),
@@ -408,7 +408,7 @@ fn par_should_sort_methods_based_on_method_name_target_and_arguments() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_emethod_expr(
                 "mth".to_string(),
@@ -451,7 +451,7 @@ fn par_should_sort_methods_based_on_method_name_target_and_arguments() {
 
 #[test]
 fn par_should_sort_sends_based_on_persistence_channel_and_data() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         sends: vec![
             Send {
                 chan: Some(new_gint_par(5, Vec::new(), false)),
@@ -485,7 +485,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         sends: vec![
             Send {
                 chan: Some(new_gint_par(4, Vec::new(), false)),
@@ -529,7 +529,7 @@ fn par_should_sort_sends_based_on_persistence_channel_and_data() {
 
 #[test]
 fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         receives: vec![
             Receive {
                 binds: vec![ReceiveBind {
@@ -625,7 +625,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         receives: vec![
             Receive {
                 binds: vec![ReceiveBind {
@@ -731,7 +731,7 @@ fn par_should_sort_receives_based_on_persistence_peek_channels_patterns_and_body
 
 #[test]
 fn par_should_sort_matches_based_on_value_and_cases() {
-    let par_match = Par {
+    let par_match = models::par_from_default! {
         matches: vec![
             Match {
                 target: Some(new_gint_par(5, Vec::new(), false)),
@@ -794,7 +794,7 @@ fn par_should_sort_matches_based_on_value_and_cases() {
         ..Default::default()
     };
 
-    let sorted_par_match = Par {
+    let sorted_par_match = models::par_from_default! {
         matches: vec![
             Match {
                 target: Some(new_gbool_par(true, Vec::new(), false)),
@@ -867,7 +867,7 @@ fn par_should_sort_matches_based_on_value_and_cases() {
 
 #[test]
 fn par_should_sort_news_based_on_bindcount_uris_and_body() {
-    let par_new = Par {
+    let par_new = models::par_from_default! {
         news: vec![
             New {
                 bind_count: 2,
@@ -908,7 +908,7 @@ fn par_should_sort_news_based_on_bindcount_uris_and_body() {
         ..Default::default()
     };
 
-    let sorted_par_new = Par {
+    let sorted_par_new = models::par_from_default! {
         news: vec![
             New {
                 bind_count: 1,
@@ -959,7 +959,7 @@ fn par_should_sort_news_based_on_bindcount_uris_and_body() {
 
 #[test]
 fn par_should_sort_uris_in_news() {
-    let par_new = Par {
+    let par_new = models::par_from_default! {
         news: vec![New {
             bind_count: 1,
             p: Some(Par::default()),
@@ -970,7 +970,7 @@ fn par_should_sort_uris_in_news() {
         ..Default::default()
     };
 
-    let sorted_par_new = Par {
+    let sorted_par_new = models::par_from_default! {
         news: vec![New {
             bind_count: 1,
             p: Some(Par::default()),
@@ -991,7 +991,7 @@ fn par_should_sort_uris_in_news() {
 
 #[test]
 fn par_should_sort_evars_based_on_type_and_levels() {
-    let par_ground = Par {
+    let par_ground = models::par_from_default! {
         exprs: vec![
             new_freevar_expr(2),
             new_freevar_expr(1),
@@ -1001,7 +1001,7 @@ fn par_should_sort_evars_based_on_type_and_levels() {
         ..Default::default()
     };
 
-    let sorted_par_ground = Par {
+    let sorted_par_ground = models::par_from_default! {
         exprs: vec![
             new_boundvar_expr(1),
             new_boundvar_expr(2),
@@ -1021,7 +1021,7 @@ fn par_should_sort_evars_based_on_type_and_levels() {
 
 #[test]
 fn par_should_sort_exprs_in_order_of_ground_vars_arithmetic_comparisons_logical() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eeq_expr_gint(4, 3, Vec::new(), false),
             new_ediv_expr_gint(1, 5, Vec::new(), false),
@@ -1035,7 +1035,7 @@ fn par_should_sort_exprs_in_order_of_ground_vars_arithmetic_comparisons_logical(
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_gint_expr(1),
             new_boundvar_expr(1),
@@ -1059,7 +1059,7 @@ fn par_should_sort_exprs_in_order_of_ground_vars_arithmetic_comparisons_logical(
 
 #[test]
 fn par_should_sort_expressions_inside_bundle() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eeq_expr_gint(4, 3, Vec::new(), false),
             new_ediv_expr_gint(1, 5, Vec::new(), false),
@@ -1073,7 +1073,7 @@ fn par_should_sort_expressions_inside_bundle() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_gint_expr(1),
             new_boundvar_expr(1),
@@ -1100,7 +1100,7 @@ fn par_should_sort_expressions_inside_bundle() {
 
 #[test]
 fn par_should_sort_expressions_in_nested_bundles_preserving_polarities() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         exprs: vec![
             new_eeq_expr_gint(4, 3, Vec::new(), false),
             new_ediv_expr_gint(1, 5, Vec::new(), false),
@@ -1114,7 +1114,7 @@ fn par_should_sort_expressions_in_nested_bundles_preserving_polarities() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         exprs: vec![
             new_gint_expr(1),
             new_boundvar_expr(1),
@@ -1154,7 +1154,7 @@ fn par_should_sort_expressions_in_nested_bundles_preserving_polarities() {
 
 #[test]
 fn par_should_sort_logical_connectives_in_not_and_or_order() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         connectives: vec![
             Connective {
                 connective_instance: Some(ConnAndBody(ConnectiveBody {
@@ -1204,7 +1204,7 @@ fn par_should_sort_logical_connectives_in_not_and_or_order() {
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         connectives: vec![
             Connective {
                 connective_instance: Some(ConnNotBody(Par::default())),
@@ -1264,7 +1264,7 @@ fn par_should_sort_logical_connectives_in_not_and_or_order() {
 
 #[test]
 fn par_should_sort_logical_connectives_in_varref_bool_int_string_uri_bytearray_order() {
-    let par_expr = Par {
+    let par_expr = models::par_from_default! {
         connectives: vec![
             Connective {
                 connective_instance: Some(ConnByteArray(true)),
@@ -1289,7 +1289,7 @@ fn par_should_sort_logical_connectives_in_varref_bool_int_string_uri_bytearray_o
         ..Default::default()
     };
 
-    let sorted_par_expr = Par {
+    let sorted_par_expr = models::par_from_default! {
         connectives: vec![
             Connective {
                 connective_instance: Some(VarRefBody(VarRef::default())),
@@ -1328,20 +1328,20 @@ fn expr_should_sort_based_on_connective_used_flag() {
         expr_instance: Some(ExprInstance::EMapBody(EMap {
             kvs: vec![
                 KeyValuePair {
-                    key: Some(Par {
+                    key: Some(models::par_from_default! {
                         ..Default::default()
                     }),
-                    value: Some(Par {
+                    value: Some(models::par_from_default! {
                         exprs: vec![],
                         ..Default::default()
                     }),
                 },
                 KeyValuePair {
-                    key: Some(Par {
+                    key: Some(models::par_from_default! {
                         connective_used: true,
                         ..Default::default()
                     }),
-                    value: Some(Par {
+                    value: Some(models::par_from_default! {
                         exprs: vec![],
                         ..Default::default()
                     }),

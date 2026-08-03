@@ -1061,7 +1061,7 @@ axis_value = "NO"
 # touched this relation, so it is sensitive to exactly the thing being claimed unmoved.
 axis_verdict = "NO"
 # ★ THE AXIS. The serde/bincode surface emits `U` of the entries IT WRITES
-# (EntryTrie::wire_trie) rather than of the entries the map stores. EXACTLY 2 of 10 serde
+# (EntryTrie::bincode_trie) rather than of the entries the map stores. EXACTLY 2 of 10 serde
 # goldens moved — locally_free.bincode.bin (356 -> 352 B) and locally_free.json
 # (2155 -> 2117 B) — and they are the only fixture carrying `locally_free`. The other eight
 # (e6a_index, ezipper, nested, remainder_connective x bincode/json) came back UNMOVED by
@@ -1090,10 +1090,25 @@ axis_post_state_hash = "MOVES"
 # and the accepted language is neither narrowed nor widened. Re-measured green at depths
 # 4/34/64/4096 with the escape arm's refusal at 34 and 64 re-measured in the same file.
 axis_acceptance = "NO"
-# Metering reads prost Message::encoded_len (rholang accounting/costs.rs:67,98,99,298). Prost
+# Metering reads prost Message::encoded_len (rholang accounting/costs.rs:67,98,99,298). Protobuf
 # is on the unmoved axis above and all five encoded_len pins are unchanged. No cost in the
 # tree is computed from a bincode length.
 axis_metering = "NO"
+
+[[entry]]
+id = "CBR-044"
+surface = "N"
+commits = []
+status = "IN_FLIGHT"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+axis_value = "MOVES"
+axis_verdict = "MOVES"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "MOVES"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CBR-043 — written LAST, from the landed tree at 8cf0b770, each verified to sit
@@ -1137,10 +1152,10 @@ at = "HEAD"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "wire_trie"
 
-# The trampolined encoder's twin of that seam — `pathmap_ps` now reads wire_view().
+# The trampolined encoder's twin of that seam — `pathmap_ps` now reads bincode_view().
 [[citation]]
 owner = "CBR-043"
-cited = "models/src/rust/rholang/wire.rs"
+cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 471
 at = "HEAD"
 path = "models/src/rust/rholang/wire.rs"
@@ -1159,7 +1174,7 @@ token = "encode_ground_field8"
 # The rule this repairs, in the words the tree already carried.
 [[citation]]
 owner = "CBR-043"
-cited = "models/src/rust/rholang/wire.rs"
+cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 75
 at = "HEAD"
 path = "models/src/rust/rholang/wire.rs"
@@ -1408,7 +1423,7 @@ evidence = "Appendix B.3 row 32 — `Clone` for the 55 non-`Copy` types is gener
 commit = "c709fbfa"
 window = "FRONTIER"
 reason = "TESTS_ONLY"
-evidence = "Appendix B.3 row 33 — 67 terms enumerated from the generated `wire_schema::*_VARIANTS` tables rather than hand-listed, *'so a 37th arm fails this file instead of escaping it.'* `models/tests/` plus its `[[test]]` declaration. CITED. [CITED]"
+evidence = "Appendix B.3 row 33 — 67 terms enumerated from the generated `bincode_schema_tables::*_VARIANTS` tables rather than hand-listed, *'so a 37th arm fails this file instead of escaping it.'* `models/tests/` plus its `[[test]]` declaration. CITED. [CITED]"
 
 [[exempt]]
 commit = "a36cb019"
@@ -1437,9 +1452,9 @@ reason = "DOCS_ONLY"
 #   The instrument timed its two arms in DIFFERENT TIME WINDOWS while its own header claimed
 #   per-repetition interleaving; it scatters 13-27% run to run. Paired: 0.948x-0.962x, a 5%
 #   deficit rather than 32%. The 0.98x threshold was replaced by a deterministic Ir-ratio
-#   criterion. And `wire_schema.rs` cites this SAME measurement as t = -307 — two runs of a
+#   criterion. And `bincode_schema_tables.rs` cites this SAME measurement as t = -307 — two runs of a
 #   blocked instrument, both real, neither transcribed; section 7.8.4 derives which is which.
-evidence = "Appendix B.3 row 36 — 68 insertions, 0 deletions, all inside `models/build/wire_schema.rs`'s doc block, and the emitted table is unchanged: that is what discharges DOCS_ONLY and it is unaffected. The throughput figure the previous evidence string quoted (0.678× / Welch t = -65) is RETRACTED — blocked arms, 13-27% run-to-run spread; paired reads 0.948×-0.962×. The walk elimination itself is NOT refuted: it lands as CBR-035. [DERIVED + RETRACTED]"
+evidence = "Appendix B.3 row 36 — 68 insertions, 0 deletions, all inside `models/codegen/schema_codegen.rs`'s doc block, and the emitted table is unchanged: that is what discharges DOCS_ONLY and it is unaffected. The throughput figure the previous evidence string quoted (0.678× / Welch t = -65) is RETRACTED — blocked arms, 13-27% run-to-run spread; paired reads 0.948×-0.962×. The walk elimination itself is NOT refuted: it lands as CBR-035. [DERIVED + RETRACTED]"
 
 [[exempt]]
 commit = "00c9ce6e"
@@ -1457,7 +1472,7 @@ evidence = "Appendix B.3 row 38 — Reaches the obligation set through `casper/s
 commit = "1eb65221"
 window = "FRONTIER"
 reason = "HYGIENE"
-evidence = "Appendix B.3 row 39 — one arm of `emit_clone_family_message` in `models/build/wire_schema.rs`: `format!(\"// BOUNDED: …\")` becomes `\"// BOUNDED: …\".to_string()`. A `format!` with no interpolation arguments yields EXACTLY its literal, so the emitted string is character-for-character identical by a property of the language rather than by a passing test. 7 insertions, 3 deletions, one file. [DERIVED]"
+evidence = "Appendix B.3 row 39 — one arm of `emit_clone_family_message` in `models/codegen/schema_codegen.rs`: `format!(\"// BOUNDED: …\")` becomes `\"// BOUNDED: …\".to_string()`. A `format!` with no interpolation arguments yields EXACTLY its literal, so the emitted string is character-for-character identical by a property of the language rather than by a passing test. 7 insertions, 3 deletions, one file. [DERIVED]"
 
 [[exempt]]
 commit = "bb81b75f"
@@ -1505,7 +1520,7 @@ evidence = "Appendix B.3 row 57 — compiler-driven dead-code removal following 
 commit = "387d4b93"
 window = "FRONTIER"
 reason = "BYTE_NEUTRAL_MEASURED"
-evidence = "Appendix B.3 row 56 — C6. encode_trie_path's EPathmapBody arm pushed one EncOp::EntryPath per entry, each re-running the full canonical encode, over entries from the deep-cloning projection memo — HEREDITARILY, so a map nested d deep re-encoded at every level, on the codec's hottest path. Now a read-zipper walk pushing rz.path() straight into the region. BYTE-IDENTICAL BY THREE FACTS, not by test: (1) forall (k,v). encode_trie_path(v) = k is the trie's entry invariant, enforced in RELEASE by adopt_trie which re-files rather than trusting; (2) EntryPath encoded with known_stable=true while the stored key had eval_stable_par computed — these disagree only for an UNSTABLE entry, which this arm cannot see, being under the eval_stable guard where entries_stable requires every entry stable; (3) CloseNestedRegion builds a PathMap<()> and emits ITS walk, so the region is a function of the key SET, not push order. SHOWN RED — and it proves the goldens reach nested maps rather than passing vacuously: appending a 0xEE byte to each key failed epathmap_canonical_fixtures::prost_goldens_epathmap_fixtures. [DERIVED]"
+evidence = "Appendix B.3 row 56 — C6. encode_trie_path's EPathmapBody arm pushed one EncOp::EntryPath per entry, each re-running the full canonical encode, over entries from the deep-cloning projection memo — HEREDITARILY, so a map nested d deep re-encoded at every level, on the codec's hottest path. Now a read-zipper walk pushing rz.path() straight into the region. BYTE-IDENTICAL BY THREE FACTS, not by test: (1) forall (k,v). encode_trie_path(v) = k is the trie's entry invariant, enforced in RELEASE by adopt_trie which re-files rather than trusting; (2) EntryPath encoded with known_stable=true while the stored key had eval_stable_par computed — these disagree only for an UNSTABLE entry, which this arm cannot see, being under the eval_stable guard where entries_stable requires every entry stable; (3) CloseNestedRegion builds a PathMap<()> and emits ITS walk, so the region is a function of the key SET, not push order. SHOWN RED — and it proves the goldens reach nested maps rather than passing vacuously: appending a 0xEE byte to each key failed epathmap_canonical_fixtures::protobuf_goldens_epathmap_fixtures. [DERIVED]"
 
 [[exempt]]
 commit = "c0385b79"
@@ -1589,7 +1604,7 @@ evidence = "Appendix B.3 row 41 — three of four files are `models/benches/` an
 commit = "f5ab21d0"
 window = "FRONTIER"
 reason = "HYGIENE"
-evidence = "Appendix B.3 row 61 — stack-safety Phase 6, a PURE RENAME across 62 files: wire_encode.rs -> bincode_encoder.rs, par_codec.rs -> bincode_decoder.rs, prost_encode.rs -> protobuf_encoder.rs, plus ten test/bench targets and the shared par_codec_corpus/ -> par_corpus/. NO BYTE CAN MOVE, and it is proven rather than argued: all SIXTEEN goldens (five *.prost.bin, five *.bincode.bin, five *.json, sorter_canonical_forms.txt) were hashed before and after and compared by SHA-256 — never by length, which would accept a same-size permutation — and every digest is unchanged, with git reporting all sixteen unmodified. STRONGER THAN THE HASHES: each staged blob is recomputed as SUBST(git show HEAD:<old path>), so 52 of the 62 files are EXACTLY a token substitution of their own HEAD content, 4 are SVGs re-rendered from re-substituted PlantUML sources, and 6 carry one enumerated formatting repair each (four use-reorderings the longer names force, one tuple wrap, one assert! wrap) — no token that reaches a value changed anywhere. Byte set unmoved, measured on a tree materialised from this commit's index by git checkout-index rather than on the working tree, because concurrent Phase-4 files are present there: models 473 passed / 0 failed / 2 ignored across 37 targets, EQUAL TO BASELINE AND EQUAL PER TARGET (each of the 37 reports the same passed/failed/ignored triple), including bincode_encoder_differential 13/13, bincode_decoder_differential 13/13, bincode_decoder_wire_shapes 13/13, bincode_encoder_space 9/9, protobuf_encoder_differential 13/13, protobuf_encoder_space 4/4, serializer_par_byte_goldens 7/7, epathmap_spliced_event_bytes 11/11. cargo check -p rholang -p casper -p node --tests clean with an unchanged warning set. The two citations into the moved files were re-pinned to the new paths and all 30 at-HEAD citations re-derive. [DERIVED]"
+evidence = "Appendix B.3 row 61 — stack-safety Phase 6, a PURE RENAME across 62 files: bincode_encode.rs -> bincode_encoder.rs, par_codec.rs -> bincode_decoder.rs, protobuf_encode.rs -> protobuf_encoder.rs, plus ten test/bench targets and the shared par_codec_corpus/ -> par_corpus/. NO BYTE CAN MOVE, and it is proven rather than argued: all SIXTEEN goldens (five *.protobuf.bin, five *.bincode.bin, five *.json, sorter_canonical_forms.txt) were hashed before and after and compared by SHA-256 — never by length, which would accept a same-size permutation — and every digest is unchanged, with git reporting all sixteen unmodified. STRONGER THAN THE HASHES: each staged blob is recomputed as SUBST(git show HEAD:<old path>), so 52 of the 62 files are EXACTLY a token substitution of their own HEAD content, 4 are SVGs re-rendered from re-substituted PlantUML sources, and 6 carry one enumerated formatting repair each (four use-reorderings the longer names force, one tuple wrap, one assert! wrap) — no token that reaches a value changed anywhere. Byte set unmoved, measured on a tree materialised from this commit's index by git checkout-index rather than on the working tree, because concurrent Phase-4 files are present there: models 473 passed / 0 failed / 2 ignored across 37 targets, EQUAL TO BASELINE AND EQUAL PER TARGET (each of the 37 reports the same passed/failed/ignored triple), including bincode_encoder_differential 13/13, bincode_decoder_differential 13/13, bincode_decoder_wire_shapes 13/13, bincode_encoder_space 9/9, protobuf_encoder_differential 13/13, protobuf_encoder_space 4/4, serializer_par_byte_goldens 7/7, epathmap_spliced_event_bytes 11/11. cargo check -p rholang -p casper -p node --tests clean with an unchanged warning set. The two citations into the moved files were re-pinned to the new paths and all 30 at-HEAD citations re-derive. [DERIVED]"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
@@ -1655,7 +1670,7 @@ token = "encoded_len"
 # Surface 2 — the wire program's first field is now the trie's byte array.
 [[citation]]
 owner = "CBR-042"
-cited = "models/src/rust/rholang/wire.rs"
+cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 366
 at = "HEAD"
 path = "models/src/rust/rholang/wire.rs"

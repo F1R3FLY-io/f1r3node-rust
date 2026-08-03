@@ -27,11 +27,8 @@ fn error(
             )
         };
 
-        let wildcards_positions: Vec<String> = free_map
-            .wildcards
-            .iter()
-            .map(|pos| at("", pos))
-            .collect();
+        let wildcards_positions: Vec<String> =
+            free_map.wildcards.iter().map(|pos| at("", pos)).collect();
 
         let free_vars_positions: Vec<String> = free_map
             .level_bindings
@@ -152,7 +149,6 @@ pub(crate) fn combine_p_bundle<'ast>(
         })))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

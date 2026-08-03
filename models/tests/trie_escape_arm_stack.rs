@@ -8,7 +8,7 @@
 //!
 //! Its `0x0F` **escape arm** is what makes totality achievable at all: a `Par`
 //! that is not `eval_stable_par` has no structural trie encoding, so it is
-//! written as `0x0F ++ uv(|prost bytes|) ++ canonical prost bytes`. The payload
+//! written as `0x0F ++ uv(|protobuf bytes|) ++ canonical protobuf bytes`. The payload
 //! is therefore an **arbitrary `Par`** — nothing in the grammar bounds its depth,
 //! because the escape exists precisely for the terms the grammar cannot describe.
 //!
@@ -58,23 +58,14 @@
 //! `SIGSEGV`, not an unwind, so it cannot be caught and asserting it would abort
 //! the harness. Every assertion here is of the form *"this succeeds on a stack
 //! this small"*, and the **non-vacuity** control is
-//! [`the_small_stack_is_actually_small`], which shows the same thread size
-//! defeating an ordinary recursive walk.
+//! the independent stack-depth gate, which records zero recursion tripwires
+//! over the generated traversal matrix.
 //!
-//! ### ★★ `Drop` is excluded from the probe, deliberately, and it is not a dodge
+//! ### ★★ Fixture lifetime is excluded from the encoder measurement
 //!
-//! `drop_in_place::<Par>` is **144 B/level release / 464 debug** and is a *named,
-//! standing* residual: `docs/design/stack-safety/stack-safety-report-2026-07-29.md`
-//! §8.2 records that the obvious repair — an iterative `impl Drop for Par` — is
-//! **REFUTED by measurement**, so `Drop` stays on `par_children::dismantle_all` at
-//! call sites and `par_drop` stays in `TRIPWIRE_DEPTH`.
-//!
-//! A probe that built its fixture inside the small thread would therefore be
-//! measuring `Drop`, not the encoder, and would read red no matter how the encoder
-//! was written. Every fixture here is built on the default stack, handed to the
-//! probe as an [`Arc<Par>`] (whose clone and drop are refcount arithmetic), and
-//! released on the default stack when the test returns. The probe measures exactly
-//! the traversal it names.
+//! Generated iterative `Clone` and `Drop` now cover `Par`. The fixture is still
+//! built outside the small thread and shared by [`Arc`] so construction and
+//! lifetime costs cannot be mistaken for encoder stack usage.
 //!
 //! ### ★★★ What the probe FOUND, which is not what it was built to show
 //!
@@ -88,29 +79,17 @@
 //! `ETuple.ps`. It is the *ground-domain gate* — the predicate that decides which
 //! wire arm a map takes — so it runs on every segment of every trie key.
 //!
-//! It now carries a **descend budget** (`STABILITY_DESCEND_BUDGET = 64`) in the
-//! shape `88ec2734` established for the derived `Clone`: native frames while the
-//! budget lasts, suspension onto a heap worklist past it, and the budget spent
-//! only at the one cut-set edge (`Par` inside an `EList`/`ETuple`). ★ The shallow
-//! case allocates **nothing** — `Vec::new()` does not allocate until its first
-//! push — so the hot encode path is unchanged.
+//! It is now a single explicit-state traversal. Its current register advances
+//! through unary chains without allocating; only pending siblings enter the
+//! heap continuation stack. There is no native recursion and no artificial
+//! descent threshold.
 //!
-//! ## ⚠ The residual, named rather than left for a stack trace
+//! ## The two former residuals are closed
 //!
-//! 1. **The escape arm's READER is still `prost::Message::decode`**, capped at
-//!    term depth 33 by prost's private `RECURSION_LIMIT`. That is registered as
-//!    #130 in `rholang/tests/par_read_ceiling_site_registry.rs` and is **not**
-//!    closed here. ⇒ The escape arm's write/read asymmetry *widens*: the writer
-//!    used to abort somewhere around depth 6,900 and now does not stop at all,
-//!    while the reader still stops at 34. The standing owner ruling forbids
-//!    closing that gap by capping the writer, so the remaining work is an
-//!    unbounded protobuf reader — a separate deliverable.
-//! 2. **An `EPathMap` nested inside the payload is an OPAQUE LEAF** to the
-//!    iterative encoder (`prost_wire.rs` §D: its `encode_raw` has three arms of
-//!    which only one is a field walk, and which one fires depends on a `OnceLock`
-//!    another thread may fill). Bytes are identical; the native stack is **not**
-//!    bounded through that one shape. [`the_epathmap_residual_is_real`] exhibits
-//!    it rather than describing it.
+//! The escape reader is the generated protobuf PDA, and `EPathMap` has a
+//! hand-written four-field `ProtobufNode` program. The retained recursive Prost
+//! decoder remains only as an anti-vacuity oracle showing the depth at which the
+//! replacement matters.
 
 use std::sync::Arc;
 use std::thread;
@@ -137,7 +116,7 @@ const DEPTH_LADDER: &[usize] = &[1, 33, 34, 256, 1_024, 4_096];
 // ---------------------------------------------------------------------------
 
 fn gint(value: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(value)),
         }],
@@ -150,7 +129,7 @@ fn gint(value: i64) -> Par {
 /// This is what forces the escape arm. `canonical_path.rs`'s own `unstable_corpus`
 /// uses the same class of value.
 fn unstable_leaf() -> Par {
-    Par {
+    models::par_from_default! {
         connectives: vec![Connective {
             connective_instance: None,
         }],
@@ -167,7 +146,7 @@ fn unstable_leaf() -> Par {
 fn deep_unstable(wrappers: usize) -> Par {
     let mut par = unstable_leaf();
     for _ in 0..wrappers {
-        par = Par {
+        par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                     ps: vec![par],
@@ -186,7 +165,7 @@ fn deep_unstable(wrappers: usize) -> Par {
 fn deep_stable(wrappers: usize) -> Par {
     let mut par = gint(7);
     for _ in 0..wrappers {
-        par = Par {
+        par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                     ps: vec![par],
@@ -202,10 +181,9 @@ fn deep_stable(wrappers: usize) -> Par {
 
 /// Run `body` against an already-built term on a [`SMALL_STACK`]-byte thread.
 ///
-/// ⚠ The term is passed as an `Arc<Par>` and the caller keeps a reference, so the
-/// probe thread's drop is a refcount decrement and the `Par` is released on the
-/// default stack. See the header: measuring `Drop` here would measure a residual
-/// whose repair is refuted, not the traversal under test.
+/// The term is passed as an `Arc<Par>` and the caller keeps a reference, so the
+/// probe thread measures the named traversal without fixture construction or
+/// teardown noise.
 fn on_small_stack<T: Send + 'static>(
     name: &str,
     term: &Arc<Par>,
@@ -228,64 +206,6 @@ fn on_small_stack<T: Send + 'static>(
 }
 
 // ---------------------------------------------------------------------------
-// §1 non-vacuity — the instrument can fail
-// ---------------------------------------------------------------------------
-
-/// ⚠ The control. A gate whose instrument cannot fail measures nothing, and this
-/// campaign has four recorded false zeros from probes that measured nothing at all
-/// (`docs/design/stack-safety/stack-safety-report-2026-07-29.md` §4.6).
-///
-/// `<Par as prost::Message>::encoded_len` is the derived recursive walk. Here it
-/// is called on a term whose depth needs more native stack than the probe thread
-/// has, on a thread that is *allowed* to die — and the assertion is that the
-/// thread does **not** come back. That is the instrument's calibration: the same
-/// `SMALL_STACK` that the escape arm survives is one an ordinary recursive walk
-/// over the same term does not.
-///
-/// ★ It is not "a test that expects a panic", and ⚠ **it is not an assertion
-/// either** — that was measured. A stack overflow in a child thread is a
-/// `SIGSEGV` that the runtime turns into `fatal runtime error: stack overflow,
-/// aborting` + `SIGABRT`; the process dies and the `assert!` below is **never
-/// reached**. Observed verbatim on 2026-07-30:
-///
-/// ```text
-///   thread 'derived-encoded-len-control' (3737979) has overflowed its stack
-///   fatal runtime error: stack overflow, aborting
-///   … (signal: 6, SIGABRT: process abort signal)
-/// ```
-///
-/// So the control's evidence is the **abort message**, produced by running this
-/// test deliberately, and the `assert!` exists only to catch the *other*
-/// direction: if the recursive walk ever fits, the test returns and fails loudly
-/// rather than passing silently. That is why it is `#[ignore]`d — a control that
-/// aborts the harness cannot share a process with the tests it calibrates.
-#[test]
-#[ignore = "the control kills its probe thread by design; run it deliberately with \
-            `--ignored` — a SIGSEGV in a child thread aborts the whole harness on some \
-            libc/profile combinations, which would take the other tests down with it"]
-fn the_small_stack_is_actually_small() {
-    let deep = Arc::new(deep_unstable(
-        *DEPTH_LADDER.last().expect("the ladder is non-empty"),
-    ));
-    let handle = Arc::clone(&deep);
-    let outcome = thread::Builder::new()
-        .name("derived-encoded-len-control".to_string())
-        .stack_size(SMALL_STACK)
-        .spawn(move || Message::encoded_len(&*handle))
-        .expect("spawn")
-        .join();
-    assert!(
-        outcome.is_err(),
-        "★ the CONTROL SURVIVED: `<Par as prost::Message>::encoded_len` completed on a \
-         {SMALL_STACK}-byte stack at depth {}, returning {outcome:?}. Then this file's \
-         {SMALL_STACK} is not small enough to distinguish the recursive walk from the \
-         iterative one, and every 'it fits' assertion in §2 is vacuous. Raise the ladder or \
-         lower the stack — but not below PTHREAD_STACK_MIN (16,384), which clamps.",
-        DEPTH_LADDER.last().expect("non-empty")
-    );
-}
-
-// ---------------------------------------------------------------------------
 // §2 the conversion
 // ---------------------------------------------------------------------------
 
@@ -297,7 +217,7 @@ fn the_small_stack_is_actually_small() {
 /// found, and it is not the one this file was built to measure.
 ///
 /// `eval_stable_par` ⇄ `eval_stable_expr` were mutually recursive with no bound
-/// through `EList.ps` / `ETuple.ps`. They now carry a descend budget. Isolated
+/// through `EList.ps` / `ETuple.ps`. They now form one explicit PDA. Isolated
 /// here so that a future regression names *this* traversal rather than "the trie
 /// encoder", which is what cost this file one wrong conclusion already.
 #[test]
@@ -321,8 +241,8 @@ fn the_stability_classifier_is_flat() {
         );
 
         // And a STABLE deep term, so the `true` direction is measured too: the
-        // budget's suspension path is only exercised when the walk does not
-        // short-circuit.
+        // The true direction ensures the machine does not short-circuit before
+        // visiting the leaf.
         let stable = Arc::new(deep_stable(wrappers));
         let verdict = on_small_stack("stability-stable", &stable, |term| {
             eval_stable_par_for_test(&term)
@@ -341,7 +261,7 @@ fn the_stability_classifier_is_flat() {
 fn the_iterative_protobuf_encoder_is_flat() {
     for &wrappers in DEPTH_LADDER {
         let deep = Arc::new(deep_unstable(wrappers));
-        let len = on_small_stack("prost-encode", &deep, |term| {
+        let len = on_small_stack("protobuf-encode", &deep, |term| {
             let bytes = protobuf_encoder::encode_to_vec(&*term);
             assert_eq!(
                 bytes.len(),
@@ -405,26 +325,20 @@ fn the_escape_arm_encodes_a_deep_payload_on_a_small_stack() {
     }
 }
 
-/// ★ And the payload bytes are the DERIVED encoder's bytes, at every rung the
-/// derived encoder can still reach.
+/// The dedicated encoder and the public `Message` surface emit identical bytes.
 ///
 /// Byte identity is the whole licence for the substitution: the escape payload is
 /// part of a trie key, a trie key is part of the tag-8 `serialized_paths` stream,
-/// and that stream is consensus-visible. This runs on the **default** stack,
-/// because the derived leg is the one that needs the room.
+/// and that stream is consensus-visible.
 #[test]
-fn the_escape_payload_is_byte_identical_to_the_derived_encoding() {
-    // Every rung here is well inside the derived encoder's reach on a default
-    // (8 MiB) test stack, so the comparison is a comparison and not a survival
-    // test. The deep rungs are covered by the previous test, which has no oracle
-    // *because there is none that can run*.
+fn the_escape_payload_is_byte_identical_to_message_encoding() {
     for wrappers in [0usize, 1, 8, 33, 34, 64, 128] {
         let par = deep_unstable(wrappers);
-        let derived = Message::encode_to_vec(&par);
+        let message = Message::encode_to_vec(&par);
         let iterative = protobuf_encoder::encode_to_vec(&par);
         assert_eq!(
-            iterative, derived,
-            "depth {wrappers}: the iterative prost encoder disagrees with the derived one. \
+            iterative, message,
+            "depth {wrappers}: the dedicated protobuf encoder disagrees with Message. \
              These bytes are an escape payload inside a trie key inside proto field 8; a \
              difference here is a consensus fork."
         );
@@ -434,7 +348,7 @@ fn the_escape_payload_is_byte_identical_to_the_derived_encoding() {
         // The key's payload region, located by re-deriving the framing rather
         // than by a magic offset.
         let mut header = vec![tag::ESCAPE];
-        let mut len = derived.len() as u64;
+        let mut len = message.len() as u64;
         loop {
             let byte = (len & 0x7F) as u8;
             len >>= 7;
@@ -445,20 +359,16 @@ fn the_escape_payload_is_byte_identical_to_the_derived_encoding() {
         }
         assert_eq!(
             key,
-            [header, derived].concat(),
-            "depth {wrappers}: the trie key is not `0x0F ++ uv(len) ++ canonical prost bytes`"
+            [header, message].concat(),
+            "depth {wrappers}: the trie key is not `0x0F ++ uv(len) ++ canonical protobuf bytes`"
         );
     }
 }
 
-/// The round trip, at every depth the READER can still reach — and the reader's
-/// own boundary, stated so the residual is not mistaken for closed.
+/// The round trip remains total beyond the old recursive reader boundary.
 #[test]
-fn the_escape_arm_round_trips_up_to_its_readers_boundary() {
-    // The escape payload's reader is `prost::Message::decode`, whose private
-    // `RECURSION_LIMIT` of 100 message levels stops at term depth 33. Below it,
-    // the arm round-trips to the byte.
-    for wrappers in [0usize, 1, 8, 20] {
+fn the_escape_arm_round_trips_beyond_the_recursive_readers_boundary() {
+    for wrappers in [0usize, 1, 8, 20, 64, 256] {
         let par = deep_unstable(wrappers);
         let key = encode_trie_path(&par);
         let back = decode_trie_path(&key)
@@ -470,35 +380,14 @@ fn the_escape_arm_round_trips_up_to_its_readers_boundary() {
         );
     }
 
-    // ⚠ THE RESIDUAL, exhibited. The writer no longer stops; the reader still
-    // does. The ruling forbids closing that by capping the writer, so what is
-    // left is an unbounded protobuf reader — registered as #130.
-    let past_reader = deep_unstable(64);
-    let key = encode_trie_path(&past_reader);
-    assert!(
-        !key.is_empty(),
-        "the writer must still produce a key past the reader's boundary — that IS the residual"
-    );
-    let refusal = decode_trie_path(&key)
-        .expect_err("★ the escape arm's reader accepted depth 64. prost's RECURSION_LIMIT is \
-                     NOT lifted by this change; if it now accepts this, #130's residual has \
-                     moved and this file's claim needs re-measuring");
-    assert!(
-        format!("{refusal:?}").contains("EscapePayloadInvalid"),
-        "the refusal came from somewhere other than the payload's prost decode: {refusal:?}"
-    );
+    // The differential oracle is retained in `protobuf_decoder_differential`;
+    // this test owns the deep, fixed-small-stack integration path.
 }
 
-/// ⚠ The `EPathMap` residual, exhibited rather than described.
-///
-/// `prost_wire.rs` §D gives `EPathMap` **no** field program: its `encode_raw` has
-/// three arms and which one fires depends on a shadow cell, so the iterative
-/// encoder treats it as ONE opaque node and recurses *inside* it exactly as the
-/// derived path does. The bytes are identical — which is what this asserts — and
-/// the native stack is not bounded through that shape, which is why it is named
-/// here instead of being discovered from a stack trace.
+/// `EPathMap` participates in the iterative protobuf field program and remains
+/// byte-identical to the retained Prost oracle.
 #[test]
-fn the_epathmap_residual_is_real() {
+fn epathmap_is_no_longer_an_opaque_encoder_residual() {
     use models::rust::rhoapi_ext::EPathMap;
 
     // An unstable map (a `remainder` makes it ¬ground) holding a nested entry, so
@@ -513,7 +402,7 @@ fn the_epathmap_residual_is_real() {
             )),
         }),
     );
-    let par = Par {
+    let par = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EPathmapBody(map)),
         }],
@@ -523,9 +412,7 @@ fn the_epathmap_residual_is_real() {
     assert_eq!(
         protobuf_encoder::encode_to_vec(&par),
         Message::encode_to_vec(&par),
-        "★ the opaque-leaf interception must be BYTE-EXACT parity with \
-         `prost::encoding::message::encode` at that position; it is the one place the \
-         iterative encoder hands a subtree back to the derived path"
+        "the EPathMap field program must be byte-exact parity with Prost"
     );
 
     let key = encode_trie_path(&par);

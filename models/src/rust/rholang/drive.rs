@@ -40,13 +40,13 @@
 //! ## ★★ Why `descend` takes a whole node and not a field index
 //!
 //! This is the binding design constraint of the whole program, and it is
-//! **measured, not theoretical**. [`crate::rust::rholang::wire`] §A2 records the
-//! obvious factoring — a generated table exposing `fn wire_field(i) -> FieldVal`
+//! **measured, not theoretical**. [`crate::rust::rholang::bincode_schema`] §A2 records the
+//! obvious factoring — a generated table exposing `fn bincode_field(i) -> FieldVal`
 //! interpreted by a hand-written driver — and what it cost:
 //!
-//! > `Par` has eleven fields, so each node cost eleven indirect `wire_field`
+//! > `Par` has eleven fields, so each node cost eleven indirect `bincode_field`
 //! > calls returning a 32-byte enum by value, plus nine more indirect
-//! > `wire_len` calls — **21 indirect calls per node where the derived path has
+//! > `bincode_len` calls — **21 indirect calls per node where the derived path has
 //! > none**. `perf` put **31.8%** of the profile in the driver loop. The result
 //! > was **1.7× slower than the derived `Serialize`**.
 //!
@@ -67,8 +67,8 @@
 //! field. A node with no descents costs exactly one call; a node with `k`
 //! descents costs `k + 1`.
 //!
-//! ⚠ The same profile is why [`crate::rust::rholang::wire::NO_RESUME`] exists:
-//! asking `node.wire_program().len()` on every descent — to find out whether
+//! ⚠ The same profile is why [`crate::rust::rholang::bincode_schema::NO_RESUME`] exists:
+//! asking `node.bincode_program().len()` on every descent — to find out whether
 //! there was anything to come back *for* — is a virtual call on the one event a
 //! deep term is made of, and it measured **2.75%** of the production-weighted
 //! mix. A driver that must interrogate its visitor per node has already lost.
@@ -394,7 +394,7 @@
 //! routing through `Vec<Val>`.
 //!
 //! ⇒ Anyone reaching for `Tail` to close a byte-movement gap should read
-//! `models/build/wire_schema.rs`'s clone-throughput section, which now carries the
+//! `models/codegen/schema_codegen.rs`'s clone-throughput section, which now carries the
 //! deterministic instruction- and store-level accounting.
 //!
 //! ### ★ And blocker 1 does not bind `Tail`, for a structural reason
@@ -626,7 +626,7 @@ pub enum Outcome<V, N> {
 /// ⚠ Deliberately **not object-safe** — see the module docs. The GAT alone
 /// makes `dyn Traversal` ill-formed, which is what guarantees that every
 /// `descend` is a direct, monomorphized call and not the 1.7×-slower table
-/// interpretation `wire.rs` §A2 measured.
+/// interpretation `bincode_schema.rs` §A2 measured.
 pub trait Traversal: Sized {
     /// A **borrowed** input node. `Copy` because pushing a child must be a
     /// reference move, never a deep clone.
@@ -641,8 +641,7 @@ pub trait Traversal: Sized {
     /// own configuration (an environment, an oracle) even when that borrow
     /// outlives the traversal.
     type Node<'t>: Copy
-    where
-        Self: 't;
+    where Self: 't;
 
     /// The value one `Step` produces.
     type Val;
@@ -654,8 +653,7 @@ pub trait Traversal: Sized {
     ///
     /// ⚠ `where Self: 't` for the same reason as [`Traversal::Node`] — see there.
     type Kont<'t>
-    where
-        Self: 't;
+    where Self: 't;
 
     /// Mutable state threaded through the whole traversal and owned by the
     /// caller — `()` when there is none, `&mut Vec<u8>` for an emitter, a
@@ -916,11 +914,7 @@ impl Ledger {
         assert!(
             self.tails <= T::MAX_TAILS_PER_DESCENT * self.original_descents,
             "{}",
-            tail_bound_message(
-                self.tails,
-                T::MAX_TAILS_PER_DESCENT,
-                self.original_descents
-            )
+            tail_bound_message(self.tails, T::MAX_TAILS_PER_DESCENT, self.original_descents)
         );
     }
 
@@ -940,7 +934,8 @@ impl Ledger {
             return;
         }
         assert_eq!(
-            values_pushed, 0,
+            values_pushed,
+            0,
             "drive: MALFORMED CONFIGURATION — a `descend` that pushed {} work item(s) must push \
              NO value (its region produces the value); this one pushed {values_pushed}. A step \
              produces exactly one value. See `drive.rs`'s module docs, Invariant 1.",
@@ -996,9 +991,7 @@ impl Ledger {
 #[cfg(not(debug_assertions))]
 impl Ledger {
     #[inline(always)]
-    fn new<'t, T: Traversal + 't>(_root: &Step<'t, T>) -> Self {
-        Ledger
-    }
+    fn new<'t, T: Traversal + 't>(_root: &Step<'t, T>) -> Self { Ledger }
     #[inline(always)]
     fn check(&self, _vals_len: usize) {}
     #[inline(always)]

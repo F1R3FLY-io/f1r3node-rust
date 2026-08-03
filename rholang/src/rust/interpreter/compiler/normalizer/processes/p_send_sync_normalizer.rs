@@ -120,10 +120,7 @@ pub(crate) fn descend_p_send_sync<'ast>(
         proc: parser.ast_builder().alloc_new(p_par, vec![name_decl]),
         span: *span,
     };
-    Step::Tail(NormWork::Proc {
-        proc: p_new,
-        input,
-    })
+    Step::Tail(NormWork::Proc { proc: p_new, input })
 }
 
 /// `x!?(P)` on a **fresh** drive. Only the unit tests enter here; the dispatch
@@ -140,7 +137,6 @@ pub fn normalize_p_send_sync<'ast>(
     let step = descend_p_send_sync(channel, messages, cont, span, input, parser);
     norm_drive_from(step, env, parser).map(NormVal::into_proc)
 }
-
 
 #[cfg(test)]
 mod tests {

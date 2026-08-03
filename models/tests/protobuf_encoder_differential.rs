@@ -1,15 +1,15 @@
 //! # The PROTOBUF encoder differential — two properties, and a mutation proof
 //!
 //! ```text
-//!   ∀t. protobuf_encoder::encode_to_vec(&t) == t.encode_to_vec()   BYTE IDENTITY
-//!   ∀t. protobuf_encoder::encoded_len(&t)   == t.encoded_len()     LENGTH IDENTITY
+//!   ∀t. protobuf_encoder::encode_to_vec(&t) == recursive_oracle_encode(&t)
+//!   ∀t. protobuf_encoder::encoded_len(&t)   == recursive_oracle_len(&t)
 //! ```
 //!
-//! ★ The derived `impl prost::Message` therefore **stays compiled and callable**.
-//! It is the oracle for exactly the reason `bincode_encoder_differential.rs` keeps
-//! the derived `Serialize`: it is compiler-generated from the same struct
-//! definitions the table is generated from, and is therefore *undriftable* in a
-//! way a second hand-written implementation could never be.
+//! The oracle deliberately reuses the generated bounded-field program while
+//! interpreting its descents with native recursion. The production encoder
+//! interprets the same program with explicit frames. This separates byte-schema
+//! agreement from control-flow equivalence without leaving recursive code in the
+//! production library.
 //!
 //! ## ⚠ Why byte identity is the property and length identity is not
 //!
@@ -30,7 +30,7 @@
 //!
 //! A green differential between two functions that are secretly the same
 //! function is indistinguishable from a green differential between two functions
-//! that agree. [`the_prost_differential_can_go_red`] settles that by
+//! that agree. [`the_protobuf_differential_can_go_red`] settles that by
 //! construction. Each mutation:
 //!
 //! 1. constructs the bytes the mutated encoder *would* produce, from the oracle's
@@ -56,7 +56,7 @@
 //! which `RUST_MIN_STACK` does not affect**. f1r3node CI runs
 //! `cargo test --release -p models` only. Every deep body here therefore runs
 //! inside an explicit `std::thread::Builder::new().stack_size(N)` — the
-//! precedent is `bincode_decoder_wire_shapes.rs:639-660` and
+//! precedent is `bincode_decoder_shapes.rs:639-660` and
 //! `bincode_encoder_differential.rs:646-661` — and each such test's doc comment
 //! states the stack it passes on **under both runners**.
 
@@ -68,18 +68,165 @@ use models::rhoapi::{
     BindPattern, Connective, Expr, ListParWithRandom, New, Par, ParWithRandom, Send,
     TaggedContinuation,
 };
-use models::rust::rholang::prost_wire::ProstNode;
-use models::rust::rholang::prost_wire_schema::{
-    PAR_PROST_PROGRAM, PROST_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROST_PROGRAM,
-};
+use models::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT;
 use models::rust::rholang::protobuf_encoder;
-use models::rust::rholang::wire_schema::EXPR_INSTANCE_VARIANT_COUNT;
+use models::rust::rholang::protobuf_schema::{ProtobufDescent, ProtobufNode, NO_RESUME};
+use models::rust::rholang::protobuf_schema_tables::{
+    PAR_PROTOBUF_PROGRAM, PROTOBUF_CONFORMANCE_REGISTRY, TAGGEDCONTINUATION_PROTOBUF_PROGRAM,
+};
 use models::rust::test_utils::test_utils::generate_par;
 use proptest::prelude::*;
+use prost::encoding::{encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 use prost::Message;
 
 mod par_corpus;
 use par_corpus as corpus;
+
+fn recursive_oracle_len_from(node: &dyn ProtobufNode, from: usize) -> u64 {
+    let (bounded, descent) = node.protobuf_len_step(from);
+    bounded
+        + match descent {
+            ProtobufDescent::Done => 0,
+            ProtobufDescent::Node {
+                resume,
+                tag,
+                node: child,
+            } => {
+                let child_len = recursive_oracle_len_from(child, 0);
+                message_contribution(tag, child_len) + recursive_oracle_resume(node, resume)
+            }
+            ProtobufDescent::Seq {
+                resume,
+                tag,
+                len,
+                seq,
+            } => {
+                let children = (0..len)
+                    .map(|index| {
+                        message_contribution(
+                            tag,
+                            recursive_oracle_len_from(seq.protobuf_get(index), 0),
+                        )
+                    })
+                    .sum::<u64>();
+                children + recursive_oracle_resume(node, resume)
+            }
+            ProtobufDescent::Map { resume, tag, map } => {
+                let default_par = Par::default();
+                let entries = map
+                    .iter()
+                    .map(|(key, value)| {
+                        let key_part = if key.is_empty() {
+                            0
+                        } else {
+                            prost::encoding::string::encoded_len(1, key) as u64
+                        };
+                        let value_part = if value == &default_par {
+                            0
+                        } else {
+                            message_contribution(2, recursive_oracle_len_from(value, 0))
+                        };
+                        message_contribution(tag, key_part + value_part)
+                    })
+                    .sum::<u64>();
+                entries + recursive_oracle_resume(node, resume)
+            }
+            ProtobufDescent::EPathMapSnapshot { resume, tag, map } => {
+                message_contribution(tag, map.trie_snapshot().len() as u64)
+                    + recursive_oracle_resume(node, resume)
+            }
+        }
+}
+
+fn recursive_oracle_resume(node: &dyn ProtobufNode, resume: u16) -> u64 {
+    if resume == NO_RESUME {
+        0
+    } else {
+        recursive_oracle_len_from(node, usize::from(resume))
+    }
+}
+
+fn message_contribution(tag: u32, len: u64) -> u64 {
+    key_len(tag) as u64 + encoded_len_varint(len) as u64 + len
+}
+
+fn recursive_oracle_emit_from(node: &dyn ProtobufNode, from: usize, out: &mut Vec<u8>) {
+    match node.protobuf_emit(from, out) {
+        ProtobufDescent::Done => {}
+        ProtobufDescent::Node {
+            resume,
+            tag,
+            node: child,
+        } => {
+            emit_child_header(tag, child, out);
+            recursive_oracle_emit_from(child, 0, out);
+            recursive_oracle_emit_resume(node, resume, out);
+        }
+        ProtobufDescent::Seq {
+            resume,
+            tag,
+            len,
+            seq,
+        } => {
+            for index in 0..len {
+                let child = seq.protobuf_get(index);
+                emit_child_header(tag, child, out);
+                recursive_oracle_emit_from(child, 0, out);
+            }
+            recursive_oracle_emit_resume(node, resume, out);
+        }
+        ProtobufDescent::Map { resume, tag, map } => {
+            let default_par = Par::default();
+            for (key, value) in map {
+                let key_part = if key.is_empty() {
+                    0
+                } else {
+                    prost::encoding::string::encoded_len(1, key) as u64
+                };
+                let value_part = if value == &default_par {
+                    0
+                } else {
+                    message_contribution(2, recursive_oracle_len_from(value, 0))
+                };
+                encode_key(tag, WireType::LengthDelimited, out);
+                encode_varint(key_part + value_part, out);
+                if !key.is_empty() {
+                    prost::encoding::string::encode(1, key, out);
+                }
+                if value != &default_par {
+                    emit_child_header(2, value, out);
+                    recursive_oracle_emit_from(value, 0, out);
+                }
+            }
+            recursive_oracle_emit_resume(node, resume, out);
+        }
+        ProtobufDescent::EPathMapSnapshot { resume, tag, map } => {
+            let snapshot = map.trie_snapshot();
+            encode_key(tag, WireType::LengthDelimited, out);
+            encode_varint(snapshot.len() as u64, out);
+            out.extend_from_slice(snapshot);
+            recursive_oracle_emit_resume(node, resume, out);
+        }
+    }
+}
+
+fn recursive_oracle_emit_resume(node: &dyn ProtobufNode, resume: u16, out: &mut Vec<u8>) {
+    if resume != NO_RESUME {
+        recursive_oracle_emit_from(node, usize::from(resume), out);
+    }
+}
+
+fn emit_child_header(tag: u32, child: &dyn ProtobufNode, out: &mut Vec<u8>) {
+    encode_key(tag, WireType::LengthDelimited, out);
+    encode_varint(recursive_oracle_len_from(child, 0), out);
+}
+
+fn recursive_oracle_encode(value: &dyn ProtobufNode) -> Vec<u8> {
+    let len = recursive_oracle_len_from(value, 0);
+    let mut out = Vec::with_capacity(usize::try_from(len).expect("oracle length fits usize"));
+    recursive_oracle_emit_from(value, 0, &mut out);
+    out
+}
 
 // ===========================================================================
 // §0  The VERDICTS, separated from the subject
@@ -98,7 +245,7 @@ fn byte_identity_verdict(label: &str, machine: &[u8], oracle: &[u8]) -> Result<(
     }
     if machine.len() != oracle.len() {
         return Err(format!(
-            "PROST WRITE DIFFERENTIAL FAILED for `{label}`: length {} vs oracle {}. \
+            "PROTOBUF WRITE DIFFERENTIAL FAILED for `{label}`: length {} vs oracle {}. \
              A length difference means a field was emitted, omitted, or given the wrong \
              prefix — not merely mis-ordered.",
             machine.len(),
@@ -111,9 +258,9 @@ fn byte_identity_verdict(label: &str, machine: &[u8], oracle: &[u8]) -> Result<(
         .position(|(a, b)| a != b)
         .expect("equal length and unequal contents implies a differing index");
     Err(format!(
-        "PROST WRITE DIFFERENTIAL FAILED for `{label}`: first difference at byte {at} \
+        "PROTOBUF WRITE DIFFERENTIAL FAILED for `{label}`: first difference at byte {at} \
          (machine 0x{:02x}, oracle 0x{:02x}); both are {} bytes. The two-pass emitter and \
-         the derived `prost::Message` disagree, which is a CONSENSUS FORK.",
+        the recursive reference interpreter disagree, which is a CONSENSUS FORK.",
         machine[at],
         oracle[at],
         machine.len()
@@ -128,24 +275,25 @@ fn length_identity_verdict(label: &str, machine: usize, oracle: usize) -> Result
         return Ok(());
     }
     Err(format!(
-        "PROST LENGTH DIFFERENTIAL FAILED for `{label}`: {machine} vs oracle {oracle}. \
-         The memoized bottom-up length pass and `prost::Message::encoded_len` disagree, so \
+        "PROTOBUF LENGTH DIFFERENTIAL FAILED for `{label}`: {machine} vs oracle {oracle}. \
+         The memoized bottom-up length pass and the recursive reference interpreter disagree, so \
          every nested length prefix below this node is wrong."
     ))
 }
 
 /// Both properties, for one value.
 fn assert_encodes_identically<T>(label: &str, value: &T)
-where
-    T: ProstNode + Message,
-{
-    let oracle_bytes = value.encode_to_vec();
+where T: ProtobufNode + Message {
+    let oracle_bytes = recursive_oracle_encode(value);
     let machine_bytes = protobuf_encoder::encode_to_vec(value);
     if let Err(why) = byte_identity_verdict(label, &machine_bytes, &oracle_bytes) {
         panic!("{why}");
     }
-    if let Err(why) = length_identity_verdict(label, protobuf_encoder::encoded_len(value), value.encoded_len())
-    {
+    if let Err(why) = length_identity_verdict(
+        label,
+        protobuf_encoder::encoded_len(value),
+        usize::try_from(recursive_oracle_len_from(value, 0)).expect("oracle length fits usize"),
+    ) {
         panic!("{why}");
     }
     // …and the length the machine reports must be the length it WROTE. A pass
@@ -159,14 +307,22 @@ where
         machine_bytes.len(),
         protobuf_encoder::encoded_len(value)
     );
+    assert_eq!(
+        value.encode_to_vec(),
+        oracle_bytes,
+        "{label}: Message surface"
+    );
+    assert_eq!(
+        value.encoded_len(),
+        oracle_bytes.len(),
+        "{label}: Message length surface"
+    );
 }
 
 /// `encode_into` must append exactly what `encode_to_vec` returns, and disturb
 /// nothing already in the buffer.
 fn assert_appends_identically<T>(label: &str, value: &T)
-where
-    T: ProstNode + Message,
-{
+where T: ProtobufNode + Message {
     const PREFIX: &[u8] = b"\xDE\xAD\xBE\xEF";
     let mut buffer = PREFIX.to_vec();
     protobuf_encoder::encode_into(value, &mut buffer);
@@ -175,7 +331,7 @@ where
         PREFIX,
         "`{label}`: `encode_into` overwrote bytes that were already in the buffer"
     );
-    let oracle = value.encode_to_vec();
+    let oracle = recursive_oracle_encode(value);
     if let Err(why) = byte_identity_verdict(label, &buffer[PREFIX.len()..], &oracle) {
         panic!("{why} (via `encode_into`)");
     }
@@ -293,13 +449,10 @@ fn every_root_and_shape_encodes_identically() {
 fn the_protobuf_specific_awkward_shapes_encode_identically() {
     // ── skip-at-default: a Send with every flag false and every bytes empty ──
     assert_encodes_identically("Send::all-default", &Send::default());
-    assert_encodes_identically(
-        "Send::one-flag",
-        &Send {
-            persistent: true,
-            ..Default::default()
-        },
-    );
+    assert_encodes_identically("Send::one-flag", &Send {
+        persistent: true,
+        ..Default::default()
+    });
 
     // ── ★ a map whose VALUE is default, and one whose value only carries
     //    `locally_free` — which the hand-written `PartialEq` treats as default ──
@@ -310,7 +463,7 @@ fn the_protobuf_specific_awkward_shapes_encode_identically() {
         ("locally-free-only", corpus::tagged(0x7F)),
         ("real-value", corpus::gint(5)),
     ] {
-        let par = Par {
+        let par = models::par_from_default! {
             news: vec![New {
                 bind_count: 1,
                 p: None,
@@ -328,7 +481,7 @@ fn the_protobuf_specific_awkward_shapes_encode_identically() {
     }
 
     // ── a map KEY at its default (the empty string), alone and mixed ──
-    let par = Par {
+    let par = models::par_from_default! {
         news: vec![New {
             bind_count: 0,
             p: None,
@@ -363,7 +516,7 @@ fn the_protobuf_specific_awkward_shapes_encode_identically() {
         // …and the encoding must be NON-EMPTY, because an arm that prost wrote
         // and this encoder skipped would agree with an oracle that also skipped.
         assert!(
-            !expr.encode_to_vec().is_empty(),
+            !recursive_oracle_encode(&expr).is_empty(),
             "`{label}`: the ORACLE encoded a set-but-default oneof arm to zero bytes. That \
              would make this case vacuous — protobuf presence requires the arm to be written."
         );
@@ -395,20 +548,53 @@ fn par_encoded_in_order(par: &Par, order: &[&str]) -> Vec<u8> {
         // protobuf message — which is exactly why the defect is invisible to a
         // decoder.
         let single = match *name {
-            "sends" => Par { sends: par.sends.clone(), ..Default::default() },
-            "receives" => Par { receives: par.receives.clone(), ..Default::default() },
-            "news" => Par { news: par.news.clone(), ..Default::default() },
-            "exprs" => Par { exprs: par.exprs.clone(), ..Default::default() },
-            "matches" => Par { matches: par.matches.clone(), ..Default::default() },
-            "unforgeables" => Par { unforgeables: par.unforgeables.clone(), ..Default::default() },
-            "connectives" => Par { connectives: par.connectives.clone(), ..Default::default() },
-            "locally_free" => Par { locally_free: par.locally_free.clone(), ..Default::default() },
-            "connective_used" => Par { connective_used: par.connective_used, ..Default::default() },
-            "bundles" => Par { bundles: par.bundles.clone(), ..Default::default() },
-            "conditionals" => Par { conditionals: par.conditionals.clone(), ..Default::default() },
+            "sends" => models::par_from_default! {
+                sends: par.sends.clone(),
+                ..Default::default()
+            },
+            "receives" => models::par_from_default! {
+                receives: par.receives.clone(),
+                ..Default::default()
+            },
+            "news" => models::par_from_default! {
+                news: par.news.clone(),
+                ..Default::default()
+            },
+            "exprs" => models::par_from_default! {
+                exprs: par.exprs.clone(),
+                ..Default::default()
+            },
+            "matches" => models::par_from_default! {
+                matches: par.matches.clone(),
+                ..Default::default()
+            },
+            "unforgeables" => models::par_from_default! {
+                unforgeables: par.unforgeables.clone(),
+                ..Default::default()
+            },
+            "connectives" => models::par_from_default! {
+                connectives: par.connectives.clone(),
+                ..Default::default()
+            },
+            "locally_free" => models::par_from_default! {
+                locally_free: par.locally_free.clone(),
+                ..Default::default()
+            },
+            "connective_used" => models::par_from_default! {
+                connective_used: par.connective_used,
+                ..Default::default()
+            },
+            "bundles" => models::par_from_default! {
+                bundles: par.bundles.clone(),
+                ..Default::default()
+            },
+            "conditionals" => models::par_from_default! {
+                conditionals: par.conditionals.clone(),
+                ..Default::default()
+            },
             other => panic!("par_encoded_in_order: unknown field `{other}`"),
         };
-        out.extend_from_slice(&single.encode_to_vec());
+        out.extend_from_slice(&recursive_oracle_encode(&single));
     }
     out
 }
@@ -419,20 +605,35 @@ fn par_encoded_in_order(par: &Par, order: &[&str]) -> Vec<u8> {
 /// A CONTROL passes the same verdict before and after all three, so a verdict
 /// that rejected everything would fail here too.
 #[test]
-fn the_prost_differential_can_go_red() {
+fn the_protobuf_differential_can_go_red() {
     // ── the fixture: a `Par` whose 11 fields are ALL populated, so every
     //    re-ordering is observable ──
-    let par = Par {
-        sends: vec![Send { chan: Some(corpus::gint(1)), persistent: true, ..Default::default() }],
-        exprs: vec![Expr { expr_instance: Some(ExprInstance::GInt(7)) }],
-        bundles: vec![models::rhoapi::Bundle { body: Some(corpus::gint(2)), write_flag: true, read_flag: false }],
-        connectives: vec![Connective { connective_instance: None }],
-        conditionals: vec![models::rhoapi::If { condition: Some(corpus::gint(3)), ..Default::default() }],
+    let par = models::par_from_default! {
+        sends: vec![Send {
+            chan: Some(corpus::gint(1)),
+            persistent: true,
+            ..Default::default()
+        }],
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }],
+        bundles: vec![models::rhoapi::Bundle {
+            body: Some(corpus::gint(2)),
+            write_flag: true,
+            read_flag: false,
+        }],
+        connectives: vec![Connective {
+            connective_instance: None,
+        }],
+        conditionals: vec![models::rhoapi::If {
+            condition: Some(corpus::gint(3)),
+            ..Default::default()
+        }],
         locally_free: vec![0xAA, 0xBB],
         connective_used: true,
         ..Default::default()
     };
-    let truth = par.encode_to_vec();
+    let truth = recursive_oracle_encode(&par);
 
     // CONTROL: the real encoder, judged by the real verdict.
     assert!(
@@ -447,16 +648,34 @@ fn the_prost_differential_can_go_red() {
     // would produce. `bundles` (11) and `conditionals` (12) are DECLARED before
     // `connectives` (8), `locally_free` (9) and `connective_used` (10).
     let declaration_order = [
-        "sends", "receives", "news", "exprs", "matches", "unforgeables",
-        "bundles", "connectives", "conditionals", "locally_free", "connective_used",
+        "sends",
+        "receives",
+        "news",
+        "exprs",
+        "matches",
+        "unforgeables",
+        "bundles",
+        "connectives",
+        "conditionals",
+        "locally_free",
+        "connective_used",
     ];
     let tag_order = [
-        "sends", "receives", "news", "exprs", "matches", "unforgeables",
-        "connectives", "locally_free", "connective_used", "bundles", "conditionals",
+        "sends",
+        "receives",
+        "news",
+        "exprs",
+        "matches",
+        "unforgeables",
+        "connectives",
+        "locally_free",
+        "connective_used",
+        "bundles",
+        "conditionals",
     ];
     // ★ THE MUTATION MUST ASSERT IT APPLIED — against the GENERATED table, so
     // "declaration order" and "tag order" are not two names this test invented.
-    let generated: Vec<&str> = PAR_PROST_PROGRAM.iter().map(|f| f.name).collect();
+    let generated: Vec<&str> = PAR_PROTOBUF_PROGRAM.iter().map(|f| f.name).collect();
     assert_eq!(
         generated, tag_order,
         "the generated `Par` prost program is not the tag order this mutation perturbs, so \
@@ -489,10 +708,14 @@ fn the_prost_differential_can_go_red() {
     );
     // ★ …and the first difference must be in the region the reordering moved:
     // everything up to `unforgeables` is common to both orders.
-    let common_prefix = par_encoded_in_order(
-        &par,
-        &["sends", "receives", "news", "exprs", "matches", "unforgeables"],
-    );
+    let common_prefix = par_encoded_in_order(&par, &[
+        "sends",
+        "receives",
+        "news",
+        "exprs",
+        "matches",
+        "unforgeables",
+    ]);
     let at: usize = why
         .split("first difference at byte ")
         .nth(1)
@@ -522,7 +745,7 @@ fn the_prost_differential_can_go_red() {
             random_state: vec![9, 9, 9],
         })),
     };
-    let tc_truth = tc.encode_to_vec();
+    let tc_truth = recursive_oracle_encode(&tc);
     assert!(
         byte_identity_verdict(
             "control-tc",
@@ -532,18 +755,27 @@ fn the_prost_differential_can_go_red() {
         .is_ok(),
         "the TaggedContinuation control must pass"
     );
-    let generated_tc: Vec<&str> = TAGGEDCONTINUATION_PROST_PROGRAM.iter().map(|f| f.name).collect();
+    let generated_tc: Vec<&str> = TAGGEDCONTINUATION_PROTOBUF_PROGRAM
+        .iter()
+        .map(|f| f.name)
+        .collect();
     assert_eq!(
         generated_tc,
         vec!["tagged_cont", "guard"],
         "the generated `TaggedContinuation` prost program must put the ONEOF first (it holds \
          tags 1-2; `guard` is tag 3), or M2 perturbs the wrong order"
     );
-    let guard_only = TaggedContinuation { guard: tc.guard.clone(), tagged_cont: None };
-    let cont_only = TaggedContinuation { guard: None, tagged_cont: tc.tagged_cont.clone() };
+    let guard_only = TaggedContinuation {
+        guard: tc.guard.clone(),
+        tagged_cont: None,
+    };
+    let cont_only = TaggedContinuation {
+        guard: None,
+        tagged_cont: tc.tagged_cont.clone(),
+    };
     let m2 = {
-        let mut v = guard_only.encode_to_vec();
-        v.extend_from_slice(&cont_only.encode_to_vec());
+        let mut v = recursive_oracle_encode(&guard_only);
+        v.extend_from_slice(&recursive_oracle_encode(&cont_only));
         v
     };
     assert_eq!(
@@ -563,7 +795,8 @@ fn the_prost_differential_can_go_red() {
         m2, tc_truth,
         "M2 DID NOT APPLY: writing `guard` before the oneof produced the oracle's own bytes"
     );
-    let why = byte_identity_verdict("M2/guard-first", &m2, &tc_truth).expect_err("M2 must be REJECTED");
+    let why =
+        byte_identity_verdict("M2/guard-first", &m2, &tc_truth).expect_err("M2 must be REJECTED");
     assert!(
         why.contains("first difference at byte"),
         "M2 must be rejected by the BYTE-IDENTITY clause. Same length, same multiset — a \
@@ -580,10 +813,19 @@ fn the_prost_differential_can_go_red() {
     // `Send.persistent` is tag 3. prost writes NOTHING for `persistent: false`
     // (`prost-derive-0.14.3/src/field/scalar.rs:116-125`); writing `3:0` anyway
     // is well-formed protobuf that every decoder accepts as `false`.
-    let send = Send { chan: Some(corpus::gint(4)), persistent: false, ..Default::default() };
-    let send_truth = send.encode_to_vec();
+    let send = Send {
+        chan: Some(corpus::gint(4)),
+        persistent: false,
+        ..Default::default()
+    };
+    let send_truth = recursive_oracle_encode(&send);
     assert!(
-        byte_identity_verdict("control-send", &protobuf_encoder::encode_to_vec(&send), &send_truth).is_ok(),
+        byte_identity_verdict(
+            "control-send",
+            &protobuf_encoder::encode_to_vec(&send),
+            &send_truth
+        )
+        .is_ok(),
         "the Send control must pass"
     );
     // Build the unskipped bytes with prost's OWN encoder, so the mutation is
@@ -615,9 +857,21 @@ fn the_prost_differential_can_go_red() {
     // ── the controls again, AFTER all three, so a verdict that latched into
     //    rejecting cannot pass this test ──
     for (label, value, truth) in [
-        ("control-after/Par", protobuf_encoder::encode_to_vec(&par), truth),
-        ("control-after/TC", protobuf_encoder::encode_to_vec(&tc), tc_truth),
-        ("control-after/Send", protobuf_encoder::encode_to_vec(&send), send_truth),
+        (
+            "control-after/Par",
+            protobuf_encoder::encode_to_vec(&par),
+            truth,
+        ),
+        (
+            "control-after/TC",
+            protobuf_encoder::encode_to_vec(&tc),
+            tc_truth,
+        ),
+        (
+            "control-after/Send",
+            protobuf_encoder::encode_to_vec(&send),
+            send_truth,
+        ),
     ] {
         assert!(
             byte_identity_verdict(label, &value, &truth).is_ok(),
@@ -629,20 +883,20 @@ fn the_prost_differential_can_go_red() {
 /// The generated prost table is what the assertions are measured against, so a
 /// degenerate table would make the coverage above vacuous.
 #[test]
-fn the_generated_prost_table_is_not_degenerate() {
+fn the_generated_protobuf_table_is_not_degenerate() {
     assert!(
-        PROST_CONFORMANCE_REGISTRY.len() >= 57,
+        PROTOBUF_CONFORMANCE_REGISTRY.len() >= 57,
         "the prost registry collapsed to {} rows",
-        PROST_CONFORMANCE_REGISTRY.len()
+        PROTOBUF_CONFORMANCE_REGISTRY.len()
     );
     assert_eq!(
-        PAR_PROST_PROGRAM.len(),
+        PAR_PROTOBUF_PROGRAM.len(),
         11,
         "`Par` has eleven fields; a shorter program means the generator dropped one and the \
          encoder would silently omit it"
     );
     assert_eq!(
-        TAGGEDCONTINUATION_PROST_PROGRAM.len(),
+        TAGGEDCONTINUATION_PROTOBUF_PROGRAM.len(),
         2,
         "`TaggedContinuation` is `guard` plus one oneof"
     );
@@ -658,13 +912,14 @@ proptest! {
     /// Both properties over arbitrary generated terms.
     #[test]
     fn generated_pars_encode_identically(par in generate_par(3)) {
-        let oracle = par.encode_to_vec();
+        let oracle = recursive_oracle_encode(&par);
         let machine = protobuf_encoder::encode_to_vec(&par);
         prop_assert!(
             byte_identity_verdict("generated", &machine, &oracle).is_ok(),
             "{}", byte_identity_verdict("generated", &machine, &oracle).unwrap_err()
         );
-        prop_assert_eq!(protobuf_encoder::encoded_len(&par), par.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encoded_len(&par) as u64, recursive_oracle_len_from(&par, 0));
+        prop_assert_eq!(par.encode_to_vec(), oracle);
     }
 
     /// Both properties through every cold-store root.
@@ -676,23 +931,23 @@ proptest! {
             guard: Some(par.clone()),
             tagged_cont: Some(TaggedCont::ScalaBodyRef(7)),
         };
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&datum), datum.encode_to_vec());
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&pattern), pattern.encode_to_vec());
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&cont), cont.encode_to_vec());
-        prop_assert_eq!(protobuf_encoder::encoded_len(&cont), cont.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), recursive_oracle_encode(&par));
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&datum), recursive_oracle_encode(&datum));
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&pattern), recursive_oracle_encode(&pattern));
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&cont), recursive_oracle_encode(&cont));
+        prop_assert_eq!(protobuf_encoder::encoded_len(&cont) as u64, recursive_oracle_len_from(&cont, 0));
     }
 
     /// Wide sequences: the counted-repeat path past its first iteration, where
     /// every element carries its own key and length prefix.
     #[test]
     fn wide_sequences_encode_identically(n in 0usize..64) {
-        let par = Par {
+        let par = models::par_from_default! {
             exprs: (0..n).map(|i| Expr { expr_instance: Some(ExprInstance::GInt(i as i64)) }).collect(),
             sends: (0..n).map(|i| Send { chan: Some(corpus::gint(i as i64)), ..Default::default() }).collect(),
             ..Default::default()
         };
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), recursive_oracle_encode(&par));
     }
 
     /// Maps: keys and values independently at or off their defaults.
@@ -703,12 +958,12 @@ proptest! {
             let v = if fill.get(i).copied().unwrap_or(false) { corpus::gint(i as i64) } else { Par::default() };
             injections.insert(k.clone(), v);
         }
-        let par = Par {
+        let par = models::par_from_default! {
             news: vec![New { bind_count: 1, p: None, uri: vec![], injections, locally_free: vec![] }],
             ..Default::default()
         };
-        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), par.encode_to_vec());
-        prop_assert_eq!(protobuf_encoder::encoded_len(&par), par.encoded_len());
+        prop_assert_eq!(protobuf_encoder::encode_to_vec(&par), recursive_oracle_encode(&par));
+        prop_assert_eq!(protobuf_encoder::encoded_len(&par) as u64, recursive_oracle_len_from(&par, 0));
     }
 }
 
@@ -716,42 +971,17 @@ proptest! {
 // §4  Depth — where the two encoders' complexity classes separate
 // ===========================================================================
 
-/// Deep terms, on an EXPLICITLY SIZED thread.
-///
-/// ## Runner discipline
-///
-/// The body runs inside `std::thread::Builder::stack_size`, so it passes on
-/// **256 MiB under both `cargo test` and `cargo nextest`** — `RUST_MIN_STACK`
-/// is irrelevant to an explicitly sized thread, and `nextest` runs bodies on the
-/// process main thread where `RUST_MIN_STACK` has no effect at all.
-///
-/// ⚠ The ORACLE is what needs the large stack, not the machine:
-/// `prost::Message::encode_to_vec` is Θ(depth) *and* Θ(d²) in work. The depths
-/// here are chosen so the oracle survives, because without an oracle there is no
-/// differential — the machine's own depth-independence is a separate question,
-/// measured by the space gate rather than asserted here.
+/// The recursive reference is intentionally exercised only on bounded terms;
+/// the production machine's unbounded-depth evidence lives in the dedicated
+/// small-stack suite.
 #[test]
-fn deep_terms_encode_identically() {
-    std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .name("prost-deep".to_string())
-        .spawn(|| {
-            for depth in [1usize, 2, 8, 32, 33, 34, 48, 256] {
-                let par = corpus::deep_par(depth);
-                assert_encodes_identically(&format!("deep_par({depth})"), &par);
-                let mixed = corpus::deep_mixed_par(depth);
-                // ★ `deep_mixed_par` cycles through EIGHT containment shapes,
-                // including a `New.injections` map at level%8==2 and an
-                // `EPathMap` at level%8==7 — the opaque leaf. So this leg is
-                // what exercises the opaque interception at depth.
-                assert_encodes_identically(&format!("deep_mixed_par({depth})"), &mixed);
-                std::mem::forget(par);
-                std::mem::forget(mixed);
-            }
-        })
-        .expect("spawn the deep-term thread")
-        .join()
-        .expect("the deep-term differential must survive");
+fn bounded_recursive_oracle_terms_encode_identically() {
+    for depth in [1usize, 2, 8, 16, 32] {
+        let par = corpus::deep_par(depth);
+        assert_encodes_identically(&format!("deep_par({depth})"), &par);
+        let mixed = corpus::deep_mixed_par(depth);
+        assert_encodes_identically(&format!("deep_mixed_par({depth})"), &mixed);
+    }
 }
 
 /// ★★ **The `` $\Theta(d^2) \to \Theta(n)$ `` claim, made observable.**
@@ -760,63 +990,48 @@ fn deep_terms_encode_identically() {
 /// It asserts the *structural* fact the complexity claim rests on: the length
 /// table holds **one entry per message node**, so each node's length is computed
 /// once. prost recomputes a node's subtree length once per ancestor.
-///
-/// ## Runner discipline
-///
-/// Runs inside an explicitly sized 64 MiB thread; passes under **both** runners.
 #[test]
 fn the_length_table_holds_exactly_one_entry_per_message_node() {
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .name("prost-lentable".to_string())
-        .spawn(|| {
-            // A `deep_par(d)` chain is `Par -> Expr(EListBody) -> EList -> Par`,
-            // so each level contributes a fixed number of MESSAGE nodes. The
-            // count must therefore be affine in the depth — and, decisively,
-            // must NOT be quadratic.
-            let mut sizes = Vec::new();
-            for depth in [4usize, 8, 16, 32] {
-                let par = corpus::deep_par(depth);
-                sizes.push((depth, protobuf_encoder::len_table_size(&par)));
-                std::mem::forget(par);
-            }
-            let per_level: Vec<usize> = sizes
-                .windows(2)
-                .map(|w| (w[1].1 - w[0].1) / (w[1].0 - w[0].0))
-                .collect();
-            assert!(
-                per_level.windows(2).all(|w| w[0] == w[1]),
-                "the length table must grow LINEARLY in depth — one entry per message node, \
+    let mut sizes = Vec::new();
+    for depth in [4usize, 8, 16, 32] {
+        let par = corpus::deep_par(depth);
+        sizes.push((depth, protobuf_encoder::len_table_size(&par)));
+    }
+    let per_level: Vec<usize> = sizes
+        .windows(2)
+        .map(|w| (w[1].1 - w[0].1) / (w[1].0 - w[0].0))
+        .collect();
+    assert!(
+        per_level.windows(2).all(|w| w[0] == w[1]),
+        "the length table must grow LINEARLY in depth — one entry per message node, \
                  each measured once. Observed {sizes:?}, i.e. {per_level:?} entries per level. \
                  A growing per-level cost means nodes are being measured more than once, \
                  which is the Θ(d²) behaviour this encoder exists to remove."
-            );
-            assert!(
-                per_level[0] >= 2,
-                "each `deep_par` level is `Par -> Expr -> EList -> Par`, so it must contribute \
+    );
+    assert!(
+        per_level[0] >= 2,
+        "each `deep_par` level is `Par -> Expr -> EList -> Par`, so it must contribute \
                  at least two message nodes; {per_level:?} suggests the table collapsed"
-            );
+    );
 
-            // …and the op stacks stay Θ(depth) while the table grows Θ(n).
-            let wide = Par {
-                exprs: (0..4096)
-                    .map(|i| Expr { expr_instance: Some(ExprInstance::GInt(i)) })
-                    .collect(),
-                ..Default::default()
-            };
-            let (len_hw, emit_hw) = protobuf_encoder::op_stack_high_water(&wide);
-            assert!(
-                len_hw < 16 && emit_hw < 16,
-                "a 4,096-sibling term must not put 4,096 entries on either op stack — the \
+    // …and the op stacks stay Θ(depth) while the table grows Θ(n).
+    let wide = models::par_from_default! {
+        exprs: (0..4096)
+            .map(|i| Expr {
+                expr_instance: Some(ExprInstance::GInt(i)),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let (len_hw, emit_hw) = protobuf_encoder::op_stack_high_water(&wide);
+    assert!(
+        len_hw < 16 && emit_hw < 16,
+        "a 4,096-sibling term must not put 4,096 entries on either op stack — the \
                  counted repeat re-pushes ITSELF, not its children. Observed \
                  (len {len_hw}, emit {emit_hw})."
-            );
-            assert!(
-                protobuf_encoder::len_table_size(&wide) >= 4096,
-                "…while the LENGTH TABLE is Θ(nodes) and must hold one entry per sibling"
-            );
-        })
-        .expect("spawn the length-table thread")
-        .join()
-        .expect("the length-table measurement must survive");
+    );
+    assert!(
+        protobuf_encoder::len_table_size(&wide) >= 4096,
+        "…while the LENGTH TABLE is Θ(nodes) and must hold one entry per sibling"
+    );
 }

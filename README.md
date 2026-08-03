@@ -179,7 +179,8 @@ To build a local image:
 
 ## Development Notes
 
-- `.cargo/config.toml` sets `RUST_MIN_STACK=8388608` for deep Rholang recursion in tests.
+- Recursive term operations use generated or explicit stack-safe traversal machines; the
+  workspace does not raise thread stack sizes globally.
 - `node`, `models`, and `comm` use `build.rs` to generate gRPC and protobuf bindings.
 - `rholang` and `rspace++` depend on the external `rholang-parser` crate fetched from Git.
 

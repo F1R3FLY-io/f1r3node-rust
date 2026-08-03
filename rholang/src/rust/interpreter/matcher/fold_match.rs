@@ -18,12 +18,7 @@ use crate::rust::interpreter::metrics_constants::{
 // subterm). The non-binding pair comparison (`match_pars`) runs entirely by
 // reference — a failing candidate copies nothing.
 pub trait FoldMatch<T, P> {
-    fn fold_match(
-        &mut self,
-        tlist: &[T],
-        plist: &[P],
-        remainder: Option<Var>,
-    ) -> Option<Vec<T>>;
+    fn fold_match(&mut self, tlist: &[T], plist: &[P], remainder: Option<Var>) -> Option<Vec<T>>;
 
     fn free_check(&self, trem: &[T], level: i32, acc: Vec<T>) -> Option<Vec<T>>;
 }

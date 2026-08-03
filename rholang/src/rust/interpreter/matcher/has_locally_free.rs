@@ -4,6 +4,11 @@ use models::rust::utils::union;
 use super::exports::*;
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 
+/// Moves the cached bitset out while leaving `Par` valid for its iterative
+/// destructor. This is allocation-neutral (`Vec::new()` replaces the field).
+#[inline]
+fn take_par_locally_free(mut par: Par) -> Vec<u8> { std::mem::take(&mut par.locally_free) }
+
 // See models/src/main/scala/coop/rchain/models/HasLocallyFree.scala
 pub trait HasLocallyFree<T> {
     /** Return true if a connective (including free variables and wildcards) is
@@ -115,14 +120,14 @@ impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
 impl HasLocallyFree<Par> for SpatialMatcherContext {
     fn connective_used(&self, p: Par) -> bool { p.connective_used }
 
-    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
+    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { take_par_locally_free(p) }
 }
 
 impl HasLocallyFree<Bundle> for SpatialMatcherContext {
     fn connective_used(&self, _source: Bundle) -> bool { false }
 
     fn locally_free(&self, source: Bundle, _depth: i32) -> Vec<u8> {
-        source.body.expect("Bundle.body").locally_free
+        take_par_locally_free(source.body.expect("Bundle.body"))
     }
 }
 
@@ -244,60 +249,60 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             Some(EZipperBody(e)) => e.locally_free,
 
             Some(EVarBody(EVar { v })) => self.locally_free(v.expect("EVar.v"), depth),
-            Some(ENotBody(ENot { p })) => p.expect("ENot.p").locally_free,
-            Some(ENegBody(ENeg { p })) => p.expect("ENeg.p").locally_free,
+            Some(ENotBody(ENot { p })) => take_par_locally_free(p.expect("ENot.p")),
+            Some(ENegBody(ENeg { p })) => take_par_locally_free(p.expect("ENeg.p")),
 
             Some(EMultBody(EMult { p1, p2 })) => union(
-                p1.expect("EMult.p1").locally_free,
-                p2.expect("EMult.p2").locally_free,
+                take_par_locally_free(p1.expect("EMult.p1")),
+                take_par_locally_free(p2.expect("EMult.p2")),
             ),
             Some(EDivBody(EDiv { p1, p2 })) => union(
-                p1.expect("EDiv.p1").locally_free,
-                p2.expect("EDiv.p2").locally_free,
+                take_par_locally_free(p1.expect("EDiv.p1")),
+                take_par_locally_free(p2.expect("EDiv.p2")),
             ),
             Some(EModBody(EMod { p1, p2 })) => union(
-                p1.expect("EMod.p1").locally_free,
-                p2.expect("EMod.p2").locally_free,
+                take_par_locally_free(p1.expect("EMod.p1")),
+                take_par_locally_free(p2.expect("EMod.p2")),
             ),
             Some(EPlusBody(EPlus { p1, p2 })) => union(
-                p1.expect("EPlus.p1").locally_free,
-                p2.expect("EPlus.p2").locally_free,
+                take_par_locally_free(p1.expect("EPlus.p1")),
+                take_par_locally_free(p2.expect("EPlus.p2")),
             ),
             Some(EMinusBody(EMinus { p1, p2 })) => union(
-                p1.expect("EMinus.p1").locally_free,
-                p2.expect("EMinus.p2").locally_free,
+                take_par_locally_free(p1.expect("EMinus.p1")),
+                take_par_locally_free(p2.expect("EMinus.p2")),
             ),
             Some(ELtBody(ELt { p1, p2 })) => union(
-                p1.expect("ELt.p1").locally_free,
-                p2.expect("ELt.p2").locally_free,
+                take_par_locally_free(p1.expect("ELt.p1")),
+                take_par_locally_free(p2.expect("ELt.p2")),
             ),
             Some(ELteBody(ELte { p1, p2 })) => union(
-                p1.expect("ELte.p1").locally_free,
-                p2.expect("ELte.p2").locally_free,
+                take_par_locally_free(p1.expect("ELte.p1")),
+                take_par_locally_free(p2.expect("ELte.p2")),
             ),
             Some(EGtBody(EGt { p1, p2 })) => union(
-                p1.expect("EGt.p1").locally_free,
-                p2.expect("EGt.p2").locally_free,
+                take_par_locally_free(p1.expect("EGt.p1")),
+                take_par_locally_free(p2.expect("EGt.p2")),
             ),
             Some(EGteBody(EGte { p1, p2 })) => union(
-                p1.expect("EGte.p1").locally_free,
-                p2.expect("EGte.p2").locally_free,
+                take_par_locally_free(p1.expect("EGte.p1")),
+                take_par_locally_free(p2.expect("EGte.p2")),
             ),
             Some(EEqBody(EEq { p1, p2 })) => union(
-                p1.expect("EEq.p1").locally_free,
-                p2.expect("EEq.p2").locally_free,
+                take_par_locally_free(p1.expect("EEq.p1")),
+                take_par_locally_free(p2.expect("EEq.p2")),
             ),
             Some(ENeqBody(ENeq { p1, p2 })) => union(
-                p1.expect("ENeq.p1").locally_free,
-                p2.expect("ENeq.p2").locally_free,
+                take_par_locally_free(p1.expect("ENeq.p1")),
+                take_par_locally_free(p2.expect("ENeq.p2")),
             ),
             Some(EAndBody(EAnd { p1, p2 })) => union(
-                p1.expect("EAnd.p1").locally_free,
-                p2.expect("EAnd.p2").locally_free,
+                take_par_locally_free(p1.expect("EAnd.p1")),
+                take_par_locally_free(p2.expect("EAnd.p2")),
             ),
             Some(EOrBody(EOr { p1, p2 })) => union(
-                p1.expect("EOr.p1").locally_free,
-                p2.expect("EOr.p2").locally_free,
+                take_par_locally_free(p1.expect("EOr.p1")),
+                take_par_locally_free(p2.expect("EOr.p2")),
             ),
 
             Some(EMethodBody(e)) => e.locally_free,
@@ -307,21 +312,21 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
             // BY VALUE and can MOVE both bitsets, where the helper (a
             // by-reference reader) must clone.
             Some(EMatchesBody(EMatches { target, pattern })) => union(
-                target.expect("EMatches.target").locally_free,
-                pattern.expect("EMatches.pattern").locally_free,
+                take_par_locally_free(target.expect("EMatches.target")),
+                take_par_locally_free(pattern.expect("EMatches.pattern")),
             ),
 
             Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => union(
-                p1.expect("EPercentPercent.p1").locally_free,
-                p2.expect("EPercentPercent.p2").locally_free,
+                take_par_locally_free(p1.expect("EPercentPercent.p1")),
+                take_par_locally_free(p2.expect("EPercentPercent.p2")),
             ),
             Some(EPlusPlusBody(EPlusPlus { p1, p2 })) => union(
-                p1.expect("EPlusPlus.p1").locally_free,
-                p2.expect("EPlusPlus.p2").locally_free,
+                take_par_locally_free(p1.expect("EPlusPlus.p1")),
+                take_par_locally_free(p2.expect("EPlusPlus.p2")),
             ),
             Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => union(
-                p1.expect("EMinusMinus.p1").locally_free,
-                p2.expect("EMinusMinus.p2").locally_free,
+                take_par_locally_free(p1.expect("EMinusMinus.p1")),
+                take_par_locally_free(p2.expect("EMinusMinus.p2")),
             ),
 
             None => Default::default(),
@@ -403,7 +408,7 @@ impl HasLocallyFree<MatchCase> for SpatialMatcherContext {
 
     fn locally_free(&self, mc: MatchCase, depth: i32) -> Vec<u8> {
         union(
-            mc.source.expect("MatchCase.source").locally_free,
+            take_par_locally_free(mc.source.expect("MatchCase.source")),
             self.locally_free(mc.pattern.expect("MatchCase.pattern"), depth + 1),
         )
     }
@@ -594,60 +599,60 @@ impl HasLocallyFree<Expr> for Expr {
                 .clone()
                 .expect("EVar.v")
                 .locally_free(v.expect("EVar.v"), depth),
-            Some(ENotBody(ENot { p })) => p.expect("ENot.p").locally_free,
-            Some(ENegBody(ENeg { p })) => p.expect("ENeg.p").locally_free,
+            Some(ENotBody(ENot { p })) => take_par_locally_free(p.expect("ENot.p")),
+            Some(ENegBody(ENeg { p })) => take_par_locally_free(p.expect("ENeg.p")),
 
             Some(EMultBody(EMult { p1, p2 })) => union(
-                p1.expect("EMult.p1").locally_free,
-                p2.expect("EMult.p2").locally_free,
+                take_par_locally_free(p1.expect("EMult.p1")),
+                take_par_locally_free(p2.expect("EMult.p2")),
             ),
             Some(EDivBody(EDiv { p1, p2 })) => union(
-                p1.expect("EDiv.p1").locally_free,
-                p2.expect("EDiv.p2").locally_free,
+                take_par_locally_free(p1.expect("EDiv.p1")),
+                take_par_locally_free(p2.expect("EDiv.p2")),
             ),
             Some(EModBody(EMod { p1, p2 })) => union(
-                p1.expect("EMod.p1").locally_free,
-                p2.expect("EMod.p2").locally_free,
+                take_par_locally_free(p1.expect("EMod.p1")),
+                take_par_locally_free(p2.expect("EMod.p2")),
             ),
             Some(EPlusBody(EPlus { p1, p2 })) => union(
-                p1.expect("EPlus.p1").locally_free,
-                p2.expect("EPlus.p2").locally_free,
+                take_par_locally_free(p1.expect("EPlus.p1")),
+                take_par_locally_free(p2.expect("EPlus.p2")),
             ),
             Some(EMinusBody(EMinus { p1, p2 })) => union(
-                p1.expect("EMinus.p1").locally_free,
-                p2.expect("EMinus.p2").locally_free,
+                take_par_locally_free(p1.expect("EMinus.p1")),
+                take_par_locally_free(p2.expect("EMinus.p2")),
             ),
             Some(ELtBody(ELt { p1, p2 })) => union(
-                p1.expect("ELt.p1").locally_free,
-                p2.expect("ELt.p2").locally_free,
+                take_par_locally_free(p1.expect("ELt.p1")),
+                take_par_locally_free(p2.expect("ELt.p2")),
             ),
             Some(ELteBody(ELte { p1, p2 })) => union(
-                p1.expect("ELte.p1").locally_free,
-                p2.expect("ELte.p2").locally_free,
+                take_par_locally_free(p1.expect("ELte.p1")),
+                take_par_locally_free(p2.expect("ELte.p2")),
             ),
             Some(EGtBody(EGt { p1, p2 })) => union(
-                p1.expect("EGt.p1").locally_free,
-                p2.expect("EGt.p2").locally_free,
+                take_par_locally_free(p1.expect("EGt.p1")),
+                take_par_locally_free(p2.expect("EGt.p2")),
             ),
             Some(EGteBody(EGte { p1, p2 })) => union(
-                p1.expect("EGte.p1").locally_free,
-                p2.expect("EGte.p2").locally_free,
+                take_par_locally_free(p1.expect("EGte.p1")),
+                take_par_locally_free(p2.expect("EGte.p2")),
             ),
             Some(EEqBody(EEq { p1, p2 })) => union(
-                p1.expect("EEq.p1").locally_free,
-                p2.expect("EEq.p2").locally_free,
+                take_par_locally_free(p1.expect("EEq.p1")),
+                take_par_locally_free(p2.expect("EEq.p2")),
             ),
             Some(ENeqBody(ENeq { p1, p2 })) => union(
-                p1.expect("ENeq.p1").locally_free,
-                p2.expect("ENeq.p2").locally_free,
+                take_par_locally_free(p1.expect("ENeq.p1")),
+                take_par_locally_free(p2.expect("ENeq.p2")),
             ),
             Some(EAndBody(EAnd { p1, p2 })) => union(
-                p1.expect("EAnd.p1").locally_free,
-                p2.expect("EAnd.p2").locally_free,
+                take_par_locally_free(p1.expect("EAnd.p1")),
+                take_par_locally_free(p2.expect("EAnd.p2")),
             ),
             Some(EOrBody(EOr { p1, p2 })) => union(
-                p1.expect("EOr.p1").locally_free,
-                p2.expect("EOr.p2").locally_free,
+                take_par_locally_free(p1.expect("EOr.p1")),
+                take_par_locally_free(p2.expect("EOr.p2")),
             ),
 
             Some(EMethodBody(e)) => e.locally_free,
@@ -657,21 +662,21 @@ impl HasLocallyFree<Expr> for Expr {
             // BY VALUE and can MOVE both bitsets, where the helper (a
             // by-reference reader) must clone.
             Some(EMatchesBody(EMatches { target, pattern })) => union(
-                target.expect("EMatches.target").locally_free,
-                pattern.expect("EMatches.pattern").locally_free,
+                take_par_locally_free(target.expect("EMatches.target")),
+                take_par_locally_free(pattern.expect("EMatches.pattern")),
             ),
 
             Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => union(
-                p1.expect("EPercentPercent.p1").locally_free,
-                p2.expect("EPercentPercent.p2").locally_free,
+                take_par_locally_free(p1.expect("EPercentPercent.p1")),
+                take_par_locally_free(p2.expect("EPercentPercent.p2")),
             ),
             Some(EPlusPlusBody(EPlusPlus { p1, p2 })) => union(
-                p1.expect("EPlusPlus.p1").locally_free,
-                p2.expect("EPlusPlus.p2").locally_free,
+                take_par_locally_free(p1.expect("EPlusPlus.p1")),
+                take_par_locally_free(p2.expect("EPlusPlus.p2")),
             ),
             Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => union(
-                p1.expect("EMinusMinus.p1").locally_free,
-                p2.expect("EMinusMinus.p2").locally_free,
+                take_par_locally_free(p1.expect("EMinusMinus.p1")),
+                take_par_locally_free(p2.expect("EMinusMinus.p2")),
             ),
 
             None => Default::default(),
@@ -715,7 +720,7 @@ impl HasLocallyFree<Connective> for Connective {
 impl HasLocallyFree<Par> for Par {
     fn connective_used(&self, p: Par) -> bool { p.connective_used }
 
-    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
+    fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { take_par_locally_free(p) }
 }
 
 impl HasLocallyFree<New> for New {

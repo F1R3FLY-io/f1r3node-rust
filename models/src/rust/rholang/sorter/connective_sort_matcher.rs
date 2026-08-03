@@ -10,7 +10,5 @@ use crate::rhoapi::Connective;
 pub struct ConnectiveSortMatcher;
 
 impl Sortable<Connective> for ConnectiveSortMatcher {
-    fn sort_match(c: &Connective) -> ScoredTerm<Connective> {
-        sort_connective(c)
-    }
+    fn sort_match(c: &Connective) -> ScoredTerm<Connective> { sort_connective(c) }
 }

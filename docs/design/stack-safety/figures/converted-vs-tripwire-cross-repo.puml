@@ -56,7 +56,7 @@ FT -[#C62828,thickness=3]right-> MR : ⚠ **NOT the same family.**\nNo fix on ei
 
 note bottom of F1 #FFF3E0
   **`clone` LEFT the tripwire by being CONVERTED** (`0eac9c3a`, stage F-4:
-  `models/build.rs` strips the derive, `models/build/wire_schema.rs`
+  `models/build.rs` strips the derive, `models/codegen/schema_codegen.rs`
   generates the impl over `drive_with`) — **never by having its ceiling
   raised.** Its `assert_slope_below` call was DELETED rather than relaxed.
   <latex>\Rightarrow</latex> The report's earlier claim that

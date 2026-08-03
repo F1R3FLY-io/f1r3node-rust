@@ -39,10 +39,10 @@ fn bench_metering(c: &mut Criterion) {
         let budget = RuntimeBudget::new(Cost::create(i64::MAX, "metering bench"));
         budget.set_deploy_signatures(&[b"cosigner-a", b"cosigner-b"]);
         let machine = MeteredMachine::new(budget);
-        let leaf_channel = envelope_sig_compound(&[b"cosigner-a", b"cosigner-b"])
-            .signer_channels()[0]
-            .0
-            .clone();
+        let leaf_channel = envelope_sig_compound(&[b"cosigner-a", b"cosigner-b"]).signer_channels()
+            [0]
+        .0
+        .clone();
         c.bench_function("note_channel_lane_multi_sig_match", |b| {
             b.iter(|| machine.note_channel_lane(black_box(&leaf_channel)))
         });

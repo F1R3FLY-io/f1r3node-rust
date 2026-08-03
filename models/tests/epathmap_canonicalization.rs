@@ -14,7 +14,7 @@ use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 
 fn gint(v: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(v)),
         }],
@@ -22,7 +22,7 @@ fn gint(v: i64) -> Par {
     }
 }
 fn gstr(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -30,7 +30,7 @@ fn gstr(s: &str) -> Par {
     }
 }
 fn map_expr(entries: Vec<Par>) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
                 entries,
@@ -48,9 +48,7 @@ fn nested_map(entries: Vec<Par>) -> Par {
 }
 
 /// Normalize a Par exactly as the compiler / runtime does (the sorter).
-fn normalize(par: &Par) -> Par {
-    ParSortMatcher::sort_match(par).term
-}
+fn normalize(par: &Par) -> Par { ParSortMatcher::sort_match(par).term }
 
 #[test]
 fn permuted_ground_maps_normalize_equal() {
@@ -117,17 +115,17 @@ fn permuted_ground_maps_have_identical_event_hash_preimage() {
 #[test]
 fn the_constructor_canonicalizes_and_is_idempotent() {
     let m = EPathMap::new(vec![gstr("z"), gint(3), gstr("a")], Vec::new(), false, None);
-    let round_tripped = EPathMap::new(m.ps().clone(), Vec::new(), false, None);
+    let round_tripped = EPathMap::new(m.entry_trie().entries_owned(), Vec::new(), false, None);
     assert_eq!(
-        m.ps(),
-        round_tripped.ps(),
+        m.trie_snapshot(),
+        round_tripped.trie_snapshot(),
         "re-filing a canonical projection reproduces it"
     );
 
     let permuted = EPathMap::new(vec![gint(3), gstr("a"), gstr("z")], Vec::new(), false, None);
     assert_eq!(
-        m.ps(),
-        permuted.ps(),
+        m.trie_snapshot(),
+        permuted.trie_snapshot(),
         "…and a permuted construction of the same entry set lands on it too"
     );
 }
@@ -155,7 +153,7 @@ fn the_constructor_canonicalizes_and_is_idempotent() {
 /// and deduplication, which is real.
 #[test]
 fn a_non_ground_map_is_canonicalized_as_well() {
-    let free = Par {
+    let free = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
                 v: Some(Var {
@@ -175,8 +173,8 @@ fn a_non_ground_map_is_canonicalized_as_well() {
     let permuted = EPathMap::new(vec![free, gstr("a"), gstr("z")], Vec::new(), true, None);
 
     assert_eq!(
-        forward.ps(),
-        permuted.ps(),
+        forward.trie_snapshot(),
+        permuted.trie_snapshot(),
         "two orders of one non-ground entry set are one value"
     );
     assert_eq!(

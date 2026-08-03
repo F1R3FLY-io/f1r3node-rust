@@ -103,7 +103,7 @@ const MEASURED: &[(usize, f64)] = &[
 const WORKLOAD_SCALE: f64 = 2000.0;
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -112,7 +112,7 @@ fn gint(n: i64) -> Par {
 }
 
 fn gstr(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -124,7 +124,7 @@ fn gstr(s: &str) -> Par {
 /// averages (3.20 nodes, 661 B per datum) rather than being a bare spine — a
 /// spine would understate the per-node cost the shallow case is meant to expose.
 fn datum(depth: usize) -> ListParWithRandom {
-    let mut body = Par {
+    let mut body = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(42)),
@@ -145,7 +145,7 @@ fn datum(depth: usize) -> ListParWithRandom {
         ..Default::default()
     };
     for level in 1..depth {
-        body = Par {
+        body = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(if level % 2 == 0 {
                     ExprInstance::ETupleBody(ETuple {
@@ -176,7 +176,7 @@ fn datum(depth: usize) -> ListParWithRandom {
 /// counted-repeat path over pairs rather than over `Par`s.
 fn map_datum(entries: usize) -> ListParWithRandom {
     ListParWithRandom {
-        pars: vec![Par {
+        pars: vec![models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EMapBody(models::rhoapi::EMap {
                     kvs: (0..entries)

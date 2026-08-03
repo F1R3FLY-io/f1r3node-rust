@@ -10,7 +10,5 @@ use crate::rhoapi::Match;
 pub struct MatchSortMatcher;
 
 impl Sortable<Match> for MatchSortMatcher {
-    fn sort_match(m: &Match) -> ScoredTerm<Match> {
-        sort_match_node(m)
-    }
+    fn sort_match(m: &Match) -> ScoredTerm<Match> { sort_match_node(m) }
 }

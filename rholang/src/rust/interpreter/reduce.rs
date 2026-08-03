@@ -19,19 +19,14 @@ use models::rhoapi::{
     ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
     Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
+use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
+use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::{
-    cursor_entry_key, path_elements, segments_to_key, CursorKind,
-};
-use models::rust::pathmap_native_query::{
-    collect_child_segments, collect_subtrie_values, next_value_key, path_prefix_exists,
-    subtrie_value_count,
-};
-use models::rust::pathmap_zipper::{decode_cursor, RholangReadZipper};
+use models::rust::pathmap_integration::{CursorKind, segments_to_key};
+use models::rust::pathmap_zipper::decode_cursor;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
@@ -45,7 +40,9 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use smallvec::SmallVec;
 use tokio::sync::RwLock;
+use typed_arena::Arena;
 
+use super::accounting::RuntimeBudget;
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -56,9 +53,8 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
-use super::accounting::RuntimeBudget;
 use super::dispatch::{
-    decode_non_deterministic_output, DispatchType, RhoDispatch, RholangAndScalaDispatcher,
+    DispatchType, RhoDispatch, RholangAndScalaDispatcher, decode_non_deterministic_output,
 };
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -80,9 +76,15 @@ use crate::rust::interpreter::accounting::costs::{
     size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
 };
 use crate::rust::interpreter::guard::MATCH_CASE_WHERE;
-use crate::rust::interpreter::matcher::r#match::{guard_disposition_in_env, GuardDisposition};
+use crate::rust::interpreter::matcher::r#match::{GuardDisposition, guard_disposition_in_env};
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
+
+// Expands only in test builds. Keeping the oracle's source separate lets the
+// derived recursion census classify deliberate reference recursion separately
+// from this module's production heap-stack drivers.
+#[cfg(test)]
+include!("reduce_expression_oracle.rs");
 
 // NOTE: `StackGrowingFuture` (stacker::maybe_grow-based dynamic stack growth) has been REMOVED. The
 // deep async recursion it guarded (eval -> produce/consume -> dispatch -> eval) is no longer a linear
@@ -715,7 +717,7 @@ impl DebruijnInterpreter {
 
     async fn eval_inner(
         &self,
-        par: Par,
+        mut par: Par,
         env: &Env<Par>,
         rand: Blake2b512Random,
         // Coordinate of THIS eval task in the parallel-reduction tree. Each of the width-N parallel
@@ -724,28 +726,31 @@ impl DebruijnInterpreter {
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         let terms: Vec<GeneratedMessage> = vec![
-            par.sends
+            std::mem::take(&mut par.sends)
                 .into_iter()
                 .map(GeneratedMessage::Send)
                 .collect::<Vec<_>>(),
-            par.receives
+            std::mem::take(&mut par.receives)
                 .into_iter()
                 .map(GeneratedMessage::Receive)
                 .collect(),
-            par.news.into_iter().map(GeneratedMessage::New).collect(),
-            par.matches
+            std::mem::take(&mut par.news)
+                .into_iter()
+                .map(GeneratedMessage::New)
+                .collect(),
+            std::mem::take(&mut par.matches)
                 .into_iter()
                 .map(GeneratedMessage::Match)
                 .collect(),
-            par.conditionals
+            std::mem::take(&mut par.conditionals)
                 .into_iter()
                 .map(GeneratedMessage::If)
                 .collect(),
-            par.bundles
+            std::mem::take(&mut par.bundles)
                 .into_iter()
                 .map(GeneratedMessage::Bundle)
                 .collect(),
-            par.exprs
+            std::mem::take(&mut par.exprs)
                 .into_iter()
                 .filter(|expr| match &expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
@@ -2283,7 +2288,25 @@ impl DebruijnInterpreter {
     // =======================================================================
     // The single driver loop. Native stack is O(1); recursion lives in `work`.
     // =======================================================================
-    fn eval_drive<'e>(&self, root: EvWork<'e>, env: &Env<Par>) -> Result<EvVal, InterpreterError> {
+    fn eval_drive<'root>(
+        &self,
+        root: EvWork<'root>,
+        env: &Env<Par>,
+    ) -> Result<EvVal, InterpreterError> {
+        let decoded_entries = Arena::new();
+        self.eval_drive_with_arena(root, env, &decoded_entries)
+    }
+
+    /// Execute one evaluator PDA while retaining any set-mode EPathMap entries
+    /// decoded from `PathMap<()>` in a traversal-local arena. This gives every
+    /// work item an ordinary borrow without installing a persistent `Vec<Par>`
+    /// shadow on the EPathMap and without recursive re-entry per entry.
+    fn eval_drive_with_arena<'e>(
+        &self,
+        root: EvWork<'e>,
+        env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
+    ) -> Result<EvVal, InterpreterError> {
         let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
         let mut vals: Vec<EvVal> = Vec::with_capacity(64);
         work.push(root);
@@ -2291,7 +2314,9 @@ impl DebruijnInterpreter {
             match w {
                 EvWork::EEval(p) => self.descend_eval(p, env, &mut work, &mut vals)?,
                 EvWork::EToPar(e) => self.descend_to_par(e, env, &mut work, &mut vals)?,
-                EvWork::EToExpr(e) => self.descend_to_expr(e, env, &mut work, &mut vals)?,
+                EvWork::EToExpr(e) => {
+                    self.descend_to_expr(e, env, decoded_entries, &mut work, &mut vals)?
+                }
                 EvWork::ESingle(p) => self.descend_single(p, env, &mut work, &mut vals)?,
                 EvWork::EBool(p) => self.descend_bool(p, env, &mut work, &mut vals)?,
                 EvWork::EI64(p) => self.descend_i64(p, env, &mut work, &mut vals)?,
@@ -2416,7 +2441,7 @@ impl DebruijnInterpreter {
             None => {
                 return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
                     format!("{:?}", std::any::type_name::<ExprInstance>()),
-                ))
+                ));
             }
         };
         match expr_instance {
@@ -2436,7 +2461,7 @@ impl DebruijnInterpreter {
                     None => {
                         return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
                             format!("{:?}", std::any::type_name::<Par>()),
-                        ))
+                        ));
                     }
                 };
                 work.push(EvWork::Combine(EvKont::ToParMethod {
@@ -2508,15 +2533,19 @@ impl DebruijnInterpreter {
             )));
         }
         match p.exprs.as_slice() {
-            [Expr {
-                expr_instance: Some(ExprInstance::GBool(b)),
-            }] => {
+            [
+                Expr {
+                    expr_instance: Some(ExprInstance::GBool(b)),
+                },
+            ] => {
                 vals.push(EvVal::Bool(*b));
                 Ok(())
             }
-            [Expr {
-                expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-            }] => {
+            [
+                Expr {
+                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+                },
+            ] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 let b = self.eval_to_bool(&pv, env)?;
                 vals.push(EvVal::Bool(b));
@@ -2553,15 +2582,19 @@ impl DebruijnInterpreter {
             )));
         }
         match p.exprs.as_slice() {
-            [Expr {
-                expr_instance: Some(ExprInstance::GInt(v)),
-            }] => {
+            [
+                Expr {
+                    expr_instance: Some(ExprInstance::GInt(v)),
+                },
+            ] => {
                 vals.push(EvVal::I64(*v));
                 Ok(())
             }
-            [Expr {
-                expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-            }] => {
+            [
+                Expr {
+                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+                },
+            ] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 let i = self.eval_to_i64(&pv, env)?;
                 vals.push(EvVal::I64(i));
@@ -2583,6 +2616,7 @@ impl DebruijnInterpreter {
         &self,
         expr: &'e Expr,
         env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
@@ -2592,7 +2626,7 @@ impl DebruijnInterpreter {
                 return Err(InterpreterError::ReduceError(format!(
                     "Unimplemented expression: {:?}",
                     expr
-                )))
+                )));
             }
         };
         match expr_instance {
@@ -2828,19 +2862,48 @@ impl DebruijnInterpreter {
                 Ok(())
             }
             ExprInstance::EPathmapBody(e1) => {
-                work.push(EvWork::Combine(EvKont::EPathmapK {
-                    e1,
-                    n: e1.entry_trie().len(),
-                }));
-                // ★ REVERSE order, which a read-zipper cannot walk directly — it goes
-                // forward only. But the reversal never needed the deep-clone memo:
-                // collecting BORROWS (8 bytes each) and reversing those is the same
-                // order at a fraction of the cost, where `ps()` would have cloned every
-                // entry and retained a second copy of the whole entry set forever.
-                let mut entries: Vec<&Par> = Vec::with_capacity(e1.entry_trie().len());
-                e1.entry_trie().extend_entry_refs(&mut entries);
-                for p in entries.into_iter().rev() {
-                    work.push(EvWork::EEval(p));
+                let child_count = match e1.mode() {
+                    EPathMapMode::Empty | EPathMapMode::Set => e1.len(),
+                    EPathMapMode::Map => e1
+                        .len()
+                        .checked_mul(2)
+                        .expect("an addressable EPathMap cannot overflow its child count"),
+                };
+                work.push(EvWork::Combine(EvKont::EPathmapK { e1, n: child_count }));
+                // Set mode stores canonical key bytes, not duplicate `Par`
+                // values. Decode each key once into the PDA's local arena and
+                // push ordinary borrows in reverse so the LIFO machine evaluates
+                // canonical trie order. Arena lifetime equals the whole drive,
+                // so nested maps remain in this same explicit machine.
+                match e1.mode() {
+                    EPathMapMode::Empty => {}
+                    EPathMapMode::Set => {
+                        let mut entries: Vec<&Par> = Vec::with_capacity(child_count);
+                        e1.entry_trie()
+                            .for_each_raw_set_entry(|key| {
+                                let entry = decode_trie_path(key)
+                                    .expect("set-mode EPathMap keys are canonical Par paths");
+                                entries.push(decoded_entries.alloc(entry));
+                            })
+                            .expect("set-mode dispatch checked before traversal");
+                        for entry in entries.into_iter().rev() {
+                            work.push(EvWork::EEval(entry));
+                        }
+                    }
+                    EPathMapMode::Map => {
+                        let mut entries: Vec<&Par> = Vec::with_capacity(child_count);
+                        e1.entry_trie()
+                            .for_each_raw_map_entry(|key, value| {
+                                let key = decode_trie_path(key)
+                                    .expect("map-mode EPathMap keys are canonical Par paths");
+                                entries.push(decoded_entries.alloc(key));
+                                entries.push(value);
+                            })
+                            .expect("map-mode dispatch checked before traversal");
+                        for p in entries.into_iter().rev() {
+                            work.push(EvWork::EEval(p));
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -2915,7 +2978,7 @@ impl DebruijnInterpreter {
                         return Err(InterpreterError::ReduceError(format!(
                             "Unimplemented method: {}",
                             emethod.method_name
-                        )))
+                        )));
                     }
                 };
                 vals.push(EvVal::Par(result_par));
@@ -4100,12 +4163,25 @@ impl DebruijnInterpreter {
             .map(|p| self.update_locally_free_par(p))
             .collect();
 
-        let rebuilt = EPathMap::new(
-            updated_ps,
-            e1.locally_free.clone(),
-            e1.connective_used,
-            None,
-        );
+        let rebuilt = match e1.mode() {
+            EPathMapMode::Empty | EPathMapMode::Set => EPathMap::new(
+                updated_ps,
+                e1.locally_free.clone(),
+                e1.connective_used,
+                None,
+            ),
+            EPathMapMode::Map => {
+                let mut values = updated_ps.into_iter();
+                let entries = std::iter::from_fn(|| {
+                    let key = values.next()?;
+                    let value = values
+                        .next()
+                        .expect("map-mode evaluator produces one value for every key");
+                    Some((key, value))
+                });
+                EPathMap::new_map(entries, e1.locally_free.clone(), e1.connective_used, None)
+            }
+        };
         // ★ The canonicalization call is GONE, because the constructor is
         // the canonicalizer now. `EPathMap::new` files every entry into the
         // map's trie, so `rebuilt` is ALREADY in trie order, deduplicated,
@@ -4195,448 +4271,8 @@ impl DebruijnInterpreter {
         Ok(result_par)
     }
 
-    // =======================================================================
-    // RECURSIVE TWIN — the oracle for the differential harness (`differential`
-    // module). Each function is a faithful recursive dispatcher over the SAME
-    // shared `combine_*` helpers the trampoline uses, so a byte-identical
-    // result + charge trace between the two proves the trampoline's descend/
-    // combine WIRING (the only new logic). cfg(test): excluded from production.
-    //
-    // ★ PROVENANCE, and what it is NOT.
-    //
-    // These six functions REPLACE `eval_expr`, `eval_expr_to_par`,
-    // `eval_expr_to_expr`, `eval_single_expr`, `eval_to_i64` and `eval_to_bool`
-    // as they stood at `a929a2d6^` (the commit before the trampoline). They are
-    // NOT copies of them, and the difference is not incidental — measured, with
-    // a `_recursive` rename applied:
-    //
-    //   | pre-trampoline fn  | its lines | twin lines | byte-identical |
-    //   |--------------------|-----------|------------|----------------|
-    //   | eval_expr          |        20 |         11 | no             |
-    //   | eval_expr_to_par   |        59 |         44 | no             |
-    //   | eval_expr_to_expr  |     1,213 |        167 | no             |
-    //   | eval_single_expr   |        21 |         20 | no             |
-    //   | eval_to_i64        |        48 |         28 | no             |
-    //   | eval_to_bool       |        48 |         28 | no             |
-    //
-    // ZERO of six. `eval_expr_to_expr` alone collapses 1,213 lines to 167,
-    // because the per-arm arithmetic, comparison and collection logic was
-    // LIFTED OUT into the `combine_*` helpers and the twin now calls them —
-    // the same helpers the trampoline calls.
-    //
-    // ⚠ THE CONSEQUENCE, stated so nobody has to infer it: this oracle SHARES
-    // code with the machine it checks. The differential can therefore prove the
-    // trampoline's descend/combine WIRING — which is the only new logic, and is
-    // what the harness claims — and it CANNOT detect a bug inside a `combine_*`
-    // helper, because both sides would compute the same wrong answer. That is a
-    // deliberate, bounded trade (a duplicated 1,213-line arm table would test
-    // the copy rather than the driving), not an oversight; it is written down
-    // here because "faithful copy" invited exactly the opposite reading.
-    //
-    // `rholang/tests/normalize_oracle_provenance.rs::
-    // the_trampoline_twin_is_a_rewrite_not_a_copy` re-derives the table above
-    // from git and fails if any entry moves.
-    //
-    // ⚠ NO `rustfmt.toml` exclusion, and that is the point: this file asserts no
-    // byte-identity, so formatting it falsifies nothing. An exclusion here would
-    // freeze text whose claim is "shares the combiners", which no formatter can
-    // break — see `2fee95d8` for why the criterion is stated that narrowly.
-    // =======================================================================
     #[cfg(test)]
-    pub(crate) fn eval_expr_recursive(
-        &self,
-        par: &Par,
-        env: &Env<Par>,
-    ) -> Result<Par, InterpreterError> {
-        let evaled_exprs = par
-            .exprs
-            .iter()
-            .map(|expr| self.eval_expr_to_par_recursive(expr, env))
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
-        let result = evaled_exprs
-            .into_iter()
-            .fold(par.with_exprs(Vec::new()), |acc, expr| {
-                concatenate_pars(acc, expr)
-            });
-        Ok(result)
-    }
-
-    #[cfg(test)]
-    fn eval_expr_to_par_recursive(
-        &self,
-        expr: &Expr,
-        env: &Env<Par>,
-    ) -> Result<Par, InterpreterError> {
-        if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
-            if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
-                return Ok(fused);
-            }
-        }
-        let expr_instance = match &expr.expr_instance {
-            Some(ei) => ei,
-            None => {
-                return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
-                    format!("{:?}", std::any::type_name::<ExprInstance>()),
-                ))
-            }
-        };
-        match expr_instance {
-            ExprInstance::EVarBody(evar) => {
-                let p = self.eval_var(&unwrap_option_safe(evar.v.clone())?, env)?;
-                let evaled_p = self.eval_expr_recursive(&p, env)?;
-                Ok(evaled_p)
-            }
-            ExprInstance::EMethodBody(emethod) => {
-                self.metering.reserve_primitive(method_call_cost())?;
-                let evaled_target =
-                    self.eval_expr_recursive(&unwrap_option_safe(emethod.target.clone())?, env)?;
-                let evaled_args: Vec<Par> = emethod
-                    .arguments
-                    .iter()
-                    .map(|arg| self.eval_expr_recursive(arg, env))
-                    .collect::<Result<Vec<_>, InterpreterError>>()?;
-                let result_par = match self.method_table().get(&emethod.method_name) {
-                    Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
-                    None => {
-                        return Err(InterpreterError::ReduceError(format!(
-                            "Unimplemented method: {}",
-                            emethod.method_name
-                        )));
-                    }
-                };
-                Ok(result_par)
-            }
-            _ => Ok(Par::default().with_exprs(vec![self.eval_expr_to_expr_recursive(expr, env)?])),
-        }
-    }
-
-    #[cfg(test)]
-    fn eval_expr_to_expr_recursive(
-        &self,
-        expr: &Expr,
-        env: &Env<Par>,
-    ) -> Result<Expr, InterpreterError> {
-        match &expr.expr_instance {
-            Some(expr_instance) => match expr_instance {
-                ExprInstance::GBool(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBool(*x)),
-                }),
-                ExprInstance::GInt(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GInt(*x)),
-                }),
-                ExprInstance::GString(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GString(x.clone())),
-                }),
-                ExprInstance::GUri(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GUri(x.clone())),
-                }),
-                ExprInstance::GByteArray(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GByteArray(x.clone())),
-                }),
-                ExprInstance::GDouble(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GDouble(*x)),
-                }),
-                ExprInstance::GBigInt(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBigInt(x.clone())),
-                }),
-                ExprInstance::GBigRat(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBigRat(x.clone())),
-                }),
-                ExprInstance::GFixedPoint(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GFixedPoint(x.clone())),
-                }),
-                ExprInstance::EZipperBody(zipper) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())),
-                }),
-
-                ExprInstance::ENotBody(enot) => {
-                    let b = self.eval_to_bool_recursive(enot.p.as_ref().unwrap(), env)?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(!b)),
-                    })
-                }
-                ExprInstance::ENegBody(eneg) => {
-                    let v = self.eval_single_expr_recursive(eneg.p.as_ref().unwrap(), env)?;
-                    self.combine_neg(v)
-                }
-                ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_mult(v1, v2)
-                }
-                ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_div(v1, v2)
-                }
-                ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_mod(v1, v2)
-                }
-                ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_plus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
-                }
-                ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_minus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
-                }
-                ExprInstance::ELtBody(ELt { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_relop(
-                        v1,
-                        v2,
-                        |b1, b2| !b1 & b2,
-                        |i1, i2| i1 < i2,
-                        |s1, s2| s1 < s2,
-                    )
-                }
-                ExprInstance::ELteBody(ELte { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_relop(
-                        v1,
-                        v2,
-                        |b1, b2| b1 <= b2,
-                        |i1, i2| i1 <= i2,
-                        |s1, s2| s1 <= s2,
-                    )
-                }
-                ExprInstance::EGtBody(EGt { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_relop(
-                        v1,
-                        v2,
-                        |b1, b2| b1 & !b2,
-                        |i1, i2| i1 > i2,
-                        |s1, s2| s1 > s2,
-                    )
-                }
-                ExprInstance::EGteBody(EGte { p1, p2 }) => {
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_relop(
-                        v1,
-                        v2,
-                        |b1, b2| b1 >= b2,
-                        |i1, i2| i1 >= i2,
-                        |s1, s2| s1 >= s2,
-                    )
-                }
-                ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_eq(v1, v2, env)
-                }
-                ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_neq(v1, v2, env)
-                }
-                ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool_recursive(p1.as_ref().unwrap(), env)?;
-                    let b2 = self.eval_to_bool_recursive(p2.as_ref().unwrap(), env)?;
-                    self.metering.reserve_primitive(boolean_and_cost())?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(b1 && b2)),
-                    })
-                }
-                ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool_recursive(p1.as_ref().unwrap(), env)?;
-                    let b2 = self.eval_to_bool_recursive(p2.as_ref().unwrap(), env)?;
-                    self.metering.reserve_primitive(boolean_or_cost())?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(b1 || b2)),
-                    })
-                }
-                ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr_recursive(target.as_ref().unwrap(), env)?;
-                    self.combine_matches(evaled_target, pattern.as_ref().unwrap(), env)
-                }
-                ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 }) => {
-                    self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_percent_percent(v1, v2, |q| {
-                        self.eval_single_expr_recursive(q, env)
-                    })
-                }
-                ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
-                    self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_plus_plus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
-                }
-                ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
-                    self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                    self.combine_minus_minus(v1, v2, env, |q| {
-                        self.eval_single_expr_recursive(q, env)
-                    })
-                }
-                ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(v.as_ref().unwrap(), env)?;
-                    self.eval_single_expr_recursive(&p, env)
-                }
-                ExprInstance::EListBody(e1) => {
-                    let evaled_ps = e1
-                        .ps
-                        .iter()
-                        .map(|p| self.eval_expr_recursive(p, env))
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
-                    self.combine_elist(evaled_ps, e1)
-                }
-                ExprInstance::ETupleBody(e1) => {
-                    let evaled_ps = e1
-                        .ps
-                        .iter()
-                        .map(|p| self.eval_expr_recursive(p, env))
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
-                    self.combine_etuple(evaled_ps, e1)
-                }
-                ExprInstance::EPathmapBody(e1) => {
-                    // ★ Walks the TRIE. `ps()` forces `EntryTrie::view`, which
-                    // deep-clones every entry, to build a `Vec` this only iterates once
-                    // — and the evaluation can fail, so the borrowing walk has to carry
-                    // the `?`. Preallocated from the O(1) maintained fold.
-                    let mut evaled_ps = Vec::with_capacity(e1.entry_trie().len());
-                    e1.entry_trie()
-                        .try_for_each_entry(|p| -> Result<(), InterpreterError> {
-                            evaled_ps.push(self.eval_expr_recursive(p, env)?);
-                            Ok(())
-                        })?;
-                    self.combine_epathmap(evaled_ps, e1)
-                }
-                ExprInstance::ESetBody(eset) => {
-                    self.combine_eset(eset, |q| self.eval_expr_recursive(q, env))
-                }
-                ExprInstance::EMapBody(emap) => {
-                    self.combine_emap(emap, |q| self.eval_expr_recursive(q, env))
-                }
-                ExprInstance::EMethodBody(emethod) => {
-                    if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
-                        return self.eval_single_expr_recursive(&fused, env);
-                    }
-                    self.metering.reserve_primitive(method_call_cost())?;
-                    let evaled_target =
-                        self.eval_expr_recursive(emethod.target.as_ref().unwrap(), env)?;
-                    let evaled_args: Vec<Par> = emethod
-                        .arguments
-                        .iter()
-                        .map(|arg| self.eval_expr_recursive(arg, env))
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
-                    let result_par =
-                        self.apply_method_expr(emethod, evaled_target, evaled_args, env)?;
-                    self.eval_single_expr_recursive(&result_par, env)
-                }
-            },
-            None => Err(InterpreterError::ReduceError(format!(
-                "Unimplemented expression: {:?}",
-                expr
-            ))),
-        }
-    }
-
-    #[cfg(test)]
-    fn eval_single_expr_recursive(
-        &self,
-        p: &Par,
-        env: &Env<Par>,
-    ) -> Result<Expr, InterpreterError> {
-        if !p.sends.is_empty()
-            || !p.receives.is_empty()
-            || !p.news.is_empty()
-            || !p.matches.is_empty()
-            || !p.unforgeables.is_empty()
-            || !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [e] => Ok(self.eval_expr_to_expr_recursive(e, env)?),
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Multiple expressions given.".to_string(),
-                )),
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn eval_to_i64_recursive(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [Expr {
-                    expr_instance: Some(ExprInstance::GInt(v)),
-                }] => Ok(*v),
-                [Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                }] => {
-                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                    self.eval_to_i64_recursive(&p, env)
-                }
-                [e] => {
-                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
-                    Self::extract_i64(evaled)
-                }
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Integer expected, or unimplemented expression.".to_string(),
-                )),
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn eval_to_bool_recursive(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [Expr {
-                    expr_instance: Some(ExprInstance::GBool(b)),
-                }] => Ok(*b),
-                [Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                }] => {
-                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                    self.eval_to_bool_recursive(&p, env)
-                }
-                [e] => {
-                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
-                    Self::extract_bool(evaled)
-                }
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Multiple expressions given.".to_string(),
-                )),
-            }
-        }
-    }
-
+    reducer_expression_oracle_methods!();
     fn nth_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct NthMethod<'a> {
             outer: &'a DebruijnInterpreter,
@@ -5050,27 +4686,31 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EPathmapBody(other_pathmap),
                     ) => {
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let other_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
-
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.entry_trie().len() as i64
+                                other_pathmap.entry_trie().len() as i64,
                             ))?;
-                        let result_map = base_rmap.map.join(&other_rmap.map);
+                        let result_entries = base_pathmap
+                            .entry_trie()
+                            .try_join(other_pathmap.entry_trie())
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                        let connective_used = base_pathmap.entry_trie().any_connective_used()
+                            || base_pathmap.remainder.is_some()
+                            || other_pathmap.entry_trie().any_connective_used()
+                            || other_pathmap.remainder.is_some();
+                        let locally_free = union(
+                            base_pathmap.entry_trie().union_locally_free().to_vec(),
+                            other_pathmap.entry_trie().union_locally_free().to_vec(),
+                        );
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || other_rmap.connective_used,
-                                    &union(base_rmap.locally_free, other_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
+                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                                result_entries,
+                                locally_free,
+                                connective_used,
+                                None,
+                            ))),
                         })
                     }
 
@@ -5176,27 +4816,26 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EPathmapBody(other_pathmap),
                     ) => {
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let other_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
-
                         self.outer
                             .metering
                             .reserve_incremental_primitive(diff_cost(
-                                other_pathmap.entry_trie().len() as i64
+                                other_pathmap.entry_trie().len() as i64,
                             ))?;
-                        let result_map = base_rmap.map.subtract(&other_rmap.map);
+                        let result_entries = base_pathmap
+                            .entry_trie()
+                            .try_subtract(other_pathmap.entry_trie())
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                        let connective_used = base_pathmap.entry_trie().any_connective_used()
+                            || base_pathmap.remainder.is_some();
+                        let locally_free = base_pathmap.entry_trie().union_locally_free().to_vec();
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used,
-                                    &base_rmap.locally_free,
-                                    None,
-                                ),
-                            )),
+                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                                result_entries,
+                                locally_free,
+                                connective_used,
+                                None,
+                            ))),
                         })
                     }
 
@@ -5252,27 +4891,31 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EPathmapBody(other_pathmap),
                     ) => {
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let other_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
-
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.entry_trie().len() as i64
+                                other_pathmap.entry_trie().len() as i64,
                             ))?;
-                        let result_map = base_rmap.map.meet(&other_rmap.map);
+                        let result_entries = base_pathmap
+                            .entry_trie()
+                            .try_meet(other_pathmap.entry_trie())
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                        let connective_used = base_pathmap.entry_trie().any_connective_used()
+                            || base_pathmap.remainder.is_some()
+                            || other_pathmap.entry_trie().any_connective_used()
+                            || other_pathmap.remainder.is_some();
+                        let locally_free = union(
+                            base_pathmap.entry_trie().union_locally_free().to_vec(),
+                            other_pathmap.entry_trie().union_locally_free().to_vec(),
+                        );
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || other_rmap.connective_used,
-                                    &union(base_rmap.locally_free, other_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
+                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                                result_entries,
+                                locally_free,
+                                connective_used,
+                                None,
+                            ))),
                         })
                     }
 
@@ -5329,67 +4972,26 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EPathmapBody(other_pathmap),
                     ) => {
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        // W2b-1 SWEEP fix: `restriction` wraps PathMap::restrict, a
-                        // PREFIX/subtrie op (base paths are kept under the paths
-                        // LEADING TO VALUES in `other`). Under the codec a prefix
-                        // is the NON-terminated segment concatenation — the same
-                        // prefix-op principle applied to getSubtrie/pathExists/
-                        // prunePath. Building `other` with terminated FULL keys
-                        // (0x00) makes them prefix-free of base's keys, silently
-                        // degenerating restrict to exact-match (a consensus-behavior
-                        // change); non-terminated keys preserve the pre-codec
-                        // prefix-restriction. `other_rmap` metadata is unused here
-                        // (the result carries base's connective/locally_free).
-                        // ★ Walks `other`'s TRIE rather than `other_pathmap.ps()`. That
-                        // projection is a memoised `Vec<Par>` whose materialisation
-                        // DEEP-CLONES every entry, and this loop only ever borrows each
-                        // one — so forcing it bought N clones and nothing else.
-                        //
-                        // ⚠ WHY THE KEY IS STILL RE-DERIVED PER ENTRY rather than read off
-                        // the zipper. It is tempting to take `rz.path()` and strip the
-                        // trailing `tag::TERM`, since `segments_to_key`'s two forms differ
-                        // by exactly that byte. **That is wrong**, and
-                        // `pathmap_integration.rs` documents why: the stored key is
-                        // `encode_trie_path(entry)`, whereas the key wanted here is
-                        // `segments_to_key(par_to_path(entry), false)` — and for a BARE
-                        // (non-list) entry those are DIFFERENT ENCODINGS. The segments form
-                        // yields the key of the SINGLETON LIST, *"a valid canonical key
-                        // naming a DIFFERENT element"*, pinned by
-                        // `bare_and_singleton_list_are_distinct_entries`. Deriving one from
-                        // the other would need a decode, which is not total.
-                        //
-                        // ⇒ Only the memo materialisation goes; the re-encode stays, and
-                        // stays deliberately.
-                        let mut other_prefix_map =
-                            models::rust::pathmap_integration::RholangPathMap::new();
-                        other_pathmap.entry_trie().for_each_entry(|entry| {
-                            other_prefix_map.insert(
-                                segments_to_key(
-                                    &models::rust::pathmap_integration::par_to_path(entry),
-                                    false,
-                                ),
-                                entry.clone(),
-                            );
-                        });
-
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.entry_trie().len() as i64
+                                other_pathmap.entry_trie().len() as i64,
                             ))?;
-                        let result_map = base_rmap.map.restrict(&other_prefix_map);
+                        let result_entries = base_pathmap
+                            .entry_trie()
+                            .try_restrict_member_prefixes(other_pathmap.entry_trie())
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                        let connective_used = base_pathmap.entry_trie().any_connective_used()
+                            || base_pathmap.remainder.is_some();
+                        let locally_free = base_pathmap.entry_trie().union_locally_free().to_vec();
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used,
-                                    &base_rmap.locally_free,
-                                    None,
-                                ),
-                            )),
+                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                                result_entries,
+                                locally_free,
+                                connective_used,
+                                None,
+                            ))),
                         })
                     }
 
@@ -5436,8 +5038,6 @@ impl DebruijnInterpreter {
             fn drop_head(&self, base_expr: &Expr, n: i64) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EPathmapBody(base_pathmap) => {
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
                         if n < 0 {
                             return Err(InterpreterError::ReduceError(format!(
                                 "dropHead argument must be non-negative, got: {}",
@@ -5448,118 +5048,9 @@ impl DebruijnInterpreter {
                             .metering
                             .reserve_incremental_primitive(union_cost(n))?;
 
-                        // `dropHead(n)` removes the first `n` elements from
-                        // EVERY entry's path (docs/rholang/07-pathmaps-and-
-                        // zippers.md), so it needs one thing about each entry:
-                        // HOW LONG ITS PATH IS. That is the codec's question,
-                        // and `path_elements` is the codec's answer — a
-                        // split-arm carrier contributes one path element per
-                        // list element, and EVERY other entry is a path of
-                        // length ONE (the bare arm, or the `0x0F` escape arm).
-                        //
-                        // ⚠ This loop used to ask `par.exprs.first()` for an
-                        // `EListBody` instead, which is strictly more permissive
-                        // than the codec's `split_carrier_list`: an entry
-                        // carrying BOTH a list and a send — `[1,2] | @"d"!(3)`,
-                        // which a program can put in a map by sending it over a
-                        // channel — was called a 2-element path by this loop and
-                        // a 1-element (escaped) path by the trie. `dropHead(1)`
-                        // then rewrote it to `[2] | @"d"!(3)`: it dropped an
-                        // element from the entry's INTERIOR rather than from its
-                        // PATH, which is a wrong answer about an entry the trie
-                        // says has no head to drop. It is the same classifier
-                        // divergence that cost `setSubtrie` its bare source
-                        // entries; there is now ONE classifier.
-                        let n = n as usize;
-                        let mut result_elements = Vec::with_capacity(base_pathmap.entry_trie().len());
-
-                        // ★ Borrows the trie instead of forcing `ps()`. That projection
-                        // deep-clones every entry, and this loop then clones AGAIN into
-                        // `result_elements` — so the identity case `dropHead(0)` was paying
-                        // two full copies of the map to return a copy of the map.
-                        //
-                        // ⛔ AND THE CRATE'S `drop_head` CANNOT SERVE THIS — a named negative
-                        // result, recorded so it is not attempted a second time.
-                        // `ZipperWriting::join_k_path_into` is aliased `drop_head` and looks
-                        // like an exact match. It is not, on two independent grounds:
-                        //
-                        //   1. UNIT MISMATCH. It removes a fixed BYTE count from each path;
-                        //      `dropHead(n)` removes `n` codec SEGMENTS, and segments are
-                        //      variable-length (`enc("a")` is 3 bytes, `enc(1)` is 2). A byte
-                        //      count is correct only when the first `n` segments happen to be
-                        //      equal-length across every entry.
-                        //   2. ⚠ IT WOULD SILENTLY BECOME A NO-OP. It rewrites KEYS and leaves
-                        //      VALUES untouched, so every entry would violate the trie's
-                        //      invariant `∀(k,v). encode_trie_path(v) = k`. On the way back
-                        //      out, `EntryTrie::adopt_trie` detects exactly that and RE-FILES
-                        //      FROM THE VALUES — reconstructing the original, untruncated
-                        //      keys. `dropHead` would compile, run, pass a smoke test, and do
-                        //      nothing, in release builds.
-                        //
-                        // ⇒ The rebuild stays. The value here is a function of the entry, not
-                        // of its key, so the key must be recomputed and the crate op cannot
-                        // help. Only the double-clone goes.
-                        base_pathmap.entry_trie().for_each_entry(|par| {
-                            let elements = path_elements(par);
-                            match n {
-                                // Dropping NOTHING is the identity — on both
-                                // arms and at every path length, including the
-                                // empty path `[]`. Two things ride on this arm
-                                // coming first. Rebuilding the entry here would
-                                // turn the bare `5` into the singleton list
-                                // `[5]`, a different entry under a different
-                                // key; and testing exhaustion first would delete
-                                // the ROOT entry `[]`, whose path has zero
-                                // elements — which is what `0 > 0` did, so
-                                // `{| [] |}.dropHead(0)` returned the EMPTY map
-                                // while the method's own meaning, and the test
-                                // named "dropHead(0) should preserve all
-                                // elements", say the identity. No fixture held
-                                // `[]`, so the contradiction was never reached.
-                                0 => result_elements.push(par.clone()),
-                                // A path with `n` or fewer elements is exhausted
-                                // by the drop and the entry goes — the pinned
-                                // rule for ground lists (`dropHead(k)` on a
-                                // k-element path removes it), now applied by ONE
-                                // rule to both arms. The bare entry `5` is a
-                                // path of length 1, so it survives `dropHead(0)`
-                                // and no other.
-                                // (was `continue`; inside the closure the empty arm is the
-                                // same thing — the entry is simply not pushed)
-                                _ if elements.len() <= n => {}
-                                // Only a split-arm entry can reach here (a
-                                // one-element path was taken by the arm above),
-                                // so the tail is a ground list: the carrier's
-                                // own metadata is at ground defaults by
-                                // `split_carrier_list`'s definition, which is
-                                // why the rebuilt entry carries none of it.
-                                _ => result_elements.push(Par {
-                                    exprs: vec![models::rhoapi::Expr {
-                                        expr_instance: Some(
-                                            models::rhoapi::expr::ExprInstance::EListBody(
-                                                models::rhoapi::EList {
-                                                    ps: elements[n..].to_vec(),
-                                                    locally_free: Vec::new(),
-                                                    connective_used: false,
-                                                    remainder: None,
-                                                },
-                                            ),
-                                        ),
-                                    }],
-                                    ..Default::default()
-                                }),
-                            }
-                        });
                         Ok(Expr {
-                            // EPathMap fix P3 (PM-2): constructor instead of
-                            // a struct literal (private shadow cell).
                             expr_instance: Some(ExprInstance::EPathmapBody(
-                                models::rhoapi::EPathMap::new(
-                                    result_elements,
-                                    base_rmap.locally_free.clone(),
-                                    base_rmap.connective_used,
-                                    None,
-                                ),
+                                base_pathmap.drop_head(n as usize),
                             )),
                         })
                     }
@@ -6036,53 +5527,14 @@ impl DebruijnInterpreter {
             fn get_leaf(&self, base_expr: &Expr) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // Get the pathmap from the zipper
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // The ENTRY key the cursor names. `current_path` says
-                        // WHERE (per-element segments); `cursor_kind` says WHICH
-                        // ARM of the two-arm codec, which is what tells the bare
-                        // element `1` (key `03 02`) apart from the singleton list
-                        // `[1]` (key `03 02 00`) — two entries one map may hold
-                        // at once. Before the cursor carried the arm this always
-                        // guessed "split", so a bare entry read back as a
-                        // DIFFERENT element rather than missing.
-                        let key: Vec<u8> = cursor_entry_key(
-                            &zipper.current_path,
-                            cursor_kind_of(&zipper)?,
-                            &rholang_pathmap,
-                        );
-
-                        // Look up value at this path
-                        if let Some(value) = rholang_pathmap.get(&key) {
-                            Ok(value.clone())
-                        } else {
-                            Ok(Par::default()) // Nil - no value at this path
-                        }
+                        let key = pathmap
+                            .cursor_entry_key(&zipper.current_path, cursor_kind_of(&zipper)?);
+                        Ok(pathmap.leaf_at_encoded_key(&key).unwrap_or_default())
                     }
-                    ExprInstance::EPathmapBody(pathmap) => {
-                        // Convert EPathMap to RholangPathMap
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Create a read zipper and get the value at current position
-                        let read_zipper = RholangReadZipper::new(
-                            &rholang_pathmap,
-                            pathmap_result.connective_used,
-                            pathmap_result.locally_free,
-                        );
-
-                        // Get value at current position (root)
-                        if let Some(value) = read_zipper.get_val() {
-                            Ok(value.clone())
-                        } else {
-                            Ok(Par::default()) // Nil
-                        }
-                    }
+                    // A raw EPathMap is focused at the trie root. Canonical
+                    // EPathMap keys are non-empty, so the root has no leaf.
+                    ExprInstance::EPathmapBody(_) => Ok(Par::default()),
                     other => Err(InterpreterError::MethodNotDefined {
                         method: String::from("getLeaf"),
                         other_type: get_type(other),
@@ -6123,32 +5575,12 @@ impl DebruijnInterpreter {
             fn get_subtrie(&self, base_expr: &Expr) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // Get the pathmap from the zipper
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Build prefix key from current_path
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Collect all entries with this prefix — native subtrie descent
-                        // (O(prefix + subtrie) instead of the previous whole-map scan);
-                        // yields the same values in the same trie-DFS order (prefix keys
-                        // are a contiguous run of the byte-lex iteration order).
-                        let subtrie_elements =
-                            collect_subtrie_values(&rholang_pathmap, &prefix_key);
-
-                        // Return as PathMap
                         Ok(Par::default().with_exprs(vec![Expr {
-                            // EPathMap fix P3 (PM-2): constructor instead of
-                            // a struct literal (private shadow cell).
-                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
-                                subtrie_elements,
-                                pathmap_result.locally_free,
-                                pathmap_result.connective_used,
-                                None,
-                            ))),
+                            expr_instance: Some(ExprInstance::EPathmapBody(
+                                pathmap.subtrie(&prefix_key),
+                            )),
                         }]))
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
@@ -6197,24 +5629,34 @@ impl DebruijnInterpreter {
             fn set_leaf(&self, base_expr: &Expr, value: &Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // For a write zipper, set value at current position
+                        let cursor_kind = cursor_kind_of(&zipper)?;
                         let mut pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        // ★ NAME an entry, do not push at a position. `push`
-                        // appended to a `Vec` whose order was a producer's
-                        // accident; `insert_entry` files the entry under its own
-                        // codec path, which also makes the write IDEMPOTENT —
-                        // setting a leaf that is already there is a no-op on the
-                        // set rather than a silent duplicate.
-                        pathmap.insert_entry(value.clone());
-                        // Return the modified PathMap (not zipper)
+                        match pathmap.mode() {
+                            EPathMapMode::Map => {
+                                let key =
+                                    pathmap.cursor_entry_key(&zipper.current_path, cursor_kind);
+                                pathmap
+                                    .insert_map_value_by_encoded_key(&key, value.clone())
+                                    .map_err(|error| {
+                                        InterpreterError::ReduceError(error.to_string())
+                                    })?;
+                            }
+                            EPathMapMode::Empty | EPathMapMode::Set => {
+                                // Set specialization: the argument is the set
+                                // member and its canonical bytes are its key.
+                                pathmap.insert_entry(value.clone());
+                            }
+                        }
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
                     }
                     ExprInstance::EPathmapBody(mut pathmap) => {
-                        // For a write zipper, set value at current position
-                        // For now, add to the pathmap. See the zipper arm above
-                        // for why this names an entry rather than pushing one.
+                        if pathmap.mode() == EPathMapMode::Map {
+                            return Err(InterpreterError::ReduceError(String::from(
+                                "setLeaf on map-mode EPathMap requires a zipper cursor key",
+                            )));
+                        }
                         pathmap.insert_entry(value.clone());
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
@@ -6276,309 +5718,11 @@ impl DebruijnInterpreter {
                         ExprInstance::EZipperBody(zipper),
                         Some(ExprInstance::EPathmapBody(source)),
                     ) if zipper.is_write_zipper => {
-                        // Step 1: Extract base PathMap and build prefix.
-                        // The cursor kind is read FIRST — `pathmap` is moved
-                        // out of `zipper` on the next line.
                         let cursor_kind = cursor_kind_of(&zipper)?;
-                        let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let mut rholang_pathmap = pathmap_result.map;
-
-                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Step 2: Remove all entries with this prefix
-                        let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
-                            .iter()
-                            .filter_map(|(key, _)| {
-                                if key.starts_with(&prefix_key) {
-                                    Some(key.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        for key in keys_to_remove {
-                            rholang_pathmap.remove(&key);
-                        }
-
-                        // ★★ HOISTED OUT OF THE LOOP BELOW. This search is **loop-invariant**:
-                        // its closure captures `zipper.current_path` and nothing else — never
-                        // `source_entry` — so inside the loop it recomputed an identical answer
-                        // once per source entry, giving O(N·M) where O(N) suffices.
-                        //
-                        // ⚠ Hoisting is provably semantics-preserving *because* the computation
-                        // does not depend on the loop variable. This is not a reformulation of
-                        // the search — which would have to prove a new search finds the SAME
-                        // entry — it is the same search, evaluated once.
-                        //
-                        // ⚠ It also stops re-forcing `pathmap.ps()` per iteration: that is a
-                        // memoised `Vec<Par>` whose materialisation deep-clones every entry.
-                        //
-                        // `Some(prefix)` ⇔ the old `found_existing == true`. The `find` predicate
-                        // already rejects anything that is not an `EListBody`, so every entry it
-                        // can return matches the inner `if let`, and the two are equivalent.
-                        let hoisted_prefix: Option<Vec<Par>> = {
-                            use models::rust::pathmap_integration::par_to_path;
-                            pathmap
-                                .entry_trie()
-                                .find_entry(|entry| {
-                                    if let Some(ExprInstance::EListBody(existing_list)) =
-                                        &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        if existing_list.ps.len() < zipper.current_path.len() {
-                                            return false;
-                                        }
-                                        // Check if the entry actually starts with current_path
-                                        let entry_segments = par_to_path(entry);
-                                        entry_segments.starts_with(&zipper.current_path)
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .and_then(|existing_entry| {
-                                    if let Some(ExprInstance::EListBody(existing_list)) =
-                                        &existing_entry
-                                            .exprs
-                                            .first()
-                                            .and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        // Take first N elements where N = current_path length
-                                        Some(existing_list.ps[..zipper.current_path.len()].to_vec())
-                                    } else {
-                                        None
-                                    }
-                                })
-                        };
-
-                        // Step 3: Add source entries with prepended prefix
-                        // ★ Borrows, not the projection. The 112-line body below mutates
-                        // `pathmap` while these are live, so it is collected rather than
-                        // wrapped in a closure — a `Vec<&Par>` costs 8 bytes an entry and
-                        // leaves the body's borrows exactly where they were, while `ps()`
-                        // deep-cloned every entry to hand back the same sequence.
-                        let mut source_entries: Vec<&Par> =
-                            Vec::with_capacity(source.entry_trie().len());
-                        source.entry_trie().extend_entry_refs(&mut source_entries);
-                        for source_entry in source_entries {
-                            use models::rust::pathmap_integration::par_to_path;
-                            let source_segments = par_to_path(source_entry);
-
-                            // Prepend current_path to make absolute
-                            let mut absolute_segments = zipper.current_path.clone();
-                            absolute_segments.extend(source_segments.clone());
-
-                            // Encode as key
-                            let key: Vec<u8> = segments_to_key(&absolute_segments, true);
-
-                            // Build the Par that represents the absolute path
-                            // Extract elements from an existing entry to understand their structure
-                            let mut absolute_elements = Vec::new();
-
-                            let found_existing = match &hoisted_prefix {
-                                Some(prefix) => {
-                                    absolute_elements.extend(prefix.iter().cloned());
-                                    true
-                                }
-                                None => false,
-                            };
-
-                            // If no existing entry found, reconstruct Par elements from current_path bytes
-                            if !found_existing {
-                                // W2b-1 (D2): reconstruct the current_path
-                                // elements faithfully via the codec. Each
-                                // segment is `encode_trie_segment(element)`, so
-                                // the split-form path `concat(segments) ∥ 0x00`
-                                // decodes back to the ground EList of those
-                                // elements — restoring ANY eval_stable element
-                                // (nested lists, numerics, GPrivate leaves), a
-                                // behavior FIX over the former lossy
-                                // GString-only SExpr quote-strip.
-                                use models::rust::canonical_path::decode_trie_path;
-                                let full_key = segments_to_key(&zipper.current_path, true);
-                                if let Ok(decoded) = decode_trie_path(&full_key) {
-                                    if let Some(ExprInstance::EListBody(list)) =
-                                        decoded.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        absolute_elements.extend(list.ps.clone());
-                                    }
-                                }
-                            }
-
-                            // Add source_entry's elements
-                            if let Some(ExprInstance::EListBody(source_list)) = &source_entry
-                                .exprs
-                                .first()
-                                .and_then(|e| e.expr_instance.as_ref())
-                            {
-                                absolute_elements.extend(source_list.ps.clone());
-                            }
-
-                            // Create the absolute path Par
-                            let composed_list_par = Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::EListBody(
-                                    models::rhoapi::EList {
-                                        ps: absolute_elements,
-                                        locally_free: vec![],
-                                        connective_used: false,
-                                        remainder: None,
-                                    },
-                                )),
-                            }]);
-
-                            // ★ A PathMap entry is both its own key and its
-                            // own value — `create_pathmap_from_elements`
-                            // inserts `(encode_trie_path(par), par)` — so what
-                            // is stored here must be the Par that `key`
-                            // ENCODES. This is the SAME doctrine step 3b
-                            // applies below; step 3 had been building the key
-                            // and the value by two independent routes:
-                            //
-                            //   key   `par_to_path(source_entry)`, the codec's
-                            //         OWN split/bare classifier — one segment
-                            //         per element for a ground-list carrier,
-                            //         ONE segment for anything else.
-                            //   value an `exprs.first()` EListBody guard that
-                            //         SILENTLY CONTRIBUTES NOTHING when it
-                            //         fails.
-                            //
-                            // For a BARE source entry (`{| 5 |}` — `GInt` is
-                            // not a split carrier) the key gained `enc(5)`
-                            // while the guard failed, so the value lost the
-                            // element. Two or more bare source entries then
-                            // received DISTINCT keys carrying the SAME value,
-                            // and since the converter reads VALUES the pair
-                            // re-encodes to one entry: entries were LOST.
-                            //
-                            // Deriving the value FROM the key is what makes
-                            // the two routes ONE route, so they cannot drift
-                            // apart again. The composed key is always
-                            // terminated, so it always decodes to the ground
-                            // list of the cursor's elements followed by the
-                            // source entry's — with a bare source entry
-                            // contributing itself as one element, which is
-                            // exactly what `par_to_path` charged the key for.
-                            //
-                            // The fallback is `composed_list_par`, reached
-                            // only when the composed key is not a valid codec
-                            // path — which requires an `EZipper.current_path`
-                            // that is not one either, since the source
-                            // segments come from `encode_trie_segment`. That
-                            // is step 3b's treatment verbatim.
-                            let absolute_path_par = {
-                                use models::rust::canonical_path::decode_trie_path;
-                                decode_trie_path(&key).unwrap_or(composed_list_par)
-                            };
-
-                            rholang_pathmap.insert(key, absolute_path_par);
-                        }
-
-                        // Step 3b: If source is empty, add current_path as entry
-                        if source.entry_trie().is_empty() && !zipper.current_path.is_empty() {
-                            // The ENTRY key the cursor names (see `getLeaf`).
-                            let key: Vec<u8> = cursor_entry_key(
-                                &zipper.current_path,
-                                cursor_kind,
-                                &rholang_pathmap,
-                            );
-
-                            // Build the Par for current_path
-                            let mut absolute_elements = Vec::new();
-
-                            // Find an existing entry that starts with current_path
-                            let found_existing = if let Some(existing_entry) =
-                                pathmap.entry_trie().find_entry(|entry| {
-                                    if let Some(ExprInstance::EListBody(existing_list)) =
-                                        &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        if existing_list.ps.len() < zipper.current_path.len() {
-                                            return false;
-                                        }
-                                        // Check if the entry actually starts with current_path
-                                        use models::rust::pathmap_integration::par_to_path;
-                                        let entry_segments = par_to_path(entry);
-                                        entry_segments.starts_with(&zipper.current_path)
-                                    } else {
-                                        false
-                                    }
-                                }) {
-                                if let Some(ExprInstance::EListBody(existing_list)) =
-                                    &existing_entry
-                                        .exprs
-                                        .first()
-                                        .and_then(|e| e.expr_instance.as_ref())
-                                {
-                                    // Take first N elements where N = current_path length
-                                    absolute_elements.extend(
-                                        existing_list.ps[..zipper.current_path.len()].to_vec(),
-                                    );
-                                }
-                                true
-                            } else {
-                                false
-                            };
-
-                            // If no existing entry found, reconstruct Par elements from current_path bytes
-                            if !found_existing {
-                                // W2b-1 (D2): reconstruct the current_path
-                                // elements faithfully via the codec. Each
-                                // segment is `encode_trie_segment(element)`, so
-                                // the split-form path `concat(segments) ∥ 0x00`
-                                // decodes back to the ground EList of those
-                                // elements — restoring ANY eval_stable element
-                                // (nested lists, numerics, GPrivate leaves), a
-                                // behavior FIX over the former lossy
-                                // GString-only SExpr quote-strip.
-                                use models::rust::canonical_path::decode_trie_path;
-                                let full_key = segments_to_key(&zipper.current_path, true);
-                                if let Ok(decoded) = decode_trie_path(&full_key) {
-                                    if let Some(ExprInstance::EListBody(list)) =
-                                        decoded.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                                    {
-                                        absolute_elements.extend(list.ps.clone());
-                                    }
-                                }
-                            }
-
-                            // Create the Par for current_path
-                            let list_par = Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::EListBody(
-                                    models::rhoapi::EList {
-                                        ps: absolute_elements,
-                                        locally_free: vec![],
-                                        connective_used: false,
-                                        remainder: None,
-                                    },
-                                )),
-                            }]);
-
-                            // A PathMap entry is both its own key and its own
-                            // value — `create_pathmap_from_elements` inserts
-                            // `(encode_trie_path(par), par)` — so what is stored
-                            // here must be the Par that `key` ENCODES. For a
-                            // split cursor that is the list of elements built
-                            // above, byte for byte what this method has always
-                            // written. For a BARE cursor it is the ELEMENT
-                            // itself, which a list can never express.
-                            let current_path_par = match cursor_kind {
-                                CursorKind::Bare => {
-                                    use models::rust::canonical_path::decode_trie_path;
-                                    decode_trie_path(&key).unwrap_or(list_par)
-                                }
-                                _ => list_par,
-                            };
-
-                            rholang_pathmap.insert(key, current_path_par);
-                        }
-
-                        // Step 4: Convert back to EPathMap
-                        let result_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                            &rholang_pathmap,
-                            pathmap_result.connective_used,
-                            &pathmap_result.locally_free,
-                            None,
-                        );
+                        let mut result_pathmap = zipper.pathmap.expect("zipper pathmap was None");
+                        result_pathmap
+                            .replace_subtrie(&zipper.current_path, cursor_kind, &source)
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(result_pathmap)),
@@ -6639,27 +5783,10 @@ impl DebruijnInterpreter {
                         // Extract pathmap from zipper (the cursor kind is
                         // read FIRST — `pathmap` is moved out on the next line).
                         let cursor_kind = cursor_kind_of(&zipper)?;
-                        let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let mut rholang_pathmap = pathmap_result.map;
-
-                        // The ENTRY key the cursor names (see `getLeaf`): a
-                        // bare cursor removes the bare entry, not the singleton
-                        // list that shares its segments.
-                        let key: Vec<u8> =
-                            cursor_entry_key(&zipper.current_path, cursor_kind, &rholang_pathmap);
-
-                        // Remove value at this path
-                        rholang_pathmap.remove(&key);
-
-                        // Convert back to EPathMap
-                        let result_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                            &rholang_pathmap,
-                            pathmap_result.connective_used,
-                            &pathmap_result.locally_free,
-                            None,
-                        );
+                        let mut result_pathmap = zipper.pathmap.expect("zipper pathmap was None");
+                        let key =
+                            result_pathmap.cursor_entry_key(&zipper.current_path, cursor_kind);
+                        result_pathmap.remove_encoded_entry(&key);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(result_pathmap)),
@@ -6674,7 +5801,16 @@ impl DebruijnInterpreter {
                         // trie's. That makes it deterministic where `pop` was
                         // not: `{|a, b|}` and `{|b, a|}` are one map, and `pop`
                         // used to remove a different entry from each.
-                        pathmap.remove_greatest_entry();
+                        match pathmap.mode() {
+                            EPathMapMode::Map => {
+                                pathmap.remove_greatest_map_entry().map_err(|error| {
+                                    InterpreterError::ReduceError(error.to_string())
+                                })?;
+                            }
+                            EPathMapMode::Empty | EPathMapMode::Set => {
+                                pathmap.remove_greatest_entry();
+                            }
+                        }
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -6720,42 +5856,9 @@ impl DebruijnInterpreter {
             fn remove_branches(&self, base_expr: &Expr) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let mut rholang_pathmap = pathmap_result.map;
-
-                        // Build prefix key from current_path. `removeBranches`
-                        // is a BRANCH query — the element-prefix, the SAME bytes
-                        // under every cursor kind — so it does not spend the
-                        // split/bare discriminator and its bytes never move.
+                        let mut result_pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Remove all branches with this prefix
-                        // Collect keys to remove (can't modify while iterating)
-                        let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
-                            .iter()
-                            .filter_map(|(key, _)| {
-                                if key.starts_with(&prefix_key) && key.len() > prefix_key.len() {
-                                    Some(key.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        // Remove the collected keys
-                        for key in keys_to_remove {
-                            rholang_pathmap.remove(&key);
-                        }
-
-                        // Convert back to EPathMap
-                        let result_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                            &rholang_pathmap,
-                            pathmap_result.connective_used,
-                            &pathmap_result.locally_free,
-                            None,
-                        );
+                        result_pathmap.remove_branches_at(&prefix_key);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(result_pathmap)),
@@ -6819,91 +5922,58 @@ impl DebruijnInterpreter {
                 base_expr: &Expr,
                 source_expr: &Expr,
             ) -> Result<Expr, InterpreterError> {
-                match (
+                let (dest_pathmap, source_pathmap) = match (
                     base_expr.expr_instance.clone().unwrap(),
                     source_expr.expr_instance.clone().unwrap(),
                 ) {
-                    // Both are zippers
                     (
                         ExprInstance::EZipperBody(dest_zipper),
                         ExprInstance::EZipperBody(source_zipper),
-                    ) => {
-                        let mut dest_pathmap =
-                            dest_zipper.pathmap.expect("dest zipper pathmap was None");
-                        let source_pathmap = source_zipper
+                    ) => (
+                        dest_zipper.pathmap.expect("dest zipper pathmap was None"),
+                        source_zipper
                             .pathmap
-                            .expect("source zipper pathmap was None");
-
-                        // Graft: copy subtrie from source to destination.
-                        // ★ This is a SET UNION now, so it is idempotent and
-                        // cannot create duplicates: grafting a source twice, or
-                        // grafting overlapping sources, yields the same map.
-                        // `extend(source.ps.into_vec())` could do neither.
-                        dest_pathmap.extend_entries(&source_pathmap);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
-                        })
-                    }
-                    // Destination is zipper, source is PathMap
+                            .expect("source zipper pathmap was None"),
+                    ),
                     (
                         ExprInstance::EZipperBody(dest_zipper),
                         ExprInstance::EPathmapBody(source_pathmap),
-                    ) => {
-                        let mut dest_pathmap =
-                            dest_zipper.pathmap.expect("dest zipper pathmap was None");
-
-                        // Graft: copy subtrie from source to destination.
-                        // ★ This is a SET UNION now, so it is idempotent and
-                        // cannot create duplicates: grafting a source twice, or
-                        // grafting overlapping sources, yields the same map.
-                        // `extend(source.ps.into_vec())` could do neither.
-                        dest_pathmap.extend_entries(&source_pathmap);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
-                        })
-                    }
-                    // Destination is PathMap, source is zipper
+                    ) => (
+                        dest_zipper.pathmap.expect("dest zipper pathmap was None"),
+                        source_pathmap,
+                    ),
                     (
-                        ExprInstance::EPathmapBody(mut dest_pathmap),
+                        ExprInstance::EPathmapBody(dest_pathmap),
                         ExprInstance::EZipperBody(source_zipper),
-                    ) => {
-                        let source_pathmap = source_zipper
+                    ) => (
+                        dest_pathmap,
+                        source_zipper
                             .pathmap
-                            .expect("source zipper pathmap was None");
-
-                        // Graft: copy subtrie from source to destination.
-                        // ★ This is a SET UNION now, so it is idempotent and
-                        // cannot create duplicates: grafting a source twice, or
-                        // grafting overlapping sources, yields the same map.
-                        // `extend(source.ps.into_vec())` could do neither.
-                        dest_pathmap.extend_entries(&source_pathmap);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
-                        })
-                    }
-                    // Both are PathMaps (existing case)
+                            .expect("source zipper pathmap was None"),
+                    ),
                     (
-                        ExprInstance::EPathmapBody(mut dest_pathmap),
+                        ExprInstance::EPathmapBody(dest_pathmap),
                         ExprInstance::EPathmapBody(source_pathmap),
-                    ) => {
-                        // Graft: copy subtrie from source to destination.
-                        // ★ This is a SET UNION now, so it is idempotent and
-                        // cannot create duplicates: grafting a source twice, or
-                        // grafting overlapping sources, yields the same map.
-                        // `extend(source.ps.into_vec())` could do neither.
-                        dest_pathmap.extend_entries(&source_pathmap);
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
-                        })
+                    ) => (dest_pathmap, source_pathmap),
+                    (other, _) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("graft"),
+                            other_type: get_type(other),
+                        });
                     }
-                    (other, _) => Err(InterpreterError::MethodNotDefined {
-                        method: String::from("graft"),
-                        other_type: get_type(other),
-                    }),
-                }
+                };
+                let entries = dest_pathmap
+                    .entry_trie()
+                    .try_join(source_pathmap.entry_trie())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                        entries,
+                        union(dest_pathmap.locally_free, source_pathmap.locally_free),
+                        dest_pathmap.connective_used || source_pathmap.connective_used,
+                        None,
+                    ))),
+                })
             }
         }
 
@@ -6945,141 +6015,63 @@ impl DebruijnInterpreter {
                 base_expr: &Expr,
                 source_expr: &Expr,
             ) -> Result<Expr, InterpreterError> {
-                match (
+                let (base_pathmap, source_pathmap) = match (
                     base_expr.expr_instance.clone().unwrap(),
                     source_expr.expr_instance.clone().unwrap(),
                 ) {
-                    // Both are zippers
                     (
                         ExprInstance::EZipperBody(base_zipper),
                         ExprInstance::EZipperBody(source_zipper),
-                    ) => {
-                        let base_pathmap =
-                            base_zipper.pathmap.expect("base zipper pathmap was None");
-                        let source_pathmap = source_zipper
+                    ) => (
+                        base_zipper.pathmap.expect("base zipper pathmap was None"),
+                        source_zipper
                             .pathmap
-                            .expect("source zipper pathmap was None");
-
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let source_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
-
-                        self.outer
-                            .metering
-                            .reserve_incremental_primitive(union_cost(
-                                source_pathmap.entry_trie().len() as i64
-                            ))?;
-                        let result_map = base_rmap.map.join(&source_rmap.map);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || source_rmap.connective_used,
-                                    &union(base_rmap.locally_free, source_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
-                        })
-                    }
-                    // Base is zipper, source is PathMap
+                            .expect("source zipper pathmap was None"),
+                    ),
                     (
                         ExprInstance::EZipperBody(base_zipper),
                         ExprInstance::EPathmapBody(source_pathmap),
-                    ) => {
-                        let base_pathmap =
-                            base_zipper.pathmap.expect("base zipper pathmap was None");
-
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let source_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
-
-                        self.outer
-                            .metering
-                            .reserve_incremental_primitive(union_cost(
-                                source_pathmap.entry_trie().len() as i64
-                            ))?;
-                        let result_map = base_rmap.map.join(&source_rmap.map);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || source_rmap.connective_used,
-                                    &union(base_rmap.locally_free, source_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
-                        })
-                    }
-                    // Base is PathMap, source is zipper
+                    ) => (
+                        base_zipper.pathmap.expect("base zipper pathmap was None"),
+                        source_pathmap,
+                    ),
                     (
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EZipperBody(source_zipper),
-                    ) => {
-                        let source_pathmap = source_zipper
+                    ) => (
+                        base_pathmap,
+                        source_zipper
                             .pathmap
-                            .expect("source zipper pathmap was None");
-
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let source_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
-
-                        self.outer
-                            .metering
-                            .reserve_incremental_primitive(union_cost(
-                                source_pathmap.entry_trie().len() as i64
-                            ))?;
-                        let result_map = base_rmap.map.join(&source_rmap.map);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || source_rmap.connective_used,
-                                    &union(base_rmap.locally_free, source_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
-                        })
-                    }
-                    // Both are PathMaps (existing case)
+                            .expect("source zipper pathmap was None"),
+                    ),
                     (
                         ExprInstance::EPathmapBody(base_pathmap),
                         ExprInstance::EPathmapBody(source_pathmap),
-                    ) => {
-                        // JoinInto: union-merge subtries
-                        let base_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let source_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_pathmap);
-
-                        self.outer
-                            .metering
-                            .reserve_incremental_primitive(union_cost(
-                                source_pathmap.entry_trie().len() as i64
-                            ))?;
-                        let result_map = base_rmap.map.join(&source_rmap.map);
-
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(
-                                PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                                    &result_map,
-                                    base_rmap.connective_used || source_rmap.connective_used,
-                                    &union(base_rmap.locally_free, source_rmap.locally_free),
-                                    None,
-                                ),
-                            )),
-                        })
+                    ) => (base_pathmap, source_pathmap),
+                    (other, _) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("joinInto"),
+                            other_type: get_type(other),
+                        });
                     }
-                    (other, _) => Err(InterpreterError::MethodNotDefined {
-                        method: String::from("joinInto"),
-                        other_type: get_type(other),
-                    }),
-                }
+                };
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(
+                        source_pathmap.entry_trie().len() as i64
+                    ))?;
+                let entries = base_pathmap
+                    .entry_trie()
+                    .try_join(source_pathmap.entry_trie())
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                        entries,
+                        union(base_pathmap.locally_free, source_pathmap.locally_free),
+                        base_pathmap.connective_used || source_pathmap.connective_used,
+                        None,
+                    ))),
+                })
             }
         }
 
@@ -7119,46 +6111,13 @@ impl DebruijnInterpreter {
             fn at_path(&self, base_expr: &Expr, path_par: &Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        use models::rust::pathmap_integration::entry_key_at;
-
-                        // Get PathMap from zipper
                         let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // The ENTRY key of the argument path, reached from this
-                        // cursor. At the root the argument IS the whole path,
-                        // so `entry_key_at` asks the codec for the key the
-                        // entry was inserted under (split arm, bare arm, or the
-                        // escape arm) instead of rebuilding it and guessing
-                        // "split" — see `entry_key_at`'s doc for why the guess
-                        // was a wrong ANSWER and not a miss.
-                        let key: Vec<u8> =
-                            entry_key_at(&zipper.current_path, path_par, &rholang_pathmap);
-
-                        // Get value at this path
-                        match rholang_pathmap.get(&key) {
-                            Some(val) => Ok(val.clone()),
-                            None => Ok(Par::default()), // Return Nil if not found
-                        }
+                        let key = pathmap.entry_key_at(&zipper.current_path, path_par);
+                        Ok(pathmap.leaf_at_encoded_key(&key).unwrap_or_default())
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
-                        use models::rust::pathmap_integration::entry_key_at;
-
-                        // Get value at path from PathMap root
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // A raw map has no cursor, so this is always the
-                        // root arm: `encode_trie_path(path_par)` exactly.
-                        let key: Vec<u8> = entry_key_at(&[], path_par, &rholang_pathmap);
-
-                        match rholang_pathmap.get(&key) {
-                            Some(val) => Ok(val.clone()),
-                            None => Ok(Par::default()), // Return Nil if not found
-                        }
+                        let key = pathmap.entry_key_at(&[], path_par);
+                        Ok(pathmap.leaf_at_encoded_key(&key).unwrap_or_default())
                     }
                     other => Err(InterpreterError::MethodNotDefined {
                         method: String::from("atPath"),
@@ -7203,25 +6162,12 @@ impl DebruijnInterpreter {
             fn path_exists(&self, base_expr: &Expr) -> Result<bool, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // Get PathMap from zipper
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Build key from current_path
                         let key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Check if path exists (either has value or has children)
                         if key.is_empty() {
-                            // Root always exists if PathMap is not empty
                             Ok(!pathmap.entry_trie().is_empty())
                         } else {
-                            // Check if exact path or any path with this prefix exists —
-                            // native trie-path lookup (O(path) instead of the previous
-                            // whole-map `any(starts_with)` scan; equivalent on the
-                            // pure-insert tries produced by create_pathmap_from_elements).
-                            Ok(path_prefix_exists(&rholang_pathmap, &key))
+                            Ok(pathmap.path_prefix_exists(&key))
                         }
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
@@ -7279,26 +6225,11 @@ impl DebruijnInterpreter {
             ) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) if zipper.is_write_zipper => {
-                        use models::rust::pathmap_integration::par_to_path;
-
-                        // Get PathMap from zipper
-                        let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-
-                        // Parse requested path to validate format
-                        let _path_segments = par_to_path(path_par);
-
-                        // Combine with current path
-                        let _ = zipper.current_path.clone(); // Use for future implementation
-
-                        // Create path structure by ensuring intermediate nodes exist
-                        // We don't set values, just ensure the path structure exists
-                        // In a trie, paths are implicitly created when you add values
-                        // Since we want to create structure without values, we'll just
-                        // return the PathMap as-is (the structure will be created when needed)
-                        // Alternatively, we could insert empty markers but that changes semantics
-
-                        // For now, just return the PathMap unchanged
-                        // This is a no-op but validates the path format
+                        let mut pathmap = zipper.pathmap.expect("zipper pathmap was None");
+                        let key = pathmap.entry_key_at(&zipper.current_path, path_par);
+                        pathmap
+                            .create_path(&key)
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -7351,38 +6282,9 @@ impl DebruijnInterpreter {
             fn prune_path(&self, base_expr: &Expr) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) if zipper.is_write_zipper => {
-                        // Get PathMap from zipper
-                        let pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let mut rholang_pathmap = pathmap_result.map;
-
-                        // Build key from current_path
+                        let mut result_pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Remove all entries at and below this path
-                        let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
-                            .iter()
-                            .filter_map(|(key, _)| {
-                                if key.starts_with(&prefix_key) {
-                                    Some(key.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        for key in keys_to_remove {
-                            rholang_pathmap.remove(&key);
-                        }
-
-                        // Convert back to EPathMap
-                        let result_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-                            &rholang_pathmap,
-                            pathmap_result.connective_used,
-                            &pathmap_result.locally_free,
-                            None,
-                        );
+                        result_pathmap.remove_subtrie_at(&prefix_key);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(result_pathmap)),
@@ -7555,7 +6457,7 @@ impl DebruijnInterpreter {
                         return Err(InterpreterError::MethodNotDefined {
                             method: String::from("ascend (requires integer argument)"),
                             other_type: "non-integer".to_string(),
-                        })
+                        });
                     }
                 };
 
@@ -7632,31 +6534,13 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Build prefix from current_path
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Find all unique immediate children — native trie descent
-                        // (O(prefix + distinct child segments) instead of the previous
-                        // whole-map scan). The helper emits distinct segments already in
-                        // the ascending byte-lex order the scan's sort()+dedup() produced.
-                        let children = collect_child_segments(&rholang_pathmap, &prefix_key, None);
+                        let children = pathmap.collect_child_segments(&prefix_key, None);
 
                         Ok(children.len() as i64)
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
-                        // For PathMap at root, count top-level paths
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Distinct first segments = child segments below the empty prefix
-                        // (native descent; same result set and order as the retired
-                        // whole-map first-segment scan + sort()+dedup()).
-                        let children = collect_child_segments(&rholang_pathmap, &[], None);
+                        let children = pathmap.collect_child_segments(&[], None);
 
                         Ok(children.len() as i64)
                     }
@@ -7707,20 +6591,8 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(mut zipper) => {
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Build prefix from current_path
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-
-                        // Find the first (byte-lex smallest) immediate child — native
-                        // trie descent with early stop after one emission (O(prefix +
-                        // first segment) instead of the previous whole-map scan +
-                        // sort()+dedup(); the helper emits in exactly that sorted order,
-                        // so the first emission IS the retired `children.first()`).
-                        let children =
-                            collect_child_segments(&rholang_pathmap, &prefix_key, Some(1));
+                        let children = pathmap.collect_child_segments(&prefix_key, Some(1));
 
                         // Get first child
                         if let Some(first_child) = children.first() {
@@ -7794,7 +6666,7 @@ impl DebruijnInterpreter {
                                 "descendIndexedBranch (requires integer argument)",
                             ),
                             other_type: "non-integer".to_string(),
-                        })
+                        });
                     }
                 };
 
@@ -7806,11 +6678,6 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(mut zipper) => {
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
-
-                        // Build prefix from current_path
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Find the idx-th immediate child in ascending byte-lex order —
@@ -7821,8 +6688,7 @@ impl DebruijnInterpreter {
                         // (saturating_add: a saturated limit simply enumerates every
                         // child, and `.get(idx)` still yields None — the retired scan's
                         // out-of-bounds behavior.)
-                        let children = collect_child_segments(
-                            &rholang_pathmap,
+                        let children = pathmap.collect_child_segments(
                             &prefix_key,
                             Some((idx as usize).saturating_add(1)),
                         );
@@ -7895,9 +6761,6 @@ impl DebruijnInterpreter {
                         }
 
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
 
                         // Get parent path and current segment
                         let current_segment = zipper.current_path.last().unwrap().clone();
@@ -7908,7 +6771,7 @@ impl DebruijnInterpreter {
                         // (O(parent + distinct siblings) instead of the previous
                         // whole-map scan; emitted in the same ascending byte-lex,
                         // deduplicated order the scan's sort()+dedup() produced).
-                        let siblings = collect_child_segments(&rholang_pathmap, &parent_key, None);
+                        let siblings = pathmap.collect_child_segments(&parent_key, None);
 
                         // Find current position and get next
                         if let Some(current_idx) =
@@ -7986,9 +6849,6 @@ impl DebruijnInterpreter {
                         }
 
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let pathmap_result =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
-                        let rholang_pathmap = pathmap_result.map;
 
                         // Get parent path and current segment
                         let current_segment = zipper.current_path.last().unwrap().clone();
@@ -7999,7 +6859,7 @@ impl DebruijnInterpreter {
                         // (O(parent + distinct siblings) instead of the previous
                         // whole-map scan; emitted in the same ascending byte-lex,
                         // deduplicated order the scan's sort()+dedup() produced).
-                        let siblings = collect_child_segments(&rholang_pathmap, &parent_key, None);
+                        let siblings = pathmap.collect_child_segments(&parent_key, None);
 
                         // Find current position and get previous
                         if let Some(current_idx) =
@@ -8134,14 +6994,11 @@ impl DebruijnInterpreter {
                         // same codec round-trip `setSubtrie` performs above.
                         use models::rust::canonical_path::decode_trie_path;
 
-                        let full_key = cursor_entry_key(
-                            &zipper.current_path,
-                            cursor_kind_of(&zipper)?,
-                            &PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(
-                                zipper.pathmap.as_ref().expect("zipper pathmap was None"),
-                            )
-                            .map,
-                        );
+                        let full_key = zipper
+                            .pathmap
+                            .as_ref()
+                            .expect("zipper pathmap was None")
+                            .cursor_entry_key(&zipper.current_path, cursor_kind_of(&zipper)?);
                         match decode_trie_path(&full_key) {
                             Ok(decoded) => Ok(decoded),
                             // A focus whose path does not decode names no
@@ -8192,16 +7049,11 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let rholang_pathmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap).map;
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
-                        Ok(subtrie_value_count(&rholang_pathmap, &prefix_key) as i64)
+                        Ok(pathmap.subtrie_value_count(&prefix_key) as i64)
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
-                        // At the root this is the map's entry count.
-                        let rholang_pathmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap).map;
-                        Ok(subtrie_value_count(&rholang_pathmap, &[]) as i64)
+                        Ok(pathmap.subtrie_value_count(&[]) as i64)
                     }
                     other => Err(InterpreterError::MethodNotDefined {
                         method: String::from("leafCount"),
@@ -8271,22 +7123,14 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(mut zipper) => {
                         let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                        let rholang_pathmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap).map;
-
-                        // The cursor's own ENTRY key is the walk's starting
-                        // point: the next value STRICTLY after this position.
-                        let from_key: Vec<u8> = cursor_entry_key(
-                            &zipper.current_path,
-                            cursor_kind_of(&zipper)?,
-                            &rholang_pathmap,
-                        );
+                        let from_key = pathmap
+                            .cursor_entry_key(&zipper.current_path, cursor_kind_of(&zipper)?);
                         // The step answers with a KEY, not just segments, so the
                         // landing cursor's arm is READ OFF the key rather than
                         // assumed — `decode_cursor` is the exact inverse of
                         // `cursor_entry_key`. This is what makes `getPath()`
                         // report the bare element `1` and not the list `[1]`.
-                        match next_value_key(&rholang_pathmap, &from_key) {
+                        match pathmap.next_value_key(&from_key) {
                             Some(key) => {
                                 let (segments, kind) = decode_cursor(&key);
                                 zipper.current_path = segments;
@@ -8344,7 +7188,9 @@ impl DebruijnInterpreter {
         }
 
         impl<'a> AddMethod<'a> {
-            fn add(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
+            fn add(&self, base_expr: Expr, mut par: Par) -> Result<Expr, InterpreterError> {
+                let par_connective_used = par.connective_used;
+                let par_locally_free = std::mem::take(&mut par.locally_free);
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::ESetBody(eset) => {
@@ -8354,10 +7200,10 @@ impl DebruijnInterpreter {
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::ESetBody(
                                     ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.insert(par.clone()),
+                                        ps: base_ps.insert(par),
                                         connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
+                                            || par_connective_used,
+                                        locally_free: union(base.locally_free, par_locally_free),
                                         remainder: None,
                                     }),
                                 )),
@@ -8410,7 +7256,9 @@ impl DebruijnInterpreter {
         }
 
         impl<'a> DeleteMethod<'a> {
-            fn delete(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
+            fn delete(&self, base_expr: Expr, mut par: Par) -> Result<Expr, InterpreterError> {
+                let par_connective_used = par.connective_used;
+                let par_locally_free = std::mem::take(&mut par.locally_free);
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::ESetBody(eset) => {
@@ -8420,10 +7268,10 @@ impl DebruijnInterpreter {
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::ESetBody(
                                     ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.remove(par.clone()),
+                                        ps: base_ps.remove(par),
                                         connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
+                                            || par_connective_used,
+                                        locally_free: union(base.locally_free, par_locally_free),
                                         remainder: None,
                                     }),
                                 )),
@@ -8437,13 +7285,24 @@ impl DebruijnInterpreter {
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EMapBody(
                                     ParMapTypeMapper::par_map_to_emap(ParMap {
-                                        ps: base_ps.remove(par.clone()),
+                                        ps: base_ps.remove(par),
                                         connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
+                                            || par_connective_used,
+                                        locally_free: union(base.locally_free, par_locally_free),
                                         remainder: None,
                                     }),
                                 )),
+                            })
+                        }
+
+                        ExprInstance::EPathmapBody(mut pathmap) => {
+                            // Generic collection deletion names an exact
+                            // member/key.  It is not a relative zipper path:
+                            // a list Par therefore remains one canonical key.
+                            let key = encode_trie_path(&par);
+                            pathmap.remove_encoded_entry(&key);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                             })
                         }
 
@@ -8513,6 +7372,12 @@ impl DebruijnInterpreter {
                             })
                         }
 
+                        ExprInstance::EPathmapBody(pathmap) => Ok(Expr {
+                            // One stack-safe canonical encode plus one native
+                            // PathMap lookup; no leaf clone or Vec projection.
+                            expr_instance: Some(ExprInstance::GBool(pathmap.contains_entry(&par))),
+                        }),
+
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("contains"),
                             other_type: get_type(other),
@@ -8566,6 +7431,11 @@ impl DebruijnInterpreter {
                             let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
                             Ok(base_ps.get_or_else(key, Par::default()))
                         }
+
+                        ExprInstance::EPathmapBody(pathmap) => pathmap
+                            .get_map_value(&key)
+                            .map(|value| value.cloned().unwrap_or_default())
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("get"),
@@ -8625,6 +7495,11 @@ impl DebruijnInterpreter {
                             let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
                             Ok(base_ps.get_or_else(key, default))
                         }
+
+                        ExprInstance::EPathmapBody(pathmap) => pathmap
+                            .get_map_value(&key)
+                            .map(|value| value.cloned().unwrap_or(default))
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("get_or_else"),
@@ -8689,6 +7564,15 @@ impl DebruijnInterpreter {
                             }]))
                         }
 
+                        ExprInstance::EPathmapBody(mut pathmap) => {
+                            pathmap.insert_map_entry(key, value).map_err(|error| {
+                                InterpreterError::ReduceError(error.to_string())
+                            })?;
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+                            }]))
+                        }
+
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("set"),
                             other_type: get_type(other),
@@ -8742,6 +7626,40 @@ impl DebruijnInterpreter {
                         ExprInstance::EMapBody(emap) => {
                             let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
                             let par_set = ParSet::create_from_vec(base_ps.keys());
+
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::ESetBody(
+                                    ParSetTypeMapper::par_set_to_eset(par_set),
+                                )),
+                            }]))
+                        }
+
+                        ExprInstance::EPathmapBody(pathmap) => {
+                            // `keys` necessarily constructs the returned ESet,
+                            // but the source remains a compressed PathMap.  We
+                            // decode each canonical key exactly once and never
+                            // materialize key/value entry pairs.
+                            let mut keys = Vec::with_capacity(pathmap.len());
+                            match pathmap.mode() {
+                                EPathMapMode::Empty => {}
+                                EPathMapMode::Set => pathmap
+                                    .entry_trie()
+                                    .for_each_raw_set_entry(|key| {
+                                        keys.push(decode_trie_path(key).expect(
+                                            "set-mode EPathMap keys are canonical Par paths",
+                                        ));
+                                    })
+                                    .expect("set-mode dispatch checked before traversal"),
+                                EPathMapMode::Map => pathmap
+                                    .entry_trie()
+                                    .for_each_raw_map_entry(|key, _| {
+                                        keys.push(decode_trie_path(key).expect(
+                                            "map-mode EPathMap keys are canonical Par paths",
+                                        ));
+                                    })
+                                    .expect("map-mode dispatch checked before traversal"),
+                            }
+                            let par_set = ParSet::create_from_vec(keys);
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::ESetBody(
@@ -8809,6 +7727,11 @@ impl DebruijnInterpreter {
                             let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
                             let size = base_ps.length() as i64;
 
+                            Ok((size, new_gint_par(size, Vec::new(), false)))
+                        }
+
+                        ExprInstance::EPathmapBody(pathmap) => {
+                            let size = pathmap.len() as i64;
                             Ok((size, new_gint_par(size, Vec::new(), false)))
                         }
 
@@ -9998,8 +8921,8 @@ fn describe_par_type(par: &Par) -> String {
 mod differential_trampoline {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{
-        BindPattern, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-        EPlus, ETuple, Expr, ListParWithRandom, Par, TaggedContinuation,
+        BindPattern, Bundle, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq,
+        ENot, EOr, EPlus, ETuple, Expr, ListParWithRandom, Par, TaggedContinuation,
     };
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
     use proptest::prelude::*;
@@ -10013,7 +8936,7 @@ mod differential_trampoline {
     type TestSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
     fn expr_par(ei: ExprInstance) -> Par {
-        Par {
+        models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ei),
             }],
@@ -10274,12 +9197,11 @@ mod differential_trampoline {
     }
 
     // ---- moderate-depth plus/list: the recursive twin (a DEBUG build, big
-    //      frames) survives ~60 levels on the 8 MiB test-thread stack, so both
+    //      frames) survives ~60 levels on the ordinary test-harness stack, so both
     //      paths run and must AGREE. (The heap-bounded 20000-deep proof is the
     //      separate `so_probe` example, trampoline-only — the twin cannot reach
-    //      it, which is precisely the bug leg-2 fixes.) `current_thread` keeps
-    //      the sync recursion on the RUST_MIN_STACK=8 MiB test thread rather
-    //      than a 2 MiB tokio worker. ----
+    //      it, which is precisely the bug leg-2 fixes.) `current_thread` avoids
+    //      introducing a separately configured tokio-worker stack. ----
     #[tokio::test(flavor = "current_thread")]
     async fn moderate_depth_plus_and_list_agree() {
         let mut t = new_gint_par(0, vec![], false);
@@ -10484,5 +9406,41 @@ mod differential_trampoline {
                 t
             );
         }
+    }
+
+    #[test]
+    fn async_reducer_scc_depth_4096_uses_a_fixed_small_native_stack() {
+        std::thread::Builder::new()
+            .name("reducer-scc-depth-4096".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let reducer = build().await;
+                    let mut process = Par::default();
+                    for _ in 0..4_096 {
+                        process = Par::default().with_bundles(vec![Bundle {
+                            body: Some(process),
+                            write_flag: true,
+                            read_flag: true,
+                        }]);
+                    }
+
+                    reducer
+                        .eval(
+                            process,
+                            &Env::new(),
+                            Blake2b512Random::create_from_bytes(&[7u8; 32]),
+                        )
+                        .await
+                        .expect("the detached heap driver must exhaust the bundle spine");
+                });
+            })
+            .expect("spawn fixed-stack reducer probe")
+            .join()
+            .expect("fixed-stack reducer probe panicked");
     }
 }

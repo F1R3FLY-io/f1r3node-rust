@@ -73,9 +73,12 @@ use std::fmt;
 use casper::rust::helper::test_result_collector::TestResult;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, Par};
+use models::rhoapi::{EPathMap, ETuple, Expr, Par};
+use models::rust::canonical_path::decode_trie_path;
+use models::rust::epathmap_trie_codec::EPathMapMode;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
+use typed_arena::Arena;
 
 /// The method name `RhoSpecContract.rho` dispatches a suite registration on.
 const TEST_SUITE_SELECTOR: &str = "testSuite";
@@ -184,10 +187,7 @@ pub fn check_registration(registered: &BTreeSet<String>) -> Result<(), FloorBrea
 /// names that reported: `⊇` catches a test that silently stopped asserting, `⊆` catches an
 /// under-reporting extractor. `DidNotFinish` is reported first when both break, because a blocked
 /// body explains the missing reports and the reverse is not true.
-pub fn check_report(
-    registered: &BTreeSet<String>,
-    result: &TestResult,
-) -> Result<(), FloorBreach> {
+pub fn check_report(registered: &BTreeSet<String>, result: &TestResult) -> Result<(), FloorBreach> {
     let reported: BTreeSet<String> = result.assertions.keys().cloned().collect();
 
     match result.has_finished {
@@ -244,6 +244,7 @@ pub fn registered_test_names(source: &str) -> Result<BTreeSet<String>, Interpret
 /// eight `new`/`for` levels before its registration) and this runs inside a `#[tokio::test]`
 /// worker whose stack is not the main thread's.
 pub fn collect_registered_test_names(root: &Par, names: &mut BTreeSet<String>) {
+    let arena = Arena::new();
     let mut work: Vec<&Par> = vec![root];
 
     while let Some(par) = work.pop() {
@@ -288,7 +289,7 @@ pub fn collect_registered_test_names(root: &Par, names: &mut BTreeSet<String>) {
         }
 
         for expr in &par.exprs {
-            push_expr_children(expr, &mut work);
+            push_expr_children(expr, &mut work, &arena);
         }
 
         for connective in &par.connectives {
@@ -349,7 +350,7 @@ fn is_test_suite_selector(argument: &Par) -> bool {
 /// `ExprInstance` variant must break this build, because a variant handled by a wildcard is a
 /// variant whose sub-terms are never searched, and an under-reporting extractor turns the floor
 /// in `RhoSpec::run_tests` back into the vacuity it replaced.
-fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>) {
+fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>, arena: &'a Arena<Par>) {
     let Some(instance) = &expr.expr_instance else {
         return;
     };
@@ -401,10 +402,10 @@ fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>) {
                 push_pair(work, &kv.key, &kv.value);
             }
         }
-        ExprInstance::EPathmapBody(e) => work.extend(e.ps().iter()),
+        ExprInstance::EPathmapBody(e) => push_epathmap_children(e, work, arena),
         ExprInstance::EZipperBody(e) => {
             if let Some(pathmap) = &e.pathmap {
-                work.extend(pathmap.ps().iter());
+                push_epathmap_children(pathmap, work, arena);
             }
         }
 
@@ -413,6 +414,33 @@ fn push_expr_children<'a>(expr: &'a Expr, work: &mut Vec<&'a Par>) {
             work.extend(e.target.as_ref());
             work.extend(e.arguments.iter());
         }
+    }
+}
+
+fn push_epathmap_children<'a>(
+    epathmap: &'a EPathMap,
+    work: &mut Vec<&'a Par>,
+    arena: &'a Arena<Par>,
+) {
+    match epathmap.mode() {
+        EPathMapMode::Empty => {}
+        EPathMapMode::Set => epathmap
+            .entry_trie()
+            .for_each_raw_set_entry(|key| {
+                let par = decode_trie_path(key)
+                    .expect("set-mode EPathMap keys are canonical_path encodings");
+                work.push(&*arena.alloc(par));
+            })
+            .expect("the EPathMap mode was checked before set traversal"),
+        EPathMapMode::Map => epathmap
+            .entry_trie()
+            .for_each_raw_map_entry(|key, value| {
+                let key = decode_trie_path(key)
+                    .expect("map-mode EPathMap keys are canonical_path encodings");
+                work.push(&*arena.alloc(key));
+                work.push(value);
+            })
+            .expect("the EPathMap mode was checked before map traversal"),
     }
 }
 

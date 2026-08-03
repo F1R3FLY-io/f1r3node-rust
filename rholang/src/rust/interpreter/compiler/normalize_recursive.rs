@@ -659,10 +659,14 @@ fn normalize_collection_recursive<'ast>(
                 parser,
             )?;
 
-            acc_pars.push(result.par.clone());
-            result_known_free = result.free_map.clone();
-            locally_free = union(locally_free, result.par.locally_free);
-            connective_used = connective_used || result.par.connective_used;
+            let mut result_par = result.par;
+            connective_used |= result_par.connective_used;
+            locally_free = union(
+                locally_free,
+                std::mem::take(&mut result_par.locally_free),
+            );
+            acc_pars.push(result_par);
+            result_known_free = result.free_map;
         }
 
         let constructed_expr: Expr = constructor(acc_pars, locally_free, connective_used);
@@ -709,15 +713,18 @@ fn normalize_collection_recursive<'ast>(
                 parser,
             )?;
 
-            acc_pairs.push((key_result.par.clone(), value_result.par.clone()));
-            result_known_free = value_result.free_map.clone();
+            let mut key_par = key_result.par;
+            let mut value_par = value_result.par;
+            connective_used |= key_par.connective_used || value_par.connective_used;
             locally_free = union(
                 locally_free,
-                union(key_result.par.locally_free, value_result.par.locally_free),
+                union(
+                    std::mem::take(&mut key_par.locally_free),
+                    std::mem::take(&mut value_par.locally_free),
+                ),
             );
-            connective_used = connective_used
-                || key_result.par.connective_used
-                || value_result.par.connective_used;
+            acc_pairs.push((key_par, value_par));
+            result_known_free = value_result.free_map;
         }
 
         let remainder_connective_used = match remainder {
@@ -1785,7 +1792,7 @@ fn normalize_p_new_recursive<'ast>(
     let new_env: BoundMapChain<VarSort> = input.bound_map_chain.put_all_pos(new_bindings);
     let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();
 
-    let body_result = normalize_ann_proc_recursive(
+    let mut body_result = normalize_ann_proc_recursive(
         proc,
         ProcVisitInputs {
             par: Par::default(),
@@ -1800,17 +1807,21 @@ fn normalize_p_new_recursive<'ast>(
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
+    let body_locally_free = filter_and_adjust_bitset(
+        std::mem::take(&mut body_result.par.locally_free),
+        new_count,
+    );
     let result_new = New {
         bind_count: new_count as i32,
-        p: Some(body_result.par.clone()),
+        p: Some(body_result.par),
         uri: uris,
         injections: btree_map,
-        locally_free: filter_and_adjust_bitset(body_result.par.clone().locally_free, new_count),
+        locally_free: body_locally_free,
     };
 
     Ok(ProcVisitOutputs {
         par: prepend_new(input.par.clone(), result_new),
-        free_map: body_result.free_map.clone(),
+        free_map: body_result.free_map,
     })
 }
 
@@ -1874,7 +1885,7 @@ fn normalize_p_contr_recursive<'ast>(
     let new_enw = input.bound_map_chain.absorb_free_span(&remainder_result.1);
     let bound_count = remainder_result.1.count_no_wildcards();
 
-    let body_result = normalize_ann_proc_recursive(
+    let mut body_result = normalize_ann_proc_recursive(
         body,
         ProcVisitInputs {
             par: Par::default(),
@@ -1885,6 +1896,11 @@ fn normalize_p_contr_recursive<'ast>(
         parser,
     )?;
 
+    let body_connective_used = body_result.par.connective_used;
+    let body_locally_free = filter_and_adjust_bitset(
+        std::mem::take(&mut body_result.par.locally_free),
+        bound_count,
+    );
     let receive = Receive {
         binds: vec![ReceiveBind {
             patterns: init_acc.0.clone().into_iter().rev().collect(),
@@ -1892,7 +1908,7 @@ fn normalize_p_contr_recursive<'ast>(
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
         }],
-        body: Some(body_result.par.clone()),
+        body: Some(body_result.par),
         persistent: true,
         peek: false,
         bind_count: bound_count as i32,
@@ -1903,13 +1919,13 @@ fn normalize_p_contr_recursive<'ast>(
             ),
             union(
                 init_acc.2,
-                filter_and_adjust_bitset(body_result.par.clone().locally_free, bound_count),
+                body_locally_free,
             ),
         ),
         connective_used: name_match_result
             .par
             .connective_used(name_match_result.par.clone())
-            || body_result.par.connective_used(body_result.par.clone()),
+            || body_connective_used,
         condition: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
@@ -2870,7 +2886,7 @@ fn normalize_p_input_recursive<'ast>(
         };
 
         // Process body
-        let proc_visit_outputs = normalize_ann_proc_recursive(
+        let mut proc_visit_outputs = normalize_ann_proc_recursive(
             body,
             ProcVisitInputs {
                 par: Par::default(),
@@ -2896,10 +2912,13 @@ fn normalize_p_input_recursive<'ast>(
             .map(|gr| gr.par.connective_used)
             .unwrap_or(false);
 
+        let body_connective_used = proc_visit_outputs.par.connective_used;
+        let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
+
         Ok(ProcVisitOutputs {
             par: input.par.clone().prepend_receive(Receive {
                 binds: receive_binds,
-                body: Some(proc_visit_outputs.clone().par),
+                body: Some(proc_visit_outputs.par),
                 persistent,
                 peek,
                 bind_count: bind_count as i32,
@@ -2914,14 +2933,14 @@ fn normalize_p_input_recursive<'ast>(
                                     union(locally_free1, locally_free2)
                                 }),
                             filter_and_adjust_bitset(
-                                union(proc_visit_outputs.par.locally_free, guard_locally_free),
+                                union(body_locally_free, guard_locally_free),
                                 bind_count,
                             ),
                         ),
                     )
                 },
                 connective_used: sources_connective_used
-                    || proc_visit_outputs.par.connective_used
+                    || body_connective_used
                     || guard_connective_used,
                 condition: guard_par,
             }),

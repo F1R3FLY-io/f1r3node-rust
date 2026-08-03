@@ -7,7 +7,7 @@
 //!
 //! | surface | census | mechanism |
 //! |---|---|---|
-//! | **derived impls** | ✅ | `DERIVE_DISPOSITIONS` in `models/build/wire_schema.rs` is a closed table over derive TOKENS; `models/build.rs` **fails the build** on an unknown one. |
+//! | **derived impls** | ✅ | `DERIVE_DISPOSITIONS` in `models/codegen/schema_codegen.rs` is a closed table over derive TOKENS; `models/build.rs` **fails the build** on an unknown one. |
 //! | **generated files** (mettail) | ✅ | `GENERATED_FILE_CENSUS` + `defines_a_function_it_also_calls`, deliberately loose in the safe direction. |
 //! | **hand-written traversals** | ❌ **nothing** | ⇐ this file |
 //!
@@ -83,8 +83,20 @@ const CRATE_ROOTS: &[&str] = &[
 /// ⚠ Matched as whole words against the function's text — deliberately coarse, because a
 /// narrow match is how a traversal escapes a census.
 const TERM_FAMILY: &[&str] = &[
-    "Par", "Expr", "Send", "Receive", "New", "Match", "Bundle", "Connective", "EList", "ETuple",
-    "ESet", "EMap", "EPathMap", "Proc",
+    "Par",
+    "Expr",
+    "Send",
+    "Receive",
+    "New",
+    "Match",
+    "Bundle",
+    "Connective",
+    "EList",
+    "ETuple",
+    "ESet",
+    "EMap",
+    "EPathMap",
+    "Proc",
 ];
 
 /// What is known about a file's hand-written recursion over the term family.
@@ -97,6 +109,7 @@ enum Disposition {
     Measured(&'static str),
     /// ⚠ A live Θ(depth) exposure with no subject. **This variant is the backlog**, and every
     /// row carrying it is an admission.
+    #[allow(dead_code)]
     Unmeasured(&'static str),
     /// The cycle is over a bounded structure rather than the term's own depth — a fixed-arity
     /// walk, a config tree, a transport handshake.
@@ -117,15 +130,29 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     // ── the reducer and its method surface ─────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/reduce.rs",
-        Disposition::Unmeasured(
-            "the reducer's own cycle — eval_bundle/eval_if/eval_inner/eval_match/eval_new/\
-             eval_with_path/generated_message_eval — plus the method-dispatch cluster it shares \
-             with fused_pathmap_chain.rs. A LIVE CONSENSUS PATH with no depth subject",
+        Disposition::Measured(
+            "production expression descent is `eval_drive`; async process descent is the \
+             detached counted-task driver. Gate subjects \
+             `async_reducer_scc_depth_4096_uses_a_fixed_small_native_stack`, the reported deploy \
+             reproducer in `deploy_depth_ceiling`, and the async-driver differential cover the \
+             formerly recursive consensus path",
         ),
     ),
     (
         "rholang/src/rust/interpreter/fused_pathmap_chain.rs",
-        Disposition::Unmeasured("shares the reducer's method-dispatch component"),
+        Disposition::Measured(
+            "the recognizer and replay are explicit loops; gate subject \
+             `fused_chain_depth_4096_uses_a_fixed_small_native_stack` drives the whole EMethod \
+             spine on 256 KiB",
+        ),
+    ),
+    (
+        "rholang/src/rust/interpreter/reduce_expression_oracle.rs",
+        Disposition::OracleTwin(
+            "the six pre-PDA expression evaluators retained only for result/charge \
+             differentials; the source is separate so its deliberate recursion cannot be \
+             mistaken for the production reducer",
+        ),
     ),
     // ── printers ───────────────────────────────────────────────────────────────────
     (
@@ -135,17 +162,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     (
         "rholang/src/rust/interpreter/pretty_printer_oracle.rs",
         Disposition::OracleTwin("the pre-conversion printer, held for the differential"),
-    ),
-    (
-        "models/src/rust/par_to_sexpr.rs",
-        Disposition::Unmeasured(
-            "bundle/expr/new/par/receive/send_to_sexpr are mutually recursive over `Par`; \
-             diagnostic-only, but no subject measures it",
-        ),
-    ),
-    (
-        "models/src/rust/casper/protocol/casper_message.rs",
-        Disposition::Unmeasured("build_string family over block messages"),
     ),
     // ── normalizer ─────────────────────────────────────────────────────────────────
     (
@@ -185,34 +201,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subjects `substitute`, `substitute_no_sort`"),
     ),
     // ── matcher ────────────────────────────────────────────────────────────────────
-    (
-        "rholang/src/rust/interpreter/matcher/spatial_matcher.rs",
-        Disposition::Unmeasured(
-            "spatial_match/list_match/match_connective_with_bounds are mutually recursive across \
-             two files; no depth subject",
-        ),
-    ),
-    (
-        "rholang/src/rust/interpreter/matcher/list_match.rs",
-        Disposition::Unmeasured("the other half of the matcher's cycle"),
-    ),
-    (
-        "rholang/src/rust/interpreter/matcher/match_pars.rs",
-        Disposition::Unmeasured("compare_* family over Par, no subject"),
-    ),
-    (
-        "rholang/src/rust/interpreter/matcher/has_locally_free.rs",
-        Disposition::Unmeasured("self-recursive over Par"),
-    ),
-    // ── ★ #121 ─────────────────────────────────────────────────────────────────────
-    (
-        "models/src/rust/pathmap_crate_type_mapper.rs",
-        Disposition::Unmeasured(
-            "⭑ #121's family: eval_stable_par_budgeted ⇄ eval_stable_expr_budgeted ⇄ \
-             stable_children. THE GROUND-DOMAIN GATE, run on every segment of every trie key. \
-             Found originally by bisection; found here by derivation",
-        ),
-    ),
     // ── codecs and canonical form ──────────────────────────────────────────────────
     (
         "models/src/rust/canonical_path.rs",
@@ -224,16 +212,37 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ),
     (
         "models/src/rust/rhoapi_ext.rs",
-        Disposition::Unmeasured("the hand-written EPathMap prost impl"),
+        Disposition::Measured(
+            "`epathmap_epm1_snapshot::epm1_round_trip_is_stack_safe_at_depth_4096_on_a_256_kib_stack` \
+             drives the semantic view, EPM1 encode, both decoders, clone-shared cache and iterative teardown",
+        ),
+    ),
+    (
+        "models/src/rust/epathmap_trie_codec.rs",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: the scanner intentionally erases qualification and joins \
+             `PendingEpmDecode::new`, `TrieCodecError::new`, `PathMap::new`, \
+             `EPathMapMode::try_from`, and `usize::try_from` through the bounded byte helpers \
+             `read_len`, `read_protobuf_varint`, and `take`. None calls itself or another \
+             member of that alleged cycle; ACTree descent is the explicit `Vec<ActFrame>` PDA",
+        ),
     ),
     (
         "models/src/rust/par_set.rs",
-        Disposition::Unmeasured("create_from_vec/update_locally_free over a Par set"),
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `ParSet::deserialize` calls the qualified \
+             `Vec::<Par>::deserialize`; it never calls `ParSet::deserialize`. The scanner \
+             intentionally erases the qualifier and therefore invents a self-loop. Recursive \
+             serde dispatch over generated Par is tracked by DERIVE_DISPOSITIONS instead",
+        ),
     ),
     (
         "models/src/rust/par_map.rs",
-        Disposition::Unmeasured(
-            "⭑ create_from_vec reaches `impl Hash for Par` — the SS-Y2 subject named by #174",
+        Disposition::NotATermDepthCycle(
+            "textual false positive: `ParMap::deserialize` calls the qualified \
+             `Vec::<(Par, Par)>::deserialize`; it never calls `ParMap::deserialize`. The scanner \
+             intentionally erases the qualifier and therefore invents a self-loop. Recursive \
+             serde dispatch over generated Par is tracked by DERIVE_DISPOSITIONS instead",
         ),
     ),
     // ── evaluator ──────────────────────────────────────────────────────────────────
@@ -269,7 +278,10 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "comm/src/rust/transport/grpc_transport.rs",
         Disposition::NotATermDepthCycle("transport, not a term traversal"),
     ),
-    ("rholang/src/lib.rs", Disposition::NotATermDepthCycle("FFI surface")),
+    (
+        "rholang/src/lib.rs",
+        Disposition::NotATermDepthCycle("FFI surface"),
+    ),
     // ── ⚠ THE OVER-REPORT, MADE VISIBLE ────────────────────────────────────────────
     //
     // The five rows below were all surfaced by the census on its first run and all five are
@@ -343,7 +355,9 @@ fn workspace_root() -> PathBuf {
 /// Every `.rs` file under the declared crate roots.
 fn source_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in entries.flatten() {
             let p = e.path();
             let name = e.file_name();
@@ -399,7 +413,9 @@ fn fn_bodies(src: &str) -> Vec<(String, String)> {
         if name.is_empty() {
             continue;
         }
-        let Some(brace) = src[i..].find('{') else { continue };
+        let Some(brace) = src[i..].find('{') else {
+            continue;
+        };
         let bstart = i + brace;
         let mut depth = 0i32;
         let mut closed = None;
@@ -466,11 +482,20 @@ type Node = (usize, String); // (file index, fn name)
 /// unbounded recursion would be the campaign's own defect, in its own instrument.
 fn strongly_connected(graph: &BTreeMap<Node, BTreeSet<Node>>) -> Vec<Vec<Node>> {
     let nodes: Vec<Node> = graph.keys().cloned().collect();
-    let idx_of: BTreeMap<Node, usize> =
-        nodes.iter().cloned().enumerate().map(|(i, n)| (n, i)).collect();
+    let idx_of: BTreeMap<Node, usize> = nodes
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(i, n)| (n, i))
+        .collect();
     let adj: Vec<Vec<usize>> = nodes
         .iter()
-        .map(|n| graph[n].iter().filter_map(|m| idx_of.get(m).copied()).collect())
+        .map(|n| {
+            graph[n]
+                .iter()
+                .filter_map(|m| idx_of.get(m).copied())
+                .collect()
+        })
         .collect();
 
     let n = nodes.len();
@@ -559,7 +584,9 @@ fn run_census() -> Census {
     let mut defined_in: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
 
     for (fi, path) in files.iter().enumerate() {
-        let Ok(src) = std::fs::read_to_string(path) else { continue };
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
         for (name, body) in fn_bodies(&src) {
             defined_in.entry(name.clone()).or_default().insert(fi);
             let key = (fi, name);
@@ -573,7 +600,9 @@ fn run_census() -> Census {
     for (node, cs) in &bodies {
         let mut out = BTreeSet::new();
         for c in cs {
-            let Some(where_) = defined_in.get(c) else { continue };
+            let Some(where_) = defined_in.get(c) else {
+                continue;
+            };
             let same = (node.0, c.clone());
             if bodies.contains_key(&same) {
                 out.insert(same);
@@ -587,9 +616,7 @@ fn run_census() -> Census {
     let comps = strongly_connected(&graph);
     let recursive: Vec<Vec<Node>> = comps
         .into_iter()
-        .filter(|c| {
-            c.len() > 1 || graph.get(&c[0]).is_some_and(|adj| adj.contains(&c[0]))
-        })
+        .filter(|c| c.len() > 1 || graph.get(&c[0]).is_some_and(|adj| adj.contains(&c[0])))
         .collect();
 
     let term_family: Vec<Vec<Node>> = recursive
@@ -611,7 +638,12 @@ fn run_census() -> Census {
         .cloned()
         .collect();
 
-    Census { recursive, term_family, files, rel }
+    Census {
+        recursive,
+        term_family,
+        files,
+        rel,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -659,7 +691,27 @@ fn every_handwritten_term_recursion_has_a_disposition() {
     let undispositioned: Vec<String> = with_recursion
         .iter()
         .filter(|(f, _)| !declared.contains(f.as_str()))
-        .map(|(f, n)| format!("{f}  (largest component: {n})"))
+        .map(|(f, n)| {
+            let mut components: Vec<String> = c
+                .term_family
+                .iter()
+                .filter(|component| component.iter().any(|(fi, _)| c.rel[*fi] == *f))
+                .map(|component| {
+                    let mut names: Vec<&str> = component
+                        .iter()
+                        .filter(|(fi, _)| c.rel[*fi] == *f)
+                        .map(|(_, name)| name.as_str())
+                        .collect();
+                    names.sort_unstable();
+                    names.join(" ↔ ")
+                })
+                .collect();
+            components.sort_unstable();
+            format!(
+                "{f}  (largest component: {n}; members: {})",
+                components.join("; ")
+            )
+        })
         .collect();
 
     assert!(
@@ -695,17 +747,31 @@ fn every_handwritten_term_recursion_has_a_disposition() {
         unmeasured.len()
     );
     for f in &unmeasured {
-        println!("    UNMEASURED: {f}");
+        let mut components: Vec<Vec<&str>> = c
+            .term_family
+            .iter()
+            .filter(|component| component.iter().any(|(fi, _)| c.rel[*fi] == *f))
+            .map(|component| {
+                let mut names: Vec<&str> =
+                    component.iter().map(|(_, name)| name.as_str()).collect();
+                names.sort_unstable();
+                names
+            })
+            .collect();
+        components.sort_unstable();
+        println!("    UNMEASURED: {f}: {components:?}");
     }
 }
 
-/// ⭑★★ **The calibration: the census must still find the defect that motivated it.**
+/// ⭑★★ **The conversion witness: the census must stop finding #121, while its
+/// independent mutual-recursion calibration remains live below.**
 ///
-/// `#121` is the reason this file exists. If a refactor moves or renames that family and the
-/// census stops seeing it, every other green here means nothing — so the witness is pinned by
-/// name rather than trusted to keep working.
+/// `#121` is the reason this file exists. The former budgeted recursion was not
+/// enough for final closure: `eval_stable_par` is now a fully iterative PDA with
+/// a tail cursor and a heap worklist containing only pending siblings. This test
+/// makes the conversion observable instead of silently losing the calibration.
 #[test]
-fn the_census_sees_the_121_family() {
+fn the_census_confirms_the_121_family_was_converted() {
     let c = run_census();
     const FILE: &str = "models/src/rust/pathmap_crate_type_mapper.rs";
 
@@ -721,27 +787,13 @@ fn the_census_sees_the_121_family() {
         .collect();
 
     assert!(
-        !found.is_empty(),
-        "CALIBRATION LOST: the census no longer finds any term-family cycle in `{FILE}`.\n\n\
-         That file holds #121 — `eval_stable_par` ⇄ `eval_stable_expr`, the ground-domain gate \
-         that runs on every segment of every trie key, which appeared in no depth audit and no \
-         `TRIPWIRE_DEPTH` and was found only by bisection.\n\n\
-         Either the family was genuinely converted — in which case say so here and move its \
-         disposition to `Measured` — or THE CENSUS HAS STOPPED WORKING and its other results \
-         cannot be trusted."
+        found.is_empty(),
+        "#121 REGRESSED: `{FILE}` again contains a term-family recursion component: {found:?}.\n\
+         The ground-domain classifier is on every EPathMap key encode and must remain a fully \
+         iterative PDA; bounded recursion and native-stack chunking are not accepted."
     );
 
-    let mutual: Vec<&Vec<String>> = found.iter().filter(|n| n.len() > 1).collect();
-    assert!(
-        !mutual.is_empty(),
-        "CALIBRATION WEAKENED: `{FILE}` still shows recursion, but only self-calls — no MUTUAL \
-         component.\n\
-         #121 was a 2-cycle. A census that sees only self-calls there is the detector this file \
-         replaced, and it would have missed the original defect.\n\
-         Found: {found:?}"
-    );
-
-    println!("  #121 calibration: mutual component(s) in {FILE}: {mutual:?}");
+    println!("  #121 conversion witness: no term-family recursion remains in {FILE}");
 }
 
 /// ★ The oracle twin is a superset of the 26 names `normalize_oracle_provenance.rs` extracts.
@@ -771,5 +823,7 @@ fn the_normalizer_oracle_twin_is_found_and_is_a_superset_of_the_scc_oracle() {
          That oracle is an independently maintained list of the SAME cycle. If this census sees \
          fewer, it is under-reporting — the one direction a census may not err in."
     );
-    println!("  SCC-oracle calibration: largest component in the twin = {biggest} (oracle lists {ORACLE_MEMBERS})");
+    println!(
+        "  SCC-oracle calibration: largest component in the twin = {biggest} (oracle lists {ORACLE_MEMBERS})"
+    );
 }

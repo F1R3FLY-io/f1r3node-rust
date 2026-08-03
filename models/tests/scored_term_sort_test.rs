@@ -264,10 +264,8 @@ fn sorting_is_a_function_equal_terms_have_equal_canonical_forms_and_scores() {
 ///
 /// This is the property that makes "canonical" mean anything: a term read back
 /// out of RSpace, or spliced into another term and re-sorted, must not move.
-/// It is also the property that lets the `ESet` / `EMap` / `EPathMap` arms sort
-/// their elements more than once (they do — see
-/// `models/src/rust/rholang/sorter/sort_combine.rs`) without the extra rounds
-/// changing anything.
+/// It also checks that collection combines and PathMap re-keying reach a fixed
+/// point after their one post-order canonicalization pass.
 #[test]
 fn sorting_is_idempotent_the_canonical_form_is_a_fixed_point() {
     fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
@@ -323,6 +321,84 @@ fn sorting_is_idempotent_the_canonical_form_is_a_fixed_point() {
     check(prop::collection::vec(generate_var(2), 5), |x| {
         VarSortMatcher::sort_match(x)
     });
+}
+
+#[test]
+fn canonical_set_collisions_collapse_to_one_member() {
+    use models::rhoapi::ESet;
+
+    fn key(values: [i64; 2]) -> Par {
+        Par::default().with_exprs(
+            values
+                .into_iter()
+                .map(|value| Expr {
+                    expr_instance: Some(ExprInstance::GInt(value)),
+                })
+                .collect(),
+        )
+    }
+
+    let input = Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ESet {
+            ps: vec![key([1, 2]), key([2, 1])],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    };
+    let sorted = ExprSortMatcher::sort_match(&input);
+    let Some(ExprInstance::ESetBody(set)) = sorted.term.expr_instance else {
+        panic!("ESet input must remain an ESet after sorting");
+    };
+    assert_eq!(set.ps.len(), 1);
+    assert_eq!(set.ps[0], key([1, 2]));
+}
+
+#[test]
+fn canonical_map_key_collisions_have_a_permutation_invariant_winner() {
+    use models::rhoapi::{EMap, KeyValuePair};
+
+    fn key(values: [i64; 2]) -> Par {
+        Par::default().with_exprs(
+            values
+                .into_iter()
+                .map(|value| Expr {
+                    expr_instance: Some(ExprInstance::GInt(value)),
+                })
+                .collect(),
+        )
+    }
+    fn value(value: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        }])
+    }
+    fn map(entries: [([i64; 2], i64); 2]) -> Expr {
+        Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: entries
+                    .into_iter()
+                    .map(|(key_values, mapped)| KeyValuePair {
+                        key: Some(key(key_values)),
+                        value: Some(value(mapped)),
+                    })
+                    .collect(),
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }
+    }
+
+    let forward = ExprSortMatcher::sort_match(&map([([1, 2], 30), ([2, 1], 90)]));
+    let reverse = ExprSortMatcher::sort_match(&map([([2, 1], 90), ([1, 2], 30)]));
+    assert_eq!(forward, reverse);
+    let Some(ExprInstance::EMapBody(map)) = forward.term.expr_instance else {
+        panic!("EMap input must remain an EMap after sorting");
+    };
+    assert_eq!(map.kvs.len(), 1);
+    assert_eq!(map.kvs[0].key.as_ref(), Some(&key([1, 2])));
+    assert_eq!(map.kvs[0].value.as_ref(), Some(&value(90)));
 }
 
 /// ★★★ **THE PINNED WITNESS — distinct canonical terms CAN share a score, and the consequence
@@ -508,7 +584,7 @@ fn equal_canonical_terms_carry_equal_scores() {
 /// why two structurally-permuted `Par`s COMM-match interchangeably.
 #[test]
 fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
-    let ascending = Par {
+    let ascending = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(1)),
@@ -519,7 +595,7 @@ fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
         ],
         ..Default::default()
     };
-    let descending = Par {
+    let descending = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(2)),
@@ -565,7 +641,7 @@ fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
 #[test]
 fn permutation_collapse_survives_nesting() {
     fn nested(inner: Par) -> Par {
-        Par {
+        models::par_from_default! {
             sends: vec![models::rhoapi::Send {
                 chan: Some(Par::default()),
                 data: vec![inner],
@@ -579,11 +655,11 @@ fn permutation_collapse_survives_nesting() {
     let gi = |v: i64| Expr {
         expr_instance: Some(ExprInstance::GInt(v)),
     };
-    let ascending = nested(Par {
+    let ascending = nested(models::par_from_default! {
         exprs: vec![gi(1), gi(2), gi(3)],
         ..Default::default()
     });
-    let shuffled = nested(Par {
+    let shuffled = nested(models::par_from_default! {
         exprs: vec![gi(3), gi(1), gi(2)],
         ..Default::default()
     });
@@ -622,7 +698,7 @@ fn scored_term_should_sort_so_that_unequal_new_have_unequal_scores() {
         bind_count: 1,
         injections: {
             let mut injections = std::collections::BTreeMap::new();
-            injections.insert("key".to_string(), Par {
+            injections.insert("key".to_string(), models::par_from_default! {
                 bundles: vec![],
                 sends: vec![],
                 receives: vec![],

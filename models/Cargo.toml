@@ -35,16 +35,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dependencies]
 crypto = { path = "../crypto" }
-# EPathMap fix P1 (pathmap_crate_type_mapper intern store): the SAME blake2
-# version the workspace already resolves via crypto (crypto/Cargo.toml) — no
-# new external crate in the lockfile. Depended on directly so the streamed
-# store-key digest finalizes into a stack [u8; 32] (crypto's Blake2b256
-# wrappers return Vec<u8>, which would put an allocation on the zero-alloc
-# intern lookup path).
-blake2 = "0.10.6"
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
-pathmap = "0.2.2"
+pathmap = { version = "0.2.2", features = ["arena_compact"] }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -58,11 +51,8 @@ prost = { workspace = true }
 tonic-prost = { workspace = true }
 utoipa = "5"
 tracing = { workspace = true }
-# EPathMap fix P4.3 (spliced event hashing, src/rust/spliced_event_bytes.rs):
-# the hand-rolled emitter reproduces and composes with bincode 1.3.3
-# (workspace pin) — the event-hash canonical encoding end-to-end through
-# stable_hash_provider. Promoted from dev-dependencies (the P0 parity
-# harness already pinned the same encoding in tests).
+typed-arena = "2.0.2"
+# Generated event-hash encoding and serde use the workspace's bincode format.
 bincode = { workspace = true }
 
 # ── The aggregate target: the seven files `tests/mod.rs` includes ──────────
@@ -120,24 +110,25 @@ path = "tests/epathmap_canonical_fixtures.rs"
 name = "epathmap_canonicalization"
 path = "tests/epathmap_canonicalization.rs"
 
-# ★ FORM ② — the bincode surface becomes TRIE-NATIVE. It pins that `U(m)` is
-# carried VERBATIM and CONTIGUOUSLY (a substring search, because an interleaved
-# form round-trips perfectly and is not the trie's byte array), that the reader
-# acquires NO depth ceiling (34 and 64 are past `decode_trie_path`'s measured
-# escape-arm ceiling of 32, which is the whole reason the values are carried
-# beside `U(m)`), and that a peer stream whose keys disagree with its values
-# RE-FILES rather than being rejected — narrowing there would be a fork.
 [[test]]
-name = "epathmap_bincode_is_the_path_stream"
-path = "tests/epathmap_bincode_is_the_path_stream.rs"
+name = "epathmap_epm1_snapshot"
+path = "tests/epathmap_epm1_snapshot.rs"
 
 [[test]]
-name = "epathmap_identity_is_the_path_stream"
-path = "tests/epathmap_identity_is_the_path_stream.rs"
+name = "epathmap_algebra"
+path = "tests/epathmap_algebra.rs"
 
 [[test]]
-name = "epathmap_spliced_event_bytes"
-path = "tests/epathmap_spliced_event_bytes.rs"
+name = "epathmap_pathmap_native_zipper"
+path = "tests/epathmap_pathmap_native_zipper.rs"
+
+[[test]]
+name = "epathmap_identity_is_epm1_snapshot"
+path = "tests/epathmap_identity_is_epm1_snapshot.rs"
+
+[[test]]
+name = "event_hash_bytes_differential"
+path = "tests/event_hash_bytes_differential.rs"
 
 # ★ Work item #124 — the byte-identity obligation of routing the datum, pattern
 # and continuation event-hash legs through `ColdStoreEncode::cold_encode`. The
@@ -145,30 +136,22 @@ path = "tests/epathmap_spliced_event_bytes.rs"
 # log), so it is asked at the leg boundary and over the value class that
 # actually reaches `direct()` — including `EPathMap`s whose intern cell is
 # UNFILLED, which neither `bincode_encoder_differential` nor
-# `epathmap_spliced_event_bytes` compares against the trampolined encoder.
+# `event_hash_bytes_differential` compares the production entry points.
 [[test]]
-name = "event_hash_leg_cold_encode_identity"
-path = "tests/event_hash_leg_cold_encode_identity.rs"
-
-# ★ The tag-8 total-write / bounded-read asymmetry, and the measurement that
-# separates it from the prost recursion ceiling: a `bytes` field costs ZERO
-# nested-message levels, so `COLLECTION_DEPTH_LIMIT` is the ONLY constraint on
-# this path and lifting it buys the whole depth range.
-[[test]]
-name = "epathmap_tag8_read_totality"
-path = "tests/epathmap_tag8_read_totality.rs"
+name = "event_hash_encoder_differential"
+path = "tests/event_hash_encoder_differential.rs"
 
 [[test]]
-name = "epathmap_wire_serialized_paths"
-path = "tests/epathmap_wire_serialized_paths.rs"
+name = "formal_equivalence_manifest"
+path = "tests/formal_equivalence_manifest.rs"
 
 [[test]]
-name = "epathmap_wrapper_cell"
-path = "tests/epathmap_wrapper_cell.rs"
+name = "epathmap_snapshot_cache"
+path = "tests/epathmap_snapshot_cache.rs"
 
 [[test]]
-name = "intern_store_guard_discipline"
-path = "tests/intern_store_guard_discipline.rs"
+name = "epathmap_global_intern_store_absence"
+path = "tests/epathmap_global_intern_store_absence.rs"
 
 [[test]]
 name = "json_encoder_test"
@@ -187,12 +170,12 @@ name = "bincode_decoder_malformed"
 path = "tests/bincode_decoder_malformed.rs"
 
 [[test]]
-name = "bincode_decoder_wire_shapes"
-path = "tests/bincode_decoder_wire_shapes.rs"
+name = "bincode_decoder_shapes"
+path = "tests/bincode_decoder_shapes.rs"
 
 [[test]]
-name = "par_prost_depth_ceiling"
-path = "tests/par_prost_depth_ceiling.rs"
+name = "par_protobuf_stack_safety"
+path = "tests/par_protobuf_stack_safety.rs"
 
 [[test]]
 name = "pathmap_integration_tests"
@@ -211,6 +194,10 @@ path = "tests/pathmap_native_query_walk.rs"
 # with its artificial depth budget removed and nothing else changed, is KILLED
 # BY A SIGNAL on a 1 MiB nest. Child processes throughout — never
 # `#[should_panic]` (`models/src/rust/rholang/drive.rs:196-199`).
+[[test]]
+name = "protobuf_decoder_differential"
+path = "tests/protobuf_decoder_differential.rs"
+
 [[test]]
 name = "protobuf_decoder_group_bomb"
 path = "tests/protobuf_decoder_group_bomb.rs"
@@ -255,8 +242,8 @@ name = "protobuf_encoder_space"
 path = "tests/protobuf_encoder_space.rs"
 
 [[test]]
-name = "wire_schema_conformance"
-path = "tests/wire_schema_conformance.rs"
+name = "bincode_schema_conformance"
+path = "tests/bincode_schema_conformance.rs"
 
 # The registry gate itself, which is what makes the list above self-checking.
 [[test]]
@@ -284,11 +271,16 @@ harness = false
 
 # ★ The two trie-key write-path conversions. `harness = false` because the
 # statistic is a PAIRED t-test over a depth ladder (both conversions are
-# depth-sensitive, in opposite directions), and because `TRIE_KEY_ARM=<arm>` must
+# depth-sensitive), and because `TRIE_KEY_ARM=<arm>` must
 # make the process run ONE arm so `cachegrind` has a subject.
 [[bench]]
 name = "trie_key_bench"
 path = "benches/trie_key_bench.rs"
+harness = false
+
+[[bench]]
+name = "epathmap_pathmap_native"
+path = "benches/epathmap_pathmap_native.rs"
 harness = false
 
 # The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
@@ -298,12 +290,15 @@ name = "bincode_encoder_massif"
 path = "benches/bincode_encoder_massif.rs"
 harness = false
 
+[dev-dependencies]
+blake2 = "0.10.6"
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
-# The wire-schema generator (models/build/wire_schema.rs) reads the protobuf
+# The schema-codegen pass (models/codegen/schema_codegen.rs) reads the protobuf
 # FileDescriptorSet that the prost pass dumps. `prost`/`prost-types` decode it;
 # `heck` applies the SAME identifier transforms prost-build itself applies, so
-# the generated `impl WireOneof` arms cannot drift from prost's variant names.
+# the generated `impl BincodeOneof` arms cannot drift from prost's variant names.
 # All three are already in the lockfile as transitive build dependencies of
 # tonic-prost-build — this adds no new crate.
 prost = { workspace = true }

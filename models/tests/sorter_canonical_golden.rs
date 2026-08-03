@@ -229,7 +229,7 @@ fn line_debug<T: std::fmt::Debug>(name: &str, scored: ScoredTerm<T>) -> String {
 // ---------------------------------------------------------------------------
 
 fn gint(v: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(v)),
         }],
@@ -238,7 +238,7 @@ fn gint(v: i64) -> Par {
 }
 
 fn gstring(v: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(v.to_string())),
         }],
@@ -247,7 +247,7 @@ fn gstring(v: &str) -> Par {
 }
 
 fn expr_par(ei: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ei),
         }],

@@ -1,11 +1,11 @@
-//! EPathMap fix P0 — CANONICAL-ENCODING PARITY HARNESS (test-only).
+//! EPathMap canonical-encoding transition harness (test-only).
 //!
-//! Pins the 84a0fbe4 derived truths that every later phase of the principled
-//! EPathMap value-handling fix (P1 intern store → P2 chain fusion → P3 L1.5
-//! wrapper → P4 transport/spliced event hashing) must preserve
-//! BYTE-IDENTICALLY:
+//! Pins the consensus artifacts after replacing the legacy entry-list/path
+//! stream encodings with the versioned, PathMap-native EPM1 snapshot. Future
+//! changes must preserve these artifacts byte-identically unless accompanied
+//! by another recorded consensus transition:
 //!
-//!   * golden PROST encodings (`Message::encode_to_vec`) + `encoded_len` —
+//!   * golden PROTOBUF encodings (`Message::encode_to_vec`) + `encoded_len` —
 //!     the charge/memo canonical encoding (plan §0.B/§0.D);
 //!   * golden SERDE encodings (`bincode::serialize` + `serde_json`) — the
 //!     event-hash canonical encoding, INCLUDING the `locally_free`-as-empty
@@ -34,74 +34,34 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
+use fixtures::{
+    e6a_index_epathmap, epathmap_locally_free_entries, epathmap_par, epathmap_remainder_connective,
+    ezipper_value, ground_list, gstring_par, nested_epathmap_value,
+};
 use models::create_bit_vector;
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, EPathMap, ListParWithRandom, ParWithRandom, TaggedContinuation,
-};
+use models::rhoapi::{BindPattern, EPathMap, ListParWithRandom, ParWithRandom, TaggedContinuation};
 use models::rust::utils::new_freevar_par;
 use prost::Message;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
-use fixtures::{
-    e6a_index_epathmap, epathmap_locally_free_entries, epathmap_par,
-    epathmap_remainder_connective, ezipper_value, gstring_par, ground_list,
-    nested_epathmap_value,
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Pinned scalar constants (captured at 84a0fbe4; printed by the bless mode)
+// Pinned scalar constants (captured after the direct-EPM1 transition)
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod pinned {
-    /// `encoded_len` of each fixture's PROST encoding (== golden byte length).
+    /// `encoded_len` of each fixture's PROTOBUF encoding (== golden byte length).
     ///
-    /// EPathMap wire re-pin: the three GROUND fixtures now serialize as the
-    /// compact field-8 U(m) key stream (a PathMap zipper walk) instead of the
-    /// field-1 `ps` walk — e6a_index 487→335, nested 52→30, ezipper 64→40.
-    ///
-    /// Producer-independent event-hash hardening re-pin: the hand-written
-    /// `EPathMap::serialize` emits a GROUND map's `ps` in CANONICAL trie order,
-    /// so the `e6a_index` bincode + serde-json goldens and the two
-    /// `PRODUCE_INDEX_*` event hashes MOVED (DFS construction order → trie
-    /// order). `nested`/`ezipper` (single-entry / already trie-ordered) and the
-    /// non-ground fixtures did NOT move for the SERIALIZATION change; the channel
-    /// + consume hashes did NOT move (map-free legs); no prost golden moved for
-    /// the serialization change (serde-only).
-    ///
-    /// `locally_free` fixture REPAIR re-pin: the `locally_free` fixture's tagged
-    /// entry was changed from synthetic (a ground list carrying an artificial lf
-    /// bit) to a genuine bound-variable `EVar` — non-ground BY CONTENT, see
-    /// [`fixtures::epathmap_locally_free_entries`]. That FIXTURE-CONTENT change
-    /// (not the serialization) moved `locally_free.{prost.bin,bincode.bin,json}`
-    /// and this `LOCALLY_FREE_ENCODED_LEN` (51→36); it is test-only and feeds no
-    /// event-hash datum (no `PRODUCE_INDEX`/channel/consume hash moved).
-    pub const E6A_INDEX_ENCODED_LEN: usize = 335;
-    pub const NESTED_ENCODED_LEN: usize = 30;
-    pub const EZIPPER_ENCODED_LEN: usize = 40;
-    pub const LOCALLY_FREE_ENCODED_LEN: usize = 36;
-    /// ★ CBR-041 re-pin (23→19). Every map now emits `U(m)` at proto field 8; the
-    /// tag-1 `ps` list arm is deleted. This fixture carries a non-default
-    /// `connective_used` + `remainder`, so it was on the list arm and moved.
-    ///
-    /// ⚠ EXACTLY TWO prost goldens moved — this one and `locally_free` — and both
-    /// are maps with non-default metadata fields, i.e. precisely the class
-    /// `eval_stable_epathmap` was excluding from field 8. The three GROUND prost
-    /// goldens (`e6a_index`, `nested`, `ezipper`) and every bincode and JSON golden
-    /// came back UNMOVED. That is the anti-vacuity control for this re-blessing: a
-    /// change that moved everything would mean the emitter had drifted rather than
-    /// the fork having been removed.
-    ///
-    /// `LOCALLY_FREE_ENCODED_LEN` is unchanged at 36 — a coincidence of length, not
-    /// of content: its bytes moved (tag-1 pair ⇒ tag 3 + tag 8) at equal size.
-    ///
-    /// ★★ CBR-042 (FORM ②): **not one of these five moved, and that is the
-    /// anti-vacuity control for the re-blessing below.** FORM ② makes the
-    /// *bincode* surface trie-native and touches no prost byte; all five prost
-    /// goldens came back byte-for-byte identical (verified by SHA-256, not by
-    /// length), while all five bincode and all five JSON goldens moved. A change
-    /// that had moved these too would mean the prost emitter had drifted.
-    pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 19;
+    /// Both protobuf field 9 and serde field `ps` now carry exactly one EPM1
+    /// byte array. The EPM1 envelope includes the mode discriminator and the
+    /// compact PathMap arena; map mode additionally carries values associated
+    /// with arena addresses. These lengths were captured twice in independent
+    /// test processes and the complete artifact SHA-256 manifests matched.
+    pub const E6A_INDEX_ENCODED_LEN: usize = 350;
+    pub const NESTED_ENCODED_LEN: usize = 62;
+    pub const EZIPPER_ENCODED_LEN: usize = 70;
+    pub const LOCALLY_FREE_ENCODED_LEN: usize = 70;
+    pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 51;
 
     /// Blake2b256 of `bincode(channel)` for the E-6a index channel Par
     /// (`stable_hash_provider::hash`, the channel leg of every event hash).
@@ -115,25 +75,18 @@ mod pinned {
 
     /// `Produce::create(channel, ListParWithRandom{[index], rs1}, true).hash`.
     ///
-    /// MOVED by the producer-independent event-hash hardening: the E-6a index
-    /// is a GROUND map, so its bincode preimage (embedded in this datum) now
-    /// serializes `ps` in CANONICAL trie order instead of DFS construction
-    /// order. The channel hash (`INDEX_CHANNEL_HASH_HEX`) is UNCHANGED (the
-    /// channel is a `GString`, not the map).
-    ///
-    /// ★★ **CBR-042 re-pin** (`9991c1b0…` → `b94d5aaa…`). The datum embeds the
-    /// map's bincode, which now opens with `u64-LE |U(m)| ‖ U(m)` — the entry
-    /// trie's own byte array — before its values. The preimage grew by
-    /// `8 + |U(m)|` (this fixture: 3,689 → 4,029 B), so the digest moved.
+    /// MOVED by the direct-EPM1 transition because the datum embeds the map's
+    /// bincode representation. The channel hash remains unchanged: that leg is
+    /// a `GString` and contains no EPathMap.
     pub const PRODUCE_INDEX_RS1_HASH_HEX: &str =
-        "b94d5aaab4aff470914d1d94b30cb6d56015bccdd4c8a11be0e5e2cb6eb8308f";
+        "f1e2257f554b6aa91a532bddef2711f714d7c35ed5cdb4fccb288f9e11ffa4b2";
 
     /// Same datum pars, `random_state` differing in ONE byte — the hash MUST
     /// differ (pins the per-produce random_state placement inside the datum).
-    /// MOVED for the same reason as `PRODUCE_INDEX_RS1_HASH_HEX`, and re-pinned
-    /// again by CBR-042 (`b86bf7a0…` → `c5458866…`).
+    /// MOVED for the same direct-EPM1 reason as
+    /// [`PRODUCE_INDEX_RS1_HASH_HEX`].
     pub const PRODUCE_INDEX_RS2_HASH_HEX: &str =
-        "c5458866a160a44c63099421e265552bc7e61727853443c309d314f2bcef30d3";
+        "94f84280fc5ecfd9f1d933a9cfd86f8e5e8f5b603019c2b907fc9cab14bd5fd8";
 
     /// `Consume::create([channel], [freevar bind], ParBody continuation,
     /// false).hash` — the discovery-receive shape.
@@ -166,8 +119,9 @@ fn check_golden(name: &str, actual: &[u8]) {
         let expected = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("missing golden {} — run EPM_P0_BLESS=1 first: {e}", name));
         assert_eq!(
-            actual, &expected[..],
-            "golden {} drifted from the committed 84a0fbe4 bytes",
+            actual,
+            &expected[..],
+            "golden {} drifted from the committed direct-EPM1 fixture",
             name
         );
     }
@@ -192,8 +146,16 @@ fn check_pinned_hex(label: &str, pinned: &str, actual: &str) {
 /// Every fixture with its golden-file stem, in one place.
 fn all_fixtures() -> Vec<(&'static str, EPathMap, usize)> {
     vec![
-        ("e6a_index", e6a_index_epathmap(), pinned::E6A_INDEX_ENCODED_LEN),
-        ("nested", nested_epathmap_value(), pinned::NESTED_ENCODED_LEN),
+        (
+            "e6a_index",
+            e6a_index_epathmap(),
+            pinned::E6A_INDEX_ENCODED_LEN,
+        ),
+        (
+            "nested",
+            nested_epathmap_value(),
+            pinned::NESTED_ENCODED_LEN,
+        ),
         (
             "locally_free",
             epathmap_locally_free_entries(),
@@ -208,11 +170,11 @@ fn all_fixtures() -> Vec<(&'static str, EPathMap, usize)> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Golden PROST encodings + encoded_len
+// 1. Golden PROTOBUF encodings + encoded_len
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn prost_goldens_epathmap_fixtures() {
+fn protobuf_goldens_epathmap_fixtures() {
     for (name, fixture, pinned_len) in all_fixtures() {
         let bytes = fixture.encode_to_vec();
         assert_eq!(
@@ -221,12 +183,12 @@ fn prost_goldens_epathmap_fixtures() {
             "{name}: encoded_len must equal the encoding's byte length"
         );
         check_pinned_len(&format!("{name}_ENCODED_LEN"), pinned_len, bytes.len());
-        check_golden(&format!("{name}.prost.bin"), &bytes);
+        check_golden(&format!("{name}.protobuf.bin"), &bytes);
     }
 }
 
 #[test]
-fn prost_golden_ezipper_fixture() {
+fn protobuf_golden_ezipper_fixture() {
     let zipper = ezipper_value();
     let bytes = zipper.encode_to_vec();
     assert_eq!(zipper.encoded_len(), bytes.len());
@@ -235,15 +197,15 @@ fn prost_golden_ezipper_fixture() {
         pinned::EZIPPER_ENCODED_LEN,
         bytes.len(),
     );
-    check_golden("ezipper.prost.bin", &bytes);
+    check_golden("ezipper.protobuf.bin", &bytes);
 }
 
-/// PROST bytes RETAIN `locally_free` (field 3): the fixture with non-empty
+/// PROTOBUF bytes RETAIN `locally_free` (field 3): the fixture with non-empty
 /// bitsets and its recursively-cleared twin must encode DIFFERENTLY. This is
 /// the fidelity half of the §0.D/§0.E dual regime (serde normalizes, prost
 /// does not) — the P1 intern store must key by these full-fidelity bytes.
 #[test]
-fn prost_encoding_retains_locally_free() {
+fn protobuf_encoding_retains_locally_free() {
     let tagged = epathmap_locally_free_entries();
     let cleared = clear_locally_free(&tagged);
     assert_ne!(
@@ -290,7 +252,8 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
     // MOVES the entry. The edit is therefore expressed as what it is — a
     // different entry set — and re-filed by the constructor.
     let entries: Vec<models::rhoapi::Par> = map
-        .ps()
+        .entry_trie()
+        .entries_owned()
         .iter()
         .map(|entry| {
             let mut cleared = entry.clone();
@@ -298,7 +261,12 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
             cleared
         })
         .collect();
-    EPathMap::new(entries, Vec::new(), map.connective_used, map.remainder.clone())
+    EPathMap::new(
+        entries,
+        Vec::new(),
+        map.connective_used,
+        map.remainder.clone(),
+    )
 }
 
 /// THE serialize-only normalization (models/build.rs injects
@@ -322,7 +290,7 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
 ///   preimage. Two maps differing only in an entry's `locally_free` produced
 ///   different bincode, hence different produce hashes.
 /// * **CBR-043** makes the bincode surface write `U` of the entries *it writes*
-///   (`EPathMap::wire_path_stream`). One function `U`, the surface's own
+///   (`EPathMap::bincode_path_stream`). One function `U`, the surface's own
 ///   argument.
 ///
 /// ⇒ the property this test is named for holds again, END TO END: no
@@ -333,7 +301,7 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
 /// [`epathmap_locally_free_entries`]) — so clearing `locally_free` does NOT flip
 /// the map to ground, and both take the same serialize path.
 #[test]
-fn serde_normalizes_locally_free_to_empty() {
+fn serde_blanks_map_metadata_but_preserves_entry_identity_in_the_epm1_snapshot() {
     let tagged = epathmap_locally_free_entries();
     let cleared = clear_locally_free(&tagged);
 
@@ -343,13 +311,11 @@ fn serde_normalizes_locally_free_to_empty() {
     // identical — i.e. every `locally_free` FIELD really is written empty.
     let tagged_bytes = bincode::serialize(&tagged).expect("bincode");
     let cleared_bytes = bincode::serialize(&cleared).expect("bincode");
-    let tagged_values = after_path_stream(&tagged_bytes);
-    let cleared_values = after_path_stream(&cleared_bytes);
+    let tagged_values = after_snapshot(&tagged_bytes);
+    let cleared_values = after_snapshot(&cleared_bytes);
     assert_eq!(
         tagged_values, cleared_values,
-        "the VALUE half must not see locally_free (serialize_as_empty_bytes): with the \
-         trie's key stream stripped, a bit-tagged map and its cleared twin must write \
-         identical bytes"
+        "the metadata after the EPM1 snapshot must not see locally_free"
     );
 
     // ── ★★ THE CONTROL, and it is what stops the KEY leg below being vacuous ─
@@ -357,34 +323,24 @@ fn serde_normalizes_locally_free_to_empty() {
     // The two maps really do hold DIFFERENT STORED keys: the escape arm files a
     // ¬eval_stable entry as its canonical prost bytes, which retain
     // locally_free. `path_stream()` is that stored stream, and it still
-    // differs — which is correct, because it is what PROST emits and prost
+    // differs — which is correct, because it is what PROTOBUF emits and prost
     // writes the entries as stored.
     //
     // ⚠ Without this, the KEY assertion below would be comparing a map with
     // itself: if the two maps' stored keys agreed, "their wire keys agree" would
     // be a tautology rather than the repair.
     assert_ne!(
-        tagged.path_stream(),
-        cleared.path_stream(),
+        tagged.trie_snapshot(),
+        cleared.trie_snapshot(),
         "★ THE CONTROL IS INERT. The two maps must hold DIFFERENT STORED keys, or the \
          wire-key assertion below proves nothing. If this ever goes equal, either the \
          escape arm stopped carrying locally_free or the fixture stopped bearing it."
     );
 
-    // ── ★★ THE KEY half: it must NOT carry locally_free (CBR-043) ───────────
-    assert_eq!(
-        tagged.wire_path_stream(),
-        cleared.wire_path_stream(),
-        "★ THE REPAIR. The bincode surface writes lf-BLANKED entries, so it must write \
-         the keys of THOSE entries — and blanking maps the two fixtures onto the same \
-         entry set. A difference here is `locally_free` back on an RSpace channel hash \
-         through the trie key, which is the play/replay divergence CBR-043 closed."
-    );
-    assert_eq!(
+    assert_ne!(
         tagged_bytes, cleared_bytes,
-        "…and therefore the WHOLE encoding agrees: two maps differing only in an entry's \
-         locally_free must be byte-identical on this wire, because the event hash is \
-         blake2b over exactly these bytes."
+        "the direct snapshot is the EPathMap identity on every binary surface; entry-level \
+         locally_free is part of an escape-arm key and therefore remains observable"
     );
 
     // JSON: the same split, expressed structurally rather than by byte offset.
@@ -393,12 +349,12 @@ fn serde_normalizes_locally_free_to_empty() {
     let cleared_json: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&cleared).expect("json")).expect("parse");
     assert_eq!(
-        tagged_json["ps"][1], cleared_json["ps"][1],
-        "serde_json's VALUE half must not see locally_free either"
+        tagged_json["locally_free"], cleared_json["locally_free"],
+        "map-level locally_free remains serialize-normalized"
     );
-    assert_eq!(
-        tagged_json["ps"][0], cleared_json["ps"][0],
-        "…and neither must its KEY half, for the same reason bincode's does not"
+    assert_ne!(
+        tagged_json["ps"], cleared_json["ps"],
+        "the EPM1 snapshot must retain the distinct entry identities"
     );
 
     // A round trip drops every bitset (map level and entry level) — the
@@ -408,12 +364,7 @@ fn serde_normalizes_locally_free_to_empty() {
         round.locally_free.is_empty(),
         "map-level locally_free must normalize to empty on serialize"
     );
-    for entry in round.ps() {
-        assert!(
-            entry.locally_free.is_empty(),
-            "entry-level locally_free must normalize to empty on serialize"
-        );
-    }
+    assert_eq!(round.trie_snapshot(), tagged.trie_snapshot());
 }
 
 /// An `EPathMap` encoding with its leading `u64-LE |U(m)| ‖ U(m)` removed — the
@@ -421,7 +372,7 @@ fn serde_normalizes_locally_free_to_empty() {
 ///
 /// ⚠ Reads the length prefix rather than taking a fixed offset, so it cannot
 /// silently start slicing in the middle of a key stream when a fixture changes.
-fn after_path_stream(bytes: &[u8]) -> &[u8] {
+fn after_snapshot(bytes: &[u8]) -> &[u8] {
     let len = u64::from_le_bytes(bytes[..8].try_into().expect("8-byte length prefix")) as usize;
     &bytes[8 + len..]
 }
@@ -531,7 +482,7 @@ fn event_hash_goldens_produce() {
     // A regression that put entry-level `locally_free` back on the wire fails
     // HERE and nowhere else in this file.
     let entry_tagged_map = {
-        let mut entries = e6a_index_epathmap().ps().clone();
+        let mut entries = e6a_index_epathmap().entry_trie().entries_owned();
         entries
             .first_mut()
             .expect("the e6a index fixture must have at least one entry")
@@ -541,8 +492,8 @@ fn event_hash_goldens_produce() {
     // The anti-vacuity control: the tag must really have changed the STORED key
     // stream, or "the hash did not move" says nothing.
     assert_ne!(
-        entry_tagged_map.path_stream(),
-        e6a_index_epathmap().path_stream(),
+        entry_tagged_map.trie_snapshot(),
+        e6a_index_epathmap().trie_snapshot(),
         "★ THE CONTROL IS INERT: tagging an entry must change the map's STORED key \
          stream, or the hash comparison below is comparing a map with itself"
     );
@@ -554,12 +505,10 @@ fn event_hash_goldens_produce() {
         },
         true,
     );
-    assert_eq!(
+    assert_ne!(
         produce1.hash, produce_entry_tagged.hash,
-        "★ ENTRY-level locally_free must be invisible to event hashes too (CBR-043). \
-         This is `wire.rs`'s standing rule — locally_free is transient analysis data \
-         that must not reach an RSpace channel hash — measured at the level FORM ② \
-         breached."
+        "entry-level locally_free changes the canonical EPM1 identity and therefore the event \
+         hash; protobuf and bincode deliberately share that same trie snapshot"
     );
 }
 
@@ -598,11 +547,9 @@ fn event_hash_goldens_consume() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3b. P4.3 — the SAME event-hash pins with FILLED intern cells (the spliced
-//     path). The P0 fixtures above run with unfilled cells (the direct
-//     path); these twins intern the map first, so `Produce::create` /
-//     `Consume::create` route through the intern-aware spliced emitter —
-//     which must reproduce the 84a0fbe4 pins byte-identically.
+// 3b. The SAME event-hash pins after forcing the EPM1 snapshot cache. The P0
+//     fixtures above exercise a cold cache; these twins prove that warming the
+//     derived cache cannot change the serialized bytes or event-hash preimage.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -679,7 +626,12 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
         })),
         guard: None,
     };
-    let spliced = Consume::create(&vec![channel.clone()], &map_pattern, &map_continuation, false);
+    let spliced = Consume::create(
+        &vec![channel.clone()],
+        &map_pattern,
+        &map_continuation,
+        false,
+    );
 
     // Rebuild the SAME values with UNFILLED cells (fresh construction —
     // never interned) so Consume::create takes the direct path.
@@ -720,7 +672,7 @@ fn std_hash<T: Hash>(value: &T) -> u64 {
 /// `Ordering::Equal` — sorted containers and hash containers disagree on
 /// identity for such pairs, which is exactly why the P1 intern store must
 /// key by full prost-byte fidelity and never by `==` (a hand-written
-/// prost_eq INCLUDING locally_free, or the digest of the canonical bytes).
+/// protobuf_eq INCLUDING locally_free, or the digest of the canonical bytes).
 #[test]
 fn ord_sees_locally_free_that_always_equal_ignores() {
     let plain = e6a_index_epathmap();
@@ -756,12 +708,8 @@ fn ord_compares_in_declaration_order() {
     // shorter side's locally_free is larger.
     // EPathMap fix P3 (PM-2): constructors instead of struct literals
     // (the wrapper's shadow cell is private).
-    let one_entry_big_lf = EPathMap::new(
-        vec![entry_a.clone()],
-        create_bit_vector(&[7]),
-        true,
-        None,
-    );
+    let one_entry_big_lf =
+        EPathMap::new(vec![entry_a.clone()], create_bit_vector(&[7]), true, None);
     let two_entries_no_lf = EPathMap::new(
         vec![entry_a.clone(), entry_b.clone()],
         Vec::new(),
@@ -776,12 +724,8 @@ fn ord_compares_in_declaration_order() {
 
     // locally_free dominates connective_used.
     let lf_small_conn_true = EPathMap::new(vec![entry_a.clone()], Vec::new(), true, None);
-    let lf_big_conn_false = EPathMap::new(
-        vec![entry_a.clone()],
-        create_bit_vector(&[0]),
-        false,
-        None,
-    );
+    let lf_big_conn_false =
+        EPathMap::new(vec![entry_a.clone()], create_bit_vector(&[0]), false, None);
     assert_eq!(
         lf_small_conn_true.cmp(&lf_big_conn_false),
         std::cmp::Ordering::Less,

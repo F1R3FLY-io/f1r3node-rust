@@ -10,7 +10,5 @@ use crate::rhoapi::Bundle;
 pub struct BundleSortMatcher;
 
 impl Sortable<Bundle> for BundleSortMatcher {
-    fn sort_match(b: &Bundle) -> ScoredTerm<Bundle> {
-        sort_bundle(b)
-    }
+    fn sort_match(b: &Bundle) -> ScoredTerm<Bundle> { sort_bundle(b) }
 }

@@ -105,31 +105,25 @@
 //! quantities are pinned by `models/tests/protobuf_encoder_space.rs`, mirroring
 //! `bincode_encoder_space.rs`.
 //!
-//! ## 4. ⚠ `EPathMap` is an OPAQUE LEAF, and that is a NAMED RESIDUAL
+//! ## 4. `EPathMap` participates in the generated traversal
 //!
-//! `EPathMap::encode_raw` has three arms — a `memcpy` of interned canonical
-//! bytes, the ground field-8 `` $U(m)$ `` form, and the ordinary field walk — of
-//! which only the last is a field walk at all, and which one fires depends on a
-//! `OnceLock` another thread may fill. Decomposing it into field descents would
-//! silently drop two of the three arms, so both passes intercept it through
-//! [`crate::rust::rholang::prost_wire::ProstNode::prost_opaque`] and treat it as
-//! ONE node: `opaque_encoded_len()` for the prefix, `opaque_encode_raw()` for
-//! the body — exact parity with what `prost::encoding::message::encode` does at
-//! that position.
-//!
-//! ★ **Correct, and not depth-independent, are two separate statements.** A term
-//! nested through an `EPathMap` recurses inside `EPathMap::encode_raw` exactly as
-//! the derived path does. The bytes are identical (the differential's
-//! `deep_mixed_par` cycles through an `EPathMap` every eighth level); the native
-//! stack is not bounded through that one shape. It is named here rather than
-//! left for a stack trace to report.
+//! `EPathMap` is external to Prost generation, so its four-field program is
+//! hand-written in `protobuf_schema.rs`: bounded metadata at tags 3/4, the
+//! optional `Var` descent at tag 5, and the trie byte array at tag 8. It follows
+//! the same two-pass machine as every generated node and introduces no opaque
+//! recursive escape hatch.
 
 use std::collections::{btree_map, BTreeMap};
 
+use pathmap::zipper::{ReadZipperUntracked, ZipperReadOnlyIteration};
+use prost::bytes::BufMut;
 use prost::encoding::{encode_key, encode_varint, encoded_len_varint, key_len, WireType};
 
 use crate::rhoapi::Par;
-use crate::rust::rholang::prost_wire::{ProstDescent, ProstNode, ProstSeq, NO_RESUME};
+use crate::rust::rhoapi_ext::EPathMap;
+use crate::rust::rholang::protobuf_schema::{
+    ProtobufDescent, ProtobufNode, ProtobufSeq, NO_RESUME,
+};
 
 // ===========================================================================
 // §A  The opcode alphabet
@@ -141,10 +135,13 @@ use crate::rust::rholang::prost_wire::{ProstDescent, ProstNode, ProstSeq, NO_RES
 #[derive(Clone, Copy)]
 enum Op<'a> {
     /// Run fields `[field..]` of `node`.
-    Node { node: &'a dyn ProstNode, field: u16 },
+    Node {
+        node: &'a dyn ProtobufNode,
+        field: u16,
+    },
     /// Run elements `[index..]` of `seq`, all under `tag`.
     Seq {
-        seq: &'a dyn ProstSeq,
+        seq: &'a dyn ProtobufSeq,
         /// ⚠ `u32`, not `usize`. A sequence with more than 4,294,967,295
         /// elements cannot exist in memory (each element is far more than one
         /// byte), and [`Machine::open_seq`] refuses one rather than truncating
@@ -157,6 +154,10 @@ enum Op<'a> {
     /// Run the remaining entries of the `BTreeMap` iterator on top of
     /// `map_iters`, all under `tag`.
     MapEntries { tag: u32 },
+    /// Run the remaining `PathMap<Par>` values of the EPM1 snapshot iterator
+    /// on top of `epm_iters`. Values carry a raw varint length, not a protobuf
+    /// field key, because they live inside the bytes payload.
+    EpmValues,
     /// ⚠ PASS 1 ONLY. Close the top frame: its length is final, so record it and
     /// hand its contribution to its parent.
     Close,
@@ -184,6 +185,15 @@ struct Frame {
 /// convention.
 const ROOT_TAG: u32 = 0;
 
+/// Synthetic frame edge for one EPM1 map value. Protobuf field numbers are at
+/// most `(1 << 29) - 1`, so this cannot collide with a valid generated tag.
+const EPM_VALUE_TAG: u32 = u32::MAX;
+
+struct EpmValueIter<'a> {
+    zipper: ReadZipperUntracked<'a, 'static, Par>,
+    remaining: usize,
+}
+
 /// Preallocated op-stack capacity, matching `bincode_encoder`'s.
 const OP_STACK_CAPACITY: usize = 64;
 
@@ -203,6 +213,7 @@ struct LenMachine<'a> {
     frames: Vec<Frame>,
     lens: Vec<u32>,
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
+    epm_iters: Vec<EpmValueIter<'a>>,
     /// The value every map entry's value is compared against for skip-at-default.
     ///
     /// ⚠★ Constructed ONCE and compared with `==`, which goes through the
@@ -223,6 +234,7 @@ impl<'a> LenMachine<'a> {
             frames: Vec::with_capacity(OP_STACK_CAPACITY),
             lens: Vec::with_capacity(LEN_TABLE_CAPACITY),
             map_iters: Vec::new(),
+            epm_iters: Vec::new(),
             default_par: Par::default(),
             high_water: 0,
         }
@@ -233,7 +245,7 @@ impl<'a> LenMachine<'a> {
     /// ★ The id is allocated HERE, at the moment of descent, which is what makes
     /// the id order pre-order and lets pass 2 resolve every length with one
     /// monotonic cursor. See the module header §2.
-    fn open(&mut self, node: &'a dyn ProstNode, tag: u32) {
+    fn open(&mut self, node: &'a dyn ProtobufNode, tag: u32) {
         let id = self.lens.len();
         assert!(
             id <= u32::MAX as usize,
@@ -299,6 +311,37 @@ impl<'a> LenMachine<'a> {
         }
     }
 
+    /// Open the synthetic bytes payload that represents an EPathMap. The
+    /// topology prefix contributes immediately; map values close into this
+    /// frame with `varint(len) + len` rather than protobuf's keyed-child rule.
+    fn open_epm_snapshot(&mut self, map: &'a EPathMap, tag: u32) {
+        let layout = map.entry_trie().epm_layout();
+        let id = self.lens.len();
+        assert!(
+            id <= u32::MAX as usize,
+            "protobuf_encoder: more than {} measured bodies in one term",
+            u32::MAX
+        );
+        self.lens.push(0);
+        self.frames.push(Frame {
+            id: id as u32,
+            tag,
+            sum: layout.prefix().len() as u64,
+        });
+        self.ops.push(Op::Close);
+        if let Some(values) = map.entry_trie().map_trie() {
+            self.epm_iters.push(EpmValueIter {
+                zipper: values.read_zipper(),
+                remaining: layout.value_count(),
+            });
+            self.ops.push(Op::EpmValues);
+        } else {
+            debug_assert_eq!(layout.value_count(), 0);
+        }
+    }
+
+    fn open_epm_value(&mut self, value: &'a Par) { self.open(value, EPM_VALUE_TAG); }
+
     /// Finalize the top frame.
     fn close(&mut self) {
         let frame = self
@@ -314,11 +357,18 @@ impl<'a> LenMachine<'a> {
         );
         self.lens[frame.id as usize] = frame.sum as u32;
         if let Some(parent) = self.frames.last_mut() {
+            if frame.tag == EPM_VALUE_TAG {
+                parent.sum += encoded_len_varint(frame.sum) as u64 + frame.sum;
+                return;
+            }
+            assert_ne!(
+                frame.tag, ROOT_TAG,
+                "protobuf_encoder: a non-root frame used the root tag sentinel"
+            );
             // Exactly `encoding::message::encoded_len` (`encoding.rs:845-852`),
             // read from the table instead of recursed:
             //   key_len(tag) + encoded_len_varint(len) + len
-            parent.sum +=
-                (key_len(frame.tag) + encoded_len_varint(frame.sum)) as u64 + frame.sum;
+            parent.sum += (key_len(frame.tag) + encoded_len_varint(frame.sum)) as u64 + frame.sum;
         } else {
             // The ROOT sits under no tag: its `encoded_len()` is its body, with
             // no key and no length prefix. `encode_to_vec` writes exactly that.
@@ -329,7 +379,7 @@ impl<'a> LenMachine<'a> {
         }
     }
 
-    fn open_seq(&mut self, seq: &'a dyn ProstSeq, len: usize, tag: u32) {
+    fn open_seq(&mut self, seq: &'a dyn ProtobufSeq, len: usize, tag: u32) {
         assert!(
             len <= u32::MAX as usize,
             "protobuf_encoder: a repeated field of {len} elements exceeds the u32 cursor. Each \
@@ -346,7 +396,7 @@ impl<'a> LenMachine<'a> {
 
     /// Push a resume point unless the program is spent — the TAIL CALL.
     #[inline(always)]
-    fn suspend(&mut self, node: &'a dyn ProstNode, resume: u16) {
+    fn suspend(&mut self, node: &'a dyn ProtobufNode, resume: u16) {
         if resume != NO_RESUME {
             self.ops.push(Op::Node {
                 node,
@@ -363,24 +413,14 @@ impl<'a> LenMachine<'a> {
             let Some(op) = self.ops.pop() else { break };
             match op {
                 Op::Node { node, field } => {
-                    // ⚠ `EPathMap`: one opaque node, never decomposed. §4.
-                    if field == 0 {
-                        if let Some(opaque) = node.prost_opaque() {
-                            self.frames
-                                .last_mut()
-                                .expect("protobuf_encoder: an opaque node with no open frame")
-                                .sum += opaque.opaque_encoded_len() as u64;
-                            continue;
-                        }
-                    }
-                    let (bounded, descent) = node.prost_len_step(field as usize);
+                    let (bounded, descent) = node.protobuf_len_step(field as usize);
                     self.frames
                         .last_mut()
                         .expect("protobuf_encoder: a measured node with no open frame")
                         .sum += bounded;
                     match descent {
-                        ProstDescent::Done => {}
-                        ProstDescent::Node {
+                        ProtobufDescent::Done => {}
+                        ProtobufDescent::Node {
                             resume,
                             tag,
                             node: child,
@@ -388,7 +428,7 @@ impl<'a> LenMachine<'a> {
                             self.suspend(node, resume);
                             self.open(child, tag);
                         }
-                        ProstDescent::Seq {
+                        ProtobufDescent::Seq {
                             resume,
                             tag,
                             len,
@@ -397,10 +437,14 @@ impl<'a> LenMachine<'a> {
                             self.suspend(node, resume);
                             self.open_seq(seq, len, tag);
                         }
-                        ProstDescent::Map { resume, tag, map } => {
+                        ProtobufDescent::Map { resume, tag, map } => {
                             self.suspend(node, resume);
                             self.map_iters.push(map.iter());
                             self.ops.push(Op::MapEntries { tag });
+                        }
+                        ProtobufDescent::EPathMapSnapshot { resume, tag, map } => {
+                            self.suspend(node, resume);
+                            self.open_epm_snapshot(map, tag);
                         }
                     }
                 }
@@ -423,7 +467,7 @@ impl<'a> LenMachine<'a> {
                                 tag,
                             });
                         }
-                        self.open(seq.prost_get(index as usize), tag);
+                        self.open(seq.protobuf_get(index as usize), tag);
                     }
                 }
                 Op::MapEntries { tag } => {
@@ -442,13 +486,44 @@ impl<'a> LenMachine<'a> {
                         }
                     }
                 }
+                Op::EpmValues => {
+                    let next = {
+                        let iter = self
+                            .epm_iters
+                            .last_mut()
+                            .expect("protobuf_encoder: EpmValues with no live zipper");
+                        let next = iter.zipper.to_next_get_val();
+                        if next.is_some() {
+                            iter.remaining = iter.remaining.checked_sub(1).expect(
+                                "protobuf_encoder: EPM1 zipper yielded more values than its layout",
+                            );
+                        }
+                        next
+                    };
+                    match next {
+                        Some(value) => {
+                            self.ops.push(Op::EpmValues);
+                            self.open_epm_value(value);
+                        }
+                        None => {
+                            let iter = self
+                                .epm_iters
+                                .pop()
+                                .expect("protobuf_encoder: EPM1 zipper disappeared");
+                            assert_eq!(
+                                iter.remaining, 0,
+                                "protobuf_encoder: EPM1 zipper yielded fewer values than its layout"
+                            );
+                        }
+                    }
+                }
                 Op::Close => self.close(),
             }
         }
     }
 
     /// Measure `root` and hand back the finished table.
-    fn measure<const TRACK: bool>(mut self, root: &'a dyn ProstNode) -> LenTable {
+    fn measure<const TRACK: bool>(mut self, root: &'a dyn ProtobufNode) -> LenTable {
         // ⚠ An opaque ROOT still needs an id, so pass 2's cursor arithmetic is
         // uniform. `open` gives it one; its walk adds the opaque length.
         self.open(root, ROOT_TAG);
@@ -462,6 +537,10 @@ impl<'a> LenMachine<'a> {
         assert!(
             self.map_iters.is_empty(),
             "protobuf_encoder: a map iterator outlived its field"
+        );
+        assert!(
+            self.epm_iters.is_empty(),
+            "protobuf_encoder: an EPM1 zipper outlived its snapshot"
         );
         LenTable {
             lens: self.lens,
@@ -488,6 +567,7 @@ struct EmitMachine<'a, 'l> {
     /// length nothing writes (`encode_to_vec` emits the body with no prefix).
     cursor: usize,
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
+    epm_iters: Vec<EpmValueIter<'a>>,
     default_par: Par,
     high_water: usize,
 }
@@ -499,6 +579,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             lens,
             cursor: 1,
             map_iters: Vec::new(),
+            epm_iters: Vec::new(),
             default_par: Par::default(),
             high_water: 0,
         }
@@ -510,7 +591,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
     /// passes through here, in the order pass 1 allocated ids, which is why one
     /// monotonic index resolves them all.
     #[inline]
-    fn open_child(&mut self, out: &mut Vec<u8>, tag: u32) {
+    fn take_len(&mut self) -> u32 {
         let len = *self.lens.get(self.cursor).unwrap_or_else(|| {
             panic!(
                 "protobuf_encoder: the emit pass asked for length slot {} of {}. The two passes \
@@ -522,12 +603,32 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             )
         });
         self.cursor += 1;
+        len
+    }
+
+    fn open_child(&mut self, out: &mut impl BufMut, tag: u32) {
+        let len = self.take_len();
         encode_key(tag, WireType::LengthDelimited, out);
         encode_varint(len as u64, out);
     }
 
+    fn open_epm_snapshot(&mut self, out: &mut impl BufMut, map: &'a EPathMap, tag: u32) {
+        self.open_child(out, tag);
+        let layout = map.entry_trie().epm_layout();
+        out.put_slice(layout.prefix());
+        if let Some(values) = map.entry_trie().map_trie() {
+            self.epm_iters.push(EpmValueIter {
+                zipper: values.read_zipper(),
+                remaining: layout.value_count(),
+            });
+            self.ops.push(Op::EpmValues);
+        } else {
+            debug_assert_eq!(layout.value_count(), 0);
+        }
+    }
+
     #[inline(always)]
-    fn suspend(&mut self, node: &'a dyn ProstNode, resume: u16) {
+    fn suspend(&mut self, node: &'a dyn ProtobufNode, resume: u16) {
         if resume != NO_RESUME {
             self.ops.push(Op::Node {
                 node,
@@ -536,7 +637,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
         }
     }
 
-    fn run<const TRACK: bool>(&mut self, out: &mut Vec<u8>) {
+    fn run<const TRACK: bool>(&mut self, out: &mut impl BufMut) {
         loop {
             if TRACK && self.ops.len() > self.high_water {
                 self.high_water = self.ops.len();
@@ -544,15 +645,9 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             let Some(op) = self.ops.pop() else { break };
             match op {
                 Op::Node { node, field } => {
-                    if field == 0 {
-                        if let Some(opaque) = node.prost_opaque() {
-                            opaque.opaque_encode_raw(out);
-                            continue;
-                        }
-                    }
-                    match node.prost_emit(field as usize, out) {
-                        ProstDescent::Done => {}
-                        ProstDescent::Node {
+                    match node.protobuf_emit(field as usize, out) {
+                        ProtobufDescent::Done => {}
+                        ProtobufDescent::Node {
                             resume,
                             tag,
                             node: child,
@@ -564,7 +659,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                                 field: 0,
                             });
                         }
-                        ProstDescent::Seq {
+                        ProtobufDescent::Seq {
                             resume,
                             tag,
                             len,
@@ -583,10 +678,14 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                                 tag,
                             });
                         }
-                        ProstDescent::Map { resume, tag, map } => {
+                        ProtobufDescent::Map { resume, tag, map } => {
                             self.suspend(node, resume);
                             self.map_iters.push(map.iter());
                             self.ops.push(Op::MapEntries { tag });
+                        }
+                        ProtobufDescent::EPathMapSnapshot { resume, tag, map } => {
+                            self.suspend(node, resume);
+                            self.open_epm_snapshot(out, map, tag);
                         }
                     }
                 }
@@ -608,7 +707,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                         // Each element carries its OWN key and length prefix.
                         self.open_child(out, tag);
                         self.ops.push(Op::Node {
-                            node: seq.prost_get(index as usize),
+                            node: seq.protobuf_get(index as usize),
                             field: 0,
                         });
                     }
@@ -641,6 +740,41 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
                         }
                     }
                 }
+                Op::EpmValues => {
+                    let next = {
+                        let iter = self
+                            .epm_iters
+                            .last_mut()
+                            .expect("protobuf_encoder: EpmValues with no live zipper");
+                        let next = iter.zipper.to_next_get_val();
+                        if next.is_some() {
+                            iter.remaining = iter.remaining.checked_sub(1).expect(
+                                "protobuf_encoder: EPM1 zipper yielded more values than its layout",
+                            );
+                        }
+                        next
+                    };
+                    match next {
+                        Some(value) => {
+                            self.ops.push(Op::EpmValues);
+                            encode_varint(self.take_len() as u64, out);
+                            self.ops.push(Op::Node {
+                                node: value,
+                                field: 0,
+                            });
+                        }
+                        None => {
+                            let iter = self
+                                .epm_iters
+                                .pop()
+                                .expect("protobuf_encoder: EPM1 zipper disappeared");
+                            assert_eq!(
+                                iter.remaining, 0,
+                                "protobuf_encoder: EPM1 zipper yielded fewer values than its layout"
+                            );
+                        }
+                    }
+                }
                 Op::Close => unreachable!(
                     "protobuf_encoder: `Op::Close` is a PASS-1 opcode. The emit pass needs no \
                      frame stack — it reads finished lengths from the table."
@@ -670,6 +804,10 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
             self.map_iters.is_empty(),
             "protobuf_encoder: a map iterator outlived its field"
         );
+        assert!(
+            self.epm_iters.is_empty(),
+            "protobuf_encoder: an EPM1 zipper outlived its snapshot"
+        );
     }
 }
 
@@ -686,7 +824,7 @@ impl<'a, 'l> EmitMachine<'a, 'l> {
 /// (`prost-0.14.3/src/encoding.rs:845-852`). Anything that needs a size without
 /// the bytes — a capacity hint, a fee estimate, a bound check — should prefer
 /// this.
-pub fn encoded_len<T: ProstNode>(value: &T) -> usize {
+pub fn encoded_len<T: ProtobufNode>(value: &T) -> usize {
     let table = LenMachine::new().measure::<false>(value);
     table.lens[0] as usize
 }
@@ -695,9 +833,24 @@ pub fn encoded_len<T: ProstNode>(value: &T) -> usize {
 ///
 /// Byte-identical to `prost::Message::encode_raw`, in Θ(depth) native stack and
 /// Θ(n) work.
-pub fn encode_into<T: ProstNode>(value: &T, out: &mut Vec<u8>) {
+pub fn encode_into<T: ProtobufNode>(value: &T, out: &mut impl BufMut) {
     let table = LenMachine::new().measure::<false>(value);
-    out.reserve(table.lens[0] as usize);
+    let mut machine = EmitMachine::new(&table.lens);
+    machine.ops.push(Op::Node {
+        node: value,
+        field: 0,
+    });
+    machine.run::<false>(out);
+    machine.finish_emit();
+}
+
+/// Append `varint(encoded_len(value)) || protobuf_body(value)` using one
+/// iterative measurement and one iterative emission. EPM1 map value tables use
+/// this exact framing; exposing it here keeps their nested `Par` values inside
+/// the generated protobuf PDA and avoids one temporary `Vec<u8>` per entry.
+pub(crate) fn encode_length_delimited_body_into<T: ProtobufNode>(value: &T, out: &mut impl BufMut) {
+    let table = LenMachine::new().measure::<false>(value);
+    encode_varint(table.lens[0] as u64, out);
     let mut machine = EmitMachine::new(&table.lens);
     machine.ops.push(Op::Node {
         node: value,
@@ -714,7 +867,7 @@ pub fn encode_into<T: ProstNode>(value: &T, out: &mut Vec<u8>) {
 /// ★ Exactly-sized, and for free: the length pass already knows the answer, so
 /// this allocates once and never grows — where `encode_to_vec` pays a full
 /// recursive `encoded_len()` walk for the same information.
-pub fn encode_to_vec<T: ProstNode>(value: &T) -> Vec<u8> {
+pub fn encode_to_vec<T: ProtobufNode>(value: &T) -> Vec<u8> {
     let table = LenMachine::new().measure::<false>(value);
     let mut out = Vec::with_capacity(table.lens[0] as usize);
     let mut machine = EmitMachine::new(&table.lens);
@@ -740,7 +893,7 @@ pub fn encode_to_vec<T: ProstNode>(value: &T) -> Vec<u8> {
 ///
 /// The measurement runs the production loops with `TRACK = true`, so it cannot
 /// drift into describing a different machine.
-pub fn op_stack_high_water<T: ProstNode>(value: &T) -> (usize, usize) {
+pub fn op_stack_high_water<T: ProtobufNode>(value: &T) -> (usize, usize) {
     let table = LenMachine::new().measure::<true>(value);
     let mut out = Vec::with_capacity(OUT_CAPACITY);
     let mut machine = EmitMachine::new(&table.lens);
@@ -755,21 +908,17 @@ pub fn op_stack_high_water<T: ProstNode>(value: &T) -> (usize, usize) {
 
 /// How many message nodes the length table held — the Θ(n) space this encoder
 /// trades for prost's Θ(d²) time.
-pub fn len_table_size<T: ProstNode>(value: &T) -> usize {
+pub fn len_table_size<T: ProtobufNode>(value: &T) -> usize {
     LenMachine::new().measure::<false>(value).lens.len()
 }
 
 /// `size_of::<Op>()`, exposed so the space gate can pin it.
-pub const fn op_size() -> usize {
-    std::mem::size_of::<Op<'static>>()
-}
+pub const fn op_size() -> usize { std::mem::size_of::<Op<'static>>() }
 
 /// `size_of::<Frame>()` — the pass-1 frame stack's per-level cost.
-pub const fn frame_size() -> usize {
-    std::mem::size_of::<Frame>()
-}
+pub const fn frame_size() -> usize { std::mem::size_of::<Frame>() }
 
-// A `BTreeMap<String, Par>` is named in `ProstDescent::Map`; this alias keeps
+// A `BTreeMap<String, Par>` is named in `ProtobufDescent::Map`; this alias keeps
 // the import above load-bearing and documents the one map shape in the schema.
 #[allow(dead_code)]
 type InjectionsMap = BTreeMap<String, Par>;

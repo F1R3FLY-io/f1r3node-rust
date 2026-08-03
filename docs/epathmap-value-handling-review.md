@@ -168,7 +168,7 @@ layer … results are value-identical hit/miss/evicted/collision; replay
 determinism untouched (pure content addressing). Consensus-relevance: none
 intended — a Rust-only performance layer with the same standing as
 84a0fbe4." USER DECISION D1 = K2 (2026-07-20): every digest hit is certified
-by an allocation-free FULL-PROST-FIDELITY structural verify against the
+by an allocation-free FULL-PROTOBUF-FIDELITY structural verify against the
 stored canonical bytes — byte-exact including locally_free at every level; a
 verify mismatch is treated as a miss and emits a once-per-process diagnostic
 (a $`\approx 2^{-128}`$ event worth loud evidence). This PRESERVES the

@@ -145,7 +145,7 @@ fn sorted_par_hash_set_should_deduplicate_its_elements_where_last_seen_element_w
 
 #[test]
 fn sorted_par_hash_set_should_be_equal_when_it_is_equal() {
-    let elements: Vec<Par> = vec![Par {
+    let elements: Vec<Par> = vec![models::par_from_default! {
         unforgeables: vec![
             GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0] })),

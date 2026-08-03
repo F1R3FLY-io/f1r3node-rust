@@ -3,13 +3,13 @@
 use models::create_bit_vector;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
-use models::rhoapi::{EVar, Expr, Par, Var};
+use models::rhoapi::{EVar, Expr, Var};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 
 #[test]
 fn different_kinds_of_variables_should_bin_separately() {
-    let par_vars = Par {
+    let par_vars = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
@@ -66,7 +66,7 @@ fn different_kinds_of_variables_should_bin_separately() {
         ..Default::default()
     };
 
-    let sorted_par_vars = Par {
+    let sorted_par_vars = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {

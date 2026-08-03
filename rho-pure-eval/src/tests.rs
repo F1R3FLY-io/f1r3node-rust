@@ -10,7 +10,7 @@ use crate::error::EvalError;
 use crate::eval::eval;
 
 fn par_of(instance: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -299,7 +299,7 @@ fn process_level_par_content_is_preserved() {
     use models::rhoapi::Send;
 
     let env = Env::<Par>::new();
-    let par = Par {
+    let par = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GBool(true)),
         }],

@@ -149,7 +149,7 @@ use models::rust::rholang::par_children::{
 /// Derived from `corpus::every_expr_instance()` rather than written out here, so
 /// that a new `rhoapi` arm becomes a *failure to cover* the moment the corpus
 /// gains its representative — and, if the corpus is not updated, a failure of
-/// `models/tests/bincode_decoder_wire_shapes.rs`'s exhaustiveness instead. Either way
+/// `models/tests/bincode_decoder_shapes.rs`'s exhaustiveness instead. Either way
 /// no arm can be added silently.
 fn expr_alphabet() -> BTreeMap<u32, &'static str> {
     corpus::every_expr_instance()
@@ -733,7 +733,7 @@ fn epathmap_shapes_agree() {
         // Through `EPathmapBody` …
         agree(
             &format!("epathmap::{label}::body"),
-            &Par {
+            &models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::EPathmapBody(map.clone())),
                 }],
@@ -744,7 +744,7 @@ fn epathmap_shapes_agree() {
         // byte the direct arm does not have.
         agree(
             &format!("epathmap::{label}::zipper"),
-            &Par {
+            &models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::EZipperBody(EZipper {
                         pathmap: Some(map),
@@ -763,7 +763,7 @@ fn epathmap_shapes_agree() {
     // And the absent `Option<EPathMap>`.
     agree(
         "epathmap::absent::zipper",
-        &Par {
+        &models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EZipperBody(EZipper {
                     pathmap: None,
@@ -790,7 +790,7 @@ fn decoded_epathmaps_carry_no_intern_handle() {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::Expr;
 
-    let source = Par {
+    let source = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EPathmapBody(corpus::nonground_pathmap())),
         }],

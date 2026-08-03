@@ -9,7 +9,9 @@ use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source, Var};
 use rholang_parser::{SourcePos, SourceSpan};
 use uuid::Uuid;
 
-use crate::rust::interpreter::compiler::exports::{FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::exports::{
+    FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
+};
 use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::compiler::normalize_drive::{
     InputK, InputPhase, NormKont, NormVal, NormWork, Step,
@@ -599,8 +601,10 @@ pub(crate) fn combine_p_input<'ast>(
             let pattern_locally_free = res.par.locally_free.clone();
             k.group_pars.push(res.par);
             k.group_free = res.free_map;
-            k.group_locally_free =
-                union(std::mem::take(&mut k.group_locally_free), pattern_locally_free);
+            k.group_locally_free = union(
+                std::mem::take(&mut k.group_locally_free),
+                pattern_locally_free,
+            );
             k.phase = InputPhase::Patterns {
                 group_idx,
                 name_idx: name_idx + 1,
@@ -615,8 +619,10 @@ pub(crate) fn combine_p_input<'ast>(
             let source_connective_used = res.par.connective_used;
             k.source_pars.push(res.par);
             k.source_free = res.free_map;
-            k.source_locally_free =
-                union(std::mem::take(&mut k.source_locally_free), source_locally_free);
+            k.source_locally_free = union(
+                std::mem::take(&mut k.source_locally_free),
+                source_locally_free,
+            );
             k.source_connective_used = k.source_connective_used || source_connective_used;
             k.phase = InputPhase::Sources { idx: idx + 1 };
             advance_input(k)
@@ -708,7 +714,6 @@ pub fn normalize_p_input<'ast>(
     let step = descend_p_input(receipts, *body, input, parser)?;
     norm_drive_from(step, env, parser).map(NormVal::into_proc)
 }
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

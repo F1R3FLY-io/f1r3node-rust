@@ -25,13 +25,12 @@
 //! `thread_stack_size` is unset and `RUST_MIN_STACK` is absent from the node's
 //! environment.
 //!
-//! ⚠ This repository's `.cargo/config.toml` sets `RUST_MIN_STACK = 8388608`, so a
-//! probe that simply spawned a runtime would measure an **8 MiB** worker and
-//! report a ceiling four times the production one. Every probe below therefore
-//! sets `thread_stack_size` **explicitly** on the tokio builder, exactly as
-//! `stack_depth_gate.rs`'s `gate_child` sets `stack_size` explicitly on its
-//! thread, and for exactly the same reason: a measurement that an environment
-//! variable can move is not a measurement of the code.
+//! An ambient `RUST_MIN_STACK` or a future runtime-default change must not move
+//! the measurement. This repository intentionally carries no `RUST_MIN_STACK`
+//! override, and every probe below still sets `thread_stack_size` **explicitly**
+//! on the tokio builder, exactly as `stack_depth_gate.rs`'s `gate_child` sets
+//! `stack_size` explicitly on its thread: a measurement an environment variable
+//! can move is not a measurement of the code.
 //!
 //! ## Why a child process per probe point
 //!
@@ -62,7 +61,6 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 // than being transcribed into the gate (#157).
 #[path = "build_depth_bounds.rs"]
 mod build_depth_bounds;
-
 
 // ---------------------------------------------------------------------------
 // The production worker stack, and the one knob that can hide it

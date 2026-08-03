@@ -1,11 +1,10 @@
 use std::sync::{Arc, OnceLock, Weak};
 
-use smallvec::SmallVec;
-
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
+use smallvec::SmallVec;
 
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -51,70 +50,31 @@ pub enum DispatchType {
 /// implementations and any future change to it had three edit sites, one of
 /// which could be missed. There is now one.
 ///
-/// # The ceiling
+/// # Stack-safe boundary
 ///
-/// `prost` enforces `RECURSION_LIMIT = 100` nested-message levels
-/// (`prost-0.14.3/src/lib.rs:30`). It is **not `pub`**, and its only knob
-/// (`no-recursion-limit`) *removes* the limit and is set in no `Cargo.toml` or
-/// `Cargo.lock` — so it cannot be configured here. The `Par → Expr → EList →
-/// Par` spine costs three message levels per bracket, so this decode **accepts
-/// term depth 33 and returns `Err` at 34**, measured, in both profiles.
-/// `encode` has no matching limit, so those bytes were writable.
+/// The old derived prost reader stopped at 100 nested-message levels, creating
+/// a play/replay asymmetry because `ProduceEventProto.outputValue` is opaque
+/// `repeated bytes`: play could write a `Par` that replay could not read. This
+/// boundary now calls the generated protobuf PDA. Its work and continuation
+/// stacks live on the heap, it imposes no term-depth limit, and its result is
+/// byte-for-byte differential-tested against prost on the former accepted
+/// domain.
 ///
-/// # ⚠ Why this is consensus-class, and where the asymmetry actually is
-///
-/// It is in the **supply**, not in this expression.
-///
-/// * **Play.** `Produce::create` sets `output_value: vec![]` and
-///   `RSpace::locked_produce` returns exactly that freshly-created `Produce`, so
-///   on the proposer the slice handed here is EMPTY, nothing is decoded, and
-///   then the bytes are written into the block.
-/// * **Replay.** `ReplayRSpace::locked_produce` returns the `Produce` **from
-///   the trace**, whose `output_value` came from the block, so on the validator
-///   this decode runs on real bytes.
-///
-/// `ProduceEventProto.outputValue` is `repeated bytes`
-/// (`models/src/main/protobuf/CasperMessage.proto:393`), so the block body
-/// decodes without descending into them and cannot reject them; the decode here
-/// is a fresh top-level one with the full budget, and therefore sits at the
-/// **bare** 33/34 ceiling rather than any wrapped one.
-///
-/// An `Err` here becomes an entry in `EvaluateResult::errors` ⇒
-/// `eval_successful = false` (`casper/src/rust/rholang/replay_runtime.rs:427`)
-/// ⇒ the `is_failed != !eval_successful` check at `:443` ⇒
-/// `ReplayFailure::ReplayStatusMismatch` ⇒ `handle_errors` returns
-/// `Either::Right(None)` ⇒ `InvalidBlock::InvalidTransaction`, which
-/// `casper/src/rust/block_status.rs::is_slashable` answers **true** for.
-///
-/// # ⚠ NOT reachable from a deploy — and that is now CHECKED, not assumed
-///
-/// `output_value` is written from one site, `reduce.rs`'s
-/// `mark_as_non_deterministic`, gated on `non_deterministic_ops()`.
-/// `rholang/tests/output_value_write_side_reachability.rs` drives **every**
-/// member of that set through a real deploy and measures what it writes: the
-/// deepest is `rho:ollama:models` at term depth **1**, thirty-two levels below
-/// the ceiling. ★ That file takes its denominator from `non_deterministic_ops()`
-/// itself, so a NINTH operation fails the suite until its depth is recorded —
-/// which is the difference between a guard and a sentence about eight function
-/// bodies.
-///
-/// # Executable
-///
-/// `rholang/tests/replay_output_value_depth_ceiling.rs` (red on replay, green
-/// on play, one bool apart) · `models/tests/par_prost_depth_ceiling.rs` (the
-/// boundary, per envelope) ·
-/// `rholang/tests/output_value_write_side_reachability.rs` (the write side).
-/// Analysis: `docs/design/audits/theta-depth-traversals-2026-07-26.md` §7.3.
-/// ⚠ The sibling ceiling `COLLECTION_DEPTH_LIMIT = 32`
-/// (`models/src/rust/canonical_path.rs`) is explicitly anchored to this one:
-/// they move together or not at all.
+/// `models/tests/par_protobuf_stack_safety.rs` exercises depth 4,096 through
+/// `Par` and every production envelope on a fixed 256 KiB stack.
+/// `rholang/tests/replay_output_value_stack_safety.rs` splices the same deep
+/// bytes through this real play/replay boundary and requires both sides to
+/// agree. `rholang/tests/output_value_write_side_reachability.rs` separately
+/// keeps the set of non-deterministic producers and their returned shapes
+/// enumerated.
 pub fn decode_non_deterministic_output(
     previous_output: &[Vec<u8>],
 ) -> Result<Vec<Par>, InterpreterError> {
     let mut decoded = Vec::with_capacity(previous_output.len());
     for bytes in previous_output {
         decoded.push(
-            Par::decode(&bytes[..]).map_err(|e| InterpreterError::DecodeError(e.to_string()))?,
+            models::rust::rholang::protobuf_decoder::decode_par(&bytes[..])
+                .map_err(|e| InterpreterError::DecodeError(e.to_string()))?,
         );
     }
     Ok(decoded)
@@ -155,7 +115,9 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval_with_path(body, &env, merged_rand, path).await?;
+                    reducer
+                        .eval_with_path(body, &env, merged_rand, path)
+                        .await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

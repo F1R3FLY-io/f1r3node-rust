@@ -62,7 +62,7 @@
 //!    the one gap exhaustiveness leaves open. A maintainer who answers `E0004`
 //!    by extending the **residue** list alone gets a variant that still compares
 //!    unequal to itself, and it compiles. This derives the authoritative variant
-//!    names from the generated `wire_schema::*_VARIANTS` tables — the same
+//!    names from the generated `bincode_schema_tables::*_VARIANTS` tables — the same
 //!    tables the codec is driven from — and requires each to own a same-variant
 //!    `eq` arm and a `hash` arm.
 //!
@@ -103,7 +103,7 @@ use models::rhoapi::{
     GSysAuthToken, Par, ParWithRandom, VarRef,
 };
 use models::rust::rholang::sorter::score_tree::Tree;
-use models::rust::rholang::wire_schema::{
+use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
 };
@@ -299,7 +299,7 @@ where T: PartialEq + Clone + Hash + std::fmt::Debug {
     assert_eq!(
         values.len(),
         table_names.len(),
-        "★ `{enum_name}` has {} variants in the GENERATED `wire_schema` table but this test \
+        "★ `{enum_name}` has {} variants in the GENERATED `bincode_schema_tables` table but this test \
          constructs {}. The schema grew (or shrank) and the reflexivity check silently stopped \
          covering all of it — which is the exact failure mode this file exists to prevent.",
         table_names.len(),
@@ -308,7 +308,7 @@ where T: PartialEq + Clone + Hash + std::fmt::Debug {
     let constructed: Vec<&str> = values.iter().map(|(n, _)| *n).collect();
     assert_eq!(
         constructed, table_names,
-        "★ `{enum_name}`'s variant names no longer match the generated `wire_schema` table, so \
+        "★ `{enum_name}`'s variant names no longer match the generated `bincode_schema_tables` table, so \
          this test is exercising a list that has drifted from the schema"
     );
 
@@ -340,7 +340,7 @@ where T: PartialEq + Clone + Hash + std::fmt::Debug {
     );
 }
 
-fn names_of(table: &[models::rust::rholang::wire::VariantProgram]) -> Vec<&str> {
+fn names_of(table: &[models::rust::rholang::bincode_schema::VariantProgram]) -> Vec<&str> {
     table.iter().map(|v| v.name).collect()
 }
 
@@ -1051,7 +1051,7 @@ fn the_catch_all_scanner_can_go_red() {
 // §3  The gap exhaustiveness leaves: answering E0004 the wrong way
 // ===========================================================================
 
-/// The five `oneof` types, their `wire_schema` variant tables, and how the impl
+/// The five `oneof` types, their `bincode_schema_tables` variant tables, and how the impl
 /// header spells the type in `models/src/lib.rs`.
 fn oneof_registry() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
@@ -1146,7 +1146,7 @@ fn every_oneof_variant_has_a_same_variant_eq_arm_and_a_hash_arm() {
         problems.is_empty(),
         "\n★ A SCHEMA VARIANT HAS NO EQUALITY OF ITS OWN.\n\
          \n\
-         The variant lists come from the GENERATED `wire_schema::*_VARIANTS` tables, so they are \
+         The variant lists come from the GENERATED `bincode_schema_tables::*_VARIANTS` tables, so they are \
          the schema itself and cannot go stale. A variant without a same-variant `eq` arm falls \
          through to the residue and compares UNEQUAL TO ITSELF — which is what happens when \
          `E0004` is answered by extending the residue list alone.\n\

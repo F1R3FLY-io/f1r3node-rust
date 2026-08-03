@@ -94,7 +94,6 @@ pub(crate) fn combine_p_matches<'ast>(
     })))
 }
 
-
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
@@ -191,7 +190,7 @@ mod tests {
             Expr {
                 expr_instance: Some(expr::ExprInstance::EMatchesBody(EMatches {
                     target: Some(new_gint_par(1, Vec::new(), false)),
-                    pattern: Some(Par {
+                    pattern: Some(models::par_from_default! {
                         connectives: vec![Connective {
                             connective_instance: Some(ConnNotBody(new_gint_par(
                                 1,
@@ -233,7 +232,7 @@ mod tests {
             inputs.par.clone(),
             Expr {
                 expr_instance: Some(expr::ExprInstance::EMatchesBody(EMatches {
-                    target: Some(Par {
+                    target: Some(models::par_from_default! {
                         connectives: vec![Connective {
                             connective_instance: Some(ConnNotBody(new_gint_par(
                                 1,

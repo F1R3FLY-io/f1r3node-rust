@@ -86,7 +86,7 @@
 
 use models::rhoapi::Par;
 use models::rust::canonical_path::encode_trie_path;
-use models::rust::pathmap_integration::{create_pathmap_from_elements, RholangPathMap};
+use models::rust::pathmap_integration::{create_set_pathmap_from_elements, RholangSetPathMap};
 use models::rust::pathmap_native_query::{next_value_key, next_value_path};
 use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 use proptest::prelude::*;
@@ -98,17 +98,17 @@ use proptest::prelude::*;
 /// `{| 1, 2, 3 |}` — three BARE `GInt` elements. Trie keys `03 02`, `03 04`,
 /// `03 06` (tag `0x03` = GInt, payload = zigzag varint), none terminated:
 /// `encode_trie_path`'s bare arm emits no `0x00`.
-fn bare_ints() -> (Vec<Par>, RholangPathMap) {
+fn bare_ints() -> (Vec<Par>, RholangSetPathMap) {
     let elements: Vec<Par> = (1..=3)
         .map(|i| new_gint_par(i, Vec::new(), false))
         .collect();
-    let map = create_pathmap_from_elements(&elements, None).map;
+    let map = create_set_pathmap_from_elements(&elements, None).map;
     (elements, map)
 }
 
 /// `{| ["a"], ["b"] |}` — SPLIT singleton lists. Trie keys `04 01 61 00`,
 /// `04 01 62 00`; two entries, so the branch is a `LineListNode`.
-fn split_strings() -> RholangPathMap {
+fn split_strings() -> RholangSetPathMap {
     let elements: Vec<Par> = ["a", "b"]
         .iter()
         .map(|s| {
@@ -122,7 +122,7 @@ fn split_strings() -> RholangPathMap {
             )
         })
         .collect();
-    create_pathmap_from_elements(&elements, None).map
+    create_set_pathmap_from_elements(&elements, None).map
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,8 +170,14 @@ fn walk_from_before_the_first_key_finds_the_first_entry() {
 fn walk_from_an_existing_key_advances() {
     let (_, map) = bare_ints();
     // from_key EXISTS (and is a value): the crate's own well-covered case.
-    assert_eq!(next_value_path(&map, &[0x03, 0x02]), Some(vec![vec![0x03, 0x04]]));
-    assert_eq!(next_value_path(&map, &[0x03, 0x04]), Some(vec![vec![0x03, 0x06]]));
+    assert_eq!(
+        next_value_path(&map, &[0x03, 0x02]),
+        Some(vec![vec![0x03, 0x04]])
+    );
+    assert_eq!(
+        next_value_path(&map, &[0x03, 0x04]),
+        Some(vec![vec![0x03, 0x06]])
+    );
     assert_eq!(next_value_path(&map, &[0x03, 0x06]), None, "last entry");
 }
 
@@ -312,11 +318,9 @@ fn bounded_walk_over_bare_elements_visits_every_entry_once() {
     }
     assert_eq!(
         visited,
-        vec![
-            vec![vec![0x03u8, 0x02]],
-            vec![vec![0x03u8, 0x04]],
-            vec![vec![0x03u8, 0x06]],
-        ],
+        vec![vec![vec![0x03u8, 0x02]], vec![vec![0x03u8, 0x04]], vec![
+            vec![0x03u8, 0x06]
+        ],],
         "every entry exactly once, in order"
     );
     assert_eq!(
@@ -348,7 +352,9 @@ fn bounded_walk_over_split_elements_visits_every_entry_once() {
     }
     assert_eq!(
         visited,
-        vec![vec![vec![0x04u8, 0x01, 0x61]], vec![vec![0x04u8, 0x01, 0x62]]],
+        vec![vec![vec![0x04u8, 0x01, 0x61]], vec![vec![
+            0x04u8, 0x01, 0x62
+        ]]],
         "two entries, each once, then exhausted"
     );
 }
@@ -368,17 +374,17 @@ fn bounded_walk_over_split_elements_visits_every_entry_once() {
 /// The specification, evaluated by brute force. `Vec<u8>`'s `Ord` is
 /// byte-lexicographic with a proper prefix sorting FIRST, which is the trie's
 /// depth-first order.
-fn reference_next_value_key(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<u8>> {
+fn reference_next_value_key(map: &RholangSetPathMap, from_key: &[u8]) -> Option<Vec<u8>> {
     map.iter()
         .map(|(key, _)| key)
         .filter(|key| key.as_slice() > from_key)
         .min()
 }
 
-fn trie_of_raw_keys(keys: &[Vec<u8>]) -> RholangPathMap {
-    let mut map = RholangPathMap::new();
-    for (index, key) in keys.iter().enumerate() {
-        map.insert(key.clone(), new_gint_par(index as i64, Vec::new(), false));
+fn trie_of_raw_keys(keys: &[Vec<u8>]) -> RholangSetPathMap {
+    let mut map = RholangSetPathMap::new();
+    for key in keys {
+        map.insert(key.clone(), ());
     }
     map
 }

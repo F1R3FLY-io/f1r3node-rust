@@ -1603,7 +1603,7 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
 
 /// Convert DataAtNameRequest to Par. Returns error if hex decode fails.
 fn to_par(rho_unforg: RhoUnforg) -> eyre::Result<Par> {
-    Ok(Par {
+    Ok(models::par_from_default! {
         unforgeables: vec![GUnforgeable {
             unf_instance: Some(unforg_to_unforg_proto(rho_unforg)?),
         }],
@@ -1612,16 +1612,22 @@ fn to_par(rho_unforg: RhoUnforg) -> eyre::Result<Par> {
 }
 
 /// Convert Par to RhoExpr - equivalent to Scala's exprFromParProto function
-fn expr_from_par_proto(par: Par) -> Option<RhoExpr> {
+fn expr_from_par_proto(mut par: Par) -> Option<RhoExpr> {
     let has_process_fields = !par.sends.is_empty()
         || !par.receives.is_empty()
         || !par.news.is_empty()
         || !par.matches.is_empty()
         || !par.connectives.is_empty();
 
-    let exprs = par.exprs.into_iter().filter_map(expr_from_expr_proto);
-    let unforg_exprs = par.unforgeables.into_iter().filter_map(unforg_from_proto);
-    let bundle_exprs = par.bundles.into_iter().filter_map(expr_from_bundle_proto);
+    let exprs = std::mem::take(&mut par.exprs)
+        .into_iter()
+        .filter_map(expr_from_expr_proto);
+    let unforg_exprs = std::mem::take(&mut par.unforgeables)
+        .into_iter()
+        .filter_map(unforg_from_proto);
+    let bundle_exprs = std::mem::take(&mut par.bundles)
+        .into_iter()
+        .filter_map(expr_from_bundle_proto);
 
     let all_exprs: Vec<RhoExpr> = exprs.chain(unforg_exprs).chain(bundle_exprs).collect();
 
@@ -1716,22 +1722,22 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
             RhoExpr::ExprMap { data }
         }
         ExprInstance::EPathmapBody(pm) => RhoExpr::ExprList {
-            // Display-boundary conversion over the map's canonical
-            // projection (memoized on the value, so this is a borrow).
+            // Display-boundary conversion over canonical trie order. The
+            // temporary vector is consumed here and never retained by EPathMap.
             data: pm
-                .ps()
-                .iter()
-                .cloned()
+                .entry_trie()
+                .entries_owned()
+                .into_iter()
                 .filter_map(expr_from_par_proto)
                 .collect(),
         },
         ExprInstance::EZipperBody(z) => {
             let pathmap = z.pathmap.map(|pm| RhoExpr::ExprList {
-                // Same projection read as the EPathmapBody arm.
+                // Same explicit display-boundary conversion as the EPathmap arm.
                 data: pm
-                    .ps()
-                    .iter()
-                    .cloned()
+                    .entry_trie()
+                    .entries_owned()
+                    .into_iter()
                     .filter_map(expr_from_par_proto)
                     .collect(),
             });
@@ -2076,7 +2082,7 @@ mod tests {
 
     #[test]
     fn test_expr_from_par_proto_single_bool() {
-        let par = Par {
+        let par = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::GBool(true)),
             }],
@@ -2088,7 +2094,7 @@ mod tests {
 
     #[test]
     fn test_expr_from_par_proto_multiple_exprs() {
-        let par = Par {
+        let par = models::par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GBool(true)),
@@ -2152,13 +2158,13 @@ mod tests {
     fn test_expr_from_expr_proto_tuple() {
         let tuple = ETuple {
             ps: vec![
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GInt(1)),
                     }],
                     ..Default::default()
                 },
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GString("hello".to_string())),
                     }],
@@ -2186,13 +2192,13 @@ mod tests {
     fn test_expr_from_expr_proto_list() {
         let list = EList {
             ps: vec![
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GInt(1)),
                     }],
                     ..Default::default()
                 },
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GInt(2)),
                     }],
@@ -2220,13 +2226,13 @@ mod tests {
     fn test_expr_from_expr_proto_set() {
         let set = ESet {
             ps: vec![
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GString("a".to_string())),
                     }],
                     ..Default::default()
                 },
-                Par {
+                models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::GString("b".to_string())),
                     }],
@@ -2255,13 +2261,13 @@ mod tests {
         let map = EMap {
             kvs: vec![
                 KeyValuePair {
-                    key: Some(Par {
+                    key: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::GString("key1".to_string())),
                         }],
                         ..Default::default()
                     }),
-                    value: Some(Par {
+                    value: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::GInt(42)),
                         }],
@@ -2269,13 +2275,13 @@ mod tests {
                     }),
                 },
                 KeyValuePair {
-                    key: Some(Par {
+                    key: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::GString("key2".to_string())),
                         }],
                         ..Default::default()
                     }),
-                    value: Some(Par {
+                    value: Some(models::par_from_default! {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::GString("value2".to_string())),
                         }],
@@ -2355,7 +2361,7 @@ mod tests {
     #[test]
     fn test_expr_from_bundle_proto() {
         let bundle = Bundle {
-            body: Some(Par {
+            body: Some(models::par_from_default! {
                 exprs: vec![Expr {
                     expr_instance: Some(ExprInstance::GString("bundle_content".to_string())),
                 }],

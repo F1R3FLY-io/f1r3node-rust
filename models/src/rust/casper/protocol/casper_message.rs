@@ -1051,6 +1051,54 @@ impl AlgebraAtom {
     }
 }
 
+/// Detach the recursive children of one signature-algebra connective and move
+/// them onto the explicit teardown stack.
+fn take_sig_compound_children(
+    connective: crate::casper::sig_compound::Connective,
+    work: &mut Vec<crate::casper::SigCompound>,
+) {
+    use crate::casper::sig_compound::Connective;
+    match connective {
+        Connective::Atom(_) => {}
+        Connective::Tensor(mut pair) | Connective::With(mut pair) => {
+            work.extend(pair.left.take().map(|child| *child));
+            work.extend(pair.right.take().map(|child| *child));
+        }
+        Connective::Plus(mut plus) => {
+            work.extend(plus.left.take().map(|child| *child));
+            work.extend(plus.right.take().map(|child| *child));
+        }
+        Connective::Bang(mut bang) => {
+            work.extend(bang.inner.take().map(|child| *child));
+        }
+        Connective::Whynot(child) => work.push(*child),
+        Connective::Lolly(mut lolly) => {
+            work.extend(lolly.from.take().map(|child| *child));
+            work.extend(lolly.to.take().map(|child| *child));
+        }
+        Connective::Threshold(mut threshold) => work.append(&mut threshold.members),
+    }
+}
+
+/// The generated protobuf shape is recursively boxed, so rustc's default drop
+/// glue consumes one native frame per algebra level. Detaching every child
+/// before its shell drops turns teardown into the same O(depth) heap worklist
+/// used by the ingress analyzer and keeps native stack use O(1).
+impl Drop for crate::casper::SigCompound {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        if let Some(connective) = self.connective.take() {
+            take_sig_compound_children(connective, &mut work);
+        }
+        while let Some(mut compound) = work.pop() {
+            if let Some(connective) = compound.connective.take() {
+                take_sig_compound_children(connective, &mut work);
+            }
+            // `compound` now has no recursive child; its own `Drop` is bounded.
+        }
+    }
+}
+
 impl DeployData {
     // D3 (DR-9): the singular-phlo escrow/price arithmetic
     // (`checked_total_phlo_charge[_value]`, `total_phlo_charge`,
@@ -1255,28 +1303,16 @@ impl DeployData {
         // quorum, F-A Threshold=(A) — lowered to a flat `Cosigned` + scalar
         // `cosigner_threshold`) are KEPT.
         //
-        // This is what actually stops a malicious gRPC client: the decode below
-        // (`collect_atoms` + `min_required_for`) would otherwise SILENTLY ACCEPT
+        // This is what actually stops a malformed ingress algebra: the analysis below
+        // would otherwise flatten
         // a `⊕/&/!/?/⊸`-formed algebra and fold it into a funding envelope.
         Self::reject_capability_connectives(sig_algebra)?;
 
-        // Walk the algebra and collect EVERY atom into the signer list
-        // (with its actual sig), and compute the minimum number of valid
-        // signatures the algebra requires (`min_required`).
-        // Per-connective semantics live in `min_required_for`:
-        //
-        //   - Atom: 1 (must verify)
-        //   - Tensor(a, b): min(a) + min(b)
-        //   - Plus(a, b, chosen=0): min(a)
-        //   - Plus(a, b, chosen=1): min(b)
-        //   - With(a, b): min(a) + min(b) (both committed at envelope time)
-        //   - Bang(inner): min(inner)
-        //   - WhyNot(inner): 0 (entirely optional)
-        //   - Lolly(from, to): min(from) + min(to)
-        //   - Threshold(k, members): k
-        let mut atoms: Vec<AlgebraAtom> = Vec::new();
-        Self::collect_atoms(sig_algebra, &mut atoms)?;
-        let min_required = Self::min_required_for(sig_algebra)?;
+        // One stack-safe analysis pass collects EVERY atom, computes the
+        // required signature count, and remembers whether the accepted funding
+        // grammar is pure N-of-N. Threshold descendants are still collected,
+        // but an outer threshold contributes its scalar exactly once.
+        let (atoms, min_required, all_required) = Self::analyze_funding_algebra(sig_algebra)?;
 
         if atoms.is_empty() {
             return Err(
@@ -1302,7 +1338,7 @@ impl DeployData {
         //     from_signed_data (canonical N-of-N).
         //   - Otherwise → from_signed_data_threshold with min_required.
         let total = signers.len() as u32;
-        if min_required == total && Self::algebra_is_all_required(sig_algebra)? {
+        if min_required == total && all_required {
             Cosigned::from_signed_data(data, signers)
                 .map_err(|e| format!("Cosigned sig_algebra validation failed: {}", e))
         } else if min_required == 0 {
@@ -1332,7 +1368,7 @@ impl DeployData {
         }
     }
 
-    /// F-A funding/capability separation — INGRESS REJECT (c). Recursively
+    /// F-A funding/capability separation — INGRESS REJECT (c). Iteratively
     /// reject a `SigCompound` deploy algebra that contains ANY value/capability
     /// type-logic connective (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
     /// `Lolly` ⊸ — the five formers that are NOT in the funding grammar
@@ -1348,232 +1384,132 @@ impl DeployData {
     /// `Cosigned`.
     fn reject_capability_connectives(sig: &crate::casper::SigCompound) -> Result<(), String> {
         use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
         const NOT_A_FUNDING_FORMER: &str =
             "is not a funding-signature former (cost-accounted-rho §App-A: \
              funding signatures are g | #P | s∘s — ground/quote atoms folded by \
              the tensor ∘; value/capability connectives ⊕/&/!/?/⊸ are \
              capability-layer only)";
-        match connective {
-            // Funding-grammar formers — accepted; recurse through the
-            // structural ones so a nested capability connective is still caught.
-            Connective::Atom(_) => Ok(()),
-            Connective::Tensor(pair) => {
-                let left = pair
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.left missing".to_string())?;
-                let right = pair
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Self::reject_capability_connectives(left)?;
-                Self::reject_capability_connectives(right)
-            }
-            Connective::Threshold(thresh) => {
-                for member in &thresh.members {
-                    Self::reject_capability_connectives(member)?;
+        let mut work = vec![sig];
+        while let Some(sig) = work.pop() {
+            let connective = sig
+                .connective
+                .as_ref()
+                .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+            match connective {
+                Connective::Atom(_) => {}
+                Connective::Tensor(pair) => {
+                    let left = pair
+                        .left
+                        .as_deref()
+                        .ok_or_else(|| "SigPair.left missing".to_string())?;
+                    let right = pair
+                        .right
+                        .as_deref()
+                        .ok_or_else(|| "SigPair.right missing".to_string())?;
+                    work.push(right);
+                    work.push(left);
                 }
-                Ok(())
+                Connective::Threshold(threshold) => {
+                    work.extend(threshold.members.iter().rev());
+                }
+                Connective::Plus(_) => {
+                    return Err(format!(
+                        "value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}"
+                    ));
+                }
+                Connective::With(_) => {
+                    return Err(format!(
+                        "value/capability connective & (With) {NOT_A_FUNDING_FORMER}"
+                    ));
+                }
+                Connective::Bang(_) => {
+                    return Err(format!(
+                        "value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}"
+                    ));
+                }
+                Connective::Whynot(_) => {
+                    return Err(format!(
+                        "value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}"
+                    ));
+                }
+                Connective::Lolly(_) => {
+                    return Err(format!(
+                        "value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}"
+                    ));
+                }
             }
-            // Value/capability type-logic connectives — REJECTED at ingress.
-            Connective::Plus(_) => Err(format!("value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}")),
-            Connective::With(_) => Err(format!("value/capability connective & (With) {NOT_A_FUNDING_FORMER}")),
-            Connective::Bang(_) => Err(format!("value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}")),
-            Connective::Whynot(_) => Err(format!("value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}")),
-            Connective::Lolly(_) => Err(format!("value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}")),
         }
+        Ok(())
     }
 
-    fn collect_atoms(
+    /// Analyze an already funding-validated algebra in one explicit-worklist
+    /// pass. The boolean on each job says whether this subtree contributes to
+    /// the outer minimum; members below `Threshold(k, …)` are still collected as
+    /// signers but do not add their individual minima on top of `k`.
+    fn analyze_funding_algebra(
         sig: &crate::casper::SigCompound,
-        atoms: &mut Vec<AlgebraAtom>,
-    ) -> Result<(), String> {
+    ) -> Result<(Vec<AlgebraAtom>, u32, bool), String> {
         use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(atom) => {
-                atoms.push(AlgebraAtom::from_proto(atom));
-                Ok(())
-            }
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                Self::collect_atoms_pair(pair, atoms)
-            }
-            Connective::Plus(plus) => {
-                if plus.chosen_branch != 0 && plus.chosen_branch != 1 {
-                    return Err(format!(
-                        "SigPlus.chosen_branch must be 0 or 1, got {}",
-                        plus.chosen_branch
-                    ));
+
+        let mut atoms = Vec::new();
+        let mut min_required = 0u32;
+        let mut all_required = true;
+        let mut work = vec![(sig, true)];
+
+        while let Some((sig, contributes)) = work.pop() {
+            let connective = sig
+                .connective
+                .as_ref()
+                .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+            match connective {
+                Connective::Atom(atom) => {
+                    atoms.push(AlgebraAtom::from_proto(atom));
+                    if contributes {
+                        min_required += 1;
+                    }
                 }
-                let left = plus
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
-                let right = plus
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
-                Self::collect_atoms(left, atoms)?;
-                Self::collect_atoms(right, atoms)
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::collect_atoms(inner, atoms)
-            }
-            Connective::Whynot(inner) => Self::collect_atoms(inner, atoms),
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Self::collect_atoms(from, atoms)?;
-                Self::collect_atoms(to, atoms)
-            }
-            Connective::Threshold(thresh) => {
-                if thresh.threshold < 1 || (thresh.threshold as usize) > thresh.members.len() {
-                    return Err(format!(
-                        "SigThreshold.threshold must satisfy 1 ≤ threshold ≤ members.len() ({}), got {}",
-                        thresh.members.len(),
-                        thresh.threshold
-                    ));
+                Connective::Tensor(pair) => {
+                    let left = pair
+                        .left
+                        .as_deref()
+                        .ok_or_else(|| "SigPair.left missing".to_string())?;
+                    let right = pair
+                        .right
+                        .as_deref()
+                        .ok_or_else(|| "SigPair.right missing".to_string())?;
+                    work.push((right, contributes));
+                    work.push((left, contributes));
                 }
-                for member in &thresh.members {
-                    Self::collect_atoms(member, atoms)?;
+                Connective::Threshold(threshold) => {
+                    if threshold.threshold < 1
+                        || (threshold.threshold as usize) > threshold.members.len()
+                    {
+                        return Err(format!(
+                            "SigThreshold.threshold must satisfy 1 ≤ threshold ≤ members.len() ({}), got {}",
+                            threshold.members.len(),
+                            threshold.threshold
+                        ));
+                    }
+                    all_required = false;
+                    if contributes {
+                        min_required += threshold.threshold as u32;
+                    }
+                    work.extend(threshold.members.iter().rev().map(|member| (member, false)));
                 }
-                Ok(())
+                Connective::Plus(_)
+                | Connective::With(_)
+                | Connective::Bang(_)
+                | Connective::Whynot(_)
+                | Connective::Lolly(_) => {
+                    return Err(
+                        "capability connective reached funding analysis after ingress validation"
+                            .to_string(),
+                    );
+                }
             }
         }
-    }
 
-    fn collect_atoms_pair(
-        pair: &crate::casper::SigPair,
-        atoms: &mut Vec<AlgebraAtom>,
-    ) -> Result<(), String> {
-        let left = pair
-            .left
-            .as_deref()
-            .ok_or_else(|| "SigPair.left missing".to_string())?;
-        let right = pair
-            .right
-            .as_deref()
-            .ok_or_else(|| "SigPair.right missing".to_string())?;
-        Self::collect_atoms(left, atoms)?;
-        Self::collect_atoms(right, atoms)
-    }
-
-    fn min_required_for(sig: &crate::casper::SigCompound) -> Result<u32, String> {
-        use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(_) => Ok(1),
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                let l = pair
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.left missing".to_string())?;
-                let r = pair
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Ok(Self::min_required_for(l)? + Self::min_required_for(r)?)
-            }
-            Connective::Plus(plus) => {
-                let l = plus
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.left missing".to_string())?;
-                let r = plus
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPlus.right missing".to_string())?;
-                if plus.chosen_branch == 0 {
-                    Self::min_required_for(l)
-                } else {
-                    Self::min_required_for(r)
-                }
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::min_required_for(inner)
-            }
-            Connective::Whynot(_) => Ok(0),
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Ok(Self::min_required_for(from)? + Self::min_required_for(to)?)
-            }
-            Connective::Threshold(thresh) => Ok(thresh.threshold as u32),
-        }
-    }
-
-    /// Returns true iff the algebra has no optional branch (no Plus,
-    /// no WhyNot, no Threshold). Used to choose between the N-of-N
-    /// constructor and the threshold constructor.
-    fn algebra_is_all_required(sig: &crate::casper::SigCompound) -> Result<bool, String> {
-        use crate::casper::sig_compound::Connective;
-        let connective = sig
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            Connective::Atom(_) => Ok(true),
-            Connective::Tensor(pair) | Connective::With(pair) => {
-                let l = pair
-                    .left
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.left missing".to_string())?;
-                let r = pair
-                    .right
-                    .as_deref()
-                    .ok_or_else(|| "SigPair.right missing".to_string())?;
-                Ok(Self::algebra_is_all_required(l)? && Self::algebra_is_all_required(r)?)
-            }
-            Connective::Bang(bang) => {
-                let inner = bang
-                    .inner
-                    .as_deref()
-                    .ok_or_else(|| "SigBang.inner missing".to_string())?;
-                Self::algebra_is_all_required(inner)
-            }
-            Connective::Lolly(lolly) => {
-                let from = lolly
-                    .from
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.from missing".to_string())?;
-                let to = lolly
-                    .to
-                    .as_deref()
-                    .ok_or_else(|| "SigLolly.to missing".to_string())?;
-                Ok(Self::algebra_is_all_required(from)? && Self::algebra_is_all_required(to)?)
-            }
-            Connective::Plus(_) | Connective::Whynot(_) | Connective::Threshold(_) => Ok(false),
-        }
+        Ok((atoms, min_required, all_required))
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -2277,9 +2213,8 @@ mod tests {
                 },
             ))),
         };
-        let err_absent =
-            DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra_absent)
-                .expect_err("WhyNot (?) is a capability connective, rejected at ingress");
+        let err_absent = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra_absent)
+            .expect_err("WhyNot (?) is a capability connective, rejected at ingress");
         assert!(
             err_absent.contains("WhyNot") && err_absent.contains("not a funding-signature former"),
             "error must name the rejected ?/WhyNot connective: {}",
@@ -2305,7 +2240,8 @@ mod tests {
             DeployData::from_proto_cosigned_with_sig_algebra(payload2, &algebra_invalid)
                 .expect_err("present-invalid WhyNot is still rejected at the connective boundary");
         assert!(
-            err_invalid.contains("WhyNot") && !err_invalid.contains("failed signature verification"),
+            err_invalid.contains("WhyNot")
+                && !err_invalid.contains("failed signature verification"),
             "ingress reject must fire BEFORE signature verification: {}",
             err_invalid
         );
@@ -2585,5 +2521,41 @@ mod tests {
             .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
         assert_eq!(cosigned.signers().len(), 2);
         assert!(cosigned.is_compound());
+    }
+
+    #[test]
+    fn sig_compound_analysis_and_drop_are_stack_safe_at_depth_4096() {
+        std::thread::Builder::new()
+            .name("sig-compound-pda".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut algebra = crate::casper::SigCompound {
+                    connective: Some(crate::casper::sig_compound::Connective::Atom(empty_atom())),
+                };
+                for _ in 0..4_096 {
+                    algebra = crate::casper::SigCompound {
+                        connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                            crate::casper::SigThreshold {
+                                threshold: 1,
+                                members: vec![algebra],
+                            },
+                        )),
+                    };
+                }
+
+                DeployData::reject_capability_connectives(&algebra)
+                    .expect("a threshold/atom chain is in the funding grammar");
+                let (atoms, required, all_required) = DeployData::analyze_funding_algebra(&algebra)
+                    .expect("the explicit-worklist analyzer accepts the chain");
+                assert_eq!(atoms.len(), 1);
+                assert_eq!(required, 1);
+                assert!(!all_required);
+
+                // `algebra` drops here on the same fixed-small-stack thread;
+                // the generated recursive Box shape must use the custom PDA.
+            })
+            .expect("spawn fixed-stack signature-algebra probe")
+            .join()
+            .expect("signature-algebra analysis/drop must not grow native stack with depth");
     }
 }

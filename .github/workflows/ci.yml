@@ -227,7 +227,6 @@ jobs:
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
           RUST_BACKTRACE: "1"
-          RUST_MIN_STACK: "8388608"
         run: |
           ulimit -n 65536
           mkdir -p /tmp/test-logs

@@ -1,165 +1,54 @@
-//! The hand-maintained `EPathMap` wrapper, whose entries are an [`EntryTrie`].
+//! PathMap-native implementation of the externally generated `EPathMap` type.
 //!
-//! Lineage: the P3 shadow-cell wrapper (full T1, stage L1.5), then stage L2's
-//! shared-`ps` representation (`SharedPars = Arc<Vec<Par>>`, USER decision D2 of
-//! 2026-07-20 on the E-6d #2 evidence — clone-class 29.76% flat at ≈44.8 ms/inj
-//! across e6d1→e6d2, attributed to the `Expr::to_vec` deep copies of `ps`), and
-//! now the inversion described under ★★ below: the `Vec` that L2 was sharing is
-//! gone, and the trie it was a source for is the field.
+//! `models/build.rs` maps `.rhoapi.EPathMap` to this module, so generated
+//! expression and zipper fields resolve to one representation throughout the
+//! program. Entry storage is homogeneous and prefix-compressed:
 //!
-//! `models/build.rs` declares `.rhoapi.EPathMap` as an EXTERN type
-//! (`tonic_prost_build::configure().extern_path(".rhoapi.EPathMap",
-//! "crate::rust::rhoapi_ext::EPathMap")` — tonic-prost-build 0.14.6
-//! `src/lib.rs:464`, forwarded verbatim to `prost_build::Config`), so prost
-//! no longer generates the struct: every generated reference
-//! (`expr::ExprInstance::EPathmapBody`, `EZipper.pathmap`) resolves to THIS
-//! type, and `models/src/lib.rs` re-exports it from `crate::rhoapi` so all
-//! existing import paths keep working. There is exactly ONE `EPathMap` type
-//! in the program (plan v1 risk R1: no unwrapped twin).
+//! - `Empty` is mode-neutral;
+//! - set membership uses `PathMap<()>`;
+//! - key/value membership uses `PathMap<Par>`.
 //!
-//! WHY: the post-P2 E-6d profile's #1 residual is the P1 store rendezvous
-//! itself — every `interned_epathmap` call re-walks the map through the
-//! streaming digest (prost `encoded_len`/`encode` frames grew 3.34% → 20.12%
-//! of the 4.31×-smaller wall; `Par::encoded_len` alone 10.11%). The wrapper
-//! adds a private SHADOW CELL (`intern: OnceLock<Arc<InternedEPathMap>>`)
-//! that pins the interned entry on the instance: the store rendezvous
-//! becomes an O(1) cell read once ANY clone ancestor interned (the cell
-//! travels with `Clone`), and the cached canonical bytes serve
-//! `Message::encoded_len` (O(1)) and `Message::encode_raw` (one `memcpy`)
-//! for every consumer holding an interned instance — substitution charges,
-//! `to_byte_array`, nested encodes — with THE SAME numbers and THE SAME
-//! bytes (`InternedEPathMap.encoded_len == canonical_prost.len()` by
-//! construction, gated by the P0 goldens).
+//! The first insertion selects set or map mode, mixed membership is rejected,
+//! and deleting the final member restores neutral empty. Canonical path bytes
+//! are the only keys; insertion order, duplicates, and retained `Vec<Par>`
+//! projections are not representable.
 //!
-//! EVERY impl here is manual (or a derive proven layout-identical) because
-//! the extra non-prost field derails the stock derives:
+//! Bincode and protobuf serialize the same versioned EPM1 snapshot: PathMap's
+//! compact ACTree03 arena followed by a generated, stack-safe protobuf value
+//! table in map mode. `trie_snapshot` caches the completed byte string across a
+//! clone family; cold construction is linear in trie nodes plus encoded values,
+//! while warm access is O(1) before the caller copies the slice. `epm_layout`
+//! caches only the value-independent topology prefix so nested map values can be
+//! streamed without retaining every suffix of a nested chain.
 //!
-//! * `prost::Message` — prost-derive cannot skip a non-annotated field, so
-//!   the impl replicates the prost-derive 0.14.3 expansion for the proto
-//!   shape (`RhoTypes.proto:321-328`: `ps` tag 1 repeated message,
-//!   `locally_free` tag 3 bytes, `connective_used` tag 4 bool, `remainder`
-//!   tag 5 optional message) field-for-field, PLUS the cached fast path.
-//!   `merge_field`/`clear` RESET the cell before mutating (a decoded/cleared
-//!   value must never carry a stale handle).
-//! * `Clone` — propagates the filled cell (`OnceLock::clone` clones the
-//!   inner `Arc`): the handle travels with the clone family, so the
-//!   first-touch digest walk is paid once per family, not per copy. `ps` is an
-//!   [`EntryTrie`], whose clone is a refcount bump on the trie root plus an
-//!   `Arc` bump on the memoized projection — `EPathMap::clone` is O(1) AT THE
-//!   NODE (only `locally_free`/`remainder` still copy, both small).
-//! * `Default`/`Debug` — prost-derive generates both alongside `Message`;
-//!   replicated here (Debug prints the four proto fields in declaration
-//!   order and omits the cell, matching the old derived output).
-//! * serde `Serialize` — HAND-WRITTEN (see the `impl serde::Serialize` below);
-//!   `Deserialize` — DERIVED, with `#[serde(skip)]` on the cell. The
-//!   Serialize impl emits `serialize_struct("EPathMap", 4)` + the four fields
-//!   in declaration order, `locally_free` ALWAYS empty (an inline `EmptyBytes`
-//!   wrapper = `serialize_bytes(&[])`, byte-identical to the dropped
-//!   `serialize_with = serialize_as_empty_bytes` attribute). It differs from a
-//!   pure derive in ONE way and that way is now the ONLY way: the asymmetry is
-//!   serialize-ONLY — the derived `Deserialize` reads real `locally_free` bytes
-//!   from the stream (no `deserialize_with`). The ground/non-ground `ps` fork
-//!   that used to live here is deleted; `ps` is the entry projection for every
-//!   map, so the event-hash preimage is a pure function of the entry set by
-//!   construction. Gated by the P0 serde goldens + the canonical-twin proptest
-//!   differential.
-//! * `PartialEq`/`Hash` — the AlwaysEqual impls MOVED from
-//!   `models/src/lib.rs:613-627`: `ps`/`connective_used`/`remainder` only,
-//!   `locally_free` IGNORED (scalapb `AlwaysEqual[BitSet]` parity).
-//! * `Eq`/`Ord`/`PartialOrd` — replicate the derived declaration-order
-//!   comparison `ps → locally_free → connective_used → remainder`,
-//!   INCLUDING `locally_free`. This is deliberately INCONSISTENT with the
-//!   AlwaysEqual `==` (two maps can be `==` yet `cmp` `Less`) — the wart is
-//!   load-bearing 84a0fbe4 behavior, pinned by the P0 Ord fixtures and the
-//!   wrapper-suite wart test; do NOT "fix" it. ★ It is now the ONLY thing
-//!   `Ord` and `==` disagree about: both read the same entry projection, so the
-//!   second, accidental disagreement — `cmp` reading a producer's order while
-//!   `==` read `U(m)` — is gone. See `EPathMap::cmp`.
-//! * `utoipa::ToSchema` — derived over the four visible fields
-//!   (`#[schema(ignore)]` + `#[serde(skip)]` hide the cell), matching the
-//!   old generated schema.
-//!
-//! `#[repr(C)]` is intentionally DROPPED (the generated struct carried it
-//! via the blanket `message_attribute(".rhoapi", "#[repr(C)]")`): the sweep
-//! recorded in the P3 change (grep for `transmute`/`from_raw`/raw-pointer
-//! casts × `EPathMap` across models/rholang/rspace++/casper/node/comm —
-//! zero hits; `EPathMap` is not referenced AT ALL outside models, rholang,
-//! and mettail's `rholang-runtime`) found no FFI or layout-dependent
-//! consumer, and the `OnceLock` field would make a C layout meaningless
-//! anyway. Amendment PM-5(4).
-//!
-//! ★★ THE INVERSION: `ps` IS THE TRIE
-//!
-//! `EPathMap.ps` was a `Vec<Par>` (latterly an `Arc<Vec<Par>>`) with a trie
-//! built from it on demand and cached in the intern store. It is now an
-//! [`EntryTrie`] — the trie itself — with the `Vec<Par>` derived from it on
-//! demand and memoized. Nothing about a pathmap's meaning changed; what
-//! changed is which of the two representations is authoritative.
-//!
-//! That single move deletes, rather than fixes, four separate mechanisms:
-//!
-//! * the MUTATION DISCIPLINE this comment used to describe. `ps_make_mut`
-//!   handed out `&mut Vec<Par>` after taking the shadow cell, and the raw
-//!   `map.ps.make_mut()` bypass was policed by `debug_assert`s in
-//!   `encode_raw`/`encoded_len` that re-streamed the fields against the cached
-//!   bytes on every cached use. **All of it is gone**: there is no
-//!   `&mut Vec<Par>` to hand out, because an entry SET has no positions to
-//!   write at. The three mutators that remain ([`EPathMap::insert_entry`],
-//!   [`EPathMap::extend_entries`], [`EPathMap::remove_greatest_entry`]) name an
-//!   entry rather than a slot, and each takes the cell before touching the trie.
-//! * the STALE-CELL invariant. It said *"the cached bytes still equal the
-//!   fields' bytes"*, and it was a real question only while the cache and the
-//!   fields were two things. The cached thing is now derived from the stored
-//!   thing, so `cached_bytes_still_valid` and `fields_match_canonical_prost` are
-//!   deleted with the assertions that called them.
-//! * the REBUILD. `ground_path_stream(&ps)` built a throwaway trie on every
-//!   pre-intern encode; `path_stream_of` now walks the stored one.
-//! * the CANONICALISATION FORK. Four consumers — `Serialize`,
-//!   `spliced_event_bytes::emit_epathmap`, `wire::pathmap_ps`, and
-//!   `sort_combine::combine_epathmap` — each carried a *"if this map is ground,
-//!   read the entries off a trie instead"* branch. The projection is that same
-//!   trie read, for every map, so all four branches collapse to one expression.
-//!
-//! ⚠ CONSENSUS-VISIBLE. For NON-ground maps the stored order was the producer's
-//! and is now the trie's, which moves prost bytes (tag 1 `repeated Par`), serde
-//! bytes, event-hash preimages, and sort order. Ground maps are unaffected —
-//! they encoded as proto field 8 (the trie's own key stream) already. See the
-//! commit message; the network version constant is deliberately NOT touched
-//! here, because bumping it is a network-coordination act rather than a code
-//! act.
-//!
-//! SHARING SEMANTICS: an `EPathMap` clone is O(1) at the node — the trie clone
-//! is a refcount bump on the root `TrieNodeODRc` and the memoized projection is
-//! an `Arc` bump. Aliasing is safe without any copy-on-write discipline,
-//! because no `&mut` path to shared state exists to begin with.
+//! Equality, hashing, ordering, lookup, algebraic operations, and zipper walks
+//! operate on PathMap directly and do not force either serialization cache.
+//! Mutation installs fresh cache cells on the modified value. Set members are
+//! decoded to `Par` only at explicit compatibility boundaries; map keys remain
+//! canonical bytes and map values remain borrowed `Par`s on PDA worklists.
 
 use std::cmp::Ordering;
 use std::fmt;
+#[cfg(test)]
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
+use prost::DecodeError;
 use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
-use prost::DecodeError;
 
 use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
-// ⚠ `eval_stable_epathmap` is deliberately NOT imported here any more. It was the
-// wire discriminant — the predicate that chose between field 8 and the tag-1 list —
-// and with one arm there is nothing left for it to select. It is NOT deleted: it
-// remains `canonical_path`'s recursion cut and `entries_stable()`'s own consumer.
-// Removing the import is what makes it impossible to reintroduce the fork by
-// reflex.
-use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_par, ground_field8_len, path_stream_of, PathFrames,
+use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
+use super::pathmap_crate_type_mapper::{PathFrameError, PathFrames, eval_stable_par};
+use super::pathmap_integration::{
+    CursorKind, RholangMapPathMap, RholangSetPathMap, cursor_entry_key as encode_cursor_entry_key,
+    entry_key_at as encode_entry_key_at, par_to_path, segments_to_key,
 };
-/// ★ Re-exported, not merely imported. [`PathStreamDisagreement::MalformedFraming`]
-/// carries a `PathFrameError`, so a caller who matches on the disagreement needs to
-/// name its payload — and a private `use` made the type unreachable at the path that
-/// exposes it. `rustc`'s `private_interfaces` lint caught exactly that: a public enum
-/// whose variant field could be observed but not spelled.
-pub use super::pathmap_crate_type_mapper::PathFrameError;
-use super::pathmap_integration::RholangPathMap;
+use super::pathmap_native_query::{
+    collect_child_segments, next_value_key, path_prefix_exists, subtrie_value_count,
+};
+use super::pathmap_zipper::decode_cursor;
 use crate::rhoapi::{Par, Var};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,453 +57,400 @@ use crate::rhoapi::{Par, Var};
 
 /// ★ **The entries of an `EPathMap`, stored as the trie they always were.**
 ///
-/// This type replaces the stage-L2 `SharedPars` (`Arc<Vec<Par>>`). The change is
-/// an **inversion, not a rewrite**: the `Vec` was the primary and a trie was
-/// built from it on demand; now the trie is the primary and the `Vec` is a
-/// derived, read-only projection of it ([`Self::view`]).
-///
-/// # Why the trie, and why this is subtractive
-///
-/// A `RholangPathMap` is a *set of `Par` entries indexed by their own codec
-/// path* — `create_pathmap_from_elements` files each entry under
-/// `encode_trie_path(entry)`. A trie's children are indexed **by byte**, so a
-/// read-zipper walk over it **is** byte-lexicographic *by construction*. The
-/// trie therefore already carries an order; nothing selects it and nothing could
-/// select a different one, which is why `path_stream_of` performs **no sort**.
-///
-/// The `Vec<Par>` carried a **second, competing order** — the order a producer
-/// happened to write the entries in — and that order shadowed the trie's:
-/// `encode_raw` emitted a ground map as proto field 8 (the trie's key stream)
-/// while `==`, `Hash`, `Ord`, and the non-ground wire arm all read the `Vec`.
-/// Deleting the `Vec` does not *impose* canonicity; it **removes the
-/// competitor**, leaving exactly one order. That is why the repair is
-/// subtractive and why so much machinery disappears with it (below).
-///
-/// # What became unrepresentable rather than fixed
-///
-/// * **Insertion order.** A trie has none. Two constructions of one entry set —
-///   permuted, duplicated, or both — are the same trie, hence the same value,
-///   the same bytes, and the same hash. (Defect #83.)
-/// * **Staleness.** The stage-L2 hazard was that `ps` was the primary and the
-///   interned canonical bytes were a cache of it, so a write to `ps` could
-///   outrun the cache. Two `debug_assert`s and `fields_match_canonical_prost`
-///   existed to police exactly that. **The cached thing is now the stored
-///   thing**, so there is nothing to police: all three are deleted.
-/// * **A rebuild.** `ground_path_stream(&ps)` used to build a throwaway trie on
-///   every pre-intern encode. The trie is right here; the rebuild is deleted.
-///
-/// # Reading
-///
-/// [`Self::view`] materializes the entries **once** per value and memoizes them
-/// behind an `Arc`, so `EPathMap::clone` stays an O(1) refcount bump at the node
-/// and repeated reads are free. There is deliberately **no**
-/// `&mut Vec<Par>` escape anywhere — the memo cannot diverge from the trie
-/// because nothing can write to it.
-///
-/// # Writing
+/// Set mode stores canonical paths in `PathMap<()>`; map mode stores canonical
+/// paths and associated values in `PathMap<Par>`. `Empty` remains mode-neutral.
+/// No insertion-order collection or decoded-entry cache is retained.
 ///
 /// [`Self::insert_entry`], [`Self::extend_entries`], and
-/// [`Self::remove_greatest_entry`] mutate the **trie** and take the memo. There
-/// is no `ps_make_mut`: an entry set has no positions to write at, so the
-/// position-shaped mutators (`push`/`pop`/`extend` over a `Vec`) could not be
-/// carried over even if we wanted them.
-///
-/// # The O(1) metadata, and why it is maintained at insert rather than derived
-///
-/// `entries_stable`, `len`, `union_locally_free`, and `any_connective_used` are
-/// all folds over the entries. Deriving them would force [`Self::view`] — a full
-/// `decode_trie_path` walk — on the *hottest* path there is: `encode_raw` asks
-/// "is this map ground?" to pick its wire arm, and a ground map's encoding needs
-/// only the trie's key stream, never the decoded entries. Folding them in as the
-/// entries arrive keeps that question O(1) and keeps the decode off the encode
-/// path entirely.
+/// [`Self::remove_greatest_entry`] mutate the trie and invalidate serialization
+/// caches. `len`, `entries_stable`, `union_locally_free`, and
+/// `any_connective_used` are maintained folds, avoiding a decode traversal for
+/// common metadata queries.
 pub struct EntryTrie {
     /// THE STORE. Keys are `encode_trie_path(entry)` (capless, injective,
     /// prefix-free, and **total** over every `Par` via the `0x0F` escape arm —
     /// `canonical_path.rs`), so a non-ground entry is as storable as a ground
     /// one and there is no arm in which the `Vec` has to come back.
-    trie: RholangPathMap,
+    repr: EPathMapRepr<Par>,
     /// Number of DISTINCT entries. Maintained at insert/remove because
     /// `PathMap::val_count` is documented O(N) ("This is not a cheap method",
     /// `pathmap-0.2.2/src/trie_map.rs:499`).
     len: usize,
     /// `ps.iter().all(eval_stable_par)` — the entry half of the GROUND predicate.
     ///
-    /// ⚠ NO LONGER A WIRE DISCRIMINANT. This used to select the wire arm: a ground
-    /// map emitted proto field 8, everything else took the tag-1 field walk, so a
-    /// conservative `false` was a consensus-visible byte change. That fork is
-    /// DELETED — every map emits proto field 8 now — and this fold no longer
-    /// chooses anything the wire can see.
-    ///
-    /// It is still computed EXACTLY rather than conservatively, because it is
-    /// still the honest answer to "are all entries in the codec's ground domain?"
-    /// for `entries_stable()`'s remaining consumers, and because it comes free
-    /// from the encoder's own verdict (`encode_trie_path_with_stability`) rather
-    /// than from a second walk that could form a second opinion.
+    /// This no longer selects a protobuf representation; all EPathMaps use the
+    /// EPM1 snapshot. It remains exact for canonical-path consumers.
     entries_stable: bool,
     /// Union of the entries' `locally_free` bitsets — the value
-    /// `create_pathmap_from_elements` used to compute on every conversion.
+    /// `create_set_pathmap_from_elements` used to compute on every conversion.
     union_locally_free: Vec<u8>,
     /// OR of the entries' `connective_used` flags (the map's own `remainder`
     /// is folded in by the caller, not here — it is metadata, not an entry).
     any_connective_used: bool,
-    /// The memoized key walk: `canonical_ps_from_trie(&trie)`. A pure function
-    /// of `trie` with no mutator, behind an `Arc` so `Clone` stays O(1).
-    view: OnceLock<Arc<Vec<Par>>>,
-    /// ★ **THE consensus byte string** — `U(m)`, the trie's own length-framed
-    /// key stream (`path_stream_of`). A pure function of `trie`, memoized behind
-    /// an `Arc` so `Clone` stays O(1) and a warm encode is one `memcpy`.
-    ///
-    /// This is the trie serialized *as a trie*: `pathmap`'s `.paths` payload
-    /// (`u32-LE keylen ++ key`, in zipper order) with the disqualifying
-    /// zlib-ng deflate removed. Every serialization surface reads it, so the
-    /// entry SET — never a projected sequence — is what reaches the wire.
-    ///
-    /// ⚠ It walks KEYS and never decodes, which is what makes it total where
-    /// [`EntryTrie::view`]'s key-side twin would not be.
-    path_stream: OnceLock<Arc<Vec<u8>>>,
-    /// ★★ **The trie the serde/bincode surface writes** — this trie's entries
-    /// with every `locally_free` blanked, re-filed under their own keys. See
-    /// [`EntryTrie::wire_trie`] for the whole argument.
-    ///
-    /// `Some(trie)` when that differs from `self`; **`None` when the two
-    /// coincide**, which is the common case and is why this is not simply a
-    /// second `EntryTrie`: an unconditional second copy would double the
-    /// resident cost of every map in the store to serve the minority that
-    /// carries a bitset.
-    ///
-    /// ⚠ It is the whole TRIE and not merely its key stream, because blanking
-    /// can **reorder**: a tagged entry keys under the `0x0F` escape arm and its
-    /// blanked twin under the structural arm, and those sort differently. A memo
-    /// holding only the keys would emit them beside values in the *stored*
-    /// order — two halves of one tuple disagreeing about which entry is which.
-    ///
-    /// ⚠ Never forced for an `entries_stable` trie — that case is answered O(1)
-    /// without touching this cell at all.
-    wire_trie: OnceLock<Option<Arc<EntryTrie>>>,
+    /// Canonical `EPM1` snapshot of the prefix-compressed trie. The `OnceLock`
+    /// itself is shared by a clone family, so cloning a cold map and then
+    /// serializing several siblings still constructs exactly one snapshot.
+    /// Mutation detaches only the mutated sibling by installing a fresh cell.
+    /// This is a serialization cache only: equality, hashing, ordering and
+    /// lookup walk the PathMap directly and never force it.
+    trie_snapshot: Arc<OnceLock<Vec<u8>>>,
+    /// Value-independent EPM1 prefix: mode, ACTree03 topology, and value count.
+    /// The generated protobuf PDA streams `PathMap<Par>` values after this
+    /// prefix, so nested maps share compressed topology without retaining a
+    /// complete snapshot for every suffix of a nested chain.
+    epm_layout: Arc<OnceLock<epathmap_trie_codec::EpmLayout>>,
 }
 
-/// ★ **THE reader.** The entries of a trie, in trie order (a read-zipper walk,
-/// **no sort**), read off the VALUE side.
-///
-/// `ZipperIteration::to_next_val` stops at exactly the positions that hold a
-/// value and skips a value at the empty (root) key, so this walk enumerates the
-/// same positions — in the same order — that `path_stream_of` frames into
-/// `U(m)`. The reducer's answer and the consensus key stream are one traversal.
-///
-/// It performs **no decode**, which is what makes it total: see
-/// [`EntryTrie::view`] for the measured reason that matters.
-fn entries_in_trie_order(map: &RholangPathMap) -> Vec<Par> {
-    use pathmap::zipper::{ZipperIteration, ZipperValues};
+/// Decode set members in trie order with a read-zipper walk and no sort.
+/// This is an explicit compatibility-boundary conversion, never retained in [`EntryTrie`].
+/// Set mode intentionally stores only `PathMap<()>` keys; callers that need
+/// semantic `Par` values pay one stack-safe decode per key and own the result.
+fn decode_set_entries(map: &RholangSetPathMap) -> Vec<Par> {
+    use pathmap::zipper::{ZipperIteration, ZipperMoving};
     let mut ps = Vec::new();
     let mut rz = map.read_zipper();
     while rz.to_next_val() {
-        ps.push(
-            rz.val()
-                .expect("to_next_val stops only at positions holding a value")
-                .clone(),
-        );
+        ps.push(decode_trie_path(rz.path()).expect(
+            "EntryTrie keys are canonical_path encodings; construction and EPM1 decode validate this",
+        ));
     }
     ps
 }
 
+fn empty_set_trie() -> &'static RholangSetPathMap {
+    static EMPTY: OnceLock<RholangSetPathMap> = OnceLock::new();
+    EMPTY.get_or_init(RholangSetPathMap::new)
+}
+
+fn remove_subtrie_native<V>(map: &mut pathmap::PathMap<V>, prefix: &[u8])
+where V: Clone + Send + Sync + Unpin {
+    if prefix.is_empty() {
+        *map = pathmap::PathMap::new();
+        return;
+    }
+    map.remove_branches_at(prefix, true);
+    drop(map.remove(prefix));
+}
+
+/// Recreate only the terminating topology paths below a prefixed destination.
+/// Value positions are installed separately so set members can retain the
+/// historical setSubtrie composition rule and map values remain associated.
+fn compose_topology<DestinationValue, SourceValue>(
+    destination: &mut pathmap::PathMap<DestinationValue>,
+    prefix: &[u8],
+    source: &pathmap::PathMap<SourceValue>,
+) where
+    DestinationValue: Clone + Send + Sync + Unpin,
+    SourceValue: Clone + Send + Sync + Unpin,
+{
+    for relative in source.read_zipper().into_path_iter() {
+        let mut absolute = Vec::with_capacity(prefix.len() + relative.len());
+        absolute.extend_from_slice(prefix);
+        absolute.extend_from_slice(&relative);
+        if !absolute.is_empty() {
+            destination.create_path(absolute);
+        }
+    }
+}
+
+/// Re-type a PathMap's terminating topology as a membership trie. Values are
+/// deliberately excluded: this mask exists only where a structural
+/// algebraic operation must be applied to `PathMap<Par>` without inventing an
+/// unlawful lattice for `Par`.
+fn topology_mask<V>(source: &pathmap::PathMap<V>) -> RholangSetPathMap
+where V: Clone + Send + Sync + Unpin {
+    let mut mask = RholangSetPathMap::new();
+    for leaf in source.read_zipper().into_path_iter() {
+        mask.insert(leaf, ());
+    }
+    mask
+}
+
+fn composed_subtrie_member_key(prefix: &[u8], source_key: &[u8]) -> Vec<u8> {
+    let (segments, _) = decode_cursor(source_key);
+    let segment_bytes = segments.iter().map(Vec::len).sum::<usize>();
+    let mut absolute = Vec::with_capacity(prefix.len() + segment_bytes + 1);
+    absolute.extend_from_slice(prefix);
+    for segment in segments {
+        absolute.extend_from_slice(&segment);
+    }
+    absolute.push(super::canonical_path::tag::TERM);
+    absolute
+}
+
+fn key_after_dropping_segments(key: &[u8], count: usize) -> Option<Vec<u8>> {
+    let (segments, _) = decode_cursor(key);
+    if segments.len() <= count {
+        return None;
+    }
+    Some(segments_to_key(&segments[count..], true))
+}
+
+fn copy_dropped_topology<V>(
+    destination: &mut pathmap::PathMap<V>,
+    source: &pathmap::PathMap<V>,
+    count: usize,
+) where
+    V: Clone + Send + Sync + Unpin,
+{
+    for source_leaf in source.read_zipper().into_path_iter() {
+        if let Some(destination_leaf) = key_after_dropping_segments(&source_leaf, count) {
+            destination.create_path(destination_leaf);
+        }
+    }
+}
+
+#[allow(deprecated)]
+fn validate_canonical_key(kind: &str, key: &[u8]) -> Result<(), DecodeError> {
+    let decoded = decode_trie_path(key)
+        .map_err(|error| DecodeError::new(format!("EPathMap {kind} key: {error:?}")))?;
+    let canonical = encode_trie_path(&decoded);
+    crate::rust::rholang::par_children::dismantle(decoded);
+    if canonical == key {
+        Ok(())
+    } else {
+        Err(DecodeError::new(format!(
+            "EPathMap {kind} key is not canonical"
+        )))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EPathMapModeError {
+    expected: EPathMapMode,
+    actual: EPathMapMode,
+}
+
+impl fmt::Display for EPathMapModeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "EPathMap is in {:?} mode; {:?} operation would mix set and map membership",
+            self.actual, self.expected
+        )
+    }
+}
+
+impl std::error::Error for EPathMapModeError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EPathMapEmptyModeError;
+
+impl fmt::Display for EPathMapEmptyModeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "cannot create value-free EPathMap topology from neutral empty storage; insert a set member or map entry first to select PathMap<()> or PathMap<Par>",
+        )
+    }
+}
+
+impl std::error::Error for EPathMapEmptyModeError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EPathMapAlgebraError {
+    ModeMismatch {
+        left: EPathMapMode,
+        right: EPathMapMode,
+    },
+    ValueConflict {
+        operation: &'static str,
+        encoded_key: Vec<u8>,
+    },
+    AmbiguousEmpty {
+        operation: &'static str,
+    },
+}
+
+impl fmt::Display for EPathMapAlgebraError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModeMismatch { left, right } => write!(
+                f,
+                "EPathMap algebra cannot combine {:?} and {:?} storage",
+                left, right
+            ),
+            Self::ValueConflict {
+                operation,
+                encoded_key,
+            } => write!(
+                f,
+                "EPathMap {operation} has unequal values at canonical key 0x{}",
+                hex::encode(encoded_key)
+            ),
+            Self::AmbiguousEmpty { operation } => write!(
+                f,
+                "EPathMap {operation} cannot choose PathMap<()> or PathMap<Par> from two neutral empty operands"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EPathMapAlgebraError {}
+
 impl EntryTrie {
-    /// The materialized entries: trie order (a read-zipper walk, **no sort**)
-    /// and deduplicated. Computed once per value and memoized behind an `Arc`,
-    /// so every later call — and every call on any clone made afterwards — is a
-    /// pointer read.
-    ///
-    /// # ★ It reads the trie's VALUES, and it must
-    ///
-    /// The obvious implementation is `canonical_ps_from_trie`: walk the keys and
-    /// `decode_trie_path` each one. **That implementation is not total, and the
-    /// failure is reachable.** `encode_trie_path`'s escape arm stores a
-    /// non-ground entry as its canonical prost bytes, and prost's *decoder* caps
-    /// recursion at 100 levels while prost's *encoder* caps nothing — so a term
-    /// deeper than that encodes to a key that will not decode
-    /// (`DecodeError::RecursionLimitReached`), and the projection panics on a
-    /// trie the system itself built. It was measured, not reasoned about: the
-    /// `bincode_decoder_differential` corpus contains such a term.
-    ///
-    /// Reading the values sidesteps it completely, because the codec is then
-    /// used **in the encode direction only** on every path that has to be total.
-    /// Decode survives exactly where a decode failure is a legitimate answer:
-    /// rejecting a peer's tag-8 key stream in `merge_field`.
-    ///
-    /// ⚠ This is NOT a return to the two-bulk-readers defect that `c705776c`
-    /// closed. There is still exactly one reader of *"what does this map
-    /// contain?"* — it reads the other side of the same entries. The key walk
-    /// survives only as a CHECK ([`EntryTrie::adopt_trie`],
-    /// `pathmap_integration::trie_entry_divergences`), never as an answer.
-    ///
-    /// # Why the result is still recursively canonical
-    ///
-    /// The old key walk got recursive canonicality from `decode ∘ encode` being
-    /// the codec's fixed point. The value walk gets it from **construction**:
-    /// every `EPathMap` files its own entries into its own trie, so a nested map
-    /// inside an entry was already canonical when the entry was built. Canonical
-    /// form is maintained hereditarily rather than re-derived on every read —
-    /// which is also why it is now free.
-    pub fn view(&self) -> &Vec<Par> {
-        self.view
-            .get_or_init(|| Arc::new(entries_in_trie_order(&self.trie)))
-    }
-
-    /// ★ `U(m)` — the trie's own length-framed key stream, memoized.
-    ///
-    /// The keys of the entries **as this value stores them**. That is what proto
-    /// field 8 emits, because prost RETAINS `locally_free` and therefore writes
-    /// the stored entries verbatim. Computed once per value and shared by every
-    /// later clone, so the hot encode is a `memcpy` and allocates nothing.
-    ///
-    /// ⚠ **Not what the serde/bincode surface emits** — that surface writes
-    /// lf-BLANKED entries, so it writes the key stream *of those*
-    /// ([`EntryTrie::wire_path_stream`]). The two coincide on every map with no
-    /// `locally_free` anywhere, which is most of them; where they differ, using
-    /// this one on the serde surface is the defect CBR-043 repairs.
-    ///
-    /// # Why it is canonical without sorting anything
-    ///
-    /// A trie indexes children by byte, so a read-zipper walk is
-    /// byte-lexicographic *by construction* and `path_stream_of` performs no
-    /// sort. Duplicates are impossible — one slot per key. `encode_trie_path`
-    /// is injective on its domain. So `U(m)` and the entry set determine each
-    /// other, and a producer's insertion order is not merely normalized away:
-    /// it is **unrepresentable**.
-    pub fn path_stream(&self) -> &[u8] {
-        self.path_stream
-            .get_or_init(|| Arc::new(path_stream_of(&self.trie)))
-    }
-
-    /// ★★ **`U` applied to the value the serde/bincode surface writes.**
-    ///
-    /// There is one function `U` — [`path_stream_of`], a read-zipper walk over a
-    /// trie. [`EntryTrie::path_stream`] is `U` of the entries this value
-    /// *stores*. This is `U` of the entries the serde surface *writes*. Same
-    /// `U`, different argument; not a second key stream and not a second
-    /// canonical form.
-    ///
-    /// # The argument, in one line
-    ///
-    /// The serde surface has ALWAYS written `locally_free`-blanked entries — the
-    /// twelve `serialize_as_empty_bytes` sites `models/build.rs` injects, plus
-    /// `EPathMap`'s own hand-written equivalent — because, in
-    /// [`crate::rust::rholang::wire`]'s words, *"`locally_free` is transient
-    /// analysis data that must not reach an RSpace channel hash"*. A surface
-    /// that writes `blank(e)` must write the keys of `blank(e)`. Writing
-    /// `U(stored)` beside `blank(stored)` puts a quantity DERIVED from the
-    /// unblanked entries next to the blanked ones, and the derivation is exactly
-    /// what carries `locally_free` back onto the wire: `encode_trie_path`'s
-    /// `0x0F` escape arm files a ¬`eval_stable` entry as its canonical **prost**
-    /// bytes, and prost retains the bitset.
-    ///
-    /// ⇒ before this, two maps differing only in an entry's `locally_free`
-    /// produced different bincode, hence different **event hashes**, and a map
-    /// hashed differently after a cold-store round trip than before it. That is
-    /// a play/replay divergence. This is what closes it.
-    ///
-    /// # ★ The O(1) discriminator, and why it is `entries_stable`
-    ///
-    /// `union_locally_free` is the obvious guard and it is **UNSOUND**, measured:
-    /// it folds the entries' TOP-LEVEL `Par::locally_free` only, so a bitset one
-    /// level down is invisible to it. Two counterexamples, both with
-    /// `union_locally_free == []` and both with a key stream that moves under
-    /// blanking (`models/tests/epathmap_bincode_is_the_path_stream.rs`,
-    /// [the fold is not hereditary]): an entry wrapping a nested `EPathMap`
-    /// whose OWN entries carry lf (31 B → 28 B), and an entry whose ground
-    /// `EList` carries lf (22 B → 7 B — blanking makes it `eval_stable`, so the
-    /// key changes ARM).
-    ///
-    /// `entries_stable` **is** sound, and hereditarily so by construction rather
-    /// than by inspection: [`eval_stable_par`] demands `locally_free.is_empty()`
-    /// at EVERY level of the stable alphabet — the `Par` itself
-    /// (`pathmap_crate_type_mapper.rs`, the eight-way disqualifier), `EList`,
-    /// `ETuple`, and a nested `EPathMap` through `eval_stable_epathmap`, which
-    /// checks the map's own bitset and then recurses into that map's
-    /// `entries_stable()`. So
-    ///
-    /// ```text
-    ///   entries_stable  ⟹  every entry has NO locally_free anywhere
-    ///                   ⟹  blank(e) = e  for every entry
-    ///                   ⟹  U(blanked) = U(stored)
-    /// ```
-    ///
-    /// which is answered in O(1) off a fold that is already maintained exactly.
-    /// It is CONSERVATIVE, never wrong: an entry unstable for some other reason
-    /// (an `EVar`, a `Send`) takes the memo path and, if blanking turns out to
-    /// be the identity there too, the memo records `None` and this still returns
-    /// the borrow. Warm allocations therefore stay at **zero for every shape** —
-    /// which `models/tests/bincode_encoder_space.rs` requires and measures.
-    pub fn wire_path_stream(&self) -> &[u8] {
-        self.wire_trie().path_stream()
-    }
-
-    /// The ENTRIES the serde/bincode surface writes, in the order it writes
-    /// them — the value half of the same tuple whose key half is
-    /// [`EntryTrie::wire_path_stream`].
-    ///
-    /// ⚠⚠ **Both halves must come from ONE trie, and this is why the memo holds
-    /// a trie rather than a byte string.** Blanking can REORDER: a `locally_free`
-    /// bit makes an otherwise-`eval_stable` entry take `encode_trie_path`'s
-    /// `0x0F` escape arm, and an escape key sorts nowhere near the structural key
-    /// its blanked twin gets. Emitting `U(blanked)` beside `view()` — the entries
-    /// in the STORED order — pairs key `i` with value `j`, and the two halves of
-    /// one tuple then disagree about which entry is which.
-    ///
-    /// ⚠ Measured, not anticipated: an earlier form of this repair memoized only
-    /// the key stream, and `epathmap_canonical_fixtures`'s ENTRY-LEVEL event-hash
-    /// leg is what caught it.
-    ///
-    /// The values themselves are lf-blanked either way — `Par`'s `Serialize`
-    /// blanks as it writes — so the only thing this changes relative to
-    /// [`EntryTrie::view`] is the ORDER, and it changes it exactly when the order
-    /// would otherwise be wrong.
-    pub fn wire_view(&self) -> &Vec<Par> {
-        self.wire_trie().view()
-    }
-
-    /// ★★ The trie this surface writes: `self`'s entries with every
-    /// `locally_free` blanked, re-filed under their own keys.
-    ///
-    /// Returns `self` — no allocation, no copy — whenever blanking is the
-    /// identity, which is the common case and is decided in O(1) for every
-    /// `entries_stable` trie.
-    fn wire_trie(&self) -> &EntryTrie {
-        // ★ THE O(1) ARM. Stability is hereditary over `locally_free`, so
-        // blanking is the identity here and there is nothing to compute.
-        if self.entries_stable {
-            return self;
+    #[allow(deprecated)]
+    fn from_repr(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
+        let mut len = 0usize;
+        match &repr {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => {
+                for (key, ()) in map.iter() {
+                    validate_canonical_key("set", &key)?;
+                    len += 1;
+                }
+            }
+            EPathMapRepr::Map(map) => {
+                for (key, _) in map.iter() {
+                    validate_canonical_key("map", &key)?;
+                    len += 1;
+                }
+            }
         }
-        match self.wire_trie.get_or_init(|| self.blanked_trie()) {
-            Some(trie) => trie,
-            // Blanking turned out to be the identity anyway — the entries were
-            // unstable for a reason other than `locally_free`. One borrow, and
-            // no second copy retained.
-            None => self,
+
+        let mut built = EntryTrie {
+            repr,
+            len,
+            entries_stable: true,
+            union_locally_free: Vec::new(),
+            any_connective_used: false,
+            trie_snapshot: Arc::new(OnceLock::new()),
+            epm_layout: Arc::new(OnceLock::new()),
+        };
+        built.recompute_folds();
+        Ok(built)
+    }
+
+    /// Decode set members into an owned vector in canonical trie order.
+    ///
+    /// This is deliberately explicit and uncached: `EntryTrie` remains a
+    /// prefix-compressed `PathMap<()>`, never a trie plus a retained `Vec<Par>`.
+    /// Map mode has distinct key/value APIs and cannot be flattened through
+    /// this set-only surface.
+    pub fn entries_owned(&self) -> Vec<Par> {
+        match &self.repr {
+            EPathMapRepr::Empty => Vec::new(),
+            EPathMapRepr::Set(map) => decode_set_entries(map),
+            EPathMapRepr::Map(_) => {
+                panic!("set-only entry decoding used on map-mode EPathMap")
+            }
         }
     }
 
-    /// The blanked trie, or `None` when it is `self`.
+    /// The canonical, versioned PathMap arena used by every new serialization
+    /// surface.
     ///
-    /// # ★★ The blanking function IS the surface
-    ///
-    /// `blank` is not spelled out here as a hand-written "clear every
-    /// `locally_free`" walk, and that is deliberate. Such a walk would be a
-    /// SECOND opinion about what this surface writes — it would have to
-    /// enumerate the twelve injected sites, and it would go stale the moment a
-    /// thirteenth appeared, silently, because a stale blanker still produces a
-    /// key stream that *looks* well-formed. Instead each entry is run through the
-    /// surface itself: [`crate::rust::rholang::bincode_encoder::encode_into`] writes
-    /// exactly what serde writes (pinned byte-for-byte by
-    /// `models/tests/bincode_encoder_differential.rs`) and `Par::cold_decode` reads
-    /// it back (pinned by `models/tests/bincode_decoder_differential.rs`). The
-    /// composite is, by construction, *the value this surface writes* — so a
-    /// thirteenth blanking site is followed automatically and cannot drift.
-    ///
-    /// ⚠ Both halves are the **trampolined** codecs, not the derived ones: the
-    /// derived `Serialize`/`Deserialize` are Θ(depth) on the native stack, and
-    /// this runs on entries of unbounded depth. Re-entrancy is safe — neither
-    /// machine holds a thread-local across a nested encode
-    /// (`bincode_encoder::with_encoded` and `pooled_stack!` each fall back to a
-    /// private buffer when the slot is already borrowed), and `encode_into`
-    /// takes the caller's buffer and touches no pool-external state at all.
-    ///
-    /// ⚠ Termination is by the term being finite: blanking an entry re-enters
-    /// this function only for a map NESTED INSIDE that entry, which is a proper
-    /// subterm.
-    ///
-    /// # ★ Why equal key streams is the right test for `None`
-    ///
-    /// `encode_trie_path` is injective, so equal key streams mean the blanked
-    /// entry sequence and the stored one are the SAME `Par`s in the SAME order —
-    /// bitsets included, since the escape arm keys by prost bytes which retain
-    /// them and the structural arm is reachable only when they are empty. So
-    /// there is nothing left for a second copy to hold, and `None` is exact
-    /// rather than approximate.
-    ///
-    /// ⚠ Comparing the VIEWS instead would be wrong: `<Par as PartialEq>` is
-    /// AlwaysEqual and ignores `locally_free` outright, so it would report
-    /// "identical" on precisely the pairs this function exists to distinguish.
-    fn blanked_trie(&self) -> Option<Arc<EntryTrie>> {
-        use crate::rust::rholang::par_children::dismantle_all;
-        use crate::rust::rholang::bincode_encoder::encode_into;
-        use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
-
-        let entries = self.view();
-        // ONE buffer for the whole fold — the entries are re-encoded in turn and
-        // the high-water capacity is reached on the first large one.
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut blanked: Vec<Par> = Vec::with_capacity(entries.len());
-        for entry in entries.iter() {
-            buffer.clear();
-            encode_into(entry, &mut buffer);
-            blanked.push(Par::cold_decode(&buffer).expect(
-                "the cold-store reader must accept the cold-store writer's own bytes — \
-                 `bincode_encoder_differential` and `bincode_decoder_differential` pin that pair \
-                 byte-for-byte, so a failure here is those two codecs having diverged, \
-                 not a property of the entry",
-            ));
-        }
-
-        let wire = EntryTrie::from(blanked);
-        if wire.path_stream() == self.path_stream() {
-            // ⚠ Torn down with the worklist, never dropped. `<Par as Drop>` is a
-            // Θ(depth) recursive traversal and these entries are of unbounded
-            // depth, so letting `wire` fall out of scope would put the one
-            // recursion this whole codec exists to avoid back on the native
-            // stack.
-            let mut owned = Vec::new();
-            wire.drain_owned_pars(&mut owned);
-            dismantle_all(owned);
-            return None;
-        }
-        Some(Arc::new(wire))
+    /// Cold construction is O(trie nodes + encoded map-value bytes). The clone
+    /// family shares that construction even when cloned while cold. Warm reads
+    /// are one `Arc`/`OnceLock` indirection and return the cached slice without
+    /// allocation; the enclosing serializer then copies the slice to its output.
+    pub fn trie_snapshot(&self) -> &[u8] {
+        self.trie_snapshot
+            .get_or_init(|| epathmap_trie_codec::encode_with_layout(&self.repr, self.epm_layout()))
+            .as_slice()
     }
 
-    /// The trie itself — the store, handed out for the O(1) `clone()` that
-    /// `PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap` returns and for
-    /// the `path_stream_of` walk that produces `U(m)`.
-    pub fn trie(&self) -> &RholangPathMap {
-        &self.trie
+    #[inline]
+    pub(crate) fn epm_layout(&self) -> &epathmap_trie_codec::EpmLayout {
+        self.epm_layout
+            .get_or_init(|| epathmap_trie_codec::layout(&self.repr))
+    }
+
+    #[cfg(test)]
+    fn snapshot_is_forced(&self) -> bool { self.trie_snapshot.get().is_some() }
+
+    /// The set trie itself, handed out by O(1) root clone.
+    pub fn set_trie(&self) -> &RholangSetPathMap {
+        match &self.repr {
+            EPathMapRepr::Empty => empty_set_trie(),
+            EPathMapRepr::Set(map) => map,
+            EPathMapRepr::Map(_) => panic!(
+                "set-only EPathMap API used on map-mode storage; use map_trie()/map lookup APIs"
+            ),
+        }
+    }
+
+    pub fn map_trie(&self) -> Option<&RholangMapPathMap> { self.repr.as_map() }
+
+    pub fn for_each_raw_set_entry(
+        &self,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<(), EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(map) => {
+                for (key, ()) in map.iter() {
+                    visit(&key);
+                }
+                Ok(())
+            }
+            EPathMapRepr::Map(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Set,
+                actual: EPathMapMode::Map,
+            }),
+        }
+    }
+
+    /// Visit map-mode storage without decoding or cloning the key. The key
+    /// slice is valid only for the callback; the associated value borrow has
+    /// the EntryTrie's lifetime and can be placed directly on a PDA worklist.
+    pub fn for_each_raw_map_entry<'trie>(
+        &'trie self,
+        mut visit: impl FnMut(&[u8], &'trie Par),
+    ) -> Result<(), EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+            EPathMapRepr::Map(map) => {
+                for (key, value) in map.iter() {
+                    visit(&key, value);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn representation(&self) -> &EPathMapRepr<Par> { &self.repr }
+
+    pub fn mode(&self) -> EPathMapMode { self.repr.mode() }
+
+    fn invalidate_derived(&mut self) {
+        self.trie_snapshot = Arc::new(OnceLock::new());
+        self.epm_layout = Arc::new(OnceLock::new());
+    }
+
+    fn fold_par_metadata(&mut self, par: &Par) {
+        self.fold_par_metadata_with_stability(par, eval_stable_par(par));
+    }
+
+    fn fold_par_metadata_with_stability(&mut self, par: &Par, stable: bool) {
+        self.entries_stable &= stable;
+        self.any_connective_used |= par.connective_used;
+        self.union_locally_free = crate::rust::utils::union(
+            std::mem::take(&mut self.union_locally_free),
+            par.locally_free.clone(),
+        );
     }
 
     /// Distinct entry count — O(1) (see the field docs for why it is not
     /// `PathMap::val_count`).
-    pub fn len(&self) -> usize {
-        self.len
-    }
+    pub fn len(&self) -> usize { self.len }
 
-    /// `true` iff the map holds no entries — O(1) (`PathMap::is_empty` reads
-    /// the root node's tag).
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+    /// `true` iff the map holds neither values nor explicit value-free
+    /// topology — O(1) (`PathMap::is_empty` reads the root node's tag).
+    pub fn is_empty(&self) -> bool { self.repr.is_empty() }
 
     /// `true` iff every entry is in the codec's ground domain
     /// (`eval_stable_par`) — the entry half of the GROUND wire predicate. O(1).
-    pub fn entries_stable(&self) -> bool {
-        self.entries_stable
-    }
+    pub fn entries_stable(&self) -> bool { self.entries_stable }
 
     /// Union of the entries' `locally_free` bitsets.
-    pub fn union_locally_free(&self) -> &[u8] {
-        &self.union_locally_free
-    }
+    pub fn union_locally_free(&self) -> &[u8] { &self.union_locally_free }
 
     /// OR of the entries' `connective_used` flags.
-    pub fn any_connective_used(&self) -> bool {
-        self.any_connective_used
-    }
-
-    /// `true` iff `self` and `other` share one memoized view allocation — the
-    /// test seam for asserting O(1) clone sharing. Representation-only: never
-    /// part of value semantics.
-    pub fn view_ptr_eq(&self, other: &EntryTrie) -> bool {
-        match (self.view.get(), other.view.get()) {
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
-    }
+    pub fn any_connective_used(&self) -> bool { self.any_connective_used }
 
     /// Add one entry. Idempotent — re-adding an entry already present is a
     /// no-op on the set, which is what makes `setLeaf` and `graft` unable to
@@ -623,19 +459,55 @@ impl EntryTrie {
     /// Takes the memo (the projection must be recomputed) but never hands out a
     /// `&mut Vec<Par>`: the only thing a caller can do is name an entry.
     pub fn insert_entry(&mut self, par: Par) {
+        let consumed = self.insert_entry_replacing(par);
+        // Set mode stores only the canonical key. The supplied Par can itself
+        // be arbitrarily deep, so release it through the iterative teardown.
+        crate::rust::rholang::par_children::dismantle(consumed);
+    }
+
+    pub fn try_insert_entry(&mut self, par: Par) -> Result<(), EPathMapModeError> {
+        if matches!(self.repr, EPathMapRepr::Map(_)) {
+            return Err(EPathMapModeError {
+                expected: EPathMapMode::Set,
+                actual: EPathMapMode::Map,
+            });
+        }
+        self.insert_entry(par);
+        Ok(())
+    }
+
+    pub(crate) fn try_insert_entry_replacing(
+        &mut self,
+        par: Par,
+    ) -> Result<Par, EPathMapModeError> {
+        if matches!(self.repr, EPathMapRepr::Map(_)) {
+            return Err(EPathMapModeError {
+                expected: EPathMapMode::Set,
+                actual: EPathMapMode::Map,
+            });
+        }
+        Ok(self.insert_entry_replacing(par))
+    }
+
+    /// The decoder-facing insertion primitive.
+    ///
+    /// Returns the consumed term instead of dropping it. Set specialization is
+    /// `PathMap<()>`, so no `Par` is retained whether the key was new or
+    /// already present. A PDA decoder places the returned term on its explicit
+    /// teardown worklist.
+    pub(crate) fn insert_entry_replacing(&mut self, par: Par) -> Par {
         // ★ ONE walk, not two. `encode_trie_path` opens with
         // `let stable = known_stable || eval_stable_par(par)` — stability is what selects
         // the escape arm — so this used to run `eval_stable_par` a SECOND time over the
         // same entry, and `entries_stable` became a second opinion about something the
         // codec had already decided. Now the codec hands the bit back.
         //
-        // ⚠ Still EXACT, though no longer for the wire's sake: this fold used to select
-        // proto field 8 over the tag-1 field walk, and that fork is now deleted. It stays
-        // exact because it is the encoder's own verdict rather than an approximation, and
+        // The fold remains exact because it is the encoder's own verdict rather
+        // than an approximation, and
         // taking it here costs nothing — the alternative is a second walk that could form
         // a second opinion about something the codec has already decided.
         let (key, stable) = encode_trie_path_with_stability(&par);
-        self.insert_encoded(key, stable, par);
+        self.insert_encoded(key, stable, par)
     }
 
     /// File `par` under a key the caller has **already** obtained from
@@ -652,19 +524,672 @@ impl EntryTrie {
     /// ⚠ `key` must be `encode_trie_path(&par)` and `stable` its companion
     /// verdict. It is `pub(crate)` and takes both together — never a bare key —
     /// so the only way to reach it is to have called the encoder.
-    pub(crate) fn insert_encoded(&mut self, key: Vec<u8>, stable: bool, par: Par) {
+    pub(crate) fn insert_encoded(&mut self, key: Vec<u8>, stable: bool, par: Par) -> Par {
+        if matches!(self.repr, EPathMapRepr::Map(_)) {
+            panic!("set insertion attempted on map-mode EPathMap");
+        }
         self.entries_stable &= stable;
         self.any_connective_used |= par.connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
             par.locally_free.clone(),
         );
-        if self.trie.insert(key, par).is_none() {
+        if matches!(self.repr, EPathMapRepr::Empty) {
+            self.repr = EPathMapRepr::Set(RholangSetPathMap::new());
+        }
+        let EPathMapRepr::Set(map) = &mut self.repr else {
+            unreachable!("map mode was rejected and empty mode was specialized")
+        };
+        let replaced = map.insert(key, ());
+        if replaced.is_none() {
             self.len += 1;
         }
-        self.view.take();
-        self.path_stream.take();
-        self.wire_trie.take();
+        self.invalidate_derived();
+        par
+    }
+
+    /// Associate `value` with `key`, specializing neutral empty storage to
+    /// `PathMap<Par>` on the first insertion. Set/map mixing is rejected.
+    pub fn insert_map_entry(&mut self, key: Par, value: Par) -> Result<(), EPathMapModeError> {
+        let replaced = self.insert_map_entry_replacing(key, value)?;
+        if let Some(replaced) = replaced {
+            crate::rust::rholang::par_children::dismantle(replaced);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn insert_map_entry_replacing(
+        &mut self,
+        key: Par,
+        value: Par,
+    ) -> Result<Option<Par>, EPathMapModeError> {
+        let (encoded_key, key_stable) = encode_trie_path_with_stability(&key);
+        self.insert_encoded_map_entry_replacing(&encoded_key, key_stable, key, value)
+    }
+
+    /// Associate a value with an already-encoded canonical key.
+    ///
+    /// `encoded_key` and `key_stable` must be the pair returned by
+    /// [`encode_trie_path_with_stability`] for `key`. Keeping the pair together
+    /// lets PathMap-aware callers index companion data and insert the entry
+    /// after one canonical-key traversal instead of encoding the key twice.
+    pub(crate) fn insert_encoded_map_entry_replacing(
+        &mut self,
+        encoded_key: &[u8],
+        key_stable: bool,
+        key: Par,
+        value: Par,
+    ) -> Result<Option<Par>, EPathMapModeError> {
+        if matches!(self.repr, EPathMapRepr::Set(_)) {
+            return Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            });
+        }
+
+        if matches!(self.repr, EPathMapRepr::Empty) {
+            self.repr = EPathMapRepr::Map(pathmap::PathMap::new());
+        }
+
+        self.fold_par_metadata_with_stability(&key, key_stable);
+        self.fold_par_metadata(&value);
+        crate::rust::rholang::par_children::dismantle(key);
+
+        let EPathMapRepr::Map(map) = &mut self.repr else {
+            unreachable!("set mode was rejected and empty mode was specialized")
+        };
+        let replaced = map.insert(encoded_key, value);
+        if replaced.is_none() {
+            self.len += 1;
+        } else {
+            // Replacing a value can remove metadata bits, so monotone forward
+            // folds are insufficient on this path.
+            self.recompute_folds();
+        }
+        self.invalidate_derived();
+        Ok(replaced)
+    }
+
+    pub fn get_map_value(&self, key: &Par) -> Result<Option<&Par>, EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(None),
+            EPathMapRepr::Map(map) => Ok(map.get(encode_trie_path(key))),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+        }
+    }
+
+    pub fn get_map_value_by_encoded_key(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<&Par>, EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(None),
+            EPathMapRepr::Map(map) => Ok(map.get(key)),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+        }
+    }
+
+    /// Associate a value at an already-canonical cursor key without encoding
+    /// that key a second time.  This is the map-mode `setLeaf` primitive.
+    pub fn insert_map_value_by_encoded_key(
+        &mut self,
+        encoded_key: &[u8],
+        value: Par,
+    ) -> Result<(), EPathMapModeError> {
+        if matches!(self.repr, EPathMapRepr::Set(_)) {
+            return Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            });
+        }
+        let key = decode_trie_path(encoded_key)
+            .expect("EPathMap cursor keys are in the canonical Par-path image");
+        let key_stable = eval_stable_par(&key);
+        let replaced =
+            self.insert_encoded_map_entry_replacing(encoded_key, key_stable, key, value)?;
+        if let Some(replaced) = replaced {
+            crate::rust::rholang::par_children::dismantle(replaced);
+        }
+        Ok(())
+    }
+
+    /// Resolve an `EZipper` cursor against whichever homogeneous PathMap
+    /// specialization this trie owns.  Prefix cursors consult value presence
+    /// in the selected trie; neutral empty uses an empty set trie because both
+    /// specializations make the same choice when no value is present.
+    pub fn cursor_entry_key(&self, segments: &[Vec<u8>], kind: CursorKind) -> Vec<u8> {
+        match &self.repr {
+            EPathMapRepr::Empty => encode_cursor_entry_key(segments, kind, empty_set_trie()),
+            EPathMapRepr::Set(map) => encode_cursor_entry_key(segments, kind, map),
+            EPathMapRepr::Map(map) => encode_cursor_entry_key(segments, kind, map),
+        }
+    }
+
+    /// Resolve a relative path argument against a cursor without projecting a
+    /// map-valued trie through the set-only compatibility boundary.
+    pub fn entry_key_at(&self, cursor: &[Vec<u8>], path: &Par) -> Vec<u8> {
+        match &self.repr {
+            EPathMapRepr::Empty => encode_entry_key_at(cursor, path, empty_set_trie()),
+            EPathMapRepr::Set(map) => encode_entry_key_at(cursor, path, map),
+            EPathMapRepr::Map(map) => encode_entry_key_at(cursor, path, map),
+        }
+    }
+
+    /// Read the semantic leaf stored at an encoded key.  Set mode returns the
+    /// key decoded as its member; map mode returns the associated value.
+    pub fn leaf_at_encoded_key(&self, key: &[u8]) -> Option<Par> {
+        match &self.repr {
+            EPathMapRepr::Empty => None,
+            EPathMapRepr::Set(map) => map.contains(key).then(|| {
+                decode_trie_path(key).expect("set-mode EPathMap keys are canonical Par paths")
+            }),
+            EPathMapRepr::Map(map) => map.get(key).cloned(),
+        }
+    }
+
+    /// Test exact entry membership without materializing the stored member or
+    /// value.  This is deliberately distinct from zipper/path lookup: a list
+    /// `Par` is one canonical key here, not a sequence of relative segments.
+    pub fn contains_encoded_key(&self, key: &[u8]) -> bool {
+        match &self.repr {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => map.contains(key),
+            EPathMapRepr::Map(map) => map.contains(key),
+        }
+    }
+
+    /// Test exact set-member/map-key membership with one canonical-key encode
+    /// and one PathMap lookup.  No decoded-key or entry-vector projection is
+    /// constructed.
+    pub fn contains_entry(&self, entry: &Par) -> bool {
+        self.contains_encoded_key(&encode_trie_path(entry))
+    }
+
+    pub fn path_prefix_exists(&self, prefix: &[u8]) -> bool {
+        match &self.repr {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => path_prefix_exists(map, prefix),
+            EPathMapRepr::Map(map) => path_prefix_exists(map, prefix),
+        }
+    }
+
+    pub fn collect_child_segments(&self, prefix: &[u8], limit: Option<usize>) -> Vec<Vec<u8>> {
+        match &self.repr {
+            EPathMapRepr::Empty => Vec::new(),
+            EPathMapRepr::Set(map) => collect_child_segments(map, prefix, limit),
+            EPathMapRepr::Map(map) => collect_child_segments(map, prefix, limit),
+        }
+    }
+
+    pub fn subtrie_value_count(&self, prefix: &[u8]) -> usize {
+        match &self.repr {
+            EPathMapRepr::Empty => 0,
+            EPathMapRepr::Set(map) => subtrie_value_count(map, prefix),
+            EPathMapRepr::Map(map) => subtrie_value_count(map, prefix),
+        }
+    }
+
+    pub fn next_value_key(&self, from_key: &[u8]) -> Option<Vec<u8>> {
+        match &self.repr {
+            EPathMapRepr::Empty => None,
+            EPathMapRepr::Set(map) => next_value_key(map, from_key),
+            EPathMapRepr::Map(map) => next_value_key(map, from_key),
+        }
+    }
+
+    /// Keep the trie rooted under `prefix` with PathMap's native restriction
+    /// algebra.  Values stay in their specialization and keys stay compressed;
+    /// no decoded member or key/value vector is constructed.
+    pub fn subtrie(&self, prefix: &[u8]) -> Self {
+        let repr = match &self.repr {
+            EPathMapRepr::Empty => EPathMapRepr::Empty,
+            EPathMapRepr::Set(map) => {
+                let restricted = if prefix.is_empty() {
+                    map.clone()
+                } else {
+                    map.restrict(&pathmap::PathMap::single(prefix, ()))
+                };
+                EPathMapRepr::Set(restricted)
+            }
+            EPathMapRepr::Map(map) => {
+                let restricted = if prefix.is_empty() {
+                    map.clone()
+                } else {
+                    map.restrict(&pathmap::PathMap::single(prefix, Par::default()))
+                };
+                EPathMapRepr::Map(restricted)
+            }
+        };
+        Self::algebra_result(repr)
+    }
+
+    /// Remove the first `count` codec segments from every stored path.  Keys
+    /// are rewritten directly from the cursor codec and associated map values
+    /// remain in their PathMap value slots; no `Vec<Par>` projection exists on
+    /// this path.
+    pub fn drop_head(&self, count: usize) -> Self {
+        if count == 0 {
+            return self.clone();
+        }
+        let repr = match &self.repr {
+            EPathMapRepr::Empty => EPathMapRepr::Empty,
+            EPathMapRepr::Set(source) => {
+                let mut destination = RholangSetPathMap::new();
+                copy_dropped_topology(&mut destination, source, count);
+                for (key, ()) in source.iter() {
+                    if let Some(key) = key_after_dropping_segments(&key, count) {
+                        destination.insert(key, ());
+                    }
+                }
+                EPathMapRepr::Set(destination)
+            }
+            EPathMapRepr::Map(source) => {
+                let mut destination = pathmap::PathMap::<Par>::new();
+                copy_dropped_topology(&mut destination, source, count);
+                for (key, value) in source.iter() {
+                    if let Some(key) = key_after_dropping_segments(&key, count) {
+                        destination.insert(key, value.clone());
+                    }
+                }
+                EPathMapRepr::Map(destination)
+            }
+        };
+        Self::algebra_result(repr)
+    }
+
+    fn normalize_after_destructive_mutation(&mut self) {
+        self.len = match &self.repr {
+            EPathMapRepr::Empty => 0,
+            EPathMapRepr::Set(map) => map.val_count(),
+            EPathMapRepr::Map(map) => map.val_count(),
+        };
+        if self.repr.is_empty() {
+            self.repr = EPathMapRepr::Empty;
+            self.len = 0;
+        }
+        self.recompute_folds();
+    }
+
+    /// Remove only the value at `key`, preserving any descendants and
+    /// value-free topology below it.
+    pub fn remove_encoded_entry(&mut self, key: &[u8]) -> bool {
+        let removed = match &mut self.repr {
+            EPathMapRepr::Empty => return false,
+            EPathMapRepr::Set(map) => map.remove(key).is_some(),
+            EPathMapRepr::Map(map) => match map.remove(key) {
+                Some(value) => {
+                    crate::rust::rholang::par_children::dismantle(value);
+                    true
+                }
+                None => false,
+            },
+        };
+        if removed {
+            self.normalize_after_destructive_mutation();
+        }
+        removed
+    }
+
+    /// Remove descendants of `prefix` with PathMap's write-zipper primitive,
+    /// retaining a value stored exactly at the prefix.
+    pub fn remove_branches_at(&mut self, prefix: &[u8]) -> bool {
+        let changed = match &mut self.repr {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => map.remove_branches_at(prefix, true),
+            EPathMapRepr::Map(map) => map.remove_branches_at(prefix, true),
+        };
+        if changed {
+            self.normalize_after_destructive_mutation();
+        }
+        changed
+    }
+
+    /// Remove the value and every branch at or below `prefix` without a
+    /// whole-map key scan.
+    pub fn remove_subtrie_at(&mut self, prefix: &[u8]) -> bool {
+        if self.repr.is_empty() {
+            return false;
+        }
+        if prefix.is_empty() {
+            self.repr = EPathMapRepr::Empty;
+            self.len = 0;
+            self.recompute_folds();
+            return true;
+        }
+        let changed = match &mut self.repr {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => {
+                let branches = map.remove_branches_at(prefix, true);
+                map.remove(prefix).is_some() || branches
+            }
+            EPathMapRepr::Map(map) => {
+                let branches = map.remove_branches_at(prefix, true);
+                let removed = map.remove(prefix);
+                if let Some(value) = removed {
+                    crate::rust::rholang::par_children::dismantle(value);
+                    true
+                } else {
+                    branches
+                }
+            }
+        };
+        if changed {
+            self.normalize_after_destructive_mutation();
+        }
+        changed
+    }
+
+    /// Create value-free topology in the already-selected specialization.
+    /// Neutral empty cannot choose between `PathMap<()>` and `PathMap<Par>`;
+    /// callers must first perform a mode-selecting insertion.
+    pub fn create_path(&mut self, path: &[u8]) -> Result<bool, EPathMapEmptyModeError> {
+        let changed = match &mut self.repr {
+            EPathMapRepr::Empty => return Err(EPathMapEmptyModeError),
+            EPathMapRepr::Set(map) => map.create_path(path),
+            EPathMapRepr::Map(map) => map.create_path(path),
+        };
+        if changed {
+            self.invalidate_derived();
+        }
+        Ok(changed)
+    }
+
+    /// Replace the branch at `cursor_segments` with `source`, preserving the
+    /// homogeneous PathMap specialization.  Source topology is copied with a
+    /// native zipper walk; value keys are composed directly from codec bytes,
+    /// and map values never leave their associated slots.
+    pub fn replace_subtrie(
+        &mut self,
+        cursor_segments: &[Vec<u8>],
+        cursor_kind: CursorKind,
+        source: &Self,
+    ) -> Result<(), EPathMapAlgebraError> {
+        let prefix = segments_to_key(cursor_segments, false);
+        let left_mode = self.mode();
+        let right_mode = source.mode();
+
+        let repr = match (&self.repr, &source.repr) {
+            (EPathMapRepr::Empty, EPathMapRepr::Empty) => {
+                if cursor_segments.is_empty() {
+                    EPathMapRepr::Empty
+                } else {
+                    return Err(EPathMapAlgebraError::AmbiguousEmpty {
+                        operation: "setSubtrie",
+                    });
+                }
+            }
+            (EPathMapRepr::Set(base), EPathMapRepr::Empty) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                if !cursor_segments.is_empty() {
+                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
+                    destination.insert(key, ());
+                }
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Map(base), EPathMapRepr::Empty) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                if !cursor_segments.is_empty() {
+                    let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
+                    destination.create_path(key);
+                }
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Empty, EPathMapRepr::Set(source_map)) => {
+                let mut destination = RholangSetPathMap::new();
+                compose_topology(&mut destination, &prefix, source_map);
+                for (source_key, ()) in source_map.iter() {
+                    destination.insert(composed_subtrie_member_key(&prefix, &source_key), ());
+                }
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Set(base), EPathMapRepr::Set(source_map)) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                compose_topology(&mut destination, &prefix, source_map);
+                for (source_key, ()) in source_map.iter() {
+                    destination.insert(composed_subtrie_member_key(&prefix, &source_key), ());
+                }
+                EPathMapRepr::Set(destination)
+            }
+            (EPathMapRepr::Empty, EPathMapRepr::Map(source_map)) => {
+                let mut destination = pathmap::PathMap::<Par>::new();
+                compose_topology(&mut destination, &prefix, source_map);
+                for (source_key, value) in source_map.iter() {
+                    destination.insert(
+                        composed_subtrie_member_key(&prefix, &source_key),
+                        value.clone(),
+                    );
+                }
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Map(base), EPathMapRepr::Map(source_map)) => {
+                let mut destination = base.clone();
+                remove_subtrie_native(&mut destination, &prefix);
+                compose_topology(&mut destination, &prefix, source_map);
+                for (source_key, value) in source_map.iter() {
+                    destination.insert(
+                        composed_subtrie_member_key(&prefix, &source_key),
+                        value.clone(),
+                    );
+                }
+                EPathMapRepr::Map(destination)
+            }
+            (EPathMapRepr::Set(_), EPathMapRepr::Map(_))
+            | (EPathMapRepr::Map(_), EPathMapRepr::Set(_)) => {
+                return Err(EPathMapAlgebraError::ModeMismatch {
+                    left: left_mode,
+                    right: right_mode,
+                });
+            }
+        };
+
+        *self = Self::algebra_result(repr);
+        Ok(())
+    }
+
+    pub fn for_each_map_entry(
+        &self,
+        mut visit: impl FnMut(&Par, &Par),
+    ) -> Result<(), EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+            EPathMapRepr::Map(map) => {
+                for (key, value) in map.iter() {
+                    let key = decode_trie_path(&key)
+                        .expect("map-mode EPathMap keys are canonical_path encodings");
+                    visit(&key, value);
+                    crate::rust::rholang::par_children::dismantle(key);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn algebra_result(repr: EPathMapRepr<Par>) -> Self {
+        if repr.is_empty() {
+            Self::default()
+        } else {
+            Self::from_repr(repr).expect(
+                "PathMap algebra preserves canonical EPathMap keys produced by construction",
+            )
+        }
+    }
+
+    fn joined_result(repr: EPathMapRepr<Par>, len: usize, left: &Self, right: &Self) -> Self {
+        if repr.is_empty() {
+            return Self::default();
+        }
+        Self {
+            repr,
+            len,
+            entries_stable: left.entries_stable && right.entries_stable,
+            union_locally_free: crate::rust::utils::union(
+                left.union_locally_free.clone(),
+                right.union_locally_free.clone(),
+            ),
+            any_connective_used: left.any_connective_used || right.any_connective_used,
+            trie_snapshot: Arc::new(OnceLock::new()),
+            epm_layout: Arc::new(OnceLock::new()),
+        }
+    }
+
+    #[inline]
+    fn exact_map_value_eq(left: &Par, right: &Par) -> bool { left.cmp(right) == Ordering::Equal }
+
+    fn mode_mismatch(&self, other: &Self) -> EPathMapAlgebraError {
+        EPathMapAlgebraError::ModeMismatch {
+            left: self.mode(),
+            right: other.mode(),
+        }
+    }
+
+    pub fn try_join(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) => Ok(other.clone()),
+            (_, EPathMapRepr::Empty) => Ok(self.clone()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let joined = left.join(right);
+                let len = joined.val_count();
+                Ok(Self::joined_result(
+                    EPathMapRepr::Set(joined),
+                    len,
+                    self,
+                    other,
+                ))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let mut joined = left.clone();
+                compose_topology(&mut joined, &[], right);
+                let mut overlap = 0usize;
+                for (key, right_value) in right.iter() {
+                    if let Some(left_value) = joined.get(&key) {
+                        overlap += 1;
+                        if !Self::exact_map_value_eq(left_value, right_value) {
+                            return Err(EPathMapAlgebraError::ValueConflict {
+                                operation: "join",
+                                encoded_key: key,
+                            });
+                        }
+                    } else {
+                        joined.insert(&key, right_value.clone());
+                    }
+                }
+                Ok(Self::joined_result(
+                    EPathMapRepr::Map(joined),
+                    self.len + other.len - overlap,
+                    self,
+                    other,
+                ))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    pub fn try_meet(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                Ok(Self::algebra_result(EPathMapRepr::Set(left.meet(right))))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let mut intersection = pathmap::PathMap::new();
+                let topology = topology_mask(left).meet(&topology_mask(right));
+                compose_topology(&mut intersection, &[], &topology);
+                let keys = if self.len <= other.len { left } else { right };
+                for (key, _) in keys.iter() {
+                    let (Some(left_value), Some(right_value)) = (left.get(&key), right.get(&key))
+                    else {
+                        continue;
+                    };
+                    if !Self::exact_map_value_eq(left_value, right_value) {
+                        return Err(EPathMapAlgebraError::ValueConflict {
+                            operation: "meet",
+                            encoded_key: key,
+                        });
+                    }
+                    intersection.insert(&key, left_value.clone());
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Map(intersection)))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    pub fn try_subtract(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) => Ok(Self::default()),
+            (_, EPathMapRepr::Empty) => Ok(self.clone()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => Ok(Self::algebra_result(
+                EPathMapRepr::Set(left.subtract(right)),
+            )),
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let mut difference = left.clone();
+                for (key, _) in right.iter() {
+                    let removed = difference.remove(&key);
+                    if let Some(removed) = removed {
+                        crate::rust::rholang::par_children::dismantle(removed);
+                    }
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Map(difference)))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    pub fn try_restrict(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => Ok(Self::algebra_result(
+                EPathMapRepr::Set(left.restrict(right)),
+            )),
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => Ok(Self::algebra_result(
+                EPathMapRepr::Map(left.restrict(right)),
+            )),
+            _ => Err(self.mode_mismatch(other)),
+        }
+    }
+
+    pub fn try_restrict_member_prefixes(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
+        match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let mut prefixes = RholangSetPathMap::new();
+                for (key, ()) in right.iter() {
+                    let entry = decode_trie_path(&key)
+                        .expect("set-mode EPathMap keys are canonical_path encodings");
+                    prefixes.insert(segments_to_key(&par_to_path(&entry), false), ());
+                    crate::rust::rholang::par_children::dismantle(entry);
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Set(
+                    left.restrict(&prefixes),
+                )))
+            }
+            (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
+                let mut prefixes = pathmap::PathMap::new();
+                for (key, value) in right.iter() {
+                    let entry = decode_trie_path(&key)
+                        .expect("map-mode EPathMap keys are canonical_path encodings");
+                    prefixes.insert(segments_to_key(&par_to_path(&entry), false), value.clone());
+                    crate::rust::rholang::par_children::dismantle(entry);
+                }
+                Ok(Self::algebra_result(EPathMapRepr::Map(
+                    left.restrict(&prefixes),
+                )))
+            }
+            _ => Err(self.mode_mismatch(other)),
+        }
     }
 
     /// Add every entry of `other` — the set union that `graft` performs.
@@ -695,19 +1220,26 @@ impl EntryTrie {
     /// `insert_entry` is no longer on this path. Each is monotone and O(1) per entry — the same
     /// three folds, in the same order.
     pub fn extend_entries(&mut self, other: &EntryTrie) {
-        use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
-
-        let mut rz = other.trie.read_zipper();
-        while rz.to_next_val() {
-            let par = rz
-                .val()
-                .expect("to_next_val stops only at positions holding a value");
-
-            // ★ `rz.path()` is the key `other` stores this entry under — no re-encode.
-            if self.trie.insert(rz.path(), par.clone()).is_none() {
-                self.len += 1;
-            }
+        if matches!(self.repr, EPathMapRepr::Map(_)) {
+            panic!("set union attempted on map-mode EPathMap");
         }
+        let other_map = match &other.repr {
+            EPathMapRepr::Empty => return,
+            EPathMapRepr::Set(map) => map,
+            EPathMapRepr::Map(_) => panic!("cannot mix map-mode entries into a set EPathMap"),
+        };
+        if matches!(self.repr, EPathMapRepr::Empty) {
+            self.repr = EPathMapRepr::Set(RholangSetPathMap::new());
+        }
+        let EPathMapRepr::Set(self_map) = &mut self.repr else {
+            unreachable!("map mode was rejected and empty mode was specialized")
+        };
+
+        // PathMap's lattice join operates on whole compressed subtries and can
+        // preserve shared nodes. Counting the result is one node cata; it is
+        // still cheaper than reinserting every full key through the root.
+        *self_map = self_map.join(other_map);
+        self.len = self_map.val_count();
 
         // ★★ The three metadata folds COMBINE from `other`'s aggregates — O(1) each, not
         // O(Σ entries). They used to be re-derived per entry inside the loop above, which meant
@@ -730,50 +1262,15 @@ impl EntryTrie {
             other.union_locally_free.clone(),
         );
 
-        self.view.take();
-        self.path_stream.take();
-        self.wire_trie.take();
+        self.invalidate_derived();
     }
 
-    /// `true` iff the projection memo has been forced, i.e. a second full copy of the entries
-    /// is live. See [`EPathMap::live_retainer_count`].
-    #[cfg(test)]
-    pub(crate) fn view_is_forced(&self) -> bool {
-        self.view.get().is_some()
-    }
-
-    /// Visit every entry **by reference**, in trie order, without materialising anything.
-    ///
-    /// ★ The borrowing counterpart to [`Self::drain_owned_pars`], and the reason it exists:
-    /// a caller that only wants to LOOK at each entry had no way to say so. The available
-    /// surface was `EPathMap::ps()`, a memoised `Vec<Par>` whose materialisation
-    /// **deep-clones every entry** — so a read-only loop paid N clones for the privilege of
-    /// borrowing.
-    ///
-    /// ⚠ A callback rather than an `impl Iterator`: the zipper borrows the trie and would
-    /// have to be owned by the iterator, which cannot be expressed without a self-referential
-    /// struct. The callback keeps the zipper's lifetime inside this frame, where it is trivial.
-    ///
-    /// ⚠ It lives here rather than at the call site because `pathmap` is a dependency of
-    /// `models` and not of its consumers; exporting the walk is cheaper than exporting the
-    /// crate.
-    /// Push every entry onto `out` as a borrow with the **TRIE's** lifetime.
-    ///
-    /// ★ Why this exists alongside [`EntryTrie::for_each_entry`]. That one hands the
-    /// visitor a `&Par` borrowed for the duration of the *call*, which is right for a
-    /// visitor and useless for a collector: a `Vec<&'a Par>` needs borrows that outlive
-    /// the walk. `ZipperReadOnlyIteration::to_next_get_val` returns `&'trie Par` — a
-    /// borrow with the trie's lifetime rather than the method call's — so the entries
-    /// can be pointed at directly.
-    ///
-    /// ⇒ a child walk no longer forces [`EntryTrie::view`], whose materialisation
-    /// **deep-clones every entry** and then retains a full second copy for the life of
-    /// the value. The trie is read where it stands.
-    pub fn extend_entry_refs<'trie>(&'trie self, out: &mut Vec<&'trie Par>) {
-        use pathmap::zipper::ZipperReadOnlyIteration;
-        let mut rz = self.trie.read_zipper();
-        while let Some(par) = rz.to_next_get_val() {
-            out.push(par);
+    /// Append the `Par`s this representation actually owns. Set-mode keys are
+    /// canonical bytes in `PathMap<()>`, so they contribute no borrowed value;
+    /// map mode contributes only its associated `Par` values.
+    pub fn extend_owned_par_refs<'trie>(&'trie self, out: &mut Vec<&'trie Par>) {
+        if let EPathMapRepr::Map(map) = &self.repr {
+            out.extend(map.iter().map(|(_, value)| value));
         }
     }
 
@@ -788,13 +1285,19 @@ impl EntryTrie {
         &self,
         mut visit: impl FnMut(&Par) -> Result<(), E>,
     ) -> Result<(), E> {
-        use pathmap::zipper::{ZipperIteration, ZipperValues};
-        let mut rz = self.trie.read_zipper();
-        while rz.to_next_val() {
-            visit(
-                rz.val()
-                    .expect("to_next_val stops only at positions holding a value"),
-            )?;
+        let map = match &self.repr {
+            EPathMapRepr::Empty => return Ok(()),
+            EPathMapRepr::Set(map) => map,
+            EPathMapRepr::Map(_) => {
+                panic!("set-only entry visitor used on map-mode EPathMap")
+            }
+        };
+        for (key, ()) in map.iter() {
+            let par = decode_trie_path(&key)
+                .expect("set-mode EPathMap keys are canonical_path encodings");
+            let result = visit(&par);
+            crate::rust::rholang::par_children::dismantle(par);
+            result?;
         }
         Ok(())
     }
@@ -806,28 +1309,38 @@ impl EntryTrie {
     /// notices that reaches for `ps().iter().find(..)` instead, forcing the deep-clone
     /// memo. The borrow carries the TRIE's lifetime (`to_next_get_val`), so the hit can
     /// be returned rather than cloned.
-    pub fn find_entry<'trie>(
-        &'trie self,
-        mut pred: impl FnMut(&Par) -> bool,
-    ) -> Option<&'trie Par> {
-        use pathmap::zipper::ZipperReadOnlyIteration;
-        let mut rz = self.trie.read_zipper();
-        while let Some(par) = rz.to_next_get_val() {
-            if pred(par) {
+    pub fn find_entry(&self, mut pred: impl FnMut(&Par) -> bool) -> Option<Par> {
+        let map = match &self.repr {
+            EPathMapRepr::Empty => return None,
+            EPathMapRepr::Set(map) => map,
+            EPathMapRepr::Map(_) => {
+                panic!("set-only entry search used on map-mode EPathMap")
+            }
+        };
+        for (key, ()) in map.iter() {
+            let par = decode_trie_path(&key)
+                .expect("set-mode EPathMap keys are canonical_path encodings");
+            if pred(&par) {
                 return Some(par);
             }
+            crate::rust::rholang::par_children::dismantle(par);
         }
         None
     }
 
     pub fn for_each_entry(&self, mut visit: impl FnMut(&Par)) {
-        use pathmap::zipper::{ZipperIteration, ZipperValues};
-        let mut rz = self.trie.read_zipper();
-        while rz.to_next_val() {
-            visit(
-                rz.val()
-                    .expect("to_next_val stops only at positions holding a value"),
-            );
+        let map = match &self.repr {
+            EPathMapRepr::Empty => return,
+            EPathMapRepr::Set(map) => map,
+            EPathMapRepr::Map(_) => {
+                panic!("set-only entry visitor used on map-mode EPathMap")
+            }
+        };
+        for (key, ()) in map.iter() {
+            let par = decode_trie_path(&key)
+                .expect("set-mode EPathMap keys are canonical_path encodings");
+            visit(&par);
+            crate::rust::rholang::par_children::dismantle(par);
         }
     }
 
@@ -857,41 +1370,17 @@ impl EntryTrie {
     pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
         // ⚠ NO `..` — see the doc above.
         let EntryTrie {
-            trie,
+            repr,
             len: _,
             entries_stable: _,
             union_locally_free: _,
             any_connective_used: _,
-            view,
-            // ★ NOT a retainer. `U(m)` is a flat `Vec<u8>` — it holds no `Par`,
-            // so dropping it is a `dealloc` of one buffer and can never reach
-            // the recursive destructor this method exists to avoid. It is named
-            // rather than elided because the `..`-free form is the guard: a
-            // future field that DOES retain entries must fail to compile here.
-            path_stream: _,
-            // ⚠★ A RETAINER — this one really does hold `Par`s, and drained
-            // below. It is the whole reason the `..`-free form is worth its
-            // verbosity: this field was added after that comment was written,
-            // and the compiler is what made it impossible to forget.
-            wire_trie,
+            trie_snapshot: _,
+            epm_layout: _,
         } = self;
-
-        if let Some(entries) = view.into_inner().and_then(Arc::into_inner) {
-            out.extend(entries);
-        }
-        for (_key, par) in trie {
-            out.push(par);
-        }
-        // ★ The blanked twin, if it was ever forced and if we hold the last
-        // handle to it.
-        //
-        // ⚠ The recursion is bounded at ONE level, and not by inspection: a
-        // blanked trie's own `blanked_trie()` is the identity (blanking is
-        // idempotent), so it would memoize `None` and hold no third copy — and
-        // nothing forces it in the first place, because `wire_trie()` is reached
-        // only from the two accessors and neither is called on the twin.
-        if let Some(twin) = wire_trie.into_inner().flatten().and_then(Arc::into_inner) {
-            twin.drain_owned_pars(out);
+        match repr {
+            EPathMapRepr::Empty | EPathMapRepr::Set(_) => {}
+            EPathMapRepr::Map(map) => out.extend(map.into_iter().map(|(_, value)| value)),
         }
     }
 
@@ -906,52 +1395,114 @@ impl EntryTrie {
     pub fn remove_greatest_entry(&mut self) -> Option<Par> {
         let last_key = {
             use pathmap::zipper::{ZipperIteration, ZipperMoving};
-            let mut rz = self.trie.read_zipper();
+            let map = match &self.repr {
+                EPathMapRepr::Empty => return None,
+                EPathMapRepr::Set(map) => map,
+                EPathMapRepr::Map(_) => panic!("set removal attempted on map-mode EPathMap"),
+            };
+            let mut rz = map.read_zipper();
             let mut last: Option<Vec<u8>> = None;
             while rz.to_next_val() {
                 last = Some(rz.path().to_vec());
             }
             last?
         };
-        let removed = self.trie.remove(&last_key);
+        let EPathMapRepr::Set(map) = &mut self.repr else {
+            unreachable!("the mode was checked above")
+        };
+        let removed = map.remove(&last_key);
         if removed.is_some() {
             self.len -= 1;
-            self.view.take();
-            self.path_stream.take();
-            self.wire_trie.take();
+            if map.is_empty() {
+                self.repr = EPathMapRepr::Empty;
+            }
+            self.invalidate_derived();
             // The folds are not invertible, so they are recomputed rather than
-            // decremented. `entries_stable` in particular MUST stay exact: a
-            // conservative `false` would move a now-ground map off proto field
-            // 8, which is a consensus-visible byte change.
+            // decremented. `entries_stable` remains exact for canonical-path
+            // classification.
             self.recompute_folds();
         }
-        removed
+        removed.map(|()| {
+            decode_trie_path(&last_key)
+                .expect("EntryTrie keys are canonical_path encodings; insertion validates this")
+        })
+    }
+
+    pub fn remove_greatest_map_entry(&mut self) -> Result<Option<(Par, Par)>, EPathMapModeError> {
+        let last_key = match &self.repr {
+            EPathMapRepr::Empty => return Ok(None),
+            EPathMapRepr::Set(_) => {
+                return Err(EPathMapModeError {
+                    expected: EPathMapMode::Map,
+                    actual: EPathMapMode::Set,
+                });
+            }
+            EPathMapRepr::Map(map) => map.iter().map(|(key, _)| key).last(),
+        };
+        let Some(last_key) = last_key else {
+            return Ok(None);
+        };
+        let EPathMapRepr::Map(map) = &mut self.repr else {
+            unreachable!("the mode was checked above")
+        };
+        let value = map
+            .remove(&last_key)
+            .expect("the selected greatest map key still exists");
+        let key = decode_trie_path(&last_key)
+            .expect("map-mode EPathMap keys are canonical_path encodings");
+        self.len -= 1;
+        if map.is_empty() {
+            self.repr = EPathMapRepr::Empty;
+        }
+        self.recompute_folds();
+        self.invalidate_derived();
+        Ok(Some((key, value)))
     }
 
     /// Re-derive the entry folds from the (post-removal) trie. Only the removal
     /// path needs this — insertion folds forward.
     fn recompute_folds(&mut self) {
-        let entries = entries_in_trie_order(&self.trie);
-        self.entries_stable = entries.iter().all(eval_stable_par);
-        self.any_connective_used = entries.iter().any(|par| par.connective_used);
+        let mut entries_stable = true;
+        let mut any_connective_used = false;
         let mut union_locally_free = Vec::new();
-        for par in &entries {
-            union_locally_free =
-                crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+        match &self.repr {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => {
+                for (key, ()) in map.iter() {
+                    let par = decode_trie_path(&key)
+                        .expect("set-mode EPathMap keys are canonical_path encodings");
+                    entries_stable &= eval_stable_par(&par);
+                    any_connective_used |= par.connective_used;
+                    union_locally_free =
+                        crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+                    crate::rust::rholang::par_children::dismantle(par);
+                }
+            }
+            EPathMapRepr::Map(map) => {
+                for (key, value) in map.iter() {
+                    let key = decode_trie_path(&key)
+                        .expect("map-mode EPathMap keys are canonical_path encodings");
+                    for par in [&key, value] {
+                        entries_stable &= eval_stable_par(par);
+                        any_connective_used |= par.connective_used;
+                        union_locally_free =
+                            crate::rust::utils::union(union_locally_free, par.locally_free.clone());
+                    }
+                    crate::rust::rholang::par_children::dismantle(key);
+                }
+            }
         }
+        self.entries_stable = entries_stable;
+        self.any_connective_used = any_connective_used;
         self.union_locally_free = union_locally_free;
-        self.view = OnceLock::from(Arc::new(entries));
-        // `U(m)` is a function of the trie, which just changed. Dropped rather
-        // than recomputed: the folds have to be eager (they are read O(1)), the
-        // key stream does not.
-        self.path_stream.take();
-        self.wire_trie.take();
+        self.trie_snapshot = Arc::new(OnceLock::new());
+        self.epm_layout = Arc::new(OnceLock::new());
     }
 }
 
 impl EntryTrie {
     /// ★ Take over a trie the caller already has, rather than re-filing its
-    /// contents — the route back from `RholangPathMap` to `EPathMap` that every
+    /// contents — the route back from `RholangSetPathMap` to `EPathMap` that every
     /// pathmap-returning method in the reducer takes.
     ///
     /// # Why it verifies instead of trusting
@@ -961,7 +1512,7 @@ impl EntryTrie {
     /// for the price of one `encode_trie_path` per entry — which is exactly what
     /// re-filing through `EntryTrie::from` would have cost anyway — so the check
     /// is free relative to the alternative and this performs it **in release
-    /// builds too**, where `rholang_pathmap_to_e_pathmap`'s
+    /// builds too**, where `rholang_set_pathmap_to_set_epathmap`'s
     /// `#[cfg(debug_assertions)]` guard is compiled out.
     ///
     /// A trie that fails the check is not rejected; it is **re-filed**, which
@@ -974,177 +1525,56 @@ impl EntryTrie {
     /// `pathmap_crate_type_mapper::root_key_divergence`). A trie holding one
     /// would be adopted with an entry its own projection cannot see, so it takes
     /// the re-filing path instead.
-    pub(crate) fn adopt_trie(map: &RholangPathMap) -> EntryTrie {
-        use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
+    pub(crate) fn adopt_trie(map: &RholangSetPathMap) -> EntryTrie {
+        use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
-        let mut entries: Vec<Par> = Vec::new();
         let mut keys_canonical = true;
+        let mut len = 0usize;
         let mut entries_stable = true;
         let mut any_connective_used = false;
         let mut union_locally_free: Vec<u8> = Vec::new();
         {
             let mut rz = map.read_zipper();
             while rz.to_next_val() {
-                let par = rz
-                    .val()
-                    .expect("to_next_val stops only at positions holding a value")
-                    .clone();
-                // ★ The check runs in the ENCODE direction. `decode_trie_path`
-                // would be the natural reading of "is this key canonical?", and
-                // it is the wrong one: it is partial on this codec's own image
-                // (prost caps decode recursion at 100 levels, encode at
-                // nothing), so a deep entry would fail the check for a reason
-                // that has nothing to do with the key.
+                let par = decode_trie_path(rz.path())
+                    .expect("RholangSetPathMap keys must be canonical_path encodings");
+                // Re-encoding proves the decoded key is in canonical form. Both
+                // directions are stack-safe and accept arbitrary finite depth.
                 keys_canonical &= encode_trie_path(&par) == rz.path();
                 entries_stable &= eval_stable_par(&par);
                 any_connective_used |= par.connective_used;
                 union_locally_free =
                     crate::rust::utils::union(union_locally_free, par.locally_free.clone());
-                entries.push(par);
+                len += 1;
+                crate::rust::rholang::par_children::dismantle(par);
             }
         }
-        if !keys_canonical || map.val_count() != entries.len() {
-            return EntryTrie::from(entries);
+        if !keys_canonical || map.val_count() != len {
+            // Malformed internal tries are normalized only on the exceptional
+            // path. The common path below is an O(1) PathMap root clone and
+            // never reconstructs an entry collection.
+            let mut normalized = EntryTrie::default();
+            let mut rz = map.read_zipper();
+            while rz.to_next_val() {
+                let par = decode_trie_path(rz.path())
+                    .expect("RholangSetPathMap keys must decode before normalization");
+                normalized.insert_entry(par);
+            }
+            return normalized;
         }
         EntryTrie {
-            trie: map.clone(),
-            len: entries.len(),
+            repr: if map.is_empty() {
+                EPathMapRepr::Empty
+            } else {
+                EPathMapRepr::Set(map.clone())
+            },
+            len,
             entries_stable,
             union_locally_free,
             any_connective_used,
-            view: OnceLock::from(Arc::new(entries)),
-            path_stream: OnceLock::new(),
-            wire_trie: OnceLock::new(),
+            trie_snapshot: Arc::new(OnceLock::new()),
+            epm_layout: Arc::new(OnceLock::new()),
         }
-    }
-}
-
-/// Why a peer's `U(m)` was not the key stream this node's own encoder produces
-/// for the values that came with it.
-///
-/// ⚠ **Never a rejection.** Every variant names a stream this node ACCEPTS —
-/// see [`EntryTrie::from_path_stream_and_values`] for why narrowing here would
-/// be a fork rather than a hardening. The variants exist so the disagreement can
-/// be *observed* (by a test, or by a future diagnostic) instead of being a
-/// silent branch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PathStreamDisagreement {
-    /// The framing itself did not parse — a partial length header, a key
-    /// running past the end, or a length that overflows the host's `usize`.
-    MalformedFraming(PathFrameError),
-    /// Frame `index` is not `encode_trie_path` of the value beside it.
-    KeyDisagrees { index: usize },
-    /// The stream held more frames than there were values.
-    ExcessFrames { values: usize },
-    /// The stream ran out of frames before the values did.
-    MissingFrames { at: usize, values: usize },
-}
-
-/// What a peer's `U(m)` turned out to be, checked against this node's encoder.
-///
-/// ⚠ It does **not** select the returned value — see
-/// [`EntryTrie::from_path_stream_and_values`], where the two branches are proved
-/// to be the same trie. It is the *verdict*, carried out so that the check is
-/// observable rather than dead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PathStreamVerdict {
-    /// Every frame was exactly `encode_trie_path` of the value beside it, and
-    /// the two sequences ended together.
-    Agrees,
-    /// The first disagreement found. The trie was built from the VALUES.
-    Refiled(PathStreamDisagreement),
-}
-
-impl EntryTrie {
-    /// ★★ **THE reader of the split `U(m) ‖ values` encoding — FORM ②.**
-    ///
-    /// The bincode surface serializes an `EPathMap`'s entries as the trie's own
-    /// byte array `U(m)` **followed by** the values, and this is the one place
-    /// that reads the pair back. Both surfaces that carry that encoding — the
-    /// `serde::Deserialize` impl below and `bincode_decoder`'s `Op::PathmapBuild` —
-    /// call it, because two hand-written bulk readers of one wire shape is the
-    /// defect `c705776c` closed and it does not get to come back.
-    ///
-    /// # ★ Why this is TOTAL where a `U(m)`-only reader would not be
-    ///
-    /// Reconstructing entries from `U(m)` **alone** means `decode_trie_path` per
-    /// key, whose escape arm re-decodes a ¬`eval_stable` entry through prost's
-    /// recursion-limited decoder. `rholang/tests/pathmap_escape_depth_reachability.rs`
-    /// measures that ceiling at depth **32** — and measures ordinary Rholang
-    /// compiling such an entry at depth **40**. A reader built on it would refuse
-    /// terms a deploy can write, which is a regression rather than a narrowing.
-    ///
-    /// ⇒ `decode_trie_path` is **never called here**. Splitting `U(m)` into
-    /// frames is pure byte slicing ([`PathFrames`]); the entries come from the
-    /// value sequence, through the existing depth-unlimited machinery; and
-    /// `encode_trie_path` — the direction that is total — is what relates the
-    /// two. **Nothing that round-trips today stops round-tripping.**
-    ///
-    /// # ⚠ A disagreeing stream is RE-FILED, never rejected
-    ///
-    /// This is `adopt_trie`'s policy and proto field 8's, and it is a
-    /// consensus-acceptance decision rather than a taste: a node that rejected a
-    /// byte string its peers accept has forked. So every fault — malformed
-    /// framing, a key that is not `encode_trie_path` of its value, a frame count
-    /// that disagrees with the value count — yields the trie built from the
-    /// VALUES, exactly as though the stream had carried no key stream at all.
-    ///
-    /// ★ **And the two branches are the same trie.** A trie is a set of
-    /// (key, value) slots; on the agreeing branch every frame *equals*
-    /// `encode_trie_path(value)`, which is the key `EntryTrie::from` would have
-    /// used. So the disposition cannot change the decoded value — which is the
-    /// property that keeps `axis_acceptance` at `NO`. The verdict is returned
-    /// rather than dropped so that the check is observable
-    /// (`models/tests/epathmap_bincode_is_the_path_stream.rs` asserts both
-    /// halves: the disagreement is *detected*, and the value is *unchanged*).
-    ///
-    /// # Preallocation
-    ///
-    /// None is possible or wanted: the trie is grown by `insert`, and `values`
-    /// is already an owned `Vec` moved through by value. `EntryTrie::len()` is
-    /// the O(1) maintained fold and is what a *caller* preallocates from.
-    pub fn from_path_stream_and_values(
-        path_stream: &[u8],
-        values: Vec<Par>,
-    ) -> (EntryTrie, PathStreamVerdict) {
-        let value_count = values.len();
-        let mut frames = PathFrames::new(path_stream);
-        let mut built = EntryTrie::default();
-        // The FIRST fault wins; later ones are consequences of it.
-        let mut verdict = PathStreamVerdict::Agrees;
-        let mut note = |found: PathStreamDisagreement| {
-            if matches!(verdict, PathStreamVerdict::Agrees) {
-                verdict = PathStreamVerdict::Refiled(found);
-            }
-        };
-
-        for (index, par) in values.into_iter().enumerate() {
-            // ★ The ENCODE direction, which is total. The key is taken in hand
-            // so it can be compared against the peer's frame and then filed
-            // without a second encode.
-            let (key, stable) = encode_trie_path_with_stability(&par);
-            match frames.next() {
-                Some(Ok(frame)) if frame == key.as_slice() => {}
-                Some(Ok(_)) => note(PathStreamDisagreement::KeyDisagrees { index }),
-                Some(Err(fault)) => note(PathStreamDisagreement::MalformedFraming(fault)),
-                None => note(PathStreamDisagreement::MissingFrames {
-                    at: index,
-                    values: value_count,
-                }),
-            }
-            built.insert_encoded(key, stable, par);
-        }
-
-        // The stream must end exactly where the values do.
-        match frames.next() {
-            None => {}
-            Some(Ok(_)) => note(PathStreamDisagreement::ExcessFrames {
-                values: value_count,
-            }),
-            Some(Err(fault)) => note(PathStreamDisagreement::MalformedFraming(fault)),
-        }
-
-        (built, verdict)
     }
 }
 
@@ -1176,11 +1606,9 @@ impl From<&[Par]> for EntryTrie {
 
 impl From<&Vec<Par>> for EntryTrie {
     /// Rebuild around a borrowed projection — the shape
-    /// `EPathMap::new(other.ps(), …)` takes when a caller wants a map with the
+    /// `EPathMap::new(other.entries_owned(), …)` takes when a caller wants a map with the
     /// same entries and different metadata.
-    fn from(entries: &Vec<Par>) -> Self {
-        EntryTrie::from(entries.as_slice())
-    }
+    fn from(entries: &Vec<Par>) -> Self { EntryTrie::from(entries.as_slice()) }
 }
 
 impl Clone for EntryTrie {
@@ -1189,14 +1617,13 @@ impl Clone for EntryTrie {
     /// `locally_free` bitset copies.
     fn clone(&self) -> Self {
         EntryTrie {
-            trie: self.trie.clone(),
+            repr: self.repr.clone(),
             len: self.len,
             entries_stable: self.entries_stable,
             union_locally_free: self.union_locally_free.clone(),
             any_connective_used: self.any_connective_used,
-            view: self.view.clone(),
-            path_stream: self.path_stream.clone(),
-            wire_trie: self.wire_trie.clone(),
+            trie_snapshot: Arc::clone(&self.trie_snapshot),
+            epm_layout: Arc::clone(&self.epm_layout),
         }
     }
 }
@@ -1206,35 +1633,41 @@ impl Default for EntryTrie {
     /// `for all` over no entries.
     fn default() -> Self {
         EntryTrie {
-            trie: RholangPathMap::new(),
+            repr: EPathMapRepr::Empty,
             len: 0,
             entries_stable: true,
             union_locally_free: Vec::new(),
             any_connective_used: false,
-            view: OnceLock::new(),
-            path_stream: OnceLock::new(),
-            wire_trie: OnceLock::new(),
+            trie_snapshot: Arc::new(OnceLock::new()),
+            epm_layout: Arc::new(OnceLock::new()),
         }
     }
 }
 
 impl fmt::Debug for EntryTrie {
-    /// Prints as the projected `Vec<Par>` — the `EPathMap` Debug output keeps
-    /// its `EPathMap { ps: [...] }` shape.
+    /// O(1) trie-native diagnostics. Debug must not force or dump a potentially
+    /// large EPM1 snapshot merely to describe a schema node.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.view().fmt(f)
+        f.debug_struct("EntryTrie")
+            .field("mode", &self.mode())
+            .field("len", &self.len)
+            .field("snapshot_cached", &self.trie_snapshot.get().is_some())
+            .finish()
     }
 }
 
-impl PartialEq for EntryTrie {
-    /// Entry-set equality, read through the **KEYS** — the relation the wire commits to.
+#[cfg(test)]
+impl EntryTrie {
+    /// Entry equality, read directly through the PathMap. Set mode compares
+    /// keys; map mode compares each ordered `(key, value)` pair. Neither path
+    /// materializes a projection or forces the EPM1 serialization cache.
     ///
     /// ★ C8, owner-ruled a REPAIR rather than a semantic change. This used to compare
     /// `self.view() == other.view()`, i.e. the projected entries under `Par`'s
     /// **AlwaysEqual** `==`, which IGNORES `locally_free`. But entries are KEYED by
-    /// `encode_trie_path`, whose escape arm is the entry's canonical prost bytes —
+    /// `encode_trie_path`, whose escape arm is the entry's canonical protobuf bytes —
     /// which INCLUDE `locally_free`. So two maps could compare EQUAL while holding
-    /// different key sets, hence different `U(m)`, hence **different emitted bytes**.
+    /// different key sets, hence different EPM1 snapshots and emitted bytes.
     /// `==` was strictly coarser than the relation consensus commits to.
     ///
     /// The old doc named this exact hazard and dismissed it: *"In a well-formed term
@@ -1247,13 +1680,52 @@ impl PartialEq for EntryTrie {
     /// ⇒ Now a paired zipper walk over the two key streams. It is also strictly cheaper:
     /// the old form forced BOTH projections, deep-cloning every entry on each side, to
     /// answer a question the tries could answer by walking.
-    fn eq(&self, other: &Self) -> bool {
+    fn recursive_eq_oracle(&self, other: &Self) -> bool {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
         if self.len != other.len {
             return false;
         }
-        let mut a = self.trie.read_zipper();
-        let mut b = other.trie.read_zipper();
+        let (a_map, b_map) = match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, EPathMapRepr::Empty) => return true,
+            (EPathMapRepr::Set(a), EPathMapRepr::Set(b)) => (a, b),
+            (EPathMapRepr::Map(a), EPathMapRepr::Map(b)) => {
+                if !a
+                    .read_zipper()
+                    .into_path_iter()
+                    .eq(b.read_zipper().into_path_iter())
+                {
+                    return false;
+                }
+                let mut a = a.iter();
+                let mut b = b.iter();
+                loop {
+                    match (a.next(), b.next()) {
+                        (None, None) => return true,
+                        (Some((a_key, a_value)), Some((b_key, b_value))) => {
+                            if a_key != b_key || a_value != b_value {
+                                return false;
+                            }
+                        }
+                        (None, Some(_)) | (Some(_), None) => return false,
+                    }
+                }
+            }
+            (EPathMapRepr::Empty, EPathMapRepr::Set(_))
+            | (EPathMapRepr::Empty, EPathMapRepr::Map(_))
+            | (EPathMapRepr::Set(_), EPathMapRepr::Empty)
+            | (EPathMapRepr::Set(_), EPathMapRepr::Map(_))
+            | (EPathMapRepr::Map(_), EPathMapRepr::Empty)
+            | (EPathMapRepr::Map(_), EPathMapRepr::Set(_)) => return false,
+        };
+        if !a_map
+            .read_zipper()
+            .into_path_iter()
+            .eq(b_map.read_zipper().into_path_iter())
+        {
+            return false;
+        }
+        let mut a = a_map.read_zipper();
+        let mut b = b_map.read_zipper();
         loop {
             // ⚠ NO `_` arm. `variant_exhaustiveness_gate` refuses a catch-all in a
             // comparison impl, and it is right to: a catch-all answering `false` makes
@@ -1279,10 +1751,10 @@ impl PartialEq for EntryTrie {
     }
 }
 
-impl Eq for EntryTrie {}
-
-impl Hash for EntryTrie {
-    /// Consistent with [`PartialEq`]: the same **key** stream, hashed in trie order.
+#[cfg(test)]
+impl EntryTrie {
+    /// Consistent with [`PartialEq`]: the same key stream (and map values),
+    /// hashed in trie order without forcing EPM1 serialization.
     ///
     /// ⚠ `Hash` must agree with `==` or a `HashMap` keyed on this type silently loses
     /// entries, so this moved with `eq` and could not have moved separately.
@@ -1294,18 +1766,37 @@ impl Hash for EntryTrie {
     /// `ScoredTerm::sort_vec` — which `SS-Y4` made a TOTAL order. A total sort's output
     /// does not depend on its input order, so hash iteration order cannot reach a byte.
     /// Before that repair this change would have needed a seven-axis entry.
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn recursive_hash_oracle<H: Hasher>(&self, state: &mut H) {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
-        let mut rz = self.trie.read_zipper();
-        while rz.to_next_val() {
-            rz.path().hash(state);
+        match &self.repr {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => {
+                for path in map.read_zipper().into_path_iter() {
+                    path.hash(state);
+                }
+                let mut rz = map.read_zipper();
+                while rz.to_next_val() {
+                    rz.path().hash(state);
+                }
+            }
+            EPathMapRepr::Map(map) => {
+                for path in map.read_zipper().into_path_iter() {
+                    path.hash(state);
+                }
+                for (key, value) in map.iter() {
+                    key.hash(state);
+                    value.hash(state);
+                }
+            }
         }
     }
 }
 
-impl Ord for EntryTrie {
-    /// Lexicographic over the **KEY** stream, in trie order — the same relation
-    /// [`PartialEq`] and [`Hash`] read.
+#[cfg(test)]
+impl EntryTrie {
+    /// Lexicographic over the key stream, then map values, in trie order — the
+    /// same relation [`PartialEq`] and [`Hash`] read. This walks PathMap
+    /// directly and leaves the EPM1 serialization cache cold.
     ///
     /// ★ This finishes C8. That commit moved `==` and `Hash` off the projected
     /// list and onto the keys, *"the relation the wire commits to"*, and left
@@ -1330,10 +1821,49 @@ impl Ord for EntryTrie {
     /// arbitrary one — it sorts by an artifact of the framing rather than by the
     /// trie's own byte-lexicographic structure. The walk costs what `eq`
     /// already costs and orders by the thing that actually means something.
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn recursive_cmp_oracle(&self, other: &Self) -> Ordering {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
-        let mut a = self.trie.read_zipper();
-        let mut b = other.trie.read_zipper();
+        let (a_map, b_map) = match (&self.repr, &other.repr) {
+            (EPathMapRepr::Empty, EPathMapRepr::Empty) => return Ordering::Equal,
+            (EPathMapRepr::Set(a), EPathMapRepr::Set(b)) => (a, b),
+            (EPathMapRepr::Map(a), EPathMapRepr::Map(b)) => {
+                let topology = a
+                    .read_zipper()
+                    .into_path_iter()
+                    .cmp(b.read_zipper().into_path_iter());
+                if topology != Ordering::Equal {
+                    return topology;
+                }
+                let mut a = a.iter();
+                let mut b = b.iter();
+                loop {
+                    match (a.next(), b.next()) {
+                        (None, None) => return Ordering::Equal,
+                        (None, Some(_)) => return Ordering::Less,
+                        (Some(_), None) => return Ordering::Greater,
+                        (Some((a_key, a_value)), Some((b_key, b_value))) => {
+                            match a_key.cmp(&b_key) {
+                                Ordering::Equal => match a_value.cmp(b_value) {
+                                    Ordering::Equal => {}
+                                    decided => return decided,
+                                },
+                                decided => return decided,
+                            }
+                        }
+                    }
+                }
+            }
+            _ => return (self.mode() as u8).cmp(&(other.mode() as u8)),
+        };
+        let topology = a_map
+            .read_zipper()
+            .into_path_iter()
+            .cmp(b_map.read_zipper().into_path_iter());
+        if topology != Ordering::Equal {
+            return topology;
+        }
+        let mut a = a_map.read_zipper();
+        let mut b = b_map.read_zipper();
         loop {
             match (a.to_next_val(), b.to_next_val()) {
                 // Both exhausted at the same position: every key agreed.
@@ -1350,120 +1880,45 @@ impl Ord for EntryTrie {
     }
 }
 
-impl PartialOrd for EntryTrie {
-    /// Consistent with [`Ord`].
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 impl serde::Serialize for EntryTrie {
-    /// ★★ **FORM ② — the trie's own byte array, then the values.**
-    ///
-    /// A two-element seq occupying the same 1-field-of-4 slot `EPathMap`'s serde
-    /// layout has always had:
-    ///
-    /// ```text
-    ///   u64-LE |U(m)| ‖ U(m)      ← the trie serialized AS A TRIE, verbatim
-    ///   u64-LE n      ‖ n × Par   ← the values
-    /// ```
-    ///
-    /// bincode writes a tuple positionally with no framing of its own, so those
-    /// two lines are literally consecutive — `U(m)` appears in the encoding
-    /// **contiguously**, which is the property
-    /// `models/tests/epathmap_bincode_is_the_path_stream.rs` asserts by substring
-    /// search.
-    ///
-    /// # ★ Why SPLIT and not interleaved
-    ///
-    /// Interleaving key with value would need a live trie cursor in the encoder.
-    /// That was built, measured, and parked (`bincode_encoder.rs`, `Op::EntryPaths`):
-    /// it costs 3 allocations / 1408 B on a warm encode where
-    /// `bincode_encoder_space::the_steady_state_allocation_table` requires **zero**,
-    /// two of them inside `read_zipper()` where they cannot be pooled away. Split,
-    /// the encoder emits one memoized slice ([`EntryTrie::path_stream`], a
-    /// `memcpy`) plus the projection it was already emitting — and `U(m)` stays
-    /// contiguous, which an interleaved form would destroy.
-    ///
-    /// # ⚠ The values are carried, and that is the cost the ruling accepted
-    ///
-    /// `U(m)` alone would be smaller. It would also make `decode_trie_path` the
-    /// reader, whose escape arm ceiling is a MEASURED 32 against ordinary
-    /// Rholang's 40 — see [`EntryTrie::from_path_stream_and_values`]. So this
-    /// surface pays `8 + |U(m)|` extra bytes per map to serialize the trie as a
-    /// trie **without** capping a reader that is uncapped today. Dropping the
-    /// values awaits the unbounded prost reader.
-    ///
-    /// # ⚠⚠ The key stream is `U` of the entries THIS SURFACE WRITES
-    ///
-    /// [`EntryTrie::wire_path_stream`], never [`EntryTrie::path_stream`]. The
-    /// second element below writes lf-BLANKED entries — it always has — so the
-    /// first must write their keys. Emitting `U(stored)` here put a quantity
-    /// derived from the unblanked entries beside the blanked ones, which carried
-    /// an entry's `locally_free` onto the event-hash preimage through the
-    /// escape arm's prost payload. **CBR-043** repairs that; `path_stream()` on
-    /// this line is the defect, not a shorter spelling of the same thing.
+    /// Serialize exactly one canonical, versioned EPM1 byte array. EPM1 embeds
+    /// PathMap's `ACTree03` arena and, in map mode, a stack-safely encoded value
+    /// table. No entry list or key/value shadow representation is constructed.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeTuple;
-
-        let mut state = serializer.serialize_tuple(2)?;
-        // `&[u8]` serializes as a seq of `u8`, which is byte-for-byte what
-        // `serialize_bytes` writes in bincode — serde has no `Vec<u8>`
-        // specialisation, so the two spellings coincide on this format
-        // (`bincode_decoder`'s shape-2 note says the same thing from the read side).
-        // ⚠ BOTH halves off ONE trie ([`EntryTrie::wire_trie`]). Mixing
-        // `wire_path_stream()` with `view()` would pair the blanked KEYS with
-        // the STORED order, and blanking can reorder — an lf bit moves an entry
-        // from the structural arm to the `0x0F` escape arm, and those sort
-        // nowhere near each other.
-        let wire = self.wire_trie();
-        state.serialize_element(wire.path_stream())?;
-        state.serialize_element(wire.view().as_slice())?;
-        state.end()
+        serializer.serialize_bytes(self.trie_snapshot())
     }
 }
 
 impl<'de> serde::Deserialize<'de> for EntryTrie {
-    /// The read half of FORM ②: the byte array, then the values, then
-    /// [`EntryTrie::from_path_stream_and_values`] — which never calls
-    /// `decode_trie_path`, so this surface acquires **no depth ceiling**.
-    ///
-    /// ⚠ The verdict is deliberately discarded. A stream whose key stream
-    /// disagrees with its values is RE-FILED, not rejected: rejecting would
-    /// narrow the language this node accepts relative to its peers, which is a
-    /// fork. See that function for why the two dispositions are the same trie.
+    /// Decode one canonical EPM1 byte array into its homogeneous PathMap
+    /// specialization. Both trie validation and map-value decoding are
+    /// iterative and impose no traversal-depth ceiling.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (path_stream, values) = <(Vec<u8>, Vec<Par>)>::deserialize(deserializer)?;
-        let (trie, _verdict) = EntryTrie::from_path_stream_and_values(&path_stream, values);
-        Ok(trie)
+        let snapshot = Vec::<u8>::deserialize(deserializer)?;
+        let mut map = EPathMap::default();
+        map.replace_trie_snapshot(&snapshot)
+            .map_err(serde::de::Error::custom)?;
+        Ok(map.ps)
     }
 }
 
-/// The hand-maintained mirror of `message EPathMap` (`RhoTypes.proto:321`),
-/// extended with the P3 shadow cell. Field order and types are EXACTLY the
-/// generated struct's (`ps`, `locally_free`, `connective_used`, `remainder`)
-/// — serde layout, `Ord`, and `Debug` all depend on that order.
+/// Hand-maintained external type for `message EPathMap`.
 ///
-/// Construction: out-of-module struct literals are impossible (the cell is
-/// private) — use [`EPathMap::new`] or [`Default`] (amendment PM-2; every
-/// former literal site is migrated). Struct PATTERNS with `..` keep working.
+/// Entries are stored only as a homogeneous, prefix-compressed PathMap:
+/// neutral empty, `PathMap<()>` set mode, or `PathMap<Par>` map mode. Use
+/// [`EPathMap::new`] or [`EPathMap::new_map`] rather than struct literals.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct EPathMap {
     /// ★ The entries, stored as the [`EntryTrie`] they are indexed by.
     ///
     /// **PRIVATE**, and that is load-bearing rather than tidy: the field is no
-    /// longer a `Vec<Par>`, so a caller reading `map.ps` would be reading a
-    /// projection and a caller writing it would be writing past the trie. Reads
-    /// go through [`EPathMap::ps`] (the memoized canonical projection); writes
-    /// go through [`EPathMap::insert_entry`] / [`EPathMap::extend_entries`] /
-    /// [`EPathMap::remove_greatest_entry`], each of which takes the shadow cell.
-    /// `ps_make_mut` no longer exists — **the compiler is the fixture** for
-    /// anything that used to hand out `&mut Vec<Par>`.
+    /// longer a `Vec<Par>`, so callers read the trie through
+    /// [`EPathMap::entry_trie`] and mutate it only through the mode-specific
+    /// operations. `ps_make_mut` no longer exists — **the compiler is the
+    /// fixture** for anything that used to hand out `&mut Vec<Par>`.
     ///
-    /// Serde still sees a `ps` field of `Vec<Par>` (the [`EntryTrie`] serde
-    /// impls project and re-file), so the serde layout and the OpenAPI schema
-    /// are unchanged.
-    #[schema(value_type = Vec<Par>)]
+    /// Serde field `ps` is a byte array containing the EPM1 snapshot.
+    #[schema(value_type = Vec<u8>)]
     ps: EntryTrie,
     /// Free-variable bitset (proto tag 3, bytes). Serde serializes this as
     /// EMPTY bytes (serialize-only normalization, `models/build.rs` parity);
@@ -1476,44 +1931,12 @@ pub struct EPathMap {
     pub connective_used: bool,
     /// Pattern remainder (proto tag 5, optional `Var`).
     pub remainder: Option<Var>,
-    // ⛔ The P3 shadow cell (`intern: OnceLock<Arc<InternedEPathMap>>`) is GONE.
-    //
-    // It memoised four things for a single production caller, and every one was
-    // already an O(1) read off this value: the trie itself, the two entry folds,
-    // and the `eval_stable` classification. Obtaining a SHARED entry cost a full
-    // streamed digest walk plus a second full `encode_raw` walk to verify the
-    // bucket — two walks to avoid one — behind a process-global mutex.
-    //
-    // ★ Byte-safety was established by SIMULATION before any site was edited:
-    // forcing the accessor to `None` failed exactly five tests, every one of them
-    // a test OF the mechanism (`spliced_*`, `*_intern_cell_*`, `*_filled_cell_*`),
-    // and moved ZERO byte goldens.
 }
 
 impl serde::Serialize for EPathMap {
-    /// Hand-written (the P3 derive is dropped) because `locally_free` is
-    /// serialize-asymmetric: it is ALWAYS written as EMPTY bytes (the
-    /// normalization the dropped `serialize_with = serialize_as_empty_bytes`
-    /// attribute used to provide) while the derived `Deserialize` still reads
-    /// the stream's REAL bytes (plan amendment PM-1).
-    ///
-    /// # ★ The ground/non-ground branch is GONE
-    ///
-    /// This impl used to fork: a GROUND map serialized `ground_canonical_ps(self)`
-    /// — the entries re-read off a trie, in trie order — while every other map
-    /// serialized `self.ps` in the order its producer wrote them. The fork
-    /// existed because the stored order was not canonical and only the ground
-    /// arm had somewhere canonical to read from.
-    ///
-    /// Now `self.ps` **is** the trie, so [`EPathMap::ps`] is that same canonical
-    /// projection for EVERY map, and the two arms are one expression. The
-    /// ground arm's bytes are unchanged (same walk, same trie); the non-ground
-    /// arm's bytes move to canonical order, which is the consensus-visible half
-    /// of this change and is stated as such in the commit.
-    ///
-    /// Layout is the unchanged 4-field struct
-    /// (`serialize_struct("EPathMap", 4)` over `ps`, `locally_free`,
-    /// `connective_used`, `remainder`; the `intern` cell is never serialized).
+    /// Serialize the EPM1 byte snapshot plus the three metadata fields.
+    /// `locally_free` remains serialize-asymmetric and is emitted as empty bytes
+    /// for compatibility with the generated schema normalization.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
@@ -1537,17 +1960,75 @@ impl serde::Serialize for EPathMap {
 }
 
 impl EPathMap {
-    /// The PM-2 constructor — the replacement for every former struct
-    /// literal (the private cell makes out-of-module literals impossible).
-    /// The cell starts EMPTY: a newly built value has no interned handle
-    /// until its first rendezvous.
+    /// Replace the entry representation from one canonical `EPM1` snapshot.
+    /// This is the sole field-9 interpretation shared by both protobuf readers.
+    #[allow(deprecated)]
+    pub(crate) fn replace_trie_snapshot(&mut self, region: &[u8]) -> Result<(), DecodeError> {
+        let repr = epathmap_trie_codec::decode(region)
+            .map_err(|error| DecodeError::new(format!("EPathMap trie_snapshot: {error}")))?;
+        self.replace_decoded_representation(repr)
+    }
+
+    /// Install a representation already validated by the pausable EPM1
+    /// decoder. This is the generated protobuf PDA's non-recursive completion
+    /// edge; it deliberately performs no second byte decode.
+    #[allow(deprecated)]
+    pub(crate) fn replace_decoded_representation(
+        &mut self,
+        repr: EPathMapRepr<Par>,
+    ) -> Result<(), DecodeError> {
+        let current = self.mode();
+        let incoming = repr.mode();
+        if current != EPathMapMode::Empty && incoming != EPathMapMode::Empty && current != incoming
+        {
+            return Err(DecodeError::new(format!(
+                "EPathMap trie_snapshot cannot change {:?} storage to {:?} storage",
+                current, incoming
+            )));
+        }
+        self.ps = EntryTrie::from_repr(repr)?;
+        Ok(())
+    }
+
+    /// Merge the retired protobuf `serialized_paths` compatibility field into
+    /// set-mode storage.
     ///
-    /// `ps` is `impl Into<EntryTrie>`, so every call site passing a `Vec<Par>`
-    /// compiles unchanged and every entry is filed under its own codec path as
-    /// it arrives. ⚠ Consequently `EPathMap::new(v, …).ps() != v` whenever `v`
-    /// is permuted, duplicated, or holds a non-canonical nested map — the
-    /// constructor canonicalizes because the store it writes into has only one
-    /// order.
+    /// The protobuf reader and the hand-maintained `Message` implementation
+    /// share this one interpretation of `U(m)`.  Keeping the field-envelope
+    /// read outside this method lets the generated reader consume the bytes on
+    /// its own PDA without delegating back to `Message::merge_field`.
+    #[allow(deprecated)]
+    pub(crate) fn merge_serialized_paths(&mut self, region: &[u8]) -> Result<(), DecodeError> {
+        if self.mode() == EPathMapMode::Map {
+            return Err(DecodeError::new(
+                "EPathMap serialized_paths cannot be merged into map-mode storage",
+            ));
+        }
+        let mut entries = EntryTrie::default();
+        for frame in PathFrames::new(region) {
+            let key = frame.map_err(|fault| match fault {
+                PathFrameError::LengthOverflow { .. } => {
+                    DecodeError::new("EPathMap serialized_paths: key length overflow")
+                }
+                PathFrameError::TruncatedKey { .. } => {
+                    DecodeError::new("EPathMap serialized_paths: truncated key")
+                }
+                PathFrameError::TruncatedLength { .. } => DecodeError::new(
+                    "EPathMap serialized_paths: trailing bytes after the final key",
+                ),
+            })?;
+            let par = decode_trie_path(key).map_err(|codec_error| {
+                DecodeError::new(format!("EPathMap serialized_paths key: {codec_error:?}"))
+            })?;
+            entries.insert_entry(par);
+        }
+        self.ps.extend_entries(&entries);
+        Ok(())
+    }
+
+    /// Construct set-mode storage. An empty input stays mode-neutral. Entries
+    /// are inserted under their canonical byte paths, so order and duplicates
+    /// cannot become retained state.
     pub fn new(
         ps: impl Into<EntryTrie>,
         locally_free: Vec<u8>,
@@ -1562,25 +2043,31 @@ impl EPathMap {
         }
     }
 
-    /// ★ The entries, in canonical trie order — deduplicated and recursively
-    /// canonical. Memoized (see [`EntryTrie::view`]), so this is a pointer read
-    /// after the first call on any member of a clone family.
-    ///
-    /// This replaces the former `pub ps: SharedPars` field. It is a method
-    /// rather than a field because it is a **projection**: the map does not
-    /// store a `Vec<Par>`, it stores a trie, and the vector is derived from it.
+    /// Construct the value-bearing specialization. An empty iterator remains
+    /// mode-neutral; its first later insertion selects map or set mode.
+    pub fn new_map(
+        entries: impl IntoIterator<Item = (Par, Par)>,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<Var>,
+    ) -> Self {
+        let mut ps = EntryTrie::default();
+        for (key, value) in entries {
+            ps.insert_map_entry(key, value)
+                .expect("a fresh map constructor cannot contain set entries");
+        }
+        EPathMap {
+            ps,
+            locally_free,
+            connective_used,
+            remainder,
+        }
+    }
+
     /// Hand every `Par` this map owns to `out`, **BY MOVE**.
     ///
     /// ★ Delegates to [`EntryTrie::drain_owned_pars`]; see that method for why the destructure
     /// is exhaustive and how the two retainers are drained.
-    ///
-    /// ⚠ **`intern` is drained too, and that matters more than it looks.** The interned handle
-    /// owns an `InternedEPathMap` whose `map: RholangPathMap` is a second holder of the same
-    /// entries. Its usual fate is an O(1) refcount decrement — but the process-global intern
-    /// store is **LRU-evicting**, so an evicted entry's handle becomes unique and its drop runs
-    /// the recursive destructor at full depth, on an arbitrary thread, inside the store's mutex,
-    /// at a moment no caller chose. Draining it here removes this value's contribution to that
-    /// path. (The store itself is slated for deletion, which dissolves the rest.)
     pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
         // ⚠ NO `..` — a field added here that can hold a `Par` must fail to compile.
         let EPathMap {
@@ -1593,145 +2080,166 @@ impl EPathMap {
         ps.drain_owned_pars(out);
     }
 
-    /// How many distinct owners of this map's entries are LIVE right now.
-    ///
-    /// ★ Exists so a teardown guard can pin the by-move table's multiplier **from the value**
-    /// rather than infer it from the data. That distinction is load-bearing: a guard that
-    /// derives the multiplier as `moved.len() / borrowed.len()` cannot detect a retainer that
-    /// was never drained, because the ratio simply becomes a smaller whole number and still
-    /// looks valid. Measured — removing the memo drain left such a guard GREEN.
-    ///
-    /// The trie always owns them; the projection memo owns a full second copy once forced; the
-    /// interned handle owns a third when this map has been interned.
+    /// Number of PathMap-owned `Par` value retainers used by teardown tests.
+    /// Set mode owns byte keys only; map mode owns one `Par` per trie value.
     #[cfg(test)]
     pub(crate) fn live_retainer_count(&self) -> usize {
-        // ★ Was `1 + memo + intern`. The interned handle was a THIRD owner of the same
-        // entries; with the store deleted there are two: the trie and the projection memo.
-        1 + usize::from(self.ps.view_is_forced())
-    }
-
-    pub fn ps(&self) -> &Vec<Par> {
-        self.ps.view()
+        match self.ps.representation() {
+            EPathMapRepr::Empty => 0,
+            EPathMapRepr::Set(_) => 0,
+            EPathMapRepr::Map(_) => 1,
+        }
     }
 
     /// The entry store itself — the trie every consumer used to rebuild.
     /// `clone()`ing it is a refcount bump.
-    pub fn entry_trie(&self) -> &EntryTrie {
-        &self.ps
+    pub fn entry_trie(&self) -> &EntryTrie { &self.ps }
+
+    pub fn representation(&self) -> &EPathMapRepr<Par> { self.ps.representation() }
+
+    pub fn mode(&self) -> EPathMapMode { self.ps.mode() }
+
+    /// Number of distinct trie entries. This is maintained with the PathMap
+    /// root and does not materialize the legacy `Vec<Par>` projection.
+    pub fn len(&self) -> usize { self.ps.len() }
+
+    /// Whether the neutral/set/map trie contains no entries.
+    pub fn is_empty(&self) -> bool { self.ps.is_empty() }
+
+    /// Insert one set member. Idempotent; an existing canonical key is absorbed.
+    pub fn insert_entry(&mut self, par: Par) { self.ps.insert_entry(par); }
+
+    pub fn try_insert_entry(&mut self, par: Par) -> Result<(), EPathMapModeError> {
+        self.ps.try_insert_entry(par)
     }
 
-    /// Add one entry, taking the shadow cell (the map's canonical bytes must be
-    /// re-derived). Idempotent: an entry already present is absorbed.
-    ///
-    /// This is the replacement for `ps_make_mut().push(..)` at `setLeaf`.
-    pub fn insert_entry(&mut self, par: Par) {
-        self.ps.insert_entry(par);
+    pub fn insert_map_entry(&mut self, key: Par, value: Par) -> Result<(), EPathMapModeError> {
+        self.ps.insert_map_entry(key, value)
+    }
+
+    pub fn insert_map_value_by_encoded_key(
+        &mut self,
+        encoded_key: &[u8],
+        value: Par,
+    ) -> Result<(), EPathMapModeError> {
+        self.ps.insert_map_value_by_encoded_key(encoded_key, value)
+    }
+
+    pub fn get_map_value(&self, key: &Par) -> Result<Option<&Par>, EPathMapModeError> {
+        self.ps.get_map_value(key)
+    }
+
+    pub fn for_each_map_entry(
+        &self,
+        visit: impl FnMut(&Par, &Par),
+    ) -> Result<(), EPathMapModeError> {
+        self.ps.for_each_map_entry(visit)
+    }
+
+    pub fn cursor_entry_key(&self, segments: &[Vec<u8>], kind: CursorKind) -> Vec<u8> {
+        self.ps.cursor_entry_key(segments, kind)
+    }
+
+    pub fn entry_key_at(&self, cursor: &[Vec<u8>], path: &Par) -> Vec<u8> {
+        self.ps.entry_key_at(cursor, path)
+    }
+
+    pub fn leaf_at_encoded_key(&self, key: &[u8]) -> Option<Par> {
+        self.ps.leaf_at_encoded_key(key)
+    }
+
+    pub fn contains_encoded_key(&self, key: &[u8]) -> bool { self.ps.contains_encoded_key(key) }
+
+    pub fn contains_entry(&self, entry: &Par) -> bool { self.ps.contains_entry(entry) }
+
+    pub fn path_prefix_exists(&self, prefix: &[u8]) -> bool { self.ps.path_prefix_exists(prefix) }
+
+    pub fn collect_child_segments(&self, prefix: &[u8], limit: Option<usize>) -> Vec<Vec<u8>> {
+        self.ps.collect_child_segments(prefix, limit)
+    }
+
+    pub fn subtrie_value_count(&self, prefix: &[u8]) -> usize {
+        self.ps.subtrie_value_count(prefix)
+    }
+
+    pub fn next_value_key(&self, from_key: &[u8]) -> Option<Vec<u8>> {
+        self.ps.next_value_key(from_key)
+    }
+
+    pub fn subtrie(&self, prefix: &[u8]) -> Self {
+        EPathMap::new(
+            self.ps.subtrie(prefix),
+            self.locally_free.clone(),
+            self.connective_used,
+            None,
+        )
+    }
+
+    pub fn drop_head(&self, count: usize) -> Self {
+        EPathMap::new(
+            self.ps.drop_head(count),
+            self.locally_free.clone(),
+            self.connective_used,
+            None,
+        )
+    }
+
+    pub fn remove_encoded_entry(&mut self, key: &[u8]) -> bool { self.ps.remove_encoded_entry(key) }
+
+    pub fn remove_branches_at(&mut self, prefix: &[u8]) -> bool {
+        self.ps.remove_branches_at(prefix)
+    }
+
+    pub fn remove_subtrie_at(&mut self, prefix: &[u8]) -> bool { self.ps.remove_subtrie_at(prefix) }
+
+    pub fn create_path(&mut self, path: &[u8]) -> Result<bool, EPathMapEmptyModeError> {
+        self.ps.create_path(path)
+    }
+
+    pub fn replace_subtrie(
+        &mut self,
+        cursor_segments: &[Vec<u8>],
+        cursor_kind: CursorKind,
+        source: &EPathMap,
+    ) -> Result<(), EPathMapAlgebraError> {
+        self.ps
+            .replace_subtrie(cursor_segments, cursor_kind, &source.ps)
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn try_insert_entry_replacing(&mut self, par: Par) -> Result<Par, DecodeError> {
+        self.ps
+            .try_insert_entry_replacing(par)
+            .map_err(|error| DecodeError::new(format!("EPathMap ps: {error}")))
     }
 
     /// Add every entry of `other` — the set union `graft` performs. Replaces
     /// `ps_make_mut().extend(other.ps.into_vec())`.
-    pub fn extend_entries(&mut self, other: &EPathMap) {
-        self.ps.extend_entries(&other.ps);
-    }
+    pub fn extend_entries(&mut self, other: &EPathMap) { self.ps.extend_entries(&other.ps); }
 
     /// Remove the entry with the greatest key in trie order. Replaces
     /// `ps_make_mut().pop()` at `removeLeaf`; see
     /// [`EntryTrie::remove_greatest_entry`] for why "the last one" has to be
     /// re-derived from the trie's order rather than from a position.
-    pub fn remove_greatest_entry(&mut self) -> Option<Par> {
-        self.ps.remove_greatest_entry()
+    pub fn remove_greatest_entry(&mut self) -> Option<Par> { self.ps.remove_greatest_entry() }
+
+    pub fn remove_greatest_map_entry(&mut self) -> Result<Option<(Par, Par)>, EPathMapModeError> {
+        self.ps.remove_greatest_map_entry()
     }
 
-
-
-
-    // ⛔ `encode_raw_fields` / `encoded_len_fields` are DELETED, not parked.
-    //
-    // They were the tag-1 field walk — `for msg in self.ps() { encode(1u32, msg) }`
-    // and its `encoded_len_repeated(1u32, …)` twin — reached only from the
-    // ¬eval_stable side of the fork in `encode_raw` / `encoded_len`. With the fork
-    // removed there is no caller and no shape they describe: every map emits `U(m)`
-    // at field 8, and the metadata fields 3/4/5 are emitted inline by the two
-    // methods that replaced them, where the encode and its length twin can be read
-    // side by side. Keeping a second, unreachable copy of that logic would be an
-    // invitation to drift between two things prost requires to agree byte for byte.
-    //
-    // (Their `pub(crate)` was for the intern store's K2 verify, which was itself
-    // deleted with the store.)
-
-    /// ★ **`U(m)` — the identity artifact of this map's entries.**
-    ///
-    /// ```math
-    /// U(m) \;=\; \big\Vert_{k \in \mathrm{keys}(m)}
-    ///            \big(\mathrm{u32\text{-}LE}(|k|) \,\Vert\, k\big)
-    /// ```
-    ///
-    /// # The order is not chosen here — the trie already has one
-    ///
-    /// A trie's children are indexed BY BYTE, so a read-zipper walk is
-    /// byte-lexicographic **by construction**. Nothing selects that order and
-    /// nothing could select a different one, which is why [`path_stream_of`]
-    /// performs **no sort**: the structure supplies the order, and a sort would
-    /// be a second opinion about something that is not in question.
-    ///
-    /// This is the artifact proto field 8 (`serialized_paths`) carries, described
-    /// there as *"the canonical identity + hash preimage of a ground map"*.
-    ///
-    /// # ★ There is no rebuild here any more
-    ///
-    /// This used to call `ground_path_stream(&self.ps)`, which built a THROWAWAY
-    /// trie from the `Vec` on every pre-intern encode. The trie is now the field,
-    /// so the walk reads the store directly. That deletion is the whole shape of
-    /// this change in miniature: the work existed only to reconstruct something
-    /// the value already had.
-    /// `U(m)` — the length-framed key stream of this map's trie.
-    ///
-    /// ★ `pub` since the intern store was deleted. The store used to front this, so a
-    /// caller wanting `U(m)` reached it as `intern().path_stream`; with no store the
-    /// walk itself is the only way to ask — and it is now **memoized on the trie**
-    /// ([`EntryTrie::path_stream`]) rather than re-walked per call.
-    ///
-    /// ⚠ This is the PROST surface's key stream — the keys of the entries as
-    /// stored. The serde/bincode surface writes lf-blanked entries and therefore
-    /// [`EPathMap::wire_path_stream`].
-    pub fn path_stream(&self) -> &[u8] {
-        self.ps.path_stream()
-    }
-
-    /// `U` applied to the entries the **serde/bincode** surface writes — see
-    /// [`EntryTrie::wire_trie`], which carries the whole argument.
-    pub fn wire_path_stream(&self) -> &[u8] {
-        self.ps.wire_path_stream()
-    }
-
-    /// The entries the **serde/bincode** surface writes, in the order it writes
-    /// them — the value half of the tuple whose key half is
-    /// [`EPathMap::wire_path_stream`].
-    ///
-    /// ⚠ Must be read TOGETHER with `wire_path_stream()`. Blanking can reorder,
-    /// so pairing that key stream with [`EPathMap::ps`] mismatches key and
-    /// value; see [`EntryTrie::wire_view`].
-    pub fn wire_view(&self) -> &Vec<Par> {
-        self.ps.wire_view()
-    }
+    /// Canonical EPM1/ACTree03 bytes. Protobuf field 9 and bincode copy this
+    /// slice directly; no set-entry or key/value vector is materialized.
+    pub fn trie_snapshot(&self) -> &[u8] { self.ps.trie_snapshot() }
 }
 
 impl Default for EPathMap {
-    /// prost-derive parity: all proto fields at their defaults, cell empty.
-    fn default() -> Self {
-        EPathMap::new(Vec::new(), Vec::new(), false, None)
-    }
+    /// Neutral empty representation with default metadata.
+    fn default() -> Self { EPathMap::new(Vec::new(), Vec::new(), false, None) }
 }
 
 impl Clone for EPathMap {
-    /// Clones the proto fields AND propagates the filled shadow cell (an
-    /// `Arc` bump via `OnceLock::clone`) — the handle travels with the
-    /// clone family. `ps` is an [`EntryTrie`], whose clone is a refcount bump
-    /// on the trie root plus an `Arc` bump on the memoized projection — the
-    /// whole clone is O(1) AT THE NODE (only `locally_free` bytes and the small
-    /// `remainder` still copy). No copy-on-write discipline is needed any more:
-    /// there is no `&mut Vec<Par>` to hand out, so no clone sibling can observe
-    /// a write.
+    /// Clone the PathMap roots and shared snapshot/layout cells by refcount.
+    /// Only metadata bytes and the small optional remainder are copied.
     fn clone(&self) -> Self {
         EPathMap {
             ps: self.ps.clone(),
@@ -1743,107 +2251,24 @@ impl Clone for EPathMap {
 }
 
 impl fmt::Debug for EPathMap {
-    /// prost-derive parity: the four proto fields in declaration order,
-    /// plain `Debug` per field (prost's scalar wrappers are pass-through
-    /// for bytes/bool), the cell omitted — byte-identical to the old
-    /// derived output.
+    /// Trie-native diagnostics.  `ps` delegates to [`EntryTrie`]'s compact
+    /// snapshot rendering instead of materialising or recursively formatting a
+    /// `Vec<Par>`.  This is an intentional correction to the former generated
+    /// shape: an EPathMap is a prefix-compressed set/map, not a list, and its
+    /// Debug surface must not restore the discarded list model.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EPathMap")
-            .field("ps", &self.ps)
-            .field("locally_free", &self.locally_free)
-            .field("connective_used", &self.connective_used)
-            .field("remainder", &self.remainder)
-            .finish()
+        write!(
+            f,
+            "EPathMap {{ ps: {:?}, locally_free: {:?}, connective_used: {:?}, remainder: {:?} }}",
+            self.ps, self.locally_free, self.connective_used, self.remainder,
+        )
     }
 }
 
 impl prost::Message for EPathMap {
-    /// # ★ The stale-cell `debug_assert` is DELETED, and could not be restated
-    ///
-    /// It read: *"with the cell filled, the CURRENT fields must still
-    /// stream-encode to the cached canonical bytes"*, and it existed because the
-    /// `Vec<Par>` was the primary while the interned bytes were a cache of it —
-    /// a write to the `Vec` could outrun the cache. **The cached thing is now
-    /// derived from the stored thing**, and every mutator
-    /// ([`EPathMap::insert_entry`], [`EPathMap::extend_entries`],
-    /// [`EPathMap::remove_greatest_entry`]) takes the cell before touching the
-    /// trie, with no `&mut` escape past them. There is no state in which the
-    /// question the assertion asked has a `false` answer, so
-    /// `cached_bytes_still_valid` and `fields_match_canonical_prost` are deleted
-    /// with it.
+    /// Emit protobuf field 9 from EPM1 through the generated stack-safe encoder.
     fn encode_raw(&self, buf: &mut impl BufMut) {
-        // ⛔ The interned fast path is GONE. It read
-        // `self.intern.get()` and, on a hit, `put_slice(&interned.canonical_prost)`.
-        //
-        // ★ Removing it is byte-neutral BY CONSTRUCTION, and the deleted comment
-        // said so itself: *"canonical_prost IS this value's canonical encoding —
-        // field 8 U(m) for a ground map, or the field walk otherwise"*. Those bytes
-        // were produced by the two arms below this line, inside
-        // `OnceLock::get_or_init` with the cell empty. So the cache's content was
-        // never anything but the output of the code that now runs unconditionally.
-        //
-        // ⚠ What it cost to keep: obtaining the shared entry required a full
-        // streamed digest walk PLUS a second full `encode_raw` walk to verify the
-        // bucket — two walks to avoid one — behind a process-global mutex, in a
-        // 64-entry LRU whose eviction drops a deep `Par` through the recursive
-        // destructor inside that lock (pgmcp 4910).
-        //
-        // ★★ ONE ARM. The trie serializes AS A TRIE — proto field 8 = U(m), read
-        // straight off the stored trie — for EVERY map, ground or not. There is no
-        // longer a `ps` field walk at tag 1, and so no fork to be on the wrong side of.
-        //
-        // # What this replaced, and why the fork was the defect
-        //
-        // Field 8 used to be gated on `eval_stable_epathmap(self)`; every other map
-        // emitted `repeated Par` at tag 1 — the trie flattened to a LIST and each entry
-        // re-encoded from scratch. That threw away, at the wire boundary, exactly the
-        // properties the trie exists to provide: the key order it maintains by
-        // construction, the dedup it guarantees by holding one slot per key, and the
-        // encoded form it already stores. The list then had to be re-filed entry by
-        // entry on the far side, paying `encode_trie_path` per entry to rebuild what
-        // the sender had already computed.
-        //
-        // # Byte movement, stated exactly
-        //
-        // GROUND maps are byte-IDENTICAL. `eval_stable_epathmap` requires fields 3/4/5
-        // at their proto defaults, so a ground map skipped all three and emitted field 8
-        // alone — which is still precisely what the ascending-tag walk below produces.
-        // The ground goldens must come back UNMOVED, and they are the anti-vacuity
-        // control for the non-ground re-blessing.
-        //
-        // NON-GROUND maps move: tag-1 field walk ⇒ tag 8. That is the consensus-visible
-        // half, and it is why this carries a seven-axis register entry.
-        //
-        // # ★ The move is PERMISSIVE, and it is measured rather than argued
-        //
-        // Reading tag 8 back means `decode_trie_path` per key, whose escape arm
-        // re-decodes a ¬eval_stable entry through prost. That is a *fresh*
-        // `DecodeContext` — the full 100-level budget starting at zero — whereas tag 1
-        // spent W ≥ 3 levels of the OUTER decode's budget before reaching the entry.
-        // `rholang/tests/pathmap_escape_depth_reachability.rs` measures the consequence:
-        // escape-arm ceiling 32 vs tag-1 ingress ceiling 31.
-        //
-        // ⇒ every entry tag 1 could deliver, tag 8 can read. The headroom is ONE level,
-        // not the three a `W ≥ 3` argument predicts; the inequality is what the
-        // conclusion needs and it holds, but the margin is thin and is recorded as
-        // measured rather than derived. No term that decodes today stops decoding.
-        //
-        // Ascending tag order (3, 4, 5, 8), prost-derive parity on the skip-at-default
-        // rule for each scalar — the format's universal rule, not a fork.
-        if !self.locally_free.is_empty() {
-            encoding::bytes::encode(3u32, &self.locally_free, buf);
-        }
-        if self.connective_used {
-            encoding::bool::encode(4u32, &self.connective_used, buf);
-        }
-        if let Some(ref msg) = self.remainder {
-            encoding::message::encode(5u32, msg, buf);
-        }
-        // Skipped when the trie is empty — proto3's own "omit at default" rule for a
-        // `bytes` field, which is also what keeps an empty map byte-identical.
-        if !self.ps.is_empty() {
-            encode_ground_field8(self.path_stream(), buf);
-        }
+        crate::rust::rholang::protobuf_encoder::encode_into(self, buf);
     }
 
     // `DecodeError::new` is prost's only public constructor for a custom
@@ -1853,47 +2278,42 @@ impl prost::Message for EPathMap {
     fn merge_field(
         &mut self,
         tag: u32,
-        wire_type: WireType,
+        protobuf_wire_type: WireType,
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Decode-merge mutates fields: reset the shadow cell FIRST so a
-        // merged-into value can never carry a stale handle (plan §1-P3
-        // "merge/clear reset the cell"). Taking on the unknown-tag skip arm
-        // too is deliberate — one uniform rule, no field-tracking.
         /// prost-derive parity: the error-context struct name pushed onto
         /// `DecodeError` paths.
         const STRUCT_NAME: &str = "EPathMap";
         match tag {
             1u32 => {
-                // prost calls `merge_field` once per occurrence of tag 1, so
-                // `decoded` receives exactly one entry per call; each is filed
-                // under its own codec path. A stream carrying a permuted or
-                // duplicated entry set therefore decodes to the same value as
-                // its canonical twin — decode is canonicalizing because the
-                // store it writes into has only one order.
-                let mut decoded: Vec<Par> = Vec::new();
-                encoding::message::merge_repeated(wire_type, &mut decoded, buf, ctx).map_err(
+                let mut payload = Vec::new();
+                encoding::bytes::merge(protobuf_wire_type, &mut payload, buf, ctx).map_err(
                     |mut error| {
                         error.push(STRUCT_NAME, "ps");
                         error
                     },
                 )?;
-                for par in decoded {
-                    self.ps.insert_entry(par);
-                }
+                let par = crate::rust::rholang::protobuf_decoder::decode_par(payload.as_slice())
+                    .map_err(|mut error| {
+                        error.push(STRUCT_NAME, "ps");
+                        error
+                    })?;
+                self.ps
+                    .try_insert_entry(par)
+                    .map_err(|error| DecodeError::new(format!("EPathMap ps: {error}")))?;
                 Ok(())
             }
             3u32 => {
                 let value = &mut self.locally_free;
-                encoding::bytes::merge(wire_type, value, buf, ctx).map_err(|mut error| {
+                encoding::bytes::merge(protobuf_wire_type, value, buf, ctx).map_err(|mut error| {
                     error.push(STRUCT_NAME, "locally_free");
                     error
                 })
             }
             4u32 => {
                 let value = &mut self.connective_used;
-                encoding::bool::merge(wire_type, value, buf, ctx).map_err(|mut error| {
+                encoding::bool::merge(protobuf_wire_type, value, buf, ctx).map_err(|mut error| {
                     error.push(STRUCT_NAME, "connective_used");
                     error
                 })
@@ -1901,7 +2321,7 @@ impl prost::Message for EPathMap {
             5u32 => {
                 let value = &mut self.remainder;
                 encoding::message::merge(
-                    wire_type,
+                    protobuf_wire_type,
                     value.get_or_insert_with(Default::default),
                     buf,
                     ctx,
@@ -1912,106 +2332,39 @@ impl prost::Message for EPathMap {
                 })
             }
             8u32 => {
-                // VALUE arm: field 8 (serialized_paths, bytes) = U(m). Decode
-                // the length-framed key stream and reconstruct `ps` by decoding
-                // each trie key. The result is canonical (trie order) by
-                // construction, so a decoded ground map compares
-                // structurally-equal to any permuted construction of the same
-                // entry multiset. (The shadow cell was reset at the top of
-                // merge_field, so the map re-interns on its next touch.)
+                // Legacy set-only key stream retained for backward reads.
                 let mut region: Vec<u8> = Vec::new();
-                encoding::bytes::merge(wire_type, &mut region, buf, ctx).map_err(|mut error| {
-                    error.push(STRUCT_NAME, "serialized_paths");
-                    error
-                })?;
-                // ★ The framing is split by the SHARED reader
-                // (`pathmap_crate_type_mapper::PathFrames`), the read twin of
-                // `path_stream_of` that writes it. Two inline splitters would be
-                // free to disagree about a trailing partial header, which is
-                // exactly the class of divergence that forks a network. The
-                // DISPOSITION stays this arm's own — and it is the opposite of
-                // the bincode surface's, necessarily: field 8 carries the keys
-                // and nothing else, so a key it cannot read is a stream it
-                // cannot represent.
-                let mut entries: Vec<Par> = Vec::new();
-                for frame in PathFrames::new(&region) {
-                    let key = frame.map_err(|fault| match fault {
-                        PathFrameError::LengthOverflow { .. } => {
-                            DecodeError::new("EPathMap serialized_paths: key length overflow")
-                        }
-                        PathFrameError::TruncatedKey { .. } => {
-                            DecodeError::new("EPathMap serialized_paths: truncated key")
-                        }
-                        PathFrameError::TruncatedLength { .. } => DecodeError::new(
-                            "EPathMap serialized_paths: trailing bytes after the final key",
-                        ),
-                    })?;
-                    let par = decode_trie_path(key).map_err(|codec_error| {
-                        DecodeError::new(format!("EPathMap serialized_paths key: {codec_error:?}"))
-                    })?;
-                    entries.push(par);
-                }
-                // Re-file each decoded key through `insert_entry` rather than
-                // re-using the incoming key bytes verbatim: a peer's key that
-                // is not `encode_trie_path` of its own decoding would otherwise
-                // enter the trie un-normalized. Decoding and re-encoding makes
-                // tag-8 decode idempotent-canonical.
-                for par in entries {
-                    self.ps.insert_entry(par);
-                }
-                Ok(())
+                encoding::bytes::merge(protobuf_wire_type, &mut region, buf, ctx).map_err(
+                    |mut error| {
+                        error.push(STRUCT_NAME, "serialized_paths");
+                        error
+                    },
+                )?;
+                self.merge_serialized_paths(&region)
             }
-            _ => encoding::skip_field(wire_type, tag, buf, ctx),
+            9u32 => {
+                let mut region: Vec<u8> = Vec::new();
+                encoding::bytes::merge(protobuf_wire_type, &mut region, buf, ctx).map_err(
+                    |mut error| {
+                        error.push(STRUCT_NAME, "trie_snapshot");
+                        error
+                    },
+                )?;
+                self.replace_trie_snapshot(&region)
+            }
+            _ => crate::rust::rholang::protobuf_decoder::skip_unknown_field(
+                protobuf_wire_type,
+                tag,
+                buf,
+            ),
         }
     }
 
-    /// The `debug_assert` that used to guard this cached read is deleted for
-    /// the same reason as [`Self::encode_raw`]'s — see the note there.
     #[inline]
-    fn encoded_len(&self) -> usize {
-        // ⛔ The interned O(1) arm is GONE, mirroring `encode_raw`. It returned
-        // `interned.encoded_len`, which was `canonical_prost.len()` — the length of
-        // bytes the two arms below produce. Same value by construction.
-        //
-        // ⚠ Honest cost, stated rather than buried: on a map whose cell HAD been
-        // filled, `Message::encoded_len` drops from O(1) to O(map). That matters on
-        // the substitution charge path, which walks `encoded_len` twice per
-        // substitution by design. It is bounded to maps that went through the fused
-        // chain's intern call — every other map already paid O(map) — and the price
-        // of keeping it was two full walks plus a global lock per rendezvous.
-        //
-        // ★ THE EXACT TWIN of `encode_raw`. Same four conditions, same order, same
-        // skip-at-default rule, term for term — prost corrupts the stream if these two
-        // ever disagree by a single byte, so they are written to be read side by side.
-        //
-        // ⚠ This is also a METERING input (`costs.rs`, `substitute.rs`), so the charge
-        // moves with the bytes: it is no longer the sum of per-entry prost lengths but
-        // the length of the one shared key stream — a figure the memo hands back
-        // without re-encoding anything.
-        (if !self.locally_free.is_empty() {
-            encoding::bytes::encoded_len(3u32, &self.locally_free)
-        } else {
-            0
-        }) + (if self.connective_used {
-            encoding::bool::encoded_len(4u32, &self.connective_used)
-        } else {
-            0
-        }) + self
-            .remainder
-            .as_ref()
-            .map_or(0, |msg| encoding::message::encoded_len(5u32, msg))
-            + (if !self.ps.is_empty() {
-                ground_field8_len(self.path_stream())
-            } else {
-                0
-            })
-    }
+    fn encoded_len(&self) -> usize { crate::rust::rholang::protobuf_encoder::encoded_len(self) }
 
     fn clear(&mut self) {
-        // prost-derive parity for the proto fields, plus the cell reset. `ps`
-        // is replaced by a fresh empty trie rather than emptied in place —
-        // observationally identical (`clear` promises fields-at-defaults) and
-        // O(1) regardless of what the old trie was sharing.
+        // Replace the representation so shared clone-family caches stay immutable.
         self.ps = EntryTrie::default();
         self.locally_free.clear();
         self.connective_used = false;
@@ -2024,7 +2377,8 @@ impl prost::Message for EPathMap {
 // (see models/src/main/scala/coop/rchain/models/AlwaysEqual.scala)
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl PartialEq for EPathMap {
+#[cfg(test)]
+impl EPathMap {
     /// AlwaysEqual semantics: `locally_free` is a transient analysis field
     /// and does NOT participate (scalapb `AlwaysEqual[BitSet]` parity). The
     /// shadow cell does not participate either (it is derived state).
@@ -2049,31 +2403,30 @@ impl PartialEq for EPathMap {
     /// unrepresentable, for every map rather than for ground maps only.
     ///
     /// ⚠ One consequence, stated rather than buried: entries are keyed by
-    /// `encode_trie_path`, whose escape arm is the entry's **canonical prost
+    /// `encode_trie_path`, whose escape arm is the entry's **canonical protobuf
     /// bytes**, which INCLUDE `locally_free`. Two entries that are AlwaysEqual
     /// but differ in `locally_free` are therefore distinct trie keys. That is
     /// the same discipline the intern store's K2 verify already applies (*"the
     /// generated AlwaysEqual `==`/`Hash` IGNORE `locally_free` and are therefore
     /// UNUSABLE for keying"*), now applied by the map itself. In a well-formed
-    /// term `locally_free` is a function of the structure, so the two cannot
-    /// differ; the note is here because "cannot" should be written down.
-    fn eq(&self, other: &Self) -> bool {
+    /// term `locally_free` is maintained from structure; comparing keys makes
+    /// malformed disagreements explicit instead of assuming that invariant.
+    fn recursive_eq_oracle(&self, other: &Self) -> bool {
         self.connective_used == other.connective_used
             && self.remainder == other.remainder
-            && self.ps == other.ps
+            && self.ps.recursive_eq_oracle(&other.ps)
     }
 }
 
-impl Eq for EPathMap {}
-
-impl Hash for EPathMap {
+#[cfg(test)]
+impl EPathMap {
     /// AlwaysEqual semantics: consistent with `==` (`locally_free` and the
     /// cell excluded). Both now read the same canonical projection, so this is
     /// the plain element-wise `Vec<Par>` hash again — it is a function of the
     /// entry SET not because it does anything clever but because the thing it
     /// reads has no order of its own to leak.
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ps.hash(state);
+    fn recursive_hash_oracle<H: Hasher>(&self, state: &mut H) {
+        self.ps.recursive_hash_oracle(state);
         self.connective_used.hash(state);
         self.remainder.hash(state);
     }
@@ -2083,7 +2436,8 @@ impl Hash for EPathMap {
 // Derived-Ord replica — declaration order INCLUDING locally_free (the wart)
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl Ord for EPathMap {
+#[cfg(test)]
+impl EPathMap {
     /// Replica of the derived `Ord` the generated struct carried
     /// (`#[derive(Eq, Ord, PartialOrd)]` via `models/build.rs`):
     /// lexicographic over the fields IN DECLARATION ORDER —
@@ -2095,11 +2449,11 @@ impl Ord for EPathMap {
     /// be `==` yet `cmp` to `Less`. That inconsistency is pinned 84a0fbe4
     /// behavior (the P0 `Ord` fixtures + the wrapper wart test) and it is
     /// deliberately untouched: "fixing" it would move sort orders
-    /// consensus-visibly for a reason unrelated to this change.
+    /// in canonical ordering for a reason unrelated to this change.
     ///
     /// What DID move is the other disagreement, the one nobody chose. Before the
     /// trie became the field, `cmp` read `ps` in the producer's order while `==`
-    /// read `U(m)`, so `Ord` and `Eq` disagreed **twice**: once about
+    /// read the canonical trie stream, so `Ord` and `Eq` disagreed **twice**: once about
     /// `locally_free` (deliberately) and once about entry order (accidentally,
     /// and in a way that made two maps the wire calls identical sort apart).
     /// Both now read the same canonical projection, so exactly one deliberate
@@ -2107,24 +2461,156 @@ impl Ord for EPathMap {
     ///
     /// ⚠ Consensus consequence, stated plainly: for NON-ground maps this moves
     /// sort order, because the entries `cmp` walks are now in trie order rather
-    /// than construction order. That is the same byte-moving change the wire arm
-    /// makes, and it is the reason this stage is consensus-visible.
+    /// than construction order. This is a consensus-visible ordering change.
     ///
     /// Note that `Par: Ord` is the DERIVED one and includes each entry's own
     /// `locally_free`; the wart is hereditary, and that too is unchanged.
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn recursive_cmp_oracle(&self, other: &Self) -> Ordering {
         self.ps
-            .cmp(&other.ps)
+            .recursive_cmp_oracle(&other.ps)
             .then_with(|| self.locally_free.cmp(&other.locally_free))
             .then_with(|| self.connective_used.cmp(&other.connective_used))
             .then_with(|| self.remainder.cmp(&other.remainder))
     }
 }
 
-impl PartialOrd for EPathMap {
-    /// Consistent with [`Ord`] (all four fields are totally ordered, so the
-    /// derived field-chaining `partial_cmp` is extensionally `Some(cmp)`).
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+#[cfg(test)]
+mod pathmap_native_semantics_tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    use super::*;
+    use crate::rhoapi::Expr;
+    use crate::rhoapi::expr::ExprInstance;
+
+    fn int(value: i64) -> Par {
+        let mut par = Par::default();
+        par.exprs.push(Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        });
+        par
+    }
+
+    fn hash_of(value: &EPathMap) -> u64 {
+        let mut state = DefaultHasher::new();
+        value.hash(&mut state);
+        state.finish()
+    }
+
+    fn oracle_hash_of(value: &EPathMap) -> u64 {
+        let mut state = DefaultHasher::new();
+        value.recursive_hash_oracle(&mut state);
+        state.finish()
+    }
+
+    fn epathmap_carrier(map: EPathMap) -> Par {
+        let mut par = Par::default();
+        par.exprs.push(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        });
+        par
+    }
+
+    #[test]
+    fn map_semantics_walk_pathmap_without_forcing_the_serialization_snapshot() {
+        let left = EPathMap::new_map(
+            [(int(1), int(10)), (int(2), int(20))],
+            Vec::new(),
+            false,
+            None,
+        );
+        let equal = left.clone();
+        let different = EPathMap::new_map(
+            [(int(1), int(10)), (int(2), int(21))],
+            Vec::new(),
+            false,
+            None,
+        );
+
+        assert_eq!(left, equal);
+        assert_ne!(left, different);
+        assert_eq!(left.cmp(&equal), Ordering::Equal);
+        assert_ne!(left.cmp(&different), Ordering::Equal);
+        assert_eq!(hash_of(&left), hash_of(&equal));
+
+        assert!(!left.ps.snapshot_is_forced());
+        assert!(!equal.ps.snapshot_is_forced());
+        assert!(!different.ps.snapshot_is_forced());
+    }
+
+    #[test]
+    fn generated_epathmap_term_operations_match_the_recursive_oracles() {
+        let cases = [
+            EPathMap::default(),
+            EPathMap::new(vec![int(1), int(2)], Vec::new(), false, None),
+            EPathMap::new_map(
+                [(int(1), int(10)), (int(2), int(20))],
+                Vec::new(),
+                false,
+                None,
+            ),
+            EPathMap::new_map(
+                [(
+                    int(1),
+                    epathmap_carrier(EPathMap::new_map(
+                        [(int(2), int(30))],
+                        Vec::new(),
+                        false,
+                        None,
+                    )),
+                )],
+                vec![1],
+                true,
+                None,
+            ),
+        ];
+
+        for left in &cases {
+            assert_eq!(hash_of(left), oracle_hash_of(left));
+            for right in &cases {
+                assert_eq!(left == right, left.recursive_eq_oracle(right));
+                assert_eq!(left.cmp(right), left.recursive_cmp_oracle(right));
+            }
+        }
+    }
+
+    #[test]
+    fn forcing_one_nested_map_snapshot_does_not_cache_every_suffix() {
+        const DEPTH: usize = 1_024;
+        let mut value = int(0);
+        for _ in 1..DEPTH {
+            value = epathmap_carrier(EPathMap::new_map(
+                [(int(1), value)],
+                Vec::new(),
+                false,
+                None,
+            ));
+        }
+        let root = EPathMap::new_map([(int(1), value)], Vec::new(), false, None);
+
+        assert!(!root.ps.snapshot_is_forced());
+        let _ = root.trie_snapshot();
+        assert!(root.ps.snapshot_is_forced());
+
+        let key = int(1);
+        let mut cursor = &root;
+        for level in 1..DEPTH {
+            let value = cursor
+                .get_map_value(&key)
+                .expect("the chain remains in map mode")
+                .expect("each chain map has one value");
+            let Some(ExprInstance::EPathmapBody(nested)) = value
+                .exprs
+                .first()
+                .and_then(|expr| expr.expr_instance.as_ref())
+            else {
+                panic!("map-value chain ended at level {level} of {DEPTH}")
+            };
+            assert!(
+                !nested.ps.snapshot_is_forced(),
+                "streaming the root must not retain the complete snapshot of nested level {level}"
+            );
+            cursor = nested;
+        }
     }
 }

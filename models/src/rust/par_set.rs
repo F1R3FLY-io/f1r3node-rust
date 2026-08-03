@@ -55,7 +55,9 @@ impl ParSet {
         ps.sorted_pars
             .clone()
             .into_iter()
-            .fold(Vec::new(), |acc, p| union(acc, p.locally_free))
+            .fold(Vec::new(), |acc, mut p| {
+                union(acc, std::mem::take(&mut p.locally_free))
+            })
     }
 }
 

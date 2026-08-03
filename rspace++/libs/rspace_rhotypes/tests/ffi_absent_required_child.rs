@@ -62,8 +62,8 @@ const CHILD: &str = "RSPACE_FFI_ABSENT_CHILD";
 /// ★ The WIRE construction. `Par.connective_used` is a proto **field**, decoded
 /// verbatim; nothing recomputes it on the read path, so a probe that reproduces
 /// what arrives over the wire sets it directly rather than deriving it.
-fn wire_par(instance: ExprInstance, connective_used: bool) -> Par {
-    Par {
+fn protobuf_par(instance: ExprInstance, connective_used: bool) -> Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -77,7 +77,7 @@ fn wire_par(instance: ExprInstance, connective_used: bool) -> Par {
 /// submessage is simply not present in the byte string, which is a legal
 /// protobuf encoding that `Par::decode` accepts without complaint.
 fn target_with_absent_child() -> Vec<u8> {
-    wire_par(
+    protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: None,
             p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -88,7 +88,7 @@ fn target_with_absent_child() -> Vec<u8> {
 }
 
 fn well_formed_target() -> Vec<u8> {
-    wire_par(
+    protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: Some(new_gint_par(7, Vec::new(), false)),
             p2: Some(new_gint_par(2, Vec::new(), false)),
@@ -101,7 +101,7 @@ fn well_formed_target() -> Vec<u8> {
 /// A pattern that forces the matcher into the `EMinus` arm: same variant, with
 /// a free variable in slot 0.
 fn pattern_bytes() -> Vec<u8> {
-    wire_par(
+    protobuf_par(
         ExprInstance::EMinusBody(EMinus {
             p1: Some(new_freevar_par(0, Vec::new())),
             p2: Some(new_gint_par(2, Vec::new(), false)),

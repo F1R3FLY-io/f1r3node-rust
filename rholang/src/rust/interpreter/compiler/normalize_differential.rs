@@ -62,7 +62,6 @@ use rholang_parser::ast::{AnnProc, Proc};
 use rholang_parser::RholangParser;
 use validated::Validated;
 
-
 use super::bound_map_chain::BoundMapChain;
 use super::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use super::normalize::{normalize_ann_proc, VarSort};
@@ -180,95 +179,415 @@ const DIFFERING_SIBLING_BIND_COUNTS: &[Case] = &[
 /// Coverage is asserted by [`every_proc_variant_is_covered`], which walks each
 /// parsed corpus entry and fails if a `Proc` discriminant is never reached.
 const STRUCTURAL: &[Case] = &[
-    Case { label: "Nil", src: "Nil", binds: 0 },
-    Case { label: "Unit", src: "()", binds: 0 },
-    Case { label: "BoolLiteral", src: "true", binds: 0 },
-    Case { label: "LongLiteral", src: "42", binds: 0 },
-    Case { label: "BigIntLiteral", src: "42000000000000000000000000n", binds: 0 },
-    Case { label: "StringLiteral", src: "\"hello\"", binds: 0 },
-    Case { label: "UriLiteral", src: "new x(`rho:io:stdout`) in { Nil }", binds: 0 },
-    Case { label: "SimpleType Int", src: "new ch in { for (@Int <- ch) { Nil } }", binds: 0 },
-    Case { label: "SimpleType String", src: "new ch in { for (@String <- ch) { Nil } }", binds: 0 },
-    Case { label: "ProcVar bound", src: "new ch in { for (@x <- ch) { x } }", binds: 0 },
-    Case { label: "ProcVar free", src: "@\"k\"!(*z)", binds: 1 },
-    Case { label: "Par", src: "Nil | Nil | Nil", binds: 0 },
-    Case { label: "Eval", src: "new x in { *x }", binds: 0 },
-    Case { label: "UnaryExp Not", src: "new ch in { for (@{~7} <- ch) { Nil } }", binds: 0 },
-    Case { label: "UnaryExp Neg", src: "-7", binds: 0 },
-    Case { label: "UnaryExp Negation", src: "new ch in { for (@{~Nil} <- ch) { Nil } }", binds: 0 },
-    Case { label: "BinaryExp Add", src: "1 + 2", binds: 0 },
-    Case { label: "BinaryExp Sub", src: "5 - 2", binds: 0 },
-    Case { label: "BinaryExp Mult", src: "6 * 7", binds: 0 },
-    Case { label: "BinaryExp Div", src: "9 / 3", binds: 0 },
-    Case { label: "BinaryExp Mod", src: "9 % 4", binds: 0 },
-    Case { label: "BinaryExp Eq/Neq", src: "(1 == 2) | (1 != 2)", binds: 0 },
-    Case { label: "BinaryExp Lt/Lte/Gt/Gte", src: "(1 < 2) | (1 <= 2) | (1 > 2) | (1 >= 2)", binds: 0 },
-    Case { label: "BinaryExp Concat", src: "\"a\" ++ \"b\"", binds: 0 },
-    Case { label: "BinaryExp Diff", src: "Set(1, 2) -- Set(2)", binds: 0 },
-    Case { label: "BinaryExp Or/And", src: "(true or false) | (true and false)", binds: 0 },
-    Case { label: "BinaryExp Interpolation", src: "\"a: %s\" % { \"s\" : 1 }", binds: 0 },
-    Case { label: "BinaryExp Conjunction", src: "new ch in { for (@{1 /\\ 2} <- ch) { Nil } }", binds: 0 },
-    Case { label: "BinaryExp Disjunction", src: "new ch in { for (@{1 \\/ 2} <- ch) { Nil } }", binds: 0 },
-    Case { label: "BinaryExp Matches", src: "7 matches 7", binds: 0 },
-    Case { label: "IfThenElse with else", src: "if (true) { Nil } else { Nil }", binds: 0 },
-    Case { label: "IfThenElse without else", src: "if (true) { Nil }", binds: 0 },
-    Case { label: "Method", src: "[1, 2, 3].nth(0)", binds: 0 },
-    Case { label: "Method zero-arg", src: "\"abc\".length()", binds: 0 },
-    Case { label: "Bundle write", src: "new x in { bundle+ { *x } }", binds: 0 },
-    Case { label: "Bundle read", src: "new x in { bundle- { *x } }", binds: 0 },
-    Case { label: "Bundle readwrite", src: "new x in { bundle { *x } }", binds: 0 },
-    Case { label: "Bundle equiv", src: "new x in { bundle0 { *x } }", binds: 0 },
-    Case { label: "Send single", src: "@\"k\"!(1, 2, 3)", binds: 0 },
-    Case { label: "Send multiple", src: "@\"k\"!!(1)", binds: 0 },
-    Case { label: "SendSync empty cont", src: "new c in { c!?(1) . }", binds: 0 },
-    Case { label: "SendSync nonempty cont", src: "new c in { c!?(1) ; Nil }", binds: 0 },
-    Case { label: "New single", src: "new x in { Nil }", binds: 0 },
-    Case { label: "New multiple + uri", src: "new x, y, z(`rho:io:stdout`) in { Nil }", binds: 0 },
-    Case { label: "Contract", src: "new c in { contract c(@x) = { Nil } }", binds: 0 },
-    Case { label: "Contract multi-formal + remainder", src: "new c in { contract c(@x, @y ...@rest) = { Nil } }", binds: 0 },
-    Case { label: "Match", src: "match 7 { 7 => Nil  _ => Nil }", binds: 0 },
-    Case { label: "Match with where-guard", src: "match 7 { x where x > 3 => Nil  _ => Nil }", binds: 0 },
-    Case { label: "Collection List", src: "@\"k\"!([1, 2, 3])", binds: 0 },
-    Case { label: "Collection List empty", src: "@\"k\"!([])", binds: 0 },
-    Case { label: "Collection List remainder", src: "new ch in { for (@{[a, b ...rest]} <- ch) { Nil } }", binds: 0 },
-    Case { label: "Collection Tuple", src: "@\"k\"!((1, 2))", binds: 0 },
-    Case { label: "Collection Set", src: "@\"k\"!(Set(1, 2, 3))", binds: 0 },
-    Case { label: "Collection Set empty", src: "@\"k\"!(Set())", binds: 0 },
-    Case { label: "Collection Map", src: "@\"k\"!({ \"a\" : 1, \"b\" : 2 })", binds: 0 },
-    Case { label: "Collection Map empty", src: "@\"k\"!({ })", binds: 0 },
-    Case { label: "Collection Map remainder", src: "new ch in { for (@{{ \"a\" : v ...rest }} <- ch) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension linear", src: "new ch in { for (@x <- ch) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension repeated", src: "new ch in { for (@x <= ch) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension peek", src: "new ch in { for (@x <<- ch) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension join", src: "new a, b in { for (@x <- a & @y <- b) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension sequential receipts", src: "new a, b in { for (@x <- a; @y <- b) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension where-guard", src: "new ch in { for (@x <- ch where x > 3) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension ReceiveSend", src: "new ch in { for (@x <- ch?!) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension SendReceive", src: "new ch in { for (@x <- ch!?(1)) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension remainder", src: "new ch in { for (@x ...@rest <- ch) { Nil } }", binds: 0 },
-    Case { label: "ForComprehension wildcard", src: "new ch in { for (_ <- ch) { Nil } }", binds: 0 },
-    Case { label: "Let concurrent single", src: "let x <- 1 in { Nil }", binds: 0 },
-    Case { label: "Let sequential single", src: "let x <- 1 ; y <- 2 in { Nil }", binds: 0 },
-    Case { label: "Let concurrent two bindings", src: "let x <- 1 & y <- 2 in { Nil }", binds: 0 },
-    Case { label: "VarRef proc", src: "new ch in { for (@x <- ch) { match 1 { =x => Nil  _ => Nil } } }", binds: 0 },
-    Case { label: "Nested new-in-new-in-new", src: "new a in { new b in { new c in { a!(*b, *c) } } }", binds: 0 },
-    Case { label: "Deeply nested list", src: "@\"k\"!([[[[[[[[0]]]]]]]])", binds: 0 },
-    Case { label: "Nested for under for under new", src: "new a, b in { for (@x <- a) { for (@y <- b) { a!(x + y) } } }", binds: 0 },
+    Case {
+        label: "Nil",
+        src: "Nil",
+        binds: 0,
+    },
+    Case {
+        label: "Unit",
+        src: "()",
+        binds: 0,
+    },
+    Case {
+        label: "BoolLiteral",
+        src: "true",
+        binds: 0,
+    },
+    Case {
+        label: "LongLiteral",
+        src: "42",
+        binds: 0,
+    },
+    Case {
+        label: "BigIntLiteral",
+        src: "42000000000000000000000000n",
+        binds: 0,
+    },
+    Case {
+        label: "StringLiteral",
+        src: "\"hello\"",
+        binds: 0,
+    },
+    Case {
+        label: "UriLiteral",
+        src: "new x(`rho:io:stdout`) in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "SimpleType Int",
+        src: "new ch in { for (@Int <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "SimpleType String",
+        src: "new ch in { for (@String <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ProcVar bound",
+        src: "new ch in { for (@x <- ch) { x } }",
+        binds: 0,
+    },
+    Case {
+        label: "ProcVar free",
+        src: "@\"k\"!(*z)",
+        binds: 1,
+    },
+    Case {
+        label: "Par",
+        src: "Nil | Nil | Nil",
+        binds: 0,
+    },
+    Case {
+        label: "Eval",
+        src: "new x in { *x }",
+        binds: 0,
+    },
+    Case {
+        label: "UnaryExp Not",
+        src: "new ch in { for (@{~7} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "UnaryExp Neg",
+        src: "-7",
+        binds: 0,
+    },
+    Case {
+        label: "UnaryExp Negation",
+        src: "new ch in { for (@{~Nil} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Add",
+        src: "1 + 2",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Sub",
+        src: "5 - 2",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Mult",
+        src: "6 * 7",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Div",
+        src: "9 / 3",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Mod",
+        src: "9 % 4",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Eq/Neq",
+        src: "(1 == 2) | (1 != 2)",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Lt/Lte/Gt/Gte",
+        src: "(1 < 2) | (1 <= 2) | (1 > 2) | (1 >= 2)",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Concat",
+        src: "\"a\" ++ \"b\"",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Diff",
+        src: "Set(1, 2) -- Set(2)",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Or/And",
+        src: "(true or false) | (true and false)",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Interpolation",
+        src: "\"a: %s\" % { \"s\" : 1 }",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Conjunction",
+        src: "new ch in { for (@{1 /\\ 2} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Disjunction",
+        src: "new ch in { for (@{1 \\/ 2} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "BinaryExp Matches",
+        src: "7 matches 7",
+        binds: 0,
+    },
+    Case {
+        label: "IfThenElse with else",
+        src: "if (true) { Nil } else { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "IfThenElse without else",
+        src: "if (true) { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Method",
+        src: "[1, 2, 3].nth(0)",
+        binds: 0,
+    },
+    Case {
+        label: "Method zero-arg",
+        src: "\"abc\".length()",
+        binds: 0,
+    },
+    Case {
+        label: "Bundle write",
+        src: "new x in { bundle+ { *x } }",
+        binds: 0,
+    },
+    Case {
+        label: "Bundle read",
+        src: "new x in { bundle- { *x } }",
+        binds: 0,
+    },
+    Case {
+        label: "Bundle readwrite",
+        src: "new x in { bundle { *x } }",
+        binds: 0,
+    },
+    Case {
+        label: "Bundle equiv",
+        src: "new x in { bundle0 { *x } }",
+        binds: 0,
+    },
+    Case {
+        label: "Send single",
+        src: "@\"k\"!(1, 2, 3)",
+        binds: 0,
+    },
+    Case {
+        label: "Send multiple",
+        src: "@\"k\"!!(1)",
+        binds: 0,
+    },
+    Case {
+        label: "SendSync empty cont",
+        src: "new c in { c!?(1) . }",
+        binds: 0,
+    },
+    Case {
+        label: "SendSync nonempty cont",
+        src: "new c in { c!?(1) ; Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "New single",
+        src: "new x in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "New multiple + uri",
+        src: "new x, y, z(`rho:io:stdout`) in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Contract",
+        src: "new c in { contract c(@x) = { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "Contract multi-formal + remainder",
+        src: "new c in { contract c(@x, @y ...@rest) = { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "Match",
+        src: "match 7 { 7 => Nil  _ => Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Match with where-guard",
+        src: "match 7 { x where x > 3 => Nil  _ => Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Collection List",
+        src: "@\"k\"!([1, 2, 3])",
+        binds: 0,
+    },
+    Case {
+        label: "Collection List empty",
+        src: "@\"k\"!([])",
+        binds: 0,
+    },
+    Case {
+        label: "Collection List remainder",
+        src: "new ch in { for (@{[a, b ...rest]} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Tuple",
+        src: "@\"k\"!((1, 2))",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Set",
+        src: "@\"k\"!(Set(1, 2, 3))",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Set empty",
+        src: "@\"k\"!(Set())",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Map",
+        src: "@\"k\"!({ \"a\" : 1, \"b\" : 2 })",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Map empty",
+        src: "@\"k\"!({ })",
+        binds: 0,
+    },
+    Case {
+        label: "Collection Map remainder",
+        src: "new ch in { for (@{{ \"a\" : v ...rest }} <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension linear",
+        src: "new ch in { for (@x <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension repeated",
+        src: "new ch in { for (@x <= ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension peek",
+        src: "new ch in { for (@x <<- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension join",
+        src: "new a, b in { for (@x <- a & @y <- b) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension sequential receipts",
+        src: "new a, b in { for (@x <- a; @y <- b) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension where-guard",
+        src: "new ch in { for (@x <- ch where x > 3) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension ReceiveSend",
+        src: "new ch in { for (@x <- ch?!) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension SendReceive",
+        src: "new ch in { for (@x <- ch!?(1)) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension remainder",
+        src: "new ch in { for (@x ...@rest <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "ForComprehension wildcard",
+        src: "new ch in { for (_ <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "Let concurrent single",
+        src: "let x <- 1 in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Let sequential single",
+        src: "let x <- 1 ; y <- 2 in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "Let concurrent two bindings",
+        src: "let x <- 1 & y <- 2 in { Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "VarRef proc",
+        src: "new ch in { for (@x <- ch) { match 1 { =x => Nil  _ => Nil } } }",
+        binds: 0,
+    },
+    Case {
+        label: "Nested new-in-new-in-new",
+        src: "new a in { new b in { new c in { a!(*b, *c) } } }",
+        binds: 0,
+    },
+    Case {
+        label: "Deeply nested list",
+        src: "@\"k\"!([[[[[[[[0]]]]]]]])",
+        binds: 0,
+    },
+    Case {
+        label: "Nested for under for under new",
+        src: "new a, b in { for (@x <- a) { for (@y <- b) { a!(x + y) } } }",
+        binds: 0,
+    },
     // ⚠ These three are REJECTED by `Compiler::normalize_term`, not by
     // `normalize_ann_proc`. At this entry point they are accepted and carry the
     // free bindings / wildcards / connectives the wrapper later refuses, so the
     // numbering they produce is exactly what has to agree.
-    Case { label: "top-level free variable (rejected one layer up)", src: "*z", binds: 1 },
-    Case { label: "top-level wildcard (rejected one layer up)", src: "_", binds: 0 },
-    Case { label: "top-level connective (rejected one layer up)", src: "1 /\\ 2", binds: 0 },
+    Case {
+        label: "top-level free variable (rejected one layer up)",
+        src: "*z",
+        binds: 1,
+    },
+    Case {
+        label: "top-level wildcard (rejected one layer up)",
+        src: "_",
+        binds: 0,
+    },
+    Case {
+        label: "top-level connective (rejected one layer up)",
+        src: "1 /\\ 2",
+        binds: 0,
+    },
     // ⚠ These three exist so `every_proc_variant_is_covered` sees the arm in
     // PROCESS position. `AnnProc::iter_preorder_dfs` deliberately does not
     // descend into names (`@P` lives "in the world of names"), so the same arms
     // appearing inside a `for` pattern above are exercised by the differential
     // but invisible to the coverage walker.
-    Case { label: "UnaryExp in process position", src: "~Nil", binds: 0 },
-    Case { label: "SimpleType in process position", src: "match 7 { Int => Nil  _ => Nil }", binds: 0 },
-    Case { label: "UriLiteral in process position", src: "@\"k\"!(`rho:io:stdout`)", binds: 0 },
+    Case {
+        label: "UnaryExp in process position",
+        src: "~Nil",
+        binds: 0,
+    },
+    Case {
+        label: "SimpleType in process position",
+        src: "match 7 { Int => Nil  _ => Nil }",
+        binds: 0,
+    },
+    Case {
+        label: "UriLiteral in process position",
+        src: "@\"k\"!(`rho:io:stdout`)",
+        binds: 0,
+    },
 ];
 
 /// Inputs the normalizer must **reject**, with the rejection itself compared.
@@ -277,13 +596,41 @@ const STRUCTURAL: &[Case] = &[
 /// that rejects for a different reason, at a different span, or with a
 /// different variable named has changed observable behaviour.
 const REJECTIONS: &[Case] = &[
-    Case { label: "name used twice free", src: "new ch in { for (@x, @x <- ch) { Nil } }", binds: 0 },
-    Case { label: "proc var used twice free", src: "@\"k\"!([*z, *z])", binds: 0 },
-    Case { label: "receive on the same channel twice", src: "new a in { for (@x <- a & @y <- a) { Nil } }", binds: 0 },
-    Case { label: "bundle with a free variable", src: "bundle+ { *z }", binds: 0 },
-    Case { label: "bundle with a top-level connective", src: "new x in { bundle+ { *x /\\ *x } }", binds: 0 },
-    Case { label: "disjunction in a receive pattern", src: "new ch in { for (@{1 \\/ 2} <- ch) { Nil } } | Nil", binds: 0 },
-    Case { label: "name where a proc was bound", src: "new ch in { for (@x <- ch) { *x } }", binds: 0 },
+    Case {
+        label: "name used twice free",
+        src: "new ch in { for (@x, @x <- ch) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "proc var used twice free",
+        src: "@\"k\"!([*z, *z])",
+        binds: 0,
+    },
+    Case {
+        label: "receive on the same channel twice",
+        src: "new a in { for (@x <- a & @y <- a) { Nil } }",
+        binds: 0,
+    },
+    Case {
+        label: "bundle with a free variable",
+        src: "bundle+ { *z }",
+        binds: 0,
+    },
+    Case {
+        label: "bundle with a top-level connective",
+        src: "new x in { bundle+ { *x /\\ *x } }",
+        binds: 0,
+    },
+    Case {
+        label: "disjunction in a receive pattern",
+        src: "new ch in { for (@{1 \\/ 2} <- ch) { Nil } } | Nil",
+        binds: 0,
+    },
+    Case {
+        label: "name where a proc was bound",
+        src: "new ch in { for (@x <- ch) { *x } }",
+        binds: 0,
+    },
 ];
 
 // ===========================================================================
@@ -315,7 +662,10 @@ enum Observed {
     Err(String),
 }
 
-fn observe(result: Result<ProcVisitOutputs, InterpreterError>, entry: &ProcVisitInputs) -> Observed {
+fn observe(
+    result: Result<ProcVisitOutputs, InterpreterError>,
+    entry: &ProcVisitInputs,
+) -> Observed {
     match result {
         Ok(out) => {
             let mut levels: Vec<(String, i32)> = out
@@ -358,7 +708,11 @@ fn both(src: &str) -> (Observed, Observed) {
 fn parse_one<'p>(parser: &'p RholangParser<'p>, src: &'p str) -> AnnProc<'p> {
     match parser.parse(src) {
         Validated::Good(procs) => {
-            assert_eq!(procs.len(), 1, "differential corpus: {src:?} is not one process");
+            assert_eq!(
+                procs.len(),
+                1,
+                "differential corpus: {src:?} is not one process"
+            );
             procs
                 .into_iter()
                 .next()
@@ -441,13 +795,13 @@ fn every_corpus_entry_carries_what_it_claims() {
         let parser = RholangParser::new();
         let ast = parse_one(&parser, case.src);
         let env: HashMap<String, Par> = HashMap::new();
-        let observed = match normalize_ann_proc_recursive(&ast, ProcVisitInputs::new(), &env, &parser)
-        {
-            Ok(out) => out.free_map.level_bindings.len(),
-            // A rejected case cannot report a binding count; its claim is
-            // checked by `every_rejection_agrees` instead.
-            Err(_) => continue,
-        };
+        let observed =
+            match normalize_ann_proc_recursive(&ast, ProcVisitInputs::new(), &env, &parser) {
+                Ok(out) => out.free_map.level_bindings.len(),
+                // A rejected case cannot report a binding count; its claim is
+                // checked by `every_rejection_agrees` instead.
+                Err(_) => continue,
+            };
         assert_eq!(
             observed, case.binds,
             "differential ANTI-VACUITY: {} claims {} free binding(s) but its normalization \
@@ -500,7 +854,11 @@ fn the_witness_shapes_really_have_differing_sibling_bind_counts() {
              invisible and this family cannot go red."
         );
         assert!(
-            counts.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+            counts
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                > 1,
             "ANTI-VACUITY: witness {src:?} has uniform sibling bind counts, so it cannot \
              distinguish a correctly threaded free map from a reversed one"
         );
@@ -656,10 +1014,12 @@ fn the_multi_name_let_branch_agrees() {
         end: SourcePos { line: 1, col: 1 },
     };
     let b = parser.ast_builder();
-    let name = |n: &'static str| Name::NameVar(Var::Id(Id {
-        name: b.alloc_str(n),
-        pos: span.start,
-    }));
+    let name = |n: &'static str| {
+        Name::NameVar(Var::Id(Id {
+            name: b.alloc_str(n),
+            pos: span.start,
+        }))
+    };
     let lit = |v: i64| AnnProc {
         proc: b.alloc_long_literal(v),
         span,
@@ -811,15 +1171,43 @@ fn every_proc_variant_is_covered() {
         ("Bad", "a parse-error node; unreachable from a corpus of parsing sources"),
         ("Select", "the PARSER panics on `select` before the normalizer is reached (rholang-parser `parsing.rs`), so it cannot appear in a corpus entry at all; the normalizer's own `Select` arm returns `Err(ParserError(..))` and is identical in both implementations by inspection — it contains no recursive call"),
     ];
-    let excused_names: std::collections::BTreeSet<&str> =
-        excused.iter().map(|(n, _)| *n).collect();
+    let excused_names: std::collections::BTreeSet<&str> = excused.iter().map(|(n, _)| *n).collect();
 
     let all: &[&str] = &[
-        "Nil", "Unit", "BoolLiteral", "LongLiteral", "SignedIntLiteral", "UnsignedIntLiteral",
-        "BigIntLiteral", "BigRatLiteral", "FloatLiteral", "FixedPointLiteral", "StringLiteral",
-        "UriLiteral", "SimpleType", "Collection", "ProcVar", "Par", "IfThenElse", "Send",
-        "ForComprehension", "Match", "Select", "Bundle", "Let", "New", "Contract", "SendSync",
-        "Eval", "Method", "UnaryExp", "BinaryExp", "VarRef", "SignedTerm", "TokenStack", "Bad",
+        "Nil",
+        "Unit",
+        "BoolLiteral",
+        "LongLiteral",
+        "SignedIntLiteral",
+        "UnsignedIntLiteral",
+        "BigIntLiteral",
+        "BigRatLiteral",
+        "FloatLiteral",
+        "FixedPointLiteral",
+        "StringLiteral",
+        "UriLiteral",
+        "SimpleType",
+        "Collection",
+        "ProcVar",
+        "Par",
+        "IfThenElse",
+        "Send",
+        "ForComprehension",
+        "Match",
+        "Select",
+        "Bundle",
+        "Let",
+        "New",
+        "Contract",
+        "SendSync",
+        "Eval",
+        "Method",
+        "UnaryExp",
+        "BinaryExp",
+        "VarRef",
+        "SignedTerm",
+        "TokenStack",
+        "Bad",
     ];
 
     let missing: Vec<&str> = all

@@ -95,7 +95,8 @@ pub(crate) fn build_collection_expr(
             // struct literal (private shadow cell). The value is
             // FRESH (never interned), so the field write below stays
             // sound under the shadow-cell invariant.
-            let mut tmp_e_pathmap = EPathMap::new(ps, locally_free, connective_used, remainder.clone());
+            let mut tmp_e_pathmap =
+                EPathMap::new(ps, locally_free, connective_used, remainder.clone());
 
             tmp_e_pathmap.connective_used = tmp_e_pathmap.connective_used || remainder.is_some();
             Expr {
@@ -435,10 +436,7 @@ pub(crate) fn combine_collect_map<'ast>(
     let value_connective_used = result.par.connective_used;
     acc_pairs.push((key, result.par));
     let result_known_free = result.free_map;
-    let locally_free = union(
-        locally_free,
-        union(key_locally_free, value_locally_free),
-    );
+    let locally_free = union(locally_free, union(key_locally_free, value_locally_free));
     let connective_used = connective_used || key_connective_used || value_connective_used;
 
     match pairs.get(idx + 1) {
@@ -476,7 +474,6 @@ pub(crate) fn combine_collect_map<'ast>(
         }
     }
 }
-
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/CollectMatcherSpec.scala
 #[cfg(test)]

@@ -9,7 +9,10 @@ use crate::rust::interpreter::errors::InterpreterError;
 
 /// `*x`, descend half — one name child.
 #[inline(never)]
-pub(crate) fn descend_p_eval<'ast>(eval_name: &'ast Name<'ast>, input: ProcVisitInputs) -> Step<'ast> {
+pub(crate) fn descend_p_eval<'ast>(
+    eval_name: &'ast Name<'ast>,
+    input: ProcVisitInputs,
+) -> Step<'ast> {
     Step::Descend {
         kont: NormKont::Eval {
             input_par: input.par,
@@ -48,7 +51,6 @@ pub(crate) fn combine_p_eval<'ast>(
         free_map: name_match_result.free_map,
     })))
 }
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

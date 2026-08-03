@@ -10,7 +10,7 @@
 //! # Semantics contract (provable identity with the retired scans)
 //!
 //! All helpers assume a PURE-INSERT trie: every map they receive is built by
-//! `create_pathmap_from_elements` (inserts only), so every path present in the
+//! `create_set_pathmap_from_elements` (inserts only), so every path present in the
 //! trie is a byte-prefix of some inserted key.
 //!
 //! EPathMap wire W2b-1: keys are now the CANONICAL PATH CODEC bytes
@@ -89,8 +89,10 @@
 //! (`bare_get_leaf_at_a_cursor_reads_back_the_element`,
 //! `bare_get_path_round_trips_through_the_map`).
 
+use pathmap::PathMap;
+
 use super::canonical_path::collect_child_segments_codec;
-use super::pathmap_integration::RholangPathMap;
+use super::pathmap_integration::RholangSetPathMap;
 use crate::rhoapi::Par;
 
 /// The byte that terminated every path segment in the RETIRED (pre-W2b-1)
@@ -107,7 +109,8 @@ pub const SEGMENT_SEPARATOR: u8 = 0xFF;
 /// inserted key, and every prefix of an inserted key is a trie path).
 /// `PathMap::path_exists_at` checks precisely trie-path existence.
 /// Cost: O(|key|) instead of O(Σ|keys|).
-pub fn path_prefix_exists(map: &RholangPathMap, key: &[u8]) -> bool {
+pub fn path_prefix_exists<V>(map: &PathMap<V>, key: &[u8]) -> bool
+where V: Clone + Send + Sync + Unpin {
     map.path_exists_at(key)
 }
 
@@ -127,11 +130,27 @@ pub fn path_prefix_exists(map: &RholangPathMap, key: &[u8]) -> bool {
 /// check), matching where the full scan encounters `key == prefix`.
 /// A nonexistent `prefix` yields nothing in both forms (a key with prefix `p`
 /// would make `p` an existing path). Cost: O(|prefix| + |subtrie|).
-pub fn collect_subtrie_values(map: &RholangPathMap, prefix: &[u8]) -> Vec<Par> {
-    map.read_zipper_at_borrowed_path(prefix)
-        .into_iter()
-        .map(|(_, value)| value.clone())
-        .collect()
+pub fn collect_subtrie_values(map: &RholangSetPathMap, prefix: &[u8]) -> Vec<Par> {
+    let zipper = map.read_zipper_at_borrowed_path(prefix);
+
+    // A zipper-rooted iterator reports keys RELATIVE to its focus. The retired
+    // scan decoded the absolute stored key, so reattach the borrowed prefix
+    // before decoding. Reuse one byte buffer across the traversal: the result
+    // already owns one `Par` per entry, and no per-entry key allocation is
+    // retained.
+    let mut absolute = Vec::new();
+    let mut values = Vec::new();
+    for (relative, ()) in zipper {
+        absolute.clear();
+        absolute.reserve(prefix.len() + relative.len());
+        absolute.extend_from_slice(prefix);
+        absolute.extend_from_slice(&relative);
+        values.push(
+            crate::rust::canonical_path::decode_trie_path(&absolute)
+                .expect("RholangSetPathMap contains only canonical entry keys"),
+        );
+    }
+    values
 }
 
 /// Collect the distinct immediate child segments below `prefix`, in ascending
@@ -149,11 +168,14 @@ pub fn collect_subtrie_values(map: &RholangPathMap, prefix: &[u8]) -> Vec<Par> {
 /// `BitMask::clear_bit`-XOR workaround are gone.
 ///
 /// Cost: O(|prefix| + Σ|emitted distinct segments|) instead of O(map).
-pub fn collect_child_segments(
-    map: &RholangPathMap,
+pub fn collect_child_segments<V>(
+    map: &PathMap<V>,
     prefix: &[u8],
     limit: Option<usize>,
-) -> Vec<Vec<u8>> {
+) -> Vec<Vec<u8>>
+where
+    V: Clone + Send + Sync + Unpin,
+{
     collect_child_segments_codec(map, prefix, limit)
 }
 
@@ -179,7 +201,8 @@ pub fn collect_child_segments(
 ///
 /// Cost: O(|prefix| + |subtrie|). This is NOT a constant-time query; it is
 /// meant to be read once as a walk bound, not once per step.
-pub fn subtrie_value_count(map: &RholangPathMap, prefix: &[u8]) -> usize {
+pub fn subtrie_value_count<V>(map: &PathMap<V>, prefix: &[u8]) -> usize
+where V: Clone + Send + Sync + Unpin {
     use pathmap::zipper::ZipperMoving;
     map.read_zipper_at_borrowed_path(prefix).val_count()
 }
@@ -273,7 +296,8 @@ pub fn subtrie_value_count(map: &RholangPathMap, prefix: &[u8]) -> usize {
 ///
 /// Cost: O(|from_key| + |answer|) trie steps — the same order as the descent
 /// it replaces.
-pub fn next_value_key(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<u8>> {
+pub fn next_value_key<V>(map: &PathMap<V>, from_key: &[u8]) -> Option<Vec<u8>>
+where V: Clone + Send + Sync + Unpin {
     use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 
     // Rooted at the trie ROOT: the walk must be able to ASCEND out of the
@@ -354,7 +378,7 @@ pub fn next_value_key(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<u8>> 
 /// singleton list wrapping it therefore return the SAME vector. That is the
 /// `EZipper.current_path` shape, and it is lossy; callers that must address
 /// the entry again need [`next_value_key`]'s raw key.
-pub fn next_value_path(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<Vec<u8>>> {
-    next_value_key(map, from_key)
-        .map(|key| super::pathmap_zipper::unflatten_segments(&key))
+pub fn next_value_path<V>(map: &PathMap<V>, from_key: &[u8]) -> Option<Vec<Vec<u8>>>
+where V: Clone + Send + Sync + Unpin {
+    next_value_key(map, from_key).map(|key| super::pathmap_zipper::unflatten_segments(&key))
 }

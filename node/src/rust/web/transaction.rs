@@ -67,7 +67,7 @@ pub fn transfer_unforgeable() -> Par {
     }
     let unforgeable_bytes = seed_for_system_vault.next();
 
-    Par {
+    models::par_from_default! {
         unforgeables: vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                 id: unforgeable_bytes.into_iter().map(|b| b as u8).collect(),

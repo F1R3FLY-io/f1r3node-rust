@@ -67,7 +67,10 @@ async fn cell_total(runtime: &RhoRuntimeImpl, names: &[&str]) -> i64 {
                 _ => None,
             })
             .sum();
-        assert!(value >= 0, "cell `{name}` must never go negative (got {value})");
+        assert!(
+            value >= 0,
+            "cell `{name}` must never go negative (got {value})"
+        );
         total += value;
     }
     total
@@ -90,18 +93,26 @@ async fn treasury_runs_and_conserves_money() {
     );
 
     // MONEY ledger — the three non-crossing pools, conserved at their opening total.
-    let money = cell_total(
-        &runtime,
-        &[
-            // Treasury pool
-            "Treasury", "Dave_cash", "Doug_cash", "Frank_cash", "Erin_cash", "Heidi_cash",
-            "Niaj_cash", "Olivia_cash", "Peggy_cash", "Ivan_cash", "Judy_cash",
-            // Quorum pool
-            "Quorum_grant", "Grace_cash",
-            // Reserve pool
-            "Reserve", "Mallory_cash",
-        ],
-    )
+    let money = cell_total(&runtime, &[
+        // Treasury pool
+        "Treasury",
+        "Dave_cash",
+        "Doug_cash",
+        "Frank_cash",
+        "Erin_cash",
+        "Heidi_cash",
+        "Niaj_cash",
+        "Olivia_cash",
+        "Peggy_cash",
+        "Ivan_cash",
+        "Judy_cash",
+        // Quorum pool
+        "Quorum_grant",
+        "Grace_cash",
+        // Reserve pool
+        "Reserve",
+        "Mallory_cash",
+    ])
     .await;
     assert_eq!(
         money, 640,

@@ -7,7 +7,6 @@ use models::rust::rholang::sorter::score_tree::ScoredTerm;
 use crate::rust::interpreter::compiler::exports::FreeMap;
 use crate::rust::interpreter::errors::InterpreterError;
 
-
 pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
     binds: Vec<(Vec<Par>, Option<Var>, Par, FreeMap<T>)>,
 ) -> Result<Vec<(ReceiveBind, FreeMap<T>)>, InterpreterError> {

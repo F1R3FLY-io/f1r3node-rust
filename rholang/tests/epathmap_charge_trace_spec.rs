@@ -46,8 +46,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ETuple, Expr, Par};
 use models::rust::utils::{new_elist_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::BillableKind;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
+use rholang::rust::interpreter::accounting::BillableKind;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -219,16 +219,14 @@ async fn read_single_par(runtime: &RhoRuntimeImpl, channel_name: &str) -> Par {
     pars[0].clone()
 }
 
-fn gstring_par(value: &str) -> Par {
-    new_gstring_par(value.to_string(), Vec::new(), false)
-}
+fn gstring_par(value: &str) -> Par { new_gstring_par(value.to_string(), Vec::new(), false) }
 
 fn ground_list(elements: Vec<Par>) -> Par {
     new_elist_par(elements, Vec::new(), false, None, Vec::new(), false)
 }
 
 fn ground_tuple1(inner: Par) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                 ps: vec![inner],
@@ -393,28 +391,34 @@ async fn discovery_chain_trace_and_result() {
 
     // Result identity: the subtrie of the op prefix is exactly the «s» root
     // entry (op-first family ⇒ one candidate site).
-    with_runtime("epm-p0-discovery-read-", |runtime: RhoRuntimeImpl| async move {
-        let res = runtime
-            .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
-            .await
-            .expect("evaluate");
-        assert!(res.errors.is_empty());
-        let subtrie = read_single_par(&runtime, "e6a:sites:site0/Pair").await;
-        let expected_entry = ground_list(vec![
-            gstring_par("t.deadbeef.Pair"),
-            gstring_par("site0"),
-        ]);
-        match subtrie.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            // `EPathMap`'s entries live in a private trie now, so the struct
-            // pattern is replaced by the projection accessor.
-            Some(ExprInstance::EPathmapBody(map)) => {
-                let ps = map.ps();
-                assert_eq!(ps.len(), 1, "op subtrie must hold exactly the root «s» entry");
-                assert_eq!(ps[0], expected_entry, "subtrie value must be the original entry Par");
+    with_runtime(
+        "epm-p0-discovery-read-",
+        |runtime: RhoRuntimeImpl| async move {
+            let res = runtime
+                .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
+                .await
+                .expect("evaluate");
+            assert!(res.errors.is_empty());
+            let subtrie = read_single_par(&runtime, "e6a:sites:site0/Pair").await;
+            let expected_entry =
+                ground_list(vec![gstring_par("t.deadbeef.Pair"), gstring_par("site0")]);
+            match subtrie.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                Some(ExprInstance::EPathmapBody(map)) => {
+                    let ps = map.entry_trie().entries_owned();
+                    assert_eq!(
+                        ps.len(),
+                        1,
+                        "op subtrie must hold exactly the root «s» entry"
+                    );
+                    assert_eq!(
+                        ps[0], expected_entry,
+                        "subtrie value must be the original entry Par"
+                    );
+                }
+                other => panic!("expected an EPathMap subtrie, got {other:?}"),
             }
-            other => panic!("expected an EPathMap subtrie, got {other:?}"),
-        }
-    })
+        },
+    )
     .await;
 }
 
@@ -425,19 +429,22 @@ async fn tag_guard_chain_trace_and_result() {
     assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
     check_trace("TAG_GUARD_TRACE", TAG_GUARD_TRACE, &trace);
 
-    with_runtime("epm-p0-tagguard-read-", |runtime: RhoRuntimeImpl| async move {
-        let res = runtime
-            .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
-            .await
-            .expect("evaluate");
-        assert!(res.errors.is_empty());
-        let out = read_single_par(&runtime, "out").await;
-        assert_eq!(
-            out.exprs.first().and_then(|e| e.expr_instance.clone()),
-            Some(ExprInstance::GBool(true)),
-            "tag guard must hold at the indexed site"
-        );
-    })
+    with_runtime(
+        "epm-p0-tagguard-read-",
+        |runtime: RhoRuntimeImpl| async move {
+            let res = runtime
+                .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
+                .await
+                .expect("evaluate");
+            assert!(res.errors.is_empty());
+            let out = read_single_par(&runtime, "out").await;
+            assert_eq!(
+                out.exprs.first().and_then(|e| e.expr_instance.clone()),
+                Some(ExprInstance::GBool(true)),
+                "tag guard must hold at the indexed site"
+            );
+        },
+    )
     .await;
 }
 
@@ -448,19 +455,22 @@ async fn sigma_exists_chain_trace_and_result() {
     assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
     check_trace("SIGMA_EXISTS_TRACE", SIGMA_EXISTS_TRACE, &trace);
 
-    with_runtime("epm-p0-sigmaexists-read-", |runtime: RhoRuntimeImpl| async move {
-        let res = runtime
-            .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
-            .await
-            .expect("evaluate");
-        assert!(res.errors.is_empty());
-        let out = read_single_par(&runtime, "out").await;
-        assert_eq!(
-            out.exprs.first().and_then(|e| e.expr_instance.clone()),
-            Some(ExprInstance::GBool(true)),
-            "σ-position existence must hold"
-        );
-    })
+    with_runtime(
+        "epm-p0-sigmaexists-read-",
+        |runtime: RhoRuntimeImpl| async move {
+            let res = runtime
+                .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
+                .await
+                .expect("evaluate");
+            assert!(res.errors.is_empty());
+            let out = read_single_par(&runtime, "out").await;
+            assert_eq!(
+                out.exprs.first().and_then(|e| e.expr_instance.clone()),
+                Some(ExprInstance::GBool(true)),
+                "σ-position existence must hold"
+            );
+        },
+    )
     .await;
 }
 
@@ -471,18 +481,22 @@ async fn sigma_chain_trace_and_result() {
     assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
     check_trace("SIGMA_CHAIN_TRACE", SIGMA_CHAIN_TRACE, &trace);
 
-    with_runtime("epm-p0-sigmachain-read-", |runtime: RhoRuntimeImpl| async move {
-        let res = runtime
-            .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
-            .await
-            .expect("evaluate");
-        assert!(res.errors.is_empty());
-        let out = read_single_par(&runtime, "out").await;
-        assert_eq!(
-            out, expected_sigma_entry(),
-            "getLeaf must return the ORIGINAL «v» entry Par losslessly"
-        );
-    })
+    with_runtime(
+        "epm-p0-sigmachain-read-",
+        |runtime: RhoRuntimeImpl| async move {
+            let res = runtime
+                .evaluate(&program, Cost::unsafe_max(), HashMap::new(), fixed_rand())
+                .await
+                .expect("evaluate");
+            assert!(res.errors.is_empty());
+            let out = read_single_par(&runtime, "out").await;
+            assert_eq!(
+                out,
+                expected_sigma_entry(),
+                "getLeaf must return the ORIGINAL «v» entry Par losslessly"
+            );
+        },
+    )
     .await;
 }
 
@@ -526,8 +540,12 @@ fn nil_source_programs() -> Vec<(&'static str, String)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nil_mid_chain_raises_the_exact_reduce_error() {
     for (label, program) in nil_source_programs() {
-        let (res, _trace) =
-            run_with_trace(&format!("epm-p0-nil-{label}-"), &program, Cost::unsafe_max()).await;
+        let (res, _trace) = run_with_trace(
+            &format!("epm-p0-nil-{label}-"),
+            &program,
+            Cost::unsafe_max(),
+        )
+        .await;
         assert_eq!(res.errors.len(), 1, "{label}: expected exactly one error");
         match &res.errors[0] {
             InterpreterError::ReduceError(message) => assert_eq!(
@@ -558,11 +576,12 @@ const NIL_GETLEAF_TRACE: &[&str] = &[
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nil_mid_chain_charge_prefix_is_pinned() {
     let (_label, program) = &nil_source_programs()[0];
-    let (res_a, trace_a) =
-        run_with_trace("epm-p0-niltrace-a-", program, Cost::unsafe_max()).await;
-    let (_res_b, trace_b) =
-        run_with_trace("epm-p0-niltrace-b-", program, Cost::unsafe_max()).await;
-    assert_eq!(trace_a, trace_b, "Nil-mid-chain trace must be deterministic");
+    let (res_a, trace_a) = run_with_trace("epm-p0-niltrace-a-", program, Cost::unsafe_max()).await;
+    let (_res_b, trace_b) = run_with_trace("epm-p0-niltrace-b-", program, Cost::unsafe_max()).await;
+    assert_eq!(
+        trace_a, trace_b,
+        "Nil-mid-chain trace must be deterministic"
+    );
     assert_eq!(res_a.errors.len(), 1);
     check_trace("NIL_GETLEAF_TRACE", NIL_GETLEAF_TRACE, &trace_a);
 }
@@ -573,8 +592,7 @@ async fn nil_mid_chain_charge_prefix_is_pinned() {
 /// NOT the Nil ReduceError. The ordering is the pinned truth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nil_with_wrong_arity_hits_the_arity_check_first() {
-    let program =
-        r#"@"nil"!( {| ["a", "x"] |}.readZipperAt(["a"]).getLeaf().getLeaf("extra") )"#;
+    let program = r#"@"nil"!( {| ["a", "x"] |}.readZipperAt(["a"]).getLeaf().getLeaf("extra") )"#;
     let (res, _trace) = run_with_trace("epm-p0-arity-", program, Cost::unsafe_max()).await;
     assert_eq!(res.errors.len(), 1, "expected exactly one error");
     match &res.errors[0] {
@@ -620,9 +638,12 @@ fn error_name(error: &InterpreterError) -> &'static str {
 
 async fn observe_exhaustion(k: i64) -> ExhaustionObservation {
     let program = sigma_chain_program();
-    let (res, trace) =
-        run_with_trace(&format!("epm-p0-exhaust-{k}-"), &program, Cost::create(k, "test budget"))
-            .await;
+    let (res, trace) = run_with_trace(
+        &format!("epm-p0-exhaust-{k}-"),
+        &program,
+        Cost::create(k, "test budget"),
+    )
+    .await;
     ExhaustionObservation {
         k,
         errors: res.errors.iter().map(error_name).collect(),
@@ -682,7 +703,10 @@ async fn budget_exhaustion_walks_comm_boundaries() {
             continue;
         }
         assert_eq!(actual.errors, errors, "exhaustion errors drifted (k={k})");
-        assert_eq!(actual.consumed, consumed, "exhaustion consumed drifted (k={k})");
+        assert_eq!(
+            actual.consumed, consumed,
+            "exhaustion consumed drifted (k={k})"
+        );
         match rows {
             Some(exact) => assert_eq!(
                 actual.committed_rows, exact,
@@ -713,12 +737,18 @@ async fn chain_shape_costs_are_memo_warmth_invariant() {
         ("sigma-exists", sigma_exists_program()),
         ("sigma-chain", sigma_chain_program()),
     ] {
-        let (res_cold, _) =
-            run_with_trace(&format!("epm-p0-inv-cold-{label}-"), &program, Cost::unsafe_max())
-                .await;
-        let (res_warm, _) =
-            run_with_trace(&format!("epm-p0-inv-warm-{label}-"), &program, Cost::unsafe_max())
-                .await;
+        let (res_cold, _) = run_with_trace(
+            &format!("epm-p0-inv-cold-{label}-"),
+            &program,
+            Cost::unsafe_max(),
+        )
+        .await;
+        let (res_warm, _) = run_with_trace(
+            &format!("epm-p0-inv-warm-{label}-"),
+            &program,
+            Cost::unsafe_max(),
+        )
+        .await;
         assert!(res_cold.errors.is_empty() && res_warm.errors.is_empty());
         assert_eq!(
             res_cold.cost.value, res_warm.cost.value,

@@ -93,8 +93,9 @@ mod zipper_query_tests {
         };
 
         // Test hasVal implementation logic
-        let pathmap_result =
-            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(zipper.pathmap.as_ref().unwrap());
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(
+            zipper.pathmap.as_ref().unwrap(),
+        );
         let rholang_pathmap = pathmap_result.map;
 
         // Builds key from current_path segments using the same encoding as par_to_path
@@ -113,7 +114,7 @@ mod zipper_query_tests {
             .collect();
         // W2b-1 (why bytes moved): FULL codec key = the codec segments joined
         // with the split-list 0x00 terminator (was the retired per-segment
-        // 0xFF), matching create_pathmap_from_elements' encode_trie_path.
+        // 0xFF), matching create_set_pathmap_from_elements' encode_trie_path.
         let key: Vec<u8> = segments_to_key(&segments, true);
 
         let has_val = rholang_pathmap.get(&key).is_some();
@@ -134,8 +135,9 @@ mod zipper_query_tests {
             cursor_kind: 0,
         };
 
-        let pathmap_result =
-            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(zipper.pathmap.as_ref().unwrap());
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(
+            zipper.pathmap.as_ref().unwrap(),
+        );
         let rholang_pathmap = pathmap_result.map;
 
         // Builds key from current_path segments using the same encoding as par_to_path
@@ -154,7 +156,7 @@ mod zipper_query_tests {
             .collect();
         // W2b-1 (why bytes moved): FULL codec key = the codec segments joined
         // with the split-list 0x00 terminator (was the retired per-segment
-        // 0xFF), matching create_pathmap_from_elements' encode_trie_path.
+        // 0xFF), matching create_set_pathmap_from_elements' encode_trie_path.
         let key: Vec<u8> = segments_to_key(&segments, true);
 
         let has_val = rholang_pathmap.get(&key).is_some();
@@ -166,7 +168,7 @@ mod zipper_query_tests {
         let pathmap = create_test_pathmap();
 
         // Test getting value at path ["a"]
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Builds key from path ["a"] using par_to_path encoding
@@ -186,7 +188,7 @@ mod zipper_query_tests {
     fn test_at_path_nonexistent() {
         let pathmap = create_test_pathmap();
 
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         let key: Vec<u8> = vec![
@@ -202,7 +204,7 @@ mod zipper_query_tests {
         let pathmap = create_test_pathmap();
 
         // Root exists if PathMap is not empty
-        let exists = !pathmap.ps().is_empty();
+        let exists = !pathmap.is_empty();
         assert!(exists, "Root path should exist for non-empty PathMap");
     }
 
@@ -211,7 +213,7 @@ mod zipper_query_tests {
         let pathmap = create_test_pathmap();
 
         // Path ["a"] exists because there are children under it
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         // Builds prefix key from path ["a"] using par_to_path encoding
@@ -233,7 +235,7 @@ mod zipper_query_tests {
     fn test_path_exists_for_nonexistent_path() {
         let pathmap = create_test_pathmap();
 
-        let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
+        let pathmap_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
         let prefix_key: Vec<u8> = vec![b'z', 0xFF];
@@ -248,7 +250,7 @@ mod zipper_query_tests {
     fn test_path_exists_empty_pathmap() {
         let empty_pathmap = EPathMap::new(vec![], vec![], false, None);
 
-        let exists = !empty_pathmap.ps().is_empty();
+        let exists = !empty_pathmap.is_empty();
         assert!(!exists, "Empty PathMap should not have existing paths");
     }
 }
@@ -264,9 +266,9 @@ mod zipper_query_tests {
 mod native_query_identity_tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{EList, EPathMap, Expr, Par};
-    use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
     use models::rust::canonical_path::{encode_trie_segment, segment_extent, tag};
-    use models::rust::pathmap_integration::RholangPathMap;
+    use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+    use models::rust::pathmap_integration::RholangSetPathMap;
     use models::rust::pathmap_native_query::{
         collect_child_segments, collect_subtrie_values, path_prefix_exists,
     };
@@ -279,7 +281,7 @@ mod native_query_identity_tests {
     /// first-`0xFF` split), sort()+dedup(). The split-list terminator (`0x00`)
     /// at the prefix boundary means "an entry ends here" and is excluded — the
     /// same rule the parser-state DFS (`collect_child_segments_codec`) follows.
-    fn oracle_child_segments(map: &RholangPathMap, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn oracle_child_segments(map: &RholangSetPathMap, prefix: &[u8]) -> Vec<Vec<u8>> {
         let mut children: Vec<Vec<u8>> = Vec::new();
         for (key, _) in map.iter() {
             if key.starts_with(prefix) && key.len() > prefix.len() {
@@ -320,28 +322,25 @@ mod native_query_identity_tests {
 
     /// The retired getSubtrie scan: whole-map iteration filtered by prefix, in
     /// map-iteration (trie-DFS byte-lex) order.
-    fn oracle_subtrie_values(map: &RholangPathMap, prefix: &[u8]) -> Vec<Par> {
+    fn oracle_subtrie_values(map: &RholangSetPathMap, prefix: &[u8]) -> Vec<Par> {
         let mut subtrie_elements = Vec::new();
-        for (key, value) in map.iter() {
+        for (key, ()) in map.iter() {
             if key.starts_with(prefix) {
-                subtrie_elements.push(value.clone());
+                subtrie_elements.push(
+                    models::rust::canonical_path::decode_trie_path(&key)
+                        .expect("fixture contains only canonical EPathMap keys"),
+                );
             }
         }
         subtrie_elements
     }
 
     /// The retired pathExists scan.
-    fn oracle_prefix_exists(map: &RholangPathMap, key: &[u8]) -> bool {
+    fn oracle_prefix_exists(map: &RholangSetPathMap, key: &[u8]) -> bool {
         map.iter().any(|(k, _)| k.starts_with(key))
     }
 
     // ---- Fixtures ----
-
-    fn gint_par(n: i64) -> Par {
-        Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GInt(n)),
-        }])
-    }
 
     fn string_list_par(path: &[&str]) -> Par {
         let path_elements = path
@@ -365,7 +364,7 @@ mod native_query_identity_tests {
     /// A realistic element-built map (through the production conversion,
     /// memo included): shared prefixes, multi-segment depth, single-segment
     /// entries.
-    fn element_built_map() -> RholangPathMap {
+    fn element_built_map() -> RholangSetPathMap {
         let e_pathmap = EPathMap::new(
             vec![
                 string_list_par(&["op", "site0", "left"]),
@@ -379,7 +378,7 @@ mod native_query_identity_tests {
             false,
             None,
         );
-        PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap).map
+        PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&e_pathmap).map
     }
 
     /// The adversarial RAW trie: 0xFF-delimited byte keys exercising cases the
@@ -389,13 +388,13 @@ mod native_query_identity_tests {
     /// / `path_prefix_exists` are `starts_with`-based and remain correct on any
     /// raw keys). The codec-specific `collect_child_segments` DFS is exercised
     /// on [`codec_adversarial_map`] instead (see W2b-1 note there).
-    fn raw_adversarial_map() -> RholangPathMap {
-        let mut map = RholangPathMap::new();
-        map.insert(b"ab\xFF".to_vec(), gint_par(1)); // value exactly at segment end
-        map.insert(b"ab\xFFq\xFF".to_vec(), gint_par(2));
-        map.insert(b"abc\xFFq\xFF".to_vec(), gint_par(3)); // sibling segment "abc" extends "ab"
-        map.insert(b"b\xFFq\xFF".to_vec(), gint_par(4));
-        map.insert(b"\xFFz\xFF".to_vec(), gint_par(5)); // EMPTY first segment
+    fn raw_adversarial_map() -> RholangSetPathMap {
+        let mut map = RholangSetPathMap::new();
+        map.insert(b"ab\xFF".to_vec(), ()); // value exactly at segment end
+        map.insert(b"ab\xFFq\xFF".to_vec(), ());
+        map.insert(b"abc\xFFq\xFF".to_vec(), ()); // sibling segment "abc" extends "ab"
+        map.insert(b"b\xFFq\xFF".to_vec(), ());
+        map.insert(b"\xFFz\xFF".to_vec(), ()); // EMPTY first segment
         map
     }
 
@@ -405,14 +404,14 @@ mod native_query_identity_tests {
     /// the retired raw map did: four distinct root segments (a, b, c, d); a
     /// value at the INTERIOR node "a" whose `0x00` boundary is excluded from
     /// a's children; sibling segments (x, y) under "a"; and leaves.
-    fn codec_adversarial_map() -> RholangPathMap {
-        let mut map = RholangPathMap::new();
-        map.insert(codec_path(&["a", "x"]), gint_par(1));
-        map.insert(codec_path(&["a", "y"]), gint_par(2));
-        map.insert(codec_path(&["a"]), gint_par(3)); // interior value at "a"
-        map.insert(codec_path(&["b"]), gint_par(4));
-        map.insert(codec_path(&["c"]), gint_par(5));
-        map.insert(codec_path(&["d"]), gint_par(6));
+    fn codec_adversarial_map() -> RholangSetPathMap {
+        let mut map = RholangSetPathMap::new();
+        map.insert(codec_path(&["a", "x"]), ());
+        map.insert(codec_path(&["a", "y"]), ());
+        map.insert(codec_path(&["a"]), ()); // interior value at "a"
+        map.insert(codec_path(&["b"]), ());
+        map.insert(codec_path(&["c"]), ());
+        map.insert(codec_path(&["d"]), ());
         map
     }
 
@@ -441,7 +440,10 @@ mod native_query_identity_tests {
                 "child segments (values AND order) must match the reference scan at prefix {:?}",
                 prefix
             );
-            assert!(!expected.is_empty(), "fixture must exercise a non-trivial prefix");
+            assert!(
+                !expected.is_empty(),
+                "fixture must exercise a non-trivial prefix"
+            );
         }
 
         // Nonexistent prefix → empty in both forms.
@@ -480,10 +482,10 @@ mod native_query_identity_tests {
             collect_child_segments(&map, &a, None),
             oracle_child_segments(&map, &a)
         );
-        assert_eq!(
-            collect_child_segments(&map, &a, None),
-            vec![codec_seg("x"), codec_seg("y")]
-        );
+        assert_eq!(collect_child_segments(&map, &a, None), vec![
+            codec_seg("x"),
+            codec_seg("y")
+        ]);
 
         // A full leaf key (value present, no children) → no child segments.
         let leaf = codec_path(&["b"]);
@@ -516,7 +518,7 @@ mod native_query_identity_tests {
     #[test]
     fn subtrie_values_match_scan_including_order() {
         let element_map = element_built_map();
-        let raw_map = raw_adversarial_map();
+        let codec_map = codec_adversarial_map();
 
         // Element-built map: whole map (empty prefix) and every top-level
         // child subtrie.
@@ -535,24 +537,19 @@ mod native_query_identity_tests {
             );
         }
 
-        // Raw map: the prefix with a value AT the prefix itself ("ab\xFF")
-        // must yield that value FIRST, exactly as the scan encountered it.
-        let at_prefix = collect_subtrie_values(&raw_map, b"ab\xFF");
-        assert_eq!(at_prefix, oracle_subtrie_values(&raw_map, b"ab\xFF"));
-        assert_eq!(at_prefix, vec![gint_par(1), gint_par(2)]);
-
-        // Empty-segment branch.
-        assert_eq!(
-            collect_subtrie_values(&raw_map, b"\xFF"),
-            oracle_subtrie_values(&raw_map, b"\xFF")
-        );
+        // Canonical map: the prefix with an entry AT the prefix itself ("a")
+        // yields that entry first, followed by its descendants.
+        let a_prefix = codec_seg("a");
+        let at_prefix = collect_subtrie_values(&codec_map, &a_prefix);
+        assert_eq!(at_prefix, oracle_subtrie_values(&codec_map, &a_prefix));
+        assert_eq!(at_prefix.first(), Some(&string_list_par(&["a"])));
 
         // Nonexistent prefix → empty.
         assert_eq!(
-            collect_subtrie_values(&raw_map, b"zz\xFF"),
-            oracle_subtrie_values(&raw_map, b"zz\xFF")
+            collect_subtrie_values(&codec_map, &codec_seg("zz")),
+            oracle_subtrie_values(&codec_map, &codec_seg("zz"))
         );
-        assert!(collect_subtrie_values(&raw_map, b"zz\xFF").is_empty());
+        assert!(collect_subtrie_values(&codec_map, &codec_seg("zz")).is_empty());
     }
 
     // ---- path_prefix_exists ----
@@ -604,7 +601,7 @@ mod trie_memo_tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{EList, EPathMap, Expr, Par};
     use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-    use models::rust::pathmap_integration::RholangPathMap;
+    use models::rust::pathmap_integration::RholangSetPathMap;
 
     fn string_list_par(path: &[&str]) -> Par {
         let path_elements = path
@@ -628,15 +625,18 @@ mod trie_memo_tests {
     fn e_pathmap(paths: &[&[&str]]) -> EPathMap {
         EPathMap::new(
             // L2: turbofish — `new` takes `impl Into<SharedPars>`.
-            paths.iter().map(|p| string_list_par(p)).collect::<Vec<Par>>(),
+            paths
+                .iter()
+                .map(|p| string_list_par(p))
+                .collect::<Vec<Par>>(),
             vec![],
             false,
             None,
         )
     }
 
-    fn full_stream(map: &RholangPathMap) -> Vec<(Vec<u8>, Par)> {
-        map.iter().map(|(k, v)| (k, v.clone())).collect()
+    fn full_stream(map: &RholangSetPathMap) -> Vec<Vec<u8>> {
+        map.iter().map(|(key, ())| key).collect()
     }
 
     #[test]
@@ -644,16 +644,12 @@ mod trie_memo_tests {
         // Two separately-allocated but byte-identical EPathMaps: whichever
         // call misses and whichever hits, the results must be
         // indistinguishable in the value domain.
-        let a = e_pathmap(&[
-            &["memoA", "x"],
-            &["memoA", "y", "deep"],
-            &["memoB"],
-        ]);
+        let a = e_pathmap(&[&["memoA", "x"], &["memoA", "y", "deep"], &["memoB"]]);
         let b = a.clone();
 
-        let first = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&a);
-        let second = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&b);
-        let third = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&a);
+        let first = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&a);
+        let second = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&b);
+        let third = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&a);
 
         let reference = full_stream(&first.map);
         assert_eq!(full_stream(&second.map), reference);
@@ -669,8 +665,8 @@ mod trie_memo_tests {
         let small = e_pathmap(&[&["aliasProbe", "x"]]);
         let large = e_pathmap(&[&["aliasProbe", "x"], &["aliasProbe", "y"]]);
 
-        let small_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&small);
-        let large_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&large);
+        let small_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&small);
+        let large_result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&large);
 
         assert_eq!(full_stream(&small_result.map).len(), 1);
         assert_eq!(full_stream(&large_result.map).len(), 2);
@@ -680,19 +676,14 @@ mod trie_memo_tests {
     fn caller_mutation_cannot_corrupt_the_cache() {
         let source = e_pathmap(&[&["cowProbe", "x"], &["cowProbe", "y"]]);
 
-        let mut mutated = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source);
+        let mut mutated = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&source);
         let sentinel_key = b"zz-sentinel\xFF".to_vec();
-        mutated.map.insert(
-            sentinel_key.clone(),
-            Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(99)),
-            }]),
-        );
+        mutated.map.insert(sentinel_key.clone(), ());
         assert!(mutated.map.get(&sentinel_key).is_some());
 
         // A fresh conversion of the same EPathMap must NOT see the caller's
         // mutation: the memoized trie is protected by copy-on-write.
-        let fresh = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source);
+        let fresh = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&source);
         assert!(
             fresh.map.get(&sentinel_key).is_none(),
             "caller mutation leaked into the memoized trie"
@@ -735,7 +726,12 @@ mod native_query_runtime_tests {
             channel_name
         );
         let pars = &data[0].a.pars;
-        assert_eq!(pars.len(), 1, "expected a single Par at @\"{}\"", channel_name);
+        assert_eq!(
+            pars.len(),
+            1,
+            "expected a single Par at @\"{}\"",
+            channel_name
+        );
         pars[0]
             .exprs
             .first()
@@ -746,7 +742,10 @@ mod native_query_runtime_tests {
     async fn assert_bool(runtime: &RhoRuntimeImpl, channel_name: &str) {
         match read_single_expr(runtime, channel_name).await {
             ExprInstance::GBool(true) => {}
-            other => panic!("@\"{}\" expected GBool(true), got {:?}", channel_name, other),
+            other => panic!(
+                "@\"{}\" expected GBool(true), got {:?}",
+                channel_name, other
+            ),
         }
     }
 

@@ -477,9 +477,12 @@ mod anti_vacuity {
 
     #[test]
     fn generate_par_reaches_a_non_empty_expr_slot() {
-        assert_generator_not_vacuous("a Par with at least one Expr", generate_par(3), DRAWS, |p| {
-            !p.exprs.is_empty()
-        });
+        assert_generator_not_vacuous(
+            "a Par with at least one Expr",
+            generate_par(3),
+            DRAWS,
+            |p| !p.exprs.is_empty(),
+        );
     }
 
     #[test]
@@ -534,15 +537,21 @@ mod anti_vacuity {
 
     #[test]
     fn generate_new_carries_injections() {
-        assert_generator_not_vacuous("a New with injections", generate_new(3).boxed(), DRAWS, |n| {
-            !n.injections.is_empty()
-        });
+        assert_generator_not_vacuous(
+            "a New with injections",
+            generate_new(3).boxed(),
+            DRAWS,
+            |n| !n.injections.is_empty(),
+        );
     }
 
     #[test]
     fn generate_match_carries_cases() {
-        assert_generator_not_vacuous("a Match with cases", generate_match(3).boxed(), DRAWS, |m| {
-            !m.cases.is_empty()
-        });
+        assert_generator_not_vacuous(
+            "a Match with cases",
+            generate_match(3).boxed(),
+            DRAWS,
+            |m| !m.cases.is_empty(),
+        );
     }
 }

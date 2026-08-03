@@ -38,8 +38,7 @@ fn signed_send_normalizes_identically_to_unsigned_send() {
 fn signed_for_normalizes_identically_to_unsigned_for() {
     let signed = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ Nil } %}[ s ]"#)
         .expect("signed for compiles");
-    let plain =
-        Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
+    let plain = Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
     assert_eq!(
         signed, plain,
         "uniform-signing of the continuation re-dissolves; no gate node is added"
@@ -53,9 +52,11 @@ fn lollipop_for_normalizes_identically_to_unsigned_for() {
     // bare `for`.
     let signed = Compiler::source_to_adt(r#"{% for(x <- @"ch"){ Nil } %}[ a -o b ]"#)
         .expect("lollipop for compiles");
-    let plain =
-        Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
-    assert_eq!(signed, plain, "a lollipop transfer adds no gate node either");
+    let plain = Compiler::source_to_adt(r#"for(x <- @"ch"){ Nil }"#).expect("plain for compiles");
+    assert_eq!(
+        signed, plain,
+        "a lollipop transfer adds no gate node either"
+    );
 }
 
 // --- (2) recognition coverage ---------------------------------------------
@@ -83,8 +84,16 @@ fn bare_token_stack_mints_nothing() {
 
 #[test]
 fn canon_ground_is_deterministic_and_spelling_keyed() {
-    assert_eq!(canon_ground("s"), canon_ground("s"), "deterministic per spelling");
-    assert_ne!(canon_ground("s"), canon_ground("t"), "distinct spellings ⇒ distinct keys");
+    assert_eq!(
+        canon_ground("s"),
+        canon_ground("s"),
+        "deterministic per spelling"
+    );
+    assert_ne!(
+        canon_ground("s"),
+        canon_ground("t"),
+        "distinct spellings ⇒ distinct keys"
+    );
 }
 
 #[test]
@@ -98,7 +107,11 @@ fn canon_bound_is_span_keyed() {
         start: SourcePos { line: 2, col: 0 },
         end: SourcePos { line: 2, col: 1 },
     };
-    assert_eq!(canon_bound(&span_a), canon_bound(&span_a), "deterministic per span");
+    assert_eq!(
+        canon_bound(&span_a),
+        canon_bound(&span_a),
+        "deterministic per span"
+    );
     assert_ne!(
         canon_bound(&span_a),
         canon_bound(&span_b),
@@ -136,7 +149,10 @@ fn bound_never_aliases_a_free_ground_of_the_same_name() {
     // atom of the same identifier are disjoint by LEADING BYTE — `DOMAIN_BOUND`
     // begins `0x66` ('f'), a `canon_ground` encoding begins `0x2a` (the `Par.exprs`
     // field-5 protobuf tag).
-    assert_eq!(DOMAIN_BOUND[0], b'f', "DOMAIN_BOUND leading byte is 'f' (0x66)");
+    assert_eq!(
+        DOMAIN_BOUND[0], b'f',
+        "DOMAIN_BOUND leading byte is 'f' (0x66)"
+    );
     assert_eq!(
         canon_ground("s")[0],
         0x2a,
@@ -164,7 +180,10 @@ fn to_native_compound_is_the_and_fold_of_its_atoms() {
                 "And-fold retains atom b"
             );
         }
-        other => panic!("expected an And-fold for a 2-atom compound, got {:?}", other),
+        other => panic!(
+            "expected an And-fold for a 2-atom compound, got {:?}",
+            other
+        ),
     }
 }
 
@@ -232,9 +251,10 @@ fn resolve_top_signed_sig(source: &str) -> crate::rust::interpreter::accounting:
     let env = HashMap::new();
     let bmc = BoundMapChain::<VarSort>::new();
     let parsed = match parser.parse(source) {
-        validated::Validated::Good(procs) => {
-            procs.into_iter().next().expect("exactly one top-level proc")
-        }
+        validated::Validated::Good(procs) => procs
+            .into_iter()
+            .next()
+            .expect("exactly one top-level proc"),
         validated::Validated::Fail(_) => panic!("parse failed: {source}"),
     };
     let sig = match parsed.proc {
@@ -251,25 +271,34 @@ fn ring_fence_free_vs_bound_and_two_bound() {
     // `new`-bound `g` is ring-fenced to its binder span; two distinct binders
     // never collide.
     let empty = BoundMapChain::<VarSort>::new();
-    let bound1 = BoundMapChain::<VarSort>::new().put_pos((
-        "g".to_string(),
-        VarSort::NameSort,
-        SourcePos { line: 1, col: 1 },
-    ));
-    let bound2 = BoundMapChain::<VarSort>::new().put_pos((
-        "g".to_string(),
-        VarSort::NameSort,
-        SourcePos { line: 9, col: 9 },
-    ));
+    let bound1 =
+        BoundMapChain::<VarSort>::new().put_pos(("g".to_string(), VarSort::NameSort, SourcePos {
+            line: 1,
+            col: 1,
+        }));
+    let bound2 =
+        BoundMapChain::<VarSort>::new().put_pos(("g".to_string(), VarSort::NameSort, SourcePos {
+            line: 9,
+            col: 9,
+        }));
 
     let free_a = ground_channel("g", &empty);
     let free_b = ground_channel("g", &empty);
     let bound_a = ground_channel("g", &bound1);
     let bound_b = ground_channel("g", &bound2);
 
-    assert_eq!(free_a, free_b, "two FREE `g` ⇒ the SAME channel (§9 rendezvous)");
-    assert_ne!(free_a, bound_a, "a `new`-bound `g` is ring-fenced ⇒ distinct from free `g`");
-    assert_ne!(bound_a, bound_b, "two distinct `new`-binders ⇒ distinct ring-fenced channels");
+    assert_eq!(
+        free_a, free_b,
+        "two FREE `g` ⇒ the SAME channel (§9 rendezvous)"
+    );
+    assert_ne!(
+        free_a, bound_a,
+        "a `new`-bound `g` is ring-fenced ⇒ distinct from free `g`"
+    );
+    assert_ne!(
+        bound_a, bound_b,
+        "two distinct `new`-binders ⇒ distinct ring-fenced channels"
+    );
 }
 
 #[test]
@@ -324,7 +353,8 @@ fn user_surface_sig_never_aliases_an_envelope_pool() {
                 user.lane_hash(),
                 envelope.lane_hash(),
                 "a user surface sig ALIASED an envelope LANE_HASH ({:?} vs {:?})",
-                user, envelope
+                user,
+                envelope
             );
         }
     }
@@ -366,8 +396,9 @@ fn signed_join_normalizes_identically_to_unsigned_join() {
 /// (which `recognize_signed_term` desugars through the `for`).
 #[test]
 fn signed_join_rejects_a_lollipop_clause_signature() {
-    let result =
-        Compiler::source_to_adt(r#"new x, w in { for( {% y <- x %}[ a -o b ] & @z <- w ){ Nil } }"#);
+    let result = Compiler::source_to_adt(
+        r#"new x, w in { for( {% y <- x %}[ a -o b ] & @z <- w ){ Nil } }"#,
+    );
     let err = result.expect_err("a lollipop clause signature must be rejected");
     let msg = format!("{:?}", err);
     assert!(

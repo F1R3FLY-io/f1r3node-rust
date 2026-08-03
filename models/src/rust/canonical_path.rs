@@ -3,7 +3,7 @@
 //! A total, injective, invertible byte codec from the `eval_stable` ground
 //! grammar to canonical path bytes, plus the parser-state DFS over a trie
 //! keyed by these paths. This is THE key the PathMap zippers index on: the
-//! Rholang→PathMap layer (`pathmap_integration::create_pathmap_from_elements`)
+//! Rholang→PathMap layer (`pathmap_integration::create_set_pathmap_from_elements`)
 //! stores each map entry under `encode_trie_path(entry)`, and the interpreter
 //! navigates and reconstructs entries through `encode_trie_segment`,
 //! `decode_trie_path`, and `collect_child_segments_codec`.
@@ -40,7 +40,8 @@
 //! │ 0x0F │ TRIE-ONLY escape arm  │ uv(|prost(par)|) ++ canonical prost bytes │
 //! │      │ (R3F-2)               │ for ¬eval_stable entries; legal only at a │
 //! │      │                       │ top-level segment position               │
-//! │ 0x10 │ …0xFF reserved        │ decode rejects                            │
+//! │ 0x10 │ value-bearing pathmap │ uv(|EPM1|) ++ canonical EPM1 bytes        │
+//! │ 0x11 │ …0xFF reserved        │ decode rejects                            │
 //! └──────┴───────────────────────┴───────────────────────────────────────────┘
 //! ```
 //!
@@ -155,10 +156,14 @@
 //! structural value is `eval_stable_par`, and every accepted escape payload is
 //! canonical prost of a ¬`eval_stable_par` value.
 
+use pathmap::PathMap;
+#[cfg(test)]
 use prost::Message;
 
+use super::epathmap_trie_codec::EPathMapMode;
 use super::pathmap_crate_type_mapper::eval_stable_par;
-use super::pathmap_integration::RholangPathMap;
+#[cfg(test)]
+use super::pathmap_integration::RholangSetPathMap;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{
@@ -188,8 +193,10 @@ pub mod tag {
     pub const GPRIVATE: u8 = 0x0E;
     /// Trie-only (R3F-2); the wire grammar rejects it.
     pub const ESCAPE: u8 = 0x0F;
-    /// First reserved tag; the reserved range is `0x10..=0xFF`.
-    pub const RESERVED_FLOOR: u8 = 0x10;
+    /// Stable, value-bearing EPathMap: length-prefixed canonical EPM1 bytes.
+    pub const EPATHMAP_MAP: u8 = 0x10;
+    /// First reserved tag; the reserved range is `0x11..=0xFF`.
+    pub const RESERVED_FLOOR: u8 = 0x11;
 }
 
 // ★★ `COLLECTION_DEPTH_LIMIT` and `SCANNER_STACK_CEILING` USED TO LIVE HERE, and
@@ -225,7 +232,7 @@ pub enum CodecError {
     NonMinimalVarint,
     /// A varint exceeded 64 bits.
     VarintOverflow,
-    /// A reserved tag (`0x10..=0xFF`) began a segment.
+    /// A reserved tag (`0x11..=0xFF`) began a segment.
     ReservedTag(u8),
     /// `0x00` appeared somewhere other than the final segment-boundary
     /// position of a path frame (mid-stream terminator, terminator with
@@ -261,6 +268,10 @@ pub enum CodecError {
     /// An escape payload decoded to an `eval_stable` Par (would alias the
     /// stable arms and break injectivity).
     EscapeOfStablePar,
+    /// A value-bearing nested EPathMap carried malformed/non-canonical EPM1.
+    MapSnapshotInvalid,
+    /// The value-bearing nested-map tag carried Empty or Set EPM1 mode.
+    MapSnapshotMode,
     /// The wire encoder was handed a Par outside the `eval_stable` domain.
     NotEvalStable,
     /// The top-level `value_entries` region must be non-empty (the canonical
@@ -281,9 +292,7 @@ pub enum CodecError {
 }
 
 impl std::fmt::Display for CodecError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
 }
 
 impl std::error::Error for CodecError {}
@@ -307,13 +316,9 @@ fn write_uv(out: &mut Vec<u8>, mut value: u64) {
 
 /// R3F-8 nit honored: zigzag computed in `i64` arithmetic, ONE cast at the
 /// end. (`<<`/`>>` on `i64` are bit shifts — no overflow trap.)
-fn zigzag64(value: i64) -> u64 {
-    ((value << 1) ^ (value >> 63)) as u64
-}
+fn zigzag64(value: i64) -> u64 { ((value << 1) ^ (value >> 63)) as u64 }
 
-fn unzigzag64(encoded: u64) -> i64 {
-    ((encoded >> 1) as i64) ^ -((encoded & 1) as i64)
-}
+fn unzigzag64(encoded: u64) -> i64 { ((encoded >> 1) as i64) ^ -((encoded & 1) as i64) }
 
 /// Read a MINIMAL-form LEB128 varint from `bytes` at `*cursor`, bounded by
 /// `limit` (exclusive). Rejects non-minimal encodings (`80 00`), >64-bit
@@ -363,9 +368,7 @@ fn read_uv(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<u64, CodecE
 /// (`pathmap_integration::par_to_path` / `CursorKind::of`) and the key encoder
 /// can never disagree. Everything else takes the bare arm — including the
 /// `0x0F` escape arm, whose key is one segment.
-pub fn takes_split_arm(par: &Par) -> bool {
-    split_carrier_list(par).is_some()
-}
+pub fn takes_split_arm(par: &Par) -> bool { split_carrier_list(par).is_some() }
 
 /// The `EList` of a split-arm carrier, or `None`. See [`takes_split_arm`].
 pub(crate) fn split_carrier_list(par: &Par) -> Option<&EList> {
@@ -400,21 +403,19 @@ pub(crate) fn split_carrier_list(par: &Par) -> Option<&EList> {
 /// Ground Par builders shared by the decoder (the decode side of the
 /// carrier bijection: ExprInstance-or-GPrivate ↔ ground Par, §1.1).
 fn expr_carrier(instance: ExprInstance) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(instance),
-        }],
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.exprs.push(Expr {
+        expr_instance: Some(instance),
+    });
+    out
 }
 
 fn gprivate_carrier(id: Vec<u8>) -> Par {
-    Par {
-        unforgeables: vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
-        }],
-        ..Default::default()
-    }
+    let mut out = Par::default();
+    out.unforgeables.push(GUnforgeable {
+        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
+    });
+    out
 }
 
 fn ground_elist_carrier(elements: Vec<Par>) -> Par {
@@ -451,7 +452,6 @@ fn epathmap_carrier(entries: Vec<Par>) -> Par {
 /// region's collected entry paths (canonicalized — ascending + deduplicated —
 /// via a PathMap zipper trie-walk on close; NO sort).
 enum EncCtx {
-    Buf(Vec<u8>),
     Region(Vec<Vec<u8>>),
 }
 
@@ -496,10 +496,6 @@ impl<'p> EncMachine<'p> {
 
     fn emit(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
         match self.detours.last_mut() {
-            Some(EncCtx::Buf(out)) => {
-                out.extend_from_slice(bytes);
-                Ok(())
-            }
             Some(EncCtx::Region(_)) => {
                 // Machine invariant: region contexts receive whole PATHS via
                 // CloseEntryPath, never raw bytes.
@@ -512,9 +508,7 @@ impl<'p> EncMachine<'p> {
         }
     }
 
-    fn emit_byte(&mut self, byte: u8) -> Result<(), CodecError> {
-        self.emit(&[byte])
-    }
+    fn emit_byte(&mut self, byte: u8) -> Result<(), CodecError> { self.emit(&[byte]) }
 
     fn emit_uv(&mut self, value: u64) -> Result<(), CodecError> {
         let mut scratch = Vec::with_capacity(10);
@@ -618,7 +612,7 @@ impl<'p> EncMachine<'p> {
             // positions (hereditary rule): nested positions are inside stable
             // subtrees where `stable` always holds.
             debug_assert!(top_level, "escape below a top-level segment position");
-            // ★★ THE ITERATIVE PROST ENCODER, not `prost::Message::encode_to_vec`.
+            // ★★ THE ITERATIVE PROTOBUF ENCODER, not `prost::Message::encode_to_vec`.
             //
             // `encode_trie_path` is required TOTAL (R3F-2: "trie keys must build
             // for every legal runtime value") and this module's header promises
@@ -639,14 +633,14 @@ impl<'p> EncMachine<'p> {
             // and by every trie-key golden.
             //
             // ⚠ NAMED RESIDUAL: an `EPathMap` nested inside the payload is an
-            // OPAQUE LEAF to this encoder (`prost_wire.rs` §D — its `encode_raw`
+            // OPAQUE LEAF to this encoder (`protobuf_schema.rs` §D — its `encode_raw`
             // has three arms of which only one is a field walk), so the native
             // stack is not bounded THROUGH that one shape. Byte-identical, not
             // depth-independent; the two are separate statements.
-            let prost_bytes = crate::rust::rholang::protobuf_encoder::encode_to_vec(par);
+            let protobuf_bytes = crate::rust::rholang::protobuf_encoder::encode_to_vec(par);
             self.emit_byte(tag::ESCAPE)?;
-            self.emit_uv(prost_bytes.len() as u64)?;
-            return self.emit(&prost_bytes);
+            self.emit_uv(protobuf_bytes.len() as u64)?;
+            return self.emit(&protobuf_bytes);
         }
         match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
             ([], [unforgeable]) => {
@@ -730,6 +724,12 @@ impl<'p> EncMachine<'p> {
                         Ok(())
                     }
                     ExprInstance::EPathmapBody(map) => {
+                        if map.mode() == EPathMapMode::Map {
+                            self.emit_byte(tag::EPATHMAP_MAP)?;
+                            let snapshot = map.trie_snapshot();
+                            self.emit_uv(snapshot.len() as u64)?;
+                            return self.emit(snapshot);
+                        }
                         self.emit_byte(tag::EPATHMAP)?;
                         self.detours.push(EncCtx::Region(Vec::new()));
 
@@ -764,7 +764,7 @@ impl<'p> EncMachine<'p> {
                             let Some(EncCtx::Region(paths)) = self.detours.last_mut() else {
                                 unreachable!("encoder invariant: region pushed immediately above")
                             };
-                            let mut rz = map.entry_trie().trie().read_zipper();
+                            let mut rz = map.entry_trie().set_trie().read_zipper();
                             while rz.to_next_val() {
                                 paths.push(rz.path().to_vec());
                             }
@@ -781,7 +781,10 @@ impl<'p> EncMachine<'p> {
     }
 
     fn into_buffer(self) -> Vec<u8> {
-        debug_assert!(self.detours.is_empty(), "encoder finished with open detours");
+        debug_assert!(
+            self.detours.is_empty(),
+            "encoder finished with open detours"
+        );
         self.root
     }
 }
@@ -793,10 +796,8 @@ impl<'p> EncMachine<'p> {
 /// `path` on the TRIE grammar: TOTAL on all Pars (R3F-2) — ¬eval_stable
 /// nodes at top-level segment positions take the `0x0F` escape arm;
 /// unlimited depth; iterative; no panics. This is THE navigable trie key
-/// the PathMap zippers index on (`create_pathmap_from_elements`).
-pub fn encode_trie_path(par: &Par) -> Vec<u8> {
-    encode_trie_path_with_stability(par).0
-}
+/// the PathMap zippers index on (`create_set_pathmap_from_elements`).
+pub fn encode_trie_path(par: &Par) -> Vec<u8> { encode_trie_path_with_stability(par).0 }
 
 /// [`encode_trie_path`], plus the stability verdict the encode ALREADY COMPUTED.
 ///
@@ -1135,6 +1136,18 @@ impl<'b> DecMachine<'b> {
                 self.limits.push(region_end);
                 self.open_next_region_frame()
             }
+            tag::EPATHMAP_MAP => {
+                let len = self.read_uv()?;
+                let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
+                let snapshot = self.take(len)?;
+                let mut map = EPathMap::default();
+                map.replace_trie_snapshot(snapshot)
+                    .map_err(|_| CodecError::MapSnapshotInvalid)?;
+                if map.mode() != EPathMapMode::Map {
+                    return Err(CodecError::MapSnapshotMode);
+                }
+                self.deliver(expr_carrier(ExprInstance::EPathmapBody(map)))
+            }
             tag::GPRIVATE => {
                 let len = self.read_uv()?;
                 let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
@@ -1152,7 +1165,12 @@ impl<'b> DecMachine<'b> {
                 let len = self.read_uv()?;
                 let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
                 let payload = self.take(len)?;
-                let par = Par::decode(payload).map_err(|_| CodecError::EscapePayloadInvalid)?;
+                // Decode the escape payload with the generated heap-stack machine.  Calling
+                // `Par::decode` here would re-enter Prost's recursive `merge_field` chain and
+                // make EPathMap tag-8 decoding stack-dependent precisely for the non-ground
+                // keys the escape arm exists to carry.
+                let par = crate::rust::rholang::protobuf_decoder::decode_par(payload)
+                    .map_err(|_| CodecError::EscapePayloadInvalid)?;
                 // Canonicality of the payload (decode-accepts ≡ image): the
                 // encoder writes canonical prost bytes of ¬eval_stable Pars
                 // only.
@@ -1270,12 +1288,8 @@ impl<'b> DecMachine<'b> {
                     let this = &self.bytes[current.0..current.1];
                     match previous.cmp(this) {
                         std::cmp::Ordering::Less => {}
-                        std::cmp::Ordering::Equal => {
-                            return Err(CodecError::DuplicatePathInRegion)
-                        }
-                        std::cmp::Ordering::Greater => {
-                            return Err(CodecError::NonAscendingRegion)
-                        }
+                        std::cmp::Ordering::Equal => return Err(CodecError::DuplicatePathInRegion),
+                        std::cmp::Ordering::Greater => return Err(CodecError::NonAscendingRegion),
                     }
                 }
                 *prev_path = Some(current);
@@ -1314,25 +1328,11 @@ impl<'b> DecMachine<'b> {
 /// where `SCANNER_STACK_CEILING` used to live). Stale prose on the one function
 /// whose totality the wire format now turns on.
 ///
-/// # The one residual partiality — and it is not the trie grammar
-///
-/// The structural arms are total at any depth. The `0x0F` escape arm is not: it
-/// stores a ¬`eval_stable` entry as its canonical prost bytes and reads them back
-/// with `Par::decode`, which prost caps at 100 message levels while capping its
-/// encoder at nothing. Past that depth an entry encodes to a key that will not
-/// decode. That is read-ceiling site #130, and
-/// `rholang/tests/pathmap_escape_depth_reachability.rs` measures the boundary by
-/// SEARCH: last accepting depth 32, with ordinary Rholang reaching past it.
-///
-/// ★ The nesting works in the PERMISSIVE direction, which is what lets proto
-/// field 8 carry every map. `Par::decode` here constructs a FRESH `DecodeContext`,
-/// so the payload gets the full budget starting at zero, whereas an entry arriving
-/// as a nested message has already spent several levels of the outer decode's
-/// budget before it is reached. Measured consequence: this arm reads to depth 32
-/// where tag-1 ingress stopped at 31.
-pub fn decode_trie_path(path: &[u8]) -> Result<Par, CodecError> {
-    DecMachine::new(path).run_path()
-}
+/// The structural arms and the `0x0F` escape arm are both total at arbitrary
+/// message depth. Escape payloads are decoded by the generated protobuf PDA,
+/// not Prost's recursively budgeted `Par::decode`; canonicality is then checked
+/// against the same iterative encoder that produced the payload.
+pub fn decode_trie_path(path: &[u8]) -> Result<Par, CodecError> { DecMachine::new(path).run_path() }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The segment-extent scanner (incremental, clonable — the DFS parser state)
@@ -1401,9 +1401,7 @@ pub struct SegmentScanner {
 }
 
 impl Default for SegmentScanner {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl SegmentScanner {
@@ -1431,6 +1429,7 @@ impl SegmentScanner {
                     | tag::GBIG_INT
                     | tag::GPRIVATE
                     | tag::EPATHMAP
+                    | tag::EPATHMAP_MAP
                     | tag::ESCAPE => {
                         self.push_varint(VarintRole::LenThenBytes);
                         ScanStep::NeedMore
@@ -1603,11 +1602,14 @@ use pathmap::zipper::{Zipper, ZipperMoving};
 ///   both dissolve.
 /// * **Early stop.** Emission is already in final order, so the `limit`
 ///   truncation is sound.
-pub fn collect_child_segments_codec(
-    map: &RholangPathMap,
+pub fn collect_child_segments_codec<V>(
+    map: &PathMap<V>,
     prefix: &[u8],
     limit: Option<usize>,
-) -> Vec<Vec<u8>> {
+) -> Vec<Vec<u8>>
+where
+    V: Clone + Send + Sync + Unpin,
+{
     let mut children: Vec<Vec<u8>> = Vec::new();
     if limit == Some(0) {
         return children;
@@ -1681,43 +1683,24 @@ pub fn collect_child_segments_codec(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::rhoapi::var::VarInstance;
     use crate::rhoapi::{ESet, EVar, Send, Var};
-    use proptest::prelude::*;
 
     // ── Par builders ─────────────────────────────────────────────────────────
 
-    fn gbool(value: bool) -> Par {
-        expr_carrier(ExprInstance::GBool(value))
-    }
-    fn gint(value: i64) -> Par {
-        expr_carrier(ExprInstance::GInt(value))
-    }
-    fn gstring(text: &str) -> Par {
-        expr_carrier(ExprInstance::GString(text.to_string()))
-    }
-    fn guri(text: &str) -> Par {
-        expr_carrier(ExprInstance::GUri(text.to_string()))
-    }
-    fn gbytes(bytes: &[u8]) -> Par {
-        expr_carrier(ExprInstance::GByteArray(bytes.to_vec()))
-    }
-    fn gdouble(value: f64) -> Par {
-        expr_carrier(ExprInstance::GDouble(value.to_bits()))
-    }
-    fn gprivate(id: &[u8]) -> Par {
-        gprivate_carrier(id.to_vec())
-    }
-    fn glist(elements: Vec<Par>) -> Par {
-        ground_elist_carrier(elements)
-    }
-    fn gtuple(elements: Vec<Par>) -> Par {
-        ground_etuple_carrier(elements)
-    }
-    fn gmap(entries: Vec<Par>) -> Par {
-        epathmap_carrier(entries)
-    }
+    fn gbool(value: bool) -> Par { expr_carrier(ExprInstance::GBool(value)) }
+    fn gint(value: i64) -> Par { expr_carrier(ExprInstance::GInt(value)) }
+    fn gstring(text: &str) -> Par { expr_carrier(ExprInstance::GString(text.to_string())) }
+    fn guri(text: &str) -> Par { expr_carrier(ExprInstance::GUri(text.to_string())) }
+    fn gbytes(bytes: &[u8]) -> Par { expr_carrier(ExprInstance::GByteArray(bytes.to_vec())) }
+    fn gdouble(value: f64) -> Par { expr_carrier(ExprInstance::GDouble(value.to_bits())) }
+    fn gprivate(id: &[u8]) -> Par { gprivate_carrier(id.to_vec()) }
+    fn glist(elements: Vec<Par>) -> Par { ground_elist_carrier(elements) }
+    fn gtuple(elements: Vec<Par>) -> Par { ground_etuple_carrier(elements) }
+    fn gmap(entries: Vec<Par>) -> Par { epathmap_carrier(entries) }
 
     /// `wrappers` list levels around a GInt leaf, built ITERATIVELY.
     fn deep_list(wrappers: u32) -> Par {
@@ -1752,9 +1735,7 @@ mod tests {
     }
 
     // Unstable shapes (the ¬eval_stable side — escape-arm inputs on the trie).
-    fn nil_par() -> Par {
-        Par::default()
-    }
+    fn nil_par() -> Par { Par::default() }
     fn evar_par() -> Par {
         expr_carrier(ExprInstance::EVarBody(EVar {
             v: Some(Var {
@@ -1771,7 +1752,7 @@ mod tests {
         }))
     }
     fn multi_expr_par() -> Par {
-        Par {
+        par_from_default! {
             exprs: vec![
                 Expr {
                     expr_instance: Some(ExprInstance::GInt(1)),
@@ -1784,7 +1765,7 @@ mod tests {
         }
     }
     fn send_par() -> Par {
-        Par {
+        par_from_default! {
             sends: vec![Send::default()],
             ..Default::default()
         }
@@ -1836,12 +1817,12 @@ mod tests {
                 proptest::collection::vec(any::<u8>(), 0..6),
                 proptest::collection::vec(any::<u8>(), 0..6)
             )
-                .prop_map(|(numerator, denominator)| expr_carrier(ExprInstance::GBigRat(
-                    GBigRational {
+                .prop_map(|(numerator, denominator)| expr_carrier(
+                    ExprInstance::GBigRat(GBigRational {
                         numerator,
                         denominator,
-                    }
-                ))),
+                    })
+                )),
             (proptest::collection::vec(any::<u8>(), 0..6), any::<u32>()).prop_map(
                 |(unscaled, scale)| expr_carrier(ExprInstance::GFixedPoint(GFixedPoint {
                     unscaled,
@@ -1908,7 +1889,9 @@ mod tests {
         );
         // 11-byte varint.
         let mut cursor = 0;
-        let eleven = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01];
+        let eleven = [
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01,
+        ];
         assert_eq!(
             read_uv(&eleven, &mut cursor, eleven.len()),
             Err(CodecError::VarintOverflow)
@@ -1934,10 +1917,9 @@ mod tests {
         assert_eq!(encode_trie_path(&gint(0)), vec![0x03, 0x00]);
         assert_eq!(encode_trie_path(&gint(-1)), vec![0x03, 0x01]);
         assert_eq!(encode_trie_path(&gint(1)), vec![0x03, 0x02]);
-        assert_eq!(
-            encode_trie_path(&gstring("hi")),
-            vec![0x04, 0x02, b'h', b'i']
-        );
+        assert_eq!(encode_trie_path(&gstring("hi")), vec![
+            0x04, 0x02, b'h', b'i'
+        ]);
         assert_eq!(encode_trie_path(&gstring("")), vec![0x04, 0x00]);
         assert_eq!(encode_trie_path(&guri("")), vec![0x05, 0x00]);
         assert_eq!(encode_trie_path(&gbytes(&[])), vec![0x06, 0x00]);
@@ -1945,7 +1927,10 @@ mod tests {
         assert_eq!(double_bytes[0], 0x07);
         assert_eq!(&double_bytes[1..], 1.5f64.to_bits().to_be_bytes());
         // −0.0 and +0.0 are bit-distinct paths (Par == is u64 equality).
-        assert_ne!(encode_trie_path(&gdouble(-0.0)), encode_trie_path(&gdouble(0.0)));
+        assert_ne!(
+            encode_trie_path(&gdouble(-0.0)),
+            encode_trie_path(&gdouble(0.0))
+        );
         // The empty-list entry dissolves to the one-byte terminator path.
         assert_eq!(encode_trie_path(&glist(vec![])), vec![0x00]);
         // k = 0 TUPLE is a bare segment — distinct from the k = 0 list.
@@ -1956,19 +1941,17 @@ mod tests {
             vec![0x04, 0x01, b'a', 0x04, 0x01, b'b', 0x00]
         );
         // Nested empty list INSIDE a split (the 0x0B arm with k = 0).
-        assert_eq!(
-            encode_trie_path(&glist(vec![glist(vec![])])),
-            vec![0x0B, 0x00, 0x00]
-        );
+        assert_eq!(encode_trie_path(&glist(vec![glist(vec![])])), vec![
+            0x0B, 0x00, 0x00
+        ]);
         // GPrivate leaf.
         assert_eq!(encode_trie_path(&gprivate(&[0xAA])), vec![0x0E, 0x01, 0xAA]);
         // Nested empty map (the 0x0D arm admits R = ε).
         assert_eq!(encode_trie_path(&gmap(vec![])), vec![0x0D, 0x00]);
         // {| {||} |} — a map holding the empty map.
-        assert_eq!(
-            encode_trie_path(&gmap(vec![gmap(vec![])])),
-            vec![0x0D, 0x03, 0x02, 0x0D, 0x00]
-        );
+        assert_eq!(encode_trie_path(&gmap(vec![gmap(vec![])])), vec![
+            0x0D, 0x03, 0x02, 0x0D, 0x00
+        ]);
     }
 
     #[test]
@@ -2077,10 +2060,9 @@ mod tests {
         // order by the prefix rule via the zipper walk.
         let pair = gmap(vec![gmap(vec![]), gmap(vec![gmap(vec![])])]);
         let bytes = encode_trie_path(&pair);
-        assert_eq!(
-            bytes,
-            vec![0x0D, 0x09, 0x02, 0x0D, 0x00, 0x05, 0x0D, 0x03, 0x02, 0x0D, 0x00]
-        );
+        assert_eq!(bytes, vec![
+            0x0D, 0x09, 0x02, 0x0D, 0x00, 0x05, 0x0D, 0x03, 0x02, 0x0D, 0x00
+        ]);
         let decoded = decode_trie_path(&bytes).expect("decode nested pair");
         assert_eq!(encode_trie_path(&decoded), bytes);
     }
@@ -2226,8 +2208,14 @@ mod tests {
     #[test]
     fn adversarial_paths_reject() {
         assert_eq!(decode_trie_path(&[]), Err(CodecError::EmptyInput));
-        assert_eq!(decode_trie_path(&[0x10]), Err(CodecError::ReservedTag(0x10)));
-        assert_eq!(decode_trie_path(&[0xFF]), Err(CodecError::ReservedTag(0xFF)));
+        assert_eq!(
+            decode_trie_path(&[tag::RESERVED_FLOOR]),
+            Err(CodecError::ReservedTag(tag::RESERVED_FLOOR))
+        );
+        assert_eq!(
+            decode_trie_path(&[0xFF]),
+            Err(CodecError::ReservedTag(0xFF))
+        );
         // Non-minimal varint in a length position.
         assert_eq!(
             decode_trie_path(&[0x04, 0x80, 0x00]),
@@ -2240,7 +2228,10 @@ mod tests {
         );
         // Truncations: mid-varint, mid-payload, mid-fixed-width.
         assert_eq!(decode_trie_path(&[0x03]), Err(CodecError::Truncated));
-        assert_eq!(decode_trie_path(&[0x04, 0x05, b'a']), Err(CodecError::Truncated));
+        assert_eq!(
+            decode_trie_path(&[0x04, 0x05, b'a']),
+            Err(CodecError::Truncated)
+        );
         assert_eq!(decode_trie_path(&[0x07, 0x00]), Err(CodecError::Truncated));
         // Terminator misplacement: mid-stream at a boundary; child position.
         assert_eq!(
@@ -2318,37 +2309,32 @@ mod tests {
         }))
     }
 
-    /// ★★ **`encode_trie_path` is TOTAL; `decode_trie_path` is NOT total on
-    /// `encode_trie_path`'s own image.** Measured, with both controls.
+    /// ★★ **`decode_trie_path` is total on `encode_trie_path`'s image.**
+    /// Measured past the retired recursive Prost depth budget.
     ///
     /// The escape arm stores a ¬`eval_stable` Par as its canonical prost bytes.
-    /// prost's **decoder** caps recursion (`DecodeContext`, 100 levels) and
-    /// prost's **encoder** caps nothing, so past that depth a Par encodes to a
-    /// key that will not decode — while the trie holding it is perfectly
-    /// well-formed and its keys are perfectly canonical.
+    /// The generated decoder PDA removes Prost's former artificial acceptance
+    /// boundary without changing any previously accepted byte's meaning. The
+    /// hand-maintained `Message for Par` now routes `Par::decode` through that
+    /// same machine, so both public decode surfaces are total in depth.
     ///
     /// # ★ Why this is pinned here rather than merely fixed elsewhere
     ///
     /// It is a standing constraint on anything that reads a pathmap, and it has
     /// already decided one design:
     ///
-    /// * `EntryTrie::view` — the projection every consumer of an `EPathMap`
-    ///   reads — walks the trie's **VALUES** rather than decoding its keys. The
-    ///   key-decoding version panicked on the `bincode_decoder_differential` corpus.
+    /// * a `PathMap<()>` set can recover entries from its keys without retaining
+    ///   a redundant `Par` value solely to avoid recursive decode;
     /// * `EntryTrie::adopt_trie` and `pathmap_integration::trie_entry_divergences`
     ///   state the trie entry invariant in the **ENCODE** direction
     ///   (`encode_trie_path(value) == key`) for the same reason: a check written
     ///   the other way would fail on depth, which has nothing to do with the
     ///   property being checked.
     ///
-    /// ⚠ **Consequence for any future per-key-value work.** The trie's value
-    /// slot looks redundant — the entry invariant says it mirrors its own key —
-    /// and it is tempting to free it for user values and recover the entry by
-    /// decoding the key. **That is exactly what this test forbids.** Freeing the
-    /// slot requires the value to carry BOTH the entry and the user value, or
-    /// the projection stops being total. The redundancy is load-bearing.
+    /// * a `PathMap<Par>` map can use its value slot for the actual associated
+    ///   value rather than a key-equals-value mirror.
     #[test]
-    fn decode_is_partial_on_the_image_of_encode_and_the_projection_must_not_depend_on_it() {
+    fn generated_escape_and_message_decode_are_total_past_the_retired_prost_ceiling() {
         // ── NEGATIVE CONTROL: shallow escapes round-trip, so the failure below
         //    is about DEPTH and not about the escape arm being broken. ────────
         let shallow = escaped_nest(2);
@@ -2364,7 +2350,7 @@ mod tests {
             "control: the escape arm round-trips when prost's decoder can reach the bottom"
         );
 
-        // ── THE MEASUREMENT: encode succeeds, decode does not. ───────────────
+        // ── THE MEASUREMENT: encode and generated decode both succeed. ──────
         let deep = escaped_nest(200);
         let deep_key = encode_trie_path(&deep);
         assert_eq!(
@@ -2377,44 +2363,31 @@ mod tests {
             "encode_trie_path is TOTAL — it produced a key"
         );
         assert_eq!(
-            decode_trie_path(&deep_key),
-            Err(CodecError::EscapePayloadInvalid),
-            "★ decode_trie_path is PARTIAL on encode_trie_path's image: prost's \
-             decoder caps recursion at 100 levels and its encoder caps nothing, \
-             so this key cannot be decoded even though it is canonical"
+            decode_trie_path(&deep_key).expect("the generated decoder has no depth ceiling"),
+            deep,
+            "decode_trie_path must remain total on encode_trie_path's image"
         );
 
-        // …and the reason it is `EscapePayloadInvalid` rather than a codec-grammar
-        // rejection: the payload is a well-formed prost encoding that prost
-        // itself declines to decode.
-        let prost_error = format!(
-            "{:?}",
-            Par::decode(deep.encode_to_vec().as_slice())
-                .expect_err("prost must decline its own output at this depth")
-        );
-        assert!(
-            prost_error.contains("RecursionLimitReached"),
-            "the mechanism is prost's decode recursion limit, not the codec \
-             grammar — got {prost_error}"
+        let message_decoded = Par::decode(deep.encode_to_vec().as_slice())
+            .expect("Message for Par delegates to the generated depth-total decoder");
+        assert_eq!(
+            message_decoded, deep,
+            "the public Message decoder and trie escape decoder must agree"
         );
 
         // ── AND THE PROPERTY THAT MATTERS: a map holding it still WORKS. ─────
-        // This is the whole point of the projection reading values. Before that
-        // change, this line panicked.
         let map = crate::rhoapi::EPathMap::new(vec![deep.clone()], Vec::new(), false, None);
-        assert_eq!(
-            map.ps().as_slice(),
-            std::slice::from_ref(&deep),
-            "the entry projection must be total: it reads the stored value, never \
-             the undecodable key"
-        );
-        // …and the map still encodes, because the tag-1 field walk writes the
-        // projection and the ground predicate reads an O(1) fold, neither of
-        // which decodes anything.
+        assert_eq!(map.len(), 1, "the deep entry remains present");
+        assert!(map
+            .entry_trie()
+            .set_trie()
+            .get(encode_trie_path(&deep))
+            .is_some());
+        // …and the map still encodes through the same iterative protobuf path.
         let encoded = <crate::rhoapi::EPathMap as Message>::encode_to_vec(&map);
         assert!(
             !encoded.is_empty(),
-            "a map holding an undecodable-key entry must still encode"
+            "a map holding a deeply escaped key must still encode"
         );
     }
 
@@ -2498,10 +2471,9 @@ mod tests {
         let forward = gmap(vec![gmap(vec![gint(1), gint(2)])]);
         let backward = gmap(vec![gmap(vec![gint(2), gint(1)])]);
         let bytes = encode_trie_path(&forward);
-        assert_eq!(
-            bytes,
-            vec![0x0D, 0x09, 0x08, 0x0D, 0x06, 0x02, 0x03, 0x02, 0x02, 0x03, 0x04]
-        );
+        assert_eq!(bytes, vec![
+            0x0D, 0x09, 0x08, 0x0D, 0x06, 0x02, 0x03, 0x02, 0x02, 0x03, 0x04
+        ]);
         assert_eq!(encode_trie_path(&backward), bytes);
         let decoded = decode_trie_path(&bytes).expect("decode nested map-of-map");
         assert_eq!(encode_trie_path(&decoded), bytes);
@@ -2534,7 +2506,11 @@ mod tests {
         let count = keys.len();
         keys.sort();
         keys.dedup();
-        assert_eq!(keys.len(), count, "distinct ground pars must have distinct keys");
+        assert_eq!(
+            keys.len(),
+            count,
+            "distinct ground pars must have distinct keys"
+        );
     }
 
     // ── the CURSOR ROUND-TRIP LAW (the bare-element key defect) ──────────────
@@ -2646,19 +2622,19 @@ mod tests {
         /// ```
         ///
         /// for EVERY Par `p` and every map: the cursor a reader builds for `p`
-        /// addresses exactly the entry `create_pathmap_from_elements` inserted
+        /// addresses exactly the entry `create_set_pathmap_from_elements` inserted
         /// for `p`. The segments say WHERE and the kind says WHICH ARM, and
         /// together they are the key — which is what "lossless" means here.
         #[test]
         fn prop_cursor_key_round_trips_for_every_par(par in any_par()) {
             use crate::rust::pathmap_integration::{
-                cursor_entry_key, par_to_path, CursorKind, RholangPathMap,
+                cursor_entry_key, par_to_path, CursorKind, RholangSetPathMap,
             };
 
             let key = encode_trie_path(&par);
             // Split/Bare never consult the map, so an empty one witnesses that
             // the answer depends on the cursor alone.
-            let empty = RholangPathMap::new();
+            let empty = RholangSetPathMap::new();
             prop_assert_eq!(
                 cursor_entry_key(&par_to_path(&par), CursorKind::of(&par), &empty),
                 key.clone()
@@ -2681,7 +2657,7 @@ mod tests {
         #[test]
         fn prop_prefix_kind_resolves_shortest_present(par in stable_par()) {
             use crate::rust::pathmap_integration::{
-                create_pathmap_from_elements, cursor_entry_key, par_to_path, CursorKind,
+                create_set_pathmap_from_elements, cursor_entry_key, par_to_path, CursorKind,
             };
 
             let segments = par_to_path(&par);
@@ -2690,7 +2666,7 @@ mod tests {
             split_key.push(tag::TERM);
 
             // (a) a map WITHOUT a bare entry at the cursor: Prefix == Split.
-            let split_only = create_pathmap_from_elements(
+            let split_only = create_set_pathmap_from_elements(
                 &[decode_trie_path(&split_key).unwrap_or_else(|_| glist(vec![]))],
                 None,
             )
@@ -2704,7 +2680,7 @@ mod tests {
 
             // (b) a map WITH a bare entry at the cursor: Prefix picks it.
             if let Ok(bare_par) = decode_trie_path(&bare_key) {
-                let with_bare = create_pathmap_from_elements(&[bare_par], None).map;
+                let with_bare = create_set_pathmap_from_elements(&[bare_par], None).map;
                 if with_bare.get(&bare_key).is_some() {
                     prop_assert_eq!(
                         cursor_entry_key(&segments, CursorKind::Prefix, &with_bare),
@@ -2718,7 +2694,7 @@ mod tests {
     // ── the parser-state DFS differential ─────────────────────────────────────
 
     /// Reference twin of the DFS: full scan + the SAME extent scanner.
-    fn reference_child_segments(map: &RholangPathMap, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn reference_child_segments(map: &RholangSetPathMap, prefix: &[u8]) -> Vec<Vec<u8>> {
         let mut out: Vec<Vec<u8>> = Vec::new();
         for (key, _) in map.iter() {
             if key.starts_with(prefix) && key.len() > prefix.len() {
@@ -2736,10 +2712,10 @@ mod tests {
         out
     }
 
-    fn codec_trie(entries: &[Par]) -> RholangPathMap {
-        let mut map = RholangPathMap::new();
+    fn codec_trie(entries: &[Par]) -> RholangSetPathMap {
+        let mut map = RholangSetPathMap::new();
         for entry in entries {
-            map.insert(encode_trie_path(entry), entry.clone());
+            map.insert(encode_trie_path(entry), ());
         }
         map
     }
@@ -2847,7 +2823,7 @@ mod tests {
         /// Size property: |path(p)| ≤ |prost entry bytes| on the stable domain
         /// (the codec keys carry no protobuf field-tag overhead).
         #[test]
-        fn prop_path_never_exceeds_prost_entry(par in stable_par()) {
+        fn prop_path_never_exceeds_protobuf_entry(par in stable_par()) {
             let bytes = encode_trie_path(&par);
             prop_assert!(
                 bytes.len() <= par.encoded_len(),

@@ -3,12 +3,11 @@ use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::{
-    create_pathmap_from_elements, par_to_path, render_trie_entry_divergences, segments_to_key,
-    trie_entry_divergences, RholangPathMap,
+    create_set_pathmap_from_elements, par_to_path, segments_to_key, RholangSetPathMap,
 };
 
 fn make_string_par(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -17,7 +16,7 @@ fn make_string_par(s: &str) -> Par {
 }
 
 fn make_int_par(i: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(i)),
         }],
@@ -26,7 +25,7 @@ fn make_int_par(i: i64) -> Par {
 }
 
 fn make_list_of(ps: Vec<Par>) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
                 ps,
@@ -41,7 +40,7 @@ fn make_list_of(ps: Vec<Par>) -> Par {
 
 fn make_list_par(elements: Vec<&str>) -> Par {
     let ps: Vec<Par> = elements.iter().map(|s| make_string_par(s)).collect();
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
                 ps,
@@ -56,7 +55,7 @@ fn make_list_par(elements: Vec<&str>) -> Par {
 
 #[test]
 fn test_create_empty_pathmap() {
-    let result = create_pathmap_from_elements(&[], None);
+    let result = create_set_pathmap_from_elements(&[], None);
     assert!(result.map.is_empty());
     assert!(!result.connective_used);
     assert!(result.locally_free.is_empty());
@@ -65,7 +64,7 @@ fn test_create_empty_pathmap() {
 #[test]
 fn test_create_pathmap_single_element() {
     let par = make_list_par(vec!["books", "fiction", "gatsby"]);
-    let result = create_pathmap_from_elements(&[par.clone()], None);
+    let result = create_set_pathmap_from_elements(&[par.clone()], None);
     assert!(!result.map.is_empty());
 }
 
@@ -74,8 +73,8 @@ fn test_pathmap_union() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["c", "d"]);
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let union = map1.map.join(&map2.map);
     assert_eq!(union.val_count(), 2);
@@ -87,8 +86,8 @@ fn test_pathmap_intersection() {
     let par2 = make_list_par(vec!["a", "b"]);
     let par3 = make_list_par(vec!["c", "d"]);
 
-    let map1 = create_pathmap_from_elements(&[par1, par3], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1, par3], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let intersection = map1.map.meet(&map2.map);
     assert_eq!(intersection.val_count(), 1);
@@ -100,8 +99,8 @@ fn test_pathmap_subtraction() {
     let par2 = make_list_par(vec!["a", "c"]);
     let par3 = make_list_par(vec!["a", "b"]);
 
-    let map1 = create_pathmap_from_elements(&[par1, par2], None);
-    let map2 = create_pathmap_from_elements(&[par3], None);
+    let map1 = create_set_pathmap_from_elements(&[par1, par2], None);
+    let map2 = create_set_pathmap_from_elements(&[par3], None);
 
     let diff = map1.map.subtract(&map2.map);
     // Should have only ["a", "c"] remaining
@@ -115,15 +114,15 @@ fn test_pathmap_restriction() {
     let par3 = make_list_par(vec!["books", "nonfiction", "history"]);
     let prefix = make_list_par(vec!["books", "fiction"]);
 
-    let map = create_pathmap_from_elements(&[par1, par2, par3], None);
+    let map = create_set_pathmap_from_elements(&[par1, par2, par3], None);
     // W2b-1 (why bytes moved): PathMap::restrict is a PREFIX/subtrie op; under
     // the codec a prefix is the NON-terminated segment concatenation (the FULL
     // encode_trie_path key terminates with 0x00 and is thus prefix-free of the
     // longer keys, degenerating restrict to exact-match). Build the restricting
     // map with prefix keys — mirroring the production `restriction` method
     // (reduce.rs) — so restrict prefix-matches and yields the 2 fiction books.
-    let mut prefix_map = RholangPathMap::new();
-    prefix_map.insert(segments_to_key(&par_to_path(&prefix), false), prefix.clone());
+    let mut prefix_map = RholangSetPathMap::new();
+    prefix_map.insert(segments_to_key(&par_to_path(&prefix), false), ());
 
     let restricted = map.map.restrict(&prefix_map);
     // Should have only the 2 fiction books
@@ -149,29 +148,28 @@ fn expected_entries_in_trie_order(elements: &[Par]) -> Vec<Par> {
 /// The conversion is asserted by CONTENT, over a fixture holding both codec
 /// arms. The retired `assert_eq!(ps.len(), 2)` would have passed with every
 /// entry replaced by a different Par, and — the case that matters — with two
-/// distinct keys carrying ONE shared value, which is precisely how entries get
-/// lost (see [`trie_entry_divergences`] and the `setSubtrie` regression in
-/// `rholang/tests/trie_entry_invariant_spec.rs`).
+/// distinct keys accidentally collapsing into one set member.
 #[test]
 fn test_pathmap_to_e_pathmap_conversion() {
     let original_ps = mixed_elements();
-    let map = create_pathmap_from_elements(&original_ps, None);
+    let map = create_set_pathmap_from_elements(&original_ps, None);
 
-    let e_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
+    let e_pathmap = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
         &map.map,
         map.connective_used,
         &map.locally_free,
         None,
     );
 
+    let entries = e_pathmap.entry_trie().entries_owned();
     assert_eq!(
-        &e_pathmap.ps()[..],
+        &entries[..],
         &expected_entries_in_trie_order(&original_ps)[..],
         "the converter must return the ENTRIES, in trie order — not merely the \
          right number of them"
     );
     // …and no two of them are the same entry, which `ps.len()` cannot see.
-    let keys: Vec<Vec<u8>> = e_pathmap.ps().iter().map(encode_trie_path).collect();
+    let keys: Vec<Vec<u8>> = entries.iter().map(encode_trie_path).collect();
     let mut distinct = keys.clone();
     distinct.sort();
     distinct.dedup();
@@ -193,7 +191,7 @@ fn test_pathmap_to_e_pathmap_conversion() {
 /// `["a","x"]` — see `mixed_elements`):
 ///
 /// ```text
-///   EPathMap ──e_pathmap_to_rholang_pathmap──▶ trie ──rholang_pathmap_to_e_pathmap──▶ EPathMap
+///   EPathMap ──set_epathmap_to_rholang_set_pathmap──▶ trie ──rholang_set_pathmap_to_set_epathmap──▶ EPathMap
 /// ```
 ///
 /// is the identity on the ENTRY SET, and normalizes only the ORDER (to trie
@@ -207,25 +205,18 @@ fn test_e_pathmap_roundtrip() {
     // (the wrapper's shadow cell is private).
     let e_pathmap1 = EPathMap::new(original_ps.clone(), vec![], false, None);
 
-    let result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap1);
+    let result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&e_pathmap1);
     assert_eq!(result.map.val_count(), original_ps.len());
 
-    // Leg 1 — every entry went in under its OWN key, and no other.
-    assert!(
-        trie_entry_divergences(&result.map).is_empty(),
-        "the trie in the middle of the round trip must uphold the entry \
-         invariant: {}",
-        render_trie_entry_divergences(&trie_entry_divergences(&result.map))
-    );
+    // Leg 1 — every entry went in under its own key, and no other.
     for element in &original_ps {
-        assert_eq!(
-            result.map.get(encode_trie_path(element)),
-            Some(element),
+        assert!(
+            result.map.get(encode_trie_path(element)).is_some(),
             "each entry is readable at its own key inside the trie"
         );
     }
 
-    let e_pathmap2 = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
+    let e_pathmap2 = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
         &result.map,
         result.connective_used,
         &result.locally_free,
@@ -233,21 +224,23 @@ fn test_e_pathmap_roundtrip() {
     );
 
     // Leg 2 — the ENTRIES come back, in trie order.
+    let round_trip_entries = e_pathmap2.entry_trie().entries_owned();
     assert_eq!(
-        &e_pathmap2.ps()[..],
+        &round_trip_entries[..],
         &expected_entries_in_trie_order(&original_ps)[..],
         "the round trip must preserve the entries themselves"
     );
 
     // …and it is a FIXED POINT: a second lap moves nothing.
-    let third = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
-        &PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap2).map,
+    let third = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
+        &PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&e_pathmap2).map,
         false,
         &[],
         None,
     );
     assert_eq!(
-        third.ps(), e_pathmap2.ps(),
+        third.trie_snapshot(),
+        e_pathmap2.trie_snapshot(),
         "trie order is already canonical — a second round trip is the identity"
     );
 }
@@ -256,8 +249,8 @@ fn test_e_pathmap_roundtrip() {
 // ★ THE ENTRY INVARIANT AS A PROPERTY — over every trie this crate can build
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// `RholangPathMap` is not a general map: a value is a redundant mirror of its
-// own key (`create_pathmap_from_elements` inserts
+// `RholangSetPathMap` is not a general map: a value is a redundant mirror of its
+// own key (`create_set_pathmap_from_elements` inserts
 // `(encode_trie_path(par), par)`), and the whole read side depends on that.
 // This section enumerates the element alphabet EXHAUSTIVELY — deterministic,
 // so there is no regressions file and no seed to lose — and asserts the
@@ -317,7 +310,7 @@ fn every_subset_of_the_alphabet() -> Vec<Vec<Par>> {
 /// That is safe for exactly ONE reason: `restrict` takes its result's VALUES
 /// from the BASE map and uses the restricting map only for its PATHS, so the
 /// prefix map's values never reach
-/// [`PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`]. Nothing in the
+/// [`PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap`]. Nothing in the
 /// tree stated that dependency, so a change in `restrict`'s value provenance
 /// would have turned a documented exception into a live divergence silently.
 ///
@@ -327,60 +320,29 @@ fn every_subset_of_the_alphabet() -> Vec<Vec<Par>> {
 fn restrict_takes_its_values_from_the_base_so_the_prefix_map_never_escapes() {
     let kept = make_list_par(vec!["books", "fiction"]);
     let dropped = make_list_par(vec!["movies", "action"]);
-    let base = create_pathmap_from_elements(&[kept.clone(), dropped], None);
+    let base = create_set_pathmap_from_elements(&[kept.clone(), dropped], None);
 
     let prefix = make_list_par(vec!["books"]);
-    let sentinel = make_string_par("SENTINEL — a value the base never held");
-    let mut prefix_map = RholangPathMap::new();
-    prefix_map.insert(
-        segments_to_key(&par_to_path(&prefix), false),
-        sentinel.clone(),
-    );
-
-    // The prefix map is a KNOWN divergence — stated, so the exception is
-    // visible rather than merely absent from the checker's inputs.
-    assert_eq!(
-        trie_entry_divergences(&prefix_map).len(),
-        1,
-        "the prefix map is deliberately NOT an entry map"
-    );
+    let mut prefix_map = RholangSetPathMap::new();
+    prefix_map.insert(segments_to_key(&par_to_path(&prefix), false), ());
 
     let restricted = base.map.restrict(&prefix_map);
 
     assert_eq!(restricted.val_count(), 1, "one book under the prefix");
-    for (_, value) in restricted.iter() {
-        assert_ne!(
-            value, &sentinel,
-            "★ `restrict` took a value from the RESTRICTING map — the prefix \
-             map's deliberate divergence now escapes into `restriction`'s \
-             result and reaches the value-side converter"
-        );
-    }
     assert!(
-        trie_entry_divergences(&restricted).is_empty(),
-        "a restriction result is an ENTRY map and must uphold the invariant: {}",
-        render_trie_entry_divergences(&trie_entry_divergences(&restricted))
-    );
-    assert_eq!(
-        restricted.get(encode_trie_path(&kept)),
-        Some(&kept),
+        restricted.get(encode_trie_path(&kept)).is_some(),
         "the surviving entry is the base's own, at the base's own key"
     );
 }
 
-/// ★ THE PROPERTY: for every `(k, v)` in every trie built from program
-/// elements, `encode_trie_path(v) == k`.
+/// Every generated member is stored at its canonical key.
 #[test]
-fn every_trie_this_crate_builds_upholds_the_entry_invariant() {
+fn every_trie_this_crate_builds_uses_canonical_member_keys() {
     for subset in every_subset_of_the_alphabet() {
-        let built = create_pathmap_from_elements(&subset, None);
-        let divergences = trie_entry_divergences(&built.map);
-        assert!(
-            divergences.is_empty(),
-            "entry invariant violated for {} elements:{}",
-            subset.len(),
-            render_trie_entry_divergences(&divergences)
-        );
+        let built = create_set_pathmap_from_elements(&subset, None);
+        for element in subset {
+            assert!(built.map.get(encode_trie_path(&element)).is_some());
+        }
     }
 }
 
@@ -440,7 +402,7 @@ fn every_reader_key_is_in_the_codec_image() {
     use models::rust::pathmap_integration::{entry_key_at, entry_key_is_in_codec_image};
 
     for subset in every_subset_of_the_alphabet() {
-        let map = create_pathmap_from_elements(&subset, None).map;
+        let map = create_set_pathmap_from_elements(&subset, None).map;
 
         for cursor_par in alphabet() {
             let cursor = par_to_path(&cursor_par);
@@ -478,8 +440,8 @@ fn every_reader_key_is_in_the_codec_image() {
                 // holds it.
                 let expected = subset.iter().find(|element| **element == named);
                 assert_eq!(
-                    map.get(&key),
-                    expected,
+                    map.get(&key).is_some(),
+                    expected.is_some(),
                     "the reader's key must read back the entry it names: \
                      cursor = {cursor_par:?}, relative = {relative:?}"
                 );
@@ -592,8 +554,7 @@ const MODULE_ANCHOR: &str = "pub fn decode_cursor";
 
 fn zipper_module_source() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ZIPPER_MODULE);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 /// ★ **THE GATE.** The retired unconditional-terminate rule cannot be written
@@ -680,7 +641,7 @@ fn the_corrected_law_separates_the_bare_element_from_the_singleton_list() {
 
     let five = make_int_par(5);
     let list_five = make_list_of(vec![make_int_par(5)]);
-    let map = &create_pathmap_from_elements(&[five.clone(), list_five.clone()], None).map;
+    let map = &create_set_pathmap_from_elements(&[five.clone(), list_five.clone()], None).map;
 
     let key_of_five = entry_key_at(&[], &five, map);
     let key_of_list_five = entry_key_at(&[], &list_five, map);
@@ -700,22 +661,22 @@ fn the_corrected_law_separates_the_bare_element_from_the_singleton_list() {
 
     // ── the DISCRIMINATING row: a bare argument names the bare entry ──
     assert_eq!(
-        map.get(&key_of_five),
-        Some(&five),
+        map.get(&key_of_five).is_some(),
+        true,
         "★ the bare argument must reach `5`, not the singleton list `[5]` that \
          the same map also holds"
     );
 
     // ── the CONTROL: the split row, where the two laws agree, is unmoved ──
     assert_eq!(
-        map.get(&key_of_list_five),
-        Some(&list_five),
+        map.get(&key_of_list_five).is_some(),
+        true,
         "CONTROL: the split arm answers `[5]` under the corrected law exactly as \
          it did under the retired one; a fix that moves this row is over-reaching"
     );
 }
 
-/// The FIRST consequence: the bulk converter (`rholang_pathmap_to_e_pathmap`)
+/// The FIRST consequence: the bulk converter (`rholang_set_pathmap_to_set_epathmap`)
 /// and a hand-rolled `to_next_val` walk that decodes keys report the same
 /// entries, in the same order, on every one of the 512 maps.
 ///
@@ -732,11 +693,15 @@ fn the_bulk_converter_is_the_key_walk_on_every_subset() {
     use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
     for subset in every_subset_of_the_alphabet() {
-        let built = create_pathmap_from_elements(&subset, None);
+        let built = create_set_pathmap_from_elements(&subset, None);
 
-        let converted =
-            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None);
-        let by_converter = converted.ps();
+        let converted = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
+            &built.map,
+            false,
+            &[],
+            None,
+        );
+        let by_converter = converted.entry_trie().entries_owned();
 
         let mut by_key = Vec::new();
         let mut rz = built.map.read_zipper();
@@ -764,13 +729,17 @@ fn the_bulk_converter_is_the_key_walk_on_every_subset() {
 #[test]
 fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
     for subset in every_subset_of_the_alphabet() {
-        let built = create_pathmap_from_elements(&subset, None);
+        let built = create_set_pathmap_from_elements(&subset, None);
         let distinct_keys = built.map.val_count();
 
-        let converted =
-            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None);
-        let rebuilt = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&EPathMap::new(
-            converted.ps().clone(),
+        let converted = PathMapCrateTypeMapper::rholang_set_pathmap_to_set_epathmap(
+            &built.map,
+            false,
+            &[],
+            None,
+        );
+        let rebuilt = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&EPathMap::new(
+            converted.entry_trie().entries_owned(),
             vec![],
             false,
             None,
@@ -784,7 +753,7 @@ fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
              cardinality assertion on `ps` proves nothing)",
             distinct_keys,
             rebuilt.map.val_count(),
-            converted.ps().len()
+            converted.len()
         );
     }
 }
@@ -794,7 +763,7 @@ fn test_pathmap_connective_used() {
     let mut par = make_list_par(vec!["a", "b"]);
     par.connective_used = true;
 
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert!(result.connective_used);
 }
 
@@ -803,7 +772,7 @@ fn test_pathmap_locally_free() {
     let mut par = make_list_par(vec!["a", "b"]);
     par.locally_free = vec![1, 2, 3];
 
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.locally_free, vec![1, 2, 3]);
 }
 
@@ -814,7 +783,7 @@ fn test_pathmap_remainder_sets_connective() {
         var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
     };
 
-    let result = create_pathmap_from_elements(&[par], Some(remainder));
+    let result = create_set_pathmap_from_elements(&[par], Some(remainder));
     assert!(result.connective_used);
 }
 
@@ -824,7 +793,7 @@ fn test_multiple_elements_union() {
     let par2 = make_list_par(vec!["b"]);
     let par3 = make_list_par(vec!["c"]);
 
-    let result = create_pathmap_from_elements(&[par1, par2, par3], None);
+    let result = create_set_pathmap_from_elements(&[par1, par2, par3], None);
     assert_eq!(result.map.val_count(), 3);
 }
 
@@ -836,8 +805,8 @@ fn test_intersection_disjoint_pathmaps() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["c", "d"]);
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let intersection = map1.map.meet(&map2.map);
     assert!(
@@ -850,8 +819,8 @@ fn test_intersection_disjoint_pathmaps() {
 fn test_intersection_empty_with_nonempty() {
     // Intersection with empty PathMap should be empty
     let par = make_list_par(vec!["a", "b"]);
-    let map1 = create_pathmap_from_elements(&[par], None);
-    let map2 = create_pathmap_from_elements(&[], None);
+    let map1 = create_set_pathmap_from_elements(&[par], None);
+    let map2 = create_set_pathmap_from_elements(&[], None);
 
     let intersection = map1.map.meet(&map2.map);
     assert!(
@@ -866,8 +835,8 @@ fn test_union_overlapping_keys() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["a", "b"]); // Same path
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let union = map1.map.join(&map2.map);
     // Should have 1 element (paths are identical)
@@ -880,8 +849,8 @@ fn test_subtraction_empty_result() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["a", "b"]);
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let diff = map1.map.subtract(&map2.map);
     assert!(
@@ -894,8 +863,8 @@ fn test_subtraction_empty_result() {
 fn test_subtraction_from_empty() {
     // Subtracting from empty map should remain empty
     let par = make_list_par(vec!["a", "b"]);
-    let map1 = create_pathmap_from_elements(&[], None);
-    let map2 = create_pathmap_from_elements(&[par], None);
+    let map1 = create_set_pathmap_from_elements(&[], None);
+    let map2 = create_set_pathmap_from_elements(&[par], None);
 
     let diff = map1.map.subtract(&map2.map);
     assert!(
@@ -910,8 +879,8 @@ fn test_subtraction_disjoint() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["c", "d"]);
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let diff = map1.map.subtract(&map2.map);
     assert_eq!(
@@ -927,8 +896,8 @@ fn test_restriction_no_match() {
     let par = make_list_par(vec!["books", "fiction", "gatsby"]);
     let prefix = make_list_par(vec!["movies"]); // Different prefix
 
-    let map = create_pathmap_from_elements(&[par], None);
-    let prefix_map = create_pathmap_from_elements(&[prefix], None);
+    let map = create_set_pathmap_from_elements(&[par], None);
+    let prefix_map = create_set_pathmap_from_elements(&[prefix], None);
 
     let restricted = map.map.restrict(&prefix_map.map);
     assert!(
@@ -943,8 +912,8 @@ fn test_restriction_exact_match() {
     let par = make_list_par(vec!["books", "fiction"]);
     let prefix = make_list_par(vec!["books", "fiction"]);
 
-    let map = create_pathmap_from_elements(&[par], None);
-    let prefix_map = create_pathmap_from_elements(&[prefix], None);
+    let map = create_set_pathmap_from_elements(&[par], None);
+    let prefix_map = create_set_pathmap_from_elements(&[prefix], None);
 
     let restricted = map.map.restrict(&prefix_map.map);
     // Should match since prefix equals the path
@@ -954,8 +923,8 @@ fn test_restriction_exact_match() {
 #[test]
 fn test_empty_pathmap_operations() {
     // Operations on empty PathMaps
-    let empty1 = create_pathmap_from_elements(&[], None);
-    let empty2 = create_pathmap_from_elements(&[], None);
+    let empty1 = create_set_pathmap_from_elements(&[], None);
+    let empty2 = create_set_pathmap_from_elements(&[], None);
 
     let union = empty1.map.join(&empty2.map);
     assert!(union.is_empty(), "Union of empty maps should be empty");
@@ -976,8 +945,8 @@ fn test_single_segment_paths() {
     let par1 = make_list_par(vec!["a"]);
     let par2 = make_list_par(vec!["b"]);
 
-    let map1 = create_pathmap_from_elements(&[par1], None);
-    let map2 = create_pathmap_from_elements(&[par2], None);
+    let map1 = create_set_pathmap_from_elements(&[par1], None);
+    let map2 = create_set_pathmap_from_elements(&[par2], None);
 
     let union = map1.map.join(&map2.map);
     assert_eq!(union.val_count(), 2);
@@ -987,7 +956,7 @@ fn test_single_segment_paths() {
 fn test_deep_nested_paths() {
     // Very deep nested paths
     let par = make_list_par(vec!["a", "b", "c", "d", "e", "f", "g", "h"]);
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.map.val_count(), 1);
 }
 
@@ -997,7 +966,7 @@ fn test_duplicate_elements() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_list_par(vec!["a", "b"]); // Duplicate
 
-    let result = create_pathmap_from_elements(&[par1, par2], None);
+    let result = create_set_pathmap_from_elements(&[par1, par2], None);
     // Should have 1 element (duplicates merged)
     assert_eq!(result.map.val_count(), 1);
 }
@@ -1006,7 +975,7 @@ fn test_duplicate_elements() {
 fn test_non_list_par() {
     // Non-list Par (single string) should work too
     let par = make_string_par("simple");
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.map.val_count(), 1);
 }
 
@@ -1016,7 +985,7 @@ fn test_mixed_list_and_nonlist() {
     let par1 = make_list_par(vec!["a", "b"]);
     let par2 = make_string_par("simple");
 
-    let result = create_pathmap_from_elements(&[par1, par2], None);
+    let result = create_set_pathmap_from_elements(&[par1, par2], None);
     assert_eq!(result.map.val_count(), 2);
 }
 
@@ -1061,21 +1030,19 @@ fn mixed_arms_produce_four_distinct_entries() {
     assert_eq!(encode_trie_path(&elements[0]), vec![0x03, 0x02]);
     assert_eq!(encode_trie_path(&elements[1]), vec![0x03, 0x02, 0x00]);
     assert_eq!(encode_trie_path(&elements[2]), vec![0x04, 0x01, 0x61]);
-    assert_eq!(
-        encode_trie_path(&elements[3]),
-        vec![0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00]
-    );
+    assert_eq!(encode_trie_path(&elements[3]), vec![
+        0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00
+    ]);
 
-    let result = create_pathmap_from_elements(&elements, None);
+    let result = create_set_pathmap_from_elements(&elements, None);
     assert_eq!(
         result.map.val_count(),
         4,
         "four distinct keys, so four entries — `1` and `[1]` do NOT collide"
     );
     for element in &elements {
-        assert_eq!(
-            result.map.get(encode_trie_path(element)),
-            Some(element),
+        assert!(
+            result.map.get(encode_trie_path(element)).is_some(),
             "every element is readable at its own inserted key"
         );
     }
@@ -1090,13 +1057,13 @@ fn mixed_arms_produce_four_distinct_entries() {
 #[test]
 fn witness_bare_elements_are_not_addressable_by_the_read_key() {
     let elements = mixed_elements();
-    let map = create_pathmap_from_elements(&elements, None).map;
+    let map = create_set_pathmap_from_elements(&elements, None).map;
 
     // SPLIT elements: the rebuilt key is the inserted key, so the read lands.
     for split in [&elements[1], &elements[3]] {
         let read_key = segments_to_key(&par_to_path(split), true);
         assert_eq!(read_key, encode_trie_path(split));
-        assert_eq!(map.get(&read_key), Some(split));
+        assert!(map.get(&read_key).is_some());
     }
 
     // ★ BARE `1`: the rebuilt key is `03 02 00` — the key of `[1]`, which is
@@ -1104,8 +1071,8 @@ fn witness_bare_elements_are_not_addressable_by_the_read_key() {
     let bare_int_read_key = segments_to_key(&par_to_path(&elements[0]), true);
     assert_eq!(bare_int_read_key, vec![0x03, 0x02, 0x00]);
     assert_eq!(
-        map.get(&bare_int_read_key),
-        Some(&elements[1]),
+        map.get(&bare_int_read_key).is_some(),
+        true,
         "★ asking for the bare `1` returns the singleton list `[1]`"
     );
 
@@ -1137,7 +1104,7 @@ fn witness_bare_elements_are_not_addressable_by_the_read_key() {
 #[test]
 fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     let elements = mixed_elements();
-    let map = create_pathmap_from_elements(&elements, None).map;
+    let map = create_set_pathmap_from_elements(&elements, None).map;
 
     let bare_a = encode_trie_path(&elements[2]); // 04 01 61
     let split_ax = encode_trie_path(&elements[3]); // 04 01 61 04 01 78 00
@@ -1158,8 +1125,9 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     use models::rust::pathmap_integration::{cursor_entry_key, par_to_path, CursorKind};
     let segments = par_to_path(&elements[2]); // one segment: 04 01 61
     assert_eq!(
-        map.get(cursor_entry_key(&segments, CursorKind::Bare, &map)),
-        Some(&elements[2]),
+        map.get(cursor_entry_key(&segments, CursorKind::Bare, &map))
+            .is_some(),
+        true,
         "Bare names the bare entry \"a\""
     );
     assert_eq!(
@@ -1170,14 +1138,15 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     // PREFIX — what a child-segment navigation move produces — resolves to the
     // SHORTEST key PRESENT, which here is the bare entry.
     assert_eq!(
-        map.get(cursor_entry_key(&segments, CursorKind::Prefix, &map)),
-        Some(&elements[2])
+        map.get(cursor_entry_key(&segments, CursorKind::Prefix, &map))
+            .is_some(),
+        true
     );
 
     // On a map with NO bare entry at that prefix, PREFIX is indistinguishable
     // from SPLIT — which is exactly why every navigation move can be PREFIX
     // without the ground-LIST corpus moving a byte.
-    let lists_only = create_pathmap_from_elements(
+    let lists_only = create_set_pathmap_from_elements(
         &[make_list_par(vec!["a"]), make_list_par(vec!["a", "x"])],
         None,
     )
@@ -1187,8 +1156,10 @@ fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
         cursor_entry_key(&segments, CursorKind::Split, &lists_only)
     );
     assert_eq!(
-        lists_only.get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only)),
-        Some(&make_list_par(vec!["a"]))
+        lists_only
+            .get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only))
+            .is_some(),
+        true
     );
 }
 
@@ -1203,11 +1174,10 @@ fn every_element_is_addressable_from_its_own_par() {
     use models::rust::pathmap_integration::entry_key_at;
 
     let elements = mixed_elements();
-    let map = create_pathmap_from_elements(&elements, None).map;
+    let map = create_set_pathmap_from_elements(&elements, None).map;
     for element in &elements {
-        assert_eq!(
-            map.get(entry_key_at(&[], element, &map)),
-            Some(element),
+        assert!(
+            map.get(entry_key_at(&[], element, &map)).is_some(),
             "the root arm addresses every element by its own Par"
         );
     }
@@ -1225,7 +1195,7 @@ fn entry_key_at_the_root_moves_no_split_arm_bytes() {
 
     // The ROOT arm never consults the map — it asks the codec — so an empty
     // one is the right witness that the answer depends on the Par alone.
-    let empty = RholangPathMap::new();
+    let empty = RholangSetPathMap::new();
 
     for split in [
         make_list_of(vec![make_int_par(1)]),
@@ -1271,7 +1241,7 @@ fn entry_key_at_the_root_moves_no_split_arm_bytes() {
 fn entry_key_below_the_root_composes_both_arms_onto_the_cursor() {
     use models::rust::pathmap_integration::entry_key_at;
 
-    let map = create_pathmap_from_elements(&mixed_elements(), None).map;
+    let map = create_set_pathmap_from_elements(&mixed_elements(), None).map;
     let cursor = par_to_path(&make_string_par("a")); // one segment: 04 01 61
 
     // ROW 1 — a LIST relative argument. Terminated, as it always was.
@@ -1309,7 +1279,7 @@ fn entry_key_below_the_root_composes_both_arms_onto_the_cursor() {
 #[test]
 fn test_empty_list_par() {
     // Empty list should be handled gracefully
-    let par = Par {
+    let par = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EListBody(EList {
                 ps: vec![], // Empty list
@@ -1321,7 +1291,7 @@ fn test_empty_list_par() {
         ..Default::default()
     };
 
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     // Empty list might be stored differently, just ensure no panic
     assert!(result.map.val_count() <= 1);
 }
@@ -1334,7 +1304,7 @@ fn test_read_zipper_creation() {
     let par2 = make_list_par(vec!["c", "d"]);
 
     let elements = vec![par1, par2];
-    let result = create_pathmap_from_elements(&elements, None);
+    let result = create_set_pathmap_from_elements(&elements, None);
 
     // Verify the PathMap was created successfully
     assert_eq!(result.map.val_count(), 2);
@@ -1347,7 +1317,7 @@ fn test_read_zipper_at_path() {
     let par3 = make_list_par(vec!["books", "nonfiction", "history"]);
 
     let elements = vec![par1, par2, par3];
-    let result = create_pathmap_from_elements(&elements, None);
+    let result = create_set_pathmap_from_elements(&elements, None);
 
     // Verify we can create a PathMap at a specific path
     assert_eq!(result.map.val_count(), 3);
@@ -1355,11 +1325,10 @@ fn test_read_zipper_at_path() {
 
 #[test]
 fn test_write_zipper_set_val() {
-    let mut map = RholangPathMap::new();
+    let mut map = RholangSetPathMap::new();
 
     // Create a simple path and set a value
-    let par = make_string_par("value");
-    map.insert(b"test_path".to_vec(), par.clone());
+    map.insert(b"test_path".to_vec(), ());
 
     assert_eq!(map.val_count(), 1);
 }
@@ -1372,8 +1341,8 @@ fn test_graft_operation() {
 
     let dst_par = make_list_par(vec!["prefix"]);
 
-    let src_result = create_pathmap_from_elements(&[src_par1, src_par2], None);
-    let dst_result = create_pathmap_from_elements(&[dst_par], None);
+    let src_result = create_set_pathmap_from_elements(&[src_par1, src_par2], None);
+    let dst_result = create_set_pathmap_from_elements(&[dst_par], None);
 
     // Verify both PathMaps were created
     assert_eq!(src_result.map.val_count(), 2);
@@ -1394,8 +1363,8 @@ fn test_join_into_operation() {
     let par3 = make_list_par(vec!["room"]);
     let par4 = make_list_par(vec!["root"]);
 
-    let map1 = create_pathmap_from_elements(&[par1, par2], None);
-    let map2 = create_pathmap_from_elements(&[par3, par4], None);
+    let map1 = create_set_pathmap_from_elements(&[par1, par2], None);
+    let map2 = create_set_pathmap_from_elements(&[par3, par4], None);
 
     let result = map1.map.join(&map2.map);
     assert_eq!(result.val_count(), 4);
@@ -1404,7 +1373,7 @@ fn test_join_into_operation() {
 #[test]
 fn test_zipper_empty_pathmap() {
     // Test zipper operations on empty PathMap
-    let result = create_pathmap_from_elements(&[], None);
+    let result = create_set_pathmap_from_elements(&[], None);
     assert!(result.map.is_empty());
     assert_eq!(result.map.val_count(), 0);
 }
@@ -1413,7 +1382,7 @@ fn test_zipper_empty_pathmap() {
 fn test_zipper_single_element() {
     // Test zipper on single-element PathMap
     let par = make_list_par(vec!["single"]);
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.map.val_count(), 1);
 }
 
@@ -1421,7 +1390,7 @@ fn test_zipper_single_element() {
 fn test_zipper_deep_path() {
     // Test zipper with deeply nested path
     let par = make_list_par(vec!["a", "b", "c", "d", "e", "f"]);
-    let result = create_pathmap_from_elements(&[par], None);
+    let result = create_set_pathmap_from_elements(&[par], None);
     assert_eq!(result.map.val_count(), 1);
 }
 
@@ -1616,10 +1585,8 @@ fn test_drophead_mixed_survivability() {
 /// are O(1).
 ///
 /// That substitution is only sound if the two agree, and **two of those seventeen sites were
-/// consensus selectors**: `pathmap_crate_type_mapper.rs:587` and `sort_combine.rs:1735` both
-/// spell `eval_stable_epathmap(..) && !..is_empty()`, which chooses between emitting a ground
-/// map as **proto field 8** (the trie's own key stream) and walking the tag-1 fields. Getting
-/// that wrong is a consensus-visible byte change, not a performance regression.
+/// metadata consumers**. A drift would make O(1) metadata queries disagree with
+/// the actual canonical member set.
 ///
 /// ⇒ The agreement is pinned here rather than argued in a comment. `len` is a **maintained
 /// fold** (incremented in `insert_entry`, recomputed on removal), so it is exactly the kind of
@@ -1637,18 +1604,18 @@ fn entry_trie_len_agrees_with_the_materialised_projection() {
 
     for (name, map) in &cases {
         let counted = map.entry_trie().len();
-        let materialised = map.ps().len();
+        let projection = map.entry_trie().entries_owned();
+        let materialised = projection.len();
         assert_eq!(
             counted, materialised,
             "'{name}': EntryTrie::len says {counted} but the projection holds {materialised}.\n\n\
              `len` is a MAINTAINED FOLD, so it can drift from what it counts. Seventeen call \
-             sites read it instead of materialising, and TWO of them are consensus selectors \
-             (pathmap_crate_type_mapper.rs and sort_combine.rs both gate the ground wire arm on \
-             `!is_empty()`), so a drift here moves emitted bytes."
+             sites read it instead of materialising, so a drift would make metadata decisions \
+             disagree with the stored PathMap."
         );
         assert_eq!(
             map.entry_trie().is_empty(),
-            map.ps().is_empty(),
+            projection.is_empty(),
             "'{name}': is_empty disagrees with the projection — same hazard as above."
         );
 
@@ -1660,8 +1627,7 @@ fn entry_trie_len_agrees_with_the_materialised_projection() {
     // while exercising neither boundary the selectors care about.
     assert!(
         saw_empty,
-        "VACUOUS: no EMPTY map in the corpus, yet `!is_empty()` is exactly what the two \
-         consensus selectors branch on. Add one."
+        "VACUOUS: no EMPTY map in the corpus, so the neutral-mode boundary is untested."
     );
     assert!(
         saw_multi,
@@ -1702,7 +1668,11 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
         (
             "mixed-kinds",
             EPathMap::new(
-                vec![make_string_par("b"), make_int_par(9), make_list_par(vec!["x"])],
+                vec![
+                    make_string_par("b"),
+                    make_int_par(9),
+                    make_list_par(vec!["x"]),
+                ],
                 Vec::new(),
                 false,
                 None,
@@ -1720,7 +1690,7 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
             "carries-a-connective",
             EPathMap::new(
                 vec![
-                    Par {
+                    models::par_from_default! {
                         connective_used: true,
                         ..make_int_par(11)
                     },
@@ -1735,11 +1705,11 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
             "carries-a-free-variable",
             EPathMap::new(
                 vec![
-                    Par {
+                    models::par_from_default! {
                         locally_free: vec![0x01],
                         ..make_int_par(13)
                     },
-                    Par {
+                    models::par_from_default! {
                         locally_free: vec![0x02],
                         ..make_int_par(14)
                     },
@@ -1758,11 +1728,11 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
             let mut base = EPathMap::new(vec![make_int_par(21)], Vec::new(), false, None);
             let other = EPathMap::new(
                 vec![
-                    Par {
+                    models::par_from_default! {
                         connective_used: true,
                         ..make_int_par(22)
                     },
-                    Par {
+                    models::par_from_default! {
                         locally_free: vec![0x04],
                         ..make_int_par(23)
                     },
@@ -1791,14 +1761,12 @@ fn pathmap_len_lemma_corpus() -> Vec<(&'static str, EPathMap)> {
 /// `union_locally_free` and `any_connective_used` are maintained folds with **five independent
 /// spellings each** — `insert_entry`, `extend_entries` (added by `626cf42d`, which duplicated
 /// them inline because `insert_entry` left that path), `recompute_folds`, `adopt_trie`, and
-/// `pathmap_integration::create_pathmap_from_elements`. Until this test there was **nothing**
+/// `pathmap_integration::create_set_pathmap_from_elements`. Until this test there was **nothing**
 /// pinning any of them.
 ///
-/// ⚠ **They reach emitted bytes.** Both feed `InternedEPathMap.locally_free` / `.connective_used`
-/// and `PathMapCreationResult`, and the latter is written back into freshly constructed
-/// `EPathMap`s' **proto fields 3 and 4** across ~36 conversion sites in `reduce.rs`. So a fold
-/// that drifts from the entries it summarises does not produce a wrong number — it produces
-/// **wrong bytes**.
+/// Both feed `EntryTrie` metadata and `SetPathMapCreationResult`, and the latter is written back into freshly constructed
+/// `EPathMap` metadata across reducer conversion sites. A fold that drifts from
+/// the entries it summarizes changes semantic metadata.
 ///
 /// ★ This is the same hazard class as
 /// [`entry_trie_len_agrees_with_the_materialised_projection`], and a strictly larger exposure:
@@ -1814,7 +1782,7 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
     let mut saw_nonempty_free = false;
 
     for (name, map) in &cases {
-        let entries = map.ps();
+        let entries = map.entry_trie().entries_owned();
 
         // The oracle: recompute both folds from the entries, by definition.
         let expected_connective = entries.iter().any(|p| p.connective_used);
@@ -1826,9 +1794,8 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
             map.entry_trie().any_connective_used(),
             expected_connective,
             "'{name}': `any_connective_used` says {} but folding over the entries says {}.\n\n\
-             This fold has FIVE independent spellings and feeds proto field 4 through \
-             InternedEPathMap / PathMapCreationResult, so a drift here emits WRONG BYTES, not a \
-             wrong number.",
+             This fold has FIVE independent spellings and feeds EPathMap metadata through \
+             SetPathMapCreationResult.",
             map.entry_trie().any_connective_used(),
             expected_connective
         );
@@ -1836,7 +1803,7 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
             map.entry_trie().union_locally_free(),
             expected_free.as_slice(),
             "'{name}': `union_locally_free` disagrees with the union over the entries.\n\n\
-             Five spellings, and it feeds proto field 3 on ~36 reduce.rs conversion sites."
+             Five spellings feed reducer EPathMap metadata."
         );
 
         saw_connective |= expected_connective;
@@ -1857,16 +1824,16 @@ fn the_metadata_folds_agree_with_a_fold_over_the_entries() {
 ///
 /// C8's repair, pinned. `EntryTrie`'s `==` used to compare the projected entries under
 /// `Par`'s **AlwaysEqual** `==`, which ignores `locally_free`. But entries are **keyed** by
-/// `encode_trie_path`, whose escape arm is the entry's canonical prost bytes — and those
+/// `encode_trie_path`, whose escape arm includes the entry's canonical protobuf bytes — and those
 /// include `locally_free`. So `==` was strictly **coarser** than the key set, and therefore
-/// coarser than `U(m)`: two maps could compare equal while emitting different bytes.
+/// coarser than EPM1: two maps could compare equal while serializing differently.
 ///
 /// ⚠ The old code named this hazard and dismissed it — *"in a well-formed term `locally_free`
 /// is a function of the structure, so the two cannot differ"*. That is a claim about who the
 /// callers are, not about what the type permits, and this campaign has already shipped one
 /// unsound memo on exactly that reasoning. This test replaces the claim with a check.
 ///
-/// The property: **equal maps emit equal `U(m)`**. That is what makes `==` safe to use
+/// The property: **equal maps emit equal EPM1 snapshots**. That is what makes `==` safe to use
 /// anywhere a validator's agreement is at stake.
 #[test]
 fn map_equality_agrees_with_the_emitted_key_stream() {
@@ -1875,21 +1842,25 @@ fn map_equality_agrees_with_the_emitted_key_stream() {
 
     // ★ THE DISCRIMINATING WITNESS. Two maps whose entries are AlwaysEqual — `Par`'s `==`
     // ignores `locally_free` — but whose trie KEYS differ, because `encode_trie_path`'s
-    // escape arm is the entry's canonical prost bytes and those include `locally_free`.
-    // Under the old projection comparison these were `==`; their `U(m)` was never equal.
+    // escape arm is the entry's canonical protobuf bytes and those include `locally_free`.
+    // Under the old projection comparison these were `==`; their EPM1 snapshots differed.
     let lf_a = EPathMap::new(
-        vec![Par { locally_free: vec![0x01], ..make_list_par(vec!["z"]) }],
-        Vec::new(), false, None,
+        vec![models::par_from_default! { locally_free: vec![0x01], ..make_list_par(vec!["z"]) }],
+        Vec::new(),
+        false,
+        None,
     );
     let lf_b = EPathMap::new(
-        vec![Par { locally_free: vec![0x02], ..make_list_par(vec!["z"]) }],
-        Vec::new(), false, None,
+        vec![models::par_from_default! { locally_free: vec![0x02], ..make_list_par(vec!["z"]) }],
+        Vec::new(),
+        false,
+        None,
     );
     assert_eq!(
         (lf_a == lf_b),
-        (lf_a.path_stream() == lf_b.path_stream()),
-        "the locally_free witness: `==` and the emitted key stream must agree. If this fires \
-         with `==` true and the streams different, `==` is coarser than the wire — the exact \
+        (lf_a.trie_snapshot() == lf_b.trie_snapshot()),
+        "the locally_free witness: `==` and the emitted trie snapshot must agree. If this fires \
+         with `==` true and the snapshots different, `==` is coarser than the wire — the exact \
          defect C8 repairs."
     );
 
@@ -1898,13 +1869,13 @@ fn map_equality_agrees_with_the_emitted_key_stream() {
         for (name_b, b) in &cases {
             compared += 1;
             let equal = a == b;
-            let same_stream = a.path_stream() == b.path_stream();
+            let same_stream = a.trie_snapshot() == b.trie_snapshot();
             assert_eq!(
                 equal, same_stream,
                 "'{name_a}' vs '{name_b}': `==` says {equal} but the emitted key stream says \
                  {same_stream}.\n\n\
-                 These must agree. `U(m)` is what a ground map emits as proto field 8, so a \
-                 pair that is `==` while emitting different bytes would let two validators \
+                 These must agree. EPM1 is the canonical snapshot, so a pair that is `==` \
+                 while emitting different bytes would let two validators \
                  treat one term as two — or two as one."
             );
         }

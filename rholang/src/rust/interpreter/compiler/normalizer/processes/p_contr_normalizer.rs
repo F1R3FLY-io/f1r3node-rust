@@ -76,8 +76,7 @@ pub(crate) fn combine_p_contr<'ast>(
         let formal_locally_free = result.par.locally_free.clone();
         k.acc_patterns.insert(0, result.par);
         k.acc_free = result.free_map;
-        k.acc_locally_free =
-            union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
+        k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
     } else {
         // The BODY has just finished.
         let body_result = value.into_proc();
@@ -155,7 +154,10 @@ pub(crate) fn combine_p_contr<'ast>(
 
     // All formals are in: absorb the remainder and open the body's scope.
     let remainder_result = normalize_match_name(&k.formals.remainder, k.acc_free.clone())?;
-    let new_enw = k.input.bound_map_chain.absorb_free_span(&remainder_result.1);
+    let new_enw = k
+        .input
+        .bound_map_chain
+        .absorb_free_span(&remainder_result.1);
     k.remainder = remainder_result.0;
     k.bound_count = remainder_result.1.count_no_wildcards();
 
@@ -179,7 +181,6 @@ pub(crate) fn combine_p_contr<'ast>(
         },
     })
 }
-
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

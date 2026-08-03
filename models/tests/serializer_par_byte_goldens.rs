@@ -32,13 +32,13 @@
 //! A hand-written decoder cannot be reviewed against "the derive"; it has to be
 //! reviewed against the four places where the derive does something a reader
 //! would not guess. Every fixture below carries all four, and each has a named
-//! assertion of its own in `models/tests/bincode_decoder_wire_shapes.rs`:
+//! assertion of its own in `models/tests/bincode_decoder_shapes.rs`:
 //!
 //! | # | shape | what surprises |
 //! |---|-------|----------------|
 //! | 1 | `New.injections: BTreeMap<String, Par>` | the ONLY `btree_map` field in `RhoTypes.proto`; serde emits a **map** (`u64` count, then key/value pairs), so a decoder must call `deserialize_map`, not `deserialize_seq` |
 //! | 2 | the 12 `serialize_with = serialize_as_empty_bytes` sites | WRITTEN as `serialize_bytes(&[])` (8 zero bytes), READ back as `Vec<u8>` through `deserialize_seq`. The asymmetry is deliberate (`models/src/rust/serde_helpers.rs`), and a decoder must read the stream's REAL length rather than assume zero |
-//! | 3 | `EPathMap` (`models/src/rust/rhoapi_ext.rs`) | **4** serde fields, not 5 — `intern` is `#[serde(skip)]`; ★ `ps` is a **two-element tuple** (`u64 \|U(m)\| ‖ U(m)`, then `u64 n ‖ n × Par`) that bincode writes positionally with no framing of its own; `locally_free` is blanked on serialize ONLY, and the retained derived `Deserialize` reads the real bytes |
+//! | 3 | `EPathMap` (`models/src/rust/rhoapi_ext.rs`) | **4** serde fields; the first is one EPM1 byte array carrying PathMap's compact ACTree03 topology and, in map mode, its generated-PDA value table. It is not a flattened `Vec<Par>`. `locally_free` is blanked on serialize ONLY, and the retained derived `Deserialize` reads the real bytes. |
 //! | 4 | the three oneofs (`ExprInstance` 36, `ConnectiveInstance` 9, `TaggedCont` 2) | an `Option` tag (1 byte) **then** a variant index (`u32`, 4 bytes fixint-LE) — two separate reads, not one |
 //!
 //! ## Blessing procedure
@@ -78,14 +78,14 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 /// A `Par` carrying a distinguishing `locally_free` tag, so a golden that
 /// pinned the WRONG sub-term (rather than none) is still caught.
 fn tagged(tag: u8) -> Par {
-    Par {
+    models::par_from_default! {
         locally_free: vec![tag],
         ..Default::default()
     }
 }
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -93,10 +93,9 @@ fn gint(n: i64) -> Par {
     }
 }
 
-/// A NON-ground `EPathMap`: `connective_used = true` defeats
-/// `eval_stable_epathmap`, so the hand-written `Serialize` takes its
-/// "byte-identical to the P3 derived layout" arm and emits `ps` in
-/// CONSTRUCTION order. Shape 3, arm A.
+/// A NON-ground set-mode `EPathMap`. `connective_used = true` and the metadata
+/// keep the fixture distinct from the ground case while its members still live
+/// only in PathMap's prefix-compressed topology. Shape 3, mode A.
 fn nonground_pathmap() -> EPathMap {
     EPathMap::new(
         vec![gint(11), gint(12)],
@@ -108,15 +107,12 @@ fn nonground_pathmap() -> EPathMap {
     )
 }
 
-/// A GROUND `EPathMap`: no connective, no remainder, empty `locally_free`, and
-/// a non-empty `ps` — so the hand-written `Serialize` takes its CANONICAL
-/// TRIE ORDER arm (`ground_canonical_ps`). Shape 3, arm B.
+/// A GROUND set-mode `EPathMap`: no connective, no remainder, empty
+/// `locally_free`, and non-empty membership. Shape 3, mode B.
 ///
-/// Deliberately built OUT of canonical order, so that a golden which silently
-/// lost the reordering would move. Note this arm makes
-/// `decode(encode(x)) == x` false for `x` — by design, and identically for the
-/// derived decoder; see the round-trip test's documentation in
-/// `models/tests/bincode_decoder_differential.rs`.
+/// Deliberately built out of canonical order, so a golden that flattened the
+/// trie or leaked insertion order would move. EPM1 canonicalization makes the
+/// round trip equal to the PathMap value.
 fn ground_pathmap() -> EPathMap {
     EPathMap::new(vec![gint(9), gint(2), gint(5)], Vec::new(), false, None)
 }
@@ -155,7 +151,10 @@ fn odd_shapes_par() -> Par {
         news: vec![New {
             bind_count: 2,
             p: Some(gint(8)),
-            uri: vec!["rho:io:stdout".to_string(), "rho:registry:lookup".to_string()],
+            uri: vec![
+                "rho:io:stdout".to_string(),
+                "rho:registry:lookup".to_string(),
+            ],
             // shape 1 — the ONLY BTreeMap<String, Par> on the wire
             injections: {
                 let mut m = BTreeMap::new();
@@ -427,9 +426,7 @@ fn fixture_continuation_scala_ref() -> WaitingContinuation<BindPattern, TaggedCo
 /// Blake2b256 of the encoding — a compact stand-in for embedding multi-kilobyte
 /// byte vectors. The length is asserted exactly alongside it, so a collision
 /// would additionally have to preserve length.
-fn digest_hex(bytes: &[u8]) -> String {
-    hex::encode(Blake2b256Hash::new(bytes).bytes())
-}
+fn digest_hex(bytes: &[u8]) -> String { hex::encode(Blake2b256Hash::new(bytes).bytes()) }
 
 mod pinned {
     //! ★★ **CBR-042 re-pin — the bincode surface became TRIE-NATIVE (FORM ②).**
@@ -446,30 +443,37 @@ mod pinned {
     //! came back byte-for-byte UNMOVED** (SHA-256, not merely length) while all
     //! five bincode and all five JSON goldens moved — which is what
     //! distinguishes *"the bincode surface changed"* from *"an emitter drifted"*.
+    //!
+    //! ★★ **CBR-044 re-pin — EPM1 replaces FORM ②.** The path stream plus
+    //! flattened value sequence is gone. Each `EPathMap` writes one canonical
+    //! EPM1 byte array containing compact ACTree03 topology; set mode has no
+    //! value table. All three roots carry the same two-map fixture and each
+    //! shrank by exactly 423 bytes. The new SHA-256 values below were emitted by
+    //! the blessing path under a 1 GiB RSS cap and are then checked in ordinary
+    //! assertion mode.
 
     /// `encode_datum(fixture_datum())` — the models-typed cold-store leaf.
     /// Captured 2026-07-27 at `18419514` on the DERIVED encoder, before any
-    /// line of `bincode_decoder.rs` existed; re-pinned 4,153 → 4,199 by CBR-042.
-    pub const PAR_DATUM_LEN: usize = 4199;
+    /// line of `bincode_decoder.rs` existed; re-pinned 4,153 → 4,199 by
+    /// CBR-042 and 4,199 → 3,776 by CBR-044.
+    pub const PAR_DATUM_LEN: usize = 3776;
     pub const PAR_DATUM_DIGEST_HEX: &str =
-        "e56abdc5614046cad47458adc5b2a3ac74165c70a09304c86ab77c1545f3f0b9";
+        "f08ae1fe1e096865ac8d852c2cf4fcdd83936a1b102f41d39454589fb29c49c0";
 
     /// `encode_datums([fixture_datum(), fixture_datum_persist()])`.
-    /// Re-pinned 4,285 → 4,331 by CBR-042.
-    pub const PAR_DATUMS_LEN: usize = 4331;
+    /// Re-pinned 4,285 → 4,331 by CBR-042 and 4,331 → 3,908 by CBR-044.
+    pub const PAR_DATUMS_LEN: usize = 3908;
     pub const PAR_DATUMS_DIGEST_HEX: &str =
-        "df32b177bf14f25ead168ca00f71b372c119cc071d12cc6f668b33d0d4194f64";
+        "66aae76545af74d6204766f46d6fd48e241845ad2aee01d3d930509946640c01";
 
     /// `encode_continuations([par_body, scala_ref])`.
-    /// Re-pinned 4,529 → 4,575 by CBR-042.
-    pub const PAR_CONTS_LEN: usize = 4575;
+    /// Re-pinned 4,529 → 4,575 by CBR-042 and 4,575 → 4,152 by CBR-044.
+    pub const PAR_CONTS_LEN: usize = 4152;
     pub const PAR_CONTS_DIGEST_HEX: &str =
-        "714df35754a4133ac3b53d96f4ecfcdf1833342b8c4e6205c76e548b15b151f1";
+        "852dd38e7f0f1e3855bd9e4b18c12629016ec63508cd9e8357ca972e02eec4ce";
 }
 
-fn bless() -> bool {
-    std::env::var_os("PAR_GOLDEN_BLESS").is_some()
-}
+fn bless() -> bool { std::env::var_os("PAR_GOLDEN_BLESS").is_some() }
 
 fn check(label: &str, pinned_len: usize, pinned_digest: &str, bytes: &[u8]) {
     if bless() {
@@ -573,7 +577,9 @@ fn fixture_carries_shape_2_every_blanked_locally_free_site() {
     }
     for e in &p.exprs {
         match e.expr_instance.as_ref() {
-            Some(ExprInstance::EListBody(x)) if !x.locally_free.is_empty() => nonempty.push("EList"),
+            Some(ExprInstance::EListBody(x)) if !x.locally_free.is_empty() => {
+                nonempty.push("EList")
+            }
             Some(ExprInstance::ETupleBody(x)) if !x.locally_free.is_empty() => {
                 nonempty.push("ETuple")
             }
@@ -605,13 +611,13 @@ fn fixture_carries_shape_3_both_epathmap_serialize_arms() {
     for e in &p.exprs {
         match e.expr_instance.as_ref() {
             Some(ExprInstance::EPathmapBody(m)) => {
-                assert!(!m.ps().is_empty() && !m.locally_free.is_empty() && m.connective_used);
+                assert!(!m.is_empty() && !m.locally_free.is_empty() && m.connective_used);
                 assert!(m.remainder.is_some());
                 saw_nonground = true;
             }
             Some(ExprInstance::EZipperBody(z)) => {
                 let m = z.pathmap.as_ref().expect("EZipper must carry a pathmap");
-                assert!(!m.ps().is_empty() && m.locally_free.is_empty() && !m.connective_used);
+                assert!(!m.is_empty() && m.locally_free.is_empty() && !m.connective_used);
                 assert!(m.remainder.is_none());
                 saw_ground = true;
             }
@@ -639,8 +645,14 @@ fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
             _ => {}
         }
     }
-    assert!(saw_high_expr, "shape 4: no high-index ExprInstance in fixture");
-    assert!(saw_absent_expr, "shape 4: no absent ExprInstance in fixture");
+    assert!(
+        saw_high_expr,
+        "shape 4: no high-index ExprInstance in fixture"
+    );
+    assert!(
+        saw_absent_expr,
+        "shape 4: no absent ExprInstance in fixture"
+    );
 
     // ConnectiveInstance: the last index (ConnByteArray = 8 of 9) and absent.
     let mut saw_high_conn = false;
@@ -652,8 +664,14 @@ fn fixture_carries_shape_4_all_three_oneofs_including_high_indices() {
             _ => {}
         }
     }
-    assert!(saw_high_conn, "shape 4: no high-index ConnectiveInstance in fixture");
-    assert!(saw_absent_conn, "shape 4: no absent ConnectiveInstance in fixture");
+    assert!(
+        saw_high_conn,
+        "shape 4: no high-index ConnectiveInstance in fixture"
+    );
+    assert!(
+        saw_absent_conn,
+        "shape 4: no absent ConnectiveInstance in fixture"
+    );
 
     // TaggedCont: both variants across the two continuation fixtures.
     assert!(matches!(

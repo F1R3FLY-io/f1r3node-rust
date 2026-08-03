@@ -18,6 +18,7 @@ pub mod path_map_encoder;
 // NO top-level value-arm wire codec (that Job-B path was never brought over);
 // nested-map canonicalization is a PathMap zipper trie-walk (no sort).
 pub mod canonical_path;
+pub mod epathmap_trie_codec;
 pub mod pathmap_crate_type_mapper;
 pub mod pathmap_integration;
 pub mod pathmap_native_query;
@@ -32,8 +33,5 @@ pub mod string_ops;
 pub mod test_utils;
 pub mod utils;
 pub mod serde_helpers;
-pub mod spliced_event_bytes;
+pub mod event_hash_bytes;
 pub mod validator;
-pub mod rhoapi {
-    pub mod par_lattice_impl;
-}

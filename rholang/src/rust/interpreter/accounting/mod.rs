@@ -2822,7 +2822,7 @@ mod signed_process_by_move_tests {
     /// A `Par` distinguishable by tag and carrying no children — so a corpus
     /// entry's identity is visible in a failure message.
     fn tagged(tag: u8) -> Par {
-        Par {
+        models::par_from_default! {
             locally_free: vec![tag],
             ..Default::default()
         }
@@ -2969,8 +2969,8 @@ mod signed_process_by_move_tests {
     /// node it visits, so neither recursion is entered.
     ///
     /// The subject runs on a thread with an **explicit 128 KiB `stack_size`**, so
-    /// neither `RUST_MIN_STACK` (this repo's `.cargo/config.toml` sets 8 MiB) nor
-    /// `ulimit -s` can mask a regression — the same discipline
+    /// neither a process-wide `RUST_MIN_STACK` override nor `ulimit -s` can mask
+    /// a regression — the same discipline
     /// `rholang/tests/stack_depth_gate.rs` uses.
     ///
     /// ★ **Shown RED.** Replacing the body's `into_source_process()` with

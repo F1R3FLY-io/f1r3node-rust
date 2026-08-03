@@ -93,7 +93,10 @@ async fn read_single_expr(runtime: &RhoRuntimeImpl, channel_name: &str) -> ExprI
 async fn assert_bool(runtime: &RhoRuntimeImpl, channel_name: &str) {
     match read_single_expr(runtime, channel_name).await {
         ExprInstance::GBool(true) => {}
-        other => panic!("@\"{}\" expected GBool(true), got {:?}", channel_name, other),
+        other => panic!(
+            "@\"{}\" expected GBool(true), got {:?}",
+            channel_name, other
+        ),
     }
 }
 

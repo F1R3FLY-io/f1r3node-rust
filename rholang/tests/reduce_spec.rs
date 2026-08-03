@@ -158,7 +158,7 @@ async fn eval_expr_should_handle_long_addition() {
          produced here until 2026-07-29 — is a DIFFERENT number presented as the sum, and in a \
          consensus interpreter every validator agrees on it. Got: {:?}",
         i64::MAX.wrapping_mul(2),
-        result.map(|par| par.exprs),
+        result.as_ref().map(|par| &par.exprs),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -373,7 +373,7 @@ async fn eval_expr_should_return_error_for_addition_overflow() {
     assert!(
         result.is_err(),
         "`i64::MAX + 1` must REFUSE, not wrap to i64::MIN. Got: {:?}",
-        result.map(|par| par.exprs),
+        result.as_ref().map(|par| &par.exprs),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -434,7 +434,7 @@ async fn eval_expr_should_return_error_for_subtraction_overflow() {
     assert!(
         result.is_err(),
         "`i64::MIN - 1` must REFUSE, not wrap to i64::MAX. Got: {:?}",
-        result.map(|par| par.exprs),
+        result.as_ref().map(|par| &par.exprs),
     );
     assert_eq!(
         result.unwrap_err(),
@@ -532,7 +532,7 @@ async fn every_int_operator_refuses_a_result_it_cannot_represent() {
             "★ `{operator}` produced a VALUE for an unrepresentable result. Every Int operator \
              must refuse; a wrapping one is a silent wrong answer that every validator agrees on. \
              Got: {:?}",
-            result.map(|par| par.exprs),
+            result.as_ref().map(|par| &par.exprs),
         );
     }
 }
@@ -1909,7 +1909,10 @@ async fn eval_of_last_method_is_the_final_element_and_not_the_first() {
     let env = Env::new();
 
     let last = reducer
-        .eval_expr_to_par(&method_call("last", gint_list(&[111, 222, 333]), vec![]), &env)
+        .eval_expr_to_par(
+            &method_call("last", gint_list(&[111, 222, 333]), vec![]),
+            &env,
+        )
         .expect("`last` must be routed: an unrouted name fails with `Unimplemented method: last`");
     assert_eq!(
         new_gint_par(333, Vec::new(), false),
@@ -1920,11 +1923,11 @@ async fn eval_of_last_method_is_the_final_element_and_not_the_first() {
     // The control, on the SAME list: the head is a different element.
     let head = reducer
         .eval_expr_to_par(
-            &method_call(
-                "nth",
-                gint_list(&[111, 222, 333]),
-                vec![new_gint_par(0, Vec::new(), false)],
-            ),
+            &method_call("nth", gint_list(&[111, 222, 333]), vec![new_gint_par(
+                0,
+                Vec::new(),
+                false,
+            )]),
             &env,
         )
         .expect("`nth` is routed");
@@ -1952,7 +1955,11 @@ async fn eval_of_last_method_on_the_empty_list_agrees_with_nth_zero_exactly() {
         .expect_err("the empty list has no last element");
     let nth_error = reducer
         .eval_expr_to_par(
-            &method_call("nth", gint_list(&[]), vec![new_gint_par(0, Vec::new(), false)]),
+            &method_call("nth", gint_list(&[]), vec![new_gint_par(
+                0,
+                Vec::new(),
+                false,
+            )]),
             &env,
         )
         .expect_err("the empty list has no element 0 either");
@@ -2022,11 +2029,11 @@ async fn eval_of_last_method_refuses_arguments_and_non_sequence_receivers() {
     // Arity: `last` takes none.
     let arity = reducer
         .eval_expr_to_par(
-            &method_call(
-                "last",
-                gint_list(&[1, 2]),
-                vec![new_gint_par(0, Vec::new(), false)],
-            ),
+            &method_call("last", gint_list(&[1, 2]), vec![new_gint_par(
+                0,
+                Vec::new(),
+                false,
+            )]),
             &env,
         )
         .expect_err("`last` takes no arguments");
@@ -6149,7 +6156,11 @@ async fn match_case_with_unsatisfied_spatial_guard_should_fall_through() {
 fn guard_first_bound_at_most_45() -> Par {
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::ELteBody(models::rhoapi::ELte {
-            p1: Some(new_boundvar_par(0, models::create_bit_vector(&vec![0]), false)),
+            p1: Some(new_boundvar_par(
+                0,
+                models::create_bit_vector(&vec![0]),
+                false,
+            )),
             p2: Some(new_gint_par(45, Vec::new(), false)),
         })),
     }])
@@ -6186,7 +6197,9 @@ fn offer_send(amount: i64) -> Par {
 }
 
 /// The integers resting on `@"offer"`, sorted.
-fn resting_offers(result: &HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>) -> Vec<i64> {
+fn resting_offers(
+    result: &HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>,
+) -> Vec<i64> {
     let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
     let mut amounts: Vec<i64> = match result.get(&key) {
         None => Vec::new(),
@@ -6256,7 +6269,10 @@ async fn guard_rejection_backtracks_to_the_next_resting_datum() {
     );
     let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
     assert!(
-        result.get(&key).map(|row| row.wks.is_empty()).unwrap_or(true),
+        result
+            .get(&key)
+            .map(|row| row.wks.is_empty())
+            .unwrap_or(true),
         "the receive fired, so no continuation may still be waiting: {result:?}"
     );
 }

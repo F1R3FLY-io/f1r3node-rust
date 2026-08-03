@@ -116,9 +116,7 @@ fn member_lattice(width: usize) -> Vec<Vec<usize>> {
 }
 
 /// The property the whole file is about.
-fn is_canonical(bits: &[u8]) -> bool {
-    bits.last() != Some(&0)
-}
+fn is_canonical(bits: &[u8]) -> bool { bits.last() != Some(&0) }
 
 // ---------------------------------------------------------------------------
 // §1 the law
@@ -161,7 +159,11 @@ fn the_empty_set_has_exactly_one_spelling() {
 #[test]
 fn the_canonical_form_is_a_bijection_on_member_sets() {
     let lattice = member_lattice(6);
-    assert_eq!(lattice.len(), 64, "control: the lattice on 0..6 has 2^6 rows");
+    assert_eq!(
+        lattice.len(),
+        64,
+        "control: the lattice on 0..6 has 2^6 rows"
+    );
 
     let mut seen: Vec<(Vec<usize>, Vec<u8>)> = Vec::with_capacity(lattice.len());
     for indices in &lattice {
@@ -371,14 +373,13 @@ fn canonicalising_union_would_move_consensus_bytes() {
     // 3. ★ THE MOVEMENT, exhibited on the wire in this process. The two spellings
     //    of ∅ serialise to different `Par` bytes, which is the whole reason the
     //    choice between them is consensus-visible.
-    use models::rhoapi::Par;
     use prost::Message;
 
-    let non_canonical = Par {
+    let non_canonical = models::par_from_default! {
         locally_free: union(vec![0], vec![]),
         ..Default::default()
     };
-    let canonical = Par {
+    let canonical = models::par_from_default! {
         locally_free: canonical_bit_vector(union(vec![0], vec![])),
         ..Default::default()
     };
@@ -440,8 +441,8 @@ fn the_bitset_construction_sites_are_enumerated_from_source() {
 
     let mut stack = vec![root.join("src")];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
         for entry in entries {
             let entry = entry.expect("dir entry");
             let path = entry.path();
@@ -467,10 +468,21 @@ fn the_bitset_construction_sites_are_enumerated_from_source() {
                     continue;
                 }
                 // `vec![0; …]` / `vec![0u8; …]` — a zero-filled vector of
-                // computed length. A literal length (`vec![0u8; 32]`, a hash
-                // buffer) is not a bitset, but including it costs only an
-                // attribution row and excluding it would need a heuristic.
-                if line.contains("vec![0;") || line.contains("vec![0u8;") {
+                // COMPUTED length. A fixed-size byte fixture such as
+                // `vec![0u8; 22]` is not a bitset producer and must not acquire
+                // a false attribution merely because it uses the same macro.
+                // This is a syntactic distinction, not a path allow-list: any
+                // non-literal length remains census-visible in every file.
+                let computed_zero_fill = ["vec![0;", "vec![0u8;"]
+                    .into_iter()
+                    .find_map(|prefix| line.split_once(prefix).map(|(_, tail)| tail))
+                    .and_then(|tail| tail.split(']').next())
+                    .is_some_and(|length| {
+                        let length = length.trim();
+                        !length.is_empty()
+                            && !length.chars().all(|ch| ch.is_ascii_digit() || ch == '_')
+                    });
+                if computed_zero_fill {
                     let rel = path
                         .strip_prefix(root)
                         .expect("under manifest dir")
@@ -487,7 +499,7 @@ fn the_bitset_construction_sites_are_enumerated_from_source() {
     assert_eq!(
         found.len(),
         ATTRIBUTED.len(),
-        "the zero-filled-vector scan of models/src found {} site(s), but {} are attributed.\n\
+        "the computed zero-filled-vector scan of models/src found {} site(s), but {} are attributed.\n\
          found: {found:#?}\n\
          attributed: {ATTRIBUTED:#?}\n\
          A NEW site means a new bitset producer: give it a row here and prove it cannot emit a \
@@ -522,7 +534,7 @@ fn the_wire_ingress_residual_is_real() {
     use models::rhoapi::Par;
     use prost::Message;
 
-    let hostile = Par {
+    let hostile = models::par_from_default! {
         locally_free: vec![0],
         ..Default::default()
     };
@@ -620,10 +632,7 @@ fn the_rholang_producers_are_named_with_their_verdicts() {
 
     // and the smallest witness that it defeats the reader the fix exists for
     let cut = set_bits_until(vec![0, 1], 1);
-    assert!(
-        !cut.is_empty(),
-        "the truncated value is not Vec-empty …"
-    );
+    assert!(!cut.is_empty(), "the truncated value is not Vec-empty …");
     assert!(
         members(&cut).is_empty(),
         "… while denoting ∅ — which is exactly the disagreement `fold_match.rs:103` reads"

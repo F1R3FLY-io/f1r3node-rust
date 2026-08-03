@@ -52,6 +52,11 @@
 //! work. A mutation that lands on an unrelated byte still has to produce the
 //! same disposition on both sides, which is exactly the property under test.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Mutex, MutexGuard};
+
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Deserialize;
@@ -59,35 +64,163 @@ use serde::Deserialize;
 mod par_corpus;
 use par_corpus as corpus;
 
+/// Largest single allocation requested since the last observation. The
+/// malformed-input gate uses this to turn an allocator blow-up into a failure
+/// that names the exact mutation and decoder side. Tracking requests rather
+/// than RSS avoids allocator retention and page-accounting noise.
+static MAX_ALLOCATION_REQUEST: AtomicUsize = AtomicUsize::new(0);
+static LIVE_ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PEAK_ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+struct TrackingSystem;
+
+#[global_allocator]
+static TEST_ALLOCATOR: TrackingSystem = TrackingSystem;
+
+unsafe impl GlobalAlloc for TrackingSystem {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        MAX_ALLOCATION_REQUEST.fetch_max(layout.size(), AtomicOrdering::Relaxed);
+        // SAFETY: this allocator is a transparent observer over `System`.
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            record_live_growth(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        MAX_ALLOCATION_REQUEST.fetch_max(layout.size(), AtomicOrdering::Relaxed);
+        // SAFETY: this allocator is a transparent observer over `System`.
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            record_live_growth(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` and `layout` came from the delegated `System` allocator.
+        unsafe { System.dealloc(ptr, layout) }
+        LIVE_ALLOCATED_BYTES.fetch_sub(layout.size(), AtomicOrdering::Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        MAX_ALLOCATION_REQUEST.fetch_max(new_size, AtomicOrdering::Relaxed);
+        // SAFETY: `ptr` and `layout` came from the delegated `System` allocator.
+        let resized = unsafe { System.realloc(ptr, layout, new_size) };
+        if !resized.is_null() {
+            if new_size >= layout.size() {
+                record_live_growth(new_size - layout.size());
+            } else {
+                LIVE_ALLOCATED_BYTES.fetch_sub(layout.size() - new_size, AtomicOrdering::Relaxed);
+            }
+        }
+        resized
+    }
+}
+
+fn record_live_growth(bytes: usize) {
+    let live = LIVE_ALLOCATED_BYTES.fetch_add(bytes, AtomicOrdering::Relaxed) + bytes;
+    PEAK_ALLOCATED_BYTES.fetch_max(live, AtomicOrdering::Relaxed);
+}
+
+fn reset_max_allocation_request() { MAX_ALLOCATION_REQUEST.store(0, AtomicOrdering::Relaxed); }
+
+fn max_allocation_request() -> usize { MAX_ALLOCATION_REQUEST.load(AtomicOrdering::Relaxed) }
+
+fn start_heap_window() -> usize {
+    let baseline = LIVE_ALLOCATED_BYTES.load(AtomicOrdering::Relaxed);
+    PEAK_ALLOCATED_BYTES.store(baseline, AtomicOrdering::Relaxed);
+    baseline
+}
+
+fn heap_window_peak(baseline: usize) -> usize {
+    PEAK_ALLOCATED_BYTES
+        .load(AtomicOrdering::Relaxed)
+        .saturating_sub(baseline)
+}
+
 /// The one assertion this file makes, everywhere.
 ///
 /// `hits` counts how many mutations produced `Err` on BOTH sides, so a family
 /// that silently stopped perturbing anything can be caught by its caller
 /// instead of reporting a comfortable pass.
-fn assert_agree<T>(label: &str, bytes: &[u8], rejections: &mut usize)
+fn assert_agree<T, F>(label: F, bytes: &[u8], rejections: &mut usize)
 where
     T: ColdStoreDecode + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    F: FnOnce() -> String,
 {
+    // The generated machine gets the strict bound. The third-party derived
+    // oracle can hold one independent 1 MiB cautious buffer for each nested
+    // sequence while it recursively descends, so it receives a wider bound and
+    // runs in short-lived batches to prevent freed arenas accumulating in RSS.
+    const MAX_ORACLE_DECODE_ALLOCATION: usize = 64 * 1024 * 1024;
+    const MAX_MACHINE_DECODE_ALLOCATION: usize = 8 * 1024 * 1024;
+
+    reset_max_allocation_request();
+    let oracle_baseline = start_heap_window();
     let oracle: Result<T, _> = bincode::deserialize(bytes);
+    let oracle_max = max_allocation_request();
+    let oracle_peak = heap_window_peak(oracle_baseline);
+    reset_max_allocation_request();
+    let machine_baseline = start_heap_window();
     let machine = T::cold_decode(bytes);
+    let machine_max = max_allocation_request();
+    let machine_peak = heap_window_peak(machine_baseline);
+    if oracle_max > MAX_ORACLE_DECODE_ALLOCATION
+        || oracle_peak > MAX_ORACLE_DECODE_ALLOCATION
+        || machine_max > MAX_MACHINE_DECODE_ALLOCATION
+        || machine_peak > MAX_MACHINE_DECODE_ALLOCATION
+    {
+        let label = label();
+        panic!(
+            "{label}: a malformed-input decode exceeded its heap gate \
+             (oracle=64 MiB, machine=8 MiB; \
+             (largest request: derived={oracle_max}, machine={machine_max}; peak live delta: \
+             derived={oracle_peak}, machine={machine_peak}; input={} bytes)",
+            bytes.len()
+        );
+    }
     match (oracle, machine) {
         (Ok(a), Ok(b)) => assert!(
             a == b,
-            "{label}: BOTH accepted, but produced DIFFERENT values. The cold-store \
-             decoder and the derived decoder must recognise the same language."
+            "{}: BOTH accepted, but produced DIFFERENT values. The cold-store \
+             decoder and the derived decoder must recognise the same language.",
+            label()
         ),
         (Err(_), Err(_)) => *rejections += 1,
-        (Ok(a), Err(e)) => panic!(
-            "{label}: the derived decoder ACCEPTED this byte string and the machine \
+        (Ok(a), Err(e)) => {
+            let label = label();
+            panic!(
+                "{label}: the derived decoder ACCEPTED this byte string and the machine \
              REJECTED it ({e}). This narrows the accepted language — a node running \
              the machine would refuse state its peers accept.\n  value: {a:?}"
-        ),
-        (Err(_), Ok(b)) => panic!(
-            "{label}: the machine ACCEPTED a byte string the derived decoder REJECTED. \
+            )
+        }
+        (Err(_), Ok(b)) => {
+            let label = label();
+            panic!(
+                "{label}: the machine ACCEPTED a byte string the derived decoder REJECTED. \
              This widens the accepted language — a node running the machine would \
              admit state its peers refuse.\n  value: {b:?}"
-        ),
+            )
+        }
     }
+}
+
+/// The seven exhaustive mutation families are deliberately CPU-heavy and each
+/// walks the same allocation-rich corpus. Libtest would otherwise launch them
+/// concurrently in one process, multiplying their allocator high-water marks
+/// and allowing a verification target to exhaust the host. Serialising the
+/// families changes no cases and no oracle; it only bounds peak resident
+/// memory. A poisoned guard is recovered so one useful failure does not hide
+/// the remaining families behind seven lock-poison failures.
+static MALFORMED_FAMILY: Mutex<()> = Mutex::new(());
+
+fn malformed_family_guard() -> MutexGuard<'static, ()> {
+    MALFORMED_FAMILY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Every corpus encoding, as `(label, bytes)`, for all four root types plus a
@@ -133,13 +266,223 @@ enum Kind {
     TaggedContinuation,
 }
 
-fn check(label: &str, kind: Kind, bytes: &[u8], rejections: &mut usize) {
+fn check<F>(label: F, kind: Kind, bytes: &[u8], rejections: &mut usize)
+where F: FnOnce() -> String {
     match kind {
-        Kind::Par => assert_agree::<Par>(label, bytes, rejections),
-        Kind::ListParWithRandom => assert_agree::<ListParWithRandom>(label, bytes, rejections),
-        Kind::BindPattern => assert_agree::<BindPattern>(label, bytes, rejections),
-        Kind::TaggedContinuation => assert_agree::<TaggedContinuation>(label, bytes, rejections),
+        Kind::Par => assert_agree::<Par, _>(label, bytes, rejections),
+        Kind::ListParWithRandom => assert_agree::<ListParWithRandom, _>(label, bytes, rejections),
+        Kind::BindPattern => assert_agree::<BindPattern, _>(label, bytes, rejections),
+        Kind::TaggedContinuation => assert_agree::<TaggedContinuation, _>(label, bytes, rejections),
     }
+}
+
+/// Allocation-heavy mutation sweeps run in bounded batches. A child process
+/// returns all of its allocator arenas to the operating system at batch end,
+/// so hundreds of thousands of deliberately hostile decodes cannot accumulate
+/// allocator retention in the long-lived libtest process. Every child inherits
+/// the parent's cgroup, and every individual decode is additionally checked by
+/// the 8 MiB allocation gate above.
+/// Offsets per isolated worker. A worker covering one offset peaks near
+/// 23 MiB after the decoder topology fix; 64 amortizes process startup while
+/// the enclosing cgroup and per-decode allocation gate remain authoritative.
+const MUTATION_BATCH_OFFSETS: usize = 64;
+const MUTATION_CHILD_FAMILY: &str = "BINCODE_MALFORMED_CHILD_FAMILY";
+const MUTATION_CHILD_FIXTURE: &str = "BINCODE_MALFORMED_CHILD_FIXTURE";
+const MUTATION_CHILD_START: &str = "BINCODE_MALFORMED_CHILD_START";
+const MUTATION_CHILD_END: &str = "BINCODE_MALFORMED_CHILD_END";
+const MUTATION_BATCH_RESULT: &str = "BINCODE_MALFORMED_BATCH_RESULT";
+
+#[derive(Clone, Copy)]
+enum MutationFamily {
+    Byte,
+    Variant,
+    Length,
+}
+
+impl MutationFamily {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Byte => "byte",
+            Self::Variant => "variant",
+            Self::Length => "length",
+        }
+    }
+
+    fn parse(name: &str) -> Self {
+        match name {
+            "byte" => Self::Byte,
+            "variant" => Self::Variant,
+            "length" => Self::Length,
+            other => panic!("unknown malformed mutation family {other:?}"),
+        }
+    }
+
+    fn offset_count(self, bytes_len: usize) -> usize {
+        match self {
+            Self::Byte => bytes_len,
+            Self::Variant => bytes_len.saturating_sub(4),
+            Self::Length => bytes_len.saturating_sub(8),
+        }
+    }
+}
+
+fn run_mutation_batches(family: MutationFamily) -> (usize, usize) {
+    let executable = std::env::current_exe().expect("locate malformed-input test executable");
+    let fixtures = encodings();
+    let mut mutations = 0usize;
+    let mut rejections = 0usize;
+
+    for (fixture, (label, _kind, bytes)) in fixtures.iter().enumerate() {
+        let count = family.offset_count(bytes.len());
+        for start in (0..count).step_by(MUTATION_BATCH_OFFSETS) {
+            let end = (start + MUTATION_BATCH_OFFSETS).min(count);
+            let output = Command::new(&executable)
+                .arg("mutation_batch_child")
+                .arg("--exact")
+                .arg("--ignored")
+                .arg("--nocapture")
+                .env(MUTATION_CHILD_FAMILY, family.name())
+                .env(MUTATION_CHILD_FIXTURE, fixture.to_string())
+                .env(MUTATION_CHILD_START, start.to_string())
+                .env(MUTATION_CHILD_END, end.to_string())
+                .output()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to start {} mutation child for {label}[{start}..{end}]: {error}",
+                        family.name()
+                    )
+                });
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "{} mutation child failed for {label}[{start}..{end}] with {}\nstdout:\n{}\nstderr:\n{}",
+                family.name(),
+                output.status,
+                stdout,
+                stderr
+            );
+            let line = stdout
+                .lines()
+                .find(|line| line.starts_with(MUTATION_BATCH_RESULT))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} mutation child for {label}[{start}..{end}] returned no result marker\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                        family.name()
+                    )
+                });
+            let mut fields = line.split_whitespace();
+            assert_eq!(fields.next(), Some(MUTATION_BATCH_RESULT));
+            mutations += fields
+                .next()
+                .expect("batch result mutation count")
+                .parse::<usize>()
+                .expect("numeric batch mutation count");
+            rejections += fields
+                .next()
+                .expect("batch result rejection count")
+                .parse::<usize>()
+                .expect("numeric batch rejection count");
+            assert!(
+                fields.next().is_none(),
+                "unexpected fields in mutation batch result {line:?}"
+            );
+        }
+    }
+    (mutations, rejections)
+}
+
+fn required_child_usize(name: &str) -> usize {
+    std::env::var(name)
+        .unwrap_or_else(|_| panic!("mutation child requires {name}"))
+        .parse()
+        .unwrap_or_else(|error| panic!("mutation child {name} is not usize: {error}"))
+}
+
+/// One resource-bounded batch driven by [`run_mutation_batches`]. Ignored so a
+/// normal libtest invocation never mistakes a worker for an independent proof.
+#[test]
+#[ignore = "child process of the malformed-input allocation gate"]
+fn mutation_batch_child() {
+    let Ok(family_name) = std::env::var(MUTATION_CHILD_FAMILY) else {
+        return;
+    };
+    let family = MutationFamily::parse(&family_name);
+    let fixture = required_child_usize(MUTATION_CHILD_FIXTURE);
+    let start = required_child_usize(MUTATION_CHILD_START);
+    let end = required_child_usize(MUTATION_CHILD_END);
+    let (label, kind, bytes) = encodings()
+        .into_iter()
+        .nth(fixture)
+        .unwrap_or_else(|| panic!("mutation child fixture {fixture} is out of range"));
+    let count = family.offset_count(bytes.len());
+    assert!(
+        start <= end && end <= count && end - start <= MUTATION_BATCH_OFFSETS,
+        "invalid {} mutation batch {start}..{end} for {label} with {count} offsets",
+        family.name()
+    );
+
+    let mut mutations = 0usize;
+    let mut rejections = 0usize;
+    match family {
+        MutationFamily::Byte => {
+            for offset in start..end {
+                for replacement in [0u8, 1, 2, 0x7f, 0xff] {
+                    if bytes[offset] == replacement {
+                        continue;
+                    }
+                    let mut mutant = bytes.clone();
+                    mutant[offset] = replacement;
+                    mutations += 1;
+                    check(
+                        || format!("{label} byte[{offset}] := {replacement:#04x}"),
+                        kind,
+                        &mutant,
+                        &mut rejections,
+                    );
+                }
+            }
+        }
+        MutationFamily::Variant => {
+            for offset in start..end {
+                for index in [2u32, 9, 36, 37, u32::MAX] {
+                    let mut mutant = bytes.clone();
+                    mutant[offset..offset + 4].copy_from_slice(&index.to_le_bytes());
+                    mutations += 1;
+                    check(
+                        || format!("{label} variant@{offset} := {index}"),
+                        kind,
+                        &mutant,
+                        &mut rejections,
+                    );
+                }
+            }
+        }
+        MutationFamily::Length => {
+            let hostile: [u64; 6] = [
+                u64::MAX,
+                usize::MAX as u64,
+                u64::MAX / 2,
+                1 << 62,
+                1 << 40,
+                4097,
+            ];
+            for offset in start..end {
+                for len in hostile {
+                    let mut mutant = bytes.clone();
+                    mutant[offset..offset + 8].copy_from_slice(&len.to_le_bytes());
+                    mutations += 1;
+                    check(
+                        || format!("{label} len@{offset} := {len}"),
+                        kind,
+                        &mutant,
+                        &mut rejections,
+                    );
+                }
+            }
+        }
+    }
+    println!("{MUTATION_BATCH_RESULT} {mutations} {rejections}");
 }
 
 // ===========================================================================
@@ -156,13 +499,14 @@ fn check(label: &str, kind: Kind, bytes: &[u8], rejections: &mut usize) {
 /// at depth 48 and the corpus is not the place to add megabyte fixtures.
 #[test]
 fn truncation_at_every_offset_agrees() {
+    let _serial = malformed_family_guard();
     let mut rejections = 0usize;
     let mut prefixes = 0usize;
     for (label, kind, bytes) in encodings() {
         for cut in 0..bytes.len() {
             prefixes += 1;
             check(
-                &format!("{label} truncated at {cut}"),
+                || format!("{label} truncated at {cut}"),
                 kind,
                 &bytes[..cut],
                 &mut rejections,
@@ -198,26 +542,8 @@ fn truncation_at_every_offset_agrees() {
 /// changes which error fires and, more importantly, whether one fires at all.
 #[test]
 fn byte_substitution_at_every_offset_agrees() {
-    let mut rejections = 0usize;
-    let mut mutations = 0usize;
-    for (label, kind, bytes) in encodings() {
-        for offset in 0..bytes.len() {
-            for replacement in [0u8, 1, 2, 0x7F, 0xFF] {
-                if bytes[offset] == replacement {
-                    continue;
-                }
-                let mut mutant = bytes.clone();
-                mutant[offset] = replacement;
-                mutations += 1;
-                check(
-                    &format!("{label} byte[{offset}] := {replacement:#04x}"),
-                    kind,
-                    &mutant,
-                    &mut rejections,
-                );
-            }
-        }
-    }
+    let _serial = malformed_family_guard();
+    let (mutations, rejections) = run_mutation_batches(MutationFamily::Byte);
     assert!(
         mutations > 100_000,
         "ANTI-VACUITY: only {mutations} substitutions were tried"
@@ -242,31 +568,16 @@ fn byte_substitution_at_every_offset_agrees() {
 /// then be a decoder that accepts a term the derived decoder refuses.
 #[test]
 fn out_of_range_variant_indices_agree() {
-    let mut rejections = 0usize;
-    let mut mutations = 0usize;
-    for (label, kind, bytes) in encodings() {
-        if bytes.len() < 4 {
-            continue;
-        }
-        for offset in 0..bytes.len() - 4 {
-            for index in [2u32, 9, 36, 37, u32::MAX] {
-                let mut mutant = bytes.clone();
-                mutant[offset..offset + 4].copy_from_slice(&index.to_le_bytes());
-                mutations += 1;
-                check(
-                    &format!("{label} variant@{offset} := {index}"),
-                    kind,
-                    &mutant,
-                    &mut rejections,
-                );
-            }
-        }
-    }
+    let _serial = malformed_family_guard();
+    let (mutations, rejections) = run_mutation_batches(MutationFamily::Variant);
     assert!(
         mutations > 100_000,
         "ANTI-VACUITY: only {mutations} variant-index mutations were tried"
     );
-    assert!(rejections > 0, "ANTI-VACUITY: no variant mutation was rejected");
+    assert!(
+        rejections > 0,
+        "ANTI-VACUITY: no variant mutation was rejected"
+    );
     println!("  variant index: {mutations} mutants, {rejections} joint rejections");
 }
 
@@ -277,48 +588,26 @@ fn out_of_range_variant_indices_agree() {
 /// Every 8-byte window is overwritten with `usize::MAX`, `u64::MAX` and other
 /// enormous counts.
 ///
-/// ⚠ **This is the family that catches an out-of-memory abort.** Without
+/// ⚠ **This is the family that catches an unsafe allocation attempt.** Without
 /// serde's `size_hint::cautious` cap (reproduced by `bincode_decoder`'s
 /// `cautious_capacity`, and made unnecessary for `Par`-bearing sequences by the
-/// counted-repeat design), a length near `usize::MAX` would make one side try
-/// to pre-allocate and die while the other returns `Err` — a divergence that no
-/// amount of valid-input testing can reach. A regression here does not fail
-/// politely: the test process is killed. That is the intended signal.
+/// counted-repeat design), a length near `usize::MAX` could make one side try
+/// to reserve unbounded memory while the other returns `Err` — a divergence
+/// that no amount of valid-input testing can reach. The per-decode allocation
+/// gate makes that regression fail with the exact mutation, and the child
+/// batches prevent the oracle allocator's freed arenas accumulating in RSS.
 #[test]
 fn hostile_lengths_agree() {
-    let mut rejections = 0usize;
-    let mut mutations = 0usize;
-    let hostile: [u64; 6] = [
-        u64::MAX,
-        usize::MAX as u64,
-        u64::MAX / 2,
-        1 << 62,
-        1 << 40,
-        4097, // just past the historical serde 4,096-element prealloc cap
-    ];
-    for (label, kind, bytes) in encodings() {
-        if bytes.len() < 8 {
-            continue;
-        }
-        for offset in 0..bytes.len() - 8 {
-            for len in hostile {
-                let mut mutant = bytes.clone();
-                mutant[offset..offset + 8].copy_from_slice(&len.to_le_bytes());
-                mutations += 1;
-                check(
-                    &format!("{label} len@{offset} := {len}"),
-                    kind,
-                    &mutant,
-                    &mut rejections,
-                );
-            }
-        }
-    }
+    let _serial = malformed_family_guard();
+    let (mutations, rejections) = run_mutation_batches(MutationFamily::Length);
     assert!(
         mutations > 100_000,
         "ANTI-VACUITY: only {mutations} length mutations were tried"
     );
-    assert!(rejections > 0, "ANTI-VACUITY: no length mutation was rejected");
+    assert!(
+        rejections > 0,
+        "ANTI-VACUITY: no length mutation was rejected"
+    );
     println!("  hostile lengths: {mutations} mutants, {rejections} joint rejections");
 }
 
@@ -332,26 +621,28 @@ fn hostile_lengths_agree() {
 /// hand-written parser that "helpfully" checks it consumed everything.
 #[test]
 fn trailing_bytes_are_accepted_by_both() {
+    let _serial = malformed_family_guard();
     let mut rejections = 0usize;
     let mut cases = 0usize;
     for (label, kind, bytes) in encodings() {
-        for suffix in [
-            vec![0u8],
-            vec![0xFF; 16],
-            vec![0x01, 0x02, 0x03, 0x04, 0x05],
-        ] {
+        for suffix in [vec![0u8], vec![0xFF; 16], vec![
+            0x01, 0x02, 0x03, 0x04, 0x05,
+        ]] {
             let mut mutant = bytes.clone();
             mutant.extend_from_slice(&suffix);
             cases += 1;
             check(
-                &format!("{label} + {} trailing bytes", suffix.len()),
+                || format!("{label} + {} trailing bytes", suffix.len()),
                 kind,
                 &mutant,
                 &mut rejections,
             );
         }
     }
-    assert!(cases > 100, "ANTI-VACUITY: only {cases} trailing-byte cases");
+    assert!(
+        cases > 100,
+        "ANTI-VACUITY: only {cases} trailing-byte cases"
+    );
     assert_eq!(
         rejections, 0,
         "trailing bytes must be ACCEPTED by both decoders; {rejections} case(s) were rejected"
@@ -367,6 +658,7 @@ fn trailing_bytes_are_accepted_by_both() {
 /// must make the same call.
 #[test]
 fn arbitrary_byte_strings_agree() {
+    let _serial = malformed_family_guard();
     let mut rejections = 0usize;
     let mut cases = 0usize;
     let mut seed: u64 = 0x2026_07_27;
@@ -381,20 +673,23 @@ fn arbitrary_byte_strings_agree() {
                 .collect();
             cases += 1;
             check(
-                &format!("arbitrary[{len}] seed {seed:#x}"),
+                || format!("arbitrary[{len}] seed {seed:#x}"),
                 Kind::Par,
                 &bytes,
                 &mut rejections,
             );
             check(
-                &format!("arbitrary[{len}] seed {seed:#x} (TaggedContinuation)"),
+                || format!("arbitrary[{len}] seed {seed:#x} (TaggedContinuation)"),
                 Kind::TaggedContinuation,
                 &bytes,
                 &mut rejections,
             );
         }
     }
-    assert!(cases > 1_000, "ANTI-VACUITY: only {cases} arbitrary strings");
+    assert!(
+        cases > 1_000,
+        "ANTI-VACUITY: only {cases} arbitrary strings"
+    );
     assert!(
         rejections > cases,
         "ANTI-VACUITY: {rejections} joint rejections over {cases} strings x 2 types — \
@@ -414,13 +709,15 @@ fn arbitrary_byte_strings_agree() {
 /// "never" is only a claim until something checks it against hostile input.
 #[test]
 fn no_input_reaches_a_machine_invariant() {
+    let _serial = malformed_family_guard();
     use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecodeError;
 
     let mut checked = 0usize;
     for (label, _kind, bytes) in encodings() {
         for cut in 0..bytes.len() {
             checked += 1;
-            if let Err(ColdStoreDecodeError::MachineInvariant(what)) = Par::cold_decode(&bytes[..cut])
+            if let Err(ColdStoreDecodeError::MachineInvariant(what)) =
+                Par::cold_decode(&bytes[..cut])
             {
                 panic!(
                     "{label} truncated at {cut} reached MachineInvariant({what}) — the \
@@ -430,5 +727,8 @@ fn no_input_reaches_a_machine_invariant() {
             }
         }
     }
-    assert!(checked > 50_000, "ANTI-VACUITY: only {checked} inputs checked");
+    assert!(
+        checked > 50_000,
+        "ANTI-VACUITY: only {checked} inputs checked"
+    );
 }

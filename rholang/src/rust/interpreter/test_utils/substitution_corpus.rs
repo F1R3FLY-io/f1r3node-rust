@@ -52,7 +52,6 @@ use models::rhoapi::{
     KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::rhoapi_ext::EPathMap;
-
 pub use models::rust::rholang::par_children::{
     CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
 };
@@ -66,14 +65,14 @@ use crate::rust::interpreter::env::Env;
 /// A `Par` carrying a distinguishing `locally_free` byte, so a traversal that
 /// returned the WRONG sub-term (rather than none) is still caught.
 pub fn tagged(tag: u8) -> Par {
-    Par {
+    models::par_from_default! {
         locally_free: vec![tag],
         ..Default::default()
     }
 }
 
 pub fn expr_par(instance: ExprInstance) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(instance),
         }],
@@ -81,9 +80,7 @@ pub fn expr_par(instance: ExprInstance) -> Par {
     }
 }
 
-pub fn gint(n: i64) -> Par {
-    expr_par(ExprInstance::GInt(n))
-}
+pub fn gint(n: i64) -> Par { expr_par(ExprInstance::GInt(n)) }
 
 /// `[[[…[0]…]]]` with `depth` bracket levels, built iteratively.
 pub fn nested_list(depth: usize) -> Par {
@@ -122,7 +119,7 @@ pub fn free_var(index: i32) -> Par {
 /// `depth`. `maybe_substitute_var_ref` rewrites it iff `VarRef.depth` equals
 /// the depth substitution is running at.
 pub fn var_ref(index: i32, depth: i32) -> Par {
-    Par {
+    models::par_from_default! {
         connectives: vec![Connective {
             connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef { index, depth })),
         }],
@@ -131,9 +128,7 @@ pub fn var_ref(index: i32, depth: i32) -> Par {
     }
 }
 
-fn pathmap_of(ps: Vec<Par>) -> EPathMap {
-    EPathMap::new(ps, vec![9], false, None)
-}
+fn pathmap_of(ps: Vec<Par>) -> EPathMap { EPathMap::new(ps, vec![9], false, None) }
 
 // ---------------------------------------------------------------------------
 // the environment
@@ -164,9 +159,7 @@ pub fn populated_env() -> Env<Par> {
 /// The empty environment — `maybe_substitute_var` finds nothing and every
 /// `BoundVar` is returned unchanged. Half the corpus should be run under each,
 /// because "found" and "not found" are different code paths.
-pub fn empty_env() -> Env<Par> {
-    Env::new()
-}
+pub fn empty_env() -> Env<Par> { Env::new() }
 
 // ---------------------------------------------------------------------------
 // per-arm corpora
@@ -215,8 +208,14 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             "EMultBody",
             ExprInstance::EMultBody(EMult { p1: a(), p2: b() }),
         ),
-        ("EDivBody", ExprInstance::EDivBody(EDiv { p1: a(), p2: b() })),
-        ("EModBody", ExprInstance::EModBody(EMod { p1: a(), p2: b() })),
+        (
+            "EDivBody",
+            ExprInstance::EDivBody(EDiv { p1: a(), p2: b() }),
+        ),
+        (
+            "EModBody",
+            ExprInstance::EModBody(EMod { p1: a(), p2: b() }),
+        ),
         (
             "EPlusBody",
             ExprInstance::EPlusBody(EPlus { p1: a(), p2: b() }),
@@ -242,12 +241,24 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
             ExprInstance::EPercentPercentBody(EPercentPercent { p1: a(), p2: b() }),
         ),
         ("ELtBody", ExprInstance::ELtBody(ELt { p1: a(), p2: b() })),
-        ("ELteBody", ExprInstance::ELteBody(ELte { p1: a(), p2: b() })),
+        (
+            "ELteBody",
+            ExprInstance::ELteBody(ELte { p1: a(), p2: b() }),
+        ),
         ("EGtBody", ExprInstance::EGtBody(EGt { p1: a(), p2: b() })),
-        ("EGteBody", ExprInstance::EGteBody(EGte { p1: a(), p2: b() })),
+        (
+            "EGteBody",
+            ExprInstance::EGteBody(EGte { p1: a(), p2: b() }),
+        ),
         ("EEqBody", ExprInstance::EEqBody(EEq { p1: a(), p2: b() })),
-        ("ENeqBody", ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() })),
-        ("EAndBody", ExprInstance::EAndBody(EAnd { p1: a(), p2: b() })),
+        (
+            "ENeqBody",
+            ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() }),
+        ),
+        (
+            "EAndBody",
+            ExprInstance::EAndBody(EAnd { p1: a(), p2: b() }),
+        ),
         ("EOrBody", ExprInstance::EOrBody(EOr { p1: a(), p2: b() })),
         (
             "EMatchesBody",
@@ -359,10 +370,7 @@ pub fn every_connective_instance() -> Vec<(&'static str, ConnectiveInstance)> {
                 ps: vec![bound_var(0), gint(1)],
             }),
         ),
-        (
-            "ConnNotBody",
-            ConnectiveInstance::ConnNotBody(bound_var(0)),
-        ),
+        ("ConnNotBody", ConnectiveInstance::ConnNotBody(bound_var(0))),
         (
             "VarRefBody@0",
             ConnectiveInstance::VarRefBody(VarRef { index: 0, depth: 0 }),
@@ -418,7 +426,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
         for depth in [0i32, 1] {
             out.push(case(
                 format!("conn/{name}@d{depth}"),
-                Par {
+                models::par_from_default! {
                     connectives: vec![Connective {
                         connective_instance: Some(instance.clone()),
                     }],
@@ -441,7 +449,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // the source channel (which it must).
     out.push(case(
         "receive/bind_count=2+guard",
-        Par {
+        models::par_from_default! {
             receives: vec![Receive {
                 binds: vec![ReceiveBind {
                     patterns: vec![free_var(0), free_var(1)],
@@ -451,7 +459,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
                     }),
                     free_count: 2,
                 }],
-                body: Some(Par {
+                body: Some(models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::EPlusBody(EPlus {
                             p1: Some(bound_var(0)),
@@ -476,10 +484,10 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // `new x, y in { … }` with a URI-bound injection.
     out.push(case(
         "new/bind_count=2+injections",
-        Par {
+        models::par_from_default! {
             news: vec![New {
                 bind_count: 2,
-                p: Some(Par {
+                p: Some(models::par_from_default! {
                     exprs: vec![Expr {
                         expr_instance: Some(ExprInstance::EListBody(EList {
                             ps: vec![bound_var(0), bound_var(2)],
@@ -509,7 +517,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // pattern is substituted at depth + 1.
     out.push(case(
         "match/free_count=1+guard",
-        Par {
+        models::par_from_default! {
             matches: vec![Match {
                 target: Some(bound_var(0)),
                 cases: vec![
@@ -539,9 +547,9 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // worklist has to reproduce exactly.
     out.push(case(
         "bundle/nested-merge",
-        Par {
+        models::par_from_default! {
             bundles: vec![Bundle {
-                body: Some(Par {
+                body: Some(models::par_from_default! {
                     bundles: vec![Bundle {
                         body: Some(bound_var(0)),
                         write_flag: false,
@@ -560,7 +568,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // A `Send` on a bound channel with several data terms.
     out.push(case(
         "send/bound-channel",
-        Par {
+        models::par_from_default! {
             sends: vec![Send {
                 chan: Some(bound_var(0)),
                 data: vec![bound_var(0), nested_list(2), gint(1)],
@@ -576,7 +584,7 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // A first-class conditional.
     out.push(case(
         "if/three-branches",
-        Par {
+        models::par_from_default! {
             conditionals: vec![If {
                 condition: Some(bound_var(0)),
                 if_true: Some(nested_list(2)),
@@ -665,10 +673,10 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
     // audit calls out as subtlest, and the shape the generator cannot reach.
     let mut binders = gint(0);
     for level in 0..6 {
-        binders = Par {
+        binders = models::par_from_default! {
             news: vec![New {
                 bind_count: 1,
-                p: Some(Par {
+                p: Some(models::par_from_default! {
                     receives: vec![Receive {
                         binds: vec![ReceiveBind {
                             patterns: vec![free_var(0)],
@@ -703,8 +711,9 @@ pub fn substitution_corpus() -> Vec<SubstitutionCase> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rust::rholang::par_children::reachable_pars;
+
+    use super::*;
 
     #[test]
     fn corpus_covers_every_expr_instance_variant() {
@@ -777,7 +786,9 @@ mod tests {
             "corpus has no If"
         );
         assert!(
-            corpus.iter().any(|c| c.name.contains("VarRefBody@mismatch")),
+            corpus
+                .iter()
+                .any(|c| c.name.contains("VarRefBody@mismatch")),
             "corpus has no VarRef at a NON-matching depth"
         );
         assert!(

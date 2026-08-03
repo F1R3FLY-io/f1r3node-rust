@@ -1,3 +1,4 @@
+#![feature(hasher_prefixfree_extras)]
 #![allow(
     clippy::type_complexity,
     clippy::ptr_arg,
@@ -54,6 +55,38 @@
     clippy::large_stack_arrays,
     clippy::manual_div_ceil
 )]
+
+/// Construct a [`rhoapi::Par`] by overriding named fields on one whole base
+/// value.
+///
+/// The generated stack-safe `Drop` implementation makes Rust's struct-update
+/// syntax illegal for `Par`: that syntax moves the unspecified fields out of
+/// the base, while a type with `Drop` may only be moved as a whole. This macro
+/// is the allocation-neutral equivalent. It evaluates the base once, then
+/// assigns each explicitly named field once.
+#[macro_export]
+macro_rules! par_from_default {
+    (@collect $par:ident [$($assignments:tt)*] ..$base:expr $(,)?) => {{
+        let mut $par: $crate::rhoapi::Par = $base;
+        $($assignments)*
+        $par
+    }};
+    (@collect $par:ident [$($assignments:tt)*] $field:ident: $value:expr, $($rest:tt)*) => {
+        $crate::par_from_default!(@collect $par [
+            $($assignments)*
+            $par.$field = $value;
+        ] $($rest)*)
+    };
+    (@collect $par:ident [$($assignments:tt)*] $field:ident, $($rest:tt)*) => {
+        $crate::par_from_default!(@collect $par [
+            $($assignments)*
+            $par.$field = $field;
+        ] $($rest)*)
+    };
+    ($($fields:tt)*) => {
+        $crate::par_from_default!(@collect par [] $($fields)*)
+    };
+}
 
 pub mod rust;
 
@@ -257,7 +290,7 @@ use crate::var::VarInstance;
 // compiler cannot: a maintainer who answers E0004 by extending the residue
 // list ALONE would compile a variant that is still unequal to itself. That
 // gate reads the authoritative variant names out of the generated
-// `wire_schema::*_VARIANTS` tables and requires a same-variant `eq` arm and a
+// `bincode_schema_tables::*_VARIANTS` tables and requires a same-variant `eq` arm and a
 // `hash` arm for each, so the wrong completion is red rather than silent.
 //
 // ⚠ The `Hash` impls below already enumerate; none of them ever carried a
@@ -265,36 +298,6 @@ use crate::var::VarInstance;
 // (equal values hash equally), so a `_ => ()` in `hash` would be this same
 // defect a second time and in a form `HashMap` corrupts even faster.
 // ===========================================================================
-
-impl PartialEq for Par {
-    fn eq(&self, other: &Self) -> bool {
-        self.sends == other.sends
-            && self.receives == other.receives
-            && self.news == other.news
-            && self.exprs == other.exprs
-            && self.matches == other.matches
-            && self.unforgeables == other.unforgeables
-            && self.bundles == other.bundles
-            && self.connectives == other.connectives
-            && self.conditionals == other.conditionals
-            && self.connective_used == other.connective_used
-    }
-}
-
-impl Hash for Par {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.sends.hash(state);
-        self.receives.hash(state);
-        self.news.hash(state);
-        self.exprs.hash(state);
-        self.matches.hash(state);
-        self.unforgeables.hash(state);
-        self.bundles.hash(state);
-        self.connectives.hash(state);
-        self.conditionals.hash(state);
-        self.connective_used.hash(state);
-    }
-}
 
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {

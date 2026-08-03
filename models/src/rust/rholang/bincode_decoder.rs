@@ -115,11 +115,11 @@
 //! strongly-connected component has a fixed maximum nesting, hence a fixed
 //! maximum stack, hence no depth-dependent frame. The counts are checked
 //! against the generated schema by `bincode_decoder_type_partition` in
-//! `models/tests/bincode_decoder_wire_shapes.rs`.
+//! `models/tests/bincode_decoder_shapes.rs`.
 //!
 //! ## 5. ⚠ The four wire shapes where a hand-written codec drifts
 //!
-//! Each has a named test in `models/tests/bincode_decoder_wire_shapes.rs`.
+//! Each has a named test in `models/tests/bincode_decoder_shapes.rs`.
 //!
 //! 1. **`New.injections: BTreeMap<String, Par>`** — the only `btree_map` field
 //!    in `RhoTypes.proto`. serde emits a **map**: an 8-byte count, then
@@ -227,7 +227,7 @@ use crate::rhoapi::{
     ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
-use crate::rust::rhoapi_ext::{EPathMap, EntryTrie};
+use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::par_children::{
     dismantle_all, CONNECTIVE_INSTANCE_VARIANT_COUNT, EXPR_INSTANCE_VARIANT_COUNT,
 };
@@ -243,7 +243,7 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 // is gated against.
 
 // ★ ONE TABLE, BOTH DIRECTIONS. These indices are no longer transcribed here:
-// they are `pub const`s emitted by `models/build/wire_schema.rs` from the same
+// they are `pub const`s emitted by `models/codegen/schema_codegen.rs` from the same
 // protobuf `FileDescriptorSet` that drives the serializer
 // (`crate::rust::rholang::bincode_encoder`). Thirty-six hand-written `EX_*`
 // literals and nine `CN_*` literals used to live in this block; a 37th oneof
@@ -253,7 +253,7 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 //
 // ⚠ The indices are serde DECLARATION ORDER, never the proto tag —
 // `EX_E_PATHMAP_BODY` is 25 and its proto tag is 32.
-use crate::rust::rholang::wire_schema::{
+use crate::rust::rholang::bincode_schema_tables::{
     CN_CONN_AND_BODY, CN_CONN_BOOL, CN_CONN_BYTE_ARRAY, CN_CONN_INT, CN_CONN_NOT_BODY,
     CN_CONN_OR_BODY, CN_CONN_STRING, CN_CONN_URI, CN_VAR_REF_BODY, EX_E_AND_BODY, EX_E_DIV_BODY,
     EX_E_EQ_BODY, EX_E_GTE_BODY, EX_E_GT_BODY, EX_E_LIST_BODY, EX_E_LTE_BODY, EX_E_LT_BODY,
@@ -330,7 +330,7 @@ fn binary_expr_instance(variant: u32, p1: Option<Par>, p2: Option<Par>) -> Res<E
         _ => {
             return Err(ColdStoreDecodeError::MachineInvariant(
                 "binary ExprInstance arm",
-            ))
+            ));
         }
     })
 }
@@ -364,17 +364,11 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Reader { bytes, pos: 0 }
-    }
+    fn new(bytes: &'a [u8]) -> Self { Reader { bytes, pos: 0 } }
 
-    fn consumed(&self) -> usize {
-        self.pos
-    }
+    fn consumed(&self) -> usize { self.pos }
 
-    fn remaining(&self) -> usize {
-        self.bytes.len() - self.pos
-    }
+    fn remaining(&self) -> usize { self.bytes.len() - self.pos }
 
     /// Bounds-checked slice take. Every payload read goes through here, so no
     /// allocation is ever sized by an unvalidated stream length.
@@ -391,9 +385,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    fn byte(&mut self, wanted: &'static str) -> Res<u8> {
-        Ok(self.take(1, wanted)?[0])
-    }
+    fn byte(&mut self, wanted: &'static str) -> Res<u8> { Ok(self.take(1, wanted)?[0]) }
 
     /// `deserialize_bool` — byte ∉ {0,1} is `InvalidBoolEncoding`
     /// (`bincode/src/de/mod.rs:132-141`).
@@ -422,9 +414,7 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    fn i32(&mut self) -> Res<i32> {
-        self.u32().map(|v| v as i32)
-    }
+    fn i32(&mut self) -> Res<i32> { self.u32().map(|v| v as i32) }
 
     fn u64(&mut self) -> Res<u64> {
         let b = self.take(8, "a u64")?;
@@ -433,9 +423,7 @@ impl<'a> Reader<'a> {
         ]))
     }
 
-    fn i64(&mut self) -> Res<i64> {
-        self.u64().map(|v| v as i64)
-    }
+    fn i64(&mut self) -> Res<i64> { self.u64().map(|v| v as i64) }
 
     /// `IntEncoding::deserialize_len` — a `u64` narrowed to `usize`
     /// (`bincode/src/config/int.rs:69-73`, `cast_u64_to_usize` at :593).
@@ -467,9 +455,7 @@ impl<'a> Reader<'a> {
     /// An owned `Vec<u8>` field — [`Reader::byte_slice`] plus the copy. The two
     /// share the length read and the `wanted` label, so their `UnexpectedEof`
     /// disposition cannot drift apart.
-    fn byte_seq(&mut self) -> Res<Vec<u8>> {
-        self.byte_slice().map(<[u8]>::to_vec)
-    }
+    fn byte_seq(&mut self) -> Res<Vec<u8>> { self.byte_slice().map(<[u8]>::to_vec) }
 
     /// `String::deserialize` → `deserialize_string` → `read_string`: read the
     /// length-prefixed bytes **first** (so a short buffer is `UnexpectedEof`,
@@ -520,9 +506,7 @@ impl<'a> Reader<'a> {
 
     fn var(&mut self) -> Res<Var> {
         if !self.option_tag()? {
-            return Ok(Var {
-                var_instance: None,
-            });
+            return Ok(Var { var_instance: None });
         }
         let instance = match self.variant("VarInstance", VAR_INSTANCE_VARIANT_COUNT)? {
             0 => VarInstance::BoundVar(self.i32()?),
@@ -546,9 +530,7 @@ impl<'a> Reader<'a> {
 
     fn unforgeable(&mut self) -> Res<GUnforgeable> {
         if !self.option_tag()? {
-            return Ok(GUnforgeable {
-                unf_instance: None,
-            });
+            return Ok(GUnforgeable { unf_instance: None });
         }
         let instance = match self.variant("UnfInstance", UNF_INSTANCE_VARIANT_COUNT)? {
             0 => UnfInstance::GPrivateBody(GPrivate {
@@ -631,7 +613,10 @@ impl Kind {
 #[derive(Clone, Copy, Debug)]
 enum Op {
     /// The counted repeat. Never materialises `remaining` ops; see §3.
-    Rep { kind: Kind, remaining: usize },
+    Rep {
+        kind: Kind,
+        remaining: usize,
+    },
 
     // ---- Par: sends, receives, news, exprs, matches, unforgeables,
     //           bundles, connectives, conditionals, locally_free,
@@ -640,19 +625,31 @@ enum Op {
     /// `field` indexes the eight repeated `Par`-bearing fields in declaration
     /// order; `unforgeables` (a bounded leaf sequence) is read inline just
     /// before field 5, which is where it sits in the stream.
-    ParField { field: u8 },
+    ParField {
+        field: u8,
+    },
     ParBuild,
 
     // ---- Send: chan, data, persistent, locally_free, connective_used
     SendStart,
-    SendData { has_chan: bool },
-    SendBuild { has_chan: bool, n_data: usize },
+    SendData {
+        has_chan: bool,
+    },
+    SendBuild {
+        has_chan: bool,
+        n_data: usize,
+    },
 
     // ---- Receive: binds, body, persistent, peek, bind_count, locally_free,
     //               connective_used, condition
     ReceiveStart,
-    ReceiveBody { n_binds: usize },
-    ReceiveCondition { n_binds: usize, has_body: bool },
+    ReceiveBody {
+        n_binds: usize,
+    },
+    ReceiveCondition {
+        n_binds: usize,
+        has_body: bool,
+    },
     ReceiveBuild {
         n_binds: usize,
         has_body: bool,
@@ -661,25 +658,47 @@ enum Op {
 
     // ---- ReceiveBind: patterns, source, remainder, free_count
     BindStart,
-    BindSource { n_patterns: usize },
-    BindBuild { n_patterns: usize, has_source: bool },
+    BindSource {
+        n_patterns: usize,
+    },
+    BindBuild {
+        n_patterns: usize,
+        has_source: bool,
+    },
 
     // ---- New: bind_count, p, uri, injections, locally_free
     NewStart,
-    NewAfterP { has_p: bool },
+    NewAfterP {
+        has_p: bool,
+    },
     /// One `BTreeMap` entry: read the key, then descend for the value.
-    NewEntry { remaining: usize },
-    NewBuild { has_p: bool, n_entries: usize },
+    NewEntry {
+        remaining: usize,
+    },
+    NewBuild {
+        has_p: bool,
+        n_entries: usize,
+    },
 
     // ---- Match: target, cases, locally_free, connective_used
     MatchStart,
-    MatchCases { has_target: bool },
-    MatchBuild { has_target: bool, n_cases: usize },
+    MatchCases {
+        has_target: bool,
+    },
+    MatchBuild {
+        has_target: bool,
+        n_cases: usize,
+    },
 
     // ---- MatchCase: pattern, source, free_count, guard
     CaseStart,
-    CaseAfterPattern { t_pattern: bool },
-    CaseAfterSource { t_pattern: bool, t_source: bool },
+    CaseAfterPattern {
+        t_pattern: bool,
+    },
+    CaseAfterSource {
+        t_pattern: bool,
+        t_source: bool,
+    },
     CaseBuild {
         t_pattern: bool,
         t_source: bool,
@@ -689,74 +708,135 @@ enum Op {
 
     // ---- If: condition, if_true, if_false, locally_free, connective_used
     IfStart,
-    IfAfterCondition { t1: bool },
-    IfAfterTrue { t1: bool, t2: bool },
-    IfBuild { t1: bool, t2: bool, t3: bool },
+    IfAfterCondition {
+        t1: bool,
+    },
+    IfAfterTrue {
+        t1: bool,
+        t2: bool,
+    },
+    IfBuild {
+        t1: bool,
+        t2: bool,
+        t3: bool,
+    },
 
     // ---- Bundle: body, write_flag, read_flag
     BundleStart,
-    BundleBuild { has_body: bool },
+    BundleBuild {
+        has_body: bool,
+    },
 
     // ---- Expr / ExprInstance
     ExprStart,
-    ExprUnaryBuild { variant: u32, has_p: bool },
-    ExprBinaryAfter1 { variant: u32, t1: bool },
-    ExprBinaryBuild { variant: u32, t1: bool, t2: bool },
+    ExprUnaryBuild {
+        variant: u32,
+        has_p: bool,
+    },
+    ExprBinaryAfter1 {
+        variant: u32,
+        t1: bool,
+    },
+    ExprBinaryBuild {
+        variant: u32,
+        t1: bool,
+        t2: bool,
+    },
     /// `EList` / `ESet`: ps, locally_free, connective_used, remainder.
-    ExprSeqBuild { variant: u32, n: usize },
+    ExprSeqBuild {
+        variant: u32,
+        n: usize,
+    },
     /// `ETuple`: ps, locally_free, connective_used — **no** remainder.
-    ExprTupleBuild { n: usize },
+    ExprTupleBuild {
+        n: usize,
+    },
     /// `EMap`: kvs, locally_free, connective_used, remainder.
-    ExprMapBuild { n: usize },
-    ExprMethodArgs { has_target: bool },
-    ExprMethodBuild { has_target: bool, n_args: usize },
+    ExprMapBuild {
+        n: usize,
+    },
+    ExprMethodArgs {
+        has_target: bool,
+    },
+    ExprMethodBuild {
+        has_target: bool,
+        n_args: usize,
+    },
     /// Wrap the `EPathMap` on top of the pathmap stack into an `Expr`.
     ExprFromPathmap,
-    ExprZipperBuild { has_pathmap: bool },
+    ExprZipperBuild {
+        has_pathmap: bool,
+    },
 
-    // ---- EPathMap: U(m), ps, locally_free, connective_used, remainder
+    // ---- EPathMap: EPM1 snapshot, locally_free, connective_used, remainder
     PathmapStart,
     /// `n` is the VALUE count; the `U(m)` slice rides on
     /// [`Machine::path_streams`] because a `&[u8]` cannot live in a
     /// lifetime-free `Op` — the same side-frame discipline `ParFrame` and
     /// `NewFrame` follow.
-    PathmapBuild { n: usize },
+    PathmapBuild,
 
     // ---- KeyValuePair: key, value
     KvStart,
-    KvAfterKey { t_key: bool },
-    KvBuild { t_key: bool, t_value: bool },
+    KvAfterKey {
+        t_key: bool,
+    },
+    KvBuild {
+        t_key: bool,
+        t_value: bool,
+    },
 
     // ---- Connective / ConnectiveInstance
     ConnStart,
-    ConnBodyBuild { variant: u32, n: usize },
+    ConnBodyBuild {
+        variant: u32,
+        n: usize,
+    },
     ConnNotBuild,
 
     // ---- TaggedContinuation: guard, tagged_cont
     TaggedContinuationStart,
-    TaggedContinuationCont { t_guard: bool },
+    TaggedContinuationCont {
+        t_guard: bool,
+    },
     /// `TaggedCont::ParBody(ParWithRandom { body, random_state })`.
-    TaggedContinuationParBody { t_guard: bool, t_body: bool },
+    TaggedContinuationParBody {
+        t_guard: bool,
+        t_body: bool,
+    },
     /// `TaggedCont::ScalaBodyRef(i64)`, value already read.
-    TaggedContinuationScala { t_guard: bool, value: i64 },
+    TaggedContinuationScala {
+        t_guard: bool,
+        value: i64,
+    },
     /// `tagged_cont` absent.
-    TaggedContinuationAbsent { t_guard: bool },
+    TaggedContinuationAbsent {
+        t_guard: bool,
+    },
 
     // ---- ListParWithRandom: pars, random_state
     ListParWithRandomStart,
-    ListParWithRandomBuild { n: usize },
+    ListParWithRandomBuild {
+        n: usize,
+    },
 
     // ---- ParWithRandom: body, random_state (standalone entry)
     ParWithRandomStart,
-    ParWithRandomBuild { has_body: bool },
+    ParWithRandomBuild {
+        has_body: bool,
+    },
 
     // ---- BindPattern: patterns, remainder, free_count
     BindPatternStart,
-    BindPatternBuild { n: usize },
+    BindPatternBuild {
+        n: usize,
+    },
 
     // ---- ListBindPatterns: patterns
     ListBindPatternsStart,
-    ListBindPatternsBuild { n: usize },
+    ListBindPatternsBuild {
+        n: usize,
+    },
 }
 
 // ===========================================================================
@@ -833,7 +913,7 @@ struct Machine<'a> {
     /// `Vec<u8>` would be a second image of bytes the caller already holds. It
     /// is a side frame rather than an `Op` payload because `Op` carries no
     /// lifetime.
-    path_streams: Vec<&'a [u8]>,
+    trie_snapshots: Vec<&'a [u8]>,
 }
 
 /// Take the last `n` values off a stack, **preserving stream order**.
@@ -891,7 +971,7 @@ impl<'a> Machine<'a> {
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
-            path_streams: Vec::new(),
+            trie_snapshots: Vec::new(),
         }
     }
 
@@ -986,7 +1066,7 @@ impl<'a> Machine<'a> {
             || !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
-            || !self.path_streams.is_empty()
+            || !self.trie_snapshots.is_empty()
         {
             return Err(ColdStoreDecodeError::MachineInvariant(
                 "side frame not drained at end of run",
@@ -1519,7 +1599,7 @@ impl<'a> Machine<'a> {
                     _ => {
                         return Err(ColdStoreDecodeError::MachineInvariant(
                             "unary ExprInstance arm",
-                        ))
+                        ));
                     }
                 };
                 self.push_expr(instance);
@@ -1556,7 +1636,7 @@ impl<'a> Machine<'a> {
                     _ => {
                         return Err(ColdStoreDecodeError::MachineInvariant(
                             "sequence ExprInstance arm",
-                        ))
+                        ));
                     }
                 };
                 self.push_expr(instance);
@@ -1639,18 +1719,15 @@ impl<'a> Machine<'a> {
                 // writes the pair as a positional 2-tuple, which bincode frames
                 // with nothing of its own, so the two are literally consecutive
                 // here.
-                let path_stream = self.r.byte_slice()?;
-                let n = self.r.len()?;
-                self.path_streams.push(path_stream);
-                self.ops.push(Op::PathmapBuild { n });
-                self.repeat(Kind::Par, n);
+                let snapshot = self.r.byte_slice()?;
+                self.trie_snapshots.push(snapshot);
+                self.ops.push(Op::PathmapBuild);
             }
-            Op::PathmapBuild { n } => {
+            Op::PathmapBuild => {
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
                 let remainder = self.r.opt_var()?;
-                let ps = take_n(&mut self.pars, n, "EPathMap.ps")?;
-                let path_stream = take_one(&mut self.path_streams, "EPathMap.serialized_paths")?;
+                let snapshot = take_one(&mut self.trie_snapshots, "EPathMap.trie_snapshot")?;
                 // ★ THE ONE reader of the split encoding, shared with the
                 // derived `Deserialize` — two hand-written bulk readers of one
                 // wire shape is the defect `c705776c` closed.
@@ -1660,19 +1737,15 @@ impl<'a> Machine<'a> {
                 // a node that refuses a byte string its peers accept has forked.
                 // `decode_trie_path` is never reached, so this surface acquires
                 // no depth ceiling.
-                let (entries, _verdict) =
-                    EntryTrie::from_path_stream_and_values(path_stream, ps);
+                let mut map = EPathMap::new(Vec::new(), locally_free, connective_used, remainder);
+                map.replace_trie_snapshot(snapshot)
+                    .map_err(|error| ColdStoreDecodeError::Legacy(error.to_string()))?;
                 // FOUR serde fields, not five: `intern` is `#[serde(skip)]`.
                 // `EPathMap::new` leaves the shadow cell empty, which is
                 // exactly what the derived `Deserialize` does for a skipped
                 // `OnceLock` field, and is required — a decoded value must
                 // never carry a stale intern handle.
-                self.pathmaps.push(EPathMap::new(
-                    entries,
-                    locally_free,
-                    connective_used,
-                    remainder,
-                ));
+                self.pathmaps.push(map);
             }
 
             // ---------------------------------------------------------------
@@ -1741,7 +1814,7 @@ impl<'a> Machine<'a> {
                             _ => {
                                 return Err(ColdStoreDecodeError::MachineInvariant(
                                     "ConnectiveInstance arm not covered by the decoder",
-                                ))
+                                ));
                             }
                         };
                         self.connectives.push(Connective {
@@ -1756,11 +1829,7 @@ impl<'a> Machine<'a> {
                 let instance = match variant {
                     CN_CONN_AND_BODY => ConnectiveInstance::ConnAndBody(body),
                     CN_CONN_OR_BODY => ConnectiveInstance::ConnOrBody(body),
-                    _ => {
-                        return Err(ColdStoreDecodeError::MachineInvariant(
-                            "ConnectiveBody arm",
-                        ))
-                    }
+                    _ => return Err(ColdStoreDecodeError::MachineInvariant("ConnectiveBody arm")),
                 };
                 self.connectives.push(Connective {
                     connective_instance: Some(instance),
@@ -1893,9 +1962,7 @@ enum DrainedRoot {
 }
 
 impl<'a> Drop for Machine<'a> {
-    fn drop(&mut self) {
-        self.dismantle();
-    }
+    fn drop(&mut self) { self.dismantle(); }
 }
 
 impl<'a> Machine<'a> {
@@ -2009,17 +2076,16 @@ impl<'a> Machine<'a> {
             }
         }
 
-        loose.push(Par {
-            sends: mem::take(&mut self.sends),
-            receives,
-            news: mem::take(&mut self.news),
-            exprs,
-            matches,
-            bundles: mem::take(&mut self.bundles),
-            connectives: mem::take(&mut self.connectives),
-            conditionals: mem::take(&mut self.ifs),
-            ..Default::default()
-        });
+        let mut root = Par::default();
+        root.sends = mem::take(&mut self.sends);
+        root.receives = receives;
+        root.news = mem::take(&mut self.news);
+        root.exprs = exprs;
+        root.matches = matches;
+        root.bundles = mem::take(&mut self.bundles);
+        root.connectives = mem::take(&mut self.connectives);
+        root.conditionals = mem::take(&mut self.ifs);
+        loose.push(root);
 
         dismantle_all(loose);
     }

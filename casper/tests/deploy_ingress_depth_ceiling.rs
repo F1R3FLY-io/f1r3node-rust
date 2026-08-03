@@ -445,10 +445,10 @@ fn ingress_child() {
         &std::env::var("INGRESS_TEARDOWN").expect("INGRESS_TEARDOWN must accompany INGRESS_DEPTH"),
     );
 
-    // ★ EXPLICIT `stack_size`. This repository's `.cargo/config.toml` sets
-    // `RUST_MIN_STACK = 8388608`, so a probe that let the default stand would be
-    // measuring a 4× larger stack than a node worker has, and would report a
-    // ceiling four times the production one.
+    // ★ EXPLICIT `stack_size`. An ambient `RUST_MIN_STACK` or a future
+    // harness-default change must not move the measurement. The repository has
+    // no `RUST_MIN_STACK` override; the probe nevertheless pins the production
+    // worker's stack so the result remains comparable and reproducible.
     std::thread::Builder::new()
         .stack_size(stack)
         .name("ingress".to_string())

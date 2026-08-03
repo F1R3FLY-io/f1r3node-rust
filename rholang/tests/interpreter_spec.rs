@@ -127,7 +127,7 @@ async fn interpreter_should_yield_correct_results_for_prime_check_contract() {
         let tuple_space = runtime.get_hot_changes().await;
 
         fn rho_par(expr: Expr) -> Vec<Par> {
-            vec![Par {
+            vec![models::par_from_default! {
                 exprs: vec![expr],
                 ..Default::default()
             }]

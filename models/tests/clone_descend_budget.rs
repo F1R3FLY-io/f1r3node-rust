@@ -1,6 +1,6 @@
 //! # `clone_descend_budget` — the DESCEND BUDGET is MEASURED, not asserted
 //!
-//! `models/build/wire_schema.rs` emits [`CLONE_DESCEND_BUDGET`], the number of
+//! `models/codegen/schema_codegen.rs` emits [`CLONE_DESCEND_BUDGET`], the number of
 //! further **cut-set** levels one `descend` walks in native frames before it
 //! suspends to `drive::drive_with`. This file is the executed statement that the
 //! constant is doing what its doc comment claims, and it exists because every
@@ -84,7 +84,7 @@ const WORKLOAD_SCALE: f64 = 2000.0;
 const WEIGHTED_MIX_NODES: usize = 12_286;
 
 fn gint(n: i64) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GInt(n)),
         }],
@@ -93,7 +93,7 @@ fn gint(n: i64) -> Par {
 }
 
 fn gstr(s: &str) -> Par {
-    Par {
+    models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
         }],
@@ -103,7 +103,7 @@ fn gstr(s: &str) -> Par {
 
 /// `models/benches/term_ops_bench.rs`'s `datum`, verbatim in shape.
 fn datum(depth: usize) -> Par {
-    let mut body = Par {
+    let mut body = models::par_from_default! {
         exprs: vec![
             Expr {
                 expr_instance: Some(ExprInstance::GInt(42)),
@@ -124,7 +124,7 @@ fn datum(depth: usize) -> Par {
         ..Default::default()
     };
     for level in 1..depth {
-        body = Par {
+        body = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(if level % 2 == 0 {
                     ExprInstance::ETupleBody(ETuple {
@@ -153,7 +153,7 @@ fn datum(depth: usize) -> Par {
 fn spine(levels: usize) -> Par {
     let mut p = gint(0);
     for _ in 0..levels {
-        p = Par {
+        p = models::par_from_default! {
             exprs: vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
                     ps: vec![p],
@@ -299,11 +299,20 @@ fn descendants_at<'a>(p: &'a Par, d: usize) -> Vec<&'a Par> {
 /// budget touches, so it is a second statement of the machine's cost rather than
 /// a restatement of it.
 fn predicted_descends(p: &Par, budget: usize) -> usize {
-    1 + descendants_at(p, budget + 1)
-        .iter()
-        .map(|q| predicted_descends(q, budget))
-        .sum::<usize>()
+    let mut pending = vec![p];
+    let mut descends = 0usize;
+    while let Some(root) = pending.pop() {
+        descends += 1;
+        pending.extend(descendants_at(root, budget + 1));
+    }
+    descends
 }
+
+/// The retained derive-shaped clone is a semantic oracle, not a deep-stack
+/// subject. Keep it on a deliberately shallow corpus; the generated Eq PDA
+/// checks deeper products against their inputs, while the independent worklist
+/// above checks the exact suspension count at every sampled depth.
+const RECURSIVE_ORACLE_MAX_LEVELS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // The guards
@@ -326,7 +335,7 @@ fn the_budget_is_not_zero() {
          verbatim — `clone_push_children_*` suspends every cut-set child and the trampoline is \
          re-entered once per `Par` node — so this whole file, the equivalence corpus and the \
          depth gate would all stay green while the amortization was gone. See \
-         `models/build/wire_schema.rs`'s `DESCEND_BUDGET` for the derivation of the value."
+         `models/codegen/schema_codegen.rs`'s `DESCEND_BUDGET` for the derivation of the value."
     );
     // The upper bound is not a correctness bound (the prefix is a constant at every
     // budget) but a REVIEW bound: past this, the constant costs a share of the
@@ -354,7 +363,7 @@ fn one_descend_covers_the_whole_modal_datum() {
     assert_eq!(
         nodes, 6,
         "the depth-2 datum has {nodes} `Par` nodes, not the 6 every figure in \
-         `models/build/wire_schema.rs` is denominated in. The fixture has drifted from the \
+         `models/codegen/schema_codegen.rs` is denominated in. The fixture has drifted from the \
          bench's `datum`."
     );
     assert_eq!(
@@ -398,7 +407,8 @@ fn the_suspension_count_matches_an_independent_prediction() {
         let independent = predicted_descends(&term, k);
 
         assert_eq!(
-            counts.descends, closed_form,
+            counts.descends,
+            closed_form,
             "a {chain}-node chain cost {} descends; the closed form ⌈{chain}/({k}+1)⌉ says \
              {closed_form}. One `descend` covers cut-set depths 0..={k}, i.e. {} levels.",
             counts.descends,
@@ -411,12 +421,20 @@ fn the_suspension_count_matches_an_independent_prediction() {
              {independent}. Two statements of one cost have drifted.",
             counts.descends
         );
-        assert_eq!(
-            out,
-            oracle_clone_par(&term),
-            "the counted walk of a {chain}-node chain produced a different term from the derive \
-             oracle."
-        );
+        if levels <= RECURSIVE_ORACLE_MAX_LEVELS {
+            assert_eq!(
+                out,
+                oracle_clone_par(&term),
+                "the counted walk of a {chain}-node chain produced a different term from the \
+                 bounded derive oracle."
+            );
+        } else {
+            assert_eq!(
+                out, term,
+                "the counted walk of a {chain}-node chain changed the input at a depth reserved \
+                 for the generated stack-safe equality check"
+            );
+        }
     }
 }
 
