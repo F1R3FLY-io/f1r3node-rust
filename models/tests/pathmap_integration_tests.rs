@@ -1890,3 +1890,81 @@ fn map_equality_agrees_with_the_emitted_key_stream() {
          distinct maps AND compare every pair, so both polarities of the agreement are exercised."
     );
 }
+
+/// The reverse raw visitors are the allocation-free bridge from PathMap order
+/// to a LIFO PDA. They must enumerate exactly the forward key/value stream in
+/// reverse, including shared-prefix branches and value association.
+#[test]
+fn reverse_raw_visitors_are_the_exact_reverse_of_forward_trie_order() {
+    let set = EPathMap::new(
+        vec![
+            make_list_par(vec!["shared", "a"]),
+            make_list_par(vec!["shared", "a", "deep"]),
+            make_list_par(vec!["shared", "b"]),
+            make_int_par(-7),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+    let mut set_forward = Vec::new();
+    set.entry_trie()
+        .for_each_raw_set_entry(|key| set_forward.push(key.to_vec()))
+        .unwrap();
+    let mut set_reverse = Vec::new();
+    set.entry_trie()
+        .for_each_raw_set_entry_reverse(|key| set_reverse.push(key.to_vec()))
+        .unwrap();
+    let expected_set_reverse = set_forward.iter().rev().cloned().collect::<Vec<_>>();
+    assert_eq!(set_reverse, expected_set_reverse);
+
+    let map = EPathMap::new_map(
+        [
+            (make_list_par(vec!["shared", "a"]), make_int_par(11)),
+            (
+                make_list_par(vec!["shared", "a", "deep"]),
+                make_string_par("deep-value"),
+            ),
+            (make_list_par(vec!["shared", "b"]), make_int_par(22)),
+            (make_int_par(-7), make_string_par("integer-key")),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+    let mut map_forward = Vec::new();
+    map.entry_trie()
+        .for_each_raw_map_entry(|key, value| {
+            map_forward.push((
+                key.to_vec(),
+                models::rust::rholang::protobuf_encoder::encode_to_vec(value),
+            ));
+        })
+        .unwrap();
+    let mut map_reverse = Vec::new();
+    map.entry_trie()
+        .for_each_raw_map_entry_reverse(|key, value| {
+            map_reverse.push((
+                key.to_vec(),
+                models::rust::rholang::protobuf_encoder::encode_to_vec(value),
+            ));
+        })
+        .unwrap();
+    let expected_map_reverse = map_forward.iter().rev().cloned().collect::<Vec<_>>();
+    assert_eq!(map_reverse, expected_map_reverse);
+
+    let empty = EPathMap::default();
+    let mut visited = false;
+    empty
+        .entry_trie()
+        .for_each_raw_set_entry_reverse(|_| visited = true)
+        .unwrap();
+    empty
+        .entry_trie()
+        .for_each_raw_map_entry_reverse(|_, _| visited = true)
+        .unwrap();
+    assert!(
+        !visited,
+        "neutral empty must be valid for either reverse visitor"
+    );
+}

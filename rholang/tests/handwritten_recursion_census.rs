@@ -160,7 +160,7 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subject `pretty`"),
     ),
     (
-        "rholang/src/rust/interpreter/pretty_printer_oracle.rs",
+        "rholang/tests/support/pretty_printer_oracle.rs",
         Disposition::OracleTwin("the pre-conversion printer, held for the differential"),
     ),
     // ── normalizer ─────────────────────────────────────────────────────────────────

@@ -28,6 +28,8 @@ pub mod pretty_printer;
 /// Its own text cites `739368a4` block by block; `rholang/tests/normalize_oracle_provenance.rs`
 /// re-derives every block from git and compares it byte for byte.
 #[cfg(test)]
+#[rustfmt::skip]
+#[path = "../../../tests/support/pretty_printer_oracle.rs"]
 pub mod pretty_printer_oracle;
 pub mod reduce;
 pub mod registry;

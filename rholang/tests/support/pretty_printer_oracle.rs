@@ -43,8 +43,8 @@
 //!
 //! | | functions | pre-conversion lines |
 //! |---|---|---|
-//! | byte-identical under the declared rename | **4 of 10** | 517 |
-//! | carrying at least one declared deviation | **6 of 10** | 454 |
+//! | byte-identical under the declared rename | **3 of 10** | gate-derived |
+//! | carrying at least one declared deviation | **7 of 10** | gate-derived |
 //!
 //! Three of the four public wrappers had their explanatory comments DELETED —
 //! precisely the "not a comment" the banner promised — and all four had their
@@ -92,9 +92,11 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus, EMinusMinus, EMod, EMult,
-    ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, Expr, MatchCase, Par,
+    ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, Expr,
+    MatchCase, Par,
 };
 use models::rust::bundle_ops::BundleOps;
+use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_integration::render_cursor_position;
@@ -148,6 +150,45 @@ impl PrettyPrinter {
             Ok(str) => self.cap(&str),
             Err(err) => format!("<unprintable channel: {}>", err),
         }
+    }
+
+    /// Independent recursive rendering of all homogeneous EPathMap modes.
+    ///
+    /// Set keys and map keys are decoded only for this presentation boundary;
+    /// map values remain borrowed from PathMap. No flattened EPathMap
+    /// projection is retained.
+    fn oracle_build_epathmap_elements(&mut self, pathmap: &EPathMap) -> String {
+        let mut rendered = Vec::with_capacity(pathmap.len());
+        match pathmap.mode() {
+            EPathMapMode::Empty => {}
+            EPathMapMode::Set => {
+                pathmap
+                    .entry_trie()
+                    .for_each_raw_set_entry(|key| {
+                        let entry = models::rust::canonical_path::decode_trie_path(key)
+                            .expect("set-mode EPathMap keys are canonical Par paths");
+                        rendered.push(self.oracle_build_string_from_message(&entry));
+                        models::rust::rholang::par_children::dismantle(entry);
+                    })
+                    .expect("set-mode dispatch checked before traversal");
+            }
+            EPathMapMode::Map => {
+                pathmap
+                    .entry_trie()
+                    .for_each_raw_map_entry(|key, value| {
+                        let key = models::rust::canonical_path::decode_trie_path(key)
+                            .expect("map-mode EPathMap keys are canonical Par paths");
+                        let key = self.oracle_build_string_from_message(&key);
+                        rendered.push(format!(
+                            "{} : {}",
+                            key,
+                            self.oracle_build_string_from_message(value)
+                        ));
+                    })
+                    .expect("map-mode dispatch checked before traversal");
+            }
+        }
+        rendered.join(", ")
     }
 
 
@@ -449,8 +490,7 @@ impl PrettyPrinter {
 
                 ExprInstance::EPathmapBody(pathmap) => {
                     // Similar to EListBody - print elements in pathmap syntax {| ... |}
-                    let entries = pathmap.entry_trie().entries_owned();
-                    let elements = self.oracle_build_vec(&entries);
+                    let elements = self.oracle_build_epathmap_elements(pathmap);
                     let remainder_string = self.build_remainder_string(&pathmap.remainder);
 
                     let full_result = if pathmap.remainder.is_some() && !elements.is_empty() {
@@ -467,8 +507,7 @@ impl PrettyPrinter {
                 ExprInstance::EZipperBody(zipper) => {
                     // Print zipper showing the underlying PathMap and current position
                     let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                    let entries = pathmap.entry_trie().entries_owned();
-                    let elements = self.oracle_build_vec(&entries);
+                    let elements = self.oracle_build_epathmap_elements(pathmap);
                     let remainder_string = self.build_remainder_string(&pathmap.remainder);
                     let zipper_type = if zipper.is_write_zipper {
                         "WriteZipper"

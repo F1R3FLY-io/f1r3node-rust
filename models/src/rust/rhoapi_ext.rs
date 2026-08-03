@@ -33,17 +33,17 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use prost::DecodeError;
 use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
+use prost::DecodeError;
 
 use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
-use super::pathmap_crate_type_mapper::{PathFrameError, PathFrames, eval_stable_par};
+use super::pathmap_crate_type_mapper::{eval_stable_par, PathFrameError, PathFrames};
 use super::pathmap_integration::{
-    CursorKind, RholangMapPathMap, RholangSetPathMap, cursor_entry_key as encode_cursor_entry_key,
-    entry_key_at as encode_entry_key_at, par_to_path, segments_to_key,
+    cursor_entry_key as encode_cursor_entry_key, entry_key_at as encode_entry_key_at, par_to_path,
+    segments_to_key, CursorKind, RholangMapPathMap, RholangSetPathMap,
 };
 use super::pathmap_native_query::{
     collect_child_segments, next_value_key, path_prefix_exists, subtrie_value_count,
@@ -115,6 +115,41 @@ fn decode_set_entries(map: &RholangSetPathMap) -> Vec<Par> {
         ));
     }
     ps
+}
+
+/// Visit value-bearing paths in descending byte-lexicographic order.
+///
+/// PathMap exposes forward value iteration and both directions of sibling
+/// movement, but no reverse-value convenience iterator. The PDA consumers
+/// that push children onto a LIFO worklist need the reverse order; collecting
+/// the forward iterator into a temporary vector would allocate one pointer per
+/// set member and two per map binding. This walk composes the existing zipper
+/// primitives instead and retains only the zipper's path buffer.
+fn for_each_raw_value_reverse<'trie, V>(
+    map: &'trie pathmap::PathMap<V>,
+    mut visit: impl FnMut(&[u8], &'trie V),
+) where
+    V: Clone + Send + Sync + Unpin + 'static,
+{
+    use pathmap::zipper::{ZipperMoving, ZipperReadOnlyValues};
+
+    let mut zipper = map.read_zipper();
+    while zipper.descend_last_byte() {}
+
+    loop {
+        if let Some(value) = zipper.get_val() {
+            visit(zipper.path(), value);
+        }
+        if zipper.at_root() {
+            break;
+        }
+        if zipper.to_prev_sibling_byte() {
+            while zipper.descend_last_byte() {}
+        } else {
+            let ascended = zipper.ascend_byte();
+            debug_assert!(ascended, "a non-root zipper must be able to ascend");
+        }
+    }
 }
 
 fn empty_set_trie() -> &'static RholangSetPathMap {
@@ -407,6 +442,46 @@ impl EntryTrie {
                 for (key, value) in map.iter() {
                     visit(&key, value);
                 }
+                Ok(())
+            }
+        }
+    }
+
+    /// Visit set members in reverse canonical trie order without materializing
+    /// decoded entries or a pointer projection. This is the order a LIFO PDA
+    /// needs when it must evaluate the forward canonical order.
+    pub fn for_each_raw_set_entry_reverse(
+        &self,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<(), EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(map) => {
+                for_each_raw_value_reverse(map, |key, ()| visit(key));
+                Ok(())
+            }
+            EPathMapRepr::Map(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Set,
+                actual: EPathMapMode::Map,
+            }),
+        }
+    }
+
+    /// Visit map bindings in reverse canonical trie order without cloning keys
+    /// or values. Associated values retain the EntryTrie's lifetime and can
+    /// be placed directly on a generated or handwritten PDA worklist.
+    pub fn for_each_raw_map_entry_reverse<'trie>(
+        &'trie self,
+        mut visit: impl FnMut(&[u8], &'trie Par),
+    ) -> Result<(), EPathMapModeError> {
+        match &self.repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+            EPathMapRepr::Map(map) => {
+                for_each_raw_value_reverse(map, |key, value| visit(key, value));
                 Ok(())
             }
         }
@@ -2470,8 +2545,8 @@ mod pathmap_native_semantics_tests {
     use std::hash::{Hash, Hasher};
 
     use super::*;
-    use crate::rhoapi::Expr;
     use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::Expr;
 
     fn int(value: i64) -> Par {
         let mut par = Par::default();

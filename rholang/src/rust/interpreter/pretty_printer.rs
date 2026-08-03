@@ -2710,43 +2710,44 @@ mod drive {
             decoded_entries: &'a Arena<Par>,
             work: &mut Vec<PpWork<'a>>,
         ) {
-            let mut children: Vec<&Par> = Vec::with_capacity(match pathmap.mode() {
-                EPathMapMode::Empty | EPathMapMode::Set => pathmap.len(),
-                EPathMapMode::Map => pathmap
-                    .len()
-                    .checked_mul(2)
-                    .expect("an addressable EPathMap cannot overflow its child count"),
-            });
             match pathmap.mode() {
                 EPathMapMode::Empty => {}
                 EPathMapMode::Set => {
                     pathmap
                         .entry_trie()
-                        .for_each_raw_set_entry(|key| {
+                        .for_each_raw_set_entry_reverse(|key| {
                             let entry = models::rust::canonical_path::decode_trie_path(key)
                                 .expect("set-mode EPathMap keys are canonical Par paths");
-                            children.push(decoded_entries.alloc(entry));
+                            push_catch(
+                                work,
+                                CatchKind::Message,
+                                PpWork::Node(PpNode::Par(decoded_entries.alloc(entry)), 0),
+                            );
                         })
                         .expect("set-mode dispatch checked before traversal");
                 }
                 EPathMapMode::Map => {
                     pathmap
                         .entry_trie()
-                        .for_each_raw_map_entry(|key, value| {
+                        .for_each_raw_map_entry_reverse(|key, value| {
+                            // The forward rendering of one binding is key then
+                            // value. Push the value first so this LIFO PDA
+                            // evaluates the key first.
+                            push_catch(
+                                work,
+                                CatchKind::Message,
+                                PpWork::Node(PpNode::Par(value), 0),
+                            );
                             let key = models::rust::canonical_path::decode_trie_path(key)
                                 .expect("map-mode EPathMap keys are canonical Par paths");
-                            children.push(decoded_entries.alloc(key));
-                            children.push(value);
+                            push_catch(
+                                work,
+                                CatchKind::Message,
+                                PpWork::Node(PpNode::Par(decoded_entries.alloc(key)), 0),
+                            );
                         })
                         .expect("map-mode dispatch checked before traversal");
                 }
-            }
-            for child in children.into_iter().rev() {
-                push_catch(
-                    work,
-                    CatchKind::Message,
-                    PpWork::Node(PpNode::Par(child), 0),
-                );
             }
         }
 
@@ -4313,6 +4314,12 @@ mod differential {
                     var_instance: Some(VarInstance::FreeVar(1)),
                 }),
             )),
+            ExprInstance::EPathmapBody(EPathMap::new_map(
+                [(gstring("key-b"), gint(2)), (gstring("key-a"), gint(1))],
+                vec![],
+                false,
+                None,
+            )),
             ExprInstance::EZipperBody(EZipper {
                 pathmap: Some(EPathMap::new(vec![gint(7)], vec![], false, None)),
                 current_path: vec![],
@@ -4331,6 +4338,19 @@ mod differential {
                 locally_free: vec![],
                 connective_used: false,
                 cursor_kind: 1,
+            }),
+            ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap::new_map(
+                    [(gstring("key"), gint(7))],
+                    vec![],
+                    false,
+                    None,
+                )),
+                current_path: vec![],
+                is_write_zipper: true,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 0,
             }),
             // ★ The DISCRIMINATOR, driven on all five rendering rows over ONE
             // fixed `current_path`, so the twin has to agree about the arm and

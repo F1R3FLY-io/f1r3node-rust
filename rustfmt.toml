@@ -99,5 +99,5 @@ group_imports = "StdExternalCrate"
 # whose byte-identity is the point.
 ignore = [
     "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
-    "rholang/src/rust/interpreter/pretty_printer_oracle.rs",
+    "rholang/tests/support/pretty_printer_oracle.rs",
 ]

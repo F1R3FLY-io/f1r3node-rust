@@ -519,7 +519,7 @@ fn no_undeclared_deviations() {
 // ★ THE SECOND ORACLE — the pretty printer's recursive twin
 // ===========================================================================
 //
-// `rholang/src/rust/interpreter/pretty_printer_oracle.rs` is the recursive twin
+// `rholang/tests/support/pretty_printer_oracle.rs` is the recursive twin
 // of the printer's explicit pushdown driver. Its bytes are consensus-relevant:
 // the printer's output reaches a block through
 // `build_channel_string` -> `cap` -> `error_message` and is compared by replay
@@ -541,7 +541,7 @@ fn no_undeclared_deviations() {
 // rather than described precisely so a move like that cannot happen quietly.
 
 /// The printer oracle, relative to the repository root.
-const PP_ORACLE: &str = "rholang/src/rust/interpreter/pretty_printer_oracle.rs";
+const PP_ORACLE: &str = "rholang/tests/support/pretty_printer_oracle.rs";
 
 /// The ten mutually-recursive entry points the extraction renamed. A name that
 /// starts with `_` takes the prefix INSIDE the underscore (`_build_x` ->
@@ -652,21 +652,24 @@ const PP_DEVIATIONS: &[Deviation] = &[
     // never to let it pass silently, and never to "improve" the copy while in
     // there.
     //
-    // `EPathMap.ps` stopped being a `pub` field and became a private entry trie
-    // with a `ps()` accessor, so the read is one token longer. The oracle's
-    // BEHAVIOUR is unchanged: it reads the same entries in the same place and
-    // hands them to the same `oracle_build_vec`.
+    // EPathMap.ps stopped being a public list and became a homogeneous
+    // Empty/PathMap<()>/PathMap<Par> entry trie. The old list-only expression
+    // cannot represent map bindings. The independent oracle helper streams the
+    // selected PathMap specialization in canonical order and returns only the
+    // comma-separated element string; the cited remainder/bracketing logic
+    // remains byte-for-byte the pre-conversion body.
     Deviation {
         path: "rholang/src/rust/interpreter/pretty_printer.rs",
         from: "let elements = self.oracle_build_vec(&pathmap.ps);",
-        to: "let elements = self.oracle_build_vec(&pathmap.ps());",
-        reason: "COMPILER-FORCED, not drift. `EPathMap.ps` became a private \
-                 `EntryTrie` (the entries are stored as the trie they are indexed \
-                 by) with a `ps()` accessor returning the memoized canonical \
-                 projection, so the field read no longer compiles. The edit is \
-                 exactly the two characters that restore it; the oracle reads the \
-                 same entries and calls the same `oracle_build_vec`. Appears \
-                 twice — the `EPathmapBody` arm and the `EZipperBody` arm.",
+        to: "let elements = self.oracle_build_epathmap_elements(pathmap);",
+        reason: "REPRESENTATION-FORCED and mode-complete, not oracle drift. \
+                 EPathMap now stores neutral empty, set PathMap<()> and map \
+                 PathMap<Par> as distinct homogeneous modes; the historical \
+                 Vec field cannot express the map mode. The oracle-only helper \
+                 independently streams canonical trie order, renders set members \
+                 or key/value pairs, and returns the same element string consumed \
+                 by the untouched pre-conversion remainder/bracketing logic. \
+                 Appears twice — EPathmapBody and EZipperBody.",
     },
     // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
     //
