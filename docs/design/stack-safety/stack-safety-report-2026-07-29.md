@@ -48,7 +48,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A6** | staged | f1r3node | `PrettyPrinter` pushdown driver | ⌀ $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap) |
-| **SS-A9** | `e2cf939f` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513--2026-08-03-closure--the-node-json-boundary-ss-a9) |
+| **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513--2026-08-03-closure--the-node-json-boundary-ss-a9) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -2300,7 +2300,7 @@ The focused closure matrix is **MEASURED**:
 | reverse-zipper pretty-printer refinement | printer 44/44; PathMap integration 62/62; provenance 2/2; recursion census 3/3 |
 | `epathmap_pathmap_native_zipper` | 7 passed |
 | `epathmap_collection_methods_spec` | 2 passed; map/set methods stay `EPathmapBody`, neutral empty specializes on first insertion |
-| `formal_equivalence_manifest` | 4 passed |
+| `formal_equivalence_manifest` | 5 passed; the added closed inventory binds all six node boundary surfaces to production markers, Rocq theorems, and executable evidence |
 | `clone_descend_budget` | 6 passed on the ordinary test stack; predictor is iterative and recursive oracle is shallow-bounded |
 | `par_protobuf_stack_safety` | 6 passed |
 | `trie_escape_arm_stack` | 6 passed; classifier and protobuf escape paths flat at depth 4,096 |
@@ -2370,6 +2370,12 @@ outside the generated/hand-written `Par` registry: the node JSON boundary in `we
 earlier `ce4dfbe9` mode-preservation repair remains the semantic prerequisite: neutral empty, homogeneous
 set, and typed homogeneous map remain distinct through the conversion.
 
+Commit `26d3e3b9` closes the audit boundary itself: `node/src` is now an input to the derived hand-written
+recursion census. The census finds 580 recursive components, 54 components mentioning the term family,
+20 mutual components, and 30 dispositioned files, with **zero unmeasured files**. Its two newly visible
+files are the measured `RhoExpr` PDA and a documented name-collision over-report in async server
+construction; neither is omitted or silently filtered.
+
 #### 5.12.7 Anti-vacuity and equivalence
 
 The manifest compares the generated traversal registry and the proof/oracle evidence table in **both**
@@ -2378,6 +2384,12 @@ fold equivalent to recursive folding for every finite tree and proves EPathMap m
 TLC independently checks stack orientation, arity, program-counter progress, and completion over every
 configured tree. Executable differentials retain bounded recursive or generated-reference oracles for
 bytes, rebuild order, errors, Eq/Hash/Ord/Debug, Clone, Drop, and Message behavior.
+
+The additional node-boundary inventory is independently closed over six named surfaces: conversion,
+EPathMap mode conversion, `Clone`, `Serialize`, `Debug`, and `Drop`. Every row must resolve three anchors:
+the production entry point, the generic Rocq theorem it instantiates, and the executable oracle or shape
+witness. This prevents a theorem and a test from remaining green after the implementation they purport to
+justify has moved or disappeared.
 
 The 2026-08-01 proof correction is itself evidence that the binding is live: the first Rocq model still
 specified map subtraction as a value comparison. The Rust test specified the intended key-mask operation.
@@ -2423,18 +2435,28 @@ moved to `node/tests/support/web_api_tests.rs`; test recursion is not compiled i
 gained consuming raw-entry visitors whose implementation delegates to PathMap's owned zipper iterator;
 the PathMap crate itself was not modified.
 
+Commit `26d3e3b9` adds the boundary to both closure instruments. The repository recursion census now scans
+`node/src`, while `BOUNDARY_PDA_EQUIVALENCE_EVIDENCE` binds the six production surfaces to the generic
+Rocq fold/drop theorems and their executable evidence. A new three-case differential separately exercises
+neutral empty, `PathMap<()>`, and `PathMap<Par>` conversion; the value-bearing branch is therefore no
+longer inferred from a set-only corpus.
+
 #### 5.13.4 Results
 
 All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`.
 
 | metric | before | after | provenance |
 |---|---:|---:|---|
-| conversion semantics | recursive implementation | **36/36** `ExprInstance` arms and **3/3** Par boundary fixtures equal to the retained recursive oracle | **MEASURED**, `rho_expr_pda_tests` |
+| conversion semantics | recursive implementation | **36/36** `ExprInstance` arms, **3/3** Par boundary fixtures, and neutral/set/map EPathMap modes equal to the retained recursive oracle | **MEASURED**, `rho_expr_pda_tests` |
 | JSON shape | derived serializer | all **40** `RhoExpr` arms match their derived JSON shape; Clone preserves bytes | **MEASURED**, `stack_safe_traits_preserve_derived_json_shapes` |
 | deep lifecycle | recursive conversion and traits | conversion + Clone + Serialize + Debug + Drop at depth **16,384** on a **256 KiB** stack | **MEASURED**, mixed unary/map chain |
-| focused node gate | — | **5/5**, 2.3 GiB peak RSS, zero swap | **MEASURED**, warm capped run |
-| full node library | 113/113 before the conversion | **117/117** after conversion and source/test separation, 2.4 GiB peak RSS, zero swap | **MEASURED**, capped run before the final fifth regression was added |
+| focused node gate | — | **6/6**, 4 GiB cgroup peak, zero swap | **MEASURED**, capped run including all three EPathMap modes |
+| full node library | 113/113 before the conversion | **119/119**, 4 GiB cgroup peak, zero swap | **MEASURED**, final capped run |
 | owned trie visitor | borrowed forward view | owned set/map stream equals borrowed trie order; wrong mode rejected; neutral empty accepted by both | **MEASURED**, 1/1; warm peak 87.8 MiB |
+| whole-worktree recursion census | node crate absent from source roots | **580** recursive components; **54** term-family components, **20** mutual, **30** files, **0** unmeasured | **MEASURED**, 3/3; 2.0 GiB peak RSS, zero swap |
+| formal binding | no row for this boundary | six production surfaces resolve to the generic Rocq theorem and executable evidence; manifest **5/5** | **MEASURED**, 1.4 GiB peak RSS, zero swap |
+| complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width), zero tripwires; **8/8** active tests, 3 measurement probes ignored | **MEASURED**, 2.3 GiB peak RSS, zero swap |
+| deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks both files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script |
 | B/level | NOT MEASURED — no pre-change frame bisection was retained for this boundary | NOT MEASURED — the explicit-loop class and 256 KiB deep probe establish bounded execution but not a byte slope | stated limitation |
 | throughput / allocation profile | NOT MEASURED — no stable boundary benchmark exists | NOT MEASURED — correctness and depth closure were gated first | stated limitation |
 
@@ -2448,16 +2470,19 @@ larger prior cost: it no longer constructs a compatibility entry projection or c
 #### 5.13.6 What is still recursive
 
 Within this boundary: **none in production**. The recursive conversion oracle is test-only, shallow-bounded,
-and deliberately excluded from the deep test. This row does not substitute for the repository-wide
-generated traversal registry in SS-E2; it closes the additional production consumer found outside that
-registry.
+and deliberately excluded from the deep test. The repository-wide census now includes `node/src`, and
+the production retired-token gate finds no traversal-depth ceiling, `stacker` call, `StackGrowingFuture`,
+or configured `RUST_MIN_STACK`. Explicit small stacks remain test instruments, not workarounds.
 
 #### 5.13.7 Anti-vacuity
 
 The corpus asserts the exact **36-arm** oneof count, so silently omitting a protobuf variant fails before
 comparison. The deep witness alternates unary and legacy-map nodes; a unary-only witness would not detect
-the `HashMap::clone` re-entry defect found during review. The owned EPathMap test checks both wrong-mode
-errors and neutral-empty dual validity, preventing a set-only implementation from passing on empty input.
+the `HashMap::clone` re-entry defect found during review. The owned EPathMap visitor checks both wrong-mode
+errors and neutral-empty dual validity, while the conversion differential independently asserts exactly
+three cases—neutral, `PathMap<()>`, and `PathMap<Par>`—so neither the map branch nor the empty-mode edge can
+be represented by set-only evidence. The formal manifest compares its closed six-surface inventory in
+both directions and resolves the production marker as well as the proof and executable markers.
 
 ---
 
