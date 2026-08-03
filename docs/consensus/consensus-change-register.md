@@ -5951,6 +5951,17 @@ changed, while the child sequence and every consensus axis remained fixed. The l
 `PathMap<()>`/`PathMap<Par>` specialization supersedes the helper's name and set-mode ownership shape,
 not this historical classification.
 
+**2026-08-03 independent closure revalidation.** A fresh run at
+`f1r3node-rust-mettail@e67a6aaa` used `MemoryMax=4G`, `MemorySwapMax=0`, and one Cargo job. The
+EPathMap algebra, EPM1 set/map/neutral-empty snapshots, native zipper/topology, shared snapshot cache,
+protobuf encoder/decoder differentials, bincode encoder/decoder differentials, and formal-equivalence
+manifest passed **84/84**. The derived recursion census and retired-mechanism registry passed **7/7**;
+the complete stack gate passed **8/8 active** with four measurement-only cases ignored; and the Rocq,
+Z3, and TLC bundle passed, with TLC exploring 2,816 distinct states to depth 8. The generated registry
+contains 34 depth + 6 width converted subjects and zero tripwires. This is a revalidation of CBR-044's
+already-registered representation and bytes, not another behavior change: no producer, field tag,
+EPM1 grammar, accepted-input rule, metering rule, or consensus axis moved.
+
 #### Authority and residuals
 
 The owner required direct trie serialization, specialized set/map modes, ordinary Rust stacks, no

@@ -1,13 +1,14 @@
-//! # `protobuf_encoder` — the Θ(depth)-native-stack, Θ(n)-work protobuf encoder
+//! # `protobuf_encoder` — the stack-safe, Θ(n)-work protobuf encoder
 //!
 //! The protobuf twin of [`crate::rust::rholang::bincode_encoder`]. Same op-stack
 //! discipline, same generated-table split, same tail-call rule — and one
 //! structural difference that changes the *complexity class*, not merely the
 //! stack shape.
 //!
-//! ⚠ **Nothing in production calls this yet.** It is byte-for-byte equivalent to
-//! the derived path (`models/tests/protobuf_encoder_differential.rs`) and is not
-//! wired into any call site; migrating them is a later stage's deliverable.
+//! Production `prost::Message` implementations for the recursive `rhoapi` cut
+//! set call this encoder directly. Byte-for-byte equivalence with prost's
+//! recursive derived path is retained by
+//! `models/tests/protobuf_encoder_differential.rs`.
 //!
 //! ---
 //!
@@ -109,7 +110,7 @@
 //!
 //! `EPathMap` is external to Prost generation, so its four-field program is
 //! hand-written in `protobuf_schema.rs`: bounded metadata at tags 3/4, the
-//! optional `Var` descent at tag 5, and the trie byte array at tag 8. It follows
+//! optional `Var` descent at tag 5, and the EPM1 trie byte array at tag 9. It follows
 //! the same two-pass machine as every generated node and introduces no opaque
 //! recursive escape hatch.
 
