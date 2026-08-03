@@ -1782,6 +1782,18 @@ window = "FRONTIER"
 reason = "HYGIENE"
 evidence = "Appendix B.3 row 75 — deletes only obsolete commented EntryPaths cursor scaffolding and applies rustfmt import ordering; the live encoder still emits one contiguous cached EPM1 snapshot. Under MemoryMax=4G, MemorySwapMax=0, and one Cargo job: bincode differential 13/13, space 9/9, EPM1 15/15. [DERIVED]"
 
+[[exempt]]
+commit = "2e6ecf9d"
+window = "FRONTIER"
+reason = "DOCS_ONLY"
+evidence = "Appendix B.3 row 76 — re-pins a drifted register citation and corrects obsolete Rust doc comments that still described entries_stable as a protobuf wire-arm selector after CBR-041 deleted that fork. The other changed files are the register documents. No executable token, serializer branch, accepted input, or consensus axis changes; the landing gate passed 30/30. [DERIVED]"
+
+[[exempt]]
+commit = "52255b2d"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 77 — changes only models/benches/epathmap_pathmap_native.rs, adding direct EPM1, generated protobuf, and bincode decode measurements for homogeneous set/map modes. Warm 1024-entry, 64-byte-value, 11-sample evidence under MemoryMax=4G, zero swap, and one Cargo job: EPM1 407751/1576672 ns; protobuf 2704396/4044712 ns; bincode 2711680/4093684 ns; command peak RSS 104036 KiB. No production or generated artifact changes. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`

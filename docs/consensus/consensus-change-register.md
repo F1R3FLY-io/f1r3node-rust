@@ -5899,6 +5899,20 @@ emission and is deleted by hygiene commit `37e047a9`, row 75. The historical mem
 descriptions remain historical evidence: later EPM1 commits supersede those mechanisms rather than
 retroactively changing what the July 31 commits did.
 
+The same gate later named `2e6ecf9d`, a July 31 citation repair that changed only Markdown and Rust doc
+comments, after its two-day frontier fuse expired. Appendix B.3 row 76 classifies it independently as
+`DOCS_ONLY`; the corrected comments explicitly state that the retired ground-field selector is no
+longer a wire discriminant. This is not folded into CBR-044 because no executable token or axis moved.
+
+**2026-08-03 decode benchmark extension.** Commit `52255b2d` changes only
+`models/benches/epathmap_pathmap_native.rs`. It measures the existing direct EPM1, generated protobuf,
+and bincode readers for both homogeneous modes and changes no library or generated artifact. The warm
+1,024-entry run used 11 median samples under a 4 GiB RSS hard maximum and zero swap: direct EPM1 decode
+was 407,751 ns set / 1,576,672 ns map; generated protobuf was 2,704,396 ns / 4,044,712 ns; bincode was
+2,711,680 ns / 4,093,684 ns. The command-level peak was 104,036 KiB. Appendix B.3 row 77 and
+`register.toml` classify this evidence-only commit as `TESTS_ONLY`; all seven consensus axes are
+unchanged by construction.
+
 #### Authority and residuals
 
 The owner required direct trie serialization, specialized set/map modes, ordinary Rust stacks, no
@@ -9682,6 +9696,8 @@ it.
 | 73 | `698406a3` | memoize the then-current `U(m)` key stream on each EntryTrie clone family | `BYTE_NEUTRAL_MEASURED` | The commit cached the exact byte vector the ground protobuf arm already emitted and shared it through `Arc<OnceLock<_>>`; invalidation followed every trie mutation. Encoder field selection and byte construction were unchanged, so warm calls replaced a repeated zipper walk with a slice borrow. The landing library suite passed 95/95. EPM1 later replaced this cache with the canonical `trie_snapshot`/layout pair and C7b removed the old intern-cell paths; that supersession does not alter the historical no-byte-movement classification. **DERIVED**. |
 | 74 | `0ddac646` | return canonical-path stability from the encode that already computed it | `BYTE_NEUTRAL_MEASURED` | `insert_entry` had independently run `encode_trie_path` and `eval_stable_par`; the new helper returns the encoder’s own exact stability decision so the maintained fold is plumbed from one authority. Forcing the returned bit false made six tests fail across three suites, proving the selector evidence was live. Restored evidence: models library 95/95, PathMap integration 61/61, canonical fixtures 13/13, identity 4/4, serialized-Par goldens 7/7, decoder differential 13/13, and serialized-path coverage 9/9; rholang and casper all-target checks were green. Later EPM1 removed the old protobuf field selector, while the returned stability remains useful to canonical-path metadata. **DERIVED**. |
 | 75 | `37e047a9` | delete obsolete commented EntryPaths cursor scaffolding from the EPM1 bincode encoder | `HYGIENE` | Removes the commented opcode/zipper arena/initializer/driver arm left by row 72 and applies rustfmt import ordering. The executable encoder path is unchanged: it still writes one contiguous cached EPM1 snapshot. Under `MemoryMax=4G`, zero swap, and one Cargo job, bincode differential 13/13, steady-state space 9/9, and EPM1 set/map/empty/deep-stack coverage 15/15 pass. No value-producing token or consensus axis changes. **DERIVED**. |
+| 76 | `2e6ecf9d` | re-pin a drifted register citation and correct the doc comments it exposed as stale | `DOCS_ONLY` | The only `models/src` changes are Rust doc/comments on `entries_stable` and insertion: they replace the obsolete claim that groundness selects protobuf field 8 versus tag 1 with the post-CBR-041 fact that the fork was deleted and the fold is no longer a wire discriminant. The other two changed files are this report and `register.toml`. No executable token, serializer branch, accepted input, or consensus axis changes. The landing gate passed 30/30; the current frontier fuse named the missing historical classification rather than permitting the documentation repair to disappear. **DERIVED**. |
+| 77 | `52255b2d` | extend the PathMap-native benchmark with direct EPM1, generated protobuf, and bincode decode measurements | `TESTS_ONLY` | Changes only `models/benches/epathmap_pathmap_native.rs`, which is not linked into the library or node. The warm 1,024-entry, 64-byte-value, 11-sample run under `MemoryMax=4G`, zero swap, and one Cargo job measured set/map direct EPM1 decode at 407,751/1,576,672 ns, protobuf at 2,704,396/4,044,712 ns, and bincode at 2,711,680/4,093,684 ns; command-level peak RSS was 104,036 KiB. Serialized sizes remained exactly 6,252/87,669 EPM1 bytes versus 491,528/662,536 projected bytes. No production or generated artifact changes. **DERIVED**. |
 
 ⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031). Neither are `7c0cfd0a`
 ([CBR-034](#cbr-034)) nor `87ee699c` ([CBR-035](#cbr-035)).

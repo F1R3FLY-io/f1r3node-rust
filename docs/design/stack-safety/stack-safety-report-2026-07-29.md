@@ -34,6 +34,8 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** `$`B_0 \rightarrow B_1`$` is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
+Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), and RHOLANG (reflective higher-order language).
+
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are defects that are OPEN at the pinned HEAD**, they are never "class change: yes", and a `SS-Y` row is discharged only by a commit that repairs it — never by the row being deleted. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
 | ID | commit | repo | traversal | $`B_0 \rightarrow B_1`$ | class change? | § |
@@ -72,18 +74,17 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G6** | `3276c1ee` | mettail | **#174's hash-keyed collection cost, ATTRIBUTED** — `par_hash` / `par_hashmap` isolate `models`' `impl Hash for Par`; a subtraction control pins the attribution | 625 / 113 recorded with ceilings; ⚠ **both filed figures withdrawn** — `map_pair_lower` 10,491 $`\rightarrow`$ **227**, `list_pair_lower` 950 $`\rightarrow`$ **0** | **no** — a residue is *named*, not converted | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | `3276c1ee` | f1r3node | ⚠★★ **A live, unrepaired defect NAMED by `SS-G6`** — `impl Hash for Par` (`models/src/lib.rs:284`) and `impl PartialEq for Par` (`:265`) are **hand-written host-recursive** traversals on a **consensus-adjacent** path (`SortedParMap` feeds the canonical sort `cost_accounting/sig.rs` signs) | 625 debug / 113 release B/level | ⛔ **open**; invisible to **both** existing censuses | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
-| **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567--ss-e1-3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
+| **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence and EPathMap laws, SMT mode dispatch, TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap) |
-| **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568--ss-y3-the-collection-arms-re-score-every-element-three-times-per-level) |
-
-| **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; ⚠ `drop_in_place::<Par>` itself is untouched (Family D) | **n/a** — discharged by deletion | [5.6.10](#5610--ss-y6-the-lru-eviction-crash-dissolved-with-its-store) |
-| **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` ≠ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569--ss-y4-sibling-order-is-not-a-total-function-of-the-term) |
+| **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
+| **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; ⚠ `drop_in_place::<Par>` itself is untouched (Family D) | **n/a** — discharged by deletion | [5.6.10](#5610-ss-y6--the-lru-eviction-crash-dissolved-with-its-store) |
+| **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits do not create the defect, they **measure** one that was already live and unquantified. Each cross-references the other, and `SS-Y3` is discharged only by a commit that repairs it — never by deletion.
 
 ⚠ **`SS-G6` and `SS-Y2` are the mandatory pair required by [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4**, in its *revealed-by* rather than *introduced-by* form: `SS-G6`'s commit does not create the defect, it **names** one that was already live and unattributed. Each cross-references the other; `SS-Y2` is discharged only by a commit that repairs it.
 
-★ **`SS-Y2` is the strongest available argument for the derived call-graph census**, and it arrived before the census was built. `DERIVE_DISPOSITIONS` closes over derive **tokens** and these impls are hand-written; `GENERATED_FILE_CENSUS` closes over generated **files** and these are not generated. Neither could ever have seen them — which is exactly the three-way split [§5.7.8](#578-the-read-ceiling-registry) argues the third leg of. `models/build.rs`'s own fail-on-`None` message already carries the lesson in one line: *"a hand-picked list of four missed `Hash` entirely."*
+★ **`SS-Y2` is the strongest available argument for the derived call-graph census**, and it arrived before the census was built. `DERIVE_DISPOSITIONS` closes over derive **tokens** and these impls are hand-written; `GENERATED_FILE_CENSUS` closes over generated **files** and these are not generated. Neither could ever have seen them — which is exactly the three-way split [§5.7.8](#578-the-read-ceiling-registry-and-a-fifth-site-it-can-detect) argues the third leg of. `models/build.rs`'s own fail-on-`None` message already carries the lesson in one line: *"a hand-picked list of four missed `Hash` entirely."*
 
 **Rejected candidates** (kept in the register so they are not re-proposed): **SS-X1** `cf35ab53` — exhaustive `PartialEq`/`Hash`; not stack safety, see [§5.8](#58-the-rejected-candidate).
 
@@ -992,7 +993,7 @@ Also measured, and worth recording: a decoded 4,096-deep term occupies **3,080,1
 
 ⚠★★ **THE PARAGRAPH THAT STOOD HERE IS SUPERSEDED IN PART BY `3a32cf07` (CBR-042). It is quoted rather than deleted, because its MEASUREMENT stands and only its INFERENCE was too strong** — and because a report that silently rewrites a blocker leaves no record of why the blocker looked total:
 
-> ⛔ **On bincode the same move would be a REGRESSION reachable from a deploy.** The cold-store wire is iterative and depth-unlimited in *both* directions today. Emitting $`U(m)`$ there makes `decode_trie_path` the reader, capping a path that is currently uncapped — and the reachability row above shows ordinary Rholang crossing that cap. **This is a new dependency edge from the cold store onto [§8.6.5](#865-119120-the-prost-read-ceiling)'s unbounded prost reader**, not a footnote: the bincode half of the owner's serialization mandate cannot land until that reader exists.
+> ⛔ **On bincode the same move would be a REGRESSION reachable from a deploy.** The cold-store wire is iterative and depth-unlimited in *both* directions today. Emitting $`U(m)`$ there makes `decode_trie_path` the reader, capping a path that is currently uncapped — and the reachability row above shows ordinary Rholang crossing that cap. **This is a new dependency edge from the cold store onto [§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it)'s unbounded prost reader**, not a footnote: the bincode half of the owner's serialization mandate cannot land until that reader exists.
 
 **What was true, and what was not.** *"Emitting $`U(m)`$ there makes `decode_trie_path` the reader"* is true of a $`U(m)`$-**ONLY** encoding, and of nothing else. The bincode surface now emits **FORM ②** — $`U(m)`$ **and** the values:
 
@@ -1004,18 +1005,18 @@ EPathMap serde/bincode ::= u64-LE |U(m)| ‖ U(m)      ← the trie's byte array
 
 so the trie **is** serialized as its own byte array, while the entries still arrive through the existing iterative, depth-unlimited value machinery. `EntryTrie::from_path_stream_and_values` splits the frames by **pure byte slicing** and never calls `decode_trie_path` — so no ceiling is inherited, and `models/tests/epathmap_bincode_is_the_path_stream.rs` measures the round trip green at depths **4, 34, 64 and 4,096**, re-measuring the refusal at 34 and 64 in the same file so the ladder is known to span a real cliff.
 
-⇒ **precisely what FORM ② achieves:** the bincode surface is **trie-native**, at **zero** warm allocations (`bincode_encoder_space` still 9/9), with **no** new depth ceiling and **no** term that round-tripped before ceasing to.
+$`\Rightarrow`$ **precisely what FORM ② achieves:** the bincode surface is **trie-native**, at **zero** warm allocations (`bincode_encoder_space` still 9/9), with **no** new depth ceiling and **no** term that round-tripped before ceasing to.
 
-⇒ ⚠⚠ **and precisely what it got WRONG, repaired by `8cf0b770` (SS-C8, CBR-043).** FORM ② emitted $`U(m)`$ — the key stream of the entries the map **stores** — beside values this surface writes `locally_free`-**blanked**. A key derived from the unblanked entries, sitting next to the blanked ones, carries the bitset onto the event hash: `encode_trie_path`'s `0x0F` escape arm keys a ¬`eval_stable` entry by its canonical *prost* bytes, and prost retains `locally_free`. Measured, the same map hashed `e48b249c…` in play and `7259192343…` after a cold-store round trip — **a play/replay divergence**, in breach of `models/src/rust/rholang/bincode_schema.rs`'s standing rule that `locally_free` *"must not reach an RSpace channel hash"*.
+$`\Rightarrow`$ ⚠⚠ **and precisely what it got WRONG, repaired by `8cf0b770` (SS-C8, CBR-043).** FORM ② emitted $`U(m)`$ — the key stream of the entries the map **stores** — beside values this surface writes `locally_free`-**blanked**. A key derived from the unblanked entries, sitting next to the blanked ones, carries the bitset onto the event hash: `encode_trie_path`'s `0x0F` escape arm keys a ¬`eval_stable` entry by its canonical *prost* bytes, and prost retains `locally_free`. Measured, the same map hashed `e48b249c…` in play and `7259192343…` after a cold-store round trip — **a play/replay divergence**, in breach of `models/src/rust/rholang/bincode_schema.rs`'s standing rule that `locally_free` *"must not reach an RSpace channel hash"*.
 
   The repair is one function $`U`$ applied to the value **this surface writes** (`EntryTrie::bincode_trie`), and it is a *stack-safety* row rather than merely a consensus one for two reasons:
 
-  * **the blanking function is the trampolined codec pair itself** — `bincode_encoder::encode_into` then `Par::cold_decode`, both iterative and depth-unbounded. A hand-written "clear every `locally_free`" walk would have been a new Θ(depth) native traversal over the term family, i.e. exactly what [§8](#8-open-defects) exists to prevent, *and* a second opinion about what this surface writes;
-  * **the throwaway trie is torn down with the worklist** (`drain_owned_pars` + `dismantle_all`), because `<Par as Drop>` is itself a recursive traversal and these entries are of unbounded depth. Letting it fall out of scope would have put the one recursion this codec exists to avoid back on the native stack — a leak of the kind [§5.3](#53-family-c--serialisation) rows are audited for.
+  * **the blanking function is the trampolined codec pair itself** — `bincode_encoder::encode_into` then `Par::cold_decode`, both iterative and depth-unbounded. A hand-written "clear every `locally_free`" walk would have been a new $`\Theta(\mathrm{depth})`$ native traversal over the term family, i.e. exactly what [§8](#8-residuals-and-future-work) exists to prevent, *and* a second opinion about what this surface writes;
+  * **the throwaway trie is torn down with the worklist** (`drain_owned_pars` + `dismantle_all`), because `<Par as Drop>` is itself a recursive traversal and these entries are of unbounded depth. Letting it fall out of scope would have put the one recursion this codec exists to avoid back on the native stack — a leak of the kind [§5.3](#53-family-c--the-codecs-and-the-malloc-profile) rows are audited for.
 
-  ⚠ The blanked trie is **memoized** (`OnceLock<Option<Arc<EntryTrie>>>`, `None` when blanking is the identity), and the identity case is decided in **O(1)** off the already-maintained `entries_stable` fold — so `bincode_encoder_space::the_steady_state_allocation_table` still reports **zero** warm allocations, now including a row for an lf-bearing map that the pre-existing `nonground_pathmap` row could not have covered.
+  ⚠ The blanked trie is **memoized** (`OnceLock<Option<Arc<EntryTrie>>>`, `None` when blanking is the identity), and the identity case is decided in **$`\mathcal{O}(1)`$** off the already-maintained `entries_stable` fold — so `bincode_encoder_space::the_steady_state_allocation_table` still reports **zero** warm allocations, now including a row for an lf-bearing map that the pre-existing `nonground_pathmap` row could not have covered.
 
-⇒ **precisely what it does not:** $`U(m)`$ **alone**, i.e. the size win. FORM ② is *larger* than the list form by $`8 + |U(m)|`$ per map (measured: +340, +62, +38, +39, +19 B on the five golden fixtures). Dropping the values is what still requires the entries to be reconstructed from keys, and therefore still waits on [§8.6.5](#865-119120-the-prost-read-ceiling)'s unbounded prost reader. **The dependency edge is narrowed, not removed** — it now points from a *size optimisation* rather than from the mandate itself.
+$`\Rightarrow`$ **precisely what it does not:** $`U(m)`$ **alone**, i.e. the size win. FORM ② is *larger* than the list form by $`8 + |U(m)|`$ per map (measured: +340, +62, +38, +39, +19 B on the five golden fixtures). Dropping the values is what still requires the entries to be reconstructed from keys, and therefore still waits on [§8.6.5](#865--119120--the-prost-read-ceiling-and-the-trap-in-removing-it)'s unbounded prost reader. **The dependency edge is narrowed, not removed** — it now points from a *size optimisation* rather than from the mandate itself.
 
 ##### What did NOT move, and why that is the control
 
@@ -1422,7 +1423,7 @@ Throughput: unmeasured, and no claim is made. Allocation: none. Complexity: one 
 
 **The checker must reject the old emitter, and it was shown doing so.** The new test run against the pre-change emitter aborts with `fatal runtime error: stack overflow`, exit **101**. Against the new emitter: 18/18.
 
-★ **A second anti-vacuity result, on the register itself.** `flat_generated_drivers_are_depth_independent` was a hand-written 26-name array beside a 33-row table that already knew the answer; `ast_try_eval` and `ast_try_eval_cast` reached the table and not the array, so both were held to an **8× looser bar** (≈32 vs ≈4 B/level) with no slope printed. The array is **deleted and derived**. ⚠ The predicate is *"the shape asserts depth-independence"*, **not** `Shape::Flat` — `FlatAndItsEqFreeTwinAgrees` is a flat assertion carrying an extra obligation, so matching `Shape::Flat` alone would have silently **dropped** `ast_subst` and `ast_normalize`: a narrowing disguised as a derivation. Measured: 30 + 2 = **32** checked against the array's 26; six gained, none lost. Its floor is derived from `MIN_DRIVER_SUBJECTS` minus the sloped rows, and its message prints count **and** membership.
+★ **A second anti-vacuity result, on the register itself.** `flat_generated_drivers_are_depth_independent` was a hand-written 26-name array beside a 33-row table that already knew the answer; `ast_try_eval` and `ast_try_eval_cast` reached the table and not the array, so both were held to an **8× looser bar** ($`\approx 32`$ vs $`\approx 4`$ B/level) with no slope printed. The array is **deleted and derived**. ⚠ The predicate is *"the shape asserts depth-independence"*, **not** `Shape::Flat` — `FlatAndItsEqFreeTwinAgrees` is a flat assertion carrying an extra obligation, so matching `Shape::Flat` alone would have silently **dropped** `ast_subst` and `ast_normalize`: a narrowing disguised as a derivation. Measured: 30 + 2 = **32** checked against the array's 26; six gained, none lost. Its floor is derived from `MIN_DRIVER_SUBJECTS` minus the sloped rows, and its message prints count **and** membership.
 
 ★ Six further stale numerals in the same file were the same failure — *a transcribed count beside a table that can compute it* — and are repaired as one mechanism rather than six edits. Superseded readings are **annotated, never overwritten**.
 
@@ -1432,9 +1433,9 @@ Throughput: unmeasured, and no claim is made. Allocation: none. Complexity: one 
 
 #174 stood as *"hash-keyed collection literals cost 11.0× a list literal, and the figure matches no driver measured in isolation."* **Both halves were wrong**, and the second was the clue: it matched no driver because **it is not a driver**.
 
-⚠ **Both filed figures are WITHDRAWN.** Re-measured on this build, on the very ladder the old numbers were taken on ($`16 \rightarrow 1{,}024`$): `map_pair_lower` **10,491 → 227** B/level (a 46× reduction) and `list_pair_lower` **950 → 0**. #162 and #189 converted the drivers stacked on top of the hash. ★ **A ratio against a control that now reads zero is not a number** — the 11.0× is withdrawn, not restated. The superseded values are kept here, named as superseded, per [Appendix G.4](#appendix-g--keeping-this-document-current) rule 2.
+⚠ **Both filed figures are WITHDRAWN.** Re-measured on this build, on the very ladder the old numbers were taken on ($`16 \rightarrow 1{,}024`$): `map_pair_lower` **10,491 $`\rightarrow`$ 227** B/level (a 46× reduction) and `list_pair_lower` **950 $`\rightarrow`$ 0**. #162 and #189 converted the drivers stacked on top of the hash. ★ **A ratio against a control that now reads zero is not a number** — the 11.0× is withdrawn, not restated. The superseded values are kept here, named as superseded, per [Appendix G.4](#appendix-g--keeping-this-document-current) rule 2.
 
-**It was never a parse-phase cost.** `list_pair_parse` / `map_pair_parse` / `set_pair_parse` read **0 / 1 / 0** debug and **−1 / −1 / 1** release. The whole residue is in the LOWER phase.
+**It was never a parse-phase cost.** `list_pair_parse` / `map_pair_parse` / `set_pair_parse` read **0 / 1 / 0** debug and **$`-1`$ / $`-1`$ / 1** release. The whole residue is in the LOWER phase.
 
 ##### 5.6.6.2 The architecture of the repair, and why THIS shape
 
@@ -1462,7 +1463,7 @@ Discriminating window $`512 \rightarrow 4{,}096`$, where the parser's depth-inde
 
 | subject | what it runs | debug | release | provenance |
 |---|---|---:|---:|---|
-| `list_pair_lower` | parse + lower, **no hash** (the control) | 0 | −1 | gate |
+| `list_pair_lower` | parse + lower, **no hash** (the control) | 0 | $`-1`$ | gate |
 | `par_hash` | `lower_depth` + `Hash for Par`, alone | **625** | **113** | gate |
 | `par_hashmap` | the `HashMap<Par,Par>` collect | **636** | **113** | gate |
 | `map_pair_lower` | the original #174 rung | 597 | 144 | gate |
@@ -1482,7 +1483,7 @@ Nothing in production: the commit adds probe subjects and assertions only.
 
 ##### 5.6.6.7 Anti-vacuity
 
-★★ **A SUBTRACTION control, not merely an invariant one.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope` asserts `lower_depth` stays flat, so the two ceilinged rows **cannot go on passing while their attribution quietly becomes false**. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash` 339,968 → 2,580,480 against `lower_depth` flat at ~73,728 ⇒ the excess **is** the whole slope, and it is the hash's.
+★★ **A SUBTRACTION control, not merely an invariant one.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope` asserts `lower_depth` stays flat, so the two ceilinged rows **cannot go on passing while their attribution quietly becomes false**. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash` 339,968 $`\rightarrow`$ 2,580,480 against `lower_depth` flat at ~73,728 $`\Rightarrow`$ the excess **is** the whole slope, and it is the hash's.
 
 ⚠ `par_hash` and `par_hashmap` are kept as **two** rows rather than folded into one, because **the pair is the attribution**: `par_hash` runs the hash alone, `par_hashmap` runs it plus `Eq for Par` on collision. Their agreement (625 vs 636 debug; 113 vs 113 release) is what says the collect adds nothing of its own. **If they diverge, the `Eq` half has started to matter and the attribution needs revisiting.** This is [§8.6](#86--the-open-residual-register--what-this-report-does-not-establish)'s *"an invariant control is not sufficient"* satisfied in code.
 
@@ -1490,7 +1491,7 @@ Nothing in production: the commit adds probe subjects and assertions only.
 
 **The defect.** Phase 3b converts the three self-contained sorter arms. Sorting is *order-defining*, so the usual "evaluation order is unobservable" argument does not apply, and `SortedParMap` feeds the canonical sort that `cost_accounting/sig.rs` signs. The epic therefore required an explicit identical-total-order argument **before** any conversion. It did not exist, and — measured here — **neither existing check could have gated the conversion.**
 
-**Architecture, and why this shape.** The order is established in two places, not one. `combine_eset` never sorts: it maps elements through `sort_match` in the iteration order of `par_set.ps.sorted_pars`, `split_scored_terms` preserves that order into both halves, `SortedParHashSet::create_from_vec` then establishes the **term** order, and the score `Tree` keeps the **input** order. ⇒ Terms and scores are ordered by two different permutations.
+**Architecture, and why this shape.** The order is established in two places, not one. `combine_eset` never sorts: it maps elements through `sort_match` in the iteration order of `par_set.ps.sorted_pars`, `split_scored_terms` preserves that order into both halves, `SortedParHashSet::create_from_vec` then establishes the **term** order, and the score `Tree` keeps the **input** order. $`\Rightarrow`$ Terms and scores are ordered by two different permutations.
 
 Three obligations follow, and one is already discharged:
 
@@ -1509,16 +1510,16 @@ Three obligations follow, and one is already discharged:
 | `sort_recursive.rs` (frozen oracle) | traversal shape | ⛔ the arms — *"the oracle shares `sort_combine` with the driver… cannot catch an error transcribed into the shared table itself"* (its own header). **These three arms are that shared table.** |
 | `sorter_canonical_golden.rs` | the arms, incl. the **score** column | ⛔ depth $`\geq 2`$ — every collection in it was depth-1 and scalar-only, and its `EMap` was **monotone** |
 
-**How the instrument was built.** `ad468163` adds three depth-$`\geq 2`$ rows — a set inside a map inside a set (the map nesting on *both* sides, so key and value descent are each exercised), an **anti-monotone** map (`3 → 90`, `9 → 30`), and a pathmap over a set — captured from the **pre-conversion** implementation.
+**How the instrument was built.** `ad468163` adds three depth-$`\geq 2`$ rows — a set inside a map inside a set (the map nesting on *both* sides, so key and value descent are each exercised), an **anti-monotone** map ($`3 \mapsto 90`$, $`9 \mapsto 30`$), and a pathmap over a set — captured from the **pre-conversion** implementation.
 
 **Results, with provenance.**
 
 | quantity | value | provenance |
 |---|---|---|
-| corpus size, before → after | 114 → 120 entries | gate output, shown **RED before blessing** |
-| golden fixture diff | **6 insertions, 0 deletions** | `git diff --numstat`; ⇒ every pre-existing canonical form byte-identical |
-| anti-monotone row's score render | `(i9 i-1 (i999 (i2 i3) i0) (i999 (i2 i9) i0) i0)` | the fixture; chains **only** key scores ⇒ O3's defect would add atoms to this line |
-| nesting depth reached | 3 levels (`i8` → `i9` → `i8`) | the fixture's set row |
+| corpus size, before / after | 114 $`\rightarrow`$ 120 entries | gate output, shown **RED before blessing** |
+| golden fixture diff | **6 insertions, 0 deletions** | `git diff --numstat`; $`\Rightarrow`$ every pre-existing canonical form byte-identical |
+| anti-monotone row's score render | `(i9 i-1 (i999 (i2 i3) i0) (i999 (i2 i9) i0) i0)` | the fixture; chains **only** key scores $`\Rightarrow`$ O3's defect would add atoms to this line |
+| nesting depth reached | 3 levels (`i8` $`\rightarrow`$ `i9` $`\rightarrow`$ `i8`) | the fixture's set row |
 
 **What it cost.** One example binary and three fixture rows. ⌀ on every runtime axis — nothing in `models/src` changed.
 
@@ -1530,11 +1531,11 @@ Three obligations follow, and one is already discharged:
 
 **The defect.** `Ordering::sort_pars` (`ordering.rs:13-20`) is not a sort. It calls `ParSortMatcher::sort_match` on **every element** and returns the *sorted terms*, not its inputs. `combine_eset` reaches it three times for the same elements:
 
-1. `eset_to_par_set(eset.clone())` → `ParSet::new` → `SortedParHashSet::create_from_vec` → `sort_pars` → `sort_match` per element;
+1. `eset_to_par_set(eset.clone())` $`\rightarrow`$ `ParSet::new` $`\rightarrow`$ `SortedParHashSet::create_from_vec` $`\rightarrow`$ `sort_pars` $`\rightarrow`$ `sort_match` per element;
 2. `par_set.ps.sorted_pars.iter().map(ParSortMatcher::sort_match)` — again;
-3. `create_from_vec(element_terms)` → `sort_pars` → a third time.
+3. `create_from_vec(element_terms)` $`\rightarrow`$ `sort_pars` $`\rightarrow`$ a third time.
 
-Each of those descends into that element's own collections, where the same three passes recur. ⇒ the re-entry is **multiplicative** in nesting depth. `combine_emap`/`combine_epathmap` have the same shape.
+Each of those descends into that element's own collections, where the same three passes recur. $`\Rightarrow`$ the re-entry is **multiplicative** in nesting depth. `combine_emap`/`combine_epathmap` have the same shape.
 
 **Method.** `models/examples/sort_collection_reentry_probe.rs` builds $`\{\{\{\ldots\{0\}\ldots\}\}\}`$ — `depth` nested **single-element** `ESet`s — and calls `sort_match` on it exactly once. Under `callgrind`, total Ir is an exact deterministic function of depth with no timer involved. ⚠ One element per level is deliberate: width would confound the question, which is how many times a *single* element is re-scored as a function of how deep it sits.
 
@@ -1551,7 +1552,7 @@ Each of those descends into that element's own collections, where the same three
 | 5 | 7,030,393 | 526,476 | 1.03 | 6,568,867 | 3.020 |
 | 6 | 20,279,660 | 542,322 | 1.03 | 19,818,134 | **3.016** |
 
-⇒ the ratio converges to **3.0** — one factor per pass, the three passes compounding per level — while the control holds flat at **1.03×** across the whole ladder. Fitted: $`\Theta(3^d)`$.
+$`\Rightarrow`$ the ratio converges to **3.0** — one factor per pass, the three passes compounding per level — while the control holds flat at **1.03×** across the whole ladder. Fitted: $`\Theta(3^d)`$.
 
 Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost by $`\approx 9`$:
 
@@ -1568,23 +1569,23 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 
 **Anti-vacuity.** The control is the load-bearing part: a harness artefact would move both arms of the ladder, and the control's ratio is flat to within $`0.03`$ at every rung while the subject's climbs from $`1.33`$ to $`2.88`$ raw. The probe also consumes its result so the subject cannot be dead-code-eliminated.
 
-⚠ **Scope of the claim.** The exponent is measured on a **single-element-per-level** chain. Width is a separate axis and is **NOT MEASURED** here; a wider collection multiplies the per-level factor and the composed figure is unknown. ⇒ Do not quote a cost for a real term from this table.
+⚠ **Scope of the claim.** The exponent is measured on a **single-element-per-level** chain. Width is a separate axis and is **NOT MEASURED** here; a wider collection multiplies the per-level factor and the composed figure is unknown. $`\Rightarrow`$ Do not quote a cost for a real term from this table.
 
 ★ **Consequence for 3b.** `sorted_pars` holds `sort_match`ed terms — **normalized values, not the message's elements** — so no message-borrowed `&'t Par` corresponds to a sorted element **in `sorted_pars` order**. That much stands.
 
-> ⛔ **SUPERSEDED, same day, by a design review — recorded here rather than rewritten, per [Appendix G](#appendix-g--the-maintenance-contract)'s rule 2.**
+> ⛔ **SUPERSEDED, same day, by a design review — recorded here rather than rewritten, per [Appendix G](#appendix-g--keeping-this-document-current)'s rule 2.**
 >
-> This section originally concluded: *"⇒ **3b needs the same owning driver that §3d's approved route (A) builds**, and the two should be built together rather than twice."* **That inference is wrong, and the refutation is already in the same file.**
+> This section originally concluded: *"$`\Rightarrow`$ **3b needs the same owning driver that §3d's approved route (A) builds**, and the two should be built together rather than twice."* **That inference is wrong, and the refutation is already in the same file.**
 >
 > `combine_ezipper` (`sort_combine.rs:1150-1182`) **is already the converted form of exactly this shape**, landed and green: `expr_child_pars`'s `EZipperBody` arm pushes `zipper.pathmap.ps().iter()` — message-borrowed `&'t Par` in **wire** order — and `combine_ezipper` then hands `element_terms` to `EPathMap::new`, so the container constructor still establishes the order (O2 honoured) and each element is scored **exactly once**.
 >
-> ⇒ The missing step was this: **you do not have to push in `sorted_pars` order.** Push in wire order and let the *combine* apply the permutation, because by then it holds every child's `ScoredTerm`. The reordering is legal by a property already asserted at HEAD — `models/tests/scored_term_sort_test.rs:339`, `the_score_and_the_canonical_term_agree_with_each_other`.
+> $`\Rightarrow`$ The missing step was this: **you do not have to push in `sorted_pars` order.** Push in wire order and let the *combine* apply the permutation, because by then it holds every child's `ScoredTerm`. The reordering is legal by a property already asserted at HEAD — `models/tests/scored_term_sort_test.rs:339`, `the_score_and_the_canonical_term_agree_with_each_other`.
 >
-> ⇒ **No owning driver, no arena, no relaxation of `Node<'t>: Copy` for 3b.** §3d still takes route (A); the two are **independent**, with one ordering coupling (§3d's repair of `dismantle`'s pathmap arms touches the same payload 3b-1 touches from the sorter side, so it lands first).
+> $`\Rightarrow`$ **No owning driver, no arena, no relaxation of `Node<'t>: Copy` for 3b.** §3d still takes route (A); the two are **independent**, with one ordering coupling (§3d's repair of `dismantle`'s pathmap arms touches the same payload 3b-1 touches from the sorter side, so it lands first).
 >
-> ⚠ The superseded inference was carried for the length of one session and reached both this report and `sort_combine.rs`'s O4 block. It is corrected in both. ★ The lesson is the one [§1.2](#12-why-a-register-and-not-a-narrative) already argues: *the design usually already exists* — `combine_ezipper` had been the worked precedent for three hundred lines above the arm the whole time.
+> ⚠ The superseded inference was carried for the length of one session and reached both this report and `sort_combine.rs`'s O4 block. It is corrected in both. ★ The lesson is the one [§1.2](#12-what-makes-a-fix-a-fix) already argues: *the design usually already exists* — `combine_ezipper` had been the worked precedent for three hundred lines above the arm the whole time.
 
-⚠ **A second correction from the same review, and this one weakens a claim rather than a plan.** `the_score_and_the_canonical_term_agree_with_each_other` asserts an **iff**, and it may be false: `combine_emap` chains only `sorted_key.score`, and nothing else in an `EMap`'s score tree depends on the values, so `{3 → 30}` and `{3 → 90}` are plausibly **distinct canonical terms with identical score trees**. If that witness holds, then `SortedParHashSet`'s `HashSet<Par>` iteration order (`sorted_par_hash_set.rs:22-24`) reaches `par_set_to_eset`'s emitted `ps` whenever two distinct elements tie on score — i.e. **the canonical form of such a term is process-dependent at HEAD**, a live consensus nondeterminism on the path `cost_accounting/sig.rs` signs. ⌀ **NOT YET MEASURED** — the deciding witness is a twenty-line hand-built test, and it is the first thing run before any arm is converted. It would enter this register as `SS-Y4`.
+⚠ **A second correction from the same review, and this one weakens a claim rather than a plan.** `the_score_and_the_canonical_term_agree_with_each_other` asserts an **iff**, and it may be false: `combine_emap` chains only `sorted_key.score`, and nothing else in an `EMap`'s score tree depends on the values, so $`\{3 \mapsto 30\}`$ and $`\{3 \mapsto 90\}`$ are plausibly **distinct canonical terms with identical score trees**. If that witness holds, then `SortedParHashSet`'s `HashSet<Par>` iteration order (`sorted_par_hash_set.rs:22-24`) reaches `par_set_to_eset`'s emitted `ps` whenever two distinct elements tie on score — i.e. **the canonical form of such a term is process-dependent at HEAD**, a live consensus nondeterminism on the path `cost_accounting/sig.rs` signs. ⌀ **NOT YET MEASURED** — the deciding witness is a twenty-line hand-built test, and it is the first thing run before any arm is converted. It would enter this register as `SS-Y4`.
 
 #### 5.6.9 `SS-Y4` — sibling order is not a total function of the term
 
@@ -1601,9 +1602,9 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 
 | claim | measurement |
 |---|---|
-| the score does not separate `{3→30}` from `{3→90}` | score trees byte-identical — both $`(999\ (9\ {-1}\ (999\ (2\ 3)\ 0)\ 0)\ 0)`$; the key `3` appears, the values appear nowhere |
-| seeded nondeterminism | 40 independent processes, identical binary and term ⇒ **20 / 20** split across two byte strings |
-| ⛔ deterministic fork | `{3:30} \| {3:90}` → `2a11ba010e…3c2a12ba010f…b401`; `{3:90} \| {3:30}` → `2a12ba010f…b4012a11ba010e…3c`. **Identical across runs**, different from each other |
+| the score does not separate $`\{3 \mapsto 30\}`$ from $`\{3 \mapsto 90\}`$ | score trees byte-identical — both $`(999\ (9\ {-1}\ (999\ (2\ 3)\ 0)\ 0)\ 0)`$; the key `3` appears, the values appear nowhere |
+| seeded nondeterminism | 40 independent processes, identical binary and term $`\Rightarrow`$ **20 / 20** split across two byte strings |
+| ⛔ deterministic fork | `{3:30} \| {3:90}` $`\rightarrow`$ `2a11ba010e…3c2a12ba010f…b401`; `{3:90} \| {3:30}` $`\rightarrow`$ `2a12ba010f…b4012a11ba010e…3c`. **Identical across runs**, different from each other |
 
 **After the repair, both measured again on the same instruments:**
 
@@ -1616,23 +1617,23 @@ Native wall clock (no valgrind) tracks it, each $`+2`$ levels multiplying cost b
 
 ★ The golden being unmoved is not a happy accident — the tie-break **refines and never reorders**, being consulted only where `compare_score` returns `Equal`, so byte-neutrality on any tie-free corpus holds *by construction*. A move there would have been a bug in the implementation, not a legitimate change.
 
-⇒ **These are two different faults.** The seeded one moves bytes that are currently **undefined**; the deterministic one moves bytes that **are defined today**, since `|` is commutative and the two spellings denote one process. `permutation_collapse_survives_nesting` already asserts the property the second violates, and both are reachable from an ordinary deploy — `@"c"!({3:30} | {3:90})`.
+$`\Rightarrow`$ **These are two different faults.** The seeded one moves bytes that are currently **undefined**; the deterministic one moves bytes that **are defined today**, since `|` is commutative and the two spellings denote one process. `permutation_collapse_survives_nesting` already asserts the property the second violates, and both are reachable from an ordinary deploy — `@"c"!({3:30} | {3:90})`.
 
-**Why nothing caught it.** `sorter_canonical_golden.rs:88-101` uses pairwise-**distinct** scores *by construction*, saying so ("otherwise it would flake"); the frozen oracle shares `sort_combine` with the driver; and the one test that should have caught it asserted an **iff whose reverse is false**, passing on sampling luck. ⇒ The corpus was chosen to exclude the input class that breaks the property — the same shape [§5.7.3](#573-the-harness-prerequisite-that-was-totally-vacuous) records for the three tests that test replaced.
+**Why nothing caught it.** `sorter_canonical_golden.rs:88-101` uses pairwise-**distinct** scores *by construction*, saying so ("otherwise it would flake"); the frozen oracle shares `sort_combine` with the driver; and the one test that should have caught it asserted an **iff whose reverse is false**, passing on sampling luck. $`\Rightarrow`$ The corpus was chosen to exclude the input class that breaks the property — the same shape [§5.7.3](#573-the-harness-prerequisite-that-was-totally-vacuous) records for the three tests that test replaced.
 
-**How the fix was made.** ★ **LANDED.** `ScoredTerm::sort_vec` now orders siblings by $`(\text{score},\ \text{the bytes the element emits})`$ — a **total** order. The key is *derived, not chosen*: consensus observes exactly one thing about a sibling, the bytes it contributes, so ordering by those is the unique key for which *"swapping two siblings is invisible"* and *"the two are equal under the key"* are the same statement. ⇒ Totality **without** requiring the encoding to be injective: if two distinct terms encode identically, swapping them is byte-invisible.
+**How the fix was made.** ★ **LANDED.** `ScoredTerm::sort_vec` now orders siblings by $`(\text{score},\ \text{the bytes the element emits})`$ — a **total** order. The key is *derived, not chosen*: consensus observes exactly one thing about a sibling, the bytes it contributes, so ordering by those is the unique key for which *"swapping two siblings is invisible"* and *"the two are equal under the key"* are the same statement. $`\Rightarrow`$ Totality **without** requiring the encoding to be injective: if two distinct terms encode identically, swapping them is byte-invisible.
 
 The bound on `sort_vec` became `T: EmittedBytes`, so **a sortable type that has not answered this question does not compile** — no list to keep current. ★ That forcing function fired during implementation: a `ScoredTerm<usize>` in the sorter's own permutation oracle failed the build until it was given an answer.
 
 ⚠ **All eleven `sort_vec` call sites were left untouched**, and that is the evidence the repair sits at the right level rather than a convenience: a sibling-blind repair is structurally impossible here.
 
-★ The owner ruled the network **pre-production**, so this lands unconditionally with no activation height. ⇒ CBR-040 needs no `UNVERIFIED` cell and `unverified_budget` (`register.toml:33`) **stays at 1**. ★ Rejected alternatives are recorded now rather than after: **γ** (make the score injective) is a *complete-the-list* repair over at least three lossy paths (`EMap` values, `EZipper` cursor, `ReceiveBind.free_count`) and the list is not derivable; **δ** (drop the `HashSet`) is actively harmful **first**, because it greens the cross-process gate while leaving the permutation fork live — [CBR-L12](#cbr-l12)'s recorded ordering hazard, inverted.
+★ The owner ruled the network **pre-production**, so this lands unconditionally with no activation height. $`\Rightarrow`$ CBR-040 needs no `UNVERIFIED` cell and `unverified_budget` (`register.toml:33`) **stays at 1**. ★ Rejected alternatives are recorded now rather than after: **γ** (make the score injective) is a *complete-the-list* repair over at least three lossy paths (`EMap` values, `EZipper` cursor, `ReceiveBind.free_count`) and the list is not derivable; **δ** (drop the `HashSet`) is actively harmful **first**, because it greens the cross-process gate while leaving the permutation fork live — [CBR-L12](../../consensus/consensus-change-register.md#cbr-l12)'s recorded ordering hazard, inverted.
 
 **What it cost.** ⌀ — nothing changed; this row measures and pins existing behaviour.
 
 **What is still recursive.** n/a — this is an ordering fault, not a depth fault.
 
-**Anti-vacuity.** The pinned assertions are written in **current-state polarity**: they assert the *fault*, because the fault is what is true at the commit that pins them. The `assert_ne!` on the permutation pair becomes `assert_eq!` in the same commit as the repair, so that diff carries its own RED-to-GREEN evidence, and the failure message says not to delete the test to make the suite green. ⚠ The witness also carries a **vacuity assertion**: if `{3→30}` and `{3→90}` ever reach the same canonical term, it fails saying so rather than passing silently.
+**Anti-vacuity.** The pinned assertions are written in **current-state polarity**: they assert the *fault*, because the fault is what is true at the commit that pins them. The `assert_ne!` on the permutation pair becomes `assert_eq!` in the same commit as the repair, so that diff carries its own RED-to-GREEN evidence, and the failure message says not to delete the test to make the suite green. ⚠ The witness also carries a **vacuity assertion**: if $`\{3 \mapsto 30\}`$ and $`\{3 \mapsto 90\}`$ ever reach the same canonical term, it fails saying so rather than passing silently.
 
 #### 5.6.10 `SS-Y6` — the LRU eviction crash, dissolved with its store
 
@@ -1640,7 +1641,7 @@ The bound on `sort_vec` became `T: EmittedBytes`, so **a sortable type that has 
 
 **How it was fixed.** ★ It was not. The store is **deleted** ([`c0385b79`](#)), so there is no LRU, no eviction, and no lock. A defect discharged by deleting its site is strictly better than one repaired at it, and this row records that rather than a repair.
 
-⇒ Why the store could go: it had **one** production caller, reading four fields — all four already O(1) on the `EPathMap` itself. Obtaining a *shared* entry cost a full streamed digest walk **plus** a second full `encode_raw` walk to verify the bucket — **two walks to avoid one**.
+$`\Rightarrow`$ Why the store could go: it had **one** production caller, reading four fields — all four already $`\mathcal{O}(1)`$ on the `EPathMap` itself. Obtaining a *shared* entry cost a full streamed digest walk **plus** a second full `encode_raw` walk to verify the bucket — **two walks to avoid one**.
 
 **Results, with provenance.**
 
@@ -2197,7 +2198,7 @@ The ACTree03 arena comes from PathMap's compact-tree accessor. Set mode has no v
 are enumerated in the arena's value order and encoded by the generated stack-safe protobuf PDA.
 Protobuf field 9 and bincode's first `EPathMap` field copy this same byte string; neither surface
 reconstructs a `Vec<Par>`. The cold `trie_snapshot` cost is linear in trie nodes plus encoded
-values; a clone family shares the `OnceLock<Vec<u8>>`, so warm access is O(1) before the caller's
+values; a clone family shares the `OnceLock<Vec<u8>>`, so warm access is $`\mathcal{O}(1)`$ before the caller's
 required copy. A separate cached `EpmLayout` retains only the topology prefix, avoiding
 $`\Theta(d^2)`$ retained suffix bytes in nested map-value chains.
 
@@ -2229,7 +2230,7 @@ arbitrary `Par` values do not have a lawful join/meet.
 The generic collection surface is trie-native too. `get` and `getOrElse` query the map value slot;
 `contains` performs one canonical-key encode and one `PathMap` membership lookup without cloning a
 leaf; `delete` removes the exact encoded member/key in either specialization; `set` specializes
-neutral empty to map mode and rejects set/map mixing; and `size` reads the maintained O(1) entry
+neutral empty to map mode and rejects set/map mixing; and `size` reads the maintained $`\mathcal{O}(1)`$ entry
 count. `keys` is the sole operation that constructs a flat collection because its specified result
 is an `ESet`; it decodes each compressed key exactly once and never constructs source key/value
 pairs. A list-valued key remains one exact canonical key on this surface—relative segment
@@ -2255,6 +2256,18 @@ changes neither EPM1 bytes nor accepted inputs. It removes one arena-sized alloc
 allocation per reconstructed endpoint. This is an allocation refinement inside the already-iterative
 SS-C9 traversal, not a new class change, so it adds no §0 identifier.
 
+**2026-08-03 reverse-zipper pretty-printer refinement (`2902f0d0`).** The production PDA previously
+collected a forward-order `Vec<&Par>` solely to reverse it before pushing children onto its LIFO
+worklist: one retained pointer per set member and two per map binding. The replacement walks the
+stored `PathMap<()>` or `PathMap<Par>` directly in reverse canonical order with a read zipper. It
+therefore retains no child-pointer projection while preserving the forward render order. The direct
+shared-prefix regression proves each reverse visitor is exactly the reverse of its forward PathMap
+stream for both homogeneous modes and that neutral empty accepts either typed visitor. The complete
+pretty-printer family passes 44/44, PathMap integration 62/62, oracle provenance 2/2, and the
+hand-written recursion census 3/3 under a 4 GiB RSS hard maximum, zero swap, and one Cargo job. The
+recursive oracle remains an independent forward traversal and now lives under
+`rholang/tests/support`, outside production sources.
+
 A second defect was found by the retained native-query scan oracle. PathMap's zipper-rooted iterator
 reports keys relative to its focus; `collect_subtrie_values` decoded those suffixes as if they were
 absolute canonical keys. The corrected traversal reattaches the borrowed prefix in one reused byte
@@ -2275,6 +2288,7 @@ The focused closure matrix is **MEASURED**:
 | `epathmap_algebra` | 6 passed |
 | `epathmap_epm1_snapshot` | 15 passed |
 | zero-copy ACT refinement | codec 7/7; EPM1/cache/bincode-shape/native-zipper 42/42; independent byte differentials and goldens 59/59 |
+| reverse-zipper pretty-printer refinement | printer 44/44; PathMap integration 62/62; provenance 2/2; recursion census 3/3 |
 | `epathmap_pathmap_native_zipper` | 7 passed |
 | `epathmap_collection_methods_spec` | 2 passed; map/set methods stay `EPathmapBody`, neutral empty specializes on first insertion |
 | `formal_equivalence_manifest` | 4 passed |
@@ -2295,19 +2309,26 @@ The focused closure matrix is **MEASURED**:
 | TLC | 422 initial roots; 3,238 states generated; 2,816 distinct; depth 8; no error |
 | MeTTaIL `rho_rholang_conformance` | 64 passed, 0 failed, 5 intentional ignores; former C4 carrier failures execute on the native trie |
 
-The fixed-scale benchmark used 1,024 entries, three shared prefix segments, 64-byte map values,
-seven repetitions, one CPU, and a 2 GiB RSS cap:
+The fixed-scale benchmark was rerun after adding the direct EPM1, generated protobuf, and bincode
+decode paths. It used 1,024 entries, three shared prefix segments, 64-byte map values, 11 median
+samples, one Cargo job, and a 4 GiB RSS hard maximum with zero swap. The warm release run completed in
+6.34 s with a 104,036 KiB command-level peak RSS; the preceding cold release build plus run completed
+in 4 min 34.55 s with a 957,940 KiB peak, also without swap. The warm measurements supersede the
+earlier seven-sample timing rows while reproducing the exact serialized sizes:
 
 | measurement | set | map |
 |---|---:|---:|
 | EPM1 bytes | 6,252 | 87,669 |
 | explicit list-projection bytes | 491,528 (**78.619×**) | 662,536 (**7.557×**) |
-| native indexed lookup | 30.01 ns/key | 40.27 ns/key |
-| linear projected lookup | 257,021.20 ns/key (**8,564.864×**) | 256,609.58 ns/key (**6,371.992×**) |
-| cold EPM1 | 110,950 ns | 495,137 ns |
+| native indexed lookup | 32.00 ns/key | 41.86 ns/key |
+| linear projected lookup | 257,975.03 ns/key (**8,060.736×**) | 258,842.32 ns/key (**6,183.905×**) |
+| cold EPM1 encode | 105,990 ns | 478,094 ns |
 | warm snapshot accessor | 20 ns | 20 ns |
-| native join | 85,462 ns | 863,575 ns |
-| merkleize | 60,364 ns | 230,126 ns |
+| direct EPM1 decode | 407,751 ns | 1,576,672 ns |
+| generated protobuf decode from shared `Bytes` | 2,704,396 ns | 4,044,712 ns |
+| bincode decode from generated encoder bytes | 2,711,680 ns | 4,093,684 ns |
+| native join | 84,830 ns | 853,895 ns |
+| merkleize | 60,204 ns | 197,864 ns |
 
 These are fixed-machine comparative measurements, not universal latency claims. Their engineering
 conclusion is the ratio and complexity class: flattening destroys trie compression and changes indexed
@@ -2318,7 +2339,7 @@ lookup into a linear scan.
 The snapshot cache retains one completed byte string per clone family after first serialization.
 `EpmLayout` adds one topology prefix so the generated encoder can stream nested map values without
 caching complete nested suffixes. Cold serialization still performs one compact-tree build and one
-stack-safe value pass; the gain is that repeated serialization becomes a shared O(1) lookup plus copy.
+stack-safe value pass; the gain is that repeated serialization becomes a shared $`\mathcal{O}(1)`$ lookup plus copy.
 The pausable decoder stores only a byte range into its owned snapshot, so ACT validation/reconstruction
 does not retain a second arena image; reconstruction still allocates the destination PathMap and its
 explicit validation/work stacks, which are the output and safety state rather than duplicate wire data.
@@ -2333,6 +2354,15 @@ not production traversals and not accepted as closure evidence. Semantic/resourc
 where they are not traversal-depth proxies. The last audited integration-side cut set,
 `STABILITY_DESCEND_BUDGET`, was replaced on 2026-08-01 by the allocation-minimal explicit classifier
 PDA and is guarded against reintroduction by `par_read_stack_safety_registry`.
+
+⚠ **Scope correction found by the 2026-08-03 whole-worktree audit.** The preceding “none” is true of
+the generated/hand-written `Par` registry, not yet of every production consumer in the worktree:
+`node/src/rust/api/web_api.rs` still converts nested `Par` values to recursive JSON `RhoExpr` values by
+mutually calling `expr_from_par_proto`, `expr_from_expr_proto`, `par_to_expr`, and the bundle/PathMap
+helpers. Commit `ce4dfbe9` has already removed that boundary's lossy set-only projection and preserves
+neutral, set, and typed map modes, with 113/113 node library tests green under the 4 GiB cap. The
+conversion/ownership traversal remains an open stack-safety obligation tracked as pgmcp task 5059;
+the campaign is not complete while this paragraph remains open.
 
 #### 5.12.7 Anti-vacuity and equivalence
 
