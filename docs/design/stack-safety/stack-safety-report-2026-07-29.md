@@ -78,6 +78,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence and EPathMap laws, SMT mode dispatch, TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512--2026-08-01-closure--generated-par-pdas-and-pathmap-native-epathmap) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514--2026-08-03-resource-closure--heap-and-deterministic-time-ss-e3) |
+| **SS-E4** | `0e487d4a` | f1r3node | Phase 7 subject-specific entry-depth histograms; production-shaped reverse PathMap zipper totality repair | four non-vacuous populations; allocation-free reverse walk preserved without a PathMap fork | enabling, measurement, and corrective evidence | [5.15](#515--2026-08-03-subject-depth-distributions-and-reverse-zipper-totality-ss-e4) |
 | **SS-Y3** | *(pre-existing; MEASURED by `SS-E1`'s `6a264e05`)* | f1r3node | ⛔★★★ **A live, unrepaired defect measured by `SS-E1`** — the three collection arms (`combine_eset` / `combine_emap` / `combine_epathmap`) re-score every element **three times per nesting level**, giving $`\Theta(3^d)`$ on the path that decides **canonical form** | $`3.016\times`$ per level (Ir, baseline-subtracted); $`d{=}14`$ costs **13.63 s**, $`d{=}16`$ **exceeds 120 s** | ⛔ **open** | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
 | **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; ⚠ `drop_in_place::<Par>` itself is untouched (Family D) | **n/a** — discharged by deletion | [5.6.10](#5610-ss-y6--the-lru-eviction-crash-dissolved-with-its-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
@@ -2557,6 +2558,73 @@ The complete Cachegrind campaign finished in **91.398 s**, peaked at **119.7 MiB
 The complete Massif campaign finished in **8.309 s**, peaked at **170.5 MiB**, and used zero swap. The
 preceding complete native-stack register run passed in **123.47 s**, peaked at **406.6 MiB**, and used zero
 swap: 40 converted subjects, zero tripwires.
+
+---
+
+### 5.15 ★ 2026-08-03 subject depth distributions and reverse-zipper totality [SS-E4]
+
+#### 5.15.1 One population per subject
+
+Commit `0e487d4a` adds the feature-gated `scripts/bench/stack-safety-phase7-histograms.sh`. Normal builds
+contain no counter, structural measurement walk, environment read, lock, or file output. The support
+implementation lives under `models/tests/support`; production entry points include it only with the
+explicit `phase7-depth-histograms` feature.
+
+The subject selector is load-bearing. It prevents an encoder call reached incidentally while measuring a
+decoder corpus from entering the wrong population. The four corpora are consequently independent:
+
+| subject | production-facing corpus | observations | observed depth distribution |
+|---|---|---:|---|
+| EPathMap escape-arm protobuf payload | `drop_head_spec`, through the ordinary evaluator | 9 | depth 1: 4 (44.44 %); depth 2: 5 (55.56 %) |
+| bincode encoder | the exact five interpreter suites used by `903cefb3` | 9,655 | depth 0: 951; 1: 8,608; 2: 58; 3: 17; 4: 12; 5: 5 |
+| bincode decoder | organic reads in the same five suites plus EPathMap checkpoint/replay | 1 | depth 1: 1 |
+| generated protobuf decoder | the workspace's foreign-function protobuf ingress tests | 6 | depth 2: 6 |
+
+Depth zero means that a root such as an empty `BindPattern` or `TaggedContinuation` contains no `Par`
+child; it does not mean an unexecuted hook. Every subject must emit at least one row or the harness fails.
+Dedicated depth ladders are excluded because inserting adversarial depths into a typical-depth population
+would manufacture the result. The complete root-kind histogram and corpus denominator are retained in
+[`phase7-depth-histograms-2026-08-03.tsv`](measurements/phase7-depth-histograms-2026-08-03.tsv) and
+[`phase7-depth-corpora-2026-08-03.tsv`](measurements/phase7-depth-corpora-2026-08-03.tsv).
+
+#### 5.15.2 Capacity decision
+
+No capacity is inherited from `903cefb3`'s datum-only 95.43 % figure. The escape arm's former statement
+that a typical payload is shallow now has its own measured population: all nine observed payloads were
+depth 1 or 2. The bincode encoder likewise has its own current root-complete distribution, whose maximum
+was 5. The bincode and protobuf decoder samples are disclosed as small rather than presented as precise
+frequency estimates.
+
+The initial vector capacities are **not** changed from depth alone. A `Par` level can contain several
+schema-message resume points, so semantic depth is not an operation-stack high-water mark; the protobuf
+encoder's length table is proportional to message-node count and therefore depends on width as well as
+depth. All affected vectors grow geometrically and impose no traversal ceiling. Resizing them from this
+table without a node-count or machine-high-water measurement would turn an observed depth distribution
+into an unsupported space claim—the exact inheritance error Phase 7 was opened to remove.
+
+#### 5.15.3 The measurement found a production totality defect
+
+The first corpus run failed before it could measure the fourth subject. The demo's EPathMap pretty-print
+walk reached PathMap 0.2.2's optimized `ReadZipperUntracked::to_prev_sibling_byte` override at the first
+mask word; its internal scan decremented word zero and panicked. This was not caused by the histogram
+walker. The backtrace ran through `for_each_raw_set_entry_reverse` and the production pretty-printer PDA.
+
+The repair does not modify or fork PathMap. `to_prev_sibling_byte_composed` spells the trait's documented
+default operation from public zipper primitives: ascend one byte, read `child_mask().prev_bit`, then
+descend to either the predecessor or the original byte. The reverse EPathMap visitor remains
+allocation-free, retains only the zipper's path buffer, and still presents the exact reverse of the
+forward canonical trie stream required by the LIFO PDA. A production-shaped dense-zero-word regression
+and the existing set/map/shared-prefix reverse equivalence both pass. The exact demo that originally
+failed then passed and printed all five maps. The consensus classification is [CBR-046](../../consensus/consensus-change-register.md#cbr-046).
+
+#### 5.15.4 Capped result
+
+The subject-separated campaign passed every constituent test in **112.836 s** service time and
+**127.425 s** CPU time. The systemd scope reached its **4 GiB** hard memory ceiling and used **zero swap**;
+the command completed successfully. The default-build focused matrix then passed **126/126** tests across
+both codec differentials, generated protobuf encoder/decoder differentials, EPM1 snapshots, canonical
+fixtures, and full PathMap integration at **1.8 GiB** peak and zero swap. No change was made in the PathMap
+repository.
 
 ---
 

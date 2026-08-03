@@ -100,10 +100,10 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 60 consensus-visible changes** — 46 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
-Of these, **58 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **30** entries move bytes; on the protobuf lane **30**; **31** move a
-*verdict*; **41** move the *post-state hash*; **17** move *acceptance*; **5** move *metering*.
+**Result: 61 consensus-visible changes** — 47 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **59 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **31** entries move bytes; on the protobuf lane **31**; **31** move a
+*verdict*; **42** move the *post-state hash*; **18** move *acceptance*; **5** move *metering*.
 ⚠ **Seven of these ten moved again on 2026-07-31 when [CBR-040](#cbr-040) gained the §4.1 glyph row it
 had never had** — the entry had a `[[entry]]` in the machine index and a prose body but no row in the
 table the gate projects from, so **every** figure on this page was computed from 56 rows while the index
@@ -646,6 +646,7 @@ is a *future* fork, not a present one).
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ● | CORRECTIVE | **W** |
 | [CBR-045](#cbr-045) | N | Genesis deploy-log order becomes a canonical function of event protobuf bytes while replay remains a function of the event multiset | `ff244c69` | ● | ○ | ● | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-046](#cbr-046) | N | A dense EPathMap set no longer panics the reverse zipper walk used by the pretty printer | `0e487d4a` | · | ○ | ● | ● | ● | ● | ○ | PERMISSIVE | **W** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -661,29 +662,29 @@ is a *future* fork, not a present one).
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 60 entries**, recounted from the rows above rather than adjusted: **46 on Surface N, 14 on
-Surface L**; **58 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **45 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **38 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 61 entries**, recounted from the rows above rather than adjusted: **47 on Surface N, 14 on
+Surface L**; **59 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **46 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **38 CORRECTIVE**, 12 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 60 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 61 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 60 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 61 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**60**, which is the arithmetic check that no row was double-counted or dropped.
+**61**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠★★ **Both figures in the paragraph above were themselves stale, and a THIRD kind of staleness is why.**
 They read *"the 55 body rows"* and *"each sum to **54**"* against a table that held **56** rows — two
@@ -6005,6 +6006,73 @@ nondeterministic. The canonicalizer makes genesis bytes reproducible and is not 
 of that nondeterminism has been localized.
 
 
+### CBR-046
+
+**A dense EPathMap set no longer panics the reverse zipper walk used by the pretty printer.**
+
+| | |
+|---|---|
+| Commit(s) | `0e487d4a` |
+| Status | LANDED |
+| Direction | PERMISSIVE |
+| Evidence grade | WITNESSED |
+| Files | `models/src/rust/rhoapi_ext.rs`, `models/tests/pathmap_integration_tests.rs` |
+
+#### (a) The issue
+
+The allocation-free reverse EPathMap visitor used PathMap 0.2.2's optimized
+`ReadZipperUntracked::to_prev_sibling_byte` override. On a production-shaped dense byte node with no
+predecessor before mask word zero, the dependency's internal scan decremented zero and panicked. The
+failure was reached by the pretty-printer PDA while the demo rendered an ordinary EPathMap set; the
+reduction task therefore failed instead of producing the rendering.
+
+The same commit contains feature-gated Phase 7 measurement hooks. Those hooks and their test-source
+support compile to nothing in a default build and move no consensus axis. This entry belongs to the one
+default-build production change in the commit: the reverse zipper totality repair.
+
+#### (b) How it potentially breaks consensus
+
+| Axis | Answer | Why |
+|---|---|---|
+| Value | N/A | The changed component is a renderer; it does not alter the `Par` being rendered. |
+| Verdict | **NO** | The same COMM and pretty-printer node are selected; the old failure occurs inside traversal after selection. |
+| Bytes (B) | **MOVES** | A failing system-deploy diagnostic could previously contain the reduction failure rather than the completed EPathMap rendering. |
+| Bytes (P) | **MOVES** | The same diagnostic can enter the protobuf block body; absence of an old successful rendering is not byte neutrality. |
+| Post-state | **MOVES** | As in CBR-018/CBR-029, replay compares the block-resident diagnostic and hashes its payload. |
+| Acceptance | **MOVES** | The witnessed demo crosses from `ReduceError("reduction task panicked")` to success. |
+| Metering | **NO** | No reserve site or cost operation moves; the visitor substitutes the documented primitive composition at the same traversal step. |
+
+The byte and post-state cells are deliberately conservative. The repair is totality-widening: there is no
+old successful byte string on the witnessed input against which to claim identity. On inputs where the
+old reverse walk completed, forward/reverse equivalence proves the visitor order and rendering unchanged.
+
+#### (c) Why the change is correct
+
+The repair spells PathMap's documented default previous-sibling semantics using only public zipper
+operations: `ascend_byte`, `child_mask().prev_bit`, and `descend_to_byte`. It neither edits PathMap nor
+allocates a forward projection. The reverse visitor therefore retains the optimization that motivated it:
+one zipper path buffer, no `Vec<Par>`, and exact reverse canonical trie order for LIFO PDA scheduling.
+
+At commit `0e487d4a`, the composition begins at `models/src/rust/rhoapi_ext.rs:120`; the callback uses it
+at line 177. The production-shaped regression is
+`models/tests/pathmap_integration_tests.rs:1978`: five shared-prefix keys must enumerate as the exact
+reverse of the forward PathMap stream. The existing set/map equivalence test remains independent.
+
+#### Evidence and residual
+
+- Before the repair, `demo_verification` panicked in PathMap's dense byte node and failed at demo 4.
+  After it, the complete scenario passes and renders all five EPathMaps. **MEASURED**.
+- The focused reverse regressions pass 2/2; full PathMap integration passes 64/64. **MEASURED**.
+- The default-build codec/EPM1/PathMap matrix passes 126/126 at 1.8 GiB peak RSS and zero swap.
+  **MEASURED**.
+- PathMap itself is unchanged. The local composition is the crate's public documented semantics, not an
+  independent ordering algorithm. **DERIVED**.
+
+The residual is dependency-local: a direct caller of PathMap 0.2.2's optimized previous-sibling override
+can still encounter its defect. This repository no longer calls that override on the EPathMap reverse
+path and carries a regression for the exact topology.
+
+
 ### CBR-039
 
 **∅ had two spellings; the constructor now has one — and the half that would have moved consensus bytes was REVERTED, with its witness landed executable.**
@@ -7737,18 +7805,20 @@ unforgeable crypto **channels** rather than method-table entries. **MEASURED** (
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 60 |
+| Axis | Entries that move it | Share of the 61 |
 |---|---|---|
-| 1 · computed value | **24** | 40 % |
-| 2 · verdict | **31** | 52 % |
-| 3 · bytes — Lane B (bincode) | **30** | 50 % |
-| 3 · bytes — Lane P (protobuf) | **30** | 50 % |
-| 4 · post-state hash | **41** | 68 % |
-| 5 · accepted programs | **17** | 28 % |
+| 1 · computed value | **24** | 39 % |
+| 2 · verdict | **31** | 51 % |
+| 3 · bytes — Lane B (bincode) | **31** | 51 % |
+| 3 · bytes — Lane P (protobuf) | **31** | 51 % |
+| 4 · post-state hash | **42** | 69 % |
+| 5 · accepted programs | **18** | 30 % |
 | 6 · metering | **5** | 8 % |
 
-⚠ **Recounted 2026-08-01 from the 60 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
-— [CBR-045](#cbr-045) adds one Surface-N row and moves value plus both byte lanes while preserving
+⚠ **Recounted 2026-08-03 from the 61 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
+— [CBR-046](#cbr-046) adds one Surface-N row and moves both byte lanes, post-state, and acceptance while
+preserving value, verdict, and metering. [CBR-045](#cbr-045) added the preceding Surface-N row and moves
+value plus both byte lanes while preserving
 verdict, RSpace post-state, acceptance, and metering. [CBR-044](#cbr-044) added the preceding Surface-N
 row and moved all seven axes. The historical recount below is
 kept because it explains why every aggregate is projected rather than remembered.
@@ -7761,7 +7831,7 @@ including the five whose *count* did not — a share is a ratio and the denomina
 entries landed: they were computed at 40 entries and never re-projected when **CBR-029** was added, so
 Lane B was under by one and the post-state hash by one. ★ The table is a projection of the `V`, `T`, `B`,
 `P`, `H`, `A`, `M` columns and of nothing else; the `●` counts per column, plus the `○` and `·` counts,
-sum to 60 in every column, which is the check that no row was skipped.
+sum to 61 in every column, which is the check that no row was skipped.
 
 ⚠★ **[CBR-040](#cbr-040)'s late glyph row moved four of the seven counts at once**, because the entry is
 `○ ● ● ● ● ○ ○`: verdict `29` $`\rightarrow`$ `30`, Lane B `26` $`\rightarrow`$ `27`, Lane P `27`
@@ -7783,7 +7853,7 @@ It moves **every** bincode golden and **no** prost byte at all — the exact mir
 which [§8](#8-conclusions) conclusion 2 already cites for moving four bytes on Lane B and zero on Lane P.
 Two entries, opposite lanes, same independence.
 
-**Reading.** The post-state hash is the most-touched axis at **68 %**, which is expected: it is downstream
+**Reading.** The post-state hash is the most-touched axis at **69 %**, which is expected: it is downstream
 of both value and verdict, so a register of *serialisation and genesis* changes should look like this.
 ⚠ **This figure read `71 %` until 2026-07-31 while the table beside it read `67 %`** — a third drift of the
 same kind, in the sentence that *interprets* the table rather than in the table.
@@ -7835,24 +7905,25 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-08-01 from the 60 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
+⚠ **Recounted 2026-08-03 from the 61 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected;
 the 2026-07-30 recount reached `33` / `55`, [CBR-042](#cbr-042) made it `34` / `56`,
 [CBR-040](#cbr-040)'s late glyph row made it `35` / `57` — a CORRECTIVE entry that had been landed and
 bodied since before either of them, and was invisible to this table the whole time — and
 [CBR-043](#cbr-043) made it `36` / `58`; [CBR-044](#cbr-044) made it `37` / `59`; and
-[CBR-045](#cbr-045) makes it `38` / `60`.
+[CBR-045](#cbr-045) made it `38` / `60`; [CBR-046](#cbr-046) leaves CORRECTIVE at `38` and makes
+PERMISSIVE `12` / `61`.
 
 | Direction | Count | Comment |
 |---|---|---|
 | CORRECTIVE | **38** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-045](#cbr-045), makes genesis deploy-log bytes a deterministic function of the event multiset. |
-| PERMISSIVE | **11** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
+| PERMISSIVE | **12** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**); **CBR-046** restores a previously panicking valid reverse traversal. |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **60** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **61** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -8579,11 +8650,11 @@ designed for**.
 | artefact | path | status |
 |---|---|---|
 | the prose register | `docs/consensus/consensus-change-register.md` | this document |
-| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **60** entries, **68** exemptions, **111** citations, 10 open questions |
+| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **61** entries, **86** exemptions, **113** citations, 10 open questions |
 | the anchor | header fields of `register.toml` | ★ **BUILT** as `register_base` / `partition_head`, not as a separate `REGISTER_BASE` file |
 | the gate | `casper/tests/consensus_change_register_gate.rs` | ★ **BUILT** — **31** cells: 1 accept, **28** refusals, 2 derivation guards |
 
-⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and have since drifted by **15 / 30 / 44 / 0**, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
+⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and have since drifted by **16 / 48 / 46 / 0**, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
 
 #### 7.7.1 Where the gate lives, and what that choice costs
 
@@ -8737,8 +8808,8 @@ enumeration* — here, `register.toml`'s entry set.
 | class | witness | clause, as built | decidable? |
 |---|---|---|---|
 | **1 · in-flight staleness** | [CBR-027](#cbr-027) read *"IN FLIGHT"* while `6ff46f8a` had landed; **CBR-007** drifted the same way | no entry whose status is not `LANDED` may name a SHA that is an ancestor of `HEAD` | ✅ `git merge-base --is-ancestor`, one call per SHA |
-| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **86 of 111** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`86 + 25 = 111`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 77\,\%`$ |
-| **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the **60** rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally. ⚠ A projection is only as complete as the table it reads, which is why [clause 7b](#774-three-specified-clauses-that-were-wrong--and-a-fourth-that-was-never-specified) now asserts that §4.1 holds **every** entry — [CBR-040](#cbr-040)'s missing glyph row made all of these figures short *and self-consistent* | ✅ no `git`, no build |
+| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **88 of 113** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`88 + 25 = 113`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 78\,\%`$ |
+| **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the **61** rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally. ⚠ A projection is only as complete as the table it reads, which is why [clause 7b](#774-three-specified-clauses-that-were-wrong--and-a-fourth-that-was-never-specified) now asserts that §4.1 holds **every** entry — [CBR-040](#cbr-040)'s missing glyph row made all of these figures short *and self-consistent* | ✅ no `git`, no build |
 | **4 · a stale prose claim about the world** | [CBR-L09](#cbr-l09) residual 3, falsified **46 minutes** after the commit it was written against | §6.3's rows carry **typed falsifiers**; 3 of 10 decidable, 7 typed `UNDECIDABLE_HERE__*` and asserted **exactly** | ⚠ **PARTLY** — see [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) |
 | **5 · a justification wrong when written** | [CBR-006](#cbr-006) §(c), refuted by its own commit message | **none** | ❌ **NOT DECIDABLE.** [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5; remedies (a) and (b) make it *falsifiable*, not *checkable* |
 
@@ -9368,8 +9439,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **60** consensus-visible changes, derived from the campaign record: **46** on the
-   F1r3node node, **14** on MeTTaIL's Rholang. **58 are landed, 1 is in flight**, one is an open unrepaired
+1. The register holds **61** consensus-visible changes, derived from the campaign record: **47** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **59 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register

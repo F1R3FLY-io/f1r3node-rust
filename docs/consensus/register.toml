@@ -1130,6 +1130,37 @@ axis_post_state_hash = "NO"
 axis_acceptance = "NO"
 axis_metering = "NO"
 
+[[entry]]
+id = "CBR-046"
+surface = "N"
+commits = ["0e487d4a"]
+status = "LANDED"
+direction = "PERMISSIVE"
+grade = "WITNESSED"
+axis_value = "N/A"
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+axis_post_state_hash = "MOVES"
+axis_acceptance = "MOVES"
+axis_metering = "NO"
+
+[[citation]]
+owner = "CBR-046"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 120
+at = "0e487d4a"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "Move to the previous sibling"
+
+[[citation]]
+owner = "CBR-046"
+cited = "models/tests/pathmap_integration_tests.rs"
+line = 1978
+at = "0e487d4a"
+path = "models/tests/pathmap_integration_tests.rs"
+token = "reverse_raw_set_visitor_handles_dense_zero_word_boundary"
+
 # CBR-044's carrier: two homogeneous PathMap modes and one neutral empty mode.
 [[citation]]
 owner = "CBR-044"
