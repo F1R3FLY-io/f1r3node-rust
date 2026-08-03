@@ -13,6 +13,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::epathmap_trie_codec::{self, EPathMapRepr};
+use models::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
+use prost::bytes::Bytes;
 
 fn gint(value: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
@@ -98,6 +100,10 @@ fn main() {
 
     let set_epm1 = epathmap_trie_codec::encode(set.representation());
     let map_epm1 = epathmap_trie_codec::encode(map.representation());
+    let set_protobuf = Bytes::from(protobuf_encoder::encode_to_vec(&set));
+    let map_protobuf = Bytes::from(protobuf_encoder::encode_to_vec(&map));
+    let set_bincode = bincode_encoder::encode(&set);
+    let map_bincode = bincode_encoder::encode(&map);
     let set_projection_bytes = bincode::serialize(&set_projection).unwrap();
     let map_projection_bytes = bincode::serialize(&map_projection).unwrap();
 
@@ -146,6 +152,25 @@ fn main() {
     });
     let map_warm_snapshot = measure(reps, || {
         black_box(map.trie_snapshot());
+    });
+
+    let set_epm1_decode = measure(reps, || {
+        black_box(epathmap_trie_codec::decode(black_box(&set_epm1)).unwrap());
+    });
+    let map_epm1_decode = measure(reps, || {
+        black_box(epathmap_trie_codec::decode(black_box(&map_epm1)).unwrap());
+    });
+    let set_protobuf_decode = measure(reps, || {
+        black_box(protobuf_decoder::decode_epath_map(black_box(set_protobuf.clone())).unwrap());
+    });
+    let map_protobuf_decode = measure(reps, || {
+        black_box(protobuf_decoder::decode_epath_map(black_box(map_protobuf.clone())).unwrap());
+    });
+    let set_bincode_decode = measure(reps, || {
+        black_box(bincode::deserialize::<EPathMap>(black_box(&set_bincode)).unwrap());
+    });
+    let map_bincode_decode = measure(reps, || {
+        black_box(bincode::deserialize::<EPathMap>(black_box(&map_bincode)).unwrap());
     });
 
     let split = entries / 2;
@@ -226,6 +251,28 @@ fn main() {
     println!(
         "map,warm_snapshot_accessor_ns,{},{},-",
         map_warm_snapshot.as_nanos(),
+        0
+    );
+    println!("set,epm1_decode_ns,{},{},-", set_epm1_decode.as_nanos(), 0);
+    println!("map,epm1_decode_ns,{},{},-", map_epm1_decode.as_nanos(), 0);
+    println!(
+        "set,protobuf_decode_ns,{},{},-",
+        set_protobuf_decode.as_nanos(),
+        0
+    );
+    println!(
+        "map,protobuf_decode_ns,{},{},-",
+        map_protobuf_decode.as_nanos(),
+        0
+    );
+    println!(
+        "set,bincode_decode_ns,{},{},-",
+        set_bincode_decode.as_nanos(),
+        0
+    );
+    println!(
+        "map,bincode_decode_ns,{},{},-",
+        map_bincode_decode.as_nanos(),
         0
     );
     println!("set,native_join_ns,{},{},-", set_join.as_nanos(), 0);
