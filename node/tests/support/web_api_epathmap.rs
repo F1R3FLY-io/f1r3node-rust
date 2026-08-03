@@ -47,7 +47,7 @@ fn set_epathmap_preserves_set_mode_and_canonical_members() {
 
     let Some(RhoExpr::ExprPathMap {
         data: RhoPathMap::Set { entries },
-    }) = result
+    }) = result.as_ref()
     else {
         panic!("expected set-mode ExprPathMap");
     };
@@ -76,7 +76,7 @@ fn map_epathmap_retains_typed_keys_that_collide_as_strings() {
 
     let Some(RhoExpr::ExprPathMap {
         data: RhoPathMap::Map { entries },
-    }) = result
+    }) = result.as_ref()
     else {
         panic!("expected map-mode ExprPathMap");
     };
@@ -106,7 +106,7 @@ fn zipper_preserves_map_mode_and_cursor_bytes() {
         })),
     });
 
-    let Some(RhoExpr::ExprTuple { data }) = result else {
+    let Some(RhoExpr::ExprTuple { data }) = result.as_ref() else {
         panic!("expected zipper tuple");
     };
     assert!(matches!(

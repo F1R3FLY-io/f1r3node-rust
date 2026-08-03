@@ -943,7 +943,7 @@ impl WebApi for WebApiImpl {
 }
 
 // Rholang terms interesting for translation to JSON
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(ToSchema)]
 #[schema(no_recursion)]
 pub enum RhoExpr {
     // === Collections ===
@@ -1118,7 +1118,7 @@ pub enum RhoExpr {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[schema(no_recursion)]
 pub enum RhoPathMap {
     Empty,
@@ -1126,7 +1126,7 @@ pub enum RhoPathMap {
     Map { entries: Vec<RhoPathMapBinding> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[schema(no_recursion)]
 pub struct RhoPathMapBinding {
     pub key: RhoExpr,
@@ -1212,25 +1212,25 @@ pub struct DataAtNameByBlockHashRequest {
     pub use_pre_state_hash: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DataAtNameResponse {
     pub exprs: Vec<RhoExprWithBlock>,
     pub length: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RhoExprWithBlock {
     pub expr: RhoExpr,
     pub block: LightBlockInfoSerde,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExploratoryDeployResponse {
     pub expr: Vec<RhoExpr>,
     pub block: LightBlockInfoSerde,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RhoDataResponse {
     pub expr: Vec<RhoExpr>,
     pub block: LightBlockInfoSerde,
@@ -1374,7 +1374,7 @@ pub struct BalanceResponse {
 }
 
 /// Registry lookup response
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RegistryResponse {
     pub uri: String,
     pub data: Vec<RhoExpr>,
@@ -1432,7 +1432,7 @@ pub struct EstimateCostResponse {
 }
 
 /// Epoch rewards response
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EpochRewardsResponse {
     pub rewards: RhoExpr,
     #[serde(rename = "blockNumber")]
@@ -1593,8 +1593,12 @@ fn to_cosigned_deploy(
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, EPathMap, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
-use models::rust::epathmap_trie_codec::EPathMapMode;
+#[cfg(test)]
+use models::rhoapi::{Bundle, Expr};
+use models::rhoapi::{GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+
+#[path = "rho_expr_pda.rs"]
+mod rho_expr_pda;
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1631,290 +1635,11 @@ fn to_par(rho_unforg: RhoUnforg) -> eyre::Result<Par> {
 }
 
 /// Convert Par to RhoExpr - equivalent to Scala's exprFromParProto function
-fn expr_from_par_proto(mut par: Par) -> Option<RhoExpr> {
-    let has_process_fields = !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.connectives.is_empty();
-
-    let exprs = std::mem::take(&mut par.exprs)
-        .into_iter()
-        .filter_map(expr_from_expr_proto);
-    let unforg_exprs = std::mem::take(&mut par.unforgeables)
-        .into_iter()
-        .filter_map(unforg_from_proto);
-    let bundle_exprs = std::mem::take(&mut par.bundles)
-        .into_iter()
-        .filter_map(expr_from_bundle_proto);
-
-    let all_exprs: Vec<RhoExpr> = exprs.chain(unforg_exprs).chain(bundle_exprs).collect();
-
-    if all_exprs.len() == 1 {
-        all_exprs.into_iter().next()
-    } else if all_exprs.is_empty() {
-        if has_process_fields {
-            // Par has process-level constructs (sends, receives, etc.) but no data expressions
-            Some(RhoExpr::ExprUnknown {
-                type_name: "Process".to_string(),
-            })
-        } else {
-            None // Truly empty Par (Nil)
-        }
-    } else {
-        Some(RhoExpr::ExprPar { data: all_exprs })
-    }
-}
+fn expr_from_par_proto(par: Par) -> Option<RhoExpr> { rho_expr_pda::from_par(par) }
 
 /// Convert Expr to RhoExpr — handles all Rholang expression types.
-fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
-    use models::rhoapi::expr::ExprInstance;
-    use num_bigint::BigInt;
-
-    let instance = expr.expr_instance?;
-    Some(match instance {
-        // Primitives
-        ExprInstance::GBool(v) => RhoExpr::ExprBool { data: v },
-        ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
-        ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
-        ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
-        ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
-            data: hex::encode(&bytes),
-        },
-
-        // Extended numerics
-        ExprInstance::GDouble(bits) => RhoExpr::ExprFloat {
-            data: f64::from_bits(bits),
-        },
-        ExprInstance::GBigInt(bytes) => {
-            let n = BigInt::from_signed_bytes_be(&bytes);
-            RhoExpr::ExprBigInt {
-                data: n.to_string(),
-            }
-        }
-        ExprInstance::GBigRat(rat) => {
-            let num = BigInt::from_signed_bytes_be(&rat.numerator);
-            let den = BigInt::from_signed_bytes_be(&rat.denominator);
-            RhoExpr::ExprBigRat {
-                numerator: num.to_string(),
-                denominator: den.to_string(),
-            }
-        }
-        ExprInstance::GFixedPoint(fp) => {
-            let unscaled = BigInt::from_signed_bytes_be(&fp.unscaled);
-            RhoExpr::ExprFixedPoint {
-                value: unscaled.to_string(),
-                scale: fp.scale,
-            }
-        }
-
-        // Collections
-        ExprInstance::ETupleBody(tuple) => RhoExpr::ExprTuple {
-            data: tuple
-                .ps
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
-        ExprInstance::EListBody(list) => RhoExpr::ExprList {
-            data: list
-                .ps
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
-        ExprInstance::ESetBody(set) => RhoExpr::ExprSet {
-            data: set.ps.into_iter().filter_map(expr_from_par_proto).collect(),
-        },
-        ExprInstance::EMapBody(map) => {
-            let mut data = HashMap::new();
-            for kv in map.kvs {
-                if let (Some(key_par), Some(value_par)) = (kv.key, kv.value) {
-                    if let (Some(key_expr), Some(value_expr)) =
-                        (expr_from_par_proto(key_par), expr_from_par_proto(value_par))
-                    {
-                        let key = extract_key_from_expr(&key_expr);
-                        data.insert(key, value_expr);
-                    }
-                }
-            }
-            RhoExpr::ExprMap { data }
-        }
-        ExprInstance::EPathmapBody(pm) => expr_from_epathmap_proto(pm),
-        ExprInstance::EZipperBody(z) => {
-            let pathmap = z.pathmap.map(expr_from_epathmap_proto);
-            RhoExpr::ExprTuple {
-                data: vec![
-                    pathmap.unwrap_or(RhoExpr::ExprPathMap {
-                        data: RhoPathMap::Empty,
-                    }),
-                    RhoExpr::ExprList {
-                        data: z
-                            .current_path
-                            .into_iter()
-                            .map(|b| RhoExpr::ExprBytes {
-                                data: hex::encode(&b),
-                            })
-                            .collect(),
-                    },
-                ],
-            }
-        }
-
-        // Unary operators
-        ExprInstance::ENotBody(op) => RhoExpr::ExprNot {
-            data: Box::new(par_to_expr(op.p)),
-        },
-        ExprInstance::ENegBody(op) => RhoExpr::ExprNeg {
-            data: Box::new(par_to_expr(op.p)),
-        },
-
-        // Binary arithmetic
-        ExprInstance::EPlusBody(op) => RhoExpr::ExprPlus {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMinusBody(op) => RhoExpr::ExprMinus {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMultBody(op) => RhoExpr::ExprMult {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EDivBody(op) => RhoExpr::ExprDiv {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EModBody(op) => RhoExpr::ExprMod {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-
-        // Comparison
-        ExprInstance::ELtBody(op) => RhoExpr::ExprLt {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::ELteBody(op) => RhoExpr::ExprLte {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EGtBody(op) => RhoExpr::ExprGt {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EGteBody(op) => RhoExpr::ExprGte {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EEqBody(op) => RhoExpr::ExprEq {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::ENeqBody(op) => RhoExpr::ExprNeq {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-
-        // Logical
-        ExprInstance::EAndBody(op) => RhoExpr::ExprAnd {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EOrBody(op) => RhoExpr::ExprOr {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-
-        // String operations
-        ExprInstance::EPlusPlusBody(op) => RhoExpr::ExprConcat {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EPercentPercentBody(op) => RhoExpr::ExprInterpolate {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-        ExprInstance::EMinusMinusBody(op) => RhoExpr::ExprDiff {
-            left: Box::new(par_to_expr(op.p1)),
-            right: Box::new(par_to_expr(op.p2)),
-        },
-
-        // Pattern matching
-        ExprInstance::EMatchesBody(op) => RhoExpr::ExprMatches {
-            target: Box::new(par_to_expr(op.target)),
-            pattern: Box::new(par_to_expr(op.pattern)),
-        },
-
-        // Method call
-        ExprInstance::EMethodBody(method) => RhoExpr::ExprMethod {
-            target: Box::new(par_to_expr(method.target)),
-            name: method.method_name,
-            args: method
-                .arguments
-                .into_iter()
-                .filter_map(expr_from_par_proto)
-                .collect(),
-        },
-
-        // Variable
-        ExprInstance::EVarBody(var) => {
-            let index = var
-                .v
-                .and_then(|v| v.var_instance)
-                .map(|vi| match vi {
-                    models::rhoapi::var::VarInstance::BoundVar(i) => i,
-                    models::rhoapi::var::VarInstance::FreeVar(i) => i,
-                    models::rhoapi::var::VarInstance::Wildcard(_) => -1,
-                })
-                .unwrap_or(-1);
-            RhoExpr::ExprVar { index }
-        }
-    })
-}
-
-fn expr_from_epathmap_proto(pathmap: EPathMap) -> RhoExpr {
-    let data = match pathmap.mode() {
-        EPathMapMode::Empty => RhoPathMap::Empty,
-        EPathMapMode::Set => {
-            let mut entries = Vec::with_capacity(pathmap.len());
-            pathmap
-                .entry_trie()
-                .for_each_raw_set_entry(|key| {
-                    let entry = models::rust::canonical_path::decode_trie_path(key)
-                        .expect("set-mode EPathMap keys are canonical Par paths");
-                    entries.push(par_to_expr(Some(entry)));
-                })
-                .expect("set-mode EPathMap exposes set entries");
-            RhoPathMap::Set { entries }
-        }
-        EPathMapMode::Map => {
-            let mut entries = Vec::with_capacity(pathmap.len());
-            pathmap
-                .entry_trie()
-                .for_each_raw_map_entry(|key, value| {
-                    let key = models::rust::canonical_path::decode_trie_path(key)
-                        .expect("map-mode EPathMap keys are canonical Par paths");
-                    entries.push(RhoPathMapBinding {
-                        key: par_to_expr(Some(key)),
-                        value: par_to_expr(Some(value.clone())),
-                    });
-                })
-                .expect("map-mode EPathMap exposes map entries");
-            RhoPathMap::Map { entries }
-        }
-    };
-    RhoExpr::ExprPathMap { data }
-}
-
-/// Convert an optional Par to RhoExpr, falling back to ExprUnknown for None.
-fn par_to_expr(par: Option<Par>) -> RhoExpr {
-    par.and_then(expr_from_par_proto)
-        .unwrap_or(RhoExpr::ExprUnknown {
-            type_name: "Nil".to_string(),
-        })
-}
+#[cfg(test)]
+fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> { rho_expr_pda::from_expr(expr) }
 
 /// Convert GUnforgeable to RhoExpr.
 fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
@@ -1943,19 +1668,8 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
 }
 
 /// Convert Bundle to RhoExpr, preserving read/write permissions.
-fn expr_from_bundle_proto(bundle: Bundle) -> Option<RhoExpr> {
-    let body_expr = bundle
-        .body
-        .and_then(expr_from_par_proto)
-        .unwrap_or(RhoExpr::ExprUnknown {
-            type_name: "Nil".to_string(),
-        });
-    Some(RhoExpr::ExprBundle {
-        data: Box::new(body_expr),
-        read: bundle.read_flag,
-        write: bundle.write_flag,
-    })
-}
+#[cfg(test)]
+fn expr_from_bundle_proto(bundle: Bundle) -> Option<RhoExpr> { rho_expr_pda::from_bundle(bundle) }
 
 /// Extract a string key from a RhoExpr for map keys.
 /// Primitive types use natural string representation; complex types use JSON serialization.
@@ -1997,490 +1711,17 @@ fn to_rho_data_response(
 }
 
 #[cfg(test)]
-mod tests {
-    use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::g_unforgeable::UnfInstance;
-    use models::rhoapi::{
-        Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
-    };
-
-    use super::*;
-
-    #[test]
-    fn test_deploy_response_full_view_includes_all_fields() {
-        let response = DeployResponse {
-            deploy_id: "abc123".to_string(),
-            block_hash: "hash1".to_string(),
-            block_number: 100,
-            timestamp: 1700000000000,
-            cost: 500,
-            errored: false,
-            is_finalized: true,
-            deployer: Some("deployer1".to_string()),
-            term: Some("new ret in { ret!(42) }".to_string()),
-            system_deploy_error: Some(String::new()),
-            sig_algorithm: Some("secp256k1".to_string()),
-            valid_after_block_number: Some(0),
-            transfers: Some(vec![]),
-        };
-
-        let json = serde_json::to_value(&response).unwrap();
-
-        assert_eq!(json["deployId"], "abc123");
-        assert_eq!(json["blockHash"], "hash1");
-        assert_eq!(json["blockNumber"], 100);
-        assert_eq!(json["cost"], 500);
-        assert_eq!(json["isFinalized"], true);
-        assert!(json.get("deployer").is_some());
-        assert!(json.get("term").is_some());
-        // D3 (DR-9): no phloPrice / phloLimit in the response.
-        assert!(json.get("phloPrice").is_none());
-        assert!(json.get("phloLimit").is_none());
-        assert!(json.get("transfers").is_some());
-    }
-
-    #[test]
-    fn test_deploy_response_summary_view_omits_optional_fields() {
-        let response = DeployResponse {
-            deploy_id: "abc123".to_string(),
-            block_hash: "hash1".to_string(),
-            block_number: 100,
-            timestamp: 1700000000000,
-            cost: 500,
-            errored: false,
-            is_finalized: true,
-            deployer: None,
-            term: None,
-            system_deploy_error: None,
-            sig_algorithm: None,
-            valid_after_block_number: None,
-            transfers: None,
-        };
-
-        let json = serde_json::to_value(&response).unwrap();
-
-        // Core fields present
-        assert_eq!(json["deployId"], "abc123");
-        assert_eq!(json["blockHash"], "hash1");
-        assert_eq!(json["cost"], 500);
-        assert_eq!(json["isFinalized"], true);
-
-        // Optional fields omitted
-        assert!(json.get("deployer").is_none());
-        assert!(json.get("term").is_none());
-        assert!(json.get("phloPrice").is_none());
-        assert!(json.get("phloLimit").is_none());
-        assert!(json.get("sigAlgorithm").is_none());
-        assert!(json.get("validAfterBlockNumber").is_none());
-        assert!(json.get("transfers").is_none());
-    }
-
-    #[test]
-    fn test_deploy_request_serialization() {
-        let request = DeployRequest {
-            data: DeployData {
-                term: "contract".to_string(),
-                time_stamp: 1234567890,
-                valid_after_block_number: 0,
-                shard_id: "".to_string(),
-                expiration_timestamp: None,
-            },
-            deployer: "0123456789abcdef".to_string(),
-            signature: "fedcba9876543210".to_string(),
-            sig_algorithm: "secp256k1".to_string(),
-            cosigners: Vec::new(),
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: DeployRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(request.deployer, deserialized.deployer);
-        assert_eq!(request.signature, deserialized.signature);
-        assert_eq!(request.sig_algorithm, deserialized.sig_algorithm);
-    }
-
-    #[test]
-    fn test_rho_expr_serialization() {
-        let expr = RhoExpr::ExprBool { data: true };
-        let json = serde_json::to_string(&expr).unwrap();
-        let deserialized: RhoExpr = serde_json::from_str(&json).unwrap();
-
-        match deserialized {
-            RhoExpr::ExprBool { data } => assert!(data),
-            _ => panic!("Expected ExprBool"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_par_proto_empty() {
-        let par = Par::default();
-        let result = expr_from_par_proto(par);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_expr_from_par_proto_single_bool() {
-        let par = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::GBool(true)),
-            }],
-            ..Default::default()
-        };
-        let result = expr_from_par_proto(par);
-        assert!(matches!(result, Some(RhoExpr::ExprBool { data: true })));
-    }
-
-    #[test]
-    fn test_expr_from_par_proto_multiple_exprs() {
-        let par = models::par_from_default! {
-            exprs: vec![
-                Expr {
-                    expr_instance: Some(ExprInstance::GBool(true)),
-                },
-                Expr {
-                    expr_instance: Some(ExprInstance::GInt(42)),
-                },
-            ],
-            ..Default::default()
-        };
-        let result = expr_from_par_proto(par);
-        match result {
-            Some(RhoExpr::ExprPar { data }) => {
-                assert_eq!(data.len(), 2);
-                assert!(matches!(data[0], RhoExpr::ExprBool { data: true }));
-                assert!(matches!(data[1], RhoExpr::ExprInt { data: 42 }));
-            }
-            _ => panic!("Expected ExprPar with 2 elements"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_expr_proto_primitive_types() {
-        // Test GBool
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::GBool(true)),
-        };
-        let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprBool { data: true })));
-
-        // Test GInt
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::GInt(42)),
-        };
-        let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprInt { data: 42 })));
-
-        // Test GString
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::GString("hello".to_string())),
-        };
-        let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprString { data }) if data == "hello"));
-
-        // Test GUri
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::GUri("rho:io:stdout".to_string())),
-        };
-        let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprUri { data }) if data == "rho:io:stdout"));
-
-        // Test GByteArray
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::GByteArray(vec![0x01, 0x02, 0x03])),
-        };
-        let result = expr_from_expr_proto(expr);
-        assert!(matches!(result, Some(RhoExpr::ExprBytes { data }) if data == "010203"));
-    }
-
-    #[test]
-    fn test_expr_from_expr_proto_tuple() {
-        let tuple = ETuple {
-            ps: vec![
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(1)),
-                    }],
-                    ..Default::default()
-                },
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("hello".to_string())),
-                    }],
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(tuple)),
-        };
-        let result = expr_from_expr_proto(expr);
-        match result {
-            Some(RhoExpr::ExprTuple { data }) => {
-                assert_eq!(data.len(), 2);
-                assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
-                assert!(matches!(data[1], RhoExpr::ExprString { data: ref d } if d == "hello"));
-            }
-            _ => panic!("Expected ExprTuple"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_expr_proto_list() {
-        let list = EList {
-            ps: vec![
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(1)),
-                    }],
-                    ..Default::default()
-                },
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GInt(2)),
-                    }],
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::EListBody(list)),
-        };
-        let result = expr_from_expr_proto(expr);
-        match result {
-            Some(RhoExpr::ExprList { data }) => {
-                assert_eq!(data.len(), 2);
-                assert!(matches!(data[0], RhoExpr::ExprInt { data: 1 }));
-                assert!(matches!(data[1], RhoExpr::ExprInt { data: 2 }));
-            }
-            _ => panic!("Expected ExprList"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_expr_proto_set() {
-        let set = ESet {
-            ps: vec![
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("a".to_string())),
-                    }],
-                    ..Default::default()
-                },
-                models::par_from_default! {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::GString("b".to_string())),
-                    }],
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::ESetBody(set)),
-        };
-        let result = expr_from_expr_proto(expr);
-        match result {
-            Some(RhoExpr::ExprSet { data }) => {
-                assert_eq!(data.len(), 2);
-                assert!(matches!(data[0], RhoExpr::ExprString { data: ref d } if d == "a"));
-                assert!(matches!(data[1], RhoExpr::ExprString { data: ref d } if d == "b"));
-            }
-            _ => panic!("Expected ExprSet"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_expr_proto_map() {
-        let map = EMap {
-            kvs: vec![
-                KeyValuePair {
-                    key: Some(models::par_from_default! {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("key1".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
-                    value: Some(models::par_from_default! {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GInt(42)),
-                        }],
-                        ..Default::default()
-                    }),
-                },
-                KeyValuePair {
-                    key: Some(models::par_from_default! {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("key2".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
-                    value: Some(models::par_from_default! {
-                        exprs: vec![Expr {
-                            expr_instance: Some(ExprInstance::GString("value2".to_string())),
-                        }],
-                        ..Default::default()
-                    }),
-                },
-            ],
-            ..Default::default()
-        };
-
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::EMapBody(map)),
-        };
-        let result = expr_from_expr_proto(expr);
-        match result {
-            Some(RhoExpr::ExprMap { data }) => {
-                assert_eq!(data.len(), 2);
-                assert!(data.contains_key("key1"));
-                assert!(data.contains_key("key2"));
-                assert!(matches!(data["key1"], RhoExpr::ExprInt { data: 42 }));
-                assert!(
-                    matches!(data["key2"], RhoExpr::ExprString { data: ref d } if d == "value2")
-                );
-            }
-            _ => panic!("Expected ExprMap"),
-        }
-    }
-
-    #[test]
-    fn test_unforg_from_proto_private() {
-        let unforg = GUnforgeable {
-            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                id: vec![0x01, 0x02, 0x03],
-            })),
-        };
-        let result = unforg_from_proto(unforg);
-        match result {
-            Some(RhoExpr::ExprUnforg { data }) => {
-                assert!(matches!(data, RhoUnforg::UnforgPrivate { data: ref d } if d == "010203"));
-            }
-            _ => panic!("Expected ExprUnforg with UnforgPrivate"),
-        }
-    }
-
-    #[test]
-    fn test_unforg_from_proto_deploy() {
-        let unforg = GUnforgeable {
-            unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId {
-                sig: vec![0x04, 0x05, 0x06],
-            })),
-        };
-        let result = unforg_from_proto(unforg);
-        match result {
-            Some(RhoExpr::ExprUnforg { data }) => {
-                assert!(matches!(data, RhoUnforg::UnforgDeploy { data: ref d } if d == "040506"));
-            }
-            _ => panic!("Expected ExprUnforg with UnforgDeploy"),
-        }
-    }
-
-    #[test]
-    fn test_unforg_from_proto_deployer() {
-        let unforg = GUnforgeable {
-            unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-                public_key: vec![0x07, 0x08, 0x09],
-            })),
-        };
-        let result = unforg_from_proto(unforg);
-        match result {
-            Some(RhoExpr::ExprUnforg { data }) => {
-                assert!(matches!(data, RhoUnforg::UnforgDeployer { data: ref d } if d == "070809"));
-            }
-            _ => panic!("Expected ExprUnforg with UnforgDeployer"),
-        }
-    }
-
-    #[test]
-    fn test_expr_from_bundle_proto() {
-        let bundle = Bundle {
-            body: Some(models::par_from_default! {
-                exprs: vec![Expr {
-                    expr_instance: Some(ExprInstance::GString("bundle_content".to_string())),
-                }],
-                ..Default::default()
-            }),
-            write_flag: true,
-            read_flag: false,
-        };
-        let result = expr_from_bundle_proto(bundle);
-        assert!(matches!(
-            result,
-            Some(RhoExpr::ExprBundle { ref data, write: true, read: false })
-            if matches!(data.as_ref(), RhoExpr::ExprString { data } if data == "bundle_content")
-        ));
-    }
-
-    #[test]
-    fn test_expr_from_bundle_proto_empty() {
-        let bundle = Bundle {
-            body: None,
-            write_flag: false,
-            read_flag: true,
-        };
-        let result = expr_from_bundle_proto(bundle);
-        // Empty body bundle returns ExprBundle with ExprUnknown body
-        assert!(matches!(
-            result,
-            Some(RhoExpr::ExprBundle {
-                read: true,
-                write: false,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_extract_key_from_expr() {
-        // Test string key
-        let expr = RhoExpr::ExprString {
-            data: "hello".to_string(),
-        };
-        assert_eq!(extract_key_from_expr(&expr), "hello");
-
-        // Test int key
-        let expr = RhoExpr::ExprInt { data: 42 };
-        assert_eq!(extract_key_from_expr(&expr), "42");
-
-        // Test bool key
-        let expr = RhoExpr::ExprBool { data: true };
-        assert_eq!(extract_key_from_expr(&expr), "true");
-
-        // Test URI key
-        let expr = RhoExpr::ExprUri {
-            data: "rho:io:stdout".to_string(),
-        };
-        assert_eq!(extract_key_from_expr(&expr), "rho:io:stdout");
-
-        // Test bytes key
-        let expr = RhoExpr::ExprBytes {
-            data: "010203".to_string(),
-        };
-        assert_eq!(extract_key_from_expr(&expr), "010203");
-
-        // Test unforgeable keys
-        let expr = RhoExpr::ExprUnforg {
-            data: RhoUnforg::UnforgPrivate {
-                data: "private".to_string(),
-            },
-        };
-        assert_eq!(extract_key_from_expr(&expr), "private");
-
-        // Test complex key type — serialized to JSON
-        let expr = RhoExpr::ExprPar { data: vec![] };
-        let key = extract_key_from_expr(&expr);
-        assert!(
-            !key.is_empty(),
-            "complex keys should serialize to non-empty string"
-        );
-    }
-}
+#[path = "../../../tests/support/web_api_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "../../../tests/support/web_api_epathmap.rs"]
 mod epathmap_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/support/rho_expr_conversion_oracle.rs"]
+mod rho_expr_conversion_oracle;
+
+#[cfg(test)]
+#[path = "../../../tests/support/rho_expr_pda_tests.rs"]
+mod rho_expr_pda_tests;

@@ -1968,3 +1968,73 @@ fn reverse_raw_visitors_are_the_exact_reverse_of_forward_trie_order() {
         "neutral empty must be valid for either reverse visitor"
     );
 }
+
+/// Consuming visitors are the ownership-preserving bridge into PDAs: set keys
+/// and map values must move out in the same trie order as the borrowed view,
+/// without first materializing a `Vec<Par>` projection.
+#[test]
+fn consuming_raw_visitors_match_borrowed_trie_order_and_mode() {
+    let set = EPathMap::new(
+        vec![
+            make_list_par(vec!["shared", "a"]),
+            make_list_par(vec!["shared", "a", "deep"]),
+            make_int_par(-7),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+    let mut expected_set = Vec::new();
+    set.entry_trie()
+        .for_each_raw_set_entry(|key| expected_set.push(key.to_vec()))
+        .unwrap();
+    let mut owned_set = Vec::new();
+    set.clone()
+        .into_raw_set_entries(|key| owned_set.push(key))
+        .unwrap();
+    assert_eq!(owned_set, expected_set);
+    assert!(set.into_raw_map_entries(|_, _| {}).is_err());
+
+    let map = EPathMap::new_map(
+        [
+            (make_list_par(vec!["shared", "a"]), make_int_par(11)),
+            (
+                make_list_par(vec!["shared", "a", "deep"]),
+                make_string_par("deep-value"),
+            ),
+            (make_int_par(-7), make_string_par("integer-key")),
+        ],
+        Vec::new(),
+        false,
+        None,
+    );
+    let mut expected_map = Vec::new();
+    map.entry_trie()
+        .for_each_raw_map_entry(|key, value| {
+            expected_map.push((
+                key.to_vec(),
+                models::rust::rholang::protobuf_encoder::encode_to_vec(value),
+            ));
+        })
+        .unwrap();
+    let mut owned_map = Vec::new();
+    map.clone()
+        .into_raw_map_entries(|key, value| {
+            owned_map.push((
+                key,
+                models::rust::rholang::protobuf_encoder::encode_to_vec(&value),
+            ));
+        })
+        .unwrap();
+    assert_eq!(owned_map, expected_map);
+    assert!(map.into_raw_set_entries(|_| {}).is_err());
+
+    let mut empty_visits = 0;
+    EPathMap::default()
+        .into_raw_set_entries(|_| empty_visits += 1)
+        .unwrap();
+    EPathMap::default()
+        .into_raw_map_entries(|_, _| empty_visits += 1)
+        .unwrap();
+    assert_eq!(empty_visits, 0, "neutral empty is valid for both modes");
+}

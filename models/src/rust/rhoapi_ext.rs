@@ -1454,6 +1454,59 @@ impl EntryTrie {
         }
     }
 
+    fn into_raw_set_entries(self, mut visit: impl FnMut(Vec<u8>)) -> Result<(), EPathMapModeError> {
+        let EntryTrie {
+            repr,
+            len: _,
+            entries_stable: _,
+            union_locally_free: _,
+            any_connective_used: _,
+            trie_snapshot: _,
+            epm_layout: _,
+        } = self;
+        match repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(map) => {
+                for (key, ()) in map {
+                    visit(key);
+                }
+                Ok(())
+            }
+            EPathMapRepr::Map(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Set,
+                actual: EPathMapMode::Map,
+            }),
+        }
+    }
+
+    fn into_raw_map_entries(
+        self,
+        mut visit: impl FnMut(Vec<u8>, Par),
+    ) -> Result<(), EPathMapModeError> {
+        let EntryTrie {
+            repr,
+            len: _,
+            entries_stable: _,
+            union_locally_free: _,
+            any_connective_used: _,
+            trie_snapshot: _,
+            epm_layout: _,
+        } = self;
+        match repr {
+            EPathMapRepr::Empty => Ok(()),
+            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+                expected: EPathMapMode::Map,
+                actual: EPathMapMode::Set,
+            }),
+            EPathMapRepr::Map(map) => {
+                for (key, value) in map {
+                    visit(key, value);
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Remove the entry with the GREATEST key in trie order, and return it.
     ///
     /// ⚠ This is the honest replacement for `ps.pop()`. A `Vec` has a last
@@ -2146,6 +2199,33 @@ impl EPathMap {
         } = self;
 
         ps.drain_owned_pars(out);
+    }
+
+    /// Consume set-mode storage through PathMap's owned zipper, visiting each
+    /// canonical byte key in trie order without decoding an entry projection.
+    pub fn into_raw_set_entries(self, visit: impl FnMut(Vec<u8>)) -> Result<(), EPathMapModeError> {
+        let EPathMap {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        } = self;
+        ps.into_raw_set_entries(visit)
+    }
+
+    /// Consume map-mode storage through PathMap's owned zipper, moving each
+    /// canonical byte key and associated value in trie order without cloning.
+    pub fn into_raw_map_entries(
+        self,
+        visit: impl FnMut(Vec<u8>, Par),
+    ) -> Result<(), EPathMapModeError> {
+        let EPathMap {
+            ps,
+            locally_free: _,
+            connective_used: _,
+            remainder: _,
+        } = self;
+        ps.into_raw_map_entries(visit)
     }
 
     /// Number of PathMap-owned `Par` value retainers used by teardown tests.
