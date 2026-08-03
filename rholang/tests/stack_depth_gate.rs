@@ -612,6 +612,11 @@ fn subject(name: &str) -> fn(usize) {
         "free_check" => free_check_body,
         "normalize_wide" => normalize_wide_body,
         "eval_with_nots" => eval_with_nots_body,
+        // -------- Phase 7 measurement controls (not production claims) --------
+        "phase7_invariant" => phase7_invariant_body,
+        "heap_fixture_par" => heap_fixture_par_body,
+        "heap_fixture_normalize" => heap_fixture_normalize_body,
+        "heap_fixture_eval" => heap_fixture_eval_body,
         // -------- synthetic controls (either axis; see SYNTHETIC_FRAME_BYTES) --------
         "synthetic_sloped" => synthetic_sloped_body,
         "synthetic_flat" => synthetic_flat_body,
@@ -654,6 +659,30 @@ fn gate_child() {
         .expect("stack_depth_gate: failed to spawn")
         .join()
         .expect("stack_depth_gate: subject panicked");
+}
+
+/// Export the converted register for the external deterministic-time harness.
+///
+/// The `PHASE7_MANIFEST` prefix is intentionally machine-readable. The harness
+/// must consume these constants rather than carrying a second subject list that
+/// can drift away from the gate.
+#[test]
+#[ignore = "machine-readable input for scripts/bench/stack-safety-phase7.sh"]
+fn phase7_measurement_manifest() {
+    // `--nocapture` may print libtest's `test ...` prefix without a newline.
+    // End that line explicitly so the first machine-readable row starts at
+    // column zero like every row after it.
+    println!();
+    for name in CONVERTED_DEPTH {
+        println!("PHASE7_MANIFEST\tdepth\t{name}");
+    }
+    for name in CONVERTED_WIDTH {
+        println!("PHASE7_MANIFEST\twidth\t{name}");
+    }
+    println!(
+        "PHASE7_MANIFEST_COUNT\t{}",
+        CONVERTED_DEPTH.len() + CONVERTED_WIDTH.len()
+    );
 }
 
 /// Run one probe point in a child process. `true` iff it survived.
@@ -3087,8 +3116,7 @@ fn free_check_body(width: usize) {
 /// without descending. On that shape the probe measures `<Par as Clone>::clone`
 /// and nothing else. `!(!(…(!true)…))` is the shape that actually recurses;
 /// measured 21,584 B/level debug / 3,359 release before the conversion.
-fn eval_with_nots_body(depth: usize) {
-    use rho_pure_eval::{eval_with, NoSpatialMatch};
+fn nested_nots(depth: usize) -> Par {
     let mut p = models::par_from_default! {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GBool(true)),
@@ -3103,6 +3131,12 @@ fn eval_with_nots_body(depth: usize) {
             ..Default::default()
         };
     }
+    p
+}
+
+fn eval_with_nots_body(depth: usize) {
+    use rho_pure_eval::{eval_with, NoSpatialMatch};
+    let p = nested_nots(depth);
     assert_carries("the eval_with input's ENot nesting", enot_depth(&p), depth);
     let env: Env<Par> = Env::new();
     let out = eval_with(&p, &env, &NoSpatialMatch).expect("stack_depth_gate: eval_with failed");
@@ -3117,6 +3151,48 @@ fn eval_with_nots_body(depth: usize) {
     );
     dismantle(p);
     dismantle(out);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 resource-measurement controls. These are addressable through
+// `gate_child` but deliberately absent from the converted/tripwire registers.
+// ---------------------------------------------------------------------------
+
+/// Cachegrind's invariant arm: no term construction, traversal, or teardown.
+fn phase7_invariant_body(parameter: usize) { std::hint::black_box(parameter); }
+
+/// Fixture-only control shared by substitution and sorting.
+fn heap_fixture_par_body(depth: usize) {
+    let term = nested_list(depth);
+    assert_carries("the heap Par fixture's nesting", par_depth(&term), depth);
+    std::hint::black_box(&term);
+    // One process per Massif cell: retaining the fixture makes its live bytes
+    // the control high-water and prevents teardown from entering the profile.
+    std::mem::forget(term);
+}
+
+/// Fixture-only control for normalization: source text exists, no parse runs.
+fn heap_fixture_normalize_body(depth: usize) {
+    let source = nested_list_source(depth);
+    assert_carries(
+        "the heap normalizer fixture's source nesting",
+        source_bracket_depth(&source),
+        depth,
+    );
+    std::hint::black_box(&source);
+    std::mem::forget(source);
+}
+
+/// Fixture-only control for evaluation: nested ENot input, no evaluator.
+fn heap_fixture_eval_body(depth: usize) {
+    let term = nested_nots(depth);
+    assert_carries(
+        "the heap evaluator fixture's nesting",
+        enot_depth(&term),
+        depth,
+    );
+    std::hint::black_box(&term);
+    std::mem::forget(term);
 }
 
 // ---------------------------------------------------------------------------
