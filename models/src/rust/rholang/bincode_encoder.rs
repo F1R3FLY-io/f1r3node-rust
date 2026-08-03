@@ -121,7 +121,7 @@ use std::collections::btree_map;
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::bincode_schema::{
-    BincodeNode, BincodeSeq, Descent, NO_RESUME, PathmapSnapshot, pathmap_snapshot, put_bytes,
+    pathmap_snapshot, put_bytes, BincodeNode, BincodeSeq, Descent, PathmapSnapshot, NO_RESUME,
 };
 
 // ===========================================================================
@@ -215,9 +215,6 @@ struct Machine<'a> {
     ops: Vec<Op<'a>>,
     /// One live iterator per ancestor `New` (the `injections` map).
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
-    // Parked with `Op::EntryPaths` — see the note at its definition.
-    // /// Live trie cursors, one per open `EPathMap`.
-    // entry_zippers: Vec<pathmap::zipper::ReadZipperUntracked<'a, 'static, Par>>,
     /// Op-stack high-water mark, tracked only when `TRACK` is on.
     high_water: usize,
 }
@@ -236,7 +233,6 @@ impl<'a> Machine<'a> {
         Machine {
             ops: take_ops(),
             map_iters: Vec::new(),
-            // entry_zippers: Vec::new(),
             high_water: 0,
         }
     }
@@ -301,28 +297,7 @@ impl<'a> Machine<'a> {
                             self.map_iters.pop();
                         }
                     }
-                } // Parked with `Op::EntryPaths` — see the note at its definition.
-                  //
-                  // Op::EntryPaths => {
-                  //     use pathmap::zipper::ZipperReadOnlyIteration;
-                  //     let next = self
-                  //         .entry_zippers
-                  //         .last_mut()
-                  //         .expect("bincode_encoder: EntryPaths with no live zipper")
-                  //         .to_next_get_val();
-                  //     match next {
-                  //         Some(par) => {
-                  //             self.ops.push(Op::EntryPaths);
-                  //             self.ops.push(Op::Node {
-                  //                 node: par,
-                  //                 field: 0,
-                  //             });
-                  //         }
-                  //         None => {
-                  //             self.entry_zippers.pop();
-                  //         }
-                  //     }
-                  // }
+                }
             }
         }
     }
