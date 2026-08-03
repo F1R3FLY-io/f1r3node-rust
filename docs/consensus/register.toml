@@ -41,7 +41,7 @@ unverified_budget = 1
 frontier_grace_days = 2
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
-# ENTRIES — 47. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
+# ENTRIES — 60. `axis_*` uses §4.2's closed vocabulary MOVES / NO / N/A / UNVERIFIED;
 # the gate re-projects §4.1's ●/○/·/? glyphs and asserts agreement cell by cell.
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -922,7 +922,7 @@ source_gate = "NOT_NAMED"
 [[entry]]
 id = "CBR-040"
 surface = "N"
-commits = ["6192b4b9"]
+commits = ["6192b4b9", "fa234cdd"]
 status = "LANDED"
 direction = "CORRECTIVE"
 grade = "WITNESSED"
@@ -1098,8 +1098,8 @@ axis_metering = "NO"
 [[entry]]
 id = "CBR-044"
 surface = "N"
-commits = []
-status = "IN_FLIGHT"
+commits = ["26876b65"]
+status = "LANDED"
 direction = "CORRECTIVE"
 grade = "WITNESSED"
 axis_value = "MOVES"
@@ -1109,6 +1109,98 @@ axis_bytes_prost = "MOVES"
 axis_post_state_hash = "MOVES"
 axis_acceptance = "MOVES"
 axis_metering = "MOVES"
+
+[[entry]]
+id = "CBR-045"
+surface = "N"
+commits = ["ff244c69"]
+status = "LANDED"
+direction = "CORRECTIVE"
+grade = "WITNESSED"
+# Canonicalisation changes the sequence stored in ProcessedDeploy::deploy_log,
+# while preserving the event multiset that replay consumes.
+axis_value = "MOVES"
+# Replay reduces the log to order-insensitive sets and counters, so COMM selection
+# and replay validity do not move.
+axis_verdict = "NO"
+axis_bytes_bincode = "MOVES"
+axis_bytes_prost = "MOVES"
+# The RSpace post_state_hash is unchanged; the containing genesis block hash moves.
+axis_post_state_hash = "NO"
+axis_acceptance = "NO"
+axis_metering = "NO"
+
+# CBR-044's carrier: two homogeneous PathMap modes and one neutral empty mode.
+[[citation]]
+owner = "CBR-044"
+cited = "models/src/rust/epathmap_trie_codec.rs"
+line = 36
+at = "26876b65"
+path = "models/src/rust/epathmap_trie_codec.rs"
+token = "pub enum EPathMapRepr"
+
+# CBR-044's direct EPM1 serializer over the trie representation.
+[[citation]]
+owner = "CBR-044"
+cited = "models/src/rust/epathmap_trie_codec.rs"
+line = 240
+at = "26876b65"
+path = "models/src/rust/epathmap_trie_codec.rs"
+token = "pub fn encode"
+
+# CBR-044's iterative ACTree03 reader rather than recursive topology descent.
+[[citation]]
+owner = "CBR-044"
+cited = "models/src/rust/epathmap_trie_codec.rs"
+line = 547
+at = "26876b65"
+path = "models/src/rust/epathmap_trie_codec.rs"
+token = "let mut stack = vec![ActFrame"
+
+# CBR-044's exact-key native query seam into PathMap.
+[[citation]]
+owner = "CBR-044"
+cited = "models/src/rust/rhoapi_ext.rs"
+line = 699
+at = "26876b65"
+path = "models/src/rust/rhoapi_ext.rs"
+token = "contains_encoded_key"
+
+# CBR-045's one production call site: canonicalise before constructing Body.
+[[citation]]
+owner = "CBR-045"
+cited = "casper/src/rust/genesis/genesis.rs"
+line = 249
+at = "ff244c69"
+path = "casper/src/rust/genesis/genesis.rs"
+token = "canonicalize_deploy_log"
+
+# CBR-045's named deterministic protobuf-byte key.
+[[citation]]
+owner = "CBR-045"
+cited = "casper/src/rust/util/event_log_canonical.rs"
+line = 140
+at = "ff244c69"
+path = "casper/src/rust/util/event_log_canonical.rs"
+token = "pub fn event_key"
+
+# CBR-045's cached-key canonicalisation: n encodes rather than Θ(n log n).
+[[citation]]
+owner = "CBR-045"
+cited = "casper/src/rust/util/event_log_canonical.rs"
+line = 152
+at = "ff244c69"
+path = "casper/src/rust/util/event_log_canonical.rs"
+token = "pub fn canonicalize_deploy_log"
+
+# CBR-045's exhaustive replay-order witness over the real ReplayRSpace rig.
+[[citation]]
+owner = "CBR-045"
+cited = "casper/tests/deploy_log_canonicalization_and_replay.rs"
+line = 556
+at = "ff244c69"
+path = "casper/tests/deploy_log_canonicalization_and_replay.rs"
+token = "rig_is_order_insensitive"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CBR-043 — written LAST, from the landed tree at 8cf0b770, each verified to sit
@@ -1121,7 +1213,7 @@ axis_metering = "MOVES"
 owner = "CBR-043"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 294
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "wire_trie"
 
@@ -1130,7 +1222,7 @@ token = "wire_trie"
 owner = "CBR-043"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 482
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "wire_trie"
 
@@ -1139,7 +1231,7 @@ token = "wire_trie"
 owner = "CBR-043"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 538
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "blanked_trie"
 
@@ -1148,7 +1240,7 @@ token = "blanked_trie"
 owner = "CBR-043"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 1419
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "wire_trie"
 
@@ -1157,7 +1249,7 @@ token = "wire_trie"
 owner = "CBR-043"
 cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 471
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/wire.rs"
 token = "wire_view"
 
@@ -1167,7 +1259,7 @@ token = "wire_view"
 owner = "CBR-043"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 1845
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "encode_ground_field8"
 
@@ -1176,7 +1268,7 @@ token = "encode_ground_field8"
 owner = "CBR-043"
 cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 75
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/wire.rs"
 token = "locally_free"
 
@@ -1186,7 +1278,7 @@ token = "locally_free"
 owner = "CBR-043"
 cited = "rholang/src/rust/interpreter/accounting/costs.rs"
 line = 67
-at = "HEAD"
+at = "cc616c3c"
 path = "rholang/src/rust/interpreter/accounting/costs.rs"
 token = "encoded_len"
 
@@ -1606,6 +1698,36 @@ window = "FRONTIER"
 reason = "HYGIENE"
 evidence = "Appendix B.3 row 61 — stack-safety Phase 6, a PURE RENAME across 62 files: bincode_encode.rs -> bincode_encoder.rs, par_codec.rs -> bincode_decoder.rs, protobuf_encode.rs -> protobuf_encoder.rs, plus ten test/bench targets and the shared par_codec_corpus/ -> par_corpus/. NO BYTE CAN MOVE, and it is proven rather than argued: all SIXTEEN goldens (five *.protobuf.bin, five *.bincode.bin, five *.json, sorter_canonical_forms.txt) were hashed before and after and compared by SHA-256 — never by length, which would accept a same-size permutation — and every digest is unchanged, with git reporting all sixteen unmodified. STRONGER THAN THE HASHES: each staged blob is recomputed as SUBST(git show HEAD:<old path>), so 52 of the 62 files are EXACTLY a token substitution of their own HEAD content, 4 are SVGs re-rendered from re-substituted PlantUML sources, and 6 carry one enumerated formatting repair each (four use-reorderings the longer names force, one tuple wrap, one assert! wrap) — no token that reaches a value changed anywhere. Byte set unmoved, measured on a tree materialised from this commit's index by git checkout-index rather than on the working tree, because concurrent Phase-4 files are present there: models 473 passed / 0 failed / 2 ignored across 37 targets, EQUAL TO BASELINE AND EQUAL PER TARGET (each of the 37 reports the same passed/failed/ignored triple), including bincode_encoder_differential 13/13, bincode_decoder_differential 13/13, bincode_decoder_wire_shapes 13/13, bincode_encoder_space 9/9, protobuf_encoder_differential 13/13, protobuf_encoder_space 4/4, serializer_par_byte_goldens 7/7, epathmap_spliced_event_bytes 11/11. cargo check -p rholang -p casper -p node --tests clean with an unchanged warning set. The two citations into the moved files were re-pinned to the new paths and all 30 at-HEAD citations re-derive. [DERIVED]"
 
+[[exempt]]
+commit = "14b75dfe"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 62 — adds only models/tests/prost_encode_space.rs and its explicit Cargo test declaration. It measures encoder operation/frame widths and linear length-table growth; no production source or generated artifact changes. [DERIVED]"
+
+[[exempt]]
+commit = "c54679f0"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 63 — memoises an unchanged iterative contains_par predicate within an explicit scope. The retained recursive predicate oracle caught and rejected the first unsound address-keyed attempt; byte differentials remained 11/11, 6/6, and 7/7. The entire mechanism was later deleted by 26876b65 after contains_par became constant false. [CITED]"
+
+[[exempt]]
+commit = "5072e1a8"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 64 — extracts the existing thread-local empty-vector pooling discipline and records the codec architecture exemption. The bincode encoder is mechanically rewired to the same pool behavior; the new helper is dormant for the protobuf encoder in this commit. Byte identity is the claimed and measured property. [CITED]"
+
+[[exempt]]
+commit = "69e67043"
+window = "FRONTIER"
+reason = "BYTE_NEUTRAL_MEASURED"
+evidence = "Appendix B.3 row 65 — routes event-hash direct legs through the retained cold encoder and converts the last recursive predicate walk to an explicit worklist. Six event-hash identity cases, eleven spliced-event cases, and seven serialized-Par goldens pin identical bytes while depth probes pin the stack change. [CITED]"
+
+[[exempt]]
+commit = "3fb4e21b"
+window = "FRONTIER"
+reason = "TESTS_ONLY"
+evidence = "Appendix B.3 row 66 — thread-scopes genesis-cache counters compiled behind the casper test-utils feature and repairs tests that observed process-wide neighbors. The changed production-path file is test support, and no node artifact or consensus behavior changes. [DERIVED]"
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # CITATIONS. One row per distinct `path:line` coordinate in the prose. A row either
 # carries `path` + `token` (checkable: the token must occur within ±3 lines of `line`
@@ -1618,7 +1740,7 @@ evidence = "Appendix B.3 row 61 — stack-safety Phase 6, a PURE RENAME across 6
 owner = "(doc)"
 cited = "pathmap_crate_type_mapper.rs"
 line = 254
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/pathmap_crate_type_mapper.rs"
 token = "eval_stable_epathmap"
 
@@ -1626,7 +1748,7 @@ token = "eval_stable_epathmap"
 owner = "(doc)"
 cited = "rhoapi_ext.rs"
 line = 244
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "proto field 8"
 
@@ -1634,7 +1756,7 @@ token = "proto field 8"
 owner = "(doc)"
 cited = "sort_combine.rs"
 line = 1735
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/sorter/sort_combine.rs"
 token = "eval_stable_epathmap"
 
@@ -1642,7 +1764,7 @@ token = "eval_stable_epathmap"
 owner = "(doc)"
 cited = "par_children.rs"
 line = 411
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/par_children.rs"
 token = "EPathmapBody"
 
@@ -1650,7 +1772,7 @@ token = "EPathmapBody"
 owner = "CBR-040"
 cited = "cost_accounting/sig.rs"
 line = 255
-at = "HEAD"
+at = "cc616c3c"
 path = "rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/sig.rs"
 token = "encode_to_vec"
 
@@ -1663,7 +1785,7 @@ token = "encode_to_vec"
 owner = "CBR-042"
 cited = "rholang/src/rust/interpreter/accounting/costs.rs"
 line = 67
-at = "HEAD"
+at = "cc616c3c"
 path = "rholang/src/rust/interpreter/accounting/costs.rs"
 token = "encoded_len"
 
@@ -1672,7 +1794,7 @@ token = "encoded_len"
 owner = "CBR-042"
 cited = "models/src/rust/rholang/bincode_schema.rs"
 line = 366
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/wire.rs"
 token = "FieldKind::Bytes"
 
@@ -1681,7 +1803,7 @@ token = "FieldKind::Bytes"
 owner = "CBR-042"
 cited = "models/src/rust/rholang/bincode_encoder.rs"
 line = 477
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/bincode_encoder.rs"
 token = "put_bytes"
 
@@ -1690,7 +1812,7 @@ token = "put_bytes"
 owner = "CBR-042"
 cited = "models/src/rust/rholang/bincode_decoder.rs"
 line = 1642
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/bincode_decoder.rs"
 token = "byte_slice"
 
@@ -1701,7 +1823,7 @@ token = "byte_slice"
 owner = "CBR-042"
 cited = "models/src/rust/rhoapi_ext.rs"
 line = 1106
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rhoapi_ext.rs"
 token = "from_path_stream_and_values"
 
@@ -1710,7 +1832,7 @@ token = "from_path_stream_and_values"
 owner = "CBR-042"
 cited = "models/src/rust/pathmap_crate_type_mapper.rs"
 line = 525
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/pathmap_crate_type_mapper.rs"
 token = "PathFrames"
 
@@ -1718,7 +1840,7 @@ token = "PathFrames"
 owner = "CBR-040"
 cited = "sort_combine.rs"
 line = 447
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/sorter/sort_combine.rs"
 token = "sort_vec"
 
@@ -1726,7 +1848,7 @@ token = "sort_vec"
 owner = "CBR-040"
 cited = "sort_combine.rs"
 line = 1442
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/rholang/sorter/sort_combine.rs"
 token = "sort_key_value_pair"
 
@@ -1734,7 +1856,7 @@ token = "sort_key_value_pair"
 owner = "CBR-040"
 cited = "sorted_par_hash_set.rs"
 line = 22
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/sorted_par_hash_set.rs"
 token = "HashSet<Par>"
 
@@ -1742,7 +1864,7 @@ token = "HashSet<Par>"
 owner = "CBR-040"
 cited = "sorter_canonical_golden.rs"
 line = 90
-at = "HEAD"
+at = "cc616c3c"
 path = "models/tests/sorter_canonical_golden.rs"
 token = "distinct-scoring"
 
@@ -1750,7 +1872,7 @@ token = "distinct-scoring"
 owner = "(doc)"
 cited = "casper/src/rust/validate.rs"
 line = 273
-at = "HEAD"
+at = "cc616c3c"
 path = "casper/src/rust/validate.rs"
 token = "fn version"
 
@@ -1758,7 +1880,7 @@ token = "fn version"
 owner = "(doc)"
 cited = "casper/src/rust/block_status.rs"
 line = 183
-at = "HEAD"
+at = "cc616c3c"
 path = "casper/src/rust/block_status.rs"
 token = "is_slashable"
 
@@ -2128,7 +2250,7 @@ token = "fn diagnose_row"
 owner = "CBR-L02"
 cited = "guard_par_substrate.rs"
 line = 754
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
@@ -2143,42 +2265,42 @@ token = "HashMap"
 owner = "CBR-L08"
 cited = "wpda_walker.rs"
 line = 15667
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "runtime/src/safe_arith.rs"
 line = 633
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "runtime/src/lib.rs"
 line = 125
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "runtime/src/safe_arith.rs"
 line = 532
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "runtime/src/canonical_float.rs"
 line = 35
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "canonical_float.rs"
 line = 94
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
@@ -2201,21 +2323,21 @@ token = "fixed64 g_double = 34;"
 owner = "CBR-L09"
 cited = "rust_code_rewrite.rs"
 line = 206
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "rholang.rs"
 line = 84
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L09"
 cited = "calculator.rs"
 line = 18
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
@@ -2230,35 +2352,35 @@ token = "ExprInstance::GDouble(_), ExprInstance::GDouble(_)"
 owner = "CBR-L09"
 cited = "macros/src/gen/syntax/display.rs"
 line = 3196
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L12"
 cited = "rholang-runtime/src/rholang_ast.rs"
 line = 1897
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L12"
 cited = "macros/src/gen/syntax/display.rs"
 line = 4608
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L12"
 cited = "languages/src/rholang/zipper.rs"
 line = 364
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
 owner = "CBR-L12"
 cited = "rholang-runtime/src/rholang_ast/recursive_oracle.rs"
 line = 1396
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
@@ -2281,7 +2403,7 @@ token = "sha256Hash"
 owner = "CBR-L13"
 cited = "languages/src/rholang.rs"
 line = 2464
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "FOREIGN_REPOSITORY"
 
 [[citation]]
@@ -2304,7 +2426,7 @@ token = "hex::encode"
 owner = "(doc)"
 cited = "accounting/costs.rs"
 line = 91
-at = "HEAD"
+at = "cc616c3c"
 path = "rholang/src/rust/interpreter/accounting/costs.rs"
 token = "sum_cost"
 
@@ -2312,14 +2434,14 @@ token = "sum_cost"
 owner = "(doc)"
 cited = "pretty_printer.rs"
 line = 2860
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "AMBIGUOUS_PATH"
 
 [[citation]]
 owner = "(doc)"
 cited = "par_to_sexpr.rs"
 line = 107
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/par_to_sexpr.rs"
 token = "hex::encode"
 
@@ -2327,14 +2449,14 @@ token = "hex::encode"
 owner = "(doc)"
 cited = "genesis_builder.rs"
 line = 175
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "AMBIGUOUS_PATH"
 
 [[citation]]
 owner = "(doc)"
 cited = ".github/workflows/ci.yml"
 line = 177
-at = "HEAD"
+at = "cc616c3c"
 path = ".github/workflows/ci.yml"
 token = "matrix:"
 
@@ -2342,14 +2464,14 @@ token = "matrix:"
 owner = "(doc)"
 cited = "genesis_builder.rs"
 line = 215
-at = "HEAD"
+at = "cc616c3c"
 unchecked = "AMBIGUOUS_PATH"
 
 [[citation]]
 owner = "(doc)"
 cited = "rholang/src/rust/interpreter/pretty_printer.rs"
 line = 2860
-at = "HEAD"
+at = "cc616c3c"
 path = "rholang/src/rust/interpreter/pretty_printer.rs"
 token = "hex::encode"
 
@@ -2357,7 +2479,7 @@ token = "hex::encode"
 owner = "(doc)"
 cited = "models/src/rust/par_to_sexpr.rs"
 line = 107
-at = "HEAD"
+at = "cc616c3c"
 path = "models/src/rust/par_to_sexpr.rs"
 token = "hex::encode"
 

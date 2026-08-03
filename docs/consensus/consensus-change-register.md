@@ -86,9 +86,9 @@ git record rather than from a summary, the subset of that work which is **consen
 classifies each member against six independent axes: computed value, verdict, serialized bytes,
 post-state hash, accepted programs, and metering.
 
-**Result: 59 consensus-visible changes** — 45 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
-Of these, **56 are landed, 2 are in flight**, and 1 is an open, unrepaired hazard recorded so it is not
-lost. On the bincode lane **29** entries move bytes; on the protobuf lane **29**; **31** move a
+**Result: 60 consensus-visible changes** — 46 on the F1r3node node itself, 14 on MeTTaIL's Rholang.
+Of these, **58 are landed, 1 is in flight**, and 1 is an open, unrepaired hazard recorded so it is not
+lost. On the bincode lane **30** entries move bytes; on the protobuf lane **30**; **31** move a
 *verdict*; **41** move the *post-state hash*; **17** move *acceptance*; **5** move *metering*.
 ⚠ **Seven of these ten moved again on 2026-07-31 when [CBR-040](#cbr-040) gained the §4.1 glyph row it
 had never had** — the entry had a `[[entry]]` in the machine index and a prose body but no row in the
@@ -131,7 +131,7 @@ plus 21 exemptions equals the 78 commits in range.
 
 **The headline risk is not any single entry; it is their conjunction.** `Validate::version`
 (`casper/src/rust/validate.rs:273`) compares block versions for **exact equality** against a
-genesis-anchored constant. There is no activation-height machinery and no per-feature gate, so these 44
+genesis-anchored constant. There is no activation-height machinery and no per-feature gate, so these 45
 changes cannot be rolled out independently: they ship together, as one coordinated protocol-version
 bump, or not at all. No entry in this report bumps a version; that act belongs to F1r3node. ★ The register
 now carries a **concrete instance** of the conjunction risk rather than only the argument for it:
@@ -142,8 +142,8 @@ is a defect in isolation.
 shipped on a proven mechanism with a production refusal counter reading exactly zero and **no failing
 test**; `CBR-007` has a real Rholang program taking the wrong `match` branch. Those are different
 propositions and a reviewer must weigh them differently, so the grade is a column of the summary table,
-not a remark in the prose. **34 entries are WITNESSED, 3 are MECHANISM-ONLY**, 4 are LATENT, 2 are
-DORMANT, and 1 rests on a measured neutrality claim.
+not a remark in the prose. **45 entries are WITNESSED, 3 are MECHANISM-ONLY**, 6 are LATENT, 2 are
+DORMANT, and 4 rest on measured neutrality claims.
 
 **What cannot be settled from inside the repository** is, for eleven entries, whether live chain state
 was produced under the old behaviour. Each such entry states the query over the block store that would
@@ -626,11 +626,12 @@ is a *future* fork, not a present one).
 | [CBR-037](#cbr-037) | N | The `EPathMap` tag-8 trie-key **reader** becomes total — the writer was unlimited by requirement | `063974c5` | ○ | ● | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
 | [CBR-038](#cbr-038) | N | The escape arm's prost encode was a remotely triggerable **abort** — and a second, unnamed recursion beside it | `d7818967`, `b75aa6a0` | ○ | ○ | ○ | ○ | ○ | ● | ○ | PERMISSIVE | **W** |
 | [CBR-039](#cbr-039) | N | ∅ gets one spelling at the constructor; the `union` half was **reverted**, witness landed | `e93f0222`, `0075ded5` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | CORRECTIVE | **L** |
-| [CBR-040](#cbr-040) | N | Sibling order was not a total function of the term; it is now — `ScoredTerm::sort_vec` tie-breaks on the bytes the element **emits** | `6192b4b9` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
+| [CBR-040](#cbr-040) | N | Sibling order was not a total function of the term; it is now — `ScoredTerm::sort_vec` tie-breaks on the bytes the element **emits** | `6192b4b9`, `fa234cdd` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-041](#cbr-041) | N | An `EPathMap` serializes on the prost wire as the TRIE — its own byte array `U(m)` at field 8 — for every map; the tag-1 list arm is deleted | `1b576c90` | ○ | ● | ○ | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
-| [CBR-044](#cbr-044) | N | **IN FLIGHT** — EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | *worktree 2026-08-01* | ● | ● | ● | ● | ● | ● | ● | CORRECTIVE | **W** |
+| [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ● | CORRECTIVE | **W** |
+| [CBR-045](#cbr-045) | N | Genesis deploy-log order becomes a canonical function of event protobuf bytes while replay remains a function of the event multiset | `ff244c69` | ● | ○ | ● | ● | ○ | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L01](#cbr-l01) | L | Equal operator precedence becomes representable; Rholang's ladder corrected | `3ff1c98b`, `f586e138` | ● | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L02](#cbr-l02) | L | The substrate lane stops answering "false" for a guard it could not decide | `0f3d298c` | · | ● | ○ | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L03](#cbr-l03) | L | A residual binder rests the COMM, whatever the formula collapsed to | `69c66cd1` | · | ● | ○ | ○ | ● | ○ | ○ | REGRESSIVE | **W** |
@@ -646,29 +647,29 @@ is a *future* fork, not a present one).
 | [CBR-L13](#cbr-l13) | L | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `ef49d8c2` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **L** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 
-**Totals — 59 entries**, recounted from the rows above rather than adjusted: **45 on Surface N, 14 on
-Surface L**; **56 landed, 2 in flight** (**CBR-044**, **CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
-grade: **44 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **37 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
+**Totals — 60 entries**, recounted from the rows above rather than adjusted: **46 on Surface N, 14 on
+Surface L**; **58 landed, 1 in flight** (**CBR-L08**), 1 open and unrepaired (**CBR-028**). By evidence
+grade: **45 WITNESSED**, 3 MECHANISM-ONLY, **6 LATENT**, 2 DORMANT, 4 NEUTRALITY-MEASURED. By direction: **38 CORRECTIVE**, 11 PERMISSIVE, 4 REGRESSIVE, 5 NEUTRAL, **1 CONVERGENT**, 1 not applicable (the open
 hazard). **★ Zero DIVERGENT** — see below. Axis cells reading `UNVERIFIED`: **1** — **CBR-L07** metering.
 ⚠ It was **2** until 2026-07-30; **CBR-031**'s verdict cell is now `MOVES`, closed by
 [CBR-032](#cbr-032)'s mechanism rather than by new evidence of its own — see
 [CBR-031](#cbr-031) (b), which quotes the superseded cell verbatim.
 
 ★★ **Every figure in the paragraph above is now COMPUTED, not written.**
-`casper/tests/consensus_change_register_gate.rs` projects each one from the 59 rows of this table and
+`casper/tests/consensus_change_register_gate.rs` projects each one from the 60 rows of this table and
 fails naming the site, the quantity, the stated value and the projection. ⚠ Two consequences for whoever
 edits this paragraph next: a projected figure must be written as a **digit** — an English numeral is
 structurally uncheckable, which is why the Abstract's *"Twenty-three move bytes"* was converted — and the
 literal text preceding each figure is an **anchor the gate matches**, asserted to occur exactly once, so
 rewording around a number is a build failure rather than a silent unpinning.
 
-★ **The derivation, so the count is checkable rather than asserted.** Read the 57 body rows of the table
+★ **The derivation, so the count is checkable rather than asserted.** Read the 60 body rows of the table
 above, project the `S` column for the surface split, the `Direction` and `Grade` columns for those two
 splits, the `M` column for the `?` cells, and each entry's `Status` field for the landed/in-flight/open
 split. Every figure in the paragraph above and in [§5.1](#51-aggregate-axis-exposure),
 [§5.3](#53-direction-profile) and [§8](#8-conclusions) is that projection and nothing else; none of them
 was obtained by incrementing a previous total. The three splits and the seven axis columns each sum to
-**57**, which is the arithmetic check that no row was double-counted or dropped.
+**60**, which is the arithmetic check that no row was double-counted or dropped.
 
 ⚠★★ **Both figures in the paragraph above were themselves stale, and a THIRD kind of staleness is why.**
 They read *"the 55 body rows"* and *"each sum to **54**"* against a table that held **56** rows — two
@@ -5321,7 +5322,7 @@ is why the count is stated with its discovery method attached.
 
 | | |
 |---|---|
-| Commit(s) | `6bdd6ad7` (the witness, pinned), `6192b4b9` (the repair) |
+| Commit(s) | `6bdd6ad7` (the witness, pinned), `6192b4b9` (the repair), `fa234cdd` (register integration and the `ReceiveBind` emitted-byte key required by the repair's generic bound) |
 | Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
@@ -5759,8 +5760,8 @@ generated protobuf PDA removes the recursive read ceiling.**
 
 | | |
 |---|---|
-| Commit(s) | **IN FLIGHT** — staged worktree, 2026-08-01 |
-| Status | IN FLIGHT |
+| Commit(s) | `26876b65` |
+| Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
 | Files | `models/src/rust/rhoapi_ext.rs`, `models/src/rust/epathmap_trie_codec.rs`, `models/src/rust/rholang/protobuf_encoder.rs`, `protobuf_decoder.rs`, `bincode_encoder.rs`, `bincode_decoder.rs`, and generated traversal code in `models/codegen/schema_codegen.rs` |
@@ -5858,13 +5859,79 @@ is identical to the retained absolute-key scan, including result order.
 - At 1,024 entries the explicit list projection is 78.619× the EPM1 set size and 7.557× the EPM1 map
   size; projected lookup is 8,564.864× and 6,371.992× slower than native indexed lookup on the measured
   set/map fixtures.
+- Pinned implementation coordinates at `26876b65`: the carrier is
+  `models/src/rust/epathmap_trie_codec.rs:36`, direct EPM1 encoding starts at
+  `models/src/rust/epathmap_trie_codec.rs:240`, iterative ACTree03 reconstruction at
+  `models/src/rust/epathmap_trie_codec.rs:547`, the exact-key PathMap query seam is
+  `models/src/rust/rhoapi_ext.rs:699`, and the kernel-checked generic PDA equivalence theorem is
+  `compile_run_equivalence` at line 84 of `formal/rocq/stack_safe_pda/theories/StackSafePDA.v`.
 
 #### Authority and residuals
 
 The owner required direct trie serialization, specialized set/map modes, ordinary Rust stacks, no
-traversal-depth workarounds, and full equivalence evidence. This entry remains **IN FLIGHT** until the
-worktree is committed and the coordinated activation/version decision is made. Legacy protobuf fields
-are read-only migration inputs; removing them is a later compatibility decision.
+traversal-depth workarounds, and full equivalence evidence. The implementation is **LANDED**. Network
+activation/version selection remains a deployment decision, not an implementation-status qualifier.
+Legacy protobuf fields are read-only migration inputs; removing them is a later compatibility decision.
+
+
+### CBR-045
+
+**Genesis deploy-log order becomes a canonical function of event protobuf bytes while replay remains a
+function of the event multiset.**
+
+| | |
+|---|---|
+| Commit(s) | `ff244c69` |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `casper/src/rust/genesis/genesis.rs`, `casper/src/rust/util/event_log_canonical.rs`, `casper/tests/deploy_log_canonicalization_and_replay.rs` |
+
+#### (a) The issue
+
+`ProcessedDeploy::deploy_log` reaches the genesis block body in reducer arrival order. That arrival
+order is not stable, so two derivations from the same genesis inputs could build different block bytes
+and therefore different block hashes. Replay does not preserve that sequence: `ReplayRSpace::rig`
+reduces it to an event set plus per-event COMM counters. The consensus obligation is consequently to
+canonicalize the play-side bytes without changing the event multiset replay observes.
+
+#### (b) How it changes consensus
+
+| Axis | Answer | Why |
+|---|---|---|
+| Value | **MOVES** | The `ProcessedDeploy.deploy_log` sequence becomes canonical rather than arrival-ordered. |
+| Verdict | **NO** | Replay consumes the same event multiset and reaches the same COMM/replay decision. |
+| Bytes (B) | **MOVES** | Any bincode representation containing the reordered body observes the new sequence. |
+| Bytes (P) | **MOVES** | The genesis body and block hash are derived from the canonical protobuf event sequence. |
+| Post-state | **NO** | The RSpace `post_state_hash` is unchanged; the enclosing genesis **block hash** is the digest repaired here. |
+| Acceptance | **NO** | The approver compares deploy terms, replayed post-state, and bonds; it neither recomputes the candidate block hash nor rejects an event-order permutation. |
+| Metering | **NO** | Canonicalization is a genesis assembly step and changes no Rholang charge. |
+
+#### (c) Why the change is correct
+
+The sort key is the deterministic protobuf encoding of one event. Lexicographic byte order is total;
+events that tie have byte-identical encodings, so their residual stable order cannot change the
+concatenated bytes. `sort_by_cached_key` performs one encoding per event rather than encoding both sides
+of every comparison. The production call is pinned at `casper/src/rust/genesis/genesis.rs:249`; its one
+key definition is `casper/src/rust/util/event_log_canonical.rs:140`, and canonicalization is
+`casper/src/rust/util/event_log_canonical.rs:152`.
+
+Replay equivalence is measured through the real converter and `ReplayRSpace`, including two distinct
+COMMs bound to one event key so the multiset counter's nontrivial case is exercised. The exhaustive
+fixture is pinned at `casper/tests/deploy_log_canonicalization_and_replay.rs:556` and checks all 5,040
+permutations. Canonicalization itself is also checked over 5,040 plus 120 orderings, including
+byte-equal ties.
+
+#### Evidence and residual
+
+With canonicalization disabled, exactly the three load-bearing tests fail: permutation invariance,
+byte-equal tie invariance, and the end-to-end load-bearing witness. Restored, the suite is 11/11. The
+named canonicalizer is byte-equivalent to the inline sort it replaced while reducing key encodes from
+$`\Theta(n \log n)`$ to $`\Theta(n)`$.
+
+The remaining scientific question is upstream of this repair: where reducer arrival order first becomes
+nondeterministic. The canonicalizer makes genesis bytes reproducible and is not evidence that the source
+of that nondeterminism has been localized.
 
 
 ### CBR-039
@@ -7599,18 +7666,20 @@ unforgeable crypto **channels** rather than method-table entries. **MEASURED** (
 
 Counting **register entries**, not commits. `●` cells from the summary table in §4.1.
 
-| Axis | Entries that move it | Share of the 59 |
+| Axis | Entries that move it | Share of the 60 |
 |---|---|---|
-| 1 · computed value | **23** | 39 % |
-| 2 · verdict | **31** | 53 % |
-| 3 · bytes — Lane B (bincode) | **29** | 49 % |
-| 3 · bytes — Lane P (prost) | **29** | 49 % |
-| 4 · post-state hash | **41** | 69 % |
-| 5 · accepted programs | **17** | 29 % |
+| 1 · computed value | **24** | 40 % |
+| 2 · verdict | **31** | 52 % |
+| 3 · bytes — Lane B (bincode) | **30** | 50 % |
+| 3 · bytes — Lane P (protobuf) | **30** | 50 % |
+| 4 · post-state hash | **41** | 68 % |
+| 5 · accepted programs | **17** | 28 % |
 | 6 · metering | **5** | 8 % |
 
-⚠ **Recounted 2026-08-01 from the 59 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
-— [CBR-044](#cbr-044) adds one Surface-N row and moves all seven axes. The historical recount below is
+⚠ **Recounted 2026-08-01 from the 60 rows of [§4.1](#41-summary--the-register-at-a-glance), not adjusted**
+— [CBR-045](#cbr-045) adds one Surface-N row and moves value plus both byte lanes while preserving
+verdict, RSpace post-state, acceptance, and metering. [CBR-044](#cbr-044) added the preceding Surface-N
+row and moved all seven axes. The historical recount below is
 kept because it explains why every aggregate is projected rather than remembered.
 — [CBR-043](#cbr-043) moved Lane B `27` $`\rightarrow`$ `28` and the post-state hash `39` $`\rightarrow`$
 `40` (it is `○ ○ ● ○ ● ○ ○`, the same two-axis shape as the entry it corrects), and **every share moved**,
@@ -7621,7 +7690,7 @@ including the five whose *count* did not — a share is a ratio and the denomina
 entries landed: they were computed at 40 entries and never re-projected when **CBR-029** was added, so
 Lane B was under by one and the post-state hash by one. ★ The table is a projection of the `V`, `T`, `B`,
 `P`, `H`, `A`, `M` columns and of nothing else; the `●` counts per column, plus the `○` and `·` counts,
-sum to 59 in every column, which is the check that no row was skipped.
+sum to 60 in every column, which is the check that no row was skipped.
 
 ⚠★ **[CBR-040](#cbr-040)'s late glyph row moved four of the seven counts at once**, because the entry is
 `○ ● ● ● ● ○ ○`: verdict `29` $`\rightarrow`$ `30`, Lane B `26` $`\rightarrow`$ `27`, Lane P `27`
@@ -7643,7 +7712,7 @@ It moves **every** bincode golden and **no** prost byte at all — the exact mir
 which [§8](#8-conclusions) conclusion 2 already cites for moving four bytes on Lane B and zero on Lane P.
 Two entries, opposite lanes, same independence.
 
-**Reading.** The post-state hash is the most-touched axis at **69 %**, which is expected: it is downstream
+**Reading.** The post-state hash is the most-touched axis at **68 %**, which is expected: it is downstream
 of both value and verdict, so a register of *serialisation and genesis* changes should look like this.
 ⚠ **This figure read `71 %` until 2026-07-31 while the table beside it read `67 %`** — a third drift of the
 same kind, in the sentence that *interprets* the table rather than in the table.
@@ -7695,23 +7764,24 @@ here, right or wrong, computes the same answer twice; that one did not. If the r
 
 ### 5.3 Direction profile
 
-⚠ **Recounted 2026-08-01 from the 59 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
+⚠ **Recounted 2026-08-01 from the 60 rows of [§4.1](#41-summary--the-register-at-a-glance).** An earlier
 revision read `CORRECTIVE 23` / `Total 40`, computed before **CBR-029** was added and never re-projected;
 the 2026-07-30 recount reached `33` / `55`, [CBR-042](#cbr-042) made it `34` / `56`,
 [CBR-040](#cbr-040)'s late glyph row made it `35` / `57` — a CORRECTIVE entry that had been landed and
 bodied since before either of them, and was invisible to this table the whole time — and
-[CBR-043](#cbr-043) made it `36` / `58`; [CBR-044](#cbr-044) makes it `37` / `59`.
+[CBR-043](#cbr-043) made it `36` / `58`; [CBR-044](#cbr-044) made it `37` / `59`; and
+[CBR-045](#cbr-045) makes it `38` / `60`.
 
 | Direction | Count | Comment |
 |---|---|---|
-| CORRECTIVE | **37** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-044](#cbr-044), completes the homogeneous set/map representation and direct EPM1 transition. |
+| CORRECTIVE | **38** | The bulk. A wrong answer becomes right; the program ran before and runs now. The newest, [CBR-045](#cbr-045), makes genesis deploy-log bytes a deterministic function of the event multiset. |
 | PERMISSIVE | **11** | Mostly liveness (**CBR-020**, **CBR-022**, **CBR-023**) and additive surface (**CBR-024**, **CBR-025**). |
 | **REGRESSIVE** | **4** | ★ **CBR-002**, **CBR-027**, **CBR-L03**, **CBR-L08**. These are what a reviewer weighs hardest. |
 | NEUTRAL | **5** | **CBR-019**, **CBR-019b**, **CBR-033**, **CBR-035**, **CBR-036** — in the register because their neutrality is a measured claim. |
 | **CONVERGENT** | **1** | ★ **CBR-L09** — a divergence *withdrawn*. The direction was added to [§2.6](#26-direction-of-change) for it. |
 | DIVERGENT | **0** | ★ Was 1 (**CBR-L09**, then *"ruled and kept"*). The reversal on 2026-07-29 emptied this row. ⚠ Zero DIVERGENT entries does **not** mean zero remaining differences — **CBR-L09** carries two carrier residuals (a third was resolved the same evening). |
 | — | **1** | **CBR-028**, an open hazard with no change. |
-| **Total** | **59** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
+| **Total** | **60** | Sums to the entry count of [§4.1](#41-summary--the-register-at-a-glance), which is the check. |
 
 **The four REGRESSIVE entries, stated plainly** — a previously-succeeding thing now fails:
 
@@ -8438,11 +8508,11 @@ designed for**.
 | artefact | path | status |
 |---|---|---|
 | the prose register | `docs/consensus/consensus-change-register.md` | this document |
-| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **59** entries, **60** exemptions, **103** citations, 10 open questions |
+| the machine index | `docs/consensus/register.toml` | ★ **BUILT** — **60** entries, **66** exemptions, **111** citations, 10 open questions |
 | the anchor | header fields of `register.toml` | ★ **BUILT** as `register_base` / `partition_head`, not as a separate `REGISTER_BASE` file |
 | the gate | `casper/tests/consensus_change_register_gate.rs` | ★ **BUILT** — **31** cells: 1 accept, **28** refusals, 2 derivation guards |
 
-⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and had drifted by **13 / 22 / 36 / 0** by the time this entry landed, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
+⚠ **The four counts in the index row are DERIVED, and they are NOT gate-projected** — they are `[[entry]]`, `[[exempt]]`, `[[citation]]` and `[[open_question]]` counted in `register.toml`. They were last correct at **45 / 38 / 67 / 10** and have since drifted by **15 / 28 / 44 / 0**, which is exactly the failure mode [§7.7.5](#775-the-five-drift-classes-and-the-clause-that-decides-each) class 3 names and exactly the reason the *entry* count is projected while these are not. Making them projections is [§7.5](#75-first-extensions) work and is recorded as owed, not done.
 
 #### 7.7.1 Where the gate lives, and what that choice costs
 
@@ -8596,8 +8666,8 @@ enumeration* — here, `register.toml`'s entry set.
 | class | witness | clause, as built | decidable? |
 |---|---|---|---|
 | **1 · in-flight staleness** | [CBR-027](#cbr-027) read *"IN FLIGHT"* while `6ff46f8a` had landed; **CBR-007** drifted the same way | no entry whose status is not `LANDED` may name a SHA that is an ancestor of `HEAD` | ✅ `git merge-base --is-ancestor`, one call per SHA |
-| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **78 of 103** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`78 + 25 = 103`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 76\,\%`$ |
-| **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the **59** rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally. ⚠ A projection is only as complete as the table it reads, which is why [clause 7b](#774-three-specified-clauses-that-were-wrong-found-by-building-them) now asserts that §4.1 holds **every** entry — [CBR-040](#cbr-040)'s missing glyph row made all of these figures short *and self-consistent* | ✅ no `git`, no build |
+| **2 · transcribed `file:line`** | [CBR-027](#cbr-027)'s `Files` cell cited `wrapping_add` / `wrapping_sub` after the fix deleted both | every `[[citation]]` row's `token` must occur within **±3 lines** of `line` in `git show <at>:<path>` | ✅ decidable, **86 of 111** coordinates checkable; the other **25** carry a typed `unchecked` reason (18 `FOREIGN_REPOSITORY`, 7 `AMBIGUOUS_PATH`). ⚠ The figure was last correct at **42 of 67**. $`86 + 25 = 111`$ is the identity that makes it checkable by hand; the 25 unchecked rows have not moved at all, so **every** citation added since is a checkable one and the ratio has risen $`63\,\% \rightarrow 77\,\%`$ |
+| **3 · partial-update drift** | §5.1 read *"Share of the 40"* with Lane B 19 while the paragraph beside it said 44 | every stated aggregate is **projected** from the **60** rows; 13 anchored figures plus §5.1's and §5.3's tables read structurally. ⚠ A projection is only as complete as the table it reads, which is why [clause 7b](#774-three-specified-clauses-that-were-wrong-found-by-building-them) now asserts that §4.1 holds **every** entry — [CBR-040](#cbr-040)'s missing glyph row made all of these figures short *and self-consistent* | ✅ no `git`, no build |
 | **4 · a stale prose claim about the world** | [CBR-L09](#cbr-l09) residual 3, falsified **46 minutes** after the commit it was written against | §6.3's rows carry **typed falsifiers**; 3 of 10 decidable, 7 typed `UNDECIDABLE_HERE__*` and asserted **exactly** | ⚠ **PARTLY** — see [§7.7.6](#776-drift-class-4--the-answer-and-why-not-the-other-two) |
 | **5 · a justification wrong when written** | [CBR-006](#cbr-006) §(c), refuted by its own commit message | **none** | ❌ **NOT DECIDABLE.** [§7.6](#76--five-findings-about-what-can-be-pinned-at-all) finding 5; remedies (a) and (b) make it *falsifiable*, not *checkable* |
 
@@ -9227,8 +9297,8 @@ indistinguishable from an unexamined one.
 
 ## 8. Conclusions
 
-1. The register holds **59** consensus-visible changes, derived from the campaign record: **45** on the
-   F1r3node node, **14** on MeTTaIL's Rholang. **56 are landed, 2 are in flight**, one is an open unrepaired
+1. The register holds **60** consensus-visible changes, derived from the campaign record: **46** on the
+   F1r3node node, **14** on MeTTaIL's Rholang. **58 are landed, 1 is in flight**, one is an open unrepaired
    hazard.
    **Twenty-eight of the first 40 were not on the coordinator's candidate list**, including the two the
    analysis ranks highest-risk — which is the report's own strongest argument for deriving a register
@@ -9560,6 +9630,16 @@ it.
 | 60 | `b73af1d2` | **C8** — `==` and `Hash` read the **keys**, the relation the wire commits to | `BYTE_NEUTRAL_MEASURED` | `EntryTrie`'s `==` compared projected entries under `Par`'s **AlwaysEqual** relation, which ignores `locally_free`, while entries are **keyed** by `encode_trie_path` whose escape arm includes it. So `==` was strictly **coarser than `U(m)`**: two maps could compare equal while emitting different proto field 8. ⚠ The old doc named this hazard and dismissed it — *"in a well-formed term `locally_free` is a function of the structure, so the two cannot differ"* — a claim about who the callers are, not about what the type permits. ★ **The witness constructs it in four lines**, is pinned by `map_equality_agrees_with_the_emitted_key_stream`, and reverting to the projection comparison **fails it naming the witness**. ★★ Byte-neutral **because of an earlier repair, not an argument**: `Hash` reaches bytes only through `HashSet`/`HashMap` iteration order, and both paths funnel into `ScoredTerm::sort_vec`, which `SS-Y4` made a **total** order — a total sort ignores its input order. Before `SS-Y4` this would have required a seven-axis entry. **DERIVED**. |
 
 | 61 | `f5ab21d0` | stack-safety **Phase 6** — the codec files name the **format and direction** they speak | `HYGIENE` | A **pure rename** across 62 files: `bincode_encode.rs` → `bincode_encoder.rs`, `par_codec.rs` → `bincode_decoder.rs`, `protobuf_encode.rs` → `protobuf_encoder.rs`, ten test/bench targets, and the shared `par_codec_corpus/` → `par_corpus/`. ★ **No byte can move, and it is proven rather than argued.** All **sixteen** goldens — five `*.protobuf.bin`, five `*.bincode.bin`, five `*.json` and `sorter_canonical_forms.txt` — were hashed before and after and compared by **SHA-256**, never by length, since a length check accepts a same-size permutation; every digest is unchanged and `git status` reports all sixteen unmodified. ★★ **Stronger than the hashes**: each staged blob is recomputed as `SUBST(git show HEAD:<old path>)`, so **52 of the 62** files are *exactly* a token substitution of their own HEAD content, 4 are SVGs re-rendered from re-substituted PlantUML sources, and 6 carry one **enumerated** formatting repair each (four `use` re-orderings the longer names force, one tuple wrap, one `assert!` wrap) — no token reaching a value changed anywhere. Byte set unmoved: `models` **473 passed / 0 failed / 2 ignored across 37 targets**, equal to baseline **and equal per target**, measured on a tree materialised from the commit's own index (`git checkout-index`) rather than the working tree, which carries concurrent Phase-4 files. ⚠ **`protobuf_`, not `prost_`**: the public/module names identify the data format, while references to the external `prost` crate remain implementation details. **DERIVED**. |
+
+| 62 | `14b75dfe` | the protobuf encoder's bounded-space gate | `TESTS_ONLY` | Adds only the test then named `prost_encode_space.rs` (now `protobuf_encoder_space.rs`) and its explicit Cargo target declaration. It measures the operation width, frame width, and linear length-table growth; **zero production source and zero generated artifacts** change. **DERIVED**. |
+
+| 63 | `c54679f0` | memoize the iterative `contains_par` predicate within an explicit scope | `BYTE_NEUTRAL_MEASURED` | The predicate's worklist is unchanged; only repeated evaluation is avoided. Crucially, the retained recursive predicate oracle rejected the first address-keyed memo as unsound while the byte gates remained green, proving the oracle was live and byte neutrality was not being inferred from a predicate bug. Restored evidence: `contains_par_equivalence` 4/4, spliced event bytes 11/11, cold-encoder event-hash identity 6/6, serialized-Par goldens 7/7. The memo and predicate are later deleted by `26876b65` after `contains_par` becomes constant false. **CITED**. |
+
+| 64 | `5072e1a8` | extract the codec stack-pooling discipline once | `BYTE_NEUTRAL_MEASURED` | The bincode encoder is mechanically rewired from its private pool to the shared empty-vector pool macro; the protobuf encoder does not yet consume the helper in this commit. Nested encodes retain private vectors and parked buffers are empty, preserving the prior lifetime argument and output. The commit changes allocation ownership, not an encoding operation or field table. **CITED**. |
+
+| 65 | `69e67043` | make the event-hash direct legs stack-flat | `BYTE_NEUTRAL_MEASURED` | Direct legs route through the existing cold encoder and the final recursive containment predicate becomes an explicit worklist. The changed property is traversal space; emitted bytes are held independently by event-hash identity 6/6, spliced-event bytes 11/11, and serialized-Par goldens 7/7, while the depth probe exercises the new stack-flat path. **CITED**. |
+
+| 66 | `3fb4e21b` | thread-scope genesis-cache counters used by tests | `TESTS_ONLY` | The source hunk is in `casper/src/rust/test_utils`, behind the test-support feature, and the remaining files are tests. It prevents process-wide counters from observing neighboring tests; no node artifact, genesis value, or consensus byte changes. **DERIVED**. |
 
 ⚠ **`0b270eca` is not in this table** — it is an entry, [CBR-031](#cbr-031). Neither are `7c0cfd0a`
 ([CBR-034](#cbr-034)) nor `87ee699c` ([CBR-035](#cbr-035)).
