@@ -185,8 +185,12 @@ fn nested_binders(depth: usize) -> Par {
 /// `ParSortMatcher`. A unary chain therefore performs one sort per level, not
 /// an exponential cascade of nested sorts, and this shape is a converted-depth
 /// subject rather than a residual tripwire.
-fn nested_sets(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
+fn nested_sets(depth: usize) -> Par { nested_sets_leaf(depth, 0) }
+
+/// [`nested_sets`] with a selectable deepest value, for full-descent trait
+/// probes whose verdict must depend on the leaf.
+fn nested_sets_leaf(depth: usize, leaf: i64) -> Par {
+    let mut p = new_gint_par(leaf, vec![], false);
     for _ in 0..depth {
         p = models::par_from_default! {
             exprs: vec![Expr {
@@ -589,9 +593,13 @@ fn subject(name: &str) -> fn(usize) {
         // `theta_depth_tripwire`'s register loop by construction.
         "eq" => eq_body,
         "hash" => hash_body,
+        "hash_nested_set" => hash_nested_set_body,
+        "hash_pathmap_set" => hash_pathmap_set_body,
+        "hash_pathmap_map" => hash_pathmap_map_body,
         "ord" => ord_body,
         "debug" => debug_body,
         "protobuf_de" => protobuf_de_body,
+        "message_clear" => message_clear_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_ser_derived" => bincode_ser_derived_body,
         "bincode_de" => bincode_de_body,
@@ -828,6 +836,19 @@ const CONVERTED_DEPTH: &[&str] = &[
     "protobuf_de",
     "eq",
     "hash",
+    // The generated Hash PDA's three collection-specific ladders. The first is
+    // the historical control promised when the legacy ESet sorter still had a
+    // HashSet<Par> residue. The latter two cover the homogeneous EPathMap
+    // specializations directly: PathMap<()> membership bytes and PathMap<Par>
+    // values. They are independent because neither representation may be
+    // flattened through the other's API.
+    "hash_nested_set",
+    "hash_pathmap_set",
+    "hash_pathmap_map",
+    // `prost::Message::clear` has its own generated PDA. The protobuf envelope
+    // test proves its semantics; this subject independently proves the cost is
+    // native-stack flat rather than inheriting that conclusion from Drop.
+    "message_clear",
     // PathMap<Par>-specific clone and teardown ladders. Their fixtures use map
     // values rather than recursively re-encoding set keys, so construction and
     // validation are linear in depth and need no capped ladder or large stack.
@@ -2468,8 +2489,11 @@ fn send_chain_depth(p: &Par) -> usize {
 /// The recursive edge is a borrowed `PathMap<Par>` value. Constant-size keys
 /// keep construction linear and exercise the map specialization directly;
 /// using each inner term as a set key would repeatedly encode every suffix.
-fn nested_pathmap_chain(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
+fn nested_pathmap_chain(depth: usize) -> Par { nested_pathmap_chain_leaf(depth, 0) }
+
+/// [`nested_pathmap_chain`] with a selectable deepest map value.
+fn nested_pathmap_chain_leaf(depth: usize, leaf: i64) -> Par {
+    let mut p = new_gint_par(leaf, vec![], false);
     for level in 0..depth {
         let key = new_gint_par(level as i64, vec![], false);
         p = models::par_from_default! {
@@ -2610,6 +2634,134 @@ fn hash_body(depth: usize) {
     );
     dismantle(zero);
     dismantle(one);
+}
+
+/// `<Par as Hash>::hash` through the legacy `ESet.ps: Vec<Par>` edge.
+///
+/// This is the `hash_nested_set` control named by `d0279621`. Its original
+/// purpose was to attribute a residual in `sort_nested_set`; that residual no
+/// longer exists because Hash, Eq, and the sorter are all generated/converted.
+/// The ladder remains valuable as a non-list collection edge that would catch
+/// a generator which accidentally delegated `Vec<Par>::hash` recursively.
+fn hash_nested_set_body(depth: usize) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let zero = nested_sets_leaf(depth, 0);
+    let one = nested_sets_leaf(depth, 1);
+    assert_carries(
+        "the hash_nested_set input's nesting",
+        eset_depth(&zero),
+        depth,
+    );
+    assert_carries(
+        "the hash_nested_set TWIN's nesting",
+        eset_depth(&one),
+        depth,
+    );
+
+    let digest = |p: &Par| {
+        let mut h = DefaultHasher::new();
+        p.hash(&mut h);
+        h.finish()
+    };
+    assert_ne!(
+        digest(&zero),
+        digest(&one),
+        "VACUOUS PROBE: two nested ESet terms differing only at the leaf hashed identically"
+    );
+    dismantle(zero);
+    dismantle(one);
+}
+
+/// Hash one set-mode EPathMap containing a deep key.
+///
+/// Set mode is a prefix-compressed `PathMap<()>`: hashing walks its canonical
+/// byte paths with PathMap zippers and never materializes a `Vec<Par>`.
+fn hash_pathmap_set_body(depth: usize) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let make = |leaf| {
+        let key = nested_list_leaf(depth, leaf);
+        assert_carries("the PathMap<()> set key's nesting", par_depth(&key), depth);
+        models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(
+                    models::rust::rhoapi_ext::EPathMap::new(vec![key], vec![], false, None),
+                )),
+            }],
+            ..Default::default()
+        }
+    };
+    let zero = make(0);
+    let one = make(1);
+    let digest = |p: &Par| {
+        let mut h = DefaultHasher::new();
+        p.hash(&mut h);
+        h.finish()
+    };
+    assert_ne!(
+        digest(&zero),
+        digest(&one),
+        "VACUOUS PROBE: PathMap<()> keys differing only at their deep leaf hashed identically"
+    );
+    dismantle(zero);
+    dismantle(one);
+}
+
+/// Hash nested map-mode EPathMaps whose deepest `PathMap<Par>` value differs.
+///
+/// Constant-size keys prevent fixture construction from repeatedly encoding
+/// the suffix. The generated Hash PDA borrows values directly from PathMap's
+/// zipper and schedules them on its own worklist.
+fn hash_pathmap_map_body(depth: usize) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let zero = nested_pathmap_chain_leaf(depth, 0);
+    let one = nested_pathmap_chain_leaf(depth, 1);
+    assert_carries(
+        "the PathMap<Par> input's nesting",
+        pathmap_chain_depth(&zero),
+        depth,
+    );
+    assert_carries(
+        "the PathMap<Par> TWIN's nesting",
+        pathmap_chain_depth(&one),
+        depth,
+    );
+    let digest = |p: &Par| {
+        let mut h = DefaultHasher::new();
+        p.hash(&mut h);
+        h.finish()
+    };
+    assert_ne!(
+        digest(&zero),
+        digest(&one),
+        "VACUOUS PROBE: PathMap<Par> values differing only at their deep leaf hashed identically"
+    );
+    dismantle(zero);
+    dismantle(one);
+}
+
+/// The generated `prost::Message::clear` PDA, independently of `Drop`.
+fn message_clear_body(depth: usize) {
+    use prost::Message;
+
+    let mut term = nested_list(depth);
+    assert_carries(
+        "the Message::clear input's nesting",
+        par_depth(&term),
+        depth,
+    );
+    Message::clear(&mut term);
+    assert_eq!(
+        term,
+        Par::default(),
+        "Message::clear did not restore Par::default()"
+    );
+    assert!(term.encode_to_vec().is_empty());
 }
 
 /// `<Par as Ord>::cmp` — generated from the schema as an explicit-worklist
