@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
@@ -212,6 +212,46 @@ pub struct ExploratoryDeployBusyError;
 #[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
 pub struct ExploratoryDeployTimeoutError {
     pub timeout_ms: u128,
+}
+
+struct ExploratoryDeployWatchdog {
+    cancel: Option<mpsc::Sender<()>>,
+}
+
+impl ExploratoryDeployWatchdog {
+    fn spawn<F>(timeout: Duration, on_timeout: F) -> std::io::Result<Self>
+    where F: FnOnce() + Send + 'static {
+        let (cancel, deadline) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("exploratory-deploy-watchdog".to_string())
+            .spawn(move || {
+                if deadline.recv_timeout(timeout) == Err(mpsc::RecvTimeoutError::Timeout) {
+                    on_timeout();
+                }
+            })?;
+        Ok(Self {
+            cancel: Some(cancel),
+        })
+    }
+
+    fn observer(timeout: Duration) -> std::io::Result<Self> {
+        let timeout_ms = timeout.as_millis();
+        Self::spawn(timeout, move || {
+            tracing::error!(
+                timeout_ms,
+                "Exploratory query stalled the observer; exiting for Docker restart"
+            );
+            std::process::exit(70);
+        })
+    }
+}
+
+impl Drop for ExploratoryDeployWatchdog {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1693,9 +1733,24 @@ impl BlockAPI {
                     .acquire_exploratory_deploy_permit()
                     .await
                     .ok_or_else(|| eyre::Report::new(ExploratoryDeployBusyError))?;
+                let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
+                let _watchdog = if is_read_only {
+                    Some(ExploratoryDeployWatchdog::observer(
+                        timeout.saturating_add(Duration::from_secs(5)),
+                    )?)
+                } else {
+                    None
+                };
 
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let lfb = casper.last_finalized_block().await?;
+                    let dag = casper.block_dag().await?;
+                    let lfb_hash = dag.last_finalized_block();
+                    let lfb = casper.block_store().get(&lfb_hash)?.ok_or_else(|| {
+                        eyre::eyre!(
+                            "Last finalized block {} is missing from the block store",
+                            PrettyPrinter::build_string_no_limit(&lfb_hash)
+                        )
+                    })?;
                     (proto_util::post_state_hash(&lfb), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
@@ -1734,7 +1789,6 @@ impl BlockAPI {
                             "source" => "casper"
                         )
                         .increment(1.0);
-                        let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
                         let result = tokio::time::timeout(
                             timeout,
                             runtime_manager.play_exploratory_deploy(term, &state_hash),
@@ -1865,12 +1919,38 @@ impl BlockAPI {
 
 #[cfg(test)]
 mod tests {
-    use super::deploy_is_block_expired;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::{deploy_is_block_expired, ExploratoryDeployWatchdog};
 
     #[test]
     fn block_expiration_matches_proposer_window() {
         assert!(deploy_is_block_expired(0, 50, 50));
         assert!(!deploy_is_block_expired(1, 50, 50));
         assert!(!deploy_is_block_expired(0, 49, 50));
+    }
+
+    #[test]
+    fn exploratory_watchdog_runs_timeout_action() {
+        let (fired, receiver) = mpsc::channel();
+        let _watchdog = ExploratoryDeployWatchdog::spawn(Duration::from_millis(10), move || {
+            fired.send(()).unwrap();
+        })
+        .unwrap();
+
+        assert!(receiver.recv_timeout(Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn exploratory_watchdog_cancels_on_drop() {
+        let (fired, receiver) = mpsc::channel();
+        let watchdog = ExploratoryDeployWatchdog::spawn(Duration::from_millis(50), move || {
+            fired.send(()).unwrap();
+        })
+        .unwrap();
+        drop(watchdog);
+
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
     }
 }
