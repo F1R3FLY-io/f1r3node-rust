@@ -81,12 +81,12 @@ their recursive counterparts definitely are not. Each qualifying change is class
 independent axes: computed value, verdict, serialized bytes (per lane), post-state hash, accepted
 programs, and metering under the token cost model.
 
-**Result: 19 entries** — 14 on the F1r3node node, 5 on MeTTaIL's Rholang; **18 landed, 1 in
+**Result: 20 entries** — 14 on the F1r3node node, 6 on MeTTaIL's Rholang; **19 landed, 1 in
 flight**. The core is the EPathMap data-model lineage (CBR-011/012/013 — the trie ruling's stages —
 and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on which six of the seven
 axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
-the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14). **The metering axis was re-derived
+the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
 derivation. **45 further changes were examined and retired** with typed reasons — 34 bug fixes, 3
@@ -131,7 +131,7 @@ with typed reasons so the account stays checkable.
    the metering axis defined under the current token cost model.
 2. An explicit account of the **two wire formats** a `Par` crosses (§2.5), including the field-order
    asymmetry that produced a measured, round-trip-invisible defect class.
-3. A **derived** register (§3, §4): 19 entries, each with all six axes answered, a stated blast
+3. A **derived** register (§3, §4): 20 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
 4. The **negative results**: 45 retired entries with typed reasons (Appendix B.1) and 21 commit-level
@@ -583,13 +583,14 @@ is a *future* fork, not a present one).
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-L11](#cbr-l11) | L | The `UInt32` acceptor is narrowed to canonical spellings (the cluster's deliberate acceptance decision; its round-trip bug fixes are retired) | `4aa64cb6` | · | ○ | ○ | ○ | ○ | ● | · | REGRESSIVE | **W** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
+| [CBR-L15](#cbr-l15) | L | One generic method-call constructor replaces 47 grammar-owned method names; reducer dispatch becomes the only method semantics | `438e3a3d` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 
-**Totals — 19 entries**: **14 on Surface N, 5 on Surface L**; **18 landed, 1 in flight**
-(**CBR-L08**); zero open hazards. By evidence grade: **17 WITNESSED**, 1 MECHANISM-ONLY
-(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **11 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
+**Totals — 20 entries**: **14 on Surface N, 6 on Surface L**; **19 landed, 1 in flight**
+(**CBR-L08**); zero open hazards. By evidence grade: **18 WITNESSED**, 1 MECHANISM-ONLY
+(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **12 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
 resolved under the token model (§3.3). The 45 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 19 + 45 = 64 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 20 + 45 = 65 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -2585,22 +2586,149 @@ closure is **partial and the residue is named**: construction is possible and th
 unforgeable crypto **channels** rather than method-table entries. **MEASURED** (the question's premise) +
 **DERIVED** (the residue, from the sibling enumeration above).
 
+### CBR-L15
+
+**One generic `MethodCall(receiver, method_name, arguments)` constructor replaces 47
+method-name-specific grammar constructors, and F1r3node's reducer table becomes the sole method
+registry and evaluator.**
+
+| | |
+|---|---|
+| Commit(s) | `438e3a3d` (`mettail-rust`) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `mettail-rust/languages/src/rholang.rs:2463`, `mettail-rust/rholang-runtime/src/rholang_ast.rs:1977`, `mettail-rust/languages/tests/method_call_surface.rs:1`, `mettail-rust/rholang-runtime/tests/rho_rholang_conformance.rs:1934`, `rholang/src/rust/interpreter/reduce.rs:8343` |
+
+#### (a) The issue
+
+The grammar carried a second, manually maintained method API. Forty-seven constructors each named
+one method as a literal terminal and many also carried a host-side fold body. The consensus reducer
+had a separate 55-key `method_table`. This was not merely a count mismatch: deriving both sets at
+their landed revisions gives the following relation.
+
+| derived set | count | members outside the intersection |
+|---|---:|---|
+| old grammar method names | **47** | `values`, `concat`, `count`, `remove`, `restrict`, `subtract`, `meet`, `getSubtrieAt` |
+| reducer `method_table` names | **55** | `intersection`, `restriction`, `dropHead`, `run`, `atPath`, `pathExists`, `createPath`, `prunePath`, `reset`, `getOrElse`, `slice`, `take`, `toList`, `toSet`, `toMap`, `toString` |
+| intersection | **39** | — |
+
+Thus the oft-repeated “47 versus 55 means eight missing methods” inference was false. The symmetric
+difference has **24** names: eight grammar-only and sixteen reducer-only. In addition, every
+identifier-shaped method terminal was globally reserved, so an API name such as `length` could not
+be used as an ordinary identifier even where upstream Rholang permits it.
+
+The landed grammar has one constructor and one explicit non-congruence declaration:
+
+```text
+MethodCall . receiver:Proc, method_name:Ident, arguments:Vec(Proc)
+|- receiver "." method_name "(" arguments.*sep(",") ")" : Proc;
+
+MethodCallReceiverWithheld . | S ~/> T
+|- (MethodCall S M Args) ~> (MethodCall T M Args);
+```
+
+The identifier is an invertible token-text leaf and the ordered argument vector is one invertible
+`FieldSeqProc` leaf. It is not expanded into one e-class child per argument, so no positional list
+of withheld vector fields exists or is needed. The independently traversed receiver is the only
+field with an explicit withheld-congruence disposition. Lowering emits one `EMethod`, and the
+reducer decides whether the method exists and whether it accepts the evaluated receiver.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **MOVES** — the sixteen reducer-only names become reachable through the language surface; the former special `concat` lowering to `EPlusPlus` is removed, and all eight grammar-only names now receive the reducer's named unimplemented-method result instead of hidden host semantics. |
+| 2 · verdict | **MOVES** — a previously unparseable dotted identifier can now reach reducer dispatch, while an identifier absent from `method_table` fails closed there. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — newly accepted calls now produce an `EMethod`; `concat` changes from `EPlusPlus` to `EMethod("concat")`. The 39 shared names retain the same `EMethod` representation. |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same AST distinction is serialized on the protobuf lane; no protobuf schema field changes. |
+| 4 · post-state hash | **MOVES** — a newly reachable reducer method can contribute a result to tuplespace state, and a former `concat` program now fails instead of producing the old result. |
+| 5 · accepted programs | **MOVES** — arbitrary identifier-shaped dotted names parse; 47 method terminals cease reserving their spellings globally; sixteen existing reducer methods gain a surface. |
+| 6 · metering | **NO** — no reducer method or charge site changes. Surface L carries no independent consensus meter, and every successful call uses the existing F1r3node reducer implementation. |
+
+**The disagreement.** A pre-change MeTTaIL compiler rejects `xs.take(2)` at the grammar or cannot
+name the reducer method; the landed compiler emits `EMethod("take")` and the reducer can answer it.
+Conversely, the pre-change special case lowers `xs.concat(ys)` to `EPlusPlus`, while the landed
+compiler emits `EMethod("concat")` and the reducer reports that the method is unimplemented. Two
+versions can therefore disagree on admission, emitted `Par`, reduction verdict, and resulting
+state. On Surface L this is a **future safety-fork risk**, not a present-chain fork.
+
+**Blast radius.** Programs using a dotted call, plus programs using one of the former 47 terminal
+spellings as an ordinary identifier. Calls in the 39-name intersection retain their reducer-owned
+semantics; the behavior-changing subdomain is the two sides of the symmetric difference and the
+newly freed identifier positions.
+
+**Could live chain state have been produced under the old behaviour?** **NO.** Surface L is the
+second implementation and has not produced consensus blocks. If that deployment status changes,
+the settling query is a scan of compiled deploy `Par`s for `EMethod.method_name` in the 24-name
+symmetric difference, paired with source-level uses of the 47 formerly reserved identifiers.
+
+#### (c) Why the change was necessary or correct
+
+**What breaks if we do not change it.** The grammar and reducer remain two drifting method
+registries; method names consume identifier space globally; a method can work only in the host fold
+lane or only in the reducer lane; and dynamic receivers obtained from a COMM cannot be evaluated by
+a syntax-time host fold. All four violate the integration requirement that MeTTaIL emit the same
+Rholang machine terms and let the same reducer own their semantics.
+
+**Why this repair rather than the alternatives.** Keeping 47 rules and generating more of them from
+the reducer table was rejected because it would still copy a runtime registry into grammar
+terminals and globally reserve every method name. Retaining the old fold bodies behind the generic
+surface was rejected because it preserves two evaluators. Encoding arguments as a `Vec<Par>` of
+independent e-class children was unnecessary: the generated invertible sequence leaf already
+preserves arity and order without expanding the e-graph or requiring a hand-maintained positional
+withholding list. The chosen representation preserves receiver, method text, and ordered arguments
+losslessly, then delegates exactly once.
+
+**Authority.** Owner authorization: *“Implement the plan.”* — 2026-08-04. Governing standing
+requirements: MeTTaIL becomes Rholang 1.4, uses the Rholang machine, preserves ambiguity rather
+than disambiguating early, and derives inventories rather than copying lists.
+
+**★ Sibling enumeration, ON THE METHOD-REGISTRY AXIS.** **Count: 2 registries before, 1 after.**
+Before: 47 grammar terminals/folds and 55 reducer-table entries. After: one grammar constructor
+accepts identifier data and the 55-entry reducer table is the only semantic registry. On the
+generated-congruence axis, **Count: 70 method-specific positive congruences before, 0 after**; one
+receiver-specific withheld declaration replaces them.
+
+**★ If the entry claims something needed no change, name the GUARD.** Existing reducer behavior is
+guarded by `rho_rholang_conformance`: shared methods execute through `method_table`, COMM-bound
+receivers match literal receivers, unknown and former host-only names fail closed with the exact
+method name, and PathMap/zipper methods retain the native trie carrier. Wire shape is guarded by the
+same suite's `EMethod` artifact comparisons; grammar shape, arbitrary names, argument order, chains,
+and display/parse stability are guarded by `method_call_surface`.
+
+#### Evidence
+
+**DERIVED** — old grammar **47**, reducer table **55**, intersection **39**, grammar-only **8**,
+reducer-only **16**. The grammar moved from 47 terms carrying 73 structural fields to one term
+carrying three fields, and from 70 method-specific congruences to one receiver-withholding rule.
+The generated guard inventory moved from `(T1,T2,total) = (242,291,533)` to
+`(172,152,324)`; the arithmetic is independently pinned in `guard_tier_golden`.
+
+**MEASURED** — capped focused suites passed: `method_call_surface` 4/4,
+`reserved_set_oracle_conformance` 6/6, `pathmap_kv_category_and_unset` 26/26,
+`token_text_invertible_leaf` 13/13, `ident_param_capture` 7/7, and
+`proj_iso_token_boundary` 10/10. `rho_rholang_conformance` passed 65 with 5 deliberately ignored;
+the complete runtime library passed 137/137, including every generated-driver versus recursive
+oracle corpus and continuation-coverage gate. All runs used one build job, no swap, a 7 GiB memory
+high-water control, and a 9 GiB hard limit.
+
 ---
 
 ## 5. Risk analysis
 
 ### 5.1 Aggregate axis exposure
 
-Projected from the 19 rows of §4.1 (each column counts `●` cells):
+Projected from the 20 rows of §4.1 (each column counts `●` cells):
 
-| Axis | entries that move it | share of the 19 |
+| Axis | entries that move it | share of the 20 |
 |---|---:|---:|
-| computed value (V) | **7** | 37 % |
-| verdict (T) | **12** | 63 % |
-| bytes, Lane B (B) | **10** | 53 % |
-| bytes, Lane P (P) | **8** | 42 % |
-| post-state hash (H) | **12** | 63 % |
-| accepted programs (A) | **9** | 47 % |
+| computed value (V) | **8** | 40 % |
+| verdict (T) | **13** | 65 % |
+| bytes, Lane B (B) | **11** | 55 % |
+| bytes, Lane P (P) | **9** | 45 % |
+| post-state hash (H) | **13** | 65 % |
+| accepted programs (A) | **10** | 50 % |
 | metering (M) | **0** | 0 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
@@ -2621,10 +2749,11 @@ that genuinely moves the committed COMM count or the funding surface re-opens th
 
 ### 5.3 Direction profile
 
-Projected from §4.1: **11 CORRECTIVE** (the data-model lineage and schema additions, corrective in
+Projected from §4.1: **12 CORRECTIVE** (the data-model lineage, schema additions, and the
+single-registry method repair, corrective in
 the sense that the representation now matches the ruling, while remaining deliberate transitions),
 **4 PERMISSIVE** (CBR-024, CBR-025, CBR-037, CBR-L07), **4 REGRESSIVE** (CBR-002, CBR-027, CBR-L08,
-CBR-L11). Total 19.
+CBR-L11). Total 20.
 
 ### 5.4 The chain-history questions
 
@@ -2641,7 +2770,7 @@ are retained because the ruling, not the evidence, is what discharges them.
 
 ### 5.5 The conjunction risk
 
-No activation-height machinery exists: `Validate::version` is exact equality, so the 19 entries ship
+No activation-height machinery exists: `Validate::version` is exact equality, so the 20 entries ship
 as one coordinated protocol-version bump. The reviewer's object of study is therefore the
 **conjunction**: if entry $`i`$ carries residual risk $`r_i`$, the bump carries
 $`1 - \prod_i (1 - r_i)`$, and the CBR-027/CBR-030 pair is the register's concrete demonstration
@@ -2802,8 +2931,8 @@ above is the maintenance mechanism.
 
 ## 8. Conclusions
 
-1. The register holds **19** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **5** on MeTTaIL's Rholang; **18 landed, 1 in flight**. **45** examined
+1. The register holds **20** may-change-consensus entries derived from the campaign record: **14**
+   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **45** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -2819,7 +2948,7 @@ above is the maintenance mechanism.
 5. **The metering axis moves in no kept entry.** Under the token model, consensus cost is the
    committed COMM count; every historical per-op "charge site" claim in this register was a
    diagnostic-weight claim, and the one `UNVERIFIED` cell dissolved with the same derivation.
-6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 19 ship as
+6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 20 ship as
    one coordinated bump, and the CBR-027/CBR-030 pair is the in-register proof that entries
    interact.
 
