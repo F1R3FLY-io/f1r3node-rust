@@ -38,6 +38,20 @@ impl ReplayCacheKey {
             .saturating_add(self.sender_pk.len())
             .saturating_add(self.payload_hash.len())
     }
+
+    fn into_owned(mut self) -> Self {
+        self.parent_state = owned_bytes(&self.parent_state);
+        self
+    }
+}
+
+/// `prost::bytes::Bytes` is a refcounted slice: a short slice keeps its whole
+/// backing allocation (typically a decoded block's buffer) alive, so
+/// length-based accounting under-counts what a cached value really retains.
+/// Copying at cache boundary makes the private buffer exactly `len` bytes —
+/// the accounting becomes exact and the decode buffer is released.
+fn owned_bytes(bytes: &prost::bytes::Bytes) -> prost::bytes::Bytes {
+    prost::bytes::Bytes::copy_from_slice(bytes)
 }
 
 /// Cached replay result containing event log and post-state hash.
@@ -49,7 +63,11 @@ pub struct ReplayCacheEntry {
 }
 
 impl ReplayCacheEntry {
-    pub fn new(event_log: Vec<Event>, post_state: StateHash) -> Self {
+    pub fn new(mut event_log: Vec<Event>, post_state: StateHash) -> Self {
+        for event in &mut event_log {
+            Self::normalize_event(event);
+        }
+        let post_state = owned_bytes(&post_state);
         let retained_bytes = event_log
             .capacity()
             .saturating_mul(std::mem::size_of::<Event>())
@@ -59,6 +77,35 @@ impl ReplayCacheEntry {
             event_log: Arc::new(event_log),
             post_state,
             retained_bytes,
+        }
+    }
+
+    fn normalize_event(event: &mut Event) {
+        match event {
+            Event::Produce(produce) => Self::normalize_produce(produce),
+            Event::Consume(consume) => {
+                for channels_hash in &mut consume.channels_hashes {
+                    *channels_hash = owned_bytes(channels_hash);
+                }
+                consume.hash = owned_bytes(&consume.hash);
+            }
+            Event::Comm(comm) => {
+                for channels_hash in &mut comm.consume.channels_hashes {
+                    *channels_hash = owned_bytes(channels_hash);
+                }
+                comm.consume.hash = owned_bytes(&comm.consume.hash);
+                for produce in &mut comm.produces {
+                    Self::normalize_produce(produce);
+                }
+            }
+        }
+    }
+
+    fn normalize_produce(produce: &mut ProduceEvent) {
+        produce.channels_hash = owned_bytes(&produce.channels_hash);
+        produce.hash = owned_bytes(&produce.hash);
+        for value in &mut produce.output_value {
+            *value = owned_bytes(value);
         }
     }
 
@@ -200,6 +247,7 @@ impl ReplayCache for InMemoryReplayCache {
     }
 
     fn put(&self, key: ReplayCacheKey, entry: ReplayCacheEntry) -> bool {
+        let key = key.into_owned();
         let charged = charged_bytes(&key, &entry);
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
 
@@ -364,6 +412,62 @@ mod tests {
 
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.stats(), (0, 0));
+    }
+
+    #[test]
+    fn test_entry_construction_copies_shared_bytes_backing() {
+        let backing = prost::bytes::Bytes::from(vec![7u8; 4096]);
+        let slice = backing.slice(0..8);
+        let post_slice = backing.slice(8..16);
+
+        let entry = ReplayCacheEntry::new(
+            vec![Event::Produce(ProduceEvent {
+                channels_hash: slice.clone(),
+                hash: slice.clone(),
+                persistent: false,
+                times_repeated: 1,
+                is_deterministic: true,
+                output_value: vec![slice.clone()],
+                failed: false,
+            })],
+            post_slice.clone(),
+        );
+
+        let Event::Produce(produce) = &entry.event_log[0] else {
+            panic!("expected produce event");
+        };
+        assert_eq!(produce.channels_hash.as_ref(), slice.as_ref());
+        assert_ne!(
+            produce.channels_hash.as_ref().as_ptr(),
+            slice.as_ref().as_ptr()
+        );
+        assert_ne!(
+            produce.output_value[0].as_ref().as_ptr(),
+            slice.as_ref().as_ptr()
+        );
+        assert_eq!(entry.post_state.as_ref(), post_slice.as_ref());
+        assert_ne!(
+            entry.post_state.as_ref().as_ptr(),
+            post_slice.as_ref().as_ptr()
+        );
+    }
+
+    #[test]
+    fn test_put_copies_shared_key_backing() {
+        let backing = prost::bytes::Bytes::from(vec![9u8; 4096]);
+        let parent_slice = backing.slice(0..8);
+        let key = ReplayCacheKey::new(parent_slice.clone(), b"s".to_vec(), 1, vec![0u8; 32]);
+        let cache = InMemoryReplayCache::default_capacity();
+
+        assert!(cache.put(key.clone(), make_entry("post")));
+
+        let state = cache.state.lock().unwrap();
+        let (stored_key, _) = state.map.get_index(0).unwrap();
+        assert_eq!(stored_key.parent_state.as_ref(), parent_slice.as_ref());
+        assert_ne!(
+            stored_key.parent_state.as_ref().as_ptr(),
+            parent_slice.as_ref().as_ptr()
+        );
     }
 
     #[test]
