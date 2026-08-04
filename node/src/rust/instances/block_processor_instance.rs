@@ -60,6 +60,7 @@ fn configured_max_parallel_blocks(value: Option<&str>) -> usize {
     value
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|v| *v > 0)
+        .map(|v| v.min(tokio::sync::Semaphore::MAX_PERMITS))
         .unwrap_or(MAX_PARALLEL_BLOCKS_DEFAULT)
 }
 
@@ -572,5 +573,14 @@ mod tests {
     fn parallel_block_limit_accepts_positive_values() {
         assert_eq!(configured_max_parallel_blocks(Some("1")), 1);
         assert_eq!(configured_max_parallel_blocks(Some("4")), 4);
+    }
+
+    #[test]
+    fn parallel_block_limit_clamps_to_semaphore_max() {
+        let max = usize::MAX.to_string();
+        assert_eq!(
+            configured_max_parallel_blocks(Some(&max)),
+            tokio::sync::Semaphore::MAX_PERMITS
+        );
     }
 }

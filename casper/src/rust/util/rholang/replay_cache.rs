@@ -31,6 +31,13 @@ impl ReplayCacheKey {
             payload_hash,
         }
     }
+
+    fn heap_bytes(&self) -> usize {
+        self.parent_state
+            .len()
+            .saturating_add(self.sender_pk.len())
+            .saturating_add(self.payload_hash.len())
+    }
 }
 
 /// Cached replay result containing event log and post-state hash.
@@ -137,6 +144,13 @@ struct ReplayCacheState {
     retained_bytes: usize,
 }
 
+/// Uses lengths rather than capacities so two equal keys always charge the
+/// same amount — the byte accounting must be reproducible from the stored
+/// (key, entry) pair alone when an eviction credits it back.
+fn charged_bytes(key: &ReplayCacheKey, entry: &ReplayCacheEntry) -> usize {
+    key.heap_bytes().saturating_add(entry.retained_bytes())
+}
+
 /// Simple in-memory LRU replay cache (thread-safe).
 pub struct InMemoryReplayCache {
     state: Mutex<ReplayCacheState>,
@@ -176,39 +190,40 @@ impl InMemoryReplayCache {
 impl ReplayCache for InMemoryReplayCache {
     fn get(&self, key: &ReplayCacheKey) -> Option<ReplayCacheEntry> {
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
-        if let Some(entry) = state.map.shift_remove(key) {
-            state.map.insert(key.clone(), entry.clone());
-            Some(entry)
-        } else {
-            None
-        }
+        // Move-to-back keeps the stored key: re-inserting the caller's clone
+        // could swap a compact key for one backed by a larger shared
+        // allocation, silently changing what the cache actually retains.
+        let index = state.map.get_index_of(key)?;
+        let last = state.map.len() - 1;
+        state.map.move_index(index, last);
+        state.map.get_index(last).map(|(_, entry)| entry.clone())
     }
 
     fn put(&self, key: ReplayCacheKey, entry: ReplayCacheEntry) -> bool {
-        let entry_bytes = entry.retained_bytes();
+        let charged = charged_bytes(&key, &entry);
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
 
-        if self.max_entries == 0 || entry_bytes > self.max_bytes {
+        if self.max_entries == 0 || charged > self.max_bytes {
             return false;
         }
 
-        if let Some(replaced) = state.map.shift_remove(&key) {
+        if let Some((replaced_key, replaced)) = state.map.shift_remove_entry(&key) {
             state.retained_bytes = state
                 .retained_bytes
-                .saturating_sub(replaced.retained_bytes());
+                .saturating_sub(charged_bytes(&replaced_key, &replaced));
         }
 
-        state.retained_bytes = state.retained_bytes.saturating_add(entry_bytes);
+        state.retained_bytes = state.retained_bytes.saturating_add(charged);
         state.map.insert(key, entry);
 
         while state.map.len() > self.max_entries || state.retained_bytes > self.max_bytes {
-            let Some((_, removed)) = state.map.shift_remove_index(0) else {
+            let Some((removed_key, removed)) = state.map.shift_remove_index(0) else {
                 state.retained_bytes = 0;
                 break;
             };
             state.retained_bytes = state
                 .retained_bytes
-                .saturating_sub(removed.retained_bytes());
+                .saturating_sub(charged_bytes(&removed_key, &removed));
         }
 
         true
@@ -304,25 +319,29 @@ mod tests {
 
     #[test]
     fn test_eviction_when_over_byte_capacity() {
-        let cache = InMemoryReplayCache::with_limits(10, 7);
         let k1 = make_key("p1", "a", 1);
         let k2 = make_key("p2", "b", 2);
+        let c1 = charged_bytes(&k1, &make_entry("four"));
+        let c2 = charged_bytes(&k2, &make_entry("five"));
+        let cache = InMemoryReplayCache::with_limits(10, c1 + c2 - 1);
 
         cache.put(k1.clone(), make_entry("four"));
         cache.put(k2.clone(), make_entry("five"));
 
         assert!(cache.get(&k1).is_none());
         assert!(cache.get(&k2).is_some());
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.retained_bytes(), 4);
+        assert_eq!(cache.stats(), (1, c2));
     }
 
     #[test]
     fn test_byte_capacity_eviction_honors_lru_access() {
-        let cache = InMemoryReplayCache::with_limits(10, 8);
         let k1 = make_key("p1", "a", 1);
         let k2 = make_key("p2", "b", 2);
         let k3 = make_key("p3", "c", 3);
+        let c1 = charged_bytes(&k1, &make_entry("four"));
+        let c2 = charged_bytes(&k2, &make_entry("five"));
+        let c3 = charged_bytes(&k3, &make_entry("six!"));
+        let cache = InMemoryReplayCache::with_limits(10, c1 + c2);
 
         cache.put(k1.clone(), make_entry("four"));
         cache.put(k2.clone(), make_entry("five"));
@@ -332,58 +351,70 @@ mod tests {
         assert!(cache.get(&k2).is_none());
         assert!(cache.get(&k1).is_some());
         assert!(cache.get(&k3).is_some());
-        assert_eq!(cache.stats(), (2, 8));
+        assert_eq!(cache.stats(), (2, c1 + c3));
     }
 
     #[test]
     fn test_oversized_entry_is_not_cached() {
-        let cache = InMemoryReplayCache::with_limits(10, 3);
         let key = make_key("p", "s", 1);
+        let charged = charged_bytes(&key, &make_entry("four"));
+        let cache = InMemoryReplayCache::with_limits(10, charged - 1);
 
         assert!(!cache.put(key.clone(), make_entry("four")));
 
         assert!(cache.get(&key).is_none());
-        assert_eq!(cache.len(), 0);
-        assert_eq!(cache.retained_bytes(), 0);
+        assert_eq!(cache.stats(), (0, 0));
+    }
+
+    #[test]
+    fn test_key_bytes_count_toward_capacity() {
+        let key = make_key("p", "s", 1);
+        let entry = make_entry("four");
+        let cache = InMemoryReplayCache::with_limits(10, entry.retained_bytes());
+
+        assert!(!cache.put(key.clone(), entry));
+        assert_eq!(cache.stats(), (0, 0));
     }
 
     #[test]
     fn test_event_heap_bytes_count_toward_capacity() {
         let key = make_key("p", "s", 1);
         let entry = make_event_entry();
-        let entry_bytes = entry.retained_bytes();
-        let cache = InMemoryReplayCache::with_limits(10, entry_bytes - 1);
+        let charged = charged_bytes(&key, &entry);
+        let cache = InMemoryReplayCache::with_limits(10, charged - 1);
 
         assert!(!cache.put(key.clone(), entry.clone()));
         assert!(cache.get(&key).is_none());
 
-        let cache = InMemoryReplayCache::with_limits(10, entry_bytes);
+        let cache = InMemoryReplayCache::with_limits(10, charged);
         assert!(cache.put(key.clone(), entry));
-        assert_eq!(cache.stats(), (1, entry_bytes));
+        assert_eq!(cache.stats(), (1, charged));
     }
 
     #[test]
     fn test_rejected_replacement_preserves_cached_entry() {
-        let cache = InMemoryReplayCache::with_limits(10, 4);
         let key = make_key("p", "s", 1);
+        let c_four = charged_bytes(&key, &make_entry("four"));
+        let cache = InMemoryReplayCache::with_limits(10, c_four);
 
         assert!(cache.put(key.clone(), make_entry("four")));
         assert!(!cache.put(key.clone(), make_entry("oversized")));
 
         assert_eq!(cache.get(&key).unwrap().post_state.as_ref(), b"four");
-        assert_eq!(cache.stats(), (1, 4));
+        assert_eq!(cache.stats(), (1, c_four));
     }
 
     #[test]
     fn test_replacement_updates_retained_bytes() {
-        let cache = InMemoryReplayCache::with_limits(10, 10);
         let key = make_key("p", "s", 1);
+        let c_larger = charged_bytes(&key, &make_entry("larger"));
+        let cache = InMemoryReplayCache::with_limits(10, c_larger);
 
         assert!(cache.put(key.clone(), make_entry("four")));
         assert!(cache.put(key.clone(), make_entry("larger")));
 
         assert_eq!(cache.get(&key).unwrap().post_state.as_ref(), b"larger");
-        assert_eq!(cache.stats(), (1, 6));
+        assert_eq!(cache.stats(), (1, c_larger));
     }
 
     #[test]
@@ -466,11 +497,11 @@ mod tests {
                     match op {
                         Op::Put { key, payload_len, with_event } => {
                             let entry = sized_entry(payload_len, with_event);
-                            let entry_bytes = entry.retained_bytes();
+                            let charged = charged_bytes(&prop_key(key), &entry);
                             let admitted = cache.put(prop_key(key), entry);
                             prop_assert_eq!(
                                 admitted,
-                                max_entries > 0 && entry_bytes <= max_bytes
+                                max_entries > 0 && charged <= max_bytes
                             );
                         }
                         Op::Get { key } => {
@@ -491,8 +522,8 @@ mod tests {
                     prop_assert!(state.retained_bytes <= max_bytes);
                     let live_sum: usize = state
                         .map
-                        .values()
-                        .map(ReplayCacheEntry::retained_bytes)
+                        .iter()
+                        .map(|(key, entry)| charged_bytes(key, entry))
                         .sum();
                     prop_assert_eq!(state.retained_bytes, live_sum);
                 }

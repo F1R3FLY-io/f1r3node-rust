@@ -215,16 +215,20 @@ done
 [[ "$CASPER_READY" == "1" ]] || die "Casper instance was not available within ${PREFLIGHT_TIMEOUT}s"
 
 harvest_finalizations() {
+	# In-memory set of already-finalized sigs: without it every cycle greps
+	# FINALS_FILE once per submitted deploy (O(n^2) file scans at high rates).
+	# Only still-pending sigs are re-polled each cycle.
+	local -A finalized_sigs=()
 	while true; do
 		while IFS=$'\t' read -r _ sig; do
-			[[ -z "$sig" ]] && continue
-			grep -q -F "$sig" "$FINALS_FILE" && continue
+			[[ -z "$sig" || -n "${finalized_sigs[$sig]:-}" ]] && continue
 			FINALIZATION="$(curl -fsS --max-time 5 \
 				"${API_BASE}/api/deploy-finalization-status/${sig}" 2>/dev/null || true)"
 			if [[ "$(jq -r '.state // empty' <<<"$FINALIZATION" 2>/dev/null)" == "Finalized" ]]; then
 				FINAL_MS="$(date +%s%3N)"
 				BLOCK_HASH="$(jq -r '.latest_block_hash // "unknown"' <<<"$FINALIZATION")"
 				printf '%s\t%s\t%s\n' "$FINAL_MS" "$sig" "$BLOCK_HASH" >>"$FINALS_FILE"
+				finalized_sigs[$sig]=1
 			fi
 		done <"$SUBMITS_FILE"
 		sleep "$POLL_INTERVAL"
