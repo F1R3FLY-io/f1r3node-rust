@@ -262,6 +262,49 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
     );
 
     compare(
+        "empty PathMap",
+        pathmap(EPathMap::default(), false),
+        pathmap(EPathMap::default(), false),
+    );
+
+    let singleton_set = |member: Par| {
+        let mut map = EPathMap::default();
+        map.insert_entry(member);
+        map
+    };
+    compare(
+        "concrete singleton PathMap set",
+        pathmap(singleton_set(one()), false),
+        pathmap(singleton_set(one()), false),
+    );
+    compare(
+        "concrete singleton PathMap set mismatch",
+        pathmap(singleton_set(one()), false),
+        pathmap(singleton_set(two()), false),
+    );
+
+    let singleton_map = |key: Par, value: Par| {
+        let mut map = EPathMap::default();
+        map.insert_map_entry(key, value).unwrap();
+        map
+    };
+    compare(
+        "concrete singleton PathMap map",
+        pathmap(singleton_map(one(), seven()), false),
+        pathmap(singleton_map(one(), seven()), false),
+    );
+    compare(
+        "concrete singleton PathMap map key mismatch",
+        pathmap(singleton_map(one(), seven()), false),
+        pathmap(singleton_map(two(), seven()), false),
+    );
+    compare(
+        "concrete singleton PathMap map value mismatch",
+        pathmap(singleton_map(one(), seven()), false),
+        pathmap(singleton_map(one(), two()), false),
+    );
+
+    compare(
         "string mismatch",
         new_gstring_par("a".into(), Vec::new(), false),
         new_gstring_par("b".into(), Vec::new(), false),
