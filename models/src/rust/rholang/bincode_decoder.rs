@@ -237,7 +237,7 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 // is gated against.
 
 // ★ ONE TABLE, BOTH DIRECTIONS. These indices are no longer transcribed here:
-// they are `pub const`s emitted by `models/codegen/schema_codegen.rs` from the same
+// they are `pub const`s emitted by `models/codegen/schema.rs` from the same
 // protobuf `FileDescriptorSet` that drives the serializer
 // (`crate::rust::rholang::bincode_encoder`). Thirty-six hand-written `EX_*`
 // literals and nine `CN_*` literals used to live in this block; a 37th oneof

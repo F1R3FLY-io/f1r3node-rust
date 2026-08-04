@@ -2071,7 +2071,7 @@ generated protobuf PDA removes the recursive read ceiling.**
 | Status | LANDED |
 | Direction | CORRECTIVE |
 | Evidence grade | WITNESSED |
-| Files | `models/src/rust/rhoapi_ext.rs`, `models/src/rust/epathmap_trie_codec.rs`, `models/src/rust/rholang/protobuf_encoder.rs`, `protobuf_decoder.rs`, `bincode_encoder.rs`, `bincode_decoder.rs`, and generated traversal code in `models/codegen/schema_codegen.rs` |
+| Files | `models/src/rust/rhoapi_ext.rs`, `models/src/rust/epathmap_trie_codec.rs`, `models/src/rust/rholang/protobuf_encoder.rs`, `protobuf_decoder.rs`, `bincode_encoder.rs`, `bincode_decoder.rs`, and generated traversal code in `models/codegen/schema.rs` |
 
 #### (a) The issue
 

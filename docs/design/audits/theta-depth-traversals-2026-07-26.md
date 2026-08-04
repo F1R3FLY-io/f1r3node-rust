@@ -3656,7 +3656,7 @@ stays compiled as the oracle, instead of by *being* the derive.
 
 `models/src/rust/rholang/bincode_encoder.rs` — a single-walk, O(1)-native-stack
 emitter driven by the same generated table as the decoder
-(`models/codegen/schema_codegen.rs`, emitted from the protobuf
+(`models/codegen/schema.rs`, emitted from the protobuf
 `FileDescriptorSet`). One obligation stack of `(&'a dyn BincodeNode, field)`; no
 value stacks, no clones, no `Drop` obligation, and therefore no teardown
 problem — the asymmetry with `bincode_decoder`, which must reassemble bottom-up.

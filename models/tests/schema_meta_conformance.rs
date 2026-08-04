@@ -1,6 +1,6 @@
 //! # The SCHEMA-META conformance probe — what the generator says about itself
 //!
-//! `models/codegen/schema_codegen.rs` makes one walk of the protobuf descriptor and
+//! `models/codegen/schema.rs` makes one walk of the protobuf descriptor and
 //! emits four files. Two of them are field tables whose bytes are checked
 //! elsewhere (`bincode_schema_tables_conformance.rs` against serde's own derive,
 //! `serializer_par_byte_goldens.rs` against recorded bytes). This file checks the

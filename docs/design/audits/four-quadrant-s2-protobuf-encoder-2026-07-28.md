@@ -6,7 +6,7 @@
 > **This document records RESULTS.** The design lives in the code it describes —
 > `models/src/rust/rholang/protobuf_encoder.rs` (the machine, §1-4),
 > `models/src/rust/rholang/protobuf_schema.rs` (the alphabet and the two asymmetries),
-> and `models/codegen/schema_codegen.rs` (the one walk, the two sort keys). Restating
+> and `models/codegen/schema.rs` (the one walk, the two sort keys). Restating
 > it here would create a second copy, and this campaign has watched four prose
 > copies of one truth drift, two of them within the hour of being reconciled.
 

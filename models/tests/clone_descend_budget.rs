@@ -1,6 +1,6 @@
 //! # `clone_descend_budget` — the DESCEND BUDGET is MEASURED, not asserted
 //!
-//! `models/codegen/schema_codegen.rs` emits [`CLONE_DESCEND_BUDGET`], the number of
+//! `models/codegen/schema.rs` emits [`CLONE_DESCEND_BUDGET`], the number of
 //! further **cut-set** levels one `descend` walks in native frames before it
 //! suspends to `drive::drive_with`. This file is the executed statement that the
 //! constant is doing what its doc comment claims, and it exists because every
@@ -335,7 +335,7 @@ fn the_budget_is_not_zero() {
          verbatim — `clone_push_children_*` suspends every cut-set child and the trampoline is \
          re-entered once per `Par` node — so this whole file, the equivalence corpus and the \
          depth gate would all stay green while the amortization was gone. See \
-         `models/codegen/schema_codegen.rs`'s `DESCEND_BUDGET` for the derivation of the value."
+         `models/codegen/schema.rs`'s `DESCEND_BUDGET` for the derivation of the value."
     );
     // The upper bound is not a correctness bound (the prefix is a constant at every
     // budget) but a REVIEW bound: past this, the constant costs a share of the
@@ -363,7 +363,7 @@ fn one_descend_covers_the_whole_modal_datum() {
     assert_eq!(
         nodes, 6,
         "the depth-2 datum has {nodes} `Par` nodes, not the 6 every figure in \
-         `models/codegen/schema_codegen.rs` is denominated in. The fixture has drifted from the \
+         `models/codegen/schema.rs` is denominated in. The fixture has drifted from the \
          bench's `datum`."
     );
     assert_eq!(

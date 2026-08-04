@@ -110,7 +110,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 ⚠★ **Read `SS-D3` and `SS-D5` correctly.** Both eliminate a **call to** `<Par as Clone>::clone`; **neither converts the impl**. The campaign's strategy at those two sites is **call-site elimination**, argued in [§5.10.5a](#5101-the-strategy-and-the-figures-it-retired). Two one-line task summaries read otherwise and are corrected in [§5.10.5](#5101-the-strategy-and-the-figures-it-retired).
 
 **`<Par as Clone>::clone` was converted by stage F-4** (`0eac9c3a`): `models/build.rs` strips the
-derive and `models/codegen/schema_codegen.rs` generates the impl over `drive_with`; its tripwire
+derive and `models/codegen/schema.rs` generates the impl over `drive_with`; its tripwire
 ceiling was **deleted rather than relaxed** — the subject left the tripwire list by being converted.
 **MEASURED (q)**, `0eac9c3a`, both profiles, ladder $`16 \rightarrow 128`$, subject and
 derived-oracle control in the *same binary* (`clone_oracle` re-emits the deleted derive's body;

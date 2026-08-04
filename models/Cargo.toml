@@ -298,7 +298,7 @@ blake2 = "0.10.6"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
-# The schema-codegen pass (models/codegen/schema_codegen.rs) reads the protobuf
+# The schema-codegen pass (models/codegen/schema.rs) reads the protobuf
 # FileDescriptorSet that the prost pass dumps. `prost`/`prost-types` decode it;
 # `heck` applies the SAME identifier transforms prost-build itself applies, so
 # the generated `impl BincodeOneof` arms cannot drift from prost's variant names.

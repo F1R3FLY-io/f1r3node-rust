@@ -11,8 +11,8 @@ use prost::Message as _;
 /// The schema-code generator: one descriptor pass emits the bincode and
 /// protobuf tables plus the generated term-operation and decode PDAs. See its
 /// module docs for why this is a build-script pass rather than a proc-macro.
-#[path = "codegen/schema_codegen.rs"]
-mod schema_codegen;
+#[path = "codegen/schema.rs"]
+mod schema;
 
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
@@ -48,14 +48,14 @@ fn main() {
     // ⚠ AND the generator's own source. Emitting ANY `cargo:rerun-if-changed`
     // switches cargo from "rerun when anything in the package changed" to
     // "rerun only for these paths" — so without this line, editing
-    // `codegen/schema_codegen.rs` leaves a STALE generated table in `OUT_DIR` while
+    // `codegen/schema.rs` leaves a STALE generated table in `OUT_DIR` while
     // the build reports success. That is a silent, byte-visible divergence
     // between the generator in the tree and the table in the binary; it was
     // observed once, during this module's development, and cost a confusing
     // benchmark result.
     println!(
         "cargo:rerun-if-changed={}",
-        manifest_dir.join("codegen/schema_codegen.rs").display()
+        manifest_dir.join("codegen/schema.rs").display()
     );
 
     // The descriptor set is what the schema-code generator reads. It carries
@@ -104,7 +104,7 @@ fn main() {
     let descriptor_bytes = fs::read(&descriptor_path).expect("read the protobuf descriptor set");
     let descriptor_set = prost_types::FileDescriptorSet::decode(&descriptor_bytes[..])
         .expect("decode the protobuf descriptor set");
-    let generated = schema_codegen::generate(&descriptor_set);
+    let generated = schema::generate(&descriptor_set);
     let counts = &generated.counts;
 
     // Remove PartialEq from specific generated structs from rhoapi.rs
@@ -250,7 +250,7 @@ fn main() {
     // The campaign's driver list must be DERIVED from what is actually
     // `#[derive]`d, never hand-picked: a hand-picked list of four missed `Hash`
     // entirely, and the enumeration that replaced it additionally found
-    // `Ord`/`PartialOrd`, which nobody had named. `models/codegen/schema_codegen.rs` holds the
+    // `Ord`/`PartialOrd`, which nobody had named. `models/codegen/schema.rs` holds the
     // closed `DERIVE_DISPOSITIONS` table; this scans the post-processed
     // `rhoapi.rs` for the tokens actually present and requires the two to agree
     // as SETS, in both directions.
@@ -301,7 +301,7 @@ fn main() {
     // rather than as a `cargo:warning`, so the evidence is retained without
     // decorating every build of every dependent crate.
     println!(
-        "schema_codegen: {} generated messages + {} extern, {} oneofs, {} serialize-only \
+        "schema: {} generated messages + {} extern, {} oneofs, {} serialize-only \
          `locally_free` fields (cross-checked against the textual pass); {} SCCs, {} \
          self-containing types, {} derive-disposition rows (cross-checked against the \
          `#[derive]` scan); {} outputs written",
@@ -315,7 +315,7 @@ fn main() {
         generated.sources.len()
     );
     println!(
-        "schema_codegen: clone cut set [{}] (residual height {}), {} items entered by the driver, \
+        "schema: clone cut set [{}] (residual height {}), {} items entered by the driver, \
          {} `impl Clone`s emitted (cross-checked against {} textually stripped `Clone` derives)",
         counts.clone_cut_set.join(", "),
         counts.clone_residual_height,
@@ -515,7 +515,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
     assert!(
         !emitted.is_empty(),
         "models/build.rs: the term-op pass emitted ZERO `impl Clone`s. See the non-vacuity \
-         assertions in `schema_codegen::generate`, which refuse this at the source."
+         assertions in `schema::generate`, which refuse this at the source."
     );
 
     let stripped_set: BTreeSet<&str> = stripped.iter().map(String::as_str).collect();
@@ -539,7 +539,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
          \n\
          Those types now have no `Clone` at all. The two rules for \"which items are \
          non-`Copy`\" have diverged: the textual pass looks for a derive line naming `Clone` \
-         and not `Copy`; `models/codegen/schema_codegen.rs`'s `ClonePlan` reproduces prost's own rule \
+         and not `Copy`; `models/codegen/schema.rs`'s `ClonePlan` reproduces prost's own rule \
          (`prost-build-0.14.3/src/context.rs:183-233`) from the descriptor. Fix whichever is \
          wrong — do not paper over it by narrowing the strip, because the strip is what makes \
          the driven `Clone` reachable.",
@@ -554,7 +554,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
          \n\
          That is two `Clone` impls for one type (`E0119`). Either prost stopped deriving `Copy` \
          for an item `ClonePlan` still believes is `Copy`, or the strip's line-shape match \
-         missed a line. See the `Copy` reproduction in `models/codegen/schema_codegen.rs` §4b.",
+         missed a line. See the `Copy` reproduction in `models/codegen/schema.rs` §4b.",
         emitted_only
     );
 }
@@ -584,7 +584,7 @@ fn check_clone_join(stripped: &[String], emitted: &[String]) {
 ///   file's — if `.extern_path` grows another entry, or a message stops being
 ///   generated, the tables would silently cover a different set of types than
 ///   the crate compiles.
-fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
+fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema::Counts) {
     use std::collections::BTreeSet;
 
     // Every token inside every `#[derive(...)]` in the generated file.
@@ -621,7 +621,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
          function is reading the wrong string."
     );
 
-    let dispositioned: BTreeSet<&str> = schema_codegen::DERIVE_DISPOSITIONS
+    let dispositioned: BTreeSet<&str> = schema::DERIVE_DISPOSITIONS
         .iter()
         .map(|d| d.token)
         .collect();
@@ -631,7 +631,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
     // set this check assembled for itself.
     let undispositioned: Vec<&&str> = found
         .iter()
-        .filter(|token| schema_codegen::disposition_of(token).is_none())
+        .filter(|token| schema::disposition_of(token).is_none())
         .collect();
     assert!(
         undispositioned.is_empty(),
@@ -643,7 +643,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
          driver list is DERIVED from this table precisely so that a new trait cannot join \
          the schema unnoticed — a hand-picked list of four missed `Hash` entirely.\n\
          \n\
-         Add a row to `DERIVE_DISPOSITIONS` in `models/codegen/schema_codegen.rs` naming the \
+         Add a row to `DERIVE_DISPOSITIONS` in `models/codegen/schema.rs` naming the \
          trait's surfaces and what has been decided about each. `Disposition::NotATraversal` \
          is available and requires only that you say WHY.",
         undispositioned
@@ -653,7 +653,7 @@ fn check_derive_dispositions(rhoapi_rs: &str, counts: &schema_codegen::Counts) {
     assert!(
         stale.is_empty(),
         "models/build.rs: STALE disposition(s) {:?} — `DERIVE_DISPOSITIONS` in \
-         `models/codegen/schema_codegen.rs` classifies {} trait tokens, but {:?} appear nowhere \
+         `models/codegen/schema.rs` classifies {} trait tokens, but {:?} appear nowhere \
          in the generated `rhoapi.rs`.\n\
          \n\
          A disposition for a derive that is no longer applied is a claim about code that \

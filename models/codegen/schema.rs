@@ -321,7 +321,7 @@ fn refine_disposition(surface: &str, uniform: Disposition, facts: &ItemFacts<'_>
         "Clone::clone" => {
             assert!(
                 !(facts.is_copy && facts.in_clone_cut_set),
-                "schema_codegen: `{}` is both `Copy` and a member of the CLONE CUT SET. A `Copy` \
+                "schema: `{}` is both `Copy` and a member of the CLONE CUT SET. A `Copy` \
                  type's `Clone` must be `*self`, and prost only derives `Copy` where every \
                  field is a non-repeated scalar — such a type contains no term and cannot be \
                  on a cycle of the child relation. One of the two derivations is wrong: either \
@@ -771,7 +771,7 @@ impl Field {
             .iter()
             .copied()
             .min()
-            .expect("schema_codegen: every field occupies at least one proto tag")
+            .expect("schema: every field occupies at least one proto tag")
     }
 }
 
@@ -919,23 +919,23 @@ fn collect<'a>(
             .and_then(|f| f.r#type)
             .and_then(|t| Type::try_from(t).ok())
             .unwrap_or_else(|| {
-                panic!("schema_codegen: map entry `{name}` has no resolvable key field at tag 1")
+                panic!("schema: map entry `{name}` has no resolvable key field at tag 1")
             });
         let value = msg
             .field
             .iter()
             .find(|f| f.number == Some(2))
             .unwrap_or_else(|| {
-                panic!("schema_codegen: map entry `{name}` has no value field at tag 2")
+                panic!("schema: map entry `{name}` has no value field at tag 2")
             });
         let value_ty = value
             .r#type
             .and_then(|t| Type::try_from(t).ok())
-            .unwrap_or_else(|| panic!("schema_codegen: map entry `{name}`'s value has no type"));
+            .unwrap_or_else(|| panic!("schema: map entry `{name}`'s value has no type"));
         assert_eq!(
             value_ty,
             Type::Message,
-            "schema_codegen: map entry `{name}` has a {value_ty:?} value. Both drivers descend \
+            "schema: map entry `{name}` has a {value_ty:?} value. Both drivers descend \
              into a map's VALUES; a scalar-valued map needs a deliberate widening, not a \
              silent reinterpretation."
         );
@@ -975,7 +975,7 @@ fn program_ident_of(
     programs
         .get(leaf)
         .cloned()
-        .unwrap_or_else(|| panic!("schema_codegen: no program emitted for `{leaf}`"))
+        .unwrap_or_else(|| panic!("schema: no program emitted for `{leaf}`"))
 }
 
 /// Is this message a synthetic protobuf map entry (`map<K,V>` desugaring)?
@@ -1031,7 +1031,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
         let previous = programs.insert(msg.leaf_name().to_string(), msg.program_ident());
         assert!(
             previous.is_none(),
-            "schema_codegen: two `{PACKAGE}` messages share the leaf name `{}`. A field's \
+            "schema: two `{PACKAGE}` messages share the leaf name `{}`. A field's \
              `type_name` resolves to the leaf, so one of them would silently adopt the other's \
              field order. Disambiguate before generating.",
             msg.leaf_name()
@@ -1094,7 +1094,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     assert_eq!(
         clone_impls.len(),
         resolved.len() + oneofs.len() - copy_items,
-        "schema_codegen: the term-op emitter wrote {} `impl Clone`s, but the schema has {} \
+        "schema: the term-op emitter wrote {} `impl Clone`s, but the schema has {} \
          generated messages + {} oneofs of which {} are `Copy`, i.e. {} non-`Copy` items that \
          MUST each get one. An item with neither a derive nor an emitted impl does not compile; \
          an item with both does not compile either. This is the arithmetic that makes \
@@ -1107,7 +1107,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
     );
     assert!(
         term_ops.len() > 32 * 1024,
-        "schema_codegen: the term-op source is only {} bytes. The `Clone` emission for {} items \
+        "schema: the term-op source is only {} bytes. The `Clone` emission for {} items \
          over a {}-type descend set cannot fit in that, so the emitter has silently stopped \
          emitting bodies — the exact failure a `String::new()` return would produce, and the \
          reason this floor is here rather than only a `!is_empty()` check in `models/build.rs`.",
@@ -1183,7 +1183,7 @@ fn resolve_message(
         // rather than guess.
         if field.proto3_optional.unwrap_or(false) {
             panic!(
-                "schema_codegen: `{msg_name}.{}` uses proto3 `optional` presence, which prost \
+                "schema: `{msg_name}.{}` uses proto3 `optional` presence, which prost \
                  renders as `Option<scalar>`. No `FieldKind` models that. Add one deliberately \
                  (and a decoder arm) rather than letting the table guess.",
                 field.name.clone().unwrap_or_default()
@@ -1199,11 +1199,11 @@ fn resolve_message(
         }
         let proto_name = field.name.clone().unwrap_or_default();
         let tag = field.number.unwrap_or_else(|| {
-            panic!("schema_codegen: `{msg_name}.{proto_name}` has no proto tag")
+            panic!("schema: `{msg_name}.{proto_name}` has no proto tag")
         });
         assert!(
             tag > 0,
-            "schema_codegen: `{msg_name}.{proto_name}` has proto tag {tag}; protobuf tags start \
+            "schema: `{msg_name}.{proto_name}` has proto tag {tag}; protobuf tags start \
              at 1 and prost's sort key would place a zero ahead of everything."
         );
         let children = shape_children(&shape);
@@ -1224,7 +1224,7 @@ fn resolve_message(
         let variants = resolve_oneof_variants(msg, idx, &rust_ident, known, extern_set, programs);
         assert!(
             !variants.is_empty(),
-            "schema_codegen: oneof `{msg_name}.{proto_name}` has no members; prost would emit no \
+            "schema: oneof `{msg_name}.{proto_name}` has no members; prost would emit no \
              enum and the table would name a type that does not exist."
         );
         fields.push(Field {
@@ -1280,7 +1280,7 @@ fn classify(
     let proto_name = field.name.clone().unwrap_or_default();
     let repeated = field.label == Some(Label::Repeated as i32);
     let ty = Type::try_from(field.r#type.unwrap_or(0)).unwrap_or_else(|_| {
-        panic!("schema_codegen: `{msg_name}.{proto_name}` has an unrecognised protobuf type")
+        panic!("schema: `{msg_name}.{proto_name}` has an unrecognised protobuf type")
     });
 
     // A protobuf `map<K,V>` arrives as a REPEATED synthetic MapEntry message.
@@ -1292,7 +1292,7 @@ fn classify(
             // PAIRS), not a seq. The only such field is `New.injections`.
             assert_eq!(
                 leaf, "InjectionsEntry",
-                "schema_codegen: `{msg_name}.{proto_name}` is a map whose entry type is `{leaf}`. \
+                "schema: `{msg_name}.{proto_name}` is a map whose entry type is `{leaf}`. \
                  The driver's `Descent::Map` is typed `BTreeMap<String, Par>`; a second map \
                  shape needs a deliberate widening, not a silent reinterpretation."
             );
@@ -1312,7 +1312,7 @@ fn classify(
             let leaf = type_leaf(field.type_name.as_deref().unwrap_or(""));
             assert!(
                 known.contains(leaf) || extern_set.contains(leaf),
-                "schema_codegen: `{msg_name}.{proto_name}` is a repeated `{leaf}`, which is not a \
+                "schema: `{msg_name}.{proto_name}` is a repeated `{leaf}`, which is not a \
                  `{PACKAGE}` message. Cross-package descent is not modelled."
             );
             (
@@ -1326,14 +1326,14 @@ fn classify(
         (true, Type::String) => ("StrSeq", Shape::RepeatedString, false),
         (true, Type::Bytes) => ("BytesSeq", Shape::RepeatedBytes, false),
         (true, other) => panic!(
-            "schema_codegen: `{msg_name}.{proto_name}` is a repeated {other:?}. Only repeated \
+            "schema: `{msg_name}.{proto_name}` is a repeated {other:?}. Only repeated \
              message / string / bytes appear in this schema; a new one needs a `FieldKind`."
         ),
         (false, Type::Message) => {
             let leaf = type_leaf(field.type_name.as_deref().unwrap_or(""));
             assert!(
                 known.contains(leaf) || extern_set.contains(leaf),
-                "schema_codegen: `{msg_name}.{proto_name}` is a `{leaf}`, which is not a \
+                "schema: `{msg_name}.{proto_name}` is a `{leaf}`, which is not a \
                  `{PACKAGE}` message. Cross-package descent is not modelled."
             );
             (
@@ -1369,7 +1369,7 @@ fn classify(
         }
         (false, t @ (Type::Uint64 | Type::Fixed64)) => ("U64", Shape::Scalar(t), false),
         (false, other) => panic!(
-            "schema_codegen: `{msg_name}.{proto_name}` has type {other:?}, which has no \
+            "schema: `{msg_name}.{proto_name}` has type {other:?}, which has no \
              `FieldKind`. Add one deliberately — silently widening it to the nearest integer \
              would change the byte layout and fork consensus."
         ),
@@ -1400,19 +1400,19 @@ fn resolve_oneof_variants(
             proto_name.to_snake_case().to_uppercase()
         );
         let ty = Type::try_from(field.r#type.unwrap_or(0)).unwrap_or_else(|_| {
-            panic!("schema_codegen: `{msg_name}.{proto_name}` has an unrecognised protobuf type")
+            panic!("schema: `{msg_name}.{proto_name}` has an unrecognised protobuf type")
         });
         assert!(
             field.label != Some(Label::Repeated as i32),
-            "schema_codegen: `{msg_name}.{proto_name}` is a repeated oneof member, which protobuf \
+            "schema: `{msg_name}.{proto_name}` is a repeated oneof member, which protobuf \
              does not allow and this table cannot model."
         );
         let tag = field.number.unwrap_or_else(|| {
-            panic!("schema_codegen: oneof member `{msg_name}.{proto_name}` has no proto tag")
+            panic!("schema: oneof member `{msg_name}.{proto_name}` has no proto tag")
         });
         assert!(
             tag > 0,
-            "schema_codegen: oneof member `{msg_name}.{proto_name}` has proto tag {tag}; protobuf \
+            "schema: oneof member `{msg_name}.{proto_name}` has proto tag {tag}; protobuf \
              tags start at 1 and prost's sort key would place a zero ahead of everything."
         );
         let mut message_leaf = None;
@@ -1421,7 +1421,7 @@ fn resolve_oneof_variants(
                 let leaf = type_leaf(field.type_name.as_deref().unwrap_or(""));
                 assert!(
                     known.contains(leaf) || extern_set.contains(leaf),
-                    "schema_codegen: oneof member `{msg_name}.{proto_name}` is a `{leaf}`, which \
+                    "schema: oneof member `{msg_name}.{proto_name}` is a `{leaf}`, which \
                      is not a `{PACKAGE}` message."
                 );
                 let program = program_ident_of(leaf, extern_set, programs);
@@ -1457,7 +1457,7 @@ fn resolve_oneof_variants(
                 "&[FieldKind::U64]".to_string(),
             ),
             other => panic!(
-                "schema_codegen: oneof member `{msg_name}.{proto_name}` has type {other:?}, which \
+                "schema: oneof member `{msg_name}.{proto_name}` has type {other:?}, which \
                  has no `Payload` shape."
             ),
         };
@@ -1490,7 +1490,7 @@ fn oneof_const_prefix(oneof_ident: &str) -> &'static str {
         "UnfInstance" => "UF_",
         "TaggedCont" => "TC_",
         other => panic!(
-            "schema_codegen: oneof `{other}` has no registered constant prefix. Add one to \
+            "schema: oneof `{other}` has no registered constant prefix. Add one to \
              `oneof_const_prefix` deliberately — an auto-abbreviation could collide with an \
              existing prefix and silently re-point a decoder arm."
         ),
@@ -1558,7 +1558,7 @@ impl SchemaGraph {
             if extern_set.contains(name.as_str()) {
                 assert!(
                     children[i].is_empty(),
-                    "schema_codegen: extern type `{name}` acquired descriptor-derived children, \
+                    "schema: extern type `{name}` acquired descriptor-derived children, \
                      which means it stopped being extern without this table noticing"
                 );
             }
@@ -1901,7 +1901,7 @@ impl ClonePlan {
                     .all(|f| field_is_copy(leaf, f, &message_is_copy, &reaches));
                 let slot = message_is_copy
                     .get_mut(leaf)
-                    .expect("schema_codegen: every message seeded a Copy slot");
+                    .expect("schema: every message seeded a Copy slot");
                 if *slot != all_copy {
                     *slot = all_copy;
                     changed = true;
@@ -1915,7 +1915,7 @@ impl ClonePlan {
             let owner = owner_of_oneof(messages, oneof);
             let desc = raw.get(owner.as_str()).unwrap_or_else(|| {
                 panic!(
-                    "schema_codegen: oneof `{}` has no owner message",
+                    "schema: oneof `{}` has no owner message",
                     oneof.rust_ident
                 )
             });
@@ -1925,7 +1925,7 @@ impl ClonePlan {
                 .position(|d| d.name.as_deref() == Some(oneof.proto_name.as_str()))
                 .unwrap_or_else(|| {
                     panic!(
-                        "schema_codegen: `{owner}` does not declare a oneof named `{}`",
+                        "schema: `{owner}` does not declare a oneof named `{}`",
                         oneof.proto_name
                     )
                 });
@@ -1991,7 +1991,7 @@ impl ClonePlan {
                 .iter()
                 .copied()
                 .max_by_key(|&i| (adjacency[i].len() + in_degree[i], usize::MAX - i))
-                .expect("schema_codegen: a non-empty cyclic set has a maximum");
+                .expect("schema: a non-empty cyclic set has a maximum");
             cut_indices.insert(pick);
         }
 
@@ -2001,7 +2001,7 @@ impl ClonePlan {
             .collect();
         assert!(
             !cut.is_empty(),
-            "schema_codegen: the CLONE CUT SET is EMPTY. The `rhoapi` child relation is cyclic by \
+            "schema: the CLONE CUT SET is EMPTY. The `rhoapi` child relation is cyclic by \
              construction — `Par` contains `Send` which contains `Par` — so an empty cut set \
              means the graph this pass read is not the schema's. A vacuous cut set would emit no \
              driver at all and every `Clone` would silently stay Θ(depth)."
@@ -2010,7 +2010,7 @@ impl ClonePlan {
             let rust = rust_type_name(name);
             assert!(
                 ITERATIVE_TEARDOWN.iter().any(|(ty, _)| *ty == rust),
-                "schema_codegen: `{rust}` joined the CLONE CUT SET but has no entry in \
+                "schema: `{rust}` joined the CLONE CUT SET but has no entry in \
                  `ITERATIVE_TEARDOWN`. A panic unwinding out of the driver leaves cloned \
                  `{rust}`s on the pooled value stack, and releasing them with `Vec::clear` runs \
                  the DERIVED recursive destructor, which is itself Θ(depth) (gate subject \
@@ -2193,7 +2193,7 @@ fn owner_of_oneof(messages: &[Message<'_>], oneof: &Oneof) -> String {
         .map(|m| m.leaf_name().to_string())
         .unwrap_or_else(|| {
             panic!(
-                "schema_codegen: no message has oneof module `{}`; the oneof `{}` cannot be \
+                "schema: no message has oneof module `{}`; the oneof `{}` cannot be \
                  attributed to an owner, and Copy-ness / cut reachability are per-owner facts",
                 oneof.module, oneof.rust_ident
             )
@@ -2324,7 +2324,7 @@ fn bincode_emit(field: &Field, index: usize) -> String {
             Type::Int64 | Type::Sint64 | Type::Sfixed64 => format!("put_i64(out, self.{name})"),
             Type::Uint64 | Type::Fixed64 => format!("put_u64(out, self.{name})"),
             other => panic!(
-                "schema_codegen: scalar {other:?} reached the bincode renderer with no primitive. \
+                "schema: scalar {other:?} reached the bincode renderer with no primitive. \
                  `classify` refuses unclassifiable types, so this is unreachable unless the two \
                  have drifted apart."
             ),
@@ -2350,7 +2350,7 @@ fn bincode_emit(field: &Field, index: usize) -> String {
 fn bincode_program(msg_name: &str, fields: &[Field]) -> Vec<String> {
     assert!(
         fields.len() < u16::MAX as usize,
-        "schema_codegen: `{msg_name}` has {} fields; `Descent::resume` is a u16 and \
+        "schema: `{msg_name}` has {} fields; `Descent::resume` is a u16 and \
          `NO_RESUME` is its maximum.",
         fields.len()
     );
@@ -2430,10 +2430,10 @@ fn walk_messages<'m, 'f>(
         }
         let (index, fields) = resolved
             .get(cursor)
-            .expect("schema_codegen: every non-extern message was resolved");
+            .expect("schema: every non-extern message was resolved");
         assert_eq!(
             *index, i,
-            "schema_codegen: the resolved-field vector is out of step with the message vector; \
+            "schema: the resolved-field vector is out of step with the message vector; \
              a generated table would be attached to the wrong type."
         );
         out.push((msg, Some(fields.as_slice())));
@@ -2442,14 +2442,14 @@ fn walk_messages<'m, 'f>(
     assert_eq!(
         cursor,
         resolved.len(),
-        "schema_codegen: resolved fields remained after every message was visited"
+        "schema: resolved fields remained after every message was visited"
     );
     out
 }
 
 fn bincode_header(src: &mut String) {
     src.push_str(
-        "// @generated by models/codegen/schema_codegen.rs from the protobuf FileDescriptorSet.\n\
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
          // DO NOT EDIT. Regenerate by touching models/src/main/protobuf/RhoTypes.proto.\n\
          //\n\
          // ONE table, BOTH directions: `models::rust::rholang::bincode_encoder` (serializer)\n\
@@ -2722,7 +2722,7 @@ fn protobuf_kind(shape: &Shape) -> String {
             assert_eq!(
                 *key,
                 Type::String,
-                "schema_codegen: a map with a {key:?} key reached the prost table. The driver's \
+                "schema: a map with a {key:?} key reached the prost table. The driver's \
                  map arm writes the key with `prost::encoding::string::encode`; another key \
                  type needs a deliberate widening, not a silent reinterpretation."
             );
@@ -2756,7 +2756,7 @@ fn protobuf_scalar_variant(ty: Type) -> &'static str {
         Type::Double => "Double",
         Type::Float => "Float",
         other => panic!(
-            "schema_codegen: protobuf type {other:?} has no `ProtobufKind`. Add one deliberately — \
+            "schema: protobuf type {other:?} has no `ProtobufKind`. Add one deliberately — \
              widening it to the nearest neighbour would change the protobuf bytes and fork \
              consensus."
         ),
@@ -2794,7 +2794,7 @@ fn protobuf_scalar_module_and_default(ty: Type) -> (&'static str, &'static str) 
         Type::Float => ("float", "0f32"),
         Type::Double => ("double", "0f64"),
         other => panic!(
-            "schema_codegen: protobuf type {other:?} has no `prost::encoding` module. Add one \
+            "schema: protobuf type {other:?} has no `prost::encoding` module. Add one \
              deliberately — the emitted code CALLS prost's encoders, so an unmapped type has \
              no bytes rather than the wrong ones, and this refusal is what keeps it that way."
         ),
@@ -2824,7 +2824,7 @@ fn emit_protobuf_source(
 ) -> String {
     let mut src = String::with_capacity(64 * 1024);
     src.push_str(
-        "// @generated by models/codegen/schema_codegen.rs from the protobuf FileDescriptorSet.\n\
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
          // DO NOT EDIT. Regenerate by touching models/src/main/protobuf/RhoTypes.proto.\n\
          //\n\
          // ⚠★ THE ORDER HERE IS ASCENDING MINIMUM TAG, and it is NOT the order in\n\
@@ -2907,7 +2907,7 @@ fn emit_protobuf_message(
         for &tag in &f.tags {
             assert!(
                 seen.insert(tag),
-                "schema_codegen: `{leaf_name}` has two fields at proto tag {tag}. \
+                "schema: `{leaf_name}` has two fields at proto tag {tag}. \
                  `prost-derive` refuses this outright (`src/lib.rs:94-101`) and the sorted \
                  order would be ambiguous."
             );
@@ -3055,7 +3055,7 @@ fn emit_protobuf_message(
 fn protobuf_bodies(msg_name: &str, sorted: &[&Field]) -> (Vec<String>, Vec<String>) {
     assert!(
         sorted.len() < u16::MAX as usize,
-        "schema_codegen: `{msg_name}` has {} fields; `ProtobufDescent::resume` is a u16 and \
+        "schema: `{msg_name}` has {} fields; `ProtobufDescent::resume` is a u16 and \
          `NO_RESUME` is its maximum.",
         sorted.len()
     );
@@ -3364,7 +3364,7 @@ fn clone_field_plan(
             let key = format!("{owner_leaf}::{}", field.rust_name);
             let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
                 panic!(
-                    "schema_codegen: `{owner_leaf}.{}` is a oneof field but no resolved oneof \
+                    "schema: `{owner_leaf}.{}` is a oneof field but no resolved oneof \
                      answers to `{key}`. The clone emitter names a oneof's generated walk after \
                      its OWNER and field, so an unattributable oneof would silently become a \
                      bounded field — i.e. a whole-value clone of a type that contains `Par`s, \
@@ -3838,7 +3838,7 @@ fn emit_term_ops_source(
             continue;
         }
         let fields = fields_of.get(leaf).unwrap_or_else(|| {
-            panic!("schema_codegen: entered type `{leaf}` has no resolved fields")
+            panic!("schema: entered type `{leaf}` has no resolved fields")
         });
         emit_clone_family_message(
             &mut src,
@@ -3860,7 +3860,7 @@ fn emit_term_ops_source(
     }
     assert!(
         families > 0,
-        "schema_codegen: the clone emitter produced NO family. The driver would then have nothing \
+        "schema: the clone emitter produced NO family. The driver would then have nothing \
          to walk, every `Clone` would fall back to a whole-value copy, and the file would \
          compile — which is precisely the silent-vacuity failure the non-vacuity floors in \
          `models/build.rs` exist to refuse. Check `ClonePlan::entered`."
@@ -3905,7 +3905,7 @@ fn emit_term_ops_source(
         fields_of
             .get("Par")
             .copied()
-            .expect("schema_codegen: Par must have resolved fields"),
+            .expect("schema: Par must have resolved fields"),
     );
 
     // ── §F  the retained oracle ──
@@ -3987,7 +3987,7 @@ fn term_ops_header(src: &mut String, plan: &ClonePlan, graph: &SchemaGraph) {
         .join(", ");
     writeln!(
         src,
-        "// @generated by models/codegen/schema_codegen.rs from the protobuf FileDescriptorSet.\n\
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
          // DO NOT EDIT. Regenerate by touching models/src/main/protobuf/RhoTypes.proto.\n\
          //\n\
          // ── THE TERM-OP DRIVERS — stage F-4 fills the slot stage S2 built ──\n\
@@ -4101,7 +4101,7 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
             .iter()
             .find(|(t, _)| *t == ty)
             .map(|(_, path)| *path)
-            .expect("schema_codegen: ClonePlan::build proved every cut member has a teardown");
+            .expect("schema: ClonePlan::build proved every cut member has a teardown");
         writeln!(
             src,
             "    /// Take the [`{ty}`] this value must be.\n    \
@@ -4120,7 +4120,7 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
                 .iter()
                 .find(|(t, _)| *t == other_ty)
                 .map(|(_, path)| *path)
-                .expect("schema_codegen: every cut member has a teardown");
+                .expect("schema: every cut member has a teardown");
             writeln!(
                 src,
                 "            CloneVal::{other_ty}(v) => {{\n                \
@@ -4139,7 +4139,7 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
     // copy per member would be N copies of one match.
     src.push_str(
         "    /// Release this value with an ITERATIVE teardown, per\n\
-         \x20   /// `codegen/schema_codegen.rs`'s `ITERATIVE_TEARDOWN` table.\n\
+         \x20   /// `codegen/schema.rs`'s `ITERATIVE_TEARDOWN` table.\n\
          \x20   ///\n\
          \x20   /// ⚠ Needed on exactly one path: a PANIC unwinding out of the driver, which\n\
          \x20   /// leaves cloned terms on the pooled value stack. `Vec::clear` there would run\n\
@@ -4154,7 +4154,7 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
             .iter()
             .find(|(t, _)| *t == ty)
             .map(|(_, path)| *path)
-            .expect("schema_codegen: every cut member has a teardown");
+            .expect("schema: every cut member has a teardown");
         writeln!(src, "            CloneVal::{ty}(v) => {teardown}(v),").expect("write");
     }
     src.push_str("        }\n    }\n}\n\n");
@@ -4246,7 +4246,7 @@ fn emit_clone_alphabet(src: &mut String, plan: &ClonePlan) {
          \x20        rebuild has (or `clone_push_children_*` never pushed it). All three \\\n\
          \x20        families are generated from ONE resolved-field vector in DECLARATION \\\n\
          \x20        order, so a disagreement means the emitter's three renderers have \\\n\
-         \x20        drifted — see models/codegen/schema_codegen.rs section 7.\"\n\
+         \x20        drifted — see models/codegen/schema.rs section 7.\"\n\
          \x20   )\n\
          }\n\n\
          #[cold]\n\
@@ -4404,7 +4404,7 @@ fn emit_clone_pool(src: &mut String, plan: &ClonePlan) {
          /// The measured produce distribution is 95.43% at depth 2, which is a chain of\n\
          /// THREE cut-set levels, so {DESCEND_BUDGET} covers 96.11% of datums entirely in\n\
          /// one `descend` and 4 would buy a further 2.03%. See\n\
-         /// `models/codegen/schema_codegen.rs`'s `DESCEND_BUDGET` for the full derivation,\n\
+         /// `models/codegen/schema.rs`'s `DESCEND_BUDGET` for the full derivation,\n\
          /// including why the `12288 / 3254` inequality is NOT the constraint and why the\n\
          /// prefix is priced at the family-of-free-functions slope (7,021 B/level) rather\n\
          /// than at the single-derive one (3,254).\n\
@@ -5193,7 +5193,7 @@ fn emit_clone_impls(
         let rust_path = &path_of[leaf];
         let fields = fields_of
             .get(leaf)
-            .unwrap_or_else(|| panic!("schema_codegen: `{leaf}` has no resolved fields"));
+            .unwrap_or_else(|| panic!("schema: `{leaf}` has no resolved fields"));
         if plan.in_cut(leaf) {
             let stem = rust_type_name(leaf).to_snake_case();
             writeln!(
@@ -5304,7 +5304,7 @@ fn emit_debug_driver(
         let previous = reachable_messages.len() + reachable_oneofs.len();
         for leaf in reachable_messages.clone() {
             let fields = fields_of.get(leaf).unwrap_or_else(|| {
-                panic!("schema_codegen: Debug-reachable message `{leaf}` has no fields")
+                panic!("schema: Debug-reachable message `{leaf}` has no fields")
             });
             for field in *fields {
                 match &field.shape {
@@ -5321,7 +5321,7 @@ fn emit_debug_driver(
                     Shape::Oneof => {
                         let key = format!("{leaf}::{}", field.rust_name);
                         let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                            panic!("schema_codegen: Debug-reachable field `{key}` has no oneof")
+                            panic!("schema: Debug-reachable field `{key}` has no oneof")
                         });
                         reachable_oneofs.insert(oneof.rust_ident.as_str());
                         for variant in &oneof.variants {
@@ -5682,12 +5682,12 @@ fn emit_debug_field_value(
         }
         Shape::RepeatedMessage { leaf } => writeln!(src, "{pad}ops.push(DebugOp::Seq(DebugSeq::{}(&value.{name}), {depth}));", rust_type_name(leaf)).expect("write"),
         Shape::Map { value_leaf, .. } => {
-            assert_eq!(value_leaf, "Par", "schema_codegen: Debug map driver only models map<string, Par>");
+            assert_eq!(value_leaf, "Par", "schema: Debug map driver only models map<string, Par>");
             writeln!(src, "{pad}ops.push(DebugOp::Map(&value.{name}, {depth}));").expect("write");
         }
         Shape::Oneof => {
             let key = format!("{owner}::{name}");
-            let oneof = oneof_by_field.get(&key).unwrap_or_else(|| panic!("schema_codegen: Debug field `{key}` has no oneof"));
+            let oneof = oneof_by_field.get(&key).unwrap_or_else(|| panic!("schema: Debug field `{key}` has no oneof"));
             writeln!(src, "{pad}match &value.{name} {{ Some(child) => debug_push_option_node(DebugNode::{}(child), {depth}, pretty, ops), None => ops.push(DebugOp::Text(\"None\")), }}", ord_oneof_arm(oneof)).expect("write");
         }
     }
@@ -5896,7 +5896,7 @@ fn emit_debug_oracle(
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["Par"],
-        "schema_codegen: the generated Debug differential currently names Par as its root; \
+        "schema: the generated Debug differential currently names Par as its root; \
          widen the generated test roots when the descriptor-derived cut set changes"
     );
     src.push_str(
@@ -5976,7 +5976,7 @@ fn emit_debug_oracle_field(
         Shape::Oneof => {
             let key = format!("{owner}::{name}");
             let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                panic!("schema_codegen: Debug oracle field `{key}` has no oneof")
+                panic!("schema: Debug oracle field `{key}` has no oneof")
             });
             writeln!(src, "    let {binding} = OracleOption(value.{name}.as_ref().map(|child| DebugNode::{}(child)));", ord_oneof_arm(oneof)).expect("write");
             writeln!(src, "    builder.field({name:?}, &{binding});").expect("write");
@@ -6012,7 +6012,7 @@ fn emit_ord_driver(
         let previous = reachable_messages.len() + reachable_oneofs.len();
         for leaf in reachable_messages.clone() {
             let fields = fields_of.get(leaf).unwrap_or_else(|| {
-                panic!("schema_codegen: Ord-reachable message `{leaf}` has no fields")
+                panic!("schema: Ord-reachable message `{leaf}` has no fields")
             });
             for field in *fields {
                 match &field.shape {
@@ -6029,7 +6029,7 @@ fn emit_ord_driver(
                     Shape::Oneof => {
                         let key = format!("{leaf}::{}", field.rust_name);
                         let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                            panic!("schema_codegen: Ord-reachable field `{key}` has no oneof")
+                            panic!("schema: Ord-reachable field `{key}` has no oneof")
                         });
                         reachable_oneofs.insert(oneof.rust_ident.as_str());
                         for variant in &oneof.variants {
@@ -6085,7 +6085,7 @@ fn emit_ord_driver(
         let arm = ord_message_arm(leaf);
         assert!(
             node_arms.insert(arm.clone()),
-            "schema_codegen: duplicate TermRef arm `{arm}`"
+            "schema: duplicate TermRef arm `{arm}`"
         );
         writeln!(src, "    {arm}(&'a {}),", path_of[leaf]).expect("write");
     }
@@ -6096,7 +6096,7 @@ fn emit_ord_driver(
         let arm = ord_oneof_arm(oneof);
         assert!(
             node_arms.insert(arm.clone()),
-            "schema_codegen: duplicate TermRef arm `{arm}`"
+            "schema: duplicate TermRef arm `{arm}`"
         );
         writeln!(
             src,
@@ -6327,7 +6327,7 @@ fn emit_ord_driver(
     for leaf in &plan.cut {
         assert!(
             !extern_set.contains(leaf.as_str()),
-            "schema_codegen: Ord cut-set member `{leaf}` is extern and cannot receive a generated impl"
+            "schema: Ord cut-set member `{leaf}` is extern and cannot receive a generated impl"
         );
         let rust_path = &path_of[leaf.as_str()];
         let arm = ord_message_arm(leaf);
@@ -6631,7 +6631,7 @@ fn emit_ord_message_step(
             Shape::Map { value_leaf, .. } => {
                 assert_eq!(
                     value_leaf, "Par",
-                    "schema_codegen: Ord map driver only models map<string, Par>"
+                    "schema: Ord map driver only models map<string, Par>"
                 );
                 writeln!(
                     src,
@@ -6646,7 +6646,7 @@ fn emit_ord_message_step(
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema_codegen: Ord field `{key}` has no resolved oneof")
+                    panic!("schema: Ord field `{key}` has no resolved oneof")
                 });
                 writeln!(
                     src,
@@ -7143,7 +7143,7 @@ fn emit_eq_message_step(
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field
                     .get(&key)
-                    .unwrap_or_else(|| panic!("schema_codegen: Eq field `{key}` has no oneof"));
+                    .unwrap_or_else(|| panic!("schema: Eq field `{key}` has no oneof"));
                 writeln!(
                     src,
                     "        match (&left.{name}, &right.{name}) {{\n            \
@@ -7272,7 +7272,7 @@ fn emit_eq_oracle(
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["Par"],
-        "schema_codegen: Eq differential root must track the descriptor-derived cut set"
+        "schema: Eq differential root must track the descriptor-derived cut set"
     );
     src.push_str(
         "#[cfg(test)]\nmod eq_pda_differential {\n\
@@ -7369,7 +7369,7 @@ fn emit_eq_oracle_message(
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema_codegen: Eq oracle field `{key}` has no oneof")
+                    panic!("schema: Eq oracle field `{key}` has no oneof")
                 });
                 let compare = format!("oracle_eq_oneof_{}", oneof.rust_ident.to_snake_case());
                 writeln!(
@@ -7698,7 +7698,7 @@ fn emit_hash_message_step(
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field
                     .get(&key)
-                    .unwrap_or_else(|| panic!("schema_codegen: Hash field `{key}` has no oneof"));
+                    .unwrap_or_else(|| panic!("schema: Hash field `{key}` has no oneof"));
                 writeln!(
                     src,
                     "        std::mem::discriminant(&value.{name}).hash(state);\n        \
@@ -7806,7 +7806,7 @@ fn emit_hash_oracle(
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["Par"],
-        "schema_codegen: Hash differential root must track the descriptor-derived cut set"
+        "schema: Hash differential root must track the descriptor-derived cut set"
     );
     src.push_str(
         "#[cfg(test)]\nmod hash_pda_differential {\n\
@@ -7905,7 +7905,7 @@ fn emit_hash_oracle_message(
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema_codegen: Hash oracle field `{key}` has no oneof")
+                    panic!("schema: Hash oracle field `{key}` has no oneof")
                 });
                 let hash = format!("oracle_hash_oneof_{}", oneof.rust_ident.to_snake_case());
                 writeln!(
@@ -8032,7 +8032,7 @@ fn emit_ord_oracle(
     assert_eq!(
         plan.cut.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["Par"],
-        "schema_codegen: the generated Ord differential currently names Par as its root; \
+        "schema: the generated Ord differential currently names Par as its root; \
          widen the generated test roots when the descriptor-derived cut set changes"
     );
     src.push_str(
@@ -8208,7 +8208,7 @@ fn emit_ord_oracle_message(
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
                 let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema_codegen: Ord oracle field `{key}` has no oneof")
+                    panic!("schema: Ord oracle field `{key}` has no oneof")
                 });
                 let oneof_stem = oneof.rust_ident.to_snake_case();
                 writeln!(
@@ -8343,7 +8343,7 @@ fn emit_clone_oracle(
         let rust_path = &path_of[leaf];
         let fields = fields_of
             .get(leaf)
-            .unwrap_or_else(|| panic!("schema_codegen: `{leaf}` has no resolved fields"));
+            .unwrap_or_else(|| panic!("schema: `{leaf}` has no resolved fields"));
         let inits = fields
             .iter()
             .map(|f| {
@@ -8370,7 +8370,7 @@ fn emit_clone_oracle(
                     Shape::Oneof => {
                         let key = format!("{leaf}::{name}");
                         let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                            panic!("schema_codegen: no oneof answers to `{key}` for the oracle")
+                            panic!("schema: no oneof answers to `{key}` for the oracle")
                         });
                         if plan.oneof_is_copy[&oneof.rust_ident] {
                             format!("src.{name}.clone()")
@@ -8569,7 +8569,7 @@ fn emit_schema_meta_source(
 ) -> (String, usize) {
     let mut src = String::with_capacity(48 * 1024);
     src.push_str(
-        "// @generated by models/codegen/schema_codegen.rs from the protobuf FileDescriptorSet.\n\
+        "// @generated by models/codegen/schema.rs from the protobuf FileDescriptorSet.\n\
          // DO NOT EDIT. Regenerate by touching models/src/main/protobuf/RhoTypes.proto.\n\
          //\n\
          // The SCHEMA META: the child relation, its strongly connected components, and the\n\
@@ -8661,7 +8661,7 @@ fn emit_schema_meta_source(
          ///\n\
          /// One row per (generated item × run-time surface of every `#[derive]` it\n\
          /// carries). The rows are the CROSS PRODUCT of the descriptor's items with\n\
-         /// `models/codegen/schema_codegen.rs`'s closed `DERIVE_DISPOSITIONS` table, so the\n\
+         /// `models/codegen/schema.rs`'s closed `DERIVE_DISPOSITIONS` table, so the\n\
          /// list of recursive walks this campaign owes a driver is DERIVED from what is\n\
          /// actually derived — never hand-picked. A hand-picked list of four missed `Hash`\n\
          /// entirely, and the enumeration additionally found `Ord`/`PartialOrd`, which\n\
@@ -8763,7 +8763,7 @@ fn emit_schema_meta_source(
         .join("\n");
     writeln!(
         src,
-        "/// The closed set of `#[derive]` tokens `codegen/schema_codegen.rs` dispositions.\n\
+        "/// The closed set of `#[derive]` tokens `codegen/schema.rs` dispositions.\n\
          ///\n\
          /// `models/build.rs` requires the textual scan of `OUT_DIR/rhoapi.rs` to produce\n\
          /// exactly this set. A token that appears in the generated file and not here\n\
@@ -8804,8 +8804,8 @@ fn emit_protobuf_decoder_source(
     extern_set: &BTreeSet<&str>,
 ) -> String {
     let mut src = String::from(
-        r##"// @generated by models/codegen/schema_codegen.rs (§8). DO NOT EDIT.
-// Regenerate by touching models/codegen/schema_codegen.rs — models/build.rs emits a
+        r##"// @generated by models/codegen/schema.rs (§8). DO NOT EDIT.
+// Regenerate by touching models/codegen/schema.rs — models/build.rs emits a
 // `cargo:rerun-if-changed` for it, so an edit here cannot leave a stale copy in
 // `OUT_DIR` while the build reports success.
 //
@@ -9083,7 +9083,7 @@ fn unexpected_end_group_tag() -> DecodeError {
     // missing function rather than the emitter that stopped emitting it.
     assert!(
         src.contains("pub fn skip_unknown_field("),
-        "schema_codegen §8: the protobuf-decoder emitter produced {} bytes without \
+        "schema §8: the protobuf-decoder emitter produced {} bytes without \
          `pub fn skip_unknown_field(`. That is the only item this output exists to \
          carry at S0.",
         src.len()
@@ -10679,7 +10679,7 @@ pub fn decode_par_with_stats<B: Buf>(
         .iter()
         .find_map(|(message, fields)| (message.leaf_name() == "Par").then_some(*fields))
         .flatten()
-        .expect("schema_codegen: the generated Par message must have resolved fields");
+        .expect("schema: the generated Par message must have resolved fields");
     emit_protobuf_decoder_merge_par_field(src, par_fields);
 }
 
@@ -10740,7 +10740,7 @@ fn emit_protobuf_decoder_merge_par_field(src: &mut String, fields: &[Field]) {
                 .expect("write Par scalar merge arm");
             }
             other => panic!(
-                "schema_codegen: Par field `{name}` has unsupported manual Message merge shape \
+                "schema: Par field `{name}` has unsupported manual Message merge shape \
                  {other:?}; widen `merge_par_field` before changing the recursive cut-set type"
             ),
         }

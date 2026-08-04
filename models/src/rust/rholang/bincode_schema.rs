@@ -5,7 +5,7 @@
 //! implements, and the one program the descriptor cannot express
 //! (`EPathMap`). The **generated** half — one `impl BincodeNode` per message, one
 //! `impl BincodeOneof` per oneof, the variant tables and their indices — is
-//! emitted by `models/codegen/schema_codegen.rs` into `OUT_DIR/rhoapi_bincode_schema.rs` and
+//! emitted by `models/codegen/schema.rs` into `OUT_DIR/rhoapi_bincode_schema.rs` and
 //! included by [`crate::rust::rholang::bincode_schema_tables`].
 //!
 //! ## The format, in one paragraph

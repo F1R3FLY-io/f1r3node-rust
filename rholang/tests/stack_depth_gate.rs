@@ -773,7 +773,7 @@ const CONVERTED_DEPTH: &[&str] = &[
     // ★★ Stage F-4 — `<Par as Clone>::clone`. It LEFT `TRIPWIRE_DEPTH` below by
     // being CONVERTED, never by having its ceiling raised: `models/build.rs`
     // STRIPS the `Clone` derive from the 55 non-`Copy` `rhoapi` items and
-    // `models/codegen/schema_codegen.rs` GENERATES the impls, `Par`'s over
+    // `models/codegen/schema.rs` GENERATES the impls, `Par`'s over
     // `drive::drive_with`. The derived form measured 16,493 B/level debug and
     // 3,254 release (`four_quadrant_s0_baseline`, re-measured at HEAD before the
     // conversion); the driven form holds its native stack flat from depth 16 to
@@ -792,13 +792,13 @@ const CONVERTED_DEPTH: &[&str] = &[
     "clone_send_chain",
     // Stage F-5 — `<Par as Ord>::cmp`. `models/build.rs` strips `Ord` and
     // `PartialOrd` exactly at the descriptor-derived feedback vertex set and
-    // `models/codegen/schema_codegen.rs` emits the lexicographic PDA. Its recursive
+    // `models/codegen/schema.rs` emits the lexicographic PDA. Its recursive
     // oracle is test-only; the generated differential and this gate cover
     // semantic equivalence and native-stack flatness through depth 4,096.
     "ord",
     // Stage F-6 — `<Par as Debug>::fmt`. `models/build.rs` injects prost's
     // `skip_debug` exactly at the descriptor-derived feedback vertex set and
-    // `models/codegen/schema_codegen.rs` emits a declaration-order formatting PDA.
+    // `models/codegen/schema.rs` emits a declaration-order formatting PDA.
     // A generated recursive builder oracle checks both compact and alternate
     // output on a shallow corpus; this gate checks stack flatness through 4,096.
     "debug",
@@ -2344,7 +2344,7 @@ fn clone_pathmap_chain_body(depth: usize) {
 /// already frozen a deliberately-broken probe form into history once by
 /// committing mid-measurement.
 ///
-/// `models/codegen/schema_codegen.rs` §F therefore retains the derive's own body as a
+/// `models/codegen/schema.rs` §F therefore retains the derive's own body as a
 /// free function, and `models/tests/clone_equivalence_corpus.rs` proves it
 /// byte-identical to the driven form on eight axes over 67 enumerated shapes. So
 /// the control and the subject live in the SAME binary, run on the SAME ladder, in
@@ -3708,7 +3708,7 @@ fn theta_depth_tripwire() {
     //
     // Stage F-4 converted `<Par as Clone>::clone`: `models/build.rs` strips the
     // `Clone` derive from the 55 non-`Copy` `rhoapi` items and
-    // `models/codegen/schema_codegen.rs` generates the impls, `Par`'s as an
+    // `models/codegen/schema.rs` generates the impls, `Par`'s as an
     // explicit-worklist traversal over `drive::drive_with`. The subject is in
     // [`CONVERTED_DEPTH`] and `converted_traversals_are_depth_independent` now
     // drives it, so a ceiling here would be a weaker statement about the same
@@ -3917,7 +3917,7 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// workspace has already frozen a deliberately-broken probe form into history
 /// once by committing mid-measurement.
 ///
-/// So the "before" is a **live control**. `models/codegen/schema_codegen.rs` §F retains
+/// So the "before" is a **live control**. `models/codegen/schema.rs` §F retains
 /// the derive's own body as `term_ops::oracle_clone_par`, and
 /// `models/tests/clone_equivalence_corpus.rs` proves it byte-identical to the
 /// driven form on eight axes over 67 enumerated shapes. Subject and control are in
@@ -3957,7 +3957,7 @@ fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
 /// figure is **3,254 B/level**, bisected directly from this subject at HEAD before
 /// the conversion and recorded in
 /// `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md` and in
-/// `models/codegen/schema_codegen.rs`'s disposition table.
+/// `models/codegen/schema.rs`'s disposition table.
 ///
 /// ★ The divergence is CONSERVATIVE for every leg that uses the oracle: legs 1 and
 /// 3 both want the control to be *expensive*, so an over-costly control makes them
@@ -4081,7 +4081,7 @@ fn the_clone_conversion_is_visible_against_its_own_derived_control() {
 /// Clone>::clone` itself is untouched and still in `TRIPWIRE_DEPTH`"*. That was
 /// true when it was written and it is not true now: **stage F-4 converted it**
 /// (`models/build.rs` strips the `Clone` derive from the 55 non-`Copy` `rhoapi`
-/// items; `models/codegen/schema_codegen.rs` generates the impls, `Par`'s over
+/// items; `models/codegen/schema.rs` generates the impls, `Par`'s over
 /// `drive::drive_with`). `clone` is in [`CONVERTED_DEPTH`], its
 /// [`assert_slope_below`] call is deleted, and its [`S0_LADDERS`] row is gone —
 /// see the note on that constant. The reading the old sentence stood behind,

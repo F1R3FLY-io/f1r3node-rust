@@ -2,13 +2,13 @@
 //!
 //! The hand-written half of the protobuf table. Its generated twin —
 //! `<TY>_PROTOBUF_PROGRAM`, one per message, and `<ONEOF>_PROTOBUF_VARIANTS`, one per
-//! oneof — is emitted by `models/codegen/schema_codegen.rs` into
+//! oneof — is emitted by `models/codegen/schema.rs` into
 //! `OUT_DIR/rhoapi_protobuf_schema.rs` and included by
 //! [`crate::rust::rholang::protobuf_schema_tables`].
 //!
 //! This is the exact counterpart of [`crate::rust::rholang::bincode_schema`], which holds
 //! the same split for the **bincode** table. The two are deliberately separate
-//! types over one shared walk; see `models/codegen/schema_codegen.rs`'s header for why
+//! types over one shared walk; see `models/codegen/schema.rs`'s header for why
 //! sharing the *order* would be a defect rather than a simplification.
 //!
 //! ---

@@ -394,7 +394,7 @@
 //! routing through `Vec<Val>`.
 //!
 //! ⇒ Anyone reaching for `Tail` to close a byte-movement gap should read
-//! `models/codegen/schema_codegen.rs`'s clone-throughput section, which now carries the
+//! `models/codegen/schema.rs`'s clone-throughput section, which now carries the
 //! deterministic instruction- and store-level accounting.
 //!
 //! ### ★ And blocker 1 does not bind `Tail`, for a structural reason

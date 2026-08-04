@@ -128,7 +128,7 @@ fn the_par_width_every_byte_argument_is_denominated_in_is_pinned() {
     assert_eq!(
         measured, PAR_BYTES,
         "★ `size_of::<Par>()` is {measured} B, not {PAR_BYTES} B. This number is not a \
-         detail: `models/codegen/schema_codegen.rs`'s clone-throughput section prices the \
+         detail: `models/codegen/schema.rs`'s clone-throughput section prices the \
          driven form's overhead as THREE EXTRA 248-BYTE MOVES PER NODE, and the \
          deterministic confirmation of that hypothesis is `drive_with`'s measured +93.6 \
          write references per node against `3 × 248 / 8 = 93`. If `Par` changed width, \

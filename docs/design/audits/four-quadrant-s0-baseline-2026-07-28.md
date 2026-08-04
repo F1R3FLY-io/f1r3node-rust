@@ -372,7 +372,7 @@ not collapse into S3. Concretely:
 
 ### 5.1 What was computed, and where it lives
 
-`models/codegen/schema_codegen.rs` now derives the schema's **child relation** from
+`models/codegen/schema.rs` now derives the schema's **child relation** from
 the same resolved fields the wire tables are generated from — a singular or
 repeated message field contributes its type, a map contributes its *value* type,
 a oneof contributes every message-payload arm — and runs an **iterative**

@@ -21,7 +21,7 @@ pub(crate) mod phase7_depth_histogram;
 // ---------------------------------------------------------------------------
 // ★ THE FIVE GENERATED MODULES — ONE build-script pass, five outputs
 //
-// `models/codegen/schema_codegen.rs` resolves every `rhoapi` message ONCE and emits
+// `models/codegen/schema.rs` resolves every `rhoapi` message ONCE and emits
 // five files into `OUT_DIR`; `models/build.rs` writes each one. All five are
 // included here, including the one that is currently empty, so the pipeline a
 // later stage fills is exercised from the stage that built it: five files
@@ -30,7 +30,7 @@ pub(crate) mod phase7_depth_histogram;
 // ⚠★ The two field tables are the SAME resolved fields under TWO SORT KEYS —
 // `identity` for serde/bincode, `sort_by_key(min_tag)` for protobuf — and the
 // two orders genuinely differ for `Par` and `TaggedContinuation`. See
-// `models/codegen/schema_codegen.rs`'s header; the second of those is the message
+// `models/codegen/schema.rs`'s header; the second of those is the message
 // whose serde order already cost this campaign a 95-byte encoding with its
 // halves exchanged, and for protobuf the correct order is the OPPOSITE of that
 // fix.

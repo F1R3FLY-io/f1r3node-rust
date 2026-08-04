@@ -3,7 +3,7 @@
 //! The hand-written half of the schema-meta table. Its generated twin —
 //! `SCHEMA_CHILDREN`, `SCHEMA_SCC`, `RECURSIVE_TYPES`,
 //! `DERIVE_DISPOSITION_REGISTRY`, `HAND_WRITTEN_TRAVERSALS` and
-//! `DISPOSITIONED_DERIVES` — is emitted by `models/codegen/schema_codegen.rs` into
+//! `DISPOSITIONED_DERIVES` — is emitted by `models/codegen/schema.rs` into
 //! `OUT_DIR/rhoapi_schema_meta.rs` and included by
 //! [`crate::rust::rholang::schema_meta_tables`].
 //!
@@ -37,7 +37,7 @@
 //! in no `assert_slope_below` call. Their absence meant UNMEASURED, and absence
 //! reads exactly like flatness from outside.
 //!
-//! So the list is **derived**: `models/codegen/schema_codegen.rs` holds a closed
+//! So the list is **derived**: `models/codegen/schema.rs` holds a closed
 //! table mapping every `#[derive]` token that reaches `OUT_DIR/rhoapi.rs` to the
 //! run-time surfaces it expands to, each with a [`Disposition`]; the generator
 //! emits the cross product with the descriptor's items; and `models/build.rs`
@@ -171,21 +171,21 @@ pub static PDA_EQUIVALENCE_EVIDENCE: &[EquivalenceEvidence] = &[
         surface: "Ord::cmp",
         proof_file: PDA_PROOF,
         theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema_codegen.rs",
+        executable_file: "models/codegen/schema.rs",
         executable_marker: "generated_ord_matches_the_recursive_oracle",
     },
     EquivalenceEvidence {
         surface: "PartialOrd::partial_cmp",
         proof_file: PDA_PROOF,
         theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema_codegen.rs",
+        executable_file: "models/codegen/schema.rs",
         executable_marker: "generated_ord_matches_the_recursive_oracle",
     },
     EquivalenceEvidence {
         surface: "Debug::fmt",
         proof_file: PDA_PROOF,
         theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema_codegen.rs",
+        executable_file: "models/codegen/schema.rs",
         executable_marker: "generated_debug_matches_the_recursive_builder_oracle",
     },
     EquivalenceEvidence {
@@ -241,14 +241,14 @@ pub static PDA_EQUIVALENCE_EVIDENCE: &[EquivalenceEvidence] = &[
         surface: "PartialEq::eq",
         proof_file: PDA_PROOF,
         theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema_codegen.rs",
+        executable_file: "models/codegen/schema.rs",
         executable_marker: "generated_eq_matches_the_recursive_oracle",
     },
     EquivalenceEvidence {
         surface: "Hash::hash",
         proof_file: PDA_PROOF,
         theorem: "pda_fold_equivalent_to_recursive_fold",
-        executable_file: "models/codegen/schema_codegen.rs",
+        executable_file: "models/codegen/schema.rs",
         executable_marker: "generated_hash_matches_the_recursive_oracle",
     },
     EquivalenceEvidence {

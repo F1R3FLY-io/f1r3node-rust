@@ -61,7 +61,7 @@ pub use crate::rust::rholang::bincode_schema_tables::CONNECTIVE_INSTANCE_VARIANT
 /// Bumping this without extending every corpus that asserts against it is the
 /// mistake this constant exists to prevent.
 /// ★ GENERATED, never a literal. Re-exported from the schema-codegen table
-/// (`models/codegen/schema_codegen.rs`) so the count IS
+/// (`models/codegen/schema.rs`) so the count IS
 /// `EXPR_INSTANCE_VARIANTS.len()`. It used to read `= 36`, which meant a 37th
 /// arm would leave every assertion measured against it passing while the new
 /// arm went untested — the exact failure mode generation exists to remove.

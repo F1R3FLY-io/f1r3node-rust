@@ -7,7 +7,7 @@
 //!
 //! | surface | census | mechanism |
 //! |---|---|---|
-//! | **derived impls** | ✅ | `DERIVE_DISPOSITIONS` in `models/codegen/schema_codegen.rs` is a closed table over derive TOKENS; `models/build.rs` **fails the build** on an unknown one. |
+//! | **derived impls** | ✅ | `DERIVE_DISPOSITIONS` in `models/codegen/schema.rs` is a closed table over derive TOKENS; `models/build.rs` **fails the build** on an unknown one. |
 //! | **generated files** (mettail) | ✅ | `GENERATED_FILE_CENSUS` + `defines_a_function_it_also_calls`, deliberately loose in the safe direction. |
 //! | **hand-written traversals** | ❌ **nothing** | ⇐ this file |
 //!

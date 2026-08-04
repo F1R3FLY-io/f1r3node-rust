@@ -2,7 +2,7 @@
 //!
 //! Stage F-4 replaced `<Par as Clone>::clone` — a `#[derive(Clone)]` expansion —
 //! with an explicit-worklist traversal over the shared `drive_with` trampoline
-//! (`models/codegen/schema_codegen.rs` §7, emitted into
+//! (`models/codegen/schema.rs` §7, emitted into
 //! `OUT_DIR/rhoapi_term_ops.rs`). `Clone` is a structural copy, so the expected
 //! answer is **byte-identical, no consensus axis moves**.
 //!
@@ -211,7 +211,7 @@ fn axes_agree(label: &str, original: &Par) {
              oracle Debug: {}\n\
              \n\
              `Clone` is a structural copy, so no axis may move. A difference here is a \
-             GENERATED-CODE defect in `models/codegen/schema_codegen.rs` §7 — most likely a \
+             GENERATED-CODE defect in `models/codegen/schema.rs` §7 — most likely a \
              `clone_rebuild_*` that places a field the matching `clone_push_children_*` never \
              pushed, or the two disagreeing about DECLARATION order.",
             a.debug, b.debug
