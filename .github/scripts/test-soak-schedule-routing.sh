@@ -36,13 +36,20 @@ cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   *"/commits?"*) printf '1\n' ;;
-  *)
+  *"runs?event=workflow_dispatch"*)
+    if [ -n "${FAKE_CLAIM_QUERY_FAIL:-}" ]; then
+      exit 1
+    fi
     if [ -n "${FAKE_CLAIMED_SLOT:-}" ]; then
       printf '{"workflow_runs":[{"id":123,"display_title":"Merge Recovery Soak [scheduled:%s]","status":"%s","conclusion":%s}]}\n' \
         "$FAKE_CLAIMED_SLOT" "${FAKE_CLAIMED_STATUS:-in_progress}" "${FAKE_CLAIMED_CONCLUSION:-null}"
     else
       printf '%s\n' '{"workflow_runs":[]}'
     fi
+    ;;
+  *)
+    printf 'unexpected gh invocation: %s\n' "$*" >&2
+    exit 1
     ;;
 esac
 SH
@@ -58,6 +65,7 @@ run_gate() {
 		FAKE_CLAIMED_SLOT="${FAKE_CLAIMED_SLOT:-}" \
 		FAKE_CLAIMED_STATUS="${FAKE_CLAIMED_STATUS:-}" \
 		FAKE_CLAIMED_CONCLUSION="${FAKE_CLAIMED_CONCLUSION:-}" \
+		FAKE_CLAIM_QUERY_FAIL="${FAKE_CLAIM_QUERY_FAIL:-}" \
 		FAKE_PACIFIC_WEEKDAY="$weekday" \
 		EVENT_NAME="$([ "$mode" = oci ] && printf workflow_dispatch || printf schedule)" \
 		EVENT_SCHEDULE="30 2 * * *" \
@@ -108,6 +116,9 @@ done_claim="$(FAKE_CLAIMED_SLOT=1785810600 FAKE_CLAIMED_STATUS=completed \
 grep -qx 'should_run=false' "$done_claim"
 # The unclaimed cron delivery from the loop above must still have run.
 grep -qx 'should_run=true' "$TMP/output-cron-1"
+# A failed claim query must fail OPEN: soak anyway rather than silently skip.
+open_fail="$(FAKE_CLAIM_QUERY_FAIL=1 run_gate cron 1 1785810600 query-fail)"
+grep -qx 'should_run=true' "$open_fail"
 
 if PATH="$TMP/bin:$PATH" \
 	FAKE_NOW_EPOCH=1785551460 \
