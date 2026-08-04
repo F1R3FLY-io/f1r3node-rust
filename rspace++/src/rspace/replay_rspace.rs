@@ -680,14 +680,7 @@ where
             .replay_data
             .lock()
             .unwrap()
-            .map
-            .get(&IOEvent::Consume(consume_ref.clone()))
-            .map(|comms| {
-                comms
-                    .iter()
-                    .map(|tuple| tuple.0.clone())
-                    .collect::<Vec<_>>()
-            });
+            .get_distinct_values_sorted(&IOEvent::Consume(consume_ref.clone()));
         match comms_option {
             None => Ok(self.store_waiting_continuation(channels, wk)),
             Some(comms_list) => {
@@ -851,14 +844,7 @@ where
             .replay_data
             .lock()
             .unwrap()
-            .map
-            .get(&IOEvent::Produce(produce_ref.clone()))
-            .map(|comms| {
-                comms
-                    .iter()
-                    .map(|tuple| tuple.0.clone())
-                    .collect::<Vec<_>>()
-            });
+            .get_distinct_values_sorted(&IOEvent::Produce(produce_ref.clone()));
         match comms_option {
             None => Ok(self.store_data(channel, data, persist, produce_ref)),
             Some(comms) => {

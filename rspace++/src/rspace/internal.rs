@@ -171,6 +171,23 @@ where
     pub fn clear(&self) { self.map.clear(); }
 
     pub fn is_empty(&self) -> bool { self.map.is_empty() }
+
+    /// Project one multiset bucket to its distinct values in canonical order.
+    ///
+    /// `Counter<V>` is a hash map from value to multiplicity. Callers that need
+    /// to try each distinct value once must not inherit that map's
+    /// process-local iteration order. Multiplicities remain in the counter
+    /// and are consumed by `remove_binding_in_place`; this projection
+    /// intentionally returns one copy of each key, matching the old replay
+    /// semantics.
+    pub fn get_distinct_values_sorted(&self, k: &K) -> Option<Vec<V>>
+    where V: Clone + Ord {
+        self.map.get(k).map(|counter| {
+            let mut values: Vec<V> = counter.iter().map(|(value, _)| value.clone()).collect();
+            values.sort_unstable();
+            values
+        })
+    }
 }
 
 impl<K: Hash + Eq, V: Hash + Eq> MultisetMultiMap<K, V> {

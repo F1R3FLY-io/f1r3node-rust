@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
@@ -87,6 +88,29 @@ impl Hash for COMM {
             value.hash(state);
         }
     }
+}
+
+/// Canonical replay-candidate order.
+///
+/// A single IO event may be bound to more than one distinct COMM in
+/// `MultisetMultiMap<IOEvent, COMM>`. The backing `Counter` is a `HashMap`, so
+/// its iteration order cannot decide which viable COMM replay attempts first.
+/// This order is deliberately written out instead of derived: adding or moving
+/// a struct field must not silently rewrite replay selection. Every component
+/// participates in `COMM` identity and already has a deterministic total order;
+/// `Produce` compares by its identity hash, including inside `times_repeated`.
+impl Ord for COMM {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.consume
+            .cmp(&other.consume)
+            .then_with(|| self.produces.cmp(&other.produces))
+            .then_with(|| self.peeks.cmp(&other.peeks))
+            .then_with(|| self.times_repeated.cmp(&other.times_repeated))
+    }
+}
+
+impl PartialOrd for COMM {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 // The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
