@@ -2,3 +2,4 @@
 theories/StackSafePDA.v
 theories/EPathMap.v
 theories/EPM1.v
+theories/SpatialMatcher.v

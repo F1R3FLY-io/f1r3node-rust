@@ -319,6 +319,33 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
         executable_file: "node/tests/support/rho_expr_pda_tests.rs",
         executable_marker: "deep_conversion_clone_json_debug_and_drop_fit_small_stack",
     },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::SpatialMatcher heterogeneous PDA",
+        production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        production_marker: "fn drive(context: &mut SpatialMatcherContext, root: MatchPair)",
+        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        theorem: "spatial_match_pda_equivalent_to_recursive_match",
+        executable_file: "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+        executable_marker: "recursive_oracle_and_pda_agree_on_the_semantic_corpus",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::SpatialMatcher state isolation",
+        production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        production_marker: "Frame::RestoreOnFailure { snapshot }",
+        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        theorem: "failed_disjunct_retries_from_the_original_snapshot",
+        executable_file: "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+        executable_marker: "recursive_oracle_and_pda_agree_on_the_semantic_corpus",
+    },
+    BoundaryEquivalenceEvidence {
+        surface: "rholang::EPathMap singleton owned-zipper matching",
+        production_file: "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+        production_marker: "fn init_single_path(",
+        proof_file: "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
+        theorem: "owned_singleton_path_move_preserves_match_semantics",
+        executable_file: "rholang/tests/epathmap_spatial_match.rs",
+        executable_marker: "map_match_subtracts_exact_pairs_and_binds_key_and_value",
+    },
 ];
 
 /// A concrete EPathMap law proved in Rocq and exercised against the PathMap
@@ -422,14 +449,16 @@ pub static EPATHMAP_FORMAL_EVIDENCE: &[EquivalenceEvidence] = &[
         proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
         theorem: "epm1_round_trip_preserves_topology_value_association",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
-        executable_marker: "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
+        executable_marker:
+            "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
     },
     EquivalenceEvidence {
         surface: "EPathMap::EPM1 ordinal uniqueness and range",
         proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
         theorem: "associated_map_ordinals_are_in_range_and_unique",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
-        executable_marker: "map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes",
+        executable_marker:
+            "map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes",
     },
     EquivalenceEvidence {
         surface: "EPathMap::EPM1 generated-PDA value equivalence",

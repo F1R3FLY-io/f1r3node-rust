@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use models::rust::rholang::schema_meta::{
-    BOUNDARY_PDA_EQUIVALENCE_EVIDENCE, BoundaryEquivalenceEvidence, Disposition,
-    EPATHMAP_FORMAL_EVIDENCE, EquivalenceEvidence, PDA_EQUIVALENCE_EVIDENCE,
+    BoundaryEquivalenceEvidence, Disposition, EquivalenceEvidence,
+    BOUNDARY_PDA_EQUIVALENCE_EVIDENCE, EPATHMAP_FORMAL_EVIDENCE, PDA_EQUIVALENCE_EVIDENCE,
 };
 use models::rust::rholang::schema_meta_tables::{
     DERIVE_DISPOSITION_REGISTRY, HAND_WRITTEN_TRAVERSALS,
@@ -105,6 +105,9 @@ fn every_repository_boundary_pda_has_one_production_proof_and_oracle_binding() {
         "node::RhoExpr::Serialize",
         "node::RhoExpr::Debug",
         "node::RhoExpr::Drop",
+        "rholang::SpatialMatcher heterogeneous PDA",
+        "rholang::SpatialMatcher state isolation",
+        "rholang::EPathMap singleton owned-zipper matching",
     ];
 
     let mut evidence = BTreeMap::<&str, &BoundaryEquivalenceEvidence>::new();
@@ -187,6 +190,7 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/StackSafePDA.v",
         "formal/rocq/stack_safe_pda/theories/EPathMap.v",
         "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom "] {
