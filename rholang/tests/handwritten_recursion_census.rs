@@ -28,14 +28,17 @@
 //! any length is one object. `the_census_sees_the_121_family` pins that it still finds the
 //! defect that motivated it.
 //!
-//! # Why the nodes are `(file, function)` and not `function`
+//! # Why the nodes are `(file, function, source offset)` and not `function`
 //!
 //! ⚠ A name-keyed graph merges every `new`, `default` and `clone` in the workspace into single
 //! nodes. Measured: it reported one **612-member** "mutual recursion" that was entirely an
 //! artefact of the merge — a number with no referent, which is the exact failure this campaign
-//! keeps finding. Qualifying by file makes same-module cycles exact; a cross-module edge is
-//! admitted only when the callee's name is defined in **exactly one** file, where it is
-//! unambiguous. That keeps genuinely cross-file cycles visible — `normalize.rs` ⇄
+//! keeps finding. The source offset is also essential: Rust traits commonly define the same
+//! method name in several impl blocks, and keying only by `(file, name)` silently retained just
+//! the last body. That is precisely how the recursive `SpatialMatcher` impl family escaped the
+//! earlier census. Calls conservatively reach every same-file definition with that name; a
+//! cross-module edge is admitted only when every definition is in **exactly one** file. That
+//! keeps genuinely cross-file cycles visible — `normalize.rs` ⇄
 //! `normalize_drive.rs` ⇄ `p_input_normalizer.rs` is one, and a per-file scan cannot see it.
 //!
 //! # Loose in the safe direction, deliberately
@@ -302,6 +305,15 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "rholang/src/lib.rs",
         Disposition::NotATermDepthCycle("FFI surface"),
     ),
+    (
+        "rholang/src/rust/interpreter/system_processes.rs",
+        Disposition::NotATermDepthCycle(
+            "conservative same-name over-report: the two unrelated constructors named `new` call \
+             qualified constructors such as `Arc::new`, `RwLock::new`, and \
+             `PrettyPrinter::new`; neither SystemProcesses constructor calls itself or the \
+             other, and neither walks a recursive term",
+        ),
+    ),
     // ── ⚠ THE OVER-REPORT, MADE VISIBLE ────────────────────────────────────────────
     //
     // The five rows below were all surfaced by the census on its first run and all five are
@@ -403,7 +415,7 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `(name, body)` for every `fn`, with the body delimited by brace count.
+/// `(name, source offset, body)` for every `fn`, with the body delimited by brace count.
 ///
 /// ⚠★ **A body whose braces never balance runs to END OF FILE rather than being skipped**, and
 /// the direction of that choice is the whole point. An unbalanced count comes from a brace
@@ -412,7 +424,7 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
 /// which OVER-reports. **Only one of those can cause a traversal to escape the census.**
 ///
 /// An earlier draft skipped, and found fewer files than the same algorithm that did not.
-fn fn_bodies(src: &str) -> Vec<(String, String)> {
+fn fn_bodies(src: &str) -> Vec<(String, usize, String)> {
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -436,6 +448,15 @@ fn fn_bodies(src: &str) -> Vec<(String, String)> {
         let Some(brace) = src[i..].find('{') else {
             continue;
         };
+        // A required trait method has no body. Without this check its `fn ...;`
+        // steals the next method's opening brace and invents a call-graph node
+        // containing that neighbour's body.
+        if let Some(semi) = src[i..].find(';') {
+            if semi < brace {
+                i += semi + 1;
+                continue;
+            }
+        }
         let bstart = i + brace;
         let mut depth = 0i32;
         let mut closed = None;
@@ -454,7 +475,7 @@ fn fn_bodies(src: &str) -> Vec<(String, String)> {
         }
         // ⚠ Unbalanced ⇒ run to EOF. See this function's doc: over-report, never under-report.
         let end = closed.unwrap_or(src.len());
-        out.push((name, src[bstart..end].to_string()));
+        out.push((name, start, src[bstart..end].to_string()));
     }
     out
 }
@@ -494,7 +515,7 @@ fn callees(body: &str) -> BTreeSet<String> {
     out
 }
 
-type Node = (usize, String); // (file index, fn name)
+type Node = (usize, String, usize); // (file index, fn name, source offset)
 
 /// Tarjan's strongly connected components, iterative so the census cannot itself overflow.
 ///
@@ -598,36 +619,45 @@ fn run_census() -> Census {
         })
         .collect();
 
-    // (file, name) -> callee names ; name -> files defining it
+    // (file, name, source offset) -> callee names ; name -> definitions
     let mut bodies: BTreeMap<Node, BTreeSet<String>> = BTreeMap::new();
     let mut text: BTreeMap<Node, String> = BTreeMap::new();
-    let mut defined_in: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut defined_in: BTreeMap<String, BTreeSet<Node>> = BTreeMap::new();
 
     for (fi, path) in files.iter().enumerate() {
         let Ok(src) = std::fs::read_to_string(path) else {
             continue;
         };
-        for (name, body) in fn_bodies(&src) {
-            defined_in.entry(name.clone()).or_default().insert(fi);
-            let key = (fi, name);
+        for (name, offset, body) in fn_bodies(&src) {
+            let key = (fi, name.clone(), offset);
+            defined_in.entry(name).or_default().insert(key.clone());
             bodies.insert(key.clone(), callees(&body));
             text.insert(key, body);
         }
     }
 
-    // Edges: same file is exact; cross-file only when the name is globally unique.
+    // Edges: conservatively include every same-file overload. Cross-file calls are admitted
+    // only when all definitions of the callee name live in one file.
     let mut graph: BTreeMap<Node, BTreeSet<Node>> = BTreeMap::new();
     for (node, cs) in &bodies {
         let mut out = BTreeSet::new();
         for c in cs {
-            let Some(where_) = defined_in.get(c) else {
+            let Some(definitions) = defined_in.get(c) else {
                 continue;
             };
-            let same = (node.0, c.clone());
-            if bodies.contains_key(&same) {
-                out.insert(same);
-            } else if where_.len() == 1 {
-                out.insert((*where_.iter().next().expect("non-empty"), c.clone()));
+            let same_file: Vec<Node> = definitions
+                .iter()
+                .filter(|definition| definition.0 == node.0)
+                .cloned()
+                .collect();
+            if !same_file.is_empty() {
+                out.extend(same_file);
+            } else {
+                let files: BTreeSet<usize> =
+                    definitions.iter().map(|definition| definition.0).collect();
+                if files.len() == 1 {
+                    out.extend(definitions.iter().cloned());
+                }
             }
         }
         graph.insert(node.clone(), out);
@@ -677,7 +707,7 @@ fn every_handwritten_term_recursion_has_a_disposition() {
 
     let mut with_recursion: BTreeMap<String, usize> = BTreeMap::new();
     for comp in &c.term_family {
-        for (fi, _) in comp {
+        for (fi, _, _) in comp {
             let e = with_recursion.entry(c.rel[*fi].clone()).or_insert(0);
             *e = (*e).max(comp.len());
         }
@@ -715,12 +745,12 @@ fn every_handwritten_term_recursion_has_a_disposition() {
             let mut components: Vec<String> = c
                 .term_family
                 .iter()
-                .filter(|component| component.iter().any(|(fi, _)| c.rel[*fi] == *f))
+                .filter(|component| component.iter().any(|(fi, _, _)| c.rel[*fi] == *f))
                 .map(|component| {
                     let mut names: Vec<&str> = component
                         .iter()
-                        .filter(|(fi, _)| c.rel[*fi] == *f)
-                        .map(|(_, name)| name.as_str())
+                        .filter(|(fi, _, _)| c.rel[*fi] == *f)
+                        .map(|(_, name, _)| name.as_str())
                         .collect();
                     names.sort_unstable();
                     names.join(" ↔ ")
@@ -770,10 +800,10 @@ fn every_handwritten_term_recursion_has_a_disposition() {
         let mut components: Vec<Vec<&str>> = c
             .term_family
             .iter()
-            .filter(|component| component.iter().any(|(fi, _)| c.rel[*fi] == *f))
+            .filter(|component| component.iter().any(|(fi, _, _)| c.rel[*fi] == *f))
             .map(|component| {
                 let mut names: Vec<&str> =
-                    component.iter().map(|(_, name)| name.as_str()).collect();
+                    component.iter().map(|(_, name, _)| name.as_str()).collect();
                 names.sort_unstable();
                 names
             })
@@ -798,9 +828,9 @@ fn the_census_confirms_the_121_family_was_converted() {
     let found: Vec<Vec<String>> = c
         .term_family
         .iter()
-        .filter(|comp| comp.iter().any(|(fi, _)| c.rel[*fi] == FILE))
+        .filter(|comp| comp.iter().any(|(fi, _, _)| c.rel[*fi] == FILE))
         .map(|comp| {
-            let mut names: Vec<String> = comp.iter().map(|(_, n)| n.clone()).collect();
+            let mut names: Vec<String> = comp.iter().map(|(_, n, _)| n.clone()).collect();
             names.sort();
             names
         })
@@ -830,7 +860,7 @@ fn the_normalizer_oracle_twin_is_found_and_is_a_superset_of_the_scc_oracle() {
     let biggest = c
         .term_family
         .iter()
-        .filter(|comp| comp.iter().any(|(fi, _)| c.rel[*fi] == FILE))
+        .filter(|comp| comp.iter().any(|(fi, _, _)| c.rel[*fi] == FILE))
         .map(|comp| comp.len())
         .max()
         .unwrap_or(0);
@@ -846,4 +876,28 @@ fn the_normalizer_oracle_twin_is_found_and_is_a_superset_of_the_scc_oracle() {
     println!(
         "  SCC-oracle calibration: largest component in the twin = {biggest} (oracle lists {ORACLE_MEMBERS})"
     );
+}
+
+/// Calibration for the exact defect that hid the old `SpatialMatcher` impl family.
+/// The second same-named impl must not overwrite the first recursive body.
+#[test]
+fn the_census_keeps_every_same_named_trait_impl_body() {
+    let source = r#"
+        trait Walk<T> { fn walk(&mut self, value: T); }
+        struct C;
+        impl Walk<u8> for C {
+            fn walk(&mut self, value: u8) { if value > 0 { self.walk(value - 1); } }
+        }
+        impl Walk<u16> for C {
+            fn walk(&mut self, _value: u16) { leaf(); }
+        }
+    "#;
+
+    let bodies: Vec<_> = fn_bodies(source)
+        .into_iter()
+        .filter(|(name, _, _)| name == "walk")
+        .collect();
+    assert_eq!(bodies.len(), 2, "both trait impl bodies must remain nodes");
+    assert!(callees(&bodies[0].2).contains("walk"));
+    assert!(!callees(&bodies[1].2).contains("walk"));
 }
