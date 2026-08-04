@@ -36,7 +36,14 @@ cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   *"/commits?"*) printf '1\n' ;;
-  *) printf '%s\n' '{"workflow_runs":[]}' ;;
+  *)
+    if [ -n "${FAKE_CLAIMED_SLOT:-}" ]; then
+      printf '{"workflow_runs":[{"id":123,"display_title":"Merge Recovery Soak [scheduled:%s]"}]}\n' \
+        "$FAKE_CLAIMED_SLOT"
+    else
+      printf '%s\n' '{"workflow_runs":[]}'
+    fi
+    ;;
 esac
 SH
 chmod +x "$TMP/bin/date" "$TMP/bin/gh"
@@ -48,6 +55,7 @@ run_gate() {
 	PATH="$TMP/bin:$PATH" \
 		FAKE_NOW_EPOCH="$((slot + 60))" \
 		FAKE_SLOT_EPOCH="$slot" \
+		FAKE_CLAIMED_SLOT="${FAKE_CLAIMED_SLOT:-}" \
 		FAKE_PACIFIC_WEEKDAY="$weekday" \
 		EVENT_NAME="$([ "$mode" = oci ] && printf workflow_dispatch || printf schedule)" \
 		EVENT_SCHEDULE="30 2 * * *" \
@@ -81,6 +89,14 @@ for mode in oci cron; do
 	grep -qx 'kind=daily' "$monday"
 	grep -qx 'run_benchmarks=false' "$monday"
 done
+
+# A cron delivery whose slot was already claimed by an OCI-dispatched run
+# must yield: the soak concurrency group cancels in-progress, so a late cron
+# would otherwise kill a soak hours into its run.
+claimed="$(FAKE_CLAIMED_SLOT=1785810600 run_gate cron 1 1785810600)"
+grep -qx 'should_run=false' "$claimed"
+# The unclaimed cron slot from the loop above must still have run.
+grep -qx 'should_run=true' "$TMP/output-oci-1"
 
 if PATH="$TMP/bin:$PATH" \
 	FAKE_NOW_EPOCH=1785551460 \
