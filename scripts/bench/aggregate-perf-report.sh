@@ -93,7 +93,8 @@ command -v jq >/dev/null || {
 mkdir -p "$OUT_DIR"
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
-find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 |
+find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
+	-path '*/bench-segment-*/metrics.json' -print0 |
 	sort -z |
 	xargs -0 --no-run-if-empty cat |
 	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
