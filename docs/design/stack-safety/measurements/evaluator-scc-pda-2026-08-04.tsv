@@ -1,0 +1,15 @@
+# SS-G7 measurement ledger
+# mettail-rust commit: b0aa4e094d8be994e278c2b9d016425ff392043e
+# host date: 2026-08-04; profile: debug/dev; CARGO_BUILD_JOBS=1 where compilation occurred
+# every systemd scope used MemorySwapMax=0
+# deep command: systemd-run --user --scope -p MemoryHigh=512M -p MemoryMax=1G -p MemorySwapMax=0 /usr/bin/time -v target/debug/deps/evaluator_cross_category_stack_safety-4eedc96afc0200a5 --exact SUBJECT --nocapture
+# proof command: FORMAL_MEMORY_MAX_BYTES=4294967296 FORMAL_MEMORY_HIGH_BYTES=3221225472 make -C formal check-capped FORMAL_CAPPED_TARGET=rocq-trampoline
+# compatibility command: systemd-run --user --scope -p MemoryHigh=3G -p MemoryMax=5G -p MemorySwapMax=0 cargo check -p languages --lib --no-default-features --features rholang -j1
+kind	subject	input	result	wall_seconds	peak_memory	provenance_note
+runtime	calculator_cross_category_cycle_is_stack_safe_at_20000_edges	20000_edges;256_KiB_thread_stack	pass	0.01	9568_KiB_RSS	single_/usr/bin/time_-v_process_run;includes_build_eval_drop_and_harness
+runtime	ledtest_cross_category_cycle_is_stack_safe_at_20000_edges	20000_edges;256_KiB_thread_stack	pass	0.01	7696_KiB_RSS	single_/usr/bin/time_-v_process_run;includes_build_eval_drop_and_harness
+formal	rocq-trampoline	incremental_target;EvaluatorSccPdaEquivalence_compiled	pass	0.493	206.8_MiB_scope_peak	continuation-parametric_theorem;no_axioms_or_admissions
+compile	rholang_feature_check	cargo_check;single_job	pass	568	3480391680_bytes_scope_peak	wall_time_distorted_by_initial_3_GiB_MemoryHigh_reclaim;not_a_throughput_result
+census	generated_eval_artifacts	workspace_target/generated	55			find_target/generated_-name_eval.rs
+census	direct_try_eval_calls	all_55_eval_artifacts	30			calculator=14;rholang=12;optsmoke=2;json=1;mixedmath=1
+census	same_scc_direct_try_eval_calls	all_55_eval_artifacts	0			DERIVED:_ExternalNative_is_emitted_only_when_component_ids_differ

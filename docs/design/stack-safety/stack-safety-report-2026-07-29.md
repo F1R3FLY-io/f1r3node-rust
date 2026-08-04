@@ -5,7 +5,7 @@
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-04
-**Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33` (original measurement tree `8853f839`)
+**Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C10` and
 `SS-Y6` register rows below point there.
@@ -89,6 +89,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G4** | `fab6de24`, `6e4abbd8`, `a21b0bf9`, `dc104aa3`, `4ee48db9` (#162); `844364d2` (#189) | mettail | ★★ **ALL ELEVEN generated `ast_*` drivers** — the `CollectionLiteral` arm divergence repaired at the classifier | `ast_cmp` 10,590 · `ast_debug` 10,542 · `ast_eq` 6,144 · `ast_match_pattern` 6,136 · `ast_term_depth` 3,408 · `ast_is_ground` 2,225 $`\rightarrow`$ **0, every one, both profiles** | **yes** — SS-Y1 is retained below as a repaired defect | [8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
 | **SS-Y1** | introduced `fab6de24`; repaired `6248f156` | mettail | The optional-collection generator defect inside SS-G4: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ★ **repaired**; the generated carrier is classified once and `--all-targets` is no longer blocked | [8.6.1a](#86-the-issue-keyed-residuals-at-their-final-dispositions) |
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
+| **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -1497,7 +1498,17 @@ Throughput: unmeasured, and no claim is made. Allocation: none. Complexity: one 
 
 ##### 5.6.5.6 What is still recursive
 
-⚠⚠ **The cast lattice, and its bound is RHOLANG-SCOPED AND MEASURED — not a property of the generator.** Rholang's twelve `try_eval` sites are all cast arms, so its residue is bounded at five host frames (`BigRat ▸ BigInt ▸ Int ▸ UInt32 ▸ Bool`) for a term of any depth. **Workspace-wide the same census finds 63 eager non-cast sites** — `calculator` 59, `ledtest` 4, `optsmoke` 1 — including two live **cross-category** cycles (`Int::BoolToInt` ⇄ `Bool::EqInt`; `Num::PredToNum` ⇄ `Pred::EqNum`). The generator-wide repair is a category-dependency **graph refusing on any cycle**, and ⚠ it must be built over the **post-auto-injection** rule set: `Num::PredToNum` is synthesised by `ast/src/auto_inject.rs:321` and appears in no grammar source.
+⚠⚠ **HISTORICAL AT `ed44c429`; superseded by SS-G7.** The cast-lattice bound was
+RHOLANG-scoped and measured, not a property of the generator. Rholang's twelve `try_eval` sites
+were all cast arms and therefore bounded at five host frames (`BigRat ▸ BigInt ▸ Int ▸ UInt32 ▸
+Bool`), while the workspace-wide classifier census found 63 eager non-cast sites, including the
+live `Int::BoolToInt` ⇄ `Bool::EqInt` and `Num::PredToNum` ⇄ `Pred::EqNum` cycles. The proposed
+"refuse any cycle" repair was not selected: SS-G7 instead computes the post-auto-injection category
+dependency graph and puts every strongly connected component in one typed PDA. Its remaining 30
+direct calls across 55 generated `eval.rs` artefacts are all edges of the acyclic condensation
+graph, so their native-call depth is bounded by the finite category graph rather than input depth.
+**DERIVED**, `mettail-rust@b0aa4e09`, `evaluator_component_ids` and the complete generated-artifact
+census recorded in `measurements/evaluator-scc-pda-2026-08-04.tsv`.
 
 ##### 5.6.5.7 Anti-vacuity
 
@@ -1740,6 +1751,154 @@ $`\Theta(d^2)`$ time cost of its dispatch — is the
 stack-safety consequence retained here: the arbitrary-thread, lock-held recursive teardown site no
 longer exists, and the recursive destructor it fell through was itself converted by SS-A8's
 generated `Drop` PDA.
+
+#### 5.6.11 `SS-G7` — native-evaluator cycles become one PDA per dependency SCC (`b0aa4e09`)
+
+##### 5.6.11.1 The defect
+
+**DERIVED**, `mettail-rust` before `b0aa4e09`. The generated `try_eval` driver owned one
+work-stack alphabet per native category. It could therefore schedule an Int child of Int as a
+`VisitInt` task, but it could not spell the Int-to-Bool edge: that edge called `Bool::try_eval`
+directly. A term
+alternating `Int::BoolToInt(Bool::EqInt(Int, Int))` repeated the cycle once per input layer and
+therefore consumed $`\Theta(d)`$ native stack at depth $`d`$. `ledtest` carried the independent
+isomorphic witness `Num::PredToNum(Pred::EqNum(Num, Num))`; `PredToNum` is an auto-injected rule,
+so a grammar-source-only census does not contain the complete graph.
+
+The failure was architectural, not a list of bad constructors. The SS-G5 census at its historical
+anchor found 63 eager non-cast sites. Any hand-maintained inventory could remove those sites and
+miss the next cross-category cycle introduced by a grammar transformation.
+
+##### 5.6.11.2 The architecture of the repair, and why THIS shape
+
+**Shape: an explicit-continuation pushdown automaton (PDA) per strongly connected component (SCC).**
+An SCC is a maximal category set in which every category is reachable from every other category.
+The generator first builds the native-category dependency graph from the **post-auto-injection**
+rule set, then computes its SCCs with an iterative two-pass graph walk. Every same-SCC edge gets a
+typed `Visit<Category>` task and typed value alternative; an edge between SCCs may retain one
+direct call because the SCC condensation graph is acyclic. Its call depth is bounded by the number
+of native categories in the language, never by term depth.
+
+★ **Alternatives rejected.** A category-local PDA is the defective baseline: it cannot represent a
+heterogeneous cycle. One language-wide machine is semantically sufficient but makes every category
+pay the enum and match complexity of all unrelated categories; the SCC is the minimal closed unit.
+Refusing cyclic grammars rejects valid language definitions rather than
+implementing them. Converting a census of named constructors is non-general and cannot see future
+auto-injected edges. The SCC partition is the smallest alphabet that is closed over every possible
+unbounded call cycle.
+
+The work item carries a borrowed term reference or the opaque data needed by its Reduce action;
+the separate value stack carries native results. Children are pushed in reverse declaration order,
+so the leftmost child is visited first and values are popped in the same order as the recursive
+semantic. Optional fields carry a presence bit. Capture text and guest bodies remain opaque frame
+payloads, while capture terms use the same SCC classification. This is the stack-balance invariant:
+every scheduled native child contributes exactly one typed value, and exactly one Reduce action
+consumes each contribution.
+
+##### 5.6.11.3 How the fix was made
+
+The old cross-category step was, **ELIDED**:
+
+```rust
+let child = child.as_ref().try_eval()?;
+apply(child)
+```
+
+The cyclic case is now, **ELIDED**:
+
+```rust
+work.push(Frame::ReduceParent);
+work.push(Frame::VisitChild(child.as_ref()));
+```
+
+In literate pseudocode, the generated algorithm is:
+
+```text
+derive all native-category edges after grammar synthesis
+partition the graph into strongly connected components, iteratively
+for each component:
+    generate one heterogeneous task alphabet and one typed value alphabet
+    for each native child of each constructor:
+        if child and parent are in this component, schedule Visit(child)
+        otherwise, call the child's component once across the acyclic condensation graph
+    execute Visit and Reduce tasks until the explicit work stack is empty
+return the one typed root value, or None at the first unevaluable constructor
+```
+
+The previous recursive `match self` implementation and its silent fallback were deleted. A rule
+shape the PDA classifier cannot represent now produces a labelled macro error instead of silently
+reintroducing native-stack recursion.
+
+##### 5.6.11.4 Results
+
+The durable measurement rows are in
+[`measurements/evaluator-scc-pda-2026-08-04.tsv`](measurements/evaluator-scc-pda-2026-08-04.tsv).
+The runtime numbers include term construction, evaluation, and teardown in the test process.
+
+| metric | before | after | provenance |
+|---|---|---|---|
+| B/level, release | **NOT MEASURED** — the filed reproducer recorded overflow, not frame bytes | $`O(1)`$ native stack by the SCC-condensation invariant; exact bytes **NOT MEASURED** | DERIVED, generator control graph |
+| B/level, debug | $`\Theta(d)`$ host recursion; exact bytes **NOT MEASURED** | $`O(1)`$ native stack; exact bytes **NOT MEASURED** | DERIVED, generator control graph |
+| max depth, 2 MiB worker | overflow reported near 4,096 layers by pgmcp #4109; not re-measured | **20,000 cross-category edges on a 256 KiB thread stack**, both witnesses | MEASURED (f), five-test regression command |
+| wall clock | NOT MEASURED | **NOT MEASURED —** the single 0.01 s process readings are resource sanity checks, not a throughput estimate | `/usr/bin/time -v`, one run per witness |
+| heap: process peak | n/a — no retained baseline binary | Calculator **9,568 KiB**; LedTest **7,696 KiB** | MEASURED (f), `/usr/bin/time -v` |
+| where the allocations moved | native call frames | amortised `Vec` growth for explicit work and native-value stacks, $`\Theta(d)`$ heap in the worst traversal frontier | DERIVED, `__mettail_try_eval_c*` |
+
+The generated-code census contains **55** `eval.rs` artefacts and **30** remaining direct
+`try_eval()?` calls: Calculator 14, Rholang 12, OptSmoke 2, Json 1, and MixedMath 1. **Zero** is a
+same-SCC edge, by construction of `ExternalNative`; the Calculator and LedTest source-shape gate
+also asserts the four cycle edges are typed `Visit` tasks and contain no direct call. **DERIVED**,
+`mettail-rust@b0aa4e09`.
+
+Executable equivalence compared the generated machine with independent recursive oracles at every
+depth from 0 through 256 for both cycle families. The deeper tests traversed 20,000 alternating
+edges on 256 KiB stacks. Focused compatibility results were 103/103 Calculator, 143/143 LedTest,
+18/18 optional-group, and 24/24 capture tests; the Rholang feature check passed. The continuation-
+parametric Rocq theorem `evaluator_scc_pda_equivalence` compiled with no axioms or admissions; the
+incremental capped `rocq-trampoline` run that compiled the new file peaked at **206.8 MiB**, with
+swap disabled. **MEASURED (f)**, 2026-08-04.
+
+##### 5.6.11.5 What it cost
+
+The native-stack class change transfers the pending traversal frontier to two heap vectors. That is
+$`\Theta(d)`$ heap for a depth-$`d`$ skewed term, with amortised constant-time pushes and pops; the
+measured whole-process peaks above include the term itself and test harness. The generated Rust is
+larger because every SCC has typed frame and value enums. The Rholang compatibility compile peaked
+at **3,480,391,680 bytes (3.3 GiB)**. Its 9 min 28 s wall time is **not a compile-throughput result**:
+the first run used a 3 GiB `MemoryHigh` threshold and spent most of that interval in kernel reclaim;
+raising the live scope to 5 GiB soft / 7 GiB hard let it finish, with swap still disabled.
+
+The complexity is centralized in one generator. Grammar authors add no annotations, constructor
+lists, stack ceilings, `RUST_MIN_STACK`, or `stacker` calls. The semantic intercept remains
+`try_eval`; callers and native result types are unchanged.
+
+##### 5.6.11.6 What is still recursive
+
+Thirty generated direct calls remain across SCC boundaries. They cannot form a cycle: otherwise
+their endpoints would be members of the same SCC. Their maximum native-call depth is consequently
+bounded by the finite condensation directed acyclic graph, independent of input depth. The shallow
+recursive functions in `evaluator_cross_category_stack_safety.rs` are test-only semantic oracles
+and are never called by the deep tests. No generated native-evaluator edge that can repeat with
+input depth remains on the host stack.
+
+This claim is scoped to generated native evaluation. It does not claim that every parser, rewrite,
+serializer, or application traversal is implemented by this machine; those surfaces have their own
+register rows and derived censuses.
+
+##### 5.6.11.7 Anti-vacuity
+
+The generated-source assertion is polarity-opposed to the old emitter: it requires `BoolToInt` and
+`PredToNum` to contain the corresponding heterogeneous `Visit` task, requires both comparison
+children to be scheduled, and rejects `.try_eval()?` in each constructor arm. The former emitted
+arms have the forbidden call and lack those visits, so the check cannot pass unchanged on the old
+mechanism. The 256 KiB deep tests independently exercise the runtime consequence.
+
+The semantic oracle also demonstrated sensitivity during implementation: an incorrectly nested
+generator branch omitted ordinary Rust-code arms, and all four semantic/deep tests returned `None`;
+the oracle failed at depth 1 before the branch was corrected. The Rocq file is part of `_CoqProject`,
+the capped target compiled it, and a source census found no `Admitted`, `admit`, `Axiom`, `Parameter`,
+or `Hypothesis`. pgmcp #4109 freezes the five-test capped command as its machine-checkable repair
+criterion and records `b0aa4e09` as the fixing commit.
 
 ---
 

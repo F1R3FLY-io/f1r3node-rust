@@ -29,6 +29,7 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **LMDB** | *Lightning Memory-Mapped Database* — the cold store's backing key-value store. | [§2.5](#25-the-two-wire-formats) |
 | **URI** | *uniform resource identifier* — here a `rho:id:…` registry URI. | **CBR-030** |
 | **PDA** | *pushdown automaton* — the explicit heap-backed machine used by generated stack-safe traversals. | **CBR-044** |
+| **SCC** | *strongly connected component* — a maximal dependency-graph region whose members are mutually reachable. | retired **CBR-023** evidence |
 | **EPM1** | *EPathMap format, version 1* — the versioned homogeneous PathMap trie snapshot used by both codecs. | **CBR-044** |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
@@ -2963,7 +2964,7 @@ material now lives.
 | `CBR-020` | `9a5521a2`, `2bcfaf87`, `000b95d7` | The cold-store read path becomes fallible and heap-bounded | `EQUIVALENCE_PROVEN` | language identity: 1.88 M malformed inputs agree with the derived oracle (stack-safety report §5.3.3) |
 | `CBR-021` | `b961d7c4` | A malformed consume refuses instead of killing the process | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-022` | `a09f1de2`, `3b265eb7` | Deploy admission owns its discard — a 43,565-byte deploy stops aborting the node | `EQUIVALENCE_PROVEN` | three-leg byte-neutrality; stack-safety report §5.5.3(a) |
-| `CBR-023` | see body | The $`\Theta(\mathrm{depth})`$ conversion programme — sixteen commits | `EQUIVALENCE_PROVEN` | oracle-gated conversion programme; stack-safety report §5 and its fix register |
+| `CBR-023` | prior set; extended by `mettail-rust@b0aa4e09` | The $`\Theta(\mathrm{depth})`$ conversion programme — living commit set | `EQUIVALENCE_PROVEN` | oracle-gated conversion programme; SS-G7 adds executable oracles and an admission-free Rocq SCC-machine theorem; stack-safety report §5 and its fix register |
 | `CBR-026` | `2087c043` | `E(S)` — the enabled-rendezvous query and firing a named selection | `DORMANT` | additive trait API with zero consensus-path callers, established mechanically; re-enters the register if wired |
 | `CBR-028` | *not repaired* | OPEN, UNREPAIRED — write-unbounded / read-bounded on a consensus wire | `CLOSED_BY_CBR-044` | the write-unbounded/read-bounded prost asymmetry is mooted by CBR-044's generated decode PDAs (depth-4,096 round trip, no recursion budget); closure recorded in the PathMap report §8 |
 | `CBR-029` | `d8e95fb0` | The pretty printer renders a receive's `where` guard | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
