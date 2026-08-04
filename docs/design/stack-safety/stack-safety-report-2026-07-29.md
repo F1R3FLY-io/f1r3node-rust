@@ -1370,6 +1370,8 @@ Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flat
 
 **The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): `render` is converted** (`mettail-rust` `19ac6f21`, gated by `f2a7711f`). A main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula` has a committed PDA (`3316adaf`) but remains open here until executable oracle equivalence and the post-conversion stack ladder both pass. The two `Drop`s are the derived-impl class and **are not reachable by the pushdown transform applied here: `drop_in_place` has no text to rewrite.**
 
+**Closure-audit extension (2026-08-03).** The flat neutral renderer did not by itself close every observation path: the CLI guest renderer still recursed through a child callback, while `RuntimeObservationValue` still derived recursive `Clone`, `Drop`, equality, ordering, hashing, and debugging and implemented recursive `Display`. These were absent from the anchor's measured register. `mettail-rust` `c99bd722` makes guest notation a layout-only hook whose children remain inside the renderer PDA; `9ee2f85f` replaces the observation-value trait family with explicit PDAs; and `3f35226b` adds a main-thread zero-slope gate. The combined trait subject has the same reliable **24 KiB** bound at depth 512 and 4,096 in both debug and release. A test-only mirror enum retains the old derives as a bounded oracle: `Clone`, equality/order, `DefaultHasher` images, compact and alternate `Debug`, and `Display` are identical across every variant and same-variant field-order controls. A 32,768-level witness exercises the deep implementations and ordinary teardown.
+
 ⚠ **`ast_drop` is that class with a twist worth recording.** The `language!` macro *does* emit a pooled iterative `Drop`, and a pure `Proc::Add(Arc<Proc>, …)` chain is flat under it — but `Proc::CastList(Arc<List>)` $`\leftrightarrows`$ `List::ListLit(Vec<Proc>)` **alternates types**, and the worklist does not follow the hop.
 
 #### 5.6.2 The environment-as-delta result, reproduced independently
@@ -2672,6 +2674,16 @@ growth budget to a zero-slope assertion. The isolated main-thread probe has the 
 reliable bound at depth 512 and 4,096 in each profile (approximately 58 KiB debug, 28 KiB
 release). The older combined subject was also corrected to exclude the independently sloped AST
 teardown; otherwise it measured the maximum of two unrelated traversals.
+
+The subsequent closure audit found two observation paths that the original `render` subject did
+not exercise: guest presentation recursed through a child callback, and
+`RuntimeObservationValue`'s trait family recursed independently of the renderer. Commits
+`c99bd722`, `9ee2f85f`, and `3f35226b` replace both with explicit PDAs and add a separate
+main-thread zero-slope gate. The combined `Clone` / `Drop` / equality / ordering / hash /
+`Display` / `Debug` subject reads the same reliable **24 KiB** bound at depth 512 and 4,096 in
+both profiles. Bounded differentials against a test-only copy of the former derives preserve the
+observable images, including alternate `Debug`; the conversion therefore changes traversal
+space, not value semantics.
 
 `lower_formula` is therefore the only production-reachable sloped traversal still open in either
 repository's living register. Its one-pass PDA is committed at `mettail-rust` `3316adaf`, but the
