@@ -140,3 +140,24 @@ One real event amplified by seven tooling defects:
   workflow ran pre-fix master code and reproduced the missing-`--repo` failure.
   The corrected command and metadata contract passed separately; the first
   post-merge checkpoint remains the end-to-end deployment proof.
+
+## RSS-runaway product fix (branch fix/node-finalization-rss-runaway)
+
+<!-- claude-session-917f64e8 -->
+
+- Root-cause fixes for the ceiling breaches themselves landed on
+  `fix/node-finalization-rss-runaway`: the replay cache is now byte-capped
+  (32MB alongside the 192-entry cap, with per-entry retained-bytes accounting
+  and LRU eviction), and block processing parallelism dropped from a
+  hardcoded 100 to a default of 2.
+- Decision (2026-08-03): `F1R3_MAX_PARALLEL_BLOCKS=2` is the new
+  **product-wide default**, not a soak-scoped mitigation. Nothing in
+  scripts/docker/workflows overrides it; operators with memory headroom raise
+  it via the env var.
+- Verification: the cache invariants (len ≤ max_entries,
+  retained_bytes ≤ max_bytes, accounting equals the sum over live entries,
+  admission contract, LRU-on-hit) are pinned by a proptest suite in
+  `replay_cache.rs`; the soak driver scrapes each node's /metrics gauges
+  (replay-cache entries/bytes, block-processing active/limit) into
+  `node-memory-timeseries.tsv` per iteration so a future breach names the
+  responsible cache, not just the total.
