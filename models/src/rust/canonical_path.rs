@@ -88,15 +88,13 @@
 //! recorded as acceptable on the grounds that *"such values are unrepresentable
 //! on today's wire either way."*
 //!
-//! ⚠★ **That premise was measured and is false.** A ground `EPathMap` is written
-//! as proto field 8, `serialized_paths`, of type `bytes` — and a `bytes` field is
-//! **opaque to protobuf**: `prost::encoding::bytes::merge` reads a varint length
-//! and copies that many bytes, spending **zero** nested-message levels on the
-//! trie-key stream inside. `models/tests/epathmap_tag8_read_totality.rs`
-//! exhibits a depth-400 key whose envelope is refused by *this* codec's depth
-//! limit and **not** by prost's recursion limit. So on the tag-8 path there was
-//! no second constraint behind the cap; it was the *only* thing between a total
-//! writer and a partial reader.
+//! ⚠★ **That premise was measured and is false.** Every current `EPathMap` is
+//! written as proto field 9, `trie_snapshot`, of type `bytes`; the legacy field
+//! 8 compatibility arm is also bytes. A `bytes` field is **opaque to protobuf**:
+//! `prost::encoding::bytes::merge` reads a varint length and copies that many
+//! bytes, spending **zero** nested-message levels on trie keys inside.
+//! `models/tests/epathmap_tag8_read_totality.rs` originally exposed the defect
+//! through the compatibility arm; EPM1 preserves the same totality obligation.
 //!
 //! It is the same shape as the sibling `0x0F` escape arm, whose payload is
 //! canonical prost bytes — also opaque — and the same shape as
@@ -2109,8 +2107,8 @@ mod tests {
                 Err(error) => panic!(
                     "★ the trie reader refused depth {wrappers} with {error:?}. It accepts \
                      {last_accepting}. The WRITER is total at this depth (it produced {} bytes), \
-                     so a bound here means this node emits trie keys — and, through proto field \
-                     8 `serialized_paths`, byte strings on a consensus wire — that it will not \
+                     so a bound here means this node emits trie keys — and, through canonical \
+                     EPM1 field 9 (or legacy field 8), byte strings on a consensus wire — that it will not \
                      read back. The retired cap was `COLLECTION_DEPTH_LIMIT = 32`; if this \
                      stopped at 32 the cap is back.",
                     bytes.len()

@@ -478,8 +478,8 @@ fn expr_instance_values() -> Vec<(&'static str, ExprInstance)> {
             }),
         ),
         // ⚠★ The EXTERN type, treated as BOUNDED because its hand-written `Clone`
-        // is O(1) at the node. Non-empty so the `EntryTrie` and the shadow cell
-        // are both live rather than at their defaults.
+        // is O(1) at the node. Non-empty so the `EntryTrie` and its canonical
+        // snapshot/layout cache paths are exercised rather than left vacuous.
         (
             "EPathmapBody",
             ExprInstance::EPathmapBody(EPathMap::new(

@@ -201,8 +201,7 @@ fn test_pathmap_to_e_pathmap_conversion() {
 fn test_e_pathmap_roundtrip() {
     let original_ps = mixed_elements();
 
-    // Use the invariant-preserving constructor instead of a struct literal.
-    // (the wrapper's shadow cell is private).
+    // Use the invariant-preserving constructor; homogeneous trie storage is private.
     let e_pathmap1 = EPathMap::new(original_ps.clone(), vec![], false, None);
 
     let result = PathMapCrateTypeMapper::set_epathmap_to_rholang_set_pathmap(&e_pathmap1);

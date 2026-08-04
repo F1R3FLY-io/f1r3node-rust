@@ -1240,8 +1240,7 @@ fn combine_ezipper(zipper: &EZipper, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<E
 
     construct_expr(
         ExprInstance::EZipperBody(EZipper {
-            // Use the invariant-preserving constructor instead of
-            // a struct literal (private shadow cell).
+            // Use the invariant-preserving constructor; homogeneous trie storage is private.
             pathmap: Some(canonical),
             current_path: zipper.current_path.clone(),
             is_write_zipper: zipper.is_write_zipper,

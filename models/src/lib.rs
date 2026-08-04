@@ -102,8 +102,9 @@ pub mod rhoapi {
 
     // `.rhoapi.EPathMap` is an extern_path in
     // models/build.rs — prost no longer generates the struct here. The
-    // hand-maintained wrapper (shadow-cell handle + cached-bytes Message
-    // impl) is re-exported so every existing `crate::rhoapi::EPathMap` /
+    // hand-maintained wrapper (homogeneous PathMap storage, shared EPM1
+    // snapshot/layout caches, and stack-safe Message impl) is re-exported so
+    // every existing `crate::rhoapi::EPathMap` /
     // `models::rhoapi::EPathMap` path keeps resolving to the ONE type.
     pub use crate::rust::rhoapi_ext::EPathMap;
 }
@@ -808,11 +809,10 @@ impl Hash for EMap {
     }
 }
 
-// The AlwaysEqual `PartialEq`/`Hash` impls for `EPathMap`
-// MOVED to models/src/rust/rhoapi_ext.rs (the hand-maintained wrapper owns
-// every one of its impls now that `.rhoapi.EPathMap` is an extern_path).
-// Semantics unchanged: `ps`/`connective_used`/`remainder` compared,
-// `locally_free` ignored.
+// The stack-safe `PartialEq`/`Hash` impls for the extern-path `EPathMap` are
+// emitted into `rhoapi_term_ops.rs` by `models/codegen/schema.rs`. They walk
+// the homogeneous PathMap representation plus `connective_used`/`remainder`;
+// `locally_free` and the EPM1 caches remain outside AlwaysEqual identity.
 
 // `cursor_kind` participates: `current_path` plus the kind IS the cursor's
 // trie key, so two zippers agreeing on the segments but differing on the arm

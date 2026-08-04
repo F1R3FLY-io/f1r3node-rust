@@ -710,8 +710,7 @@ fn ord_compares_in_declaration_order() {
 
     // ps dominates locally_free: shorter-prefix ps < longer ps even when the
     // shorter side's locally_free is larger.
-    // Use invariant-preserving constructors instead of struct literals.
-    // (the wrapper's shadow cell is private).
+    // Use invariant-preserving constructors; homogeneous trie storage is private.
     let one_entry_big_lf =
         EPathMap::new(vec![entry_a.clone()], create_bit_vector(&[7]), true, None);
     let two_entries_no_lf = EPathMap::new(

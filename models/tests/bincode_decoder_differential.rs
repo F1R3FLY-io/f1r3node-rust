@@ -779,14 +779,10 @@ fn epathmap_shapes_agree() {
     );
 }
 
-/// A decoded `EPathMap` must carry an EMPTY shadow cell. The derived
-/// `Deserialize` leaves `intern` at `OnceLock::default()` because the field is
-/// `#[serde(skip)]`; a machine that filled it — or that reused a cell from a
-/// sibling — would hand out a stale interned handle for a value it has never
-/// interned, which the wrapper's cached-encode `debug_assert`s treat as a
-/// defect.
+/// A decoded `EPathMap` reconstructs the same canonical trie snapshot rather
+/// than reviving the deleted intern-handle representation.
 #[test]
-fn decoded_epathmaps_carry_no_intern_handle() {
+fn decoded_epathmaps_reconstruct_the_canonical_trie_snapshot() {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::Expr;
 
@@ -796,14 +792,16 @@ fn decoded_epathmaps_carry_no_intern_handle() {
         }],
         ..Default::default()
     };
+    let expected_snapshot = match source.exprs[0].expr_instance.as_ref() {
+        Some(ExprInstance::EPathmapBody(map)) => map.trie_snapshot().to_vec(),
+        _ => unreachable!("fixture is an EPathMap"),
+    };
     let bytes = bincode::serialize(&source).expect("serialize");
     let decoded = Par::cold_decode(&bytes).expect("machine");
-    // ⛔ Was: assert the decoded map carries no intern handle. With the store gone
-    // there is no handle to carry, so the assertion is unspellable rather than
-    // weakened. What still matters — that the decode produced an `EPathmapBody` at
-    // all — is kept.
     match decoded.exprs[0].expr_instance.as_ref() {
-        Some(ExprInstance::EPathmapBody(_)) => {}
+        Some(ExprInstance::EPathmapBody(map)) => {
+            assert_eq!(map.trie_snapshot(), expected_snapshot.as_slice());
+        }
         other => panic!("expected EPathmapBody, got {:?}", other.is_some()),
     }
 }

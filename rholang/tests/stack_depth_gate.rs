@@ -2396,13 +2396,13 @@ fn clone_send_chain_body(depth: usize) {
 /// `Clone` call — because an extern type contributes no descriptor-derived
 /// children. That is correct only because `EPathMap::clone` is O(1) **at the
 /// node**: `ps` is an `EntryTrie` whose clone is a refcount bump on the trie root
-/// plus an `Arc` bump on the memoized projection, and the shadow cell is an
-/// `OnceLock<Arc<_>>` clone (`models/src/rust/rhoapi_ext.rs`).
+/// plus `Arc` bumps on the canonical EPM1 snapshot and layout caches
+/// (`models/src/rust/rhoapi_ext.rs`).
 ///
 /// ⚠ If that ever stops being true — if `EPathMap::clone` starts deep-copying its
-/// `Vec<Par>` — this ladder goes sloped while every other clone subject stays
+/// PathMap contents — this ladder goes sloped while every other clone subject stays
 /// flat, because `EPathMap` is the ONE recursive edge the driver does not own.
-/// Nesting is `Par → Expr → EPathmapBody(EPathMap) → ps[0] → Par`.
+/// Nesting is `Par → Expr → EPathmapBody(EPathMap) → map value → Par`.
 ///
 /// ## ⚠★ Why this subject LEAKS instead of dismantling — measured, not assumed
 ///

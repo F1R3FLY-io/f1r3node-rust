@@ -1770,8 +1770,8 @@ fn tarjan_scc(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
 // ⚠★ An EXTERN type is bounded, and for `EPathMap` that is a FACT ABOUT ITS
 // `Clone` rather than a consequence of externness: `EPathMap::clone` is O(1) AT
 // THE NODE (`models/src/rust/rhoapi_ext.rs`) — `ps` is an `EntryTrie` whose clone
-// is a refcount bump on the trie root plus an `Arc` bump on the memoized
-// projection, and the shadow cell is an `OnceLock<Arc<_>>` clone. It never
+// is a refcount bump on the trie root plus `Arc` bumps on the canonical EPM1
+// snapshot and layout caches. It never
 // re-enters `Par::clone` at all. The obligation is stated in the emitted file and
 // MEASURED by `rholang/tests/stack_depth_gate.rs`'s `clone_pathmap_chain`
 // subject, which nests through `EPathmapBody` and is gated flat.
@@ -2863,12 +2863,10 @@ fn emit_protobuf_source(
             writeln!(
                 src,
                 "// `{rust_path}` is EXTERN (models/build.rs `.extern_path`). It has NO\n\
-                 // descriptor-driven prost program, and — unlike the bincode side — it does not\n\
-                 // get a hand-written one either. `EPathMap::encode_raw` has THREE arms (a memcpy\n\
-                 // of the interned canonical bytes, the ground field-8 `U(m)` form, and the\n\
-                 // ordinary field walk) of which only the last is a field walk at all, and which\n\
-                 // one fires depends on a shadow cell another thread may fill. It is therefore an\n\
-                 // OPAQUE LEAF to the prost driver, at exact parity with what\n\
+                 // descriptor-driven protobuf program. Its hand-written `Message` implementation\n\
+                 // emits canonical EPM1 field 9 through the generated stack-safe encoder, with no\n\
+                 // entry-list fallback or representation-dependent arm. It is therefore an\n\
+                 // OPAQUE LEAF to the generic protobuf driver, at exact parity with what\n\
                  // `prost::encoding::message::encode` does at that position.\n"
             )
             .expect("write");
@@ -4706,7 +4704,7 @@ fn bounded_note(leaf: &str, plan: &ClonePlan, extern_note: bool) -> String {
     if extern_note {
         format!(
             "// `{leaf}` is EXTERN: its hand-written `Clone` is O(1) AT THE NODE (`ps` is an\n    \
-             // `EntryTrie`, a refcount bump; the shadow cell is an `Arc` bump), so it never\n    \
+             // `EntryTrie`; trie-root and EPM1 cache clones are refcount bumps), so it never\n    \
              // re-enters a driven clone. Measured by the gate subject `clone_pathmap_chain`."
         )
     } else {
@@ -8528,8 +8526,8 @@ fn emit_clone_join_tables(
          /// whole-value `Clone` call. That is only correct if the call is FLAT, and for\n\
          /// `EPathMap` it is a fact about its hand-written impl rather than about\n\
          /// externness: `ps` is an `EntryTrie` whose clone is a refcount bump on the trie\n\
-         /// root plus an `Arc` bump on the memoized projection, and the shadow cell is an\n\
-         /// `OnceLock<Arc<_>>` clone. `EPathMap::clone` never re-enters a driven clone.\n\
+         /// root plus `Arc` bumps on the canonical EPM1 snapshot and layout caches.\n\
+         /// `EPathMap::clone` never re-enters a driven clone.\n\
          ///\n\
          /// The obligation is MEASURED, not asserted: `rholang/tests/stack_depth_gate.rs`'s\n\
          /// `clone_pathmap_chain` subject nests through `ExprInstance::EPathmapBody` and is\n\

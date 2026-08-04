@@ -12,11 +12,10 @@ use super::blake2b256_hash::Blake2b256Hash;
 /// definition unless it overrides. An override may ONLY be a byte-identical
 /// faster construction: models overrides the three rhoapi event types
 /// (`ListParWithRandom`, `BindPattern`, `TaggedContinuation`) with the
-/// intern-aware spliced emitter, which reuses `InternedEPathMap.serde_bytes`
-/// at filled-cell EPathMap nodes and black-box `bincode::serialize` for
-/// interned-map-free subtrees (bincode's encoding is compositional). Byte
-/// identity is gated by the canonical event-hash goldens (re-asserted with filled
-/// cells) and the spliced-vs-direct proptest.
+/// generated stack-safe bincode encoder. EPathMap nodes copy their canonical
+/// EPM1 snapshot directly; no intern-store dispatch scan or recursive serde
+/// fallback remains. Byte identity is gated by the canonical event-hash
+/// goldens and generated-vs-derived differential tests.
 ///
 /// The trait lives HERE (rspace++ is generic and models depends on rspace++,
 /// so the orphan rule places the rhoapi impls in models); rspace++ provides

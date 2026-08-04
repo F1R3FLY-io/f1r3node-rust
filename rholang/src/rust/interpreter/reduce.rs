@@ -5859,8 +5859,8 @@ impl DebruijnInterpreter {
                     ExprInstance::EPathmapBody(pathmap) => {
                         // Remove all branches below current position (root = remove everything)
                         Ok(Expr {
-                            // Use the invariant-preserving constructor instead of
-                            // a struct literal (private shadow cell).
+                            // Use the invariant-preserving constructor; homogeneous
+                            // trie storage is private.
                             expr_instance: Some(ExprInstance::EPathmapBody(
                                 models::rhoapi::EPathMap::new(
                                     vec![],

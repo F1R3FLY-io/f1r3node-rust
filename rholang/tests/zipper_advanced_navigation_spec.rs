@@ -26,8 +26,7 @@ mod zipper_advanced_navigation_tests {
             create_path_par(vec!["c".to_string()], "value4"),
         ];
 
-        // Use the invariant-preserving constructor instead of a struct literal.
-        // (the wrapper's shadow cell is private).
+        // Use the invariant-preserving constructor; homogeneous trie storage is private.
         EPathMap::new(entries, vec![], false, None)
     }
 

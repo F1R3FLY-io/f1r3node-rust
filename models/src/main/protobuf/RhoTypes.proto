@@ -319,16 +319,14 @@ message EMap {
 }
 
 message EPathMap {
-  // TERM/pattern arm — non-ground entries. Empty for the value arm.
+  // LEGACY entry-list compatibility arm. Current writers never emit it.
   // (`.rhoapi.EPathMap` is an extern prost type; the hand-maintained Rust
   // impl in models/src/rust/rhoapi_ext.rs is authoritative — this message is
   // documentation-of-record.)
   //
-  // The entries are written in the ENTRY TRIE's own order: a read-zipper walk
-  // over `encode_trie_path(entry)` keys, which is byte-lexicographic by
-  // construction (children are indexed by byte), deduplicated (a trie holds one
-  // slot per key), and NEVER sorted. The order is the structure's, not a
-  // producer's — the same order `serialized_paths` below frames into U(m).
+  // Readers insert each decoded Par into homogeneous set-mode PathMap storage;
+  // mixing this arm with map-mode EPM1 is rejected. Retaining the field number
+  // is required for stored and peer data written before EPM1.
   //
   // ⚠ The canonicality this buys is SYNTACTIC, not semantic. Two non-ground
   // entries can be different terms that match the same things; no representation
@@ -346,11 +344,9 @@ message EPathMap {
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 4;
   Var remainder = 5;
-  // ★★ THE entry arm, for EVERY map -- ground or not. U(m) = the UNCOMPRESSED,
-  // trie-ordered, length-framed key stream `repeat( u32-LE keylen ++ trie_key )`,
-  // produced by a PathMap read-zipper walk (NO sort -- a trie indexes children by
-  // byte, so the walk is byte-lexicographic BY CONSTRUCTION, and a permuted entry
-  // order is not normalized away but unrepresentable). NEVER deflated.
+  // LEGACY value-free set-trie compatibility arm. Current writers never emit
+  // it. U(m) is the uncompressed, trie-ordered, length-framed key stream
+  // `repeat( u32-LE keylen ++ trie_key )`, produced by a PathMap read-zipper walk.
   //
   // This is pathmap's OWN `.paths` payload with the compressor removed: the crate's
   // `serialize_paths` emits exactly these bytes and then hands them to zlib-ng at
@@ -358,11 +354,13 @@ message EPathMap {
   // trie. That disqualifies it as a consensus preimage; U(m) is the uncompressed
   // twin, and the reason it is hand-rolled.
   //
-  // Omitted when the map holds no entries, by proto3's own omit-at-default rule.
+  // Readers accept it only into neutral-empty/set storage and reject mixing it
+  // with map-mode EPM1. Omitted when empty by proto3's default rule.
   bytes serialized_paths = 8;
-  // Canonical EPM1 snapshot: versioned mode plus PathMap's prefix-compressed
-  // ACTree03 arena. New writers emit only this entry representation; fields 1
-  // and 8 remain accepted for compatibility with stored and peer data.
+  // THE current entry representation for every EPathMap: a canonical EPM1
+  // snapshot carrying versioned mode, PathMap's prefix-compressed ACTree03
+  // arena, and (for map mode) its generated-PDA value table. New writers emit
+  // only this field; fields 1 and 8 remain decoder-only compatibility inputs.
   bytes trie_snapshot = 9;
 }
 

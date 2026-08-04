@@ -6,16 +6,15 @@
 //! the 84a0fbe4 derived truths — canonical PROTOBUF bytes, SERDE bytes
 //! (bincode + JSON, including the `locally_free`-as-empty serialize-only
 //! normalization), produce/consume event hashes, and the derived
-//! declaration-order `Ord` — that later phases of the principled EPathMap
-//! value-handling work (interning, chain fusion, the invariant-preserving
-//! wrapper, transport, and event hashing) must preserve byte-identically.
+//! declaration-order `Ord` — that the current trie-native EPathMap integration
+//! must preserve where the consensus contract remains unchanged.
 //!
 //! Fixture families:
 //!   1. [`e6a_index_epathmap`] — an E-6a-shaped subject index: «s» (site/tag)
 //!      and «v» (σ-carrier) entry families for the subject `Pair(A, B)` at
 //!      root site `site0`.
-//!   2. [`nested_epathmap_value`] — an EPathMap whose entry list carries a
-//!      NESTED EPathMap value.
+//!   2. [`nested_epathmap_value`] — an EPathMap whose canonical entry key
+//!      encodes a nested EPathMap value.
 //!   3. [`ezipper_value`] — an EZipper value (pathmap + focus path).
 //!   4. [`epathmap_locally_free_entries`] — non-empty `locally_free` on both
 //!      the map and its entry Pars (exercises the AlwaysEqual/serde/Ord
@@ -156,15 +155,14 @@ pub fn e6a_index_epathmap() -> EPathMap {
         ]),
     ];
 
-    // Use the invariant-preserving constructor instead of a struct literal.
-    // (the wrapper's shadow cell is private).
+    // Use the invariant-preserving constructor; homogeneous trie storage is private.
     EPathMap::new(entries, Vec::new(), false, None)
 }
 
 /// FIXTURE 2 — an EPathMap carrying a NESTED EPathMap value: entry
-/// `[ "nest", {| ["inner","leaf"] |} ]`. Exercises recursive
-/// encode/serialize/Ord through the `ps: Vec<Par>` → `Expr` →
-/// `EPathmapBody` cycle.
+/// `[ "nest", {| ["inner","leaf"] |} ]`. Exercises nested canonical-key
+/// encoding and the resulting EPM1/serialization/ordering surfaces without
+/// retaining an entry-list projection.
 pub fn nested_epathmap_value() -> EPathMap {
     let inner = EPathMap::new(
         vec![ground_list(vec![gstring_par("inner"), gstring_par("leaf")])],

@@ -5,7 +5,7 @@
 //! `eval_expr_to_expr`, reduce.rs). It recognizes a read-only PathMap/zipper
 //! method chain as one nested AST — the chain is fully visible pre-evaluation
 //! because the outermost `EMethod.target` holds the next link — and evaluates
-//! the WHOLE chain against a single interned trie plus a lightweight focus
+//! the WHOLE chain against a single borrowed trie plus a lightweight focus
 //! (`Vec<Vec<u8>>` mirroring `EZipper.current_path`), instead of today's
 //! per-link pipeline that re-evaluates the ground map, converts it to a trie,
 //! and materializes an intermediate `EZipper` Par at every link.
@@ -18,7 +18,7 @@
 //!
 //! The FIRST action is an O(1) method-name check ([`LinkKind::from_name`]):
 //! a non-PathMap method (`nth`, `length`, `toString`, …) pays one string
-//! compare and nothing else — no spine walk, no env lookup, no interning.
+//! compare and nothing else — no spine walk, no env lookup, no trie access.
 //!
 //! # What fuses (the recognizer's shape inventory)
 //!
@@ -41,7 +41,7 @@
 //!   else (free/wildcard vars, unbound levels, non-map bindings, `None`
 //!   targets, junk-carrying Pars) ⇒ `None`, and the fallback reproduces
 //!   today's behavior for those shapes by construction.
-//! * GATE (risk R6): `interned_epathmap(map).eval_stable == true`, else
+//! * GATE (risk R6): `eval_stable_epathmap(map) == true`, else
 //!   `None`. Today's path re-evaluates the ground map on every var reference
 //!   AND at every link's `eval_single_expr` (reduce.rs:2687-2707) — a
 //!   re-evaluation that FORCES `remainder = None` and recomputes
@@ -99,13 +99,13 @@
 //!
 //! # Link semantics (pinned per the landed reduce.rs impls)
 //!
-//! The view state is `(Arc<InternedEPathMap>, focus: Vec<Vec<u8>>)` plus the
+//! The view state is a borrowed `EPathMap`, `focus: Vec<Vec<u8>>`, and the
 //! zipper metadata a materialization needs. Keys are the 0xFF-terminated
 //! segment flattening (`seg ∥ 0xFF ∥ …`, reduce.rs:3998-4007;
 //! `SEGMENT_SEPARATOR`, models pathmap_native_query.rs:32). Each fused link
 //! mirrors its today-impl arm-for-arm — the same
 //! `collect_child_segments`/`collect_subtrie_values`/`path_prefix_exists`
-//! helpers on the same (now shared, uncloned) trie, the same
+//! helpers on the same borrowed, uncloned trie, the same
 //! root PathMap lookup for `getLeaf`'s raw-map variant, the same
 //! `pathExists` empty-focus special case
 //! (:5011-5013), the same message-level `ps.is_empty()` reads, the same Nil

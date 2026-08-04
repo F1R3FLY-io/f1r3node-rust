@@ -1348,10 +1348,9 @@ fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
         .filter(|w| *w == slot0.as_slice())
         .count();
     if occurrences == 0 {
-        // ★ The variant's children are NOT nested prost sub-messages. `EPathMap`
-        // is `extern_path`'d (`models/build.rs`) and encodes its entries to
-        // proto field 8 `serialized_paths` — a stream of `encode_trie_path`
-        // keys — so there is no `Par` sub-message to excise and no "absent
+        // ★ The variant's children are NOT nested protobuf sub-messages. `EPathMap`
+        // is `extern_path`'d (`models/build.rs`) and encodes its trie to canonical
+        // EPM1 field 9 bytes, so there is no `Par` sub-message to excise and no "absent
         // required child" to construct. Its read side is bounded and
         // `Err`-returning rather than `Option`-returning, which is the #130 /
         // #135 axis, not this one.

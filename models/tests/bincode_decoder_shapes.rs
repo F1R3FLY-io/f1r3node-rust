@@ -257,10 +257,10 @@ fn shape_2_etuple_has_no_remainder_field() {
 // SHAPE 3 — `EPathMap` has FOUR serde fields, and the first is EPM1 bytes
 // ===========================================================================
 
-/// `intern: OnceLock<Arc<InternedEPathMap>>` is `#[serde(skip)]`, so serde's
-/// derived `Deserialize` emits `FIELDS.len() == 4` and bincode turns that into
-/// `deserialize_tuple(4)` (`bincode/src/de/mod.rs:402-412`). The cell consumes
-/// **nothing** and is left at `OnceLock::default()`.
+/// EPathMap's canonical snapshot/layout caches are derived state rather than
+/// serde fields, so the hand-maintained schema has `FIELDS.len() == 4` and
+/// bincode turns that into `deserialize_tuple(4)`
+/// (`bincode/src/de/mod.rs:402-412`).
 ///
 /// ★★ **FORM ② — `ps` is one canonical EPM1 byte array.** `EntryTrie`
 /// serializes the PathMap-native snapshot directly; bincode contributes only

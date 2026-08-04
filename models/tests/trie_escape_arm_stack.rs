@@ -328,7 +328,8 @@ fn the_escape_arm_encodes_a_deep_payload_on_a_small_stack() {
 /// The dedicated encoder and the public `Message` surface emit identical bytes.
 ///
 /// Byte identity is the whole licence for the substitution: the escape payload is
-/// part of a trie key, a trie key is part of the tag-8 `serialized_paths` stream,
+/// part of a trie key, and trie keys are part of the canonical EPM1 field-9 snapshot
+/// (and the accepted legacy tag-8 `serialized_paths` stream),
 /// and that stream is consensus-visible.
 #[test]
 fn the_escape_payload_is_byte_identical_to_message_encoding() {

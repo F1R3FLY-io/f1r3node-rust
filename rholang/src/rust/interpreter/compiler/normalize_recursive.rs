@@ -855,10 +855,9 @@ fn normalize_collection_recursive<'ast>(
 
             let constructor =
                 |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    // Use the invariant-preserving constructor instead of a
-                    // struct literal (private shadow cell). The value is
-                    // FRESH (never interned), so the field write below stays
-                    // sound under the shadow-cell invariant.
+                    // Use the invariant-preserving constructor because homogeneous
+                    // trie storage is private. The subsequent metadata update cannot
+                    // invalidate the entry representation or its serialization caches.
                     let mut tmp_e_pathmap = EPathMap::new(
                         ps,
                         locally_free,
