@@ -2195,6 +2195,29 @@ impl EPathMap {
         }
     }
 
+    /// Construct set-mode storage from a stream of entries.
+    ///
+    /// Unlike [`EPathMap::new`]'s legacy `Vec<Par>` compatibility boundary,
+    /// this inserts directly into `PathMap<()>` and retains no positional
+    /// collection. Empty input remains mode-neutral.
+    pub fn from_set_iter(
+        entries: impl IntoIterator<Item = Par>,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<Var>,
+    ) -> Self {
+        let mut ps = EntryTrie::default();
+        for entry in entries {
+            ps.insert_entry(entry);
+        }
+        EPathMap {
+            ps,
+            locally_free,
+            connective_used,
+            remainder,
+        }
+    }
+
     /// Construct the value-bearing specialization. An empty iterator remains
     /// mode-neutral; its first later insertion selects map or set mode.
     pub fn new_map(

@@ -1891,6 +1891,33 @@ fn map_equality_agrees_with_the_emitted_key_stream() {
     );
 }
 
+/// The delivery-facing constructor streams entries directly into `PathMap<()>`.
+/// It must preserve neutral-empty semantics, select homogeneous set mode on the
+/// first insertion, and absorb duplicates without a legacy vector-shaped API.
+#[test]
+fn streamed_set_construction_preserves_neutral_empty_and_selects_set_mode() {
+    use models::rust::epathmap_trie_codec::EPathMapMode;
+
+    let empty = EPathMap::from_set_iter(std::iter::empty(), vec![1, 0, 1], true, None);
+    assert_eq!(empty.mode(), EPathMapMode::Empty);
+    assert!(empty.is_empty());
+    assert_eq!(empty.locally_free, vec![1, 0, 1]);
+    assert!(empty.connective_used);
+
+    let one = make_int_par(1);
+    let two = make_int_par(2);
+    let set = EPathMap::from_set_iter(
+        [two.clone(), one.clone(), two.clone()],
+        Vec::new(),
+        false,
+        None,
+    );
+    assert_eq!(set.mode(), EPathMapMode::Set);
+    assert_eq!(set.len(), 2, "PathMap set insertion absorbs duplicates");
+    assert!(set.contains_entry(&one));
+    assert!(set.contains_entry(&two));
+}
+
 /// The reverse raw visitors are the allocation-free bridge from PathMap order
 /// to a LIFO PDA. They must enumerate exactly the forward key/value stream in
 /// reverse, including shared-prefix branches and value association.
