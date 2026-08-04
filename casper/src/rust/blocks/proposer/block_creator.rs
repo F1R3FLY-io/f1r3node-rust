@@ -1687,6 +1687,7 @@ fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator
     validators.first().cloned()
 }
 
+#[cfg(test)]
 fn initial_deploy_inclusion_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
     current_proposal_validators(casper_snapshot)
         .into_iter()
@@ -2538,11 +2539,7 @@ pub async fn create(
             .leader
             .as_ref()
             .map(|leader| leader == &validator_identity.public_key.bytes)
-            .unwrap_or_else(|| {
-                initial_deploy_inclusion_leader(casper_snapshot)
-                    .map(|leader| leader == validator_identity.public_key.bytes)
-                    .unwrap_or(true)
-            });
+            .unwrap_or(true);
         let inclusion_staleness =
             deploy_inclusion_progress_staleness(&inclusion_progress, next_block_num, now_millis);
         let finality_lag_stats = finality_lag_stats(casper_snapshot, block_store)?;
@@ -3908,16 +3905,16 @@ mod tests {
     }
 
     #[test]
-    fn deploy_inclusion_leadership_gates_ordinary_selection() {
+    fn deploy_inclusion_leadership_gates_only_active_progress() {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         assert!(
-            !ordinary_admission_policy(
+            ordinary_admission_policy(
                 &snapshot,
                 false,
                 false,
                 false,
-                false,
+                true,
                 FreshAdmissionFallback::default(),
                 FreshAdmissionFallback::default(),
                 DeployInclusionStaleness::default(),
