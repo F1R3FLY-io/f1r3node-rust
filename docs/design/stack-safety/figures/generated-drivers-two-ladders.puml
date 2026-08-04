@@ -15,35 +15,44 @@ skinparam ArrowThickness 1.4
 title <b>Two ladders, nine generated drivers</b>\nthe cross-type hop is the mechanism — confirmed 9 for 9
 
 rectangle "**LADDER A — ALTERNATING CATEGORIES**\n`nested_list`: ``Proc::CastList(Arc<List>)`` then ``List::ListLit(Vec<Proc>)``\nthe hop is crossed at EVERY level" as A #FFEBEE {
-  card "`ast_cmp`             **10,592.4** / **335.3**" as a1 #EF9A9A
-  card "`ast_debug`           **10,544.2** / **463.8**" as a2 #EF9A9A
-  card "`ast_eq`               **6,144.0** / **175.7**" as a3 #EF9A9A
-  card "`ast_normalize`        **6,144.0** / **176.7**" as a4 #EF9A9A
-  card "`ast_match_pattern`    **6,138.0** / **174.7**" as a5 #EF9A9A
-  card "`ast_subst`            **6,134.0** / **174.7**" as a6 #EF9A9A
-  card "`ast_hash`             **1,216.8** / **206.8**" as a7 #EF9A9A
-  card "`ast_semantic_hash`    **1,214.7** / **206.8**" as a8 #EF9A9A
-  card "`ast_drop`               **254.0** /  **96.4**\n<i>the one pre-existing subject — reproduced to the byte</i>" as a9 #EF5350
-  card "`ast_display`                **0.0** /   **0**\n★ FLAT — its driver DOES follow the hop" as a10 #A5D6A7
-  card "`ast_clone`                  **2.0** /   **0**\n★ FLAT — it does not traverse at all" as a11 #66BB6A
-  card "`build_twins` (control)      **1.0** /   **0**" as a12 #80CBC4
+  card tableA #FFFFFF [
+    |= driver |= debug B/level |= release B/level |= |
+    |<#EF9A9A> ""ast_cmp"" |<#EF9A9A> **""10,592.4""** |<#EF9A9A> **""335.3""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_debug"" |<#EF9A9A> **""10,544.2""** |<#EF9A9A> **""463.8""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_eq"" |<#EF9A9A> **"" 6,144.0""** |<#EF9A9A> **""175.7""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_normalize"" |<#EF9A9A> **"" 6,144.0""** |<#EF9A9A> **""176.7""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_match_pattern"" |<#EF9A9A> **"" 6,138.0""** |<#EF9A9A> **""174.7""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_subst"" |<#EF9A9A> **"" 6,134.0""** |<#EF9A9A> **""174.7""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_hash"" |<#EF9A9A> **"" 1,216.8""** |<#EF9A9A> **""206.8""** |<#EF9A9A> |
+    |<#EF9A9A> ""ast_semantic_hash"" |<#EF9A9A> **"" 1,214.7""** |<#EF9A9A> **""206.8""** |<#EF9A9A> |
+    |<#EF5350> ""ast_drop"" |<#EF5350> **""   254.0""** |<#EF5350> **"" 96.4""** |<#EF5350> //the one pre-existing subject — reproduced to the byte// |
+    |<#A5D6A7> ""ast_display"" |<#A5D6A7> **""     0.0""** |<#A5D6A7> **""    0""** |<#A5D6A7> ★ FLAT — its driver DOES follow the hop |
+    |<#66BB6A> ""ast_clone"" |<#66BB6A> **""     2.0""** |<#66BB6A> **""    0""** |<#66BB6A> ★ FLAT — it does not traverse at all |
+    |<#80CBC4> ""build_twins"" (control) |<#80CBC4> **""     1.0""** |<#80CBC4> **""    0""** |<#80CBC4> |
+  ]
 }
 
 rectangle "**LADDER B — PURE SINGLE CATEGORY**\n`nested_add`: ``Proc::Add(Arc<Proc>, Arc<Proc>)``\nno hop exists to cross" as B #E8F5E9 {
-  card "**every one of the nine: <latex>\approx 0</latex> B/level**\n`ast_cmp` `ast_debug` `ast_eq` `ast_normalize`\n`ast_match_pattern` `ast_subst` `ast_hash`\n`ast_semantic_hash` `ast_display` `ast_drop`" as b1 #A5D6A7
-  card "`build_twins_add` (control)  <latex>\approx 0</latex>" as b2 #80CBC4
+  card tableB #FFFFFF [
+    |<#A5D6A7> **every one of the nine: <latex>\approx 0</latex> B/level** |
+    |<#A5D6A7> ""ast_cmp"" ""ast_debug"" ""ast_eq"" ""ast_normalize"" |
+    |<#A5D6A7> ""ast_match_pattern"" ""ast_subst"" ""ast_hash"" |
+    |<#A5D6A7> ""ast_semantic_hash"" ""ast_display"" ""ast_drop"" |
+    |<#80CBC4> ""build_twins_add"" (control)  <latex>\approx 0</latex> |
+  ]
 }
 
-A -[#455A64,thickness=3]right-> B : the ONLY difference is the SHAPE walked
+A -[#455A64,thickness=3]down-> B : the ONLY difference is the SHAPE walked
 
-note bottom of A #FFEBEE
-  ★★ **Eight sloped drivers are a LIVE DEFECT class in `macros/src/gen/`**, not a
+note right of A #FFEBEE
+  ★★ **Eight sloped drivers were a live defect class in `macros/src/gen/`** (since
+  repaired at the classifier — SS-G4), not a
   documentation gap: depth-independence is these modules' entire purpose.
   Figures are **debug / release** B/level, ladder <latex>16 \rightarrow 4{,}096</latex>,
   bisected at 4 KiB resolution on the child's MAIN thread.
 end note
 
-note bottom of B #E8F5E9
+note right of B #E8F5E9
   The controls are flat on **both** ladders, so every slope in ladder A is the
   **driver's own** and not the builder's or the harness's.
   <latex>\Rightarrow</latex> The generated work stacks are typed **per category** and do not
@@ -53,6 +62,7 @@ end note
 legend bottom
   |= cell |= meaning |
   |<#EF9A9A>| sloped on the alternating ladder — the defect |
+  |<#EF5350>| the one pre-existing subject (`ast_drop`) |
   |<#A5D6A7>| flat |
   |<#66BB6A>| flat by REPRESENTATION (<latex>\mathtt{Arc::clone}</latex>), not by a driver |
   |<#80CBC4>| control — runs no driver |

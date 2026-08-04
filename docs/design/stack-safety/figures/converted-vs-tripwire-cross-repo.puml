@@ -20,6 +20,8 @@ skinparam defaultFontName "DejaVu Sans"
 skinparam shadowing false
 skinparam roundcorner 8
 skinparam ArrowThickness 1.4
+skinparam ranksep 28
+skinparam nodesep 25
 
 title <b>Converted subjects and live residuals — both repositories, at the anchor</b>\ndisjoint families, different repositories, different gate constants
 
@@ -33,6 +35,9 @@ package "**`f1r3node-rust-mettail@e67a6aaa`**\nhand-written + generated `Par` tr
   card "**TRIPWIRE LISTS: EMPTY on both axes** — an executed claim;\nthe synthetic sloped controls still run and are still rejected" as FT #C8E6C9
 
   card "★ `min_stack_for` returns typed `MinStack::{Bytes, BelowResolution}`\n— a floor reading renders as a refusal, **never a number**" as FFLOOR #80CBC4
+
+  FCD -[hidden]down-> FT
+  FCW -[hidden]down-> FFLOOR
 }
 
 package "**`mettail-rust@98901e33`**\nGENERATED `ast_*` drivers\ngate: `rholang-runtime/tests/stack_depth_gate.rs`" as MT #ECEFF1 {
@@ -45,26 +50,34 @@ package "**`mettail-rust@98901e33`**\nGENERATED `ast_*` drivers\ngate: `rholang-
   package "**LIVE RESIDUALS** — the only sloped production subjects\nin either register" as MR #FFF3E0 {
     card "`render`        **3,665 / 911** B/level (debug / release)\n`lower_formula` **4,094 / 978** B/level\neach with its own gate subject and named owner" as MRES #FFCC80
   }
+
+  MCD -[hidden]down-> MRES
 }
 
-FC -[hidden]down-> FT
-FT -[#455A64,thickness=2]right-> MR : **disjoint families** —\nno fix on either side\ndischarges the other
+FT -[hidden]down-> MCD
+FFLOOR -[hidden]down-> MANCHOR
+FT -[#455A64,thickness=2,norank]down-> MR : **disjoint families** —\nno fix on either side\ndischarges the other
 
-note bottom of F1 #E8F5E9
-  **Every former tripwire member left by being CONVERTED, never by a raised
-  ceiling** — `clone` via stage F-4 + SS-A8's generated trait family, the
-  collection arms via the generated sorter PDA (SS-Y3), the compositions with
-  them. The deterministic-time axis fits all 40 subjects at Ir exponents
-  <latex>0.9462</latex>–<latex>1.0970</latex>; the largest data counter is
+note as NF1 #E8F5E9
+  **Every former tripwire member left by being CONVERTED,**
+  **never by a raised ceiling** — `clone` via stage F-4 +
+  SS-A8's generated trait family, the collection arms via the
+  generated sorter PDA (SS-Y3), the compositions with them.
+  The deterministic-time axis fits all 40 subjects at Ir
+  exponents <latex>0.9462</latex>–<latex>1.0970</latex>; the largest data counter is
   <latex>1.4007</latex> Dw (`score_cmp_wide`).
 end note
 
-note bottom of MT #FFF3E0
-  ★ The optional-collection generator defect that once blocked
-  `--all-targets` (#197 / SS-Y1) is **repaired** (`6248f156`); the derived
-  traversal table carries **zero unmeasured members**, retiring the
+note as NMT #FFF3E0
+  ★ The optional-collection generator defect that once
+  blocked `--all-targets` (~#197 / SS-Y1) is **repaired**
+  (`6248f156`); the derived traversal table carries
+  **zero unmeasured members**, retiring the
   `UNMEASURED_TRAVERSALS` ratchet by derivation.
 end note
+
+MRES -[hidden]down-> NF1
+MRES -[hidden]down-> NMT
 
 legend bottom
   |= cell |= meaning |

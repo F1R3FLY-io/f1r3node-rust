@@ -12,6 +12,8 @@ skinparam defaultFontName "DejaVu Sans"
 skinparam shadowing false
 skinparam roundcorner 8
 skinparam ArrowThickness 1.4
+skinparam ranksep 26
+skinparam nodesep 25
 
 title <b>Where the allocations moved</b>  —  cold-store codec, MEASURED\nmassif + DHAT, release, one arm per process, pinned cores
 
@@ -20,8 +22,22 @@ package "**A.  Production shape** (depth 2 = 95.43 % of measured produces), 20,0
   rectangle "**machine** `bincode_encoder::encode`\ntotal **12,834,467 B** in **20,026** blocks\n= **1.001 blocks / call**\npeak **12,395 B** in 19 blocks\nheap **writes** 41.65 MB" as A2 #BBDEFB
   rectangle "**reused** `bincode_encoder::with_encoded`\ntotal **14,466 B** in **26** blocks\n= **0.0013 blocks / call**\npeak **12,394 B** in 19 blocks\nheap **writes** 28.83 MB" as A3 #A5D6A7
 
-  A1 -[#455A64,thickness=2]right-> A2 : **+6,208 B total** (the two thread-local\narenas, allocated **once**);\npeak **2.00<latex>\times</latex>** because the arenas are **retained**
-  A2 -[#2E7D32,thickness=2]right-> A3 : **770<latex>\times</latex> fewer blocks**, **887<latex>\times</latex> fewer bytes\nwhen the caller does not need ownership
+  A1 -[#455A64,thickness=2]down-> A2 : **+6,208 B total** (the two thread-local\narenas, allocated **once**);\npeak **2.00<latex>\times</latex>** because the arenas are **retained**
+  A2 -[#2E7D32,thickness=2]down-> A3 : **770<latex>\times</latex> fewer blocks**, **887<latex>\times</latex> fewer bytes**\nwhen the caller does not need ownership
+
+  note right of A2 #FFEBEE
+    ⚠ **The cost, stated plainly.** The machine
+    performs **3.25<latex>\times</latex> more heap writes** than
+    the derive on the production shape
+    (41.65 MB vs 12.83 MB over 20,000
+    encodes).  Those writes were previously
+    native-stack traffic, which DHAT does not count —
+    so this is a *relocation made visible*, not new
+    work invented. The peak
+    heap **doubles** (6,187 → 12,395 B)
+    because the arenas are deliberately
+    retained.
+  end note
 }
 
 package "**B.  Deep shape** (a 4,096-deep `Par`)" as B #E3F2FD {
@@ -37,27 +53,23 @@ package "**C.  The migration, per nesting level**" as C #FFF8E1 {
   rectangle "**cold-store READER**\nnative <latex>12{,}894 \rightarrow 0</latex> B/level  (release)\nheap   <latex>0 \rightarrow 304.7</latex> B/level\n<b>ratio 42.3<latex>\times</latex> cheaper</b>, and the region is now growable" as C2 #FFE082
 }
 
-A -[hidden]-> B
-B -[hidden]-> C
+A3 -[hidden]down-> B1
+A3 -[hidden]down-> B2
+B3 -[hidden]down-> C1
+B3 -[hidden]down-> C2
 
-note bottom of C #FFF3E0
-  ★ **This is the whole trade, in one sentence.** The conversion does not remove the
-  <latex>\Theta(d)</latex> state — a depth-<latex>d</latex> traversal must remember <latex>d</latex>
-  things. It **relocates** that state from a **fixed 2 MiB region whose exhaustion is a SIGSEGV**
-  to a **growable region whose exhaustion is an `Err`** — and, on these two codecs, it happens to
-  need 5<latex>\times</latex> to 42<latex>\times</latex> fewer bytes per level as well, because a
-  hand-written work item carries only what the resumption needs while a compiler-laid-out stack
-  frame carries every live local of a 40-arm `match`.
+note as NC #FFF3E0
+  ★ **This is the whole trade, in one sentence.** The conversion
+  does not remove the <latex>\Theta(d)</latex> state — a depth-<latex>d</latex> traversal
+  must remember <latex>d</latex> things. It **relocates** that state from a
+  **fixed 2 MiB region whose exhaustion is a SIGSEGV** to a
+  **growable region whose exhaustion is an `Err`** — and, on
+  these two codecs, it happens to need 5<latex>\times</latex> to 42<latex>\times</latex> fewer
+  bytes per level as well, because a hand-written work item
+  carries only what the resumption needs while a
+  compiler-laid-out stack frame carries every live local of a
+  40-arm `match`.
 end note
-
-note right of A #FFEBEE
-  ⚠ **The cost, stated plainly.** The machine performs
-  **3.25<latex>\times</latex> more heap writes** than the derive on the
-  production shape (41.65 MB vs 12.83 MB over 20,000 encodes).
-  Those writes were previously native-stack traffic, which DHAT
-  does not count — so this is a *relocation made visible*, not new
-  work invented. The peak heap **doubles** (6,187 → 12,395 B)
-  because the arenas are deliberately retained.
-end note
+C1 -[hidden]down-> NC
 
 @enduml

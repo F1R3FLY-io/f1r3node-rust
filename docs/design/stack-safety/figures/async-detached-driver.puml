@@ -11,6 +11,8 @@ skinparam defaultFontName "DejaVu Sans"
 skinparam shadowing false
 skinparam roundcorner 8
 skinparam ArrowThickness 1.4
+skinparam ranksep 28
+skinparam nodesep 25
 
 title <b>Detached-spawn + atomic-counter reduction driver</b>\ntwo resources, two defects, one repair
 
@@ -22,7 +24,7 @@ package "**BEFORE** — two separate <latex>\Theta(N)</latex> chains on one path
   rectangle "**(ii) PARKED-PARENT CHAIN — heap**\neach parent `await`s its children, so every ancestor's\nfuture stays **live and parked** until the whole\nsubtree finishes.  `shortslow.rho`: **32,768 parked parents**" as II #BBDEFB
 
   I -[#C62828,thickness=2]-> IM : guarded by
-  note bottom of IM #FFF3E0
+  note right of IM #FFF3E0
     f1r3node issues **#305** and **#306**
   end note
 }
@@ -42,23 +44,33 @@ package "**AFTER** — one <latex>O(1)</latex>-frame task per branch, joined by 
   G -[#2E7D32,thickness=2]-> J
 }
 
-BEF -[#455A64,thickness=3]right-> AFT : five join sites detached\n(Site 1 = `eval_inner`'s parallel join;\nSites 2–5 = `run_parallel_dispatches`)
+IM -[hidden]down-> D
+BEF -[#455A64,thickness=3]down-> AFT : five join sites detached\n(Site 1 = `eval_inner`'s parallel join;\nSites 2–5 = `run_parallel_dispatches`)
 
-note bottom of AFT #E8F5E9
-  ★ **The stack-safety connection, stated precisely.**  `tokio::spawn` roots a task on its own
-  stack, so a spawned-and-awaited child does **not** nest `poll` frames — resource (i) is fixed by
-  the fact that the recursion is now *spawned* rather than *inlined*.  Resource (ii) is **heap**, not
-  stack: <latex>N</latex> parked parents are <latex>\Theta(N)</latex> live future objects, not
-  <latex>\Theta(N)</latex> frames.  Detaching removes both, and `StackGrowingFuture` +
-  the `stacker` dependency were then **deleted** rather than retuned.
+note as NAFT #E8F5E9
+  ★ **The stack-safety connection, stated precisely.**
+  `tokio::spawn` roots a task on its own stack, so a
+  spawned-and-awaited child does **not** nest `poll` frames —
+  resource (i) is fixed by the fact that the recursion is now
+  *spawned* rather than *inlined*.  Resource (ii) is **heap**,
+  not stack: <latex>N</latex> parked parents are <latex>\Theta(N)</latex> live future
+  objects, not <latex>\Theta(N)</latex> frames.  Detaching removes both, and
+  `StackGrowingFuture` + the `stacker` dependency were then
+  **deleted** rather than retuned.
 end note
 
-note bottom of BEF #FFF3E0
-  ⚠ **What "fire-and-forget" does *not* mean here.**  The child is not unobserved: completion is
-  tracked by the counter and errors by the sink.  What is given up is the **parent's `await`** —
-  i.e. the structural coupling of a send to its continuation — which is what Rholang's asynchronous
-  send always meant semantically.  Concurrency is unchanged (the same spawns), so COMM order is
+note as NBEF #FFF3E0
+  ⚠ **What "fire-and-forget" does *not* mean here.**  The
+  child is not unobserved: completion is tracked by the
+  counter and errors by the sink.  What is given up is the
+  **parent's `await`** — i.e. the structural coupling of a
+  send to its continuation — which is what Rholang's
+  asynchronous send always meant semantically.  Concurrency
+  is unchanged (the same spawns), so COMM order is
   unchanged, which is the consensus-neutrality argument.
 end note
+
+J -[hidden]down-> NAFT
+J -[hidden]down-> NBEF
 
 @enduml

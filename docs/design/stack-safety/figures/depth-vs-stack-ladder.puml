@@ -13,48 +13,61 @@ skinparam defaultFontName "DejaVu Sans"
 skinparam shadowing false
 skinparam ArrowThickness 1.4
 skinparam roundcorner 6
+skinparam ranksep 30
+skinparam nodesep 20
 
 title <b>Minimum surviving stack vs. nesting depth — the register at the anchor</b>\n<latex>S(d) = c + B\,d</latex>  —  a conversion drives the slope <latex>B</latex> to <b>zero</b>, not the intercept <latex>c</latex>
 
-rectangle "**THE OBSERVABLE**\n<latex>B \;=\; \dfrac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}</latex>  bytes of native stack per nesting level\nobtained by bisecting the smallest `stack_size` on which the subject survives,\nat each end of a ladder, to a 4,096 B resolution" as OBS #E0F2F1
+rectangle "**THE OBSERVABLE**\n<latex>B \;=\; \dfrac{S(d_{\mathrm{hi}}) - S(d_{\mathrm{lo}})}{d_{\mathrm{hi}} - d_{\mathrm{lo}}}</latex>  bytes of native stack per nesting level\nobtained by bisecting the smallest `stack_size` on which the\nsubject survives, at each end of a ladder, to a 4,096 B resolution" as OBS #E0F2F1
 
-rectangle "**CONVERTED — <latex>B = 0</latex>**  (34 depth subjects + 6 width subjects; flat at both ladder ends, both profiles)" as C #E8F5E9 {
-  card "the cores — `substitute*` · `sort` · `score_cmp` · `normalize` · `eval_with_nots` · `pretty`" as c1 #A5D6A7
-  card "the cold-store codec pair — **`bincode_ser`** · **`bincode_de`**" as c2 #66BB6A
-  card "the generated trait family — `clone` · `par_drop` · `eq` · `hash` · `ord` · `debug` · `message_clear`" as c3 #A5D6A7
-  card "the collection arms — `sort_nested_set` · `sort_nested_map` · `clone_nested_set` · `hash_nested_set`" as c4 #A5D6A7
-  card "the PathMap pair — `hash_pathmap_set` (`PathMap<()>`) · `hash_pathmap_map` (`PathMap<Par>`)" as c5 #66BB6A
-  card "the compositions — `inj_attempt_clone` · `subst_and_charge` · `substitute_deep_binding` · `normalize_drop`" as c6 #A5D6A7
-  card "width axis (to 65,536) — `substitute_wide` · `sort_wide` · `score_cmp_wide` · `free_check` · `pretty_wide` · `normalize_wide`" as c7 #A5D6A7
-}
+rectangle C #E8F5E9 [
+**CONVERTED — <latex>B = 0</latex>**  (34 depth subjects + 6 width subjects;
+flat at both ladder ends, both profiles)
+----
+|<#A5D6A7> the cores — `substitute*` · `sort` · `score_cmp` · `normalize` · `eval_with_nots` · `pretty` |
+|<#66BB6A> the cold-store codec pair — **`bincode_ser`** · **`bincode_de`** |
+|<#A5D6A7> the generated trait family — `clone` · `par_drop` · `eq` · `hash` · `ord` · `debug` · `message_clear` |
+|<#A5D6A7> the collection arms — `sort_nested_set` · `sort_nested_map` · `clone_nested_set` · `hash_nested_set` |
+|<#66BB6A> the PathMap pair — `hash_pathmap_set` (`PathMap<()>`) · `hash_pathmap_map` (`PathMap<Par>`) |
+|<#A5D6A7> the compositions — `inj_attempt_clone` · `subst_and_charge` · `substitute_deep_binding` · `normalize_drop` |
+|<#A5D6A7> width axis (to 65,536) — `substitute_wide` · `sort_wide` · `score_cmp_wide` · `free_check` · `pretty_wide` · `normalize_wide` |
+]
 
-rectangle "**FORMER TRIPWIRES — every one CONVERTED**  (release before-slope → after)" as T #FFF3E0 {
-  card "`sort_nested_map`          **7,509** B/level  →  **0**" as t1 #FFCC80
-  card "`substitute_deep_binding`  **7,460** B/level  →  **0**   <i>the bound VALUE's depth; the copy IS substitution — now on the generated Clone PDA</i>" as t2 #FFCC80
-  card "`sort_nested_set`          **4,778** B/level  →  **0**" as t3 #FFCC80
-  card "`clone_nested_set`         **4,096** B/level  →  **0**" as t4 #FFCC80
-  card "`clone` = <latex>\langle</latex>`Par as Clone`<latex>\rangle</latex>::clone   **3,254** B/level  →  **0**   <i>stage F-4 + SS-A8</i>" as t5 #FFCC80
-  card "**`encode`** = prost writer  **302** B/level  →  **0**   <i>generated Message PDA</i>" as t6 #FFCC80
-  card "`subst_and_charge`         **146** B/level  →  **0**" as t7 #FFCC80
-  card "`par_drop` · `normalize_drop`  **144** B/level  →  **0**   <i>generated Drop machinery</i>" as t8 #FFCC80
-}
+rectangle T #FFF3E0 [
+**FORMER TRIPWIRES — every one CONVERTED**  (release before-slope → after)
+----
+|<#FFCC80> `sort_nested_map` |<#FFCC80> **7,509** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> `substitute_deep_binding` |<#FFCC80> **7,460** B/level |<#FFCC80> → **0** |<#FFCC80> <i>the bound VALUE's depth; the copy IS substitution — now on the generated Clone PDA</i> |
+|<#FFCC80> `sort_nested_set` |<#FFCC80> **4,778** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> `clone_nested_set` |<#FFCC80> **4,096** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> `clone` = <latex>\langle</latex>`Par as Clone`<latex>\rangle</latex>::clone |<#FFCC80> **3,254** B/level |<#FFCC80> → **0** |<#FFCC80> <i>stage F-4 + SS-A8</i> |
+|<#FFCC80> **`encode`** = prost writer |<#FFCC80> **302** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Message PDA</i> |
+|<#FFCC80> `subst_and_charge` |<#FFCC80> **146** B/level |<#FFCC80> → **0** |<#FFCC80> |
+|<#FFCC80> `par_drop` · `normalize_drop` |<#FFCC80> **144** B/level |<#FFCC80> → **0** |<#FFCC80> <i>generated Drop machinery</i> |
+]
 
-rectangle "**CONTROLS** — the checkers are shown to separate the two classes" as K #E0F2F1 {
-  card "`synthetic_recurse` (a function)   **111** B/level  — must be REJECTED" as k1 #80CBC4
-  card "`synthetic_drop`   (a destructor)   **31** B/level  — must be REJECTED" as k2 #80CBC4
-  card "their iterative twins                **0** B/level  — must be ACCEPTED" as k3 #80CBC4
-}
+rectangle K #E0F2F1 [
+**CONTROLS** — the checkers are shown to separate the two classes
+----
+|<#80CBC4> `synthetic_recurse` (a function) |<#80CBC4> **111** B/level |<#80CBC4> — must be REJECTED |
+|<#80CBC4> `synthetic_drop`   (a destructor) |<#80CBC4> **31** B/level |<#80CBC4> — must be REJECTED |
+|<#80CBC4> their iterative twins |<#80CBC4> **0** B/level |<#80CBC4> — must be ACCEPTED |
+]
 
 OBS -[#00695C,thickness=2]-> C
-OBS -[#00695C,thickness=2]-> T
-OBS -[#00695C,thickness=2]-> K
+OBS -[#00695C,thickness=2,norank]-> T
+OBS -[#00695C,thickness=2,norank]-> K
+C -[hidden]down-> T
+T -[hidden]down-> K
 
-note bottom of T #E8F5E9
-  ★ **Both tripwire lists are EMPTY at the anchor — an executed claim, not an absence.**
-  Membership of the converted register is the deliverable; a subject entered it
-  only by being **converted** — never by having a ceiling raised. The
+note as NT #E8F5E9
+  ★ **Both tripwire lists are EMPTY at the anchor — an executed**
+  **claim, not an absence.**  Membership of the converted register
+  is the deliverable; a subject entered it only by being
+  **converted** — never by having a ceiling raised.  The
   deterministic-time axis over all 40 subjects fits Ir exponents
   <latex>0.9462</latex>–<latex>1.0970</latex>, no quadratic observed.
 end note
+K -[hidden]down-> NT
 
 @enduml

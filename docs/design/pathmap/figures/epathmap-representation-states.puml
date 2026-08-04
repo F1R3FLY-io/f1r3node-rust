@@ -21,6 +21,8 @@ skinparam backgroundColor #FAFAFA
 skinparam defaultFontName "DejaVu Sans"
 skinparam shadowing false
 skinparam ArrowThickness 1.4
+skinparam ranksep 40
+skinparam nodesep 30
 skinparam StateBorderColor #455A64
 skinparam StateBackgroundColor #ECEFF1
 
@@ -36,30 +38,40 @@ state "**AmbiguousEmpty**\nthe refusal, not a state of the value" as Ambiguous #
 [*] --> Empty : `{| |}`
 
 Empty -[#2E7D32,bold]-> SetMode : first **set** membership\noperation selects the mode
-Empty -[#6A1B9A,bold]-> MapMode : first **map** operation\n(e.g. `set(k, v)`) selects the mode
+Empty -[#6A1B9A,bold]-> MapMode : first **map** operation\n(e.g. `set(k, v)`)\nselects the mode
 
-Empty -[#EF6C00,dashed]-> Ambiguous : mode-dependent mutation\n(e.g. `setSubtrie`) on neutral empty
-Ambiguous -[#EF6C00,dashed]-> Empty : caller must select a mode first;\nthe value is unchanged
-
-SetMode -[#2E7D32]-> SetMode : set ops over the `PathMap<()>` lattice:\njoin · meet · subtract · restrict · zipper walks
-MapMode -[#6A1B9A]-> MapMode : map ops over `PathMap<Par>`:\n`get` · `set` · `delete` · join/meet with\n`ValueConflict` on unequal overlap · key-mask subtraction
+Empty -[#EF6C00,dashed]right-> Ambiguous : mode-dependent mutation\n(e.g. `setSubtrie`)\non neutral empty
+Ambiguous -[#EF6C00,dashed]-> Empty : caller must select\na mode first; the\nvalue is unchanged
 
 SetMode -[#C62828,dashed]-> SetMode : **map** membership op → **rejected**\n(mixed set/map membership is unspellable)
-MapMode -[#C62828,dashed]-> MapMode : **set** membership op → **rejected**
+SetMode -[#2E7D32]-> SetMode : set ops over the `PathMap<()>` lattice:\njoin · meet · subtract · restrict · zipper walks
 
-note bottom of SetMode #E8F5E9
-  ★ **An empty selected trie stays selected** when it carries explicit
-  value-free terminating topology: `PathMap::is_empty` distinguishes
-  *"no terminating path"* from *"no associated value"*.  Value-free
-  topology therefore survives Eq / Hash / Ord and every wire round trip.
+MapMode -[#C62828,dashed]-> MapMode : **set** membership op\n→ **rejected**
+MapMode -[#6A1B9A]-> MapMode : map ops over `PathMap<Par>`: `get` · `set` ·\n`delete` · join/meet with `ValueConflict` on\nunequal overlap · key-mask subtraction
+
+SetMode -[hidden]down-> MapMode
+Ambiguous -[hidden]down-> MapMode
+
+note as NSET #E8F5E9
+  ★ **An empty selected trie stays selected** when it
+  carries explicit value-free terminating topology:
+  `PathMap::is_empty` distinguishes *"no terminating path"*
+  from *"no associated value"*.  Value-free topology
+  therefore survives Eq / Hash / Ord and every wire
+  round trip.
 end note
 
-note bottom of Ambiguous #FFF3E0
-  ★ **Why refuse rather than guess.** An entirely neutral `{| |}` cannot
-  answer a mode-dependent mutation without silently choosing an algebra.
-  `AmbiguousEmpty` is the edge case that prevents empty from selecting
-  the wrong lattice on the caller's behalf.
+note as NAMB #FFF3E0
+  ★ **Why refuse rather than guess.** An entirely
+  neutral `{| |}` cannot answer a mode-dependent
+  mutation without silently choosing an algebra.
+  `AmbiguousEmpty` is the edge case that prevents
+  empty from selecting the wrong lattice on the
+  caller's behalf.
 end note
+
+MapMode -[hidden]down-> NSET
+MapMode -[hidden]down-> NAMB
 
 legend bottom
   |= cell |= meaning |
