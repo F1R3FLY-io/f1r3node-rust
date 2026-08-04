@@ -241,34 +241,6 @@ if [ -z "$fork_bad_persist$fork_bad_optin" ]; then
 	ok "fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true"
 fi
 
-SOAK_WORKFLOW=.github/workflows/merge-recovery-soak.yml
-if grep -qE '^  schedule:' "$SOAK_WORKFLOW"; then
-	err "$SOAK_WORKFLOW must not use GitHub's delayed schedule trigger"
-else
-	ok "merge recovery soak has no GitHub schedule trigger"
-fi
-if grep -qE '^      scheduled_slot_epoch:' "$SOAK_WORKFLOW" &&
-	grep -q 'source=oci-resource-scheduler' "$SOAK_WORKFLOW"; then
-	ok "merge recovery soak accepts an OCI scheduled slot"
-else
-	err "$SOAK_WORKFLOW must accept and resolve scheduled_slot_epoch from OCI"
-fi
-if grep -Fq -- "[ \"\$trigger_delay\" -gt 900 ]" "$SOAK_WORKFLOW" &&
-	grep -q 'merge-recovery-soak-slot-' "$SOAK_WORKFLOW"; then
-	ok "OCI slot delay and duplicate serialization fail closed"
-else
-	err "$SOAK_WORKFLOW must enforce the 15-minute OCI delay and serialize duplicate slots"
-fi
-if grep -Fq "[ \"\$pacific_weekday\" -eq 5 ]" "$SOAK_WORKFLOW" &&
-	grep -q 'target_ref=master' "$SOAK_WORKFLOW" &&
-	grep -q 'duration_seconds=216000' "$SOAK_WORKFLOW" &&
-	grep -q 'target_ref=dev' "$SOAK_WORKFLOW" &&
-	grep -q 'duration_seconds=79200' "$SOAK_WORKFLOW"; then
-	ok "OCI schedule gate covers daily and weekend soak series"
-else
-	err "$SOAK_WORKFLOW must route Mon-Thu to the daily dev soak and Friday to the weekend master soak"
-fi
-
 # 8. Every `run:` block in every workflow must be parseable by its shell.
 #
 # A workflow is not compiled, so a `run:` block with a syntax error is a
@@ -341,6 +313,41 @@ else
 fi
 if [ -n "$skipped_shells" ]; then
 	printf 'note: non-bash run: blocks not syntax-checked:%s\n' "$skipped_shells"
+fi
+
+cat >"$scratch/check-canary.rb" <<'RUBY'
+require "yaml"
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+%w[retry_within_window perf_report notify_failure].each do |job_id|
+  condition = jobs.dig(job_id, "if").to_s
+  expected = "outputs.canary != #{39.chr}true#{39.chr}"
+  puts "#{job_id} does not exclude canaries" unless condition.include?(expected)
+end
+gate = jobs.dig("schedule_gate", "steps").find { |step| step["id"] == "resolve" }
+body = gate && gate["run"].to_s
+puts "canary duration is not bounded to 1800s" unless body&.include?("duration_seconds=1800")
+puts "canary checkpoint slots are not cleared" unless body&.include?("checkpoints=()")
+puts "canary retry attempts are not rejected" unless body&.include?("INPUT_RETRY_ATTEMPT")
+puts "protection injection is not restricted to canaries" unless body&.include?("inject_protection_breach requires canary")
+injection = jobs.dig("soak", "steps").find { |step| step["name"] == "Configure injected protection breach" }
+puts "protection injection step is missing or not gate-controlled" unless injection&.dig("if").to_s == "needs.schedule_gate.outputs.inject_protection_breach == 'true'"
+puts "OCI scheduled slots are not handled before manual dispatches" unless body&.include?('if [ -n "$INPUT_SCHEDULED_SLOT" ]; then')
+puts "OCI scheduled inputs are not isolated from manual controls" unless body&.include?("scheduled_slot_epoch cannot be combined")
+puts "Friday routing does not consistently target master" unless body&.scan("target_ref=master")&.length.to_i >= 2
+puts "daily routing does not consistently target dev" unless body&.scan("target_ref=dev")&.length.to_i >= 2
+puts "OCI scheduled runs are not deduplicated" unless body&.include?("scheduled slot already belongs to run")
+puts "OCI scheduled runs do not reject dispatch delays over 900 seconds" unless body&.include?('[ "$trigger_delay" -gt 900 ]')
+raw = File.read(ARGV[0])
+puts "OCI scheduled runs are not serialized by slot" unless raw.include?("merge-recovery-soak-slot-")
+puts "scheduled_slot_epoch input is missing" unless raw.include?("scheduled_slot_epoch:")
+puts "scheduled run names are not slot-stable" unless raw.include?("Merge Recovery Soak [scheduled:{0}]")
+RUBY
+soak_errors="$(ruby "$scratch/check-canary.rb" .github/workflows/merge-recovery-soak.yml)"
+if [ -n "$soak_errors" ]; then
+	err "soak workflow invariants failed: $(printf '%s' "$soak_errors" | tr '\n' ';')"
+else
+	ok "soak canaries are isolated and scheduled routing maps daily to dev and weekend to master"
 fi
 
 if [ "$fail" -ne 0 ]; then
