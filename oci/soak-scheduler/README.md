@@ -51,7 +51,13 @@ Use this cutover order:
 2. Confirm `merge-recovery-soak.yml` on `master` accepts `scheduled_slot_epoch`.
 3. Run `scripts/oci/deploy-soak-scheduler.sh`.
 4. Invoke the eligible Function payload manually and complete the verification below.
-5. Confirm no GitHub `schedule` trigger remains enabled.
+5. Confirm the cron path's slot dedup is on `master`: the GitHub `schedule`
+   triggers stay enabled **permanently** as a late-delivered fallback. A cron
+   run whose slot was already claimed by an OCI-dispatched run suppresses
+   itself (the soak concurrency group cancels in-progress, so an undeduped
+   late cron would kill a soak hours into its run); if the Function ever dies
+   silently, the cron still soaks that night, hours late instead of not at
+   all.
 
 GitHub resolves `workflow_dispatch` from the configured `master` ref, so deploying before step 1 will fail against workflow inputs that do not yet exist.
 
