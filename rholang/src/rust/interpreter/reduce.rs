@@ -2871,38 +2871,31 @@ impl DebruijnInterpreter {
                 };
                 work.push(EvWork::Combine(EvKont::EPathmapK { e1, n: child_count }));
                 // Set mode stores canonical key bytes, not duplicate `Par`
-                // values. Decode each key once into the PDA's local arena and
-                // push ordinary borrows in reverse so the LIFO machine evaluates
-                // canonical trie order. Arena lifetime equals the whole drive,
-                // so nested maps remain in this same explicit machine.
+                // values. Walk the trie in reverse, decode each key once into
+                // the PDA's local arena, and push it directly so the LIFO
+                // machine evaluates canonical trie order without a pointer
+                // projection. Arena lifetime equals the whole drive, so nested
+                // maps remain in this same explicit machine.
                 match e1.mode() {
                     EPathMapMode::Empty => {}
                     EPathMapMode::Set => {
-                        let mut entries: Vec<&Par> = Vec::with_capacity(child_count);
                         e1.entry_trie()
-                            .for_each_raw_set_entry(|key| {
+                            .for_each_raw_set_entry_reverse(|key| {
                                 let entry = decode_trie_path(key)
                                     .expect("set-mode EPathMap keys are canonical Par paths");
-                                entries.push(decoded_entries.alloc(entry));
+                                work.push(EvWork::EEval(decoded_entries.alloc(entry)));
                             })
                             .expect("set-mode dispatch checked before traversal");
-                        for entry in entries.into_iter().rev() {
-                            work.push(EvWork::EEval(entry));
-                        }
                     }
                     EPathMapMode::Map => {
-                        let mut entries: Vec<&Par> = Vec::with_capacity(child_count);
                         e1.entry_trie()
-                            .for_each_raw_map_entry(|key, value| {
+                            .for_each_raw_map_entry_reverse(|key, value| {
                                 let key = decode_trie_path(key)
                                     .expect("map-mode EPathMap keys are canonical Par paths");
-                                entries.push(decoded_entries.alloc(key));
-                                entries.push(value);
+                                work.push(EvWork::EEval(value));
+                                work.push(EvWork::EEval(decoded_entries.alloc(key)));
                             })
                             .expect("map-mode dispatch checked before traversal");
-                        for p in entries.into_iter().rev() {
-                            work.push(EvWork::EEval(p));
-                        }
                     }
                 }
                 Ok(())
