@@ -747,6 +747,10 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 )
             }
 
+            (Some(EPathmapBody(target)), Some(EPathmapBody(pattern))) => {
+                self.spatial_match_epathmap(target, pattern)
+            }
+
             (Some(EVarBody(EVar { v: vp })), Some(EVarBody(EVar { v: vt }))) => guard(vp == vt),
 
             (Some(ENotBody(ENot { p: t })), Some(ENotBody(ENot { p }))) => {
@@ -1028,16 +1032,9 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 )
             }),
 
-            // ⚠ `EPathmapBody` and `EZipperBody` reach this arm DELIBERATELY,
-            // and `spatial_match_descends_into` says so in checkable form. The
-            // matcher's descent frontier may not outrun `Substitute`'s, and
-            // `Substitute` declines both: a `VarRef` or a shifted `BoundVar`
-            // inside a path map is still in its pre-substitution form when the
-            // matcher gets here, so binding out of it would bind out of stale
-            // bytes. For `EPathmapBody` that is a REAL gap — `{| a, ...rest |}`
-            // is ordinary surface syntax — and closing it additionally requires
-            // deciding a path map's entry-multiset semantics under matching,
-            // whose canonical form is the ground-map event-hash preimage.
+            // `EZipperBody` reaches this arm deliberately. It is runtime cursor
+            // state, not surface pattern syntax; equality handles the
+            // non-connective case before this matcher is entered.
             _ => None,
         }
     }

@@ -49,13 +49,13 @@ use models::rhoapi::{
     GUnforgeable, KeyValuePair, Par, Var,
 };
 use models::rust::rhoapi_ext::EPathMap;
+use models::rust::rholang::bincode_schema::{BincodeOneof, Descent, FieldKind};
+use models::rust::rholang::bincode_schema_tables::{
+    EXPR_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANT_COUNT,
+};
 use models::rust::rholang::par_children::{
     expr_instance_child_pars, expr_instance_variant_index, spatial_match_descends_into,
     EXPR_INSTANCE_VARIANT_COUNT,
-};
-use models::rust::rholang::bincode_schema::{Descent, FieldKind, BincodeOneof};
-use models::rust::rholang::bincode_schema_tables::{
-    EXPR_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANT_COUNT,
 };
 use models::rust::utils::{new_freevar_par, new_gint_par};
 use prost::Message;
@@ -84,10 +84,11 @@ fn bound() -> Par { new_gint_par(BOUND, Vec::new(), false) }
 /// Every other slot, on both sides.
 fn filler() -> Par { new_gint_par(FILLER, Vec::new(), false) }
 
-fn pathmap(ps: Vec<Par>, connective_used: bool) -> EPathMap {
-    // `EPathMap` carries a private intern cell, so it is built through its
-    // constructor rather than a struct literal.
-    EPathMap::new(ps, Vec::new(), connective_used, None)
+fn pathmap_value(value: Par, connective_used: bool) -> EPathMap {
+    // Set mode owns canonical byte keys but no child `Par`. Map mode owns its
+    // values, so a value probe is visible to the structural child table while
+    // still exercising the specialized EPathMap matcher.
+    EPathMap::new_map([(filler(), value)], Vec::new(), connective_used, None)
 }
 
 /// One variant of `ExprInstance`, in both its pattern and its target form.
@@ -396,17 +397,17 @@ fn probes() -> Vec<Probe> {
             }),
         ),
         Probe::new(
-            ExprInstance::EPathmapBody(pathmap(vec![hole()], true)),
-            ExprInstance::EPathmapBody(pathmap(vec![bound()], false)),
+            ExprInstance::EPathmapBody(pathmap_value(hole(), true)),
+            ExprInstance::EPathmapBody(pathmap_value(bound(), false)),
         ),
         Probe::new(
             ExprInstance::EZipperBody(EZipper {
-                pathmap: Some(pathmap(vec![hole()], true)),
+                pathmap: Some(pathmap_value(hole(), true)),
                 connective_used: true,
                 ..Default::default()
             }),
             ExprInstance::EZipperBody(EZipper {
-                pathmap: Some(pathmap(vec![bound()], false)),
+                pathmap: Some(pathmap_value(bound(), false)),
                 ..Default::default()
             }),
         ),
@@ -538,8 +539,9 @@ fn every_child_bearing_variant_descends_or_is_declared_not_to() {
     );
 }
 
-/// The excluded set, pinned exactly — modelled on
-/// `substitute_disposition_excludes_exactly_the_two_pathmap_arms`.
+/// The excluded set, pinned exactly. EPathMap is ordinary surface syntax and
+/// now descends through the trie-native matcher; only runtime EZipper cursor
+/// state remains deliberately opaque.
 ///
 /// Growing this set makes more programs inert; shrinking it makes programs that
 /// rest today fire. Either direction is a protocol change, so neither may
@@ -554,7 +556,7 @@ fn spatial_match_disposition_excludes_exactly_the_declared_arms() {
 
     assert_eq!(
         excluded,
-        vec!["EPathmapBody", "EZipperBody"],
+        vec!["EZipperBody"],
         "the set of child-bearing ExprInstance variants that `spatial_match` does NOT \
          descend into has changed. That set decides which patterns can fire a COMM, so \
          it is consensus-visible. See `spatial_match_descends_into`."
@@ -1323,6 +1325,17 @@ fn repair_enclosing_lengths(bytes: &mut Vec<u8>, hole: usize, removed: usize) {
 /// zero — #129's harness lost a whole cell to exactly that), and
 /// `expr_instance_child_pars` must report exactly one child fewer.
 fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
+    if matches!(
+        &instance,
+        ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_)
+    ) {
+        // Their owned `Par` values live inside an EPM1 trie snapshot, not as a
+        // nested protobuf field. Finding the same bytes inside that opaque
+        // region and repairing protobuf envelopes would corrupt the snapshot;
+        // malformed-EPM1 behavior is covered by the decoder-specific suite.
+        return None;
+    }
+
     let mut children_before: Vec<&Par> = Vec::new();
     expr_instance_child_pars(&instance, &mut children_before);
     let expected = children_before.len() - 1;

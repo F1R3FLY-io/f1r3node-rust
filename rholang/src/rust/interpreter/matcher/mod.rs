@@ -1,4 +1,5 @@
 pub mod exports;
+mod epathmap_match;
 pub mod fold_match;
 pub mod has_locally_free;
 pub mod list_match;

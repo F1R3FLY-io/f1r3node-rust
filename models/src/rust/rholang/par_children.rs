@@ -74,8 +74,8 @@ pub use crate::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT
 /// Append every child `Par` structurally contained in `e`, in traversal order.
 ///
 /// "Structurally contained" means *reachable by `drop_in_place`* — including
-/// `EPathmapBody` and `EZipperBody`, which `Substitute` does not descend into
-/// but teardown certainly does.
+/// PathMap-owned values and `EZipperBody` cursor state. Logical traversal
+/// disposition remains a separate table below.
 pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>) {
     match e {
         // ---- grounds: no child Par ----
@@ -604,17 +604,11 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
 /// this declaration agree. A variant can therefore be *implemented* or
 /// *consciously excluded*, but not forgotten.
 ///
-/// ## The two exclusions, and the invariant that forces them
+/// ## The runtime-cursor exclusion, and the invariant that forces it
 ///
-/// `EPathmapBody` and `EZipperBody` carry child `Par`s and are **not**
-/// descended into. The reason is not that matching is dangerous in itself —
-/// matching does not rewrite anything — but that the matcher and
-/// [`substitute_descends_into`] run over *the same installed pattern*: a `for`
-/// bind is substituted before it is stored in RSpace and matched after. Neither
-/// of these two variants is descended into by `Substitute` (see that function),
-/// so a `VarRef` or a shifted `BoundVar` sitting inside a path map is still in
-/// its **pre-substitution** form when the matcher reaches it. Descending here
-/// would bind out of bytes substitution never rewrote.
+/// `EPathmapBody` now descends in both substitution and matching through
+/// specialized trie-native PDAs. `EZipperBody` remains excluded: it is runtime
+/// cursor state rather than surface pattern syntax.
 ///
 /// Hence the invariant, checked by
 /// `spatial_match_never_descends_where_substitute_does_not`:
@@ -623,26 +617,12 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
 ///     spatial_match_descends_into(e)  ⟹  substitute_descends_into(e)
 /// ```
 ///
-/// The matcher's frontier may not outrun substitution's. That makes the
-/// exclusion set **derived** rather than chosen: it is exactly the set of
-/// child-bearing variants substitution declines, and it will shrink the moment
-/// substitution's does — which is a separate, deliberate, protocol-visible
-/// decision, and F1r3node's to take.
+/// The matcher's frontier may not outrun substitution's. EPathMap satisfies
+/// that invariant now; its set semantics are idempotent membership (duplicates
+/// are unrepresentable), and a bound remainder is rebuilt in canonical trie
+/// order using the target's homogeneous specialization.
 ///
-/// ⚠ For `EPathmapBody` the exclusion is a **real gap**, not a formality. A
-/// path-map literal is ordinary surface syntax (`{| a, b, ...rest |}`, see the
-/// `pathmap` rule in the Rholang grammar) and the collection normalizer sets
-/// its `connective_used` from its elements and its remainder exactly as it does
-/// for a set, so a pattern like `for (@{| x, ...rest |} <- ch)` normalizes
-/// fine and then matches nothing. Closing it needs two things this function
-/// cannot supply on its own: substitution descent (above), and a decision about
-/// what a path map's *entry multiset* means under matching — whether
-/// `{| 1, 1 |}` and `{| 1 |}` are the same pattern, and in what canonical order
-/// a bound `...rest` is reassembled. That order is the ground-map canonical
-/// form whose bytes are the event-hash preimage, so it is a consensus decision,
-/// not an implementation detail.
-///
-/// `EZipperBody` is excluded on the same invariant, and is additionally
+/// `EZipperBody` is excluded by the invariant, and is additionally
 /// unreachable as a pattern: no normalizer path constructs one. Every
 /// `EZipper` in the tree is produced at *runtime* by `readZipper`,
 /// `readZipperAt` and `writeZipper` (`reduce.rs`), by the decoder, or by the
@@ -673,9 +653,8 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GFixedPoint(_)
         | ExprInstance::EVarBody(_) => false,
 
-        // ⚠ NO DESCENT, and they DO have children — see the note above. This is
-        // forced by `substitute_descends_into`, which declines them too.
-        ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => false,
+        // Runtime cursor state, not surface pattern syntax.
+        ExprInstance::EZipperBody(_) => false,
 
         ExprInstance::ENotBody(_)
         | ExprInstance::ENegBody(_)
@@ -708,7 +687,8 @@ pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::EMapBody(_)
         // `EMethodBody` descends into its receiver and its arguments; the
         // method NAME is compared by equality.
-        | ExprInstance::EMethodBody(_) => true,
+        | ExprInstance::EMethodBody(_)
+        | ExprInstance::EPathmapBody(_) => true,
     }
 }
 
@@ -1368,7 +1348,7 @@ mod tests {
     /// `rholang/tests/spatial_matcher_disposition.rs`, which lives in the
     /// `rholang` crate because that is where `spatial_match` lives.
     #[test]
-    fn spatial_match_disposition_excludes_exactly_the_two_pathmap_arms() {
+    fn spatial_match_disposition_excludes_exactly_the_zipper_arm() {
         let not_descended: Vec<std::mem::Discriminant<ExprInstance>> = expr_instance_corpus()
             .iter()
             .filter(|(instance, expected_children)| {
@@ -1377,10 +1357,9 @@ mod tests {
             .map(|(instance, _)| std::mem::discriminant(instance))
             .collect();
 
-        let expected = vec![
-            std::mem::discriminant(&ExprInstance::EPathmapBody(pathmap_of(vec![]))),
-            std::mem::discriminant(&ExprInstance::EZipperBody(EZipper::default())),
-        ];
+        let expected = vec![std::mem::discriminant(&ExprInstance::EZipperBody(
+            EZipper::default(),
+        ))];
 
         assert_eq!(
             not_descended, expected,
