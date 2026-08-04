@@ -1,4 +1,4 @@
-//! EPathMap fix P2 — T3b: interpreter-internal method-chain view fusion.
+//! EPathMap interpreter-internal method-chain view fusion.
 //!
 //! One seam, [`DebruijnInterpreter::try_eval_fused_method_chain`], called
 //! FIRST in BOTH `EMethodBody` dispatch arms (`eval_expr_to_par` and
@@ -12,9 +12,9 @@
 //!
 //! `Ok(None)` means "not a fusable chain" and the existing per-link path runs
 //! UNCHANGED — the seam never partially evaluates before declining (the
-//! recognizer performs no charge, no evaluation, and no observable work).
+//! recognizer performs no reservation, no evaluation, and no observable work).
 //!
-//! # Control neutrality (amendment PM-5(1))
+//! # Control neutrality
 //!
 //! The FIRST action is an O(1) method-name check ([`LinkKind::from_name`]):
 //! a non-PathMap method (`nth`, `length`, `toString`, …) pays one string
@@ -45,16 +45,19 @@
 //!   `None`. Today's path re-evaluates the ground map on every var reference
 //!   AND at every link's `eval_single_expr` (reduce.rs:2687-2707) — a
 //!   re-evaluation that FORCES `remainder = None` and recomputes
-//!   `locally_free` per entry. The PM-4(c) classifier admits exactly the maps
+//!   `locally_free` per entry. The stability classifier admits exactly the maps
 //!   for which that pipeline is the byte-exact identity, so skipping it is
 //!   byte-invisible; ground re-evaluation adds NO charges (verified: no
 //!   `reserve_*` in the EPathmapBody/ground arms :2687-2714), so skipping it
 //!   is charge-invisible too. Conservative: anything unrecognized falls back.
 //!
-//! # Charge replay (amendment PM-4(b) — same entry points, same constants,
-//! same ORDER)
+//! # Diagnostic replay (non-consensus compatibility)
 //!
-//! The fused replay issues the SAME `MeteredMachine` reservations today's
+//! Consensus accounting is one unit per committed COMM. Method, lookup,
+//! substitution, and structural-reduction reservations carry zero consensus
+//! units and cannot move a funding or liveness boundary. They are nevertheless
+//! retained as diagnostic telemetry, so the fused replay issues the SAME
+//! `MeteredMachine` reservations the fallback
 //! path issues, in the same within-fork temporal order (local_index order —
 //! which is what the canonical event log's `Ord` keys on):
 //!
@@ -72,8 +75,8 @@
 //!      the fallback raises the identical `MethodArgumentNumberMismatch`;
 //!    - **(c)** the `apply`-entry target check (`eval_single_expr`
 //!      :7007-7027): a Nil view raises the exact `_`-arm
-//!      `ReduceError("Error: Multiple expressions given.")` — the PM-4(d)
-//!      parity target — with the failing link's arguments already charged
+//!      `ReduceError("Error: Multiple expressions given.")` — the Nil-chain
+//!      parity target — with the failing link's arguments already recorded
 //!      and its constant NOT charged;
 //!    - **(d)** Position-B argument re-evaluation for arity-1 links
 //!      (:3701/:3886/:4973/:5402/:5667) — replayed verbatim (charge-free on
@@ -89,10 +92,10 @@
 //!      accepted arms, and `ascend`/`descendIndexedBranch`'s argument
 //!      extraction errors, which today fire AFTER the union constant.
 //!
-//! Because primitives carry zero consensus cost units (D3: only `Comm`
-//! charges gate liveness), mid-sequence budget exhaustion behavior is
-//! preserved trivially — and the replay preserves it structurally anyway by
-//! issuing byte-identical reservation sequences.
+//! Because primitives carry zero consensus cost units (only `Comm` gates
+//! liveness), no diagnostic replay step can exhaust the budget. The replay is
+//! retained solely so optimized and fallback executions expose equivalent
+//! telemetry; exact diagnostic weights are not consensus metering goldens.
 //!
 //! # Link semantics (pinned per the landed reduce.rs impls)
 //!
@@ -116,7 +119,7 @@
 //! produces — one map-message embed cloned from the borrowed base (parity
 //! only, no win claimed on that arm).
 //!
-//! # Force-disable + instrumentation (amendment PM-5(3))
+//! # Force-disable + instrumentation
 //!
 //! [`fusion_test_support`] — the differential harness's force-disable toggle
 //! and the shape-keyed fusion-hit counters — is compiled ONLY under
@@ -145,7 +148,7 @@ const TYPE_PATHMAP: &str = "pathmap";
 const TYPE_ZIPPER: &str = "zipper";
 
 /// The exact `eval_single_expr` `_`-arm message (reduce.rs:7022-7024) — the
-/// PM-4(d) Nil-mid-chain parity target (the misleading string IS the pin).
+/// Nil-mid-chain parity target (the misleading string IS the pin).
 const NIL_MID_CHAIN_ERROR: &str = "Error: Multiple expressions given.";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,8 +178,8 @@ enum LinkKind {
     AtPath,
 }
 
-/// Which metering entry point a link's constant goes through (PM-4(b)).
-enum LinkCharge {
+/// Which non-consensus diagnostic reservation a link emits.
+enum LinkDiagnostic {
     /// `reserve_incremental_primitive(union_cost(1))` — the 13 navigation
     /// links.
     IncrementalUnion,
@@ -185,7 +188,7 @@ enum LinkCharge {
 }
 
 impl LinkKind {
-    /// The PM-5(1) name gate: one O(1) string match; `None` for every
+    /// The name gate: one O(1) string match; `None` for every
     /// non-fusable method name.
     fn from_name(name: &str) -> Option<LinkKind> {
         match name {
@@ -273,11 +276,11 @@ impl LinkKind {
         )
     }
 
-    /// PM-4(b): which reservation entry point the link constant uses.
-    fn charge(self) -> LinkCharge {
+    /// Which diagnostic reservation entry point the link constant uses.
+    fn diagnostic(self) -> LinkDiagnostic {
         match self {
-            LinkKind::GetLeaf | LinkKind::GetSubtrie => LinkCharge::Lookup,
-            _ => LinkCharge::IncrementalUnion,
+            LinkKind::GetLeaf | LinkKind::GetSubtrie => LinkDiagnostic::Lookup,
+            _ => LinkDiagnostic::IncrementalUnion,
         }
     }
 }
@@ -302,8 +305,8 @@ enum FusedBase<'a> {
 }
 
 /// A fully recognized, GATED fusable chain. Once this exists, the replay's
-/// result (value or error) is FINAL — there is no post-charge fallback,
-/// because falling back after replay began would double-charge.
+/// result (value or error) is FINAL — there is no post-reservation fallback,
+/// because falling back after replay began would duplicate diagnostics.
 struct FusedChain<'a> {
     /// Walk order: `links[0]` = OUTERMOST (applied last, the terminal link);
     /// `links[n-1]` = innermost (applied first).
@@ -444,15 +447,9 @@ fn recognize_chain<'a>(emethod: &'a EMethod, env: &'a Env<Par>) -> Option<FusedC
         _ => return None,
     };
 
-    // THE GATE (plan §1-P2, risk R6): fusion skips today's ground
-    // re-evaluation, which is only byte-invisible when the PM-4(c)
-    // classifier certifies the map as eval-stable. Interning here also
-    // pre-warms the one store entry every link will read — the same entry
-    // today's first conversion would create (same message bytes ⇒ same
-    // digest), so no second cache mechanism is introduced (risk R3).
-    // THE GATE, unchanged in meaning: `eval_stable_epathmap` is the same classifier
-    // the store used to compute its cached `eval_stable` bit, read directly instead
-    // of through a global rendezvous.
+    // THE GATE: fusion skips today's ground re-evaluation, which is only
+    // byte-invisible when `eval_stable_epathmap` certifies the map. The
+    // classifier is read directly; no intern-store rendezvous exists.
     if !models::rust::pathmap_crate_type_mapper::eval_stable_epathmap(source_map) {
         return None;
     }
@@ -535,16 +532,16 @@ fn single_expr_par(expr_instance: ExprInstance) -> Par {
 }
 
 impl DebruijnInterpreter {
-    /// THE P2 SEAM. `Ok(None)` ⇒ not fusable, run today's path unchanged;
-    /// `Ok(Some(par))` ⇒ the chain's result, byte-identical to today's, with
-    /// byte-identical charges already reserved; `Err` ⇒ the chain fused and
-    /// failed exactly as today's path would have (same error, same charges).
+    /// The production fusion seam. `Ok(None)` means not fusable; the fallback
+    /// remains untouched. `Ok(Some(par))` returns the byte-identical result
+    /// with equivalent diagnostics. `Err` means the fused path owned the chain
+    /// and produced the same error the fallback would have produced.
     pub(crate) fn try_eval_fused_method_chain(
         &self,
         emethod: &EMethod,
         env: &Env<Par>,
     ) -> Result<Option<Par>, InterpreterError> {
-        // PM-5(3): the force-disable seam exists ONLY in test builds — no
+        // The force-disable seam exists ONLY in test builds — no
         // production runtime flag.
         #[cfg(any(test, feature = "epathmap-fusion-differential"))]
         {
@@ -553,7 +550,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        // PM-5(1): O(1) NAME GATE before any spine walk — a non-PathMap
+        // O(1) NAME GATE before any spine walk — a non-PathMap
         // method pays exactly one string compare here.
         if LinkKind::from_name(&emethod.method_name).is_none() {
             return Ok(None);
@@ -577,7 +574,7 @@ impl DebruijnInterpreter {
         result.map(Some)
     }
 
-    /// Replay the recognized chain: charges in today's exact order, link
+    /// Replay the recognized chain: diagnostics in today's exact order, link
     /// semantics on the shared view. See the module docs for the pinned
     /// order (method_call ×n outermost-first → base var_eval → per link
     /// innermost-out: Position-A args → Nil check → Position-B args → link
@@ -587,17 +584,15 @@ impl DebruijnInterpreter {
         chain: &FusedChain<'_>,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
-        // (1) method_call × n, outermost-first (reduce.rs:1536/:2723 charge
+        // (1) method_call × n, outermost-first (reduce.rs:1536/:2723 reserves
         // BEFORE recursing into the target, so today the outermost dispatch
-        // charges first and the chain aborting later still leaves all n
-        // charges committed — e.g. the pinned NIL_GETLEAF_TRACE opens with
-        // three `prim(method call)=10` rows).
+        // records first and a later abort still leaves all n attempts).
         for _ in &chain.links {
             self.metering.reserve_primitive(method_call_cost())?;
         }
 
-        // (2) the base: a var base charges var_eval_cost (:1217); the bound
-        // map's re-evaluation adds NO charges under the eval_stable gate
+        // (2) the base: a var base records var_eval_cost (:1217); the bound
+        // map's re-evaluation adds NO diagnostics under the eval_stable gate
         // (and a bound zipper is returned as-is today, :2710-2714).
         if matches!(chain.base, FusedBase::VarMap | FusedBase::VarZipper(_)) {
             self.metering.reserve_primitive(var_eval_cost())?;
@@ -625,7 +620,7 @@ impl DebruijnInterpreter {
             let kind = chain.kinds[idx];
 
             // (a) Position-A argument evaluation (:1538-1542): the same
-            // eval_expr on the raw argument ASTs — full charges (var_eval
+            // eval_expr on the raw argument ASTs — full diagnostics (var_eval
             // for var arguments, method_call for method arguments, …) at
             // today's position: after the inner links completed, before the
             // apply-order steps below.
@@ -646,10 +641,10 @@ impl DebruijnInterpreter {
             // the evaluated target at :3622/:3700/:3824/:3885/:3974/:4053/
             // :4972/:5048/:5220/:5268/:5324/:5401/:5481/:5561/:5666/:5757/
             // :5847): a Nil target (zero exprs) hits the `_` arm — the exact
-            // PM-4(d) error, with this link's arguments already charged and
-            // its constant NOT charged. Map/zipper targets pass: the map
+            // Nil-chain error, with this link's arguments already evaluated
+            // and its constant NOT recorded. Map/zipper targets pass: the map
             // re-evaluation is the byte-identity under the gate, the zipper
-            // arm returns as-is — both charge-free.
+            // arm returns as-is — both diagnostic-free.
             if matches!(mode, ViewMode::Nil) {
                 return Err(InterpreterError::ReduceError(
                     NIL_MID_CHAIN_ERROR.to_string(),
@@ -667,12 +662,12 @@ impl DebruijnInterpreter {
                 None
             };
 
-            // (e) the link constant (PM-4(b) — same entry point, same Cost).
-            match kind.charge() {
-                LinkCharge::IncrementalUnion => {
+            // (e) the link's non-consensus diagnostic reservation.
+            match kind.diagnostic() {
+                LinkDiagnostic::IncrementalUnion => {
                     self.metering.reserve_incremental_primitive(union_cost(1))?
                 }
-                LinkCharge::Lookup => self.metering.reserve_primitive(lookup_cost())?,
+                LinkDiagnostic::Lookup => self.metering.reserve_primitive(lookup_cost())?,
             }
 
             // (f) the link semantics on the view.
@@ -1141,7 +1136,7 @@ impl DebruijnInterpreter {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test-only support (amendment PM-5(3)): compile-time-gated force-disable +
+// Test-only support: compile-time-gated force-disable +
 // shape-keyed fusion-hit counters
 // ─────────────────────────────────────────────────────────────────────────────
 

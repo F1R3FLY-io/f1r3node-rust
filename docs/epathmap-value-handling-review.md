@@ -4,6 +4,22 @@ Status: REVIEW PACKET for the user's consensus review, prepared 2026-07-20.
 Nothing in this stack has been pushed toward origin; this document is the
 checklist-bearing record to review BEFORE any upstreaming decision.
 
+> **Historical scope notice (2026-08-04).** This packet records the July
+> implementation sequence and its then-current phase names; it is not the live
+> EPathMap design. The homogeneous `Empty | PathMap<()> | PathMap<Par>` carrier,
+> direct EPM1 trie image, generated protobuf/bincode PDAs, and current evidence
+> are registered by
+> [CBR-044](consensus/consensus-change-register.md#cbr-044), the
+> [PathMap report](design/pathmap/pathmap-report-2026-08-03.md), and the
+> [stack-safety report](design/stack-safety/stack-safety-report-2026-07-29.md).
+> In particular, this packet's pinned per-operation “charge traces” describe a
+> retired pre-COMM-only test contract. Primitive, substitution, and structural
+> rows are diagnostic-only; consensus accounting is the committed COMM count.
+> The removed `epathmap_charge_trace_spec.rs` has been superseded by
+> `epathmap_fusion_equivalence_spec.rs`, which pins semantic results, errors,
+> COMM boundaries, and dynamic fused-vs-fallback diagnostic equivalence without
+> pinning diagnostic weights as metering values.
+
 Scope: the nine-commit stack on the `f1r3node-rust-mettail` branch
 `fix/epathmap-value-handling` @ `ead2f152`, merged back (fast-forward, no
 merge commit) into `feature/mettail` on 2026-07-20 so both refs name the same
@@ -42,7 +58,7 @@ Terminology used below:
 | inj | the benchmark's measured injection wall time (per-cell median, ms) |
 | DNF | did-not-finish (a recorded refusal/timeout line, never a silent failure) |
 | P0 goldens | the `602144bd` byte pins: prost bytes + `encoded_len`, bincode + JSON serde, produce/consume event hashes, Ord fixtures |
-| charge traces | the `602144bd` ordered (reservation-KIND, operation, weight) cost snapshots |
+| charge traces | **historical only**: the `602144bd` ordered diagnostic snapshots; superseded by committed-COMM accounting and dynamic fusion equivalence (notice above) |
 | byte goldens | the P4.1 `serializer_byte_goldens.rs` literal cold-store bytes |
 | replay equivalence | the P4.3 spec: log re-derivation (`check_replay_data`), identical play/replay cost, identical checkpoint roots |
 | K2 | user decision D1 (2026-07-20): digest-bucket keying with a mandatory full-byte structural verify on every hit |

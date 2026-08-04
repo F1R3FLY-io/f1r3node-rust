@@ -1,39 +1,35 @@
-//! EPathMap fix P0 — FUSED-VS-UNFUSED DIFFERENTIAL SCAFFOLD (test-only).
+//! EPathMap fused-vs-fallback equivalence and COMM-accounting specification.
 //!
-//! The harness STRUCTURE that later phases' differentials plug into,
-//! committed now so the parity methodology is fixed before any production
-//! change exists. THE P2 CONSUMER: when P2 lands
-//! `try_eval_fused_method_chain` (the method-chain view-fusion seam called
-//! first in both dispatch arms), it extends [`QueryRunMode`] with
+//! The production `try_eval_fused_method_chain` optimization is checked
+//! against the unfused per-link implementation from the same source. The
+//! test-only [`QueryRunMode`] exposes
 //! `FusedDisabled` / `Fused` variants — gated by a COMPILE-TIME
 //! (`cfg`/feature) force-disable flag on the recognizer, never a runtime
 //! flip (a runtime-flippable path is a node-divergence hazard under a latent
-//! parity bug; plan amendment PM-5(3)) — and asserts
+//! parity bug) — and asserts
 //! `observe(Fused, …) == observe(FusedDisabled, …)` field-for-field over
-//! every chain shape and edge program below. P4's spliced event hashing
-//! reuses the same observation (its `produce_hash` field is the
-//! spliced-vs-direct gate).
+//! every chain shape and edge program below.
 //!
-//! P2 STATUS: the seam exists (`try_eval_fused_method_chain`,
-//! interpreter/fused_pathmap_chain.rs) and [`QueryRunMode`] now carries the
+//! The seam exists in `interpreter/fused_pathmap_chain.rs`; the
 //! `FusedDisabled`/`Fused` variants under the `epathmap-fusion-differential`
-//! feature — the PM-5(3) compile-time gate (`cargo test -p rholang
+//! feature provide the compile-time gate (`cargo test -p rholang
 //! --features epathmap-fusion-differential --test
-//! epathmap_differential_scaffold`). Without the feature this file compiles
-//! to exactly the P0 suite: [`QueryRunMode::TodayPath`] — which POST-P2 IS
-//! the fused production path — plus the two determinism tests, the property
-//! every differential relies on to attribute any mismatch to the treatment
-//! rather than to ambient nondeterminism.
+//! epathmap_fusion_equivalence_spec`). Without the feature,
+//! [`QueryRunMode::TodayPath`] exercises the fused production path and the
+//! deterministic semantic/COMM-accounting assertions.
 //!
-//! The programs mirror `epathmap_charge_trace_spec.rs` (kept self-contained
-//! per the suite's house style of per-file fixtures; if you change a program
-//! here, change its twin there).
+//! Consensus accounting is ONE unit per committed COMM. Primitive,
+//! substitution, and structural-reduction events have zero consensus cost.
+//! Their canonical rows remain in [`QueryObservation::diagnostic_trace`] only
+//! to prove that fusion preserves non-consensus diagnostics; this suite never
+//! treats their operation names or weights as pinned metering values.
 
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
+use models::rhoapi::{ETuple, Expr, Par};
+use models::rust::utils::{new_elist_par, new_gstring_par};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
@@ -45,15 +41,14 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 // Run modes
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Which evaluation path an observation runs. `TodayPath` is whatever
-/// production does (post-P2: the fused seam active); the P2 differential
-/// modes exist only under the PM-5(3) compile-time feature gate.
+/// Which evaluation path an observation runs. `TodayPath` is the production
+/// path; differential modes exist only under the compile-time feature gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueryRunMode {
-    /// The production evaluation path (post-P2: fusion active).
+    /// The production evaluation path (fusion active).
     TodayPath,
     /// The recognizer force-disabled via the test-only toggle — every chain
-    /// takes the per-link fallback (the pre-P2 path, bit for bit).
+    /// takes the original per-link fallback, bit for bit.
     #[cfg(feature = "epathmap-fusion-differential")]
     FusedDisabled,
     /// The fused path, explicitly (identical to `TodayPath`; named for the
@@ -75,27 +70,30 @@ struct ChannelObservation {
     /// The datum's `random_state` (deterministic under the fixed rand).
     random_state: Vec<Vec<u8>>,
     persist: Vec<bool>,
-    /// The produce EVENT HASH of each datum (`Datum::source.hash`) — the
-    /// consensus-side observable P4's spliced hashing must reproduce.
+    /// The produce EVENT HASH of each datum (`Datum::source.hash`).
     produce_hash: Vec<Vec<u8>>,
 }
 
-/// Everything a fused-vs-unfused differential compares.
+/// Everything a fused-vs-fallback differential compares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct QueryObservation {
     /// Interpreter errors, rendered `{:?}` (pins variants AND payloads —
     /// e.g. the exact `"Error: Multiple expressions given."` string).
     errors: Vec<String>,
-    /// Consensus consumed total (`EvaluateResult::cost.value`).
+    /// Consensus consumed total (`EvaluateResult::cost.value`), equal to the
+    /// committed COMM count.
     consumed: i64,
-    /// The rendered canonical charge trace (kind, operation, weight, order —
-    /// same rendering as `epathmap_charge_trace_spec.rs`).
-    charge_trace: Vec<String>,
+    /// Independently counted committed COMM events. This is the current
+    /// consensus accounting model; diagnostic event weights are excluded.
+    committed_comms: i64,
+    /// Canonical non-consensus diagnostics. Dynamic fused-vs-fallback
+    /// equality is useful, but these rows are not metering goldens.
+    diagnostic_trace: Vec<String>,
     /// Per-channel readbacks, in the caller-given channel order.
     channels: Vec<ChannelObservation>,
 }
 
-fn render_charge(kind: &BillableKind, weight: u64) -> String {
+fn render_diagnostic_event(kind: &BillableKind, weight: u64) -> String {
     match kind {
         BillableKind::Primitive(operation) => {
             let class = if operation.ends_with(" union cost") {
@@ -113,8 +111,7 @@ fn render_charge(kind: &BillableKind, weight: u64) -> String {
 
 /// The fixed evaluation seed (`create_from_length` draws from
 /// `rand::thread_rng()` and would make `random_state`/`produce_hash`
-/// nondeterministic — the captured 84a0fbe4 truth this harness works around
-/// by seeding explicitly).
+/// nondeterministic, so the suite seeds explicitly).
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::create_from_bytes(&[
         0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -132,8 +129,8 @@ async fn observe(
     channels: &[&str],
     initial_phlo: Cost,
 ) -> QueryObservation {
-    // Mode dispatch (P2): the force-disable toggle, compile-time gated per
-    // PM-5(3). The guard restores the production default (fusion active) on
+    // Compile-time-gated force-disable toggle. The guard restores the
+    // production default (fusion active) on
     // drop, even across panics.
     #[cfg(feature = "epathmap-fusion-differential")]
     let _toggle_guard = {
@@ -158,11 +155,14 @@ async fn observe(
             .await
             .expect("evaluate must not fail structurally");
 
-        let charge_trace = runtime
-            .cost()
-            .get_canonical_event_log()
+        let canonical_events = runtime.cost().get_canonical_event_log();
+        let committed_comms = canonical_events
             .iter()
-            .map(|event| render_charge(&event.kind, event.weight))
+            .filter(|event| matches!(event.kind, BillableKind::Comm))
+            .count() as i64;
+        let diagnostic_trace = canonical_events
+            .iter()
+            .map(|event| render_diagnostic_event(&event.kind, event.weight))
             .collect::<Vec<_>>();
 
         let mut channel_observations = Vec::with_capacity(channels.len());
@@ -196,6 +196,11 @@ async fn observe(
             });
         }
 
+        assert_eq!(
+            res.cost.value, committed_comms,
+            "consensus cost must equal the committed COMM count"
+        );
+
         QueryObservation {
             errors: res
                 .errors
@@ -203,7 +208,8 @@ async fn observe(
                 .map(|error| format!("{error:?}"))
                 .collect(),
             consumed: res.cost.value,
-            charge_trace,
+            committed_comms,
+            diagnostic_trace,
             channels: channel_observations,
         }
     })
@@ -211,7 +217,7 @@ async fn observe(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The differential program set (mirrors epathmap_charge_trace_spec.rs)
+// Shared EPathMap query programs
 // ─────────────────────────────────────────────────────────────────────────────
 
 const INDEX_MAP: &str = r#"{|
@@ -234,8 +240,8 @@ fn e6a_program(result_channel: &str, chain: &str) -> String {
     )
 }
 
-/// Every program the P2/P4 differentials must cover: the four E-6a chain
-/// shapes plus the PM-4(d) edge programs (Nil-mid-chain in all four Nil
+/// Every program the differential must cover: the four E-6a chain
+/// shapes plus the edge programs (Nil-mid-chain in all four Nil
 /// sources; Nil + wrong arity). Each row: (label, program, readback
 /// channels).
 fn differential_programs() -> Vec<(&'static str, String, Vec<&'static str>)> {
@@ -302,22 +308,169 @@ fn differential_programs() -> Vec<(&'static str, String, Vec<&'static str>)> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P0 exercise: the today-path observation is deterministic
+// Production-path semantics, COMM accounting, and determinism
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Two fresh runtimes, identical observations — errors, consumed, charge
-/// trace, result bytes, random_state, persist flags, produce hashes. This is
+fn gstring_par(value: &str) -> Par { new_gstring_par(value.to_string(), Vec::new(), false) }
+
+fn ground_list(elements: Vec<Par>) -> Par {
+    new_elist_par(elements, Vec::new(), false, None, Vec::new(), false)
+}
+
+fn ground_tuple1(inner: Par) -> Par {
+    models::par_from_default! {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![inner],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }],
+        ..Par::default()
+    }
+}
+
+fn expected_sigma_entry() -> Par {
+    ground_list(vec![
+        gstring_par("v"),
+        gstring_par("site0"),
+        gstring_par("Pair.0"),
+        ground_tuple1(gstring_par("A")),
+    ])
+}
+
+fn single_observed_par(observation: &QueryObservation, channel_index: usize) -> Par {
+    let channel = &observation.channels[channel_index];
+    assert_eq!(
+        channel.par_bytes.len(),
+        1,
+        "expected one datum at @{:?}",
+        channel.channel
+    );
+    Par::decode(channel.par_bytes[0].as_slice()).expect("observed Par protobuf must decode")
+}
+
+/// Pin the intended production semantics independently of the dynamic
+/// fused-vs-fallback comparison, and pin the current accounting rule: each
+/// successful treatment shape consumes exactly its three COMMs while every
+/// non-COMM diagnostic event contributes zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn today_path_has_expected_semantics_and_comm_accounting() {
+    #[cfg(feature = "epathmap-fusion-differential")]
+    let _serial = fused_differentials::serialize_toggle_tests();
+
+    let programs = differential_programs();
+    let mut observations = Vec::with_capacity(4);
+    for (label, program, channels) in programs.iter().take(4) {
+        let observation = observe(
+            QueryRunMode::TodayPath,
+            &format!("epm-current-{label}-"),
+            program,
+            channels,
+            Cost::unsafe_max(),
+        )
+        .await;
+        assert!(
+            observation.errors.is_empty(),
+            "{label}: unexpected errors: {:?}",
+            observation.errors
+        );
+        assert_eq!(observation.consumed, 3, "{label}: expected three COMMs");
+        assert_eq!(observation.committed_comms, 3);
+        observations.push(observation);
+    }
+
+    let discovery = single_observed_par(&observations[0], 0);
+    match discovery
+        .exprs
+        .first()
+        .and_then(|expr| expr.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EPathmapBody(map)) => {
+            let entries = map.entry_trie().entries_owned();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0],
+                ground_list(vec![gstring_par("t.deadbeef.Pair"), gstring_par("site0")])
+            );
+        }
+        other => panic!("expected an EPathMap discovery result, got {other:?}"),
+    }
+
+    for (label, observation) in [
+        ("tag guard", &observations[1]),
+        ("sigma existence", &observations[2]),
+    ] {
+        let value = single_observed_par(observation, 0);
+        assert_eq!(
+            value
+                .exprs
+                .first()
+                .and_then(|expr| expr.expr_instance.clone()),
+            Some(ExprInstance::GBool(true)),
+            "{label} must hold"
+        );
+    }
+    assert_eq!(
+        single_observed_par(&observations[3], 0),
+        expected_sigma_entry(),
+        "getLeaf must return the original trie value losslessly"
+    );
+
+    for (label, program, channels) in programs.iter().skip(4).take(4) {
+        let observation = observe(
+            QueryRunMode::TodayPath,
+            &format!("epm-current-{label}-"),
+            program,
+            channels,
+            Cost::unsafe_max(),
+        )
+        .await;
+        assert_eq!(observation.consumed, 1, "{label}: expected one send COMM");
+        assert_eq!(observation.committed_comms, 1);
+        assert_eq!(observation.errors.len(), 1);
+        assert!(
+            observation.errors[0].contains("ReduceError")
+                && observation.errors[0].contains("Error: Multiple expressions given."),
+            "{label}: wrong Nil-mid-chain error: {:?}",
+            observation.errors
+        );
+    }
+
+    let (label, program, channels) = &programs[8];
+    let wrong_arity = observe(
+        QueryRunMode::TodayPath,
+        &format!("epm-current-{label}-"),
+        program,
+        channels,
+        Cost::unsafe_max(),
+    )
+    .await;
+    assert_eq!(wrong_arity.consumed, 1);
+    assert_eq!(wrong_arity.committed_comms, 1);
+    assert_eq!(wrong_arity.errors.len(), 1);
+    assert!(
+        wrong_arity.errors[0].contains("MethodArgumentNumberMismatch")
+            && wrong_arity.errors[0].contains("getLeaf"),
+        "wrong-arity ordering drifted: {:?}",
+        wrong_arity.errors
+    );
+}
+
+/// Two fresh runtimes, identical observations — errors, COMM consumption,
+/// diagnostic trace, result bytes, random_state, persist flags, and produce
+/// hashes. This is
 /// the null-differential every later fused-vs-unfused comparison stands on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn today_path_observations_are_deterministic() {
-    // Under the P2 differential feature every test in this binary serializes
+    // Under the differential feature every test in this binary serializes
     // on the toggle lock (the toggle + hit counters are process-global).
     #[cfg(feature = "epathmap-fusion-differential")]
     let _serial = fused_differentials::serialize_toggle_tests();
     for (label, program, channels) in differential_programs() {
         let first = observe(
             QueryRunMode::TodayPath,
-            &format!("epm-p0-diff-a-{label}-"),
+            &format!("epm-current-diff-a-{label}-"),
             &program,
             &channels,
             Cost::unsafe_max(),
@@ -325,7 +478,7 @@ async fn today_path_observations_are_deterministic() {
         .await;
         let second = observe(
             QueryRunMode::TodayPath,
-            &format!("epm-p0-diff-b-{label}-"),
+            &format!("epm-current-diff-b-{label}-"),
             &program,
             &channels,
             Cost::unsafe_max(),
@@ -338,31 +491,33 @@ async fn today_path_observations_are_deterministic() {
     }
 }
 
-/// The bounded-budget variant of the null differential — the k-axis the P2
-/// exhaustion-at-index-k differential walks.
+/// The bounded-budget variant of the null differential — the COMM-boundary
+/// axis the fused-vs-fallback exhaustion differential walks.
 ///
-/// ★ CAPTURED SCHEDULE-DEPENDENCE (see
-/// `epathmap_charge_trace_spec::budget_exhaustion_walks_comm_boundaries`):
-/// at ks where parallel branches race for the last token, the losing branch
-/// ABORTS and truncates the attempt multiset, so the diagnostic committed
-/// charge trace — and, at k=1, even which side's produce reached the space —
-/// is schedule-dependent. The deterministic projection at those ks is
-/// (errors, consumed). The scaffold therefore asserts FULL observation
+/// At budgets where parallel branches race for the last token, the losing
+/// branch aborts and can truncate the non-consensus diagnostic trace. The
+/// deterministic consensus projection is `(errors, consumed,
+/// committed_comms)`. The suite therefore asserts FULL observation
 /// equality at k∈{0,3,4} (empty commit / complete runs) and the projection
-/// at k∈{1,2} (k=2 has shown no variance but is classed conservatively with
-/// k=1 pending a mechanism proof). P2/P4 exhaustion differentials inherit
-/// exactly this contract.
+/// at k∈{1,2}.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn today_path_bounded_budget_observations_are_deterministic() {
-    // Under the P2 differential feature every test in this binary serializes
+    // Under the differential feature every test in this binary serializes
     // on the toggle lock (the toggle + hit counters are process-global).
     #[cfg(feature = "epathmap-fusion-differential")]
     let _serial = fused_differentials::serialize_toggle_tests();
     let (label, program, channels) = &differential_programs()[3]; // sigma-chain
-    for k in 0..=4i64 {
+    let expected = [
+        (0, true, 0),
+        (1, true, 1),
+        (2, true, 2),
+        (3, false, 3),
+        (4, false, 3),
+    ];
+    for (k, expect_oop, expected_comms) in expected {
         let first = observe(
             QueryRunMode::TodayPath,
-            &format!("epm-p0-diffk-a-{label}-{k}-"),
+            &format!("epm-current-diffk-a-{label}-{k}-"),
             program,
             channels,
             Cost::create(k, "differential budget"),
@@ -370,7 +525,7 @@ async fn today_path_bounded_budget_observations_are_deterministic() {
         .await;
         let second = observe(
             QueryRunMode::TodayPath,
-            &format!("epm-p0-diffk-b-{label}-{k}-"),
+            &format!("epm-current-diffk-b-{label}-{k}-"),
             program,
             channels,
             Cost::create(k, "differential budget"),
@@ -385,25 +540,39 @@ async fn today_path_bounded_budget_observations_are_deterministic() {
                 first.consumed, second.consumed,
                 "{label} k={k}: consumed total must be deterministic"
             );
+            assert_eq!(
+                first.committed_comms, second.committed_comms,
+                "{label} k={k}: committed COMM count must be deterministic"
+            );
         } else {
             assert_eq!(
                 first, second,
                 "{label} k={k}: bounded-budget observation must be byte-deterministic"
             );
         }
+        assert_eq!(first.consumed, expected_comms, "{label} k={k}");
+        assert_eq!(first.committed_comms, expected_comms, "{label} k={k}");
+        assert_eq!(
+            first
+                .errors
+                .iter()
+                .any(|error| error.contains("OutOfPhlogistons")),
+            expect_oop,
+            "{label} k={k}: wrong COMM-boundary verdict"
+        );
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P2: the fused-vs-unfused differential suite (feature-gated per PM-5(3))
+// Fused-vs-unfused differential suite (compile-time feature gated)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The P2 differential proper: for every fusable shape and every edge, the
+/// For every fusable shape and every edge, the
 /// FUSED observation must equal the FORCE-DISABLED (per-link fallback)
 /// observation field-for-field — result Par bytes, datum `random_state`,
 /// persist flags, produce event hashes, interpreter errors (variant AND
-/// payload strings), the consensus consumed total, and the full canonical
-/// charge trace (reservation kind, operation, weight, ORDER). Each row also
+/// payload strings), the consensus COMM total, and the full non-consensus
+/// diagnostic trace. Each row also
 /// pins its fusion-hit accounting: rows expected to fuse must record ≥1 hit
 /// in Fused mode; rows expected to fall back must record EXACTLY 0; the
 /// force-disabled run must always record 0.
@@ -417,12 +586,11 @@ mod fused_differentials {
 
     /// Serializes every test in this binary under the feature: the
     /// force-disable toggle and the hit counters are process-global, so a
-    /// concurrently-running P0 determinism test (whose E-6a programs fuse)
+    /// concurrently-running production-path test (whose E-6a programs fuse)
     /// would smear another test's hit delta — and a `TodayPath` observation
     /// taken inside a force-disabled window, while byte-equivalent (that IS
     /// the differential claim), would turn a parity bug into flakiness
-    /// instead of a clean failure. The P0 tests take this lock too
-    /// (feature-gated; without the feature they run exactly as at P0).
+    /// instead of a clean failure. Production-path tests take this lock too.
     pub(super) static DIFFERENTIAL_LOCK: Mutex<()> = Mutex::new(());
 
     /// Lock, de-poisoned: each test asserts independently, so an earlier
@@ -514,7 +682,7 @@ mod fused_differentials {
 
     /// THE MATRIX. Every fusable link appears in at least one fusing row;
     /// every recognizer-decline reason appears in at least one zero-hit row;
-    /// all four PM-4(d) Nil sources and both in-fusion error families
+    /// all four Nil sources and both in-fusion error families
     /// (`MethodNotDefined`, argument-extraction) are exercised.
     fn differential_matrix() -> Vec<MatrixRow> {
         let mut rows = Vec::with_capacity(32);
@@ -673,7 +841,7 @@ mod fused_differentials {
             vec!["ReduceError", "Error: Multiple expressions given."],
         ));
 
-        // ── the PM-4(d) Nil sources + follow-on link ─────────────────────
+        // ── Nil sources + follow-on link ─────────────────────────────────
         // getLeaf-no-value is a MID-CHAIN value producer: the whole chain
         // falls back, but the fallback's inner spine
         // `readZipperAt(["a"]).getLeaf()` fuses as its own chain (hits ≥1).
@@ -822,7 +990,7 @@ mod fused_differentials {
             false,
         ));
 
-        // ── the expr-arm (guard) dispatch route — PM-4(a) ────────────────
+        // ── the expr-arm (guard) dispatch route ──────────────────────────
         rows.push(row(
             "guard-pathExists-true-branch",
             r#"if( {| ["a"] |}.pathExists() ) { @"out"!("yes") } else { @"out"!("no") }"#,
@@ -842,7 +1010,7 @@ mod fused_differentials {
         ));
         rows.push(error_row(
             // A Nil chain result as an EAnd CONJUNCT — the true expr-arm
-            // route (eval_to_bool → eval_expr_to_expr → the seam): PM-4(a)'s
+            // route (eval_to_bool → eval_expr_to_expr → the seam): the
             // fused Some(par) goes through the SAME eval_single_expr
             // conversion today's arm applies to its result_par, raising the
             // identical "Error: Multiple expressions given.".
@@ -868,7 +1036,7 @@ mod fused_differentials {
     async fn assert_row_differential(row: &MatrixRow) -> u64 {
         let (unfused, unfused_hits) = observe_with_hits(
             QueryRunMode::FusedDisabled,
-            &format!("epm-p2-fd-{}-", row.label),
+            &format!("epm-fusion-fd-{}-", row.label),
             &row.program,
             &row.channels,
             Cost::unsafe_max(),
@@ -876,7 +1044,7 @@ mod fused_differentials {
         .await;
         let (fused, fused_hits) = observe_with_hits(
             QueryRunMode::Fused,
-            &format!("epm-p2-f-{}-", row.label),
+            &format!("epm-fusion-f-{}-", row.label),
             &row.program,
             &row.channels,
             Cost::unsafe_max(),
@@ -887,7 +1055,7 @@ mod fused_differentials {
             fused, unfused,
             "{}: the fused observation must equal the force-disabled observation \
              field-for-field (result bytes, random_state, persist, produce hashes, \
-             errors, consumed, charge trace)",
+             errors, COMM consumption, diagnostic trace)",
             row.label
         );
         // Vacuousness guard: the row must have evaluated as INTENDED (a
@@ -959,7 +1127,7 @@ mod fused_differentials {
         }
     }
 
-    /// PM-5(1) CONTROL-NEUTRALITY FALSIFIER: a method-heavy program with
+    /// Control-neutrality falsifier: a method-heavy program with
     /// ZERO PathMap methods must produce byte-identical observations with a
     /// fusion-hit count of EXACTLY 0 in both modes — the name gate proven
     /// (non-PathMap methods pay one string compare and nothing else).
@@ -981,7 +1149,7 @@ mod fused_differentials {
 
         let (unfused, unfused_hits) = observe_with_hits(
             QueryRunMode::FusedDisabled,
-            "epm-p2-control-fd-",
+            "epm-fusion-control-fd-",
             program,
             &channels,
             Cost::unsafe_max(),
@@ -989,7 +1157,7 @@ mod fused_differentials {
         .await;
         let (fused, fused_hits) = observe_with_hits(
             QueryRunMode::Fused,
-            "epm-p2-control-f-",
+            "epm-fusion-control-f-",
             program,
             &channels,
             Cost::unsafe_max(),
@@ -1003,7 +1171,7 @@ mod fused_differentials {
         );
         assert_eq!(
             fused, unfused,
-            "control: byte-identical results and charges with zero PathMap methods"
+            "control: byte-identical observations with zero PathMap methods"
         );
         assert_eq!(
             fused_hits, 0,
@@ -1012,25 +1180,19 @@ mod fused_differentials {
         assert_eq!(unfused_hits, 0, "control: force-disabled must never fuse");
     }
 
-    /// The P2 budget-exhaustion-at-index-k differential over the
-    /// DETERMINISTIC PROJECTION (the P0-captured contract, inherited
-    /// verbatim): errors + consumed compare EXACTLY at every k; the
-    /// diagnostic committed-rows count compares exactly at the
-    /// schedule-independent ks (0: nothing commits; ≥3: the complete run)
-    /// and is bounded to [consumed, full-trace] at the racing ks (1, 2),
-    /// where parallel branches race for the last token and the losing
-    /// branch's abort truncates the attempt multiset.
+    /// Budget-exhaustion differential over the deterministic consensus
+    /// projection: errors, consumed units, and committed COMM count compare
+    /// exactly at every boundary. Full observations, including diagnostics,
+    /// compare only when the attempt multiset is schedule-independent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fused_vs_unfused_exhaustion_at_index_k() {
         let _serial = serialize_toggle_tests();
 
         let (label, program, channels) = &differential_programs()[3]; // sigma-chain
-        const FULL_TRACE_ROWS: usize = 17;
-
         for k in 0..=4i64 {
             let (unfused, _) = observe_with_hits(
                 QueryRunMode::FusedDisabled,
-                &format!("epm-p2-exh-fd-{label}-{k}-"),
+                &format!("epm-fusion-exh-fd-{label}-{k}-"),
                 program,
                 channels,
                 Cost::create(k, "differential budget"),
@@ -1038,7 +1200,7 @@ mod fused_differentials {
             .await;
             let (fused, fused_hits) = observe_with_hits(
                 QueryRunMode::Fused,
-                &format!("epm-p2-exh-f-{label}-{k}-"),
+                &format!("epm-fusion-exh-f-{label}-{k}-"),
                 program,
                 channels,
                 Cost::create(k, "differential budget"),
@@ -1054,18 +1216,12 @@ mod fused_differentials {
                 fused.consumed, unfused.consumed,
                 "{label} k={k}: consumed total must not move under fusion"
             );
+            assert_eq!(
+                fused.committed_comms, unfused.committed_comms,
+                "{label} k={k}: committed COMM count must not move under fusion"
+            );
 
-            if matches!(k, 1 | 2) {
-                // Racing ks: committed rows are schedule-dependent; both
-                // paths must stay inside the captured envelope.
-                for (side, obs) in [("fused", &fused), ("unfused", &unfused)] {
-                    assert!(
-                        (obs.consumed as usize..=FULL_TRACE_ROWS).contains(&obs.charge_trace.len()),
-                        "{label} k={k} ({side}): committed rows {} outside the envelope",
-                        obs.charge_trace.len()
-                    );
-                }
-            } else {
+            if !matches!(k, 1 | 2) {
                 // Schedule-independent ks: the FULL observation must match.
                 assert_eq!(
                     fused, unfused,

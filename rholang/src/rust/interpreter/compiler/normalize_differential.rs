@@ -759,6 +759,58 @@ fn every_structural_arm_agrees() {
     }
 }
 
+/// The four representative EPathMap query chains used by the interpreter
+/// integration suite. This binds their normalized protobuf bytes to the
+/// recursive oracle independently of runtime accounting.
+#[test]
+fn epathmap_query_chain_sources_agree_with_the_recursive_oracle() {
+    const INDEX_MAP: &str = r#"{|
+        ["t.deadbeef.Pair", "site0"],
+        ["v", "site0", ("Pair",)],
+        ["t.deadbeef.A", "site0", "Pair.0"],
+        ["v", "site0", "Pair.0", ("A",)],
+        ["t.deadbeef.B", "site0", "Pair.1"],
+        ["v", "site0", "Pair.1", ("B",)]
+    |}"#;
+
+    let cases = [
+        (
+            "e6a:sites:site0/Pair",
+            r#"idx.readZipperAt(["t.deadbeef.Pair"]).getSubtrie()"#,
+        ),
+        (
+            "out",
+            r#"idx.readZipperAt(["t.deadbeef.A", "site0", "Pair.0"]).pathExists()"#,
+        ),
+        (
+            "out",
+            r#"idx.readZipperAt(["v", "site0", "Pair.0"]).pathExists()"#,
+        ),
+        (
+            "out",
+            r#"idx.readZipperAt(["v", "site0", "Pair.0"]).descendFirst().getLeaf()"#,
+        ),
+    ];
+
+    for (result_channel, chain) in cases {
+        let source = format!(
+            r#"@"e6a:idx:site0"!!({INDEX_MAP}) |
+                for( @idx <- @"e6a:idx:site0" ) {{
+                    @"{result_channel}"!( {chain} )
+                }}"#
+        );
+        let (machine, oracle) = both(&source);
+        assert!(
+            matches!(oracle, Observed::Ok { .. }),
+            "the recursive EPathMap-query oracle rejected {source:?}"
+        );
+        assert_eq!(
+            machine, oracle,
+            "the EPathMap-query bytes diverged from the recursive normalizer: {source}"
+        );
+    }
+}
+
 #[test]
 fn every_rejection_agrees() {
     for case in REJECTIONS {
