@@ -286,6 +286,31 @@ scrape_node_memory_timeseries() {
 	done < <(docker ps --filter 'name=rnode.' --format '{{.Names}}' 2>/dev/null || true)
 }
 
+# Drop content-duplicate files from a newline-separated list on stdin (first
+# occurrence wins). The same log can appear under both telemetry roots when
+# teardown archives a copy of a file that also lives under data/, and the
+# counting metrics below (too-far-ahead, sample counts) would double without
+# this. Hash content rather than compare paths: the roots' layouts differ,
+# so the same file carries unrelated relative paths. Fail-soft — an
+# unhashable file passes through rather than being dropped.
+dedup_files_by_content() {
+	local f digest
+	declare -A seen_digests=()
+	while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		if command -v md5sum >/dev/null 2>&1; then
+			digest="$(md5sum "$f" 2>/dev/null | awk '{print $1}')"
+		else
+			digest="$(md5 -q "$f" 2>/dev/null)"
+		fi
+		if [ -n "$digest" ]; then
+			[ -n "${seen_digests[$digest]:-}" ] && continue
+			seen_digests[$digest]=1
+		fi
+		printf '%s\n' "$f"
+	done
+}
+
 # Propose-timing latency samples (total_ms) from node JSON logs written after
 # the iteration's start marker — the f1r3fly.propose.timing parse target from
 # profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
@@ -295,6 +320,7 @@ iteration_finalization_latency() {
 	# zero matching samples, making grep exit 1 and the pipeline nonzero.
 	find "${HARNESS_TELEMETRY_DIRS[@]}" \
 		-name '*.log' -newer "$iteration_dir/.started" 2>/dev/null |
+		dedup_files_by_content |
 		xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null |
 		grep -oE 'total_ms=[0-9]+' | grep -oE '[0-9]+' |
 		sort -n |
@@ -317,6 +343,7 @@ iteration_too_far_ahead_errors() {
 	local iteration_dir="$1"
 	find "${HARNESS_TELEMETRY_DIRS[@]}" \
 		-type f \( -name '*.log' -o -name '*.txt' \) -newer "$iteration_dir/.started" 2>/dev/null |
+		dedup_files_by_content |
 		xargs -r grep -h -o 'too far ahead of the last finalized block' 2>/dev/null |
 		wc -l | tr -d ' '
 }

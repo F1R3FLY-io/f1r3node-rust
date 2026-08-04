@@ -29,6 +29,12 @@ elapsed_s,node,metric,value
 1.0,rnode.test.validator1,replay_cache_entries,12
 1.0,rnode.test.validator1,replay_cache_retained_bytes,1048576
 CSV
+# The identical node log in BOTH roots (teardown archives a copy of a log
+# that also lives under data/): counting metrics must see it once.
+cat >"$FAKE_DATA_DIR/session/validator1.log" <<'LOG'
+proposal rejected: too far ahead of the last finalized block
+LOG
+cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
 while :; do sleep 1; done
 SH
@@ -114,6 +120,7 @@ jq -e '
   and .rss_peak_mb == 768
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].too_far_ahead_errors == 1
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"

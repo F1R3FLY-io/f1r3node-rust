@@ -42,10 +42,33 @@ done
 keys="$(jq -r '.metrics[]?.key // empty' "$REGISTRY" 2>/dev/null)" || emit_empty
 [ -n "$keys" ] || emit_empty
 
+# Drop content-duplicate files (first occurrence wins): the same log can
+# appear under more than one root when teardown archives a copy, and the
+# per-metric sample counts would double. Fail-soft — an unhashable file
+# passes through.
+dedup_files_by_content() {
+  local f digest
+  declare -A seen_digests=()
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if command -v md5sum >/dev/null 2>&1; then
+      digest="$(md5sum "$f" 2>/dev/null | awk '{print $1}')"
+    else
+      digest="$(md5 -q "$f" 2>/dev/null)"
+    fi
+    if [ -n "$digest" ]; then
+      [ -n "${seen_digests[$digest]:-}" ] && continue
+      seen_digests[$digest]=1
+    fi
+    printf '%s\n' "$f"
+  done
+}
+
 # One pass over the logs; keep only metric lines so the per-key greps below
 # scan a small buffer rather than the full log set again.
 lines="$(find "${LOG_ROOTS[@]}" -type f \( -name '*.log' -o -name '*.txt' \) \
   -newer "$MARKER" 2>/dev/null \
+  | dedup_files_by_content \
   | xargs -r grep -h -o 'SOAK_METRIC [^"]*' 2>/dev/null)" || true
 [ -n "${lines:-}" ] || emit_empty
 
