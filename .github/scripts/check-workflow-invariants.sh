@@ -337,7 +337,9 @@ puts "OCI scheduled inputs are not isolated from manual controls" unless body&.i
 puts "Friday routing does not consistently target master" unless body&.scan("target_ref=master")&.length.to_i >= 2
 puts "daily routing does not consistently target dev" unless body&.scan("target_ref=dev")&.length.to_i >= 2
 puts "OCI scheduled runs are not deduplicated" unless body&.include?("scheduled slot already belongs to run")
+puts "OCI scheduled runs do not reject dispatch delays over 900 seconds" unless body&.include?('[ "$trigger_delay" -gt 900 ]')
 raw = File.read(ARGV[0])
+puts "OCI scheduled runs are not serialized by slot" unless raw.include?("merge-recovery-soak-slot-")
 puts "scheduled_slot_epoch input is missing" unless raw.include?("scheduled_slot_epoch:")
 puts "scheduled run names are not slot-stable" unless raw.include?("Merge Recovery Soak [scheduled:{0}]")
 RUBY
