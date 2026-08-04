@@ -40,22 +40,22 @@ note right #E0F2F1
 end note
 
 if (does the subject survive at <latex>hi = 16{,}384</latex>?) then (**yes** — the common case)
-  #FFCDD2:**the doubling loop is NEVER ENTERED**;
-  #FFCDD2:bisect on <latex>[\,8{,}192,\ 16{,}384\,]</latex>;
+  :**the doubling loop is NEVER ENTERED**;<<#FFCDD2>>
+  :bisect on <latex>[\,8{,}192,\ 16{,}384\,]</latex>;<<#FFCDD2>>
   note right #FFCDD2
     <latex>hi - lo = 8{,}192 > \mathtt{RESOLUTION} = 4{,}096</latex>,
     so the loop runs, and it terminates on its FIRST midpoint:
     <latex>mid = \frac{8{,}192 + 16{,}384}{2} = 12{,}288</latex>
     <latex>\Rightarrow</latex> **12,288 is the smallest value the bisection can emit.**
   end note
-  #EF9A9A:⚠ **BEFORE #187** — return `12288`\n<i>a bare `usize`, indistinguishable from a\nsubject genuinely measured at 12,288 B</i>;
-  #A5D6A7:★ **AFTER #187** (`125065a8`) — return\n`MinStack::BelowResolution`\n<i>renders `<12 KiB (BELOW THE INSTRUMENT FLOOR)`,\n**never a number**</i>;
+  :⚠ **BEFORE #187** — return `12288`\n<i>a bare `usize`, indistinguishable from a\nsubject genuinely measured at 12,288 B</i>;<<#EF9A9A>>
+  :★ **AFTER #187** (`125065a8`) — return\n`MinStack::BelowResolution`\n<i>renders `<12 KiB (BELOW THE INSTRUMENT FLOOR)`,\n**never a number**</i>;<<#A5D6A7>>
 else (**no**)
   :double: `hi` <latex>\leftarrow</latex> <latex>2\,hi</latex>, up to 512 MiB;
-  #A5D6A7:bisect on <latex>[\,hi/2,\ hi\,]</latex>\n<latex>\Rightarrow</latex> a GENUINE measurement,\nabove the floor;
+  :bisect on <latex>[\,hi/2,\ hi\,]</latex>\n<latex>\Rightarrow</latex> a GENUINE measurement,\nabove the floor;<<#A5D6A7>>
 endif
 
-#FFE082:⚠★ **the defect neither prior analysis named**\n`runs_within` mapped an `execve` refusal to `Err(_) => false` —\n**the same verdict as a genuine overflow** — so the instrument\ncould not distinguish *"needs more stack"* from *"cannot ask"*;
+:⚠★ **the defect neither prior analysis named**\n`runs_within` mapped an `execve` refusal to `Err(_) => false` —\n**the same verdict as a genuine overflow** — so the instrument\ncould not distinguish *"needs more stack"* from *"cannot ask"*;<<#FFE082>>
 note right #FFE082
   ★ **Status at HEAD: REPAIRED, and the repair is narrower than the
   diagnosis.** `runs_within` now panics on
