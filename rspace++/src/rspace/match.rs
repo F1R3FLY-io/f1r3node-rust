@@ -6,7 +6,7 @@
  * cross-channel `where`-clause guards can fire after all spatial
  * binds succeed. See plan §7.12 / Phase 9.
  *
- * EPathMap fix P4.2 (plan v1 §1-P4 sub-commit 2, amendment PM-3): both
+ * Both
  * methods take their inputs BY REFERENCE. `get` previously took the
  * pattern and the candidate datum by value — the space cloned both per
  * candidate per match attempt (space_matcher.rs), the dominant

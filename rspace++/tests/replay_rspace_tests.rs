@@ -89,7 +89,7 @@ enum Pattern {
     Wildcard,
     StringMatch(String),
 }
-// P4.3: default-body event-hash bytes for the test-local type.
+// Default-body event-hash bytes for the test-local type.
 impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for Pattern {}
 
 
@@ -97,7 +97,7 @@ impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerializ
 struct StringMatch;
 
 impl Match<Pattern, String, String> for StringMatch {
-    // P4.2: borrowed inputs — clone only the matched (returned) value.
+    // Borrowed inputs: clone only the matched (returned) value.
     fn get(&self, p: &Pattern, a: &String) -> Option<String> {
         match p {
             Pattern::Wildcard => Some(a.clone()),

@@ -1452,7 +1452,7 @@ impl RuntimeOps {
             .await
             .into_iter()
             .filter_map(|wk| {
-                // P4.1: materialize the Arc-shaped payloads (cold readback).
+                // Materialize the Arc-shaped payloads at the cold-readback boundary.
                 let continuation = std::sync::Arc::unwrap_or_clone(wk.continuation);
                 if let Some(TaggedCont::ParBody(par_body)) = continuation.tagged_cont {
                     Some((std::sync::Arc::unwrap_or_clone(wk.patterns), par_body.body.unwrap()))

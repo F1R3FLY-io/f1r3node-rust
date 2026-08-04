@@ -690,7 +690,7 @@ where
             .increment(t1.elapsed().as_nanos() as u64);
 
         let t2 = Instant::now();
-        // P4.2: borrow-zip — no per-consume channel/pattern clones.
+        // Borrow-zip: no per-consume channel/pattern clones.
         let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
         // The complete, guard-aware candidate search (plan §7.12 / defect D1).
         // A `where` guard on this consume participates in SELECTION, not only
@@ -789,7 +789,7 @@ where
 
         self.log_produce(produce_ref, &channel, &data, persist);
 
-        // P4.1: wrap the produced payload in an `Arc` ONCE — the speculative
+        // Wrap the produced payload in an `Arc` once — the speculative
         // candidate below and the `store_data` fallthrough share it by
         // refcount (previously each took a deep copy).
         let data = Arc::new(data);
@@ -1027,8 +1027,8 @@ where
         // the rendezvous channels, the consumed data, and the firing waiting-continuation
         // (patterns + continuation) — extracted to slices so the observer can clone lock-free.
         if let Some(observer) = &self.step_observer {
-            // P4.1: materialize through the Arc — observer-only path (None in
-            // production), cost-identical to the pre-P4.1 clone.
+            // Materialize through the Arc — observer-only path (None in
+            // production), cost-identical to the earlier value-shaped clone.
             let consumed: Vec<A> =
                 data_candidates.iter().map(|candidate| (*candidate.datum.a).clone()).collect();
             observer.observe_comm(
@@ -1106,7 +1106,7 @@ where
         None
     }
 
-    // P4.1: takes the shared `Arc` payload — the datum stored is the same
+    // Takes the shared `Arc` payload — the datum stored is the same
     // allocation the speculative candidate borrowed (no copy).
     fn store_data(
         &self,
@@ -1228,7 +1228,7 @@ where
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
             let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
-            // P4.2: borrow-zip — no per-install channel/pattern clones.
+            // Borrow-zip: no per-install channel/pattern clones.
             let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
             let options: Option<Vec<ConsumeCandidate<C, A>>> = self
                 .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
@@ -1276,12 +1276,12 @@ where
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
 
-    // P4.1: the public result stays VALUE-shaped (`RSpaceResult<C, A>` /
+    // The public result stays value-shaped (`RSpaceResult<C, A>` /
     // `ContResult` unchanged) — this is the single per-fired-COMM
-    // materialization boundary, cost-identical to the pre-P4.1 clones. The
+    // materialization boundary, cost-identical to the earlier value-shaped clones. The
     // multiplicative per-ATTEMPT copies died in the store/matcher hops; the
     // dispatch-side copy into the continuation env is stage-L2 territory
-    // (user decision D2, out of P4 scope).
+    // (the continuation-environment boundary is outside this transport change).
     fn wrap_result(
         &self,
         channels: &[C],

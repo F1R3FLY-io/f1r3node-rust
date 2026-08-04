@@ -1,5 +1,5 @@
-//! EPathMap fix P4.3 — REPLAY EQUIVALENCE over an EPathMap-heavy program
-//! (plan v1 §1-P4 gate: "record a run, replay, assert log equality").
+//! Replay equivalence over an EPathMap-heavy program.
+//! Records a run, replays it, and asserts log equality.
 //!
 //! Replay matching is driven ENTIRELY by event hashes: `rig` indexes the
 //! recorded log by produce/consume identity, and every replayed

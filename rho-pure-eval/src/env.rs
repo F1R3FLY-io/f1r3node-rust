@@ -49,7 +49,7 @@ impl<A: Clone> Env<A> {
     /// index resolution as [`Env::get`], minus its deep clone of the bound
     /// value.
     ///
-    /// Additive (EPathMap fix P2): the interpreter's method-chain fusion
+    /// Additive: the interpreter's EPathMap method-chain fusion
     /// recognizer inspects a chain's base binding BY BORROW to decide whether
     /// the chain fuses; `get`'s clone is exactly the per-reference
     /// materialization the fusion removes, so the recognizer must not pay it

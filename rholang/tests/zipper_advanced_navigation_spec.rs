@@ -26,7 +26,7 @@ mod zipper_advanced_navigation_tests {
             create_path_par(vec!["c".to_string()], "value4"),
         ];
 
-        // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+        // Use the invariant-preserving constructor instead of a struct literal.
         // (the wrapper's shadow cell is private).
         EPathMap::new(entries, vec![], false, None)
     }

@@ -1,0 +1,13 @@
+revision	layout	role	depth	heaptrack_runtime_s	allocation_calls	temporary_allocations	heaptrack_peak_heap	heaptrack_peak_rss_including_profiler	time_max_rss_kib
+cf74b4d3	inline-large-enum-payloads	matcher	512	0.040	33588	4662	11.58M	16.15M	23452
+cf74b4d3	inline-large-enum-payloads	fixture-control	512	0.026	16154	2101	1.03M	10.72M	22824
+cf74b4d3	inline-large-enum-payloads	matcher	4096	0.332	266551	36918	91.98M	86.16M	79676
+cf74b4d3	inline-large-enum-payloads	fixture-control	4096	0.062	127258	16437	7.63M	17.83M	22896
+714d618c	boxed-large-states-plus-canonical-key-fast-path	matcher	512	0.036	31540	3641	1.03M	12.25M	23276
+714d618c	boxed-large-states-plus-canonical-key-fast-path	fixture-control	512	0.027	16156	2104	1.03M	10.44M	22668
+714d618c	boxed-large-states-plus-canonical-key-fast-path	matcher	4096	0.097	250167	28729	7.63M	19.52M	23240
+714d618c	boxed-large-states-plus-canonical-key-fast-path	fixture-control	4096	0.057	127260	16440	7.63M	18.04M	23200
+6f1412ee	all-singletons-owned-canonical-fast-path	matcher	512	0.029	27445	3128	1.03M	12.11M	23016
+6f1412ee	all-singletons-owned-canonical-fast-path	fixture-control	512	0.025	16157	2103	1.03M	10.58M	23552
+6f1412ee	all-singletons-owned-canonical-fast-path	matcher	4096	0.088	217400	24632	7.63M	18.83M	23024
+6f1412ee	all-singletons-owned-canonical-fast-path	fixture-control	4096	0.067	127261	16439	7.63M	17.91M	22976

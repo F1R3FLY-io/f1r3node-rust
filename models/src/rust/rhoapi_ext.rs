@@ -2725,7 +2725,7 @@ impl EPathMap {
     ///
     /// `locally_free` IS compared here although `==` ignores it, so two maps can
     /// be `==` yet `cmp` to `Less`. That inconsistency is pinned 84a0fbe4
-    /// behavior (the P0 `Ord` fixtures + the wrapper wart test) and it is
+    /// behavior (the canonical `Ord` fixtures + the wrapper wart test) and it is
     /// deliberately untouched: "fixing" it would move sort orders
     /// in canonical ordering for a reason unrelated to this change.
     ///

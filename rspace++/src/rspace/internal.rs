@@ -12,14 +12,13 @@ use super::hashing::stable_hash_provider::StableHashSerialize;
 
 use super::trace::event::{Consume, Produce};
 
-// EPathMap fix P4.1 — reference-shaped RSpace transport (plan v1 §1-P4,
-// sub-commit 1 of 3): the PAYLOAD fields of the hot-store records are
-// `Arc`-shaped, so every store→matcher→result hop is a refcount bump instead
-// of a deep copy (the per-consume-attempt `get_data` clone, the per-produce
-// `get_continuations` clone, the candidate/`check_commit`/`wrap_result`
-// copies — plan §0.C). The struct NAMES and every generic signature that
-// mentions them are unchanged; only construction sites and owned-payload
-// consumers adapt.
+// Reference-shaped RSpace transport: the payload fields of the hot-store
+// records are `Arc`-shaped, so every store→matcher→result hop is a refcount
+// bump instead of a deep copy (the per-consume-attempt `get_data` clone, the
+// per-produce `get_continuations` clone, the
+// candidate/`check_commit`/`wrap_result` copies). The struct names and every
+// generic signature that mentions them are unchanged; only construction sites
+// and owned-payload consumers adapt.
 //
 // `Serialize`/`Deserialize` are deliberately DROPPED (the workspace requests
 // serde's "derive" feature only — no "rc" — so an `Arc` field reaching
@@ -35,7 +34,7 @@ use super::trace::event::{Consume, Produce};
 // The 'Default' macro is needed here for hot_store_spec.rs
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Arbitrary, Default)]
 pub struct Datum<A: Clone> {
-    /// The stored payload, shared by `Arc` (P4.1): cloning a `Datum` — per
+    /// The stored payload, shared by `Arc`: cloning a `Datum` — per
     /// consume attempt, per candidate, per history-cache fill — bumps a
     /// refcount instead of deep-copying the (potentially EPathMap-heavy)
     /// payload. Read sites deref-coerce (`&datum.a` → `&A`); the few
@@ -62,12 +61,12 @@ where A: Clone + StableHashSerialize
 // The 'Default' macro is needed here for hot_store_spec.rs
 #[derive(Clone, Debug, Arbitrary, Default, PartialEq, Eq, Hash)]
 pub struct WaitingContinuation<P: Clone, K: Clone> {
-    /// Patterns shared by `Arc` (P4.1): `get_continuations` clones the whole
+    /// Patterns shared by `Arc`: `get_continuations` clones the whole
     /// waiting-continuation vector per produce attempt — the pattern list now
     /// travels by refcount. The matcher borrows individual patterns
     /// (sub-commit 2); `ContResult` materializes once per fired COMM.
     pub patterns: Arc<Vec<P>>,
-    /// The continuation body shared by `Arc` (P4.1) — the largest payload of
+    /// The continuation body shared by `Arc` — the largest payload of
     /// the record (`TaggedContinuation` carrying the receive body).
     pub continuation: Arc<K>,
     pub persist: bool,
@@ -102,7 +101,7 @@ where
 pub struct ConsumeCandidate<C, A: Clone> {
     pub channel: C,
     pub datum: Datum<A>,
-    /// The datum as it sat in the store (pre-match), shared by `Arc` (P4.1):
+    /// The datum as it sat in the store (pre-match), shared by `Arc`:
     /// referenced by peek re-produces and `wrap_result`; previously a deep
     /// copy per candidate.
     pub removed_datum: Arc<A>,

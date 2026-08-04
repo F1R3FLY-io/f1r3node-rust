@@ -1,13 +1,13 @@
-//! EPathMap fix P4.1 — serializer BYTE GOLDENS for the storage-shape change.
+//! EPathMap serializer byte goldens for the storage-shape change.
 //!
-//! `Datum`/`WaitingContinuation` become Arc-shaped (non-Serialize) in P4.1;
+//! `Datum`/`WaitingContinuation` are Arc-shaped and non-`Serialize`;
 //! the history/cold-store boundary then serializes through borrowed twins in
 //! `serializers.rs`. These tests pin the twin encodings against literal bytes
-//! captured from the PRE-P4.1 derived `Serialize` impls (4e422b6b), so any
+//! captured from the earlier value-shaped derived `Serialize` impls (`4e422b6b`), so any
 //! layout drift in the twins is a hard failure — the cold-store leaf bytes
 //! and therefore the checkpoint roots are consensus surfaces.
 //!
-//! Capture procedure: `EPM_P4_BLESS=1 cargo test -p rspace_plus_plus --test
+//! Capture procedure: `EPATHMAP_SERIALIZER_GOLDENS_BLESS=1 cargo test -p rspace_plus_plus --test
 //! serializer_byte_goldens -- --nocapture` at 4e422b6b printed the constants
 //! below; the assert mode then pins them forever.
 
@@ -29,7 +29,7 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 /// derived encoder before the cold-store decoder was written. It lives on the
 /// `models` side because `models` depends on `rspace_plus_plus`, so this crate
 /// cannot name `Par` without a dependency cycle. (It remains pinned
-/// transitively by the P0 event-hash goldens and the history checkpoint-root
+/// transitively by the canonical event-hash goldens and the history checkpoint-root
 /// tests as well.)
 fn fixture_datum() -> Datum<String> {
     Datum {
@@ -91,7 +91,7 @@ mod pinned {
         "eb9661583df8275f3e919df4237c55837d41650dad3449afc1378f0b2e6ea18d";
 }
 
-fn bless() -> bool { std::env::var_os("EPM_P4_BLESS").is_some() }
+fn bless() -> bool { std::env::var_os("EPATHMAP_SERIALIZER_GOLDENS_BLESS").is_some() }
 
 fn check(label: &str, pinned_len: usize, pinned_digest: &str, bytes: &[u8]) {
     if bless() {

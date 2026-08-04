@@ -19,14 +19,14 @@ use crate::rspace::serializers::cold_store_decode::{
 use crate::rspace::trace::event::{Consume, Produce};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EPathMap fix P4.1 — the serializer MATERIALIZATION boundary.
+// The EPathMap serializer materialization boundary.
 //
 // `Datum`/`WaitingContinuation` are Arc-shaped and deliberately non-serde
 // (fail-closed: no serde "rc" feature, so an Arc field reaching
 // `bincode::serialize` cannot compile). This module is where the storage
 // shape materializes back into the historical wire layout, through borrowed
 // SERIALIZE TWINS and owned DESERIALIZE TWINS whose field order replicates
-// the pre-P4.1 struct declarations exactly. bincode 1.3.3 (legacy
+// the earlier value-shaped struct declarations exactly. bincode 1.3.3 (legacy
 // fixint-LE) is positional — struct/field names never reach the wire and
 // `serialize(&T) == serialize(T)` — so the twin encodings are byte-identical
 // to the old derived impls BY CONSTRUCTION. Pinned by
@@ -35,7 +35,7 @@ use crate::rspace::trace::event::{Consume, Produce};
 // cold-store leaves, a consensus surface.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Borrowed serialize twin of the pre-P4.1 `Datum<A>` layout
+/// Borrowed serialize twin of the value-shaped `Datum<A>` layout
 /// (`a`, `persist`, `source` — declaration order).
 #[derive(Serialize)]
 struct DatumSer<'a, A> {
@@ -44,7 +44,7 @@ struct DatumSer<'a, A> {
     source: &'a Produce,
 }
 
-/// Owned deserialize twin of the pre-P4.1 `Datum<A>` layout.
+/// Owned deserialize twin of the value-shaped `Datum<A>` layout.
 ///
 /// ⚠ **Retained as a `#[cfg(test)]` ORACLE only.** Production decoding goes
 /// through [`decode_datum`], which reads `a` with the O(1)-native-stack machine
@@ -53,7 +53,7 @@ struct DatumSer<'a, A> {
 /// against; the `Par`-typed half lives in `models/tests/cold_store_records.rs`,
 /// on the far side of the `models -> rspace_plus_plus` dependency edge.
 ///
-/// It is a better oracle than the P4.1 serialize twins were: those are
+/// It is a better oracle than the serialize twins were: those are
 /// hand-maintained and could drift from the struct they mirror, whereas this
 /// one's *body* is compiler-generated from the field list, so the only thing
 /// that can drift is the field list itself — which is the same list
@@ -77,7 +77,7 @@ impl<A: Clone> From<DatumOracleDe<A>> for Datum<A> {
     }
 }
 
-/// Borrowed serialize twin of the pre-P4.1 `WaitingContinuation<P, K>` layout
+/// Borrowed serialize twin of the value-shaped `WaitingContinuation<P, K>` layout
 /// (`patterns`, `continuation`, `persist`, `peeks`, `source`).
 #[derive(Serialize)]
 struct WaitingContinuationSer<'a, P, K> {
@@ -88,7 +88,7 @@ struct WaitingContinuationSer<'a, P, K> {
     source: &'a Consume,
 }
 
-/// Owned deserialize twin of the pre-P4.1 `WaitingContinuation<P, K>` layout.
+/// Owned deserialize twin of the value-shaped `WaitingContinuation<P, K>` layout.
 /// Retained as a `#[cfg(test)]` ORACLE only — see [`DatumOracleDe`].
 #[cfg(test)]
 #[derive(Deserialize)]
@@ -133,10 +133,10 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
     }
 }
 
-/// P4.1: the deterministic candidate-ordering bytes (`rspace.rs`
+/// The deterministic candidate-ordering bytes (`rspace.rs`
 /// `shuffle_with_index` → `deterministic_candidate_hash`). Candidate ordering
 /// participates in replay-visible COMM selection, so these bytes must equal
-/// the pre-P4.1 `bincode::serialize(candidate)` exactly — they go through
+/// the earlier value-shaped `bincode::serialize(candidate)` exactly — they go through
 /// the same twins as the cold-store encoding (one layout, one pin).
 pub trait CandidateOrderingBytes {
     fn candidate_ordering_bytes(&self) -> Vec<u8>;

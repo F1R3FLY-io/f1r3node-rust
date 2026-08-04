@@ -1240,7 +1240,7 @@ fn combine_ezipper(zipper: &EZipper, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<E
 
     construct_expr(
         ExprInstance::EZipperBody(EZipper {
-            // EPathMap fix P3 (PM-2): constructor instead of
+            // Use the invariant-preserving constructor instead of
             // a struct literal (private shadow cell).
             pathmap: Some(canonical),
             current_path: zipper.current_path.clone(),

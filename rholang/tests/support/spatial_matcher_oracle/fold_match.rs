@@ -11,7 +11,7 @@ use crate::rust::interpreter::metrics_constants::{
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - foldMatch
 //
-// EPathMap fix P4.2 (amendment PM-3): `fold_match` takes BORROWED slices —
+// `fold_match` takes borrowed slices —
 // the `Match::get` entry no longer owns its inputs, so the pair walk borrows
 // the target/pattern lists and clones only what actually enters the owned
 // spatial lattice (a binding/connective pair) or the free_map (a bound
@@ -33,8 +33,8 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
         // Iterative pair-walk over (tlist, plist) — index into the originals
         // and hand each head pair to the REFERENCE entry: the non-binding
         // case compares by reference (zero clones), the binding/connective
-        // case clones the pair once into the owned lattice (P4.2; that clone
-        // is the bound-candidate copy).
+        // case clones the pair once into the owned lattice; that clone is the
+        // bound-candidate copy.
         metrics::counter!(RHOLANG_MATCHER_FOLD_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
             .increment(1);
         metrics::counter!(RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -91,8 +91,8 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
     /// where the gate has to bite.
     fn free_check(&self, trem: &[Par], _level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
         for item in trem {
-            // P4.2: `HasLocallyFree<Par> for SpatialMatcherContext` is
-            // literally `p.locally_free` (has_locally_free.rs:49-53) —
+            // `HasLocallyFree<Par> for SpatialMatcherContext` is literally
+            // `p.locally_free` (has_locally_free.rs:49-53) —
             // read the precomputed field instead of cloning the whole Par
             // to feed the consuming signature. Byte-identical semantics.
             if item.locally_free.is_empty() {
@@ -115,7 +115,8 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
         remainder: Option<Var>,
     ) -> Option<Vec<MatchCase>> {
         // Iterative pair-walk; head-pair clone per iteration (MatchCase has
-        // no reference fast path — the pre-P4.2 behavior, cost-identical).
+        // no reference fast path — the earlier value-shaped behavior,
+        // cost-identical).
         let n = tlist.len().min(plist.len());
         for i in 0..n {
             let __clone_start = std::time::Instant::now();

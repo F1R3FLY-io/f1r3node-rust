@@ -19,7 +19,7 @@ unsafe impl Sync for Matcher {}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 //
-// EPathMap fix P4.2 (amendment PM-3): `get` BORROWS the pattern and the
+// `get` borrows the pattern and the
 // candidate datum — the space no longer clones either per match attempt.
 // The interior pair walk (`fold_match` over borrowed slices) compares
 // non-binding pairs by reference and clones only binding/connective pairs

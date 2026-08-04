@@ -52,7 +52,7 @@ impl SpatialMatcherContext {
         }
     }
 
-    /// EPathMap fix P4.2 (amendment PM-3): the REFERENCE entry to the
+    /// The reference entry to the
     /// Par-pair matcher — the exact branch structure of
     /// `SpatialMatcher<Par, Par>::spatial_match` with the ownership decision
     /// hoisted to the branch that needs it:
@@ -67,7 +67,7 @@ impl SpatialMatcherContext {
     ///   that machinery is deliberately byte-untouched). For the common
     ///   free-var bind the clone IS the bound-candidate copy the
     ///   continuation env receives; it is discarded only when a connective
-    ///   pattern fails midway (pre-P4.2 behavior, minus the two
+    ///   pattern fails midway (the earlier value-shaped behavior, minus the two
     ///   unconditional entry copies).
     pub fn spatial_match_par_ref(&mut self, target: &Par, pattern: &Par) -> Option<()> {
         if !pattern.connective_used {

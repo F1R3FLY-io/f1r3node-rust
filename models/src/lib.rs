@@ -100,7 +100,7 @@ pub mod casper {
 pub mod rhoapi {
     include!(concat!(env!("OUT_DIR"), "/rhoapi.rs"));
 
-    // EPathMap fix P3: `.rhoapi.EPathMap` is an extern_path in
+    // `.rhoapi.EPathMap` is an extern_path in
     // models/build.rs — prost no longer generates the struct here. The
     // hand-maintained wrapper (shadow-cell handle + cached-bytes Message
     // impl) is re-exported so every existing `crate::rhoapi::EPathMap` /
@@ -808,7 +808,7 @@ impl Hash for EMap {
     }
 }
 
-// EPathMap fix P3: the AlwaysEqual `PartialEq`/`Hash` impls for `EPathMap`
+// The AlwaysEqual `PartialEq`/`Hash` impls for `EPathMap`
 // MOVED to models/src/rust/rhoapi_ext.rs (the hand-maintained wrapper owns
 // every one of its impls now that `.rhoapi.EPathMap` is an extern_path).
 // Semantics unchanged: `ps`/`connective_used`/`remainder` compared,

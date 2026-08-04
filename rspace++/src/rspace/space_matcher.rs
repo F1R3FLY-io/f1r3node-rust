@@ -108,9 +108,9 @@ where
         for (offset, (datum, data_index)) in data[start..].iter().enumerate() {
             let idx = start + offset;
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            // P4.2: the matcher BORROWS the pattern and the Arc-shared datum
+            // The matcher borrows the pattern and the Arc-shared datum
             // payload — a failing attempt copies nothing at this boundary
-            // (pre-P4.2: one full pattern clone + one full payload clone per
+            // (the earlier value-shaped path made one full pattern clone plus one full payload clone per
             // candidate per attempt; the `rspace.matcher.clone_ns` timer that
             // measured them is retired with the clones).
             let t_match = std::time::Instant::now();
@@ -129,7 +129,7 @@ where
                         source: datum.source.clone(),
                     },
                     // The stored payload as removed — an Arc bump
-                    // (pre-P4.1: a deep copy per candidate).
+                    // (before Arc-shaped transport: a deep copy per candidate).
                     removed_datum: std::sync::Arc::clone(&datum.a),
                     datum_index: *data_index,
                 }));
@@ -160,7 +160,7 @@ where
     /// Attempts to match all channel-pattern pairs against the data map.
     /// Records mutations in `rollback` so the caller can undo them on failure.
     ///
-    /// P4.2: the pairs are BORROWED (`(&C, &P)`) — callers zip references
+    /// The pairs are borrowed (`(&C, &P)`) — callers zip references
     /// into the channels/patterns they already hold instead of cloning a
     /// pair list per candidate continuation (extract_first_match previously
     /// cloned every channel and every pattern per candidate iterated).
@@ -395,7 +395,7 @@ where
     ) -> SelectionOutcome {
         // Leaf: every bind is filled, so the guard can finally be asked. This
         // is the ONE place a commit guard is consulted on a candidate
-        // selection. P4.2: it reads the matched payloads through borrows.
+        // selection. It reads the matched payloads through borrows.
         if level == channel_pattern_pairs.len() {
             let matched: Vec<&A> = chosen.iter().map(|candidate| &*candidate.datum.a).collect();
             return match matcher.check_commit(continuation, &matched) {
@@ -510,7 +510,7 @@ where
         for (cont, index) in &match_candidates {
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
-            // P4.2: zip REFERENCES — pre-P4.2 every candidate continuation
+            // Zip references; the earlier value-shaped path cloned every candidate continuation
             // cloned every channel and every pattern into an owned pair list.
             let __pair_start = std::time::Instant::now();
             let channel_pattern_pairs: Vec<(&C, &P)> =

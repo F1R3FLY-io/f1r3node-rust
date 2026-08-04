@@ -843,7 +843,7 @@ pub enum Pattern {
     Wildcard,
     StringMatch(String),
 }
-// P4.3: default-body event-hash bytes for the test-local type.
+// Default-body event-hash bytes for the test-local type.
 impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for Pattern {}
 
 
@@ -851,7 +851,7 @@ impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerializ
 pub struct StringsCaptor {
     res: LinkedList<Vec<String>>,
 }
-// P4.3: default-body event-hash bytes for the test-local type.
+// Default-body event-hash bytes for the test-local type.
 impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for StringsCaptor {}
 
 

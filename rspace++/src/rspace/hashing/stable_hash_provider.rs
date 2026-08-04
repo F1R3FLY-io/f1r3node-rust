@@ -3,8 +3,7 @@ use serde::Serialize;
 
 use super::blake2b256_hash::Blake2b256Hash;
 
-/// EPathMap fix P4.3 (plan v1 §1-P4 sub-commit 3, amendment PM-1): the
-/// serialization CONTRACT of event hashing.
+/// The serialization contract of EPathMap-bearing event hashing.
 ///
 /// `hash_produce`/`hash_consume` hash the bincode 1.3.3 default-config
 /// (legacy fixint-LE) encoding of the datum / each pattern / the
@@ -16,7 +15,7 @@ use super::blake2b256_hash::Blake2b256Hash;
 /// intern-aware spliced emitter, which reuses `InternedEPathMap.serde_bytes`
 /// at filled-cell EPathMap nodes and black-box `bincode::serialize` for
 /// interned-map-free subtrees (bincode's encoding is compositional). Byte
-/// identity is gated by the P0 event-hash goldens (re-asserted with filled
+/// identity is gated by the canonical event-hash goldens (re-asserted with filled
 /// cells) and the spliced-vs-direct proptest.
 ///
 /// The trait lives HERE (rspace++ is generic and models depends on rspace++,
@@ -88,7 +87,7 @@ pub fn hash_from_hashes(channels_hashes: &Vec<Blake2b256Hash>) -> Blake2b256Hash
 
 // See rspace/src/main/scala/coop/rchain/rspace/hashing/StableHashProvider.scala
 //
-// P4.3: the pattern/continuation bytes come from `StableHashSerialize` —
+// Pattern/continuation bytes come from `StableHashSerialize` —
 // byte-identical to the previous direct `bincode::serialize` (default body;
 // models' spliced override is gated byte-identical). The sort over encoded
 // patterns is order-stable because the bytes are unchanged.
@@ -115,9 +114,9 @@ pub fn hash_consume<P: StableHashSerialize, K: StableHashSerialize>(
     Blake2b256Hash::new(&encoded)
 }
 
-// P4.3: the hashed unit is bincode(vec![channel_hash_bytes, bincode(datum),
+// The hashed unit is bincode(vec![channel_hash_bytes, bincode(datum),
 // bincode(persist)]) — `datum.stable_hash_bytes()` supplies the middle leg
-// byte-identically (amendment PM-1: the intern-aware models override splices
+// byte-identically (the models override splices
 // cached per-EPathMap serde bytes into exactly this layout).
 pub fn hash_produce<A: StableHashSerialize>(
     encoded_channel: Vec<u8>,

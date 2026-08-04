@@ -6,22 +6,22 @@
 //! by another recorded consensus transition:
 //!
 //!   * golden PROTOBUF encodings (`Message::encode_to_vec`) + `encoded_len` —
-//!     the charge/memo canonical encoding (plan §0.B/§0.D);
+//!     the charge/memo canonical encoding;
 //!   * golden SERDE encodings (`bincode::serialize` + `serde_json`) — the
 //!     event-hash canonical encoding, INCLUDING the `locally_free`-as-empty
-//!     serialize-only normalization injected by models/build.rs (§0.D);
+//!     serialize-only normalization injected by models/build.rs;
 //!   * golden produce/consume EVENT HASHES (`Produce::create` /
 //!     `Consume::create`) — the full stable_hash_provider composition,
 //!     including the per-produce `random_state` placement that makes a
 //!     per-Par digest UNABLE to reproduce the hash (only cached per-Par
-//!     serde BYTES compose — §0.D);
+//!     serde BYTES compose);
 //!   * ORD fixtures — the derived declaration-order comparison INCLUDING
 //!     `locally_free`, versus the AlwaysEqual `==`/`Hash` that IGNORE it
-//!     (the documented inconsistency, §0.E: the store must key by full
-//!     prost-byte fidelity, never by `==`).
+//!     (the documented inconsistency: the store must key by full
+//!     protobuf-byte fidelity, never by `==`).
 //!
 //! GOLDEN CAPTURE: goldens live in `tests/fixtures/goldens/` and are
-//! committed. `EPM_P0_BLESS=1 cargo test -p models --test
+//! committed. `EPATHMAP_CANONICAL_GOLDENS_BLESS=1 cargo test -p models --test
 //! epathmap_canonical_fixtures` regenerates them and prints the pinned
 //! scalar constants; the default mode ASSERTS against the committed bytes.
 //! The capture procedure ran the bless mode twice in separate processes and
@@ -105,7 +105,7 @@ fn goldens_dir() -> PathBuf {
         .join("goldens")
 }
 
-fn bless_enabled() -> bool { std::env::var_os("EPM_P0_BLESS").is_some() }
+fn bless_enabled() -> bool { std::env::var_os("EPATHMAP_CANONICAL_GOLDENS_BLESS").is_some() }
 
 /// In bless mode: write `actual` to the golden file. In assert mode: read the
 /// committed golden and assert byte equality.
@@ -116,8 +116,12 @@ fn check_golden(name: &str, actual: &[u8]) {
         std::fs::write(&path, actual).expect("write golden");
         println!("BLESSED {} ({} bytes)", name, actual.len());
     } else {
-        let expected = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("missing golden {} — run EPM_P0_BLESS=1 first: {e}", name));
+        let expected = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "missing golden {} — run EPATHMAP_CANONICAL_GOLDENS_BLESS=1 first: {e}",
+                name
+            )
+        });
         assert_eq!(
             actual,
             &expected[..],
@@ -202,8 +206,8 @@ fn protobuf_golden_ezipper_fixture() {
 
 /// PROTOBUF bytes RETAIN `locally_free` (field 3): the fixture with non-empty
 /// bitsets and its recursively-cleared twin must encode DIFFERENTLY. This is
-/// the fidelity half of the §0.D/§0.E dual regime (serde normalizes, prost
-/// does not) — the P1 intern store must key by these full-fidelity bytes.
+/// the fidelity half of the dual encoding regime (serde normalizes, protobuf
+/// does not) — any identity cache must key by these full-fidelity bytes.
 #[test]
 fn protobuf_encoding_retains_locally_free() {
     let tagged = epathmap_locally_free_entries();
@@ -422,8 +426,8 @@ fn event_hash_goldens_produce() {
 
     // Same pars, random_state differing in one byte ⇒ DIFFERENT hash: the
     // per-produce random_state sits INSIDE the hashed datum, which is why a
-    // per-Par digest cannot reproduce event hashes and P4 must splice cached
-    // per-Par serde BYTES into the enclosing bincode layout (plan §0.D).
+    // per-Par digest cannot reproduce event hashes; cached per-Par serde bytes
+    // must be spliced into the enclosing bincode layout.
     let mut rs2 = rs1.clone();
     rs2[0] ^= 0x01;
     let datum2 = ListParWithRandom {
@@ -547,7 +551,7 @@ fn event_hash_goldens_consume() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3b. The SAME event-hash pins after forcing the EPM1 snapshot cache. The P0
+// 3b. The same event-hash pins after forcing the EPM1 snapshot cache. The canonical
 //     fixtures above exercise a cold cache; these twins prove that warming the
 //     derived cache cannot change the serialized bytes or event-hash preimage.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -591,7 +595,7 @@ fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
 
     let interned_map = e6a_index_epathmap();
 
-    // First: the EXACT P0 consume (map-free) must still pin — the direct
+    // First: the exact canonical consume (map-free) must still pin — the direct
     // path through the new trait plumbing.
     let patterns = vec![BindPattern {
         patterns: vec![new_freevar_par(0, Vec::new())],
@@ -664,14 +668,14 @@ fn std_hash<T: Hash>(value: &T) -> u64 {
     hasher.finish()
 }
 
-/// THE DOCUMENTED INCONSISTENCY (plan §0.E): `PartialEq`/`Hash` are the
+/// The documented inconsistency: `PartialEq`/`Hash` are the
 /// hand-written AlwaysEqual impls (models/src/lib.rs:613-627) and IGNORE
 /// `locally_free`, while the DERIVED `Ord`/`PartialOrd` compare ALL fields in
 /// declaration order (ps, locally_free, connective_used, remainder) and see
 /// it. Two maps differing only in `locally_free` are `==` yet NOT
 /// `Ordering::Equal` — sorted containers and hash containers disagree on
-/// identity for such pairs, which is exactly why the P1 intern store must
-/// key by full prost-byte fidelity and never by `==` (a hand-written
+/// identity for such pairs, which is exactly why any identity cache must key
+/// by full protobuf-byte fidelity and never by `==` (a hand-written
 /// protobuf_eq INCLUDING locally_free, or the digest of the canonical bytes).
 #[test]
 fn ord_sees_locally_free_that_always_equal_ignores() {
@@ -706,7 +710,7 @@ fn ord_compares_in_declaration_order() {
 
     // ps dominates locally_free: shorter-prefix ps < longer ps even when the
     // shorter side's locally_free is larger.
-    // EPathMap fix P3 (PM-2): constructors instead of struct literals
+    // Use invariant-preserving constructors instead of struct literals.
     // (the wrapper's shadow cell is private).
     let one_entry_big_lf =
         EPathMap::new(vec![entry_a.clone()], create_bit_vector(&[7]), true, None);

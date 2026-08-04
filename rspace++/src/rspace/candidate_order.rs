@@ -56,9 +56,9 @@ use super::serializers::serializers::CandidateOrderingBytes;
 
 /// The ordering hash of one candidate.
 ///
-/// P4.1: candidates are `Arc`-shaped (non-serde) — the ordering bytes come from
+/// Candidates are `Arc`-shaped and non-serde; the ordering bytes come from
 /// the serializer twins ([`CandidateOrderingBytes`]), byte-identical to the
-/// pre-P4.1 `bincode::serialize(candidate)` (golden-pinned). Candidate ordering
+/// the earlier value-shaped `bincode::serialize(candidate)` (golden-pinned). Candidate ordering
 /// participates in replay-visible COMM selection; the bytes are a consensus
 /// surface.
 pub fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash

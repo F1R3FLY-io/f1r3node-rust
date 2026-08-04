@@ -917,8 +917,7 @@ impl DebruijnInterpreter {
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        // EPathMap fix P4.1 (plan §0.C "produce_inner clones chan+data",
-        // reduce.rs:399 clone removal): the space CONSUMES the channel and
+        // The space consumes the channel and
         // payload — the only post-call consumer is the persistent-produce
         // re-fire in `continue_produce_process`, so only a persistent send
         // retains a copy. A non-persistent send (the common case) hands its
@@ -1073,7 +1072,7 @@ impl DebruijnInterpreter {
     async fn continue_produce_process(
         &self,
         res: Application,
-        // P4.1: `Some((chan, data))` iff the produce was persistent — the
+        // `Some((chan, data))` iff the produce was persistent — the
         // ONLY arm that needs the original send again (the re-fire below);
         // every other arm runs payload-copy-free.
         refire: Option<(Par, ListParWithRandom)>,
@@ -1112,8 +1111,8 @@ impl DebruijnInterpreter {
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
-                    // P4.1: the retained copy moves into the re-fire future
-                    // (no further clone — pre-P4.1 this was the SECOND copy).
+                    // The retained copy moves into the re-fire future
+                    // (no further clone; the earlier value-shaped path made a second copy).
                     let (chan_refire, data_refire) = refire.expect(
                         "persistent produce retains its channel+payload for the re-fire \
                          (produce_inner built refire = Some for persistent sends)",
@@ -5860,7 +5859,7 @@ impl DebruijnInterpreter {
                     ExprInstance::EPathmapBody(pathmap) => {
                         // Remove all branches below current position (root = remove everything)
                         Ok(Expr {
-                            // EPathMap fix P3 (PM-2): constructor instead of
+                            // Use the invariant-preserving constructor instead of
                             // a struct literal (private shadow cell).
                             expr_instance: Some(ExprInstance::EPathmapBody(
                                 models::rhoapi::EPathMap::new(

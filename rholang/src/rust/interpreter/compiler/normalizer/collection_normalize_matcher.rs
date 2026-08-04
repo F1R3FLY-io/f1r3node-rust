@@ -91,7 +91,7 @@ pub(crate) fn build_collection_expr(
         }
 
         CollectKind::PathMap { remainder } => {
-            // EPathMap fix P3 (PM-2): constructor instead of a
+            // Use the invariant-preserving constructor instead of a
             // struct literal (private shadow cell). The value is
             // FRESH (never interned), so the field write below stays
             // sound under the shadow-cell invariant.

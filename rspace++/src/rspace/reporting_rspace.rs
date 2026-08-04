@@ -427,8 +427,8 @@ where
         comm: COMM,
         _label: &str,
     ) -> COMM {
-        // P4.1: reporting materializes through the Arcs (reporting-only path,
-        // cost-identical to the pre-P4.1 moves/clones).
+        // Reporting materializes through the Arcs (reporting-only path,
+        // cost-identical to the earlier value-shaped moves/clones).
         let reporting_consume = ReportingConsume {
             channels: channels.clone(),
             patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),

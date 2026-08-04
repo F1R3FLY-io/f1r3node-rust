@@ -809,7 +809,7 @@ where
         let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> =
             channel_to_indexed_data_list.into_iter().collect();
 
-        // P4.2: borrow-zip — no per-attempt channel/pattern clones.
+        // Borrow-zip: no per-attempt channel/pattern clones.
         let pairs: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
 
         self.extract_guarded_data_candidates(
@@ -921,7 +921,7 @@ where
         produce_ref: Produce,
         grouped_channels: Vec<Vec<C>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
-        // P4.1: wrap once — the per-channel speculative candidates below
+        // Wrap once — the per-channel speculative candidates below
         // share the payload by refcount.
         let data = Arc::new(data);
         self.run_matcher_for_channels(
@@ -1257,7 +1257,7 @@ where
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
             let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
-            // P4.2: borrow-zip — no per-install channel/pattern clones.
+            // Borrow-zip: no per-install channel/pattern clones.
             let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
             let options: Option<Vec<ConsumeCandidate<C, A>>> = self
                 .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
@@ -1305,9 +1305,9 @@ where
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
 
-    // P4.1: the public result stays VALUE-shaped — the single per-fired-COMM
+    // The public result stays value-shaped — the single per-fired-COMM
     // materialization boundary (`Arc::unwrap_or_clone` takes the value when
-    // uniquely owned, clones otherwise — same semantics as the pre-P4.1
+    // uniquely owned, clones otherwise — same semantics as the earlier value-shaped
     // moves/clones).
     fn wrap_result(
         &self,

@@ -1,4 +1,4 @@
-//! EPathMap fix P0 — parity-harness FIXTURE BUILDERS (test-only).
+//! EPathMap parity-harness fixture builders (test-only).
 //!
 //! Hand-built mirrors of the E-6a subject-index shapes from
 //! `mettail-rust/rholang-runtime/src/e6a_support.rs:305-409` (READ-ONLY
@@ -7,10 +7,10 @@
 //! (bincode + JSON, including the `locally_free`-as-empty serialize-only
 //! normalization), produce/consume event hashes, and the derived
 //! declaration-order `Ord` — that later phases of the principled EPathMap
-//! value-handling fix (P1 intern store, P2 chain fusion, P3 L1.5 wrapper,
-//! P4 transport/spliced hashing) must preserve byte-identically.
+//! value-handling work (interning, chain fusion, the invariant-preserving
+//! wrapper, transport, and event hashing) must preserve byte-identically.
 //!
-//! Fixture families (per the P0 charter):
+//! Fixture families:
 //!   1. [`e6a_index_epathmap`] — an E-6a-shaped subject index: «s» (site/tag)
 //!      and «v» (σ-carrier) entry families for the subject `Pair(A, B)` at
 //!      root site `site0`.
@@ -156,7 +156,7 @@ pub fn e6a_index_epathmap() -> EPathMap {
         ]),
     ];
 
-    // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+    // Use the invariant-preserving constructor instead of a struct literal.
     // (the wrapper's shadow cell is private).
     EPathMap::new(entries, Vec::new(), false, None)
 }

@@ -6,6 +6,7 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-04
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
+**Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C10` and
 `SS-Y6` register rows below point there.
@@ -14,11 +15,12 @@ live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C
 `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`,
 `docs/design/audits/four-quadrant-s2-protobuf-encoder-2026-07-28.md`
 
-**Verified status at the anchor.** The node gate contains **34 converted depth subjects + 6
-converted width subjects and zero production tripwire subjects**; the derived hand-written recursion
-census has zero `Unmeasured` dispositions; and MeTTaIL's generated traversal table has no unmeasured
-traversal. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a traversal-depth
-ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
+**Verified living status.** The node gate contains **37 converted depth subjects + 8
+converted width subjects and zero production tripwire subjects**. The strengthened hand-written
+recursion census finds **585** recursive components, **50** term-family components across **29** files,
+**20** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
+has no unmeasured traversal. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
 measurement-only probes + 1 forked-child driver** (**DERIVED** from the four `#[ignore]` attributes
@@ -64,6 +66,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
+| **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope also eliminated | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -133,15 +136,16 @@ oracle-artefact gap as a threat). At the anchor the tripwire lists are **empty**
 
 A `Par` — the term representation of the Rholang interpreter — is a mutually recursive family of 37 protobuf message types whose every cycle passes through `Par` itself (**MEASURED (q)**, `7c74260d`: 58 nodes, 95 edges, 22 strongly connected components, exactly one cyclic). Until 2026-07-26, essentially every traversal of that family was written as recursive descent, so each consumed native stack in proportion to the *nesting depth of an attacker-chosen term*. Because a native-stack overflow in Rust is a `SIGSEGV` on the guard page and not a catchable panic, program-controlled nesting depth controlled node liveness. The worst reachable instance measured **8.8 kB of source text aborting a node** through the term *destructor* alone (**MEASURED (q)**, `291bc217`), and a second, on unauthenticated pre-consensus gRPC ingress, at **43,565 bytes** (**MEASURED (q)**, `3b265eb7`).
 
-The register contains **40 converted production subjects — 34 on the depth axis and 6 on the width
-axis — and zero production tripwire subjects**. Every converted subject is driven on the ordinary
+The living register contains **45 converted production subjects — 37 on the depth axis and 8 on the
+width axis — and zero production tripwire subjects**. Every converted subject is driven on the ordinary
 execution architecture, without `RUST_MIN_STACK`, `stacker`, or a traversal-depth ceiling. The
-derived hand-written recursion census (580 recursive components, 54 mentioning the term family, 20
-mutual, 30 dispositioned files including `node/src`) carries **zero unmeasured dispositions**. The
-complete deterministic-time campaign observes no quadratic subject: Ir exponents range from 0.9462
+strengthened hand-written recursion census (585 recursive components, 50 mentioning the term family,
+20 mutual, 29 dispositioned files including `node/src`) carries **zero unmeasured dispositions**. The
+40-subject Phase-7 deterministic-time cohort observes no quadratic subject: Ir exponents range from 0.9462
 to 1.0970, and the largest data-counter exponent is 1.4007 Dw. **MEASURED**, §5.12–§5.15;
-**DERIVED** from `CONVERTED_DEPTH`, `CONVERTED_WIDTH`, `TRIPWIRE_DEPTH`, and `TRIPWIRE_WIDTH` at
-`e67a6aaa`.
+the five later matcher subjects have independent depth/width stack and elapsed-time evidence in §5.16.
+**DERIVED** from the living `CONVERTED_DEPTH`, `CONVERTED_WIDTH`, `TRIPWIRE_DEPTH`, and
+`TRIPWIRE_WIDTH` registers.
 
 Headline results, all **MEASURED** (each row's before and after are the same subject on the same
 instrument; the instrument per family is named in §4.4):
@@ -221,6 +225,7 @@ register rows (SS-C5…SS-C10, SS-Y6) and the stack-safety consequences.
   - [5.13 The node JSON boundary [SS-A9]](#513-the-node-json-boundary-ss-a9)
   - [5.14 Resource closure — heap and deterministic time [SS-E3]](#514-resource-closure--heap-and-deterministic-time-ss-e3)
   - [5.15 Subject depth distributions [SS-E4]](#515-subject-depth-distributions-ss-e4)
+  - [5.16 Spatial matcher and PathMap-native retry PDA [SS-A10]](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -249,8 +254,8 @@ register rows (SS-C5…SS-C10, SS-Y6) and the stack-safety consequences.
 - [References](#references)
 - [Appendix A — reproduction commands](#appendix-a--reproduction-commands)
 - [Appendix B — raw data locations](#appendix-b--raw-data-locations)
-- [Appendix C — the complete fix inventory](#appendix-c--the-complete-fix-inventory)
-  - [C.1 Code fixes](#c1-code-fixes)
+- [Appendix C — historical July inventory snapshot](#appendix-c--historical-july-inventory-snapshot)
+  - [C.1 Historical code fixes](#c1-historical-code-fixes)
   - [C.2 Instrument commits](#c2-instrument-commits)
   - [C.3 Rejected](#c3-rejected)
 - [Appendix E — documentation-guideline conformance](#appendix-e--documentation-guideline-conformance)
@@ -665,7 +670,7 @@ Every measurement in §5 comes from a harness that has been **shown to fail**. T
 
 ## 5. Results
 
-**The register at the anchor contains 40 converted production subjects — 34 depth + 6 width — and
+**The Phase-7 anchor contains 40 converted production subjects — 34 depth + 6 width — and
 zero tripwire subjects on either axis** (**DERIVED** from `CONVERTED_DEPTH`, `CONVERTED_WIDTH`,
 `TRIPWIRE_DEPTH`, `TRIPWIRE_WIDTH` at `e67a6aaa`; **MEASURED** by the capped 8/8-active gate run
 recorded in the header). *Converted* means the minimum surviving stack is identical at depth 4 and
@@ -673,7 +678,9 @@ depth 4,096 (width 4 and width 65,536 on the width axis) in both profiles; the p
 deterministic-time fits for all 40 are the
 [cachegrind TSV](measurements/phase7-cachegrind-fits-2026-08-03.tsv). Sections 5.1–5.6 report each
 family's defect, repair architecture, and before/after result; §5.12–§5.15 carry the closure and
-resource results.
+resource results. **The living extension is 45 = 37 + 8 with zero tripwires**; §5.16 reports the
+five matcher additions separately so the historical 40-subject Cachegrind population is not silently
+rewritten as though it had measured them.
 
 ![depth vs stack ladder](figures/depth-vs-stack-ladder.svg)
 
@@ -2333,7 +2340,7 @@ are the term-family closure):
 | `output_value_write_side_reachability` | 3 passed |
 | `absent_required_child_reachability` | 5 passed; the malformed-shape axis remains independently witnessed |
 | `stack_depth_gate` | 8 passed active; **4 ignored = 3 measurement-only probes + 1 forked-child driver** |
-| stack gate production matrix | 40 depth+width subjects at the anchor; zero tripwire subjects |
+| stack gate production matrix | 40 depth+width subjects at the original anchor; **45 current = 37 depth + 8 width** after SS-A10; zero tripwire subjects |
 | Rocq | all three files kernel-checked; no `Admitted`, `admit`, or `Axiom` |
 | Z3 | mode-dispatch counterexample query unsatisfiable |
 | TLC | 422 initial roots; 3,238 states generated; 2,816 distinct; depth 8; no error |
@@ -2351,8 +2358,11 @@ classifier PDA and is guarded against reintroduction by `par_read_stack_safety_r
 The whole-worktree audit found one production consumer outside the generated/hand-written `Par`
 registry — the node JSON boundary in `web_api.rs` — converted by SS-A9 (§5.13). Commit `26d3e3b9`
 then closed the audit boundary itself: `node/src` is an input to the derived hand-written recursion
-census, which finds 580 recursive components, 54 mentioning the term family, 20 mutual components,
-and 30 dispositioned files, with **zero unmeasured files**.
+census. The overloaded-method correction `e485a567` supersedes the anchor count: **585 recursive
+components, 50 mentioning the term family, 20 mutual components, and 29 dispositioned files**, with
+**zero unmeasured files**. The term-family count fell while total components rose because body-less
+trait declarations are now excluded and repeated impl methods are retained instead of overwriting one
+another; the calibration reproduces the exact matcher-shaped blind spot.
 
 #### 5.12.5 Anti-vacuity and equivalence
 
@@ -2430,9 +2440,9 @@ All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`
 | focused node gate | — | **6/6**, 4 GiB cgroup peak, zero swap | **MEASURED**, capped run including all three EPathMap modes |
 | full node library | 113/113 before the conversion | **119/119**, 4 GiB cgroup peak, zero swap | **MEASURED**, final capped run |
 | owned trie visitor | borrowed forward view | owned set/map stream equals borrowed trie order; wrong mode rejected; neutral empty accepted by both | **MEASURED**, 1/1; warm peak 87.8 MiB |
-| whole-worktree recursion census | node crate absent from source roots | **580** recursive components; **54** term-family components, **20** mutual, **30** files, **0** unmeasured | **MEASURED**, 3/3; 2.0 GiB peak RSS, zero swap |
+| whole-worktree recursion census | node crate absent from source roots | anchor 580/54/20/30; ★ current **585** recursive components, **50** term-family components, **20** mutual, **29** files, **0** unmeasured after overloaded-method correction | **MEASURED**, census calibration and 3/3 gate; zero swap |
 | formal binding | no row for this boundary | six production surfaces resolve to the generic Rocq theorem and executable evidence; manifest **5/5** | **MEASURED**, 1.4 GiB peak RSS, zero swap |
-| complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width) at `26d3e3b9`; ★ current register **40** (34 + 6) after the independent EPathMap hash/`Message::clear` controls, zero tripwires | **MEASURED**, original 2.3 GiB peak RSS; current full register 406.6 MiB, zero swap ([§5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3)) |
+| complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width) at `26d3e3b9`; **40** (34 + 6) at the Phase-7 resource anchor; ★ current register **45** (37 + 8) after SS-A10, zero tripwires | **MEASURED**, original 2.3 GiB peak RSS; current matcher-inclusive debug/release gates 206 s / 27 s, zero swap ([§5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10)) |
 | deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks all three files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script; structural EPM1 refinement re-run 2026-08-04 |
 | B/level | NOT MEASURED — no pre-change frame bisection was retained for this boundary | NOT MEASURED — the explicit-loop class and 256 KiB deep probe establish bounded execution but not a byte slope | stated limitation |
 | throughput / allocation profile | NOT MEASURED — no stable boundary benchmark exists | NOT MEASURED — correctness and depth closure were gated first | stated limitation |
@@ -2636,6 +2646,123 @@ grammar/rendering work into the stack-safety acceptance set. The production pret
 historical allocation finding is already bounded by a test-only mutation refusal; its recursive oracle
 lives under `rholang/tests/support`, and the formerly suspected `nested_list_expr` helper is live in
 `stack_depth_probe`. None is an unclassified production recursion site.
+
+---
+
+### 5.16 Spatial matcher and PathMap-native retry PDA [SS-A10]
+
+#### 5.16.1 The defect
+
+The recursive `SpatialMatcherContext` component crossed `Par`, `Expr`, binder records, ordered and
+unordered collections, connectives, and EPathMap values. A free-variable pattern forced the semantic
+path and measured approximately **70,237 B/level in debug** before conversion; a concrete pattern could
+bypass that path and therefore was not a valid witness by itself. The same component contained two
+additional depth/width mechanisms: concrete `Receive`/`New` matching re-entered through `match_pars`, and
+subset search recursively retried candidate pairings while carrying mutable binding state.
+
+Flattening EPathMap would have hidden rather than repaired the defect. Set mode is `PathMap<()>`, map
+mode is `PathMap<Par>`, and prefix topology, algebra, zipper navigation, and compact ACTree03 storage are
+part of the representation. A `Vec<Par>` or hash collection would discard those properties and add
+allocation before matching began.
+
+#### 5.16.2 Architecture of the repair
+
+Commits `78611b11`, `6799b406`, and `fc497f94` compile the complete heterogeneous matcher dependency
+component into one explicit machine. Work items represent target/pattern pairs, result reductions,
+collection cursors, connective snapshots, and retry continuations. A `FreeMap` snapshot belongs to the
+frame that may roll back: failed disjunction alternatives, negation, and augmenting-path retries restore
+their entry state; successful sequential/conjunctive children commit in source order.
+
+EPathMap matching remains trie-native. Exact set/map members are removed with PathMap subtraction before
+dynamic matching. Set entries stream as owned byte keys from `PathMap<()>`; map entries stream as owned
+key/value pairs from `PathMap<Par>`. The singleton fast path (`98bb3d5e`) removes the sole pair through
+owned zippers and moves the `Par` value directly into the matcher PDA. Larger ambiguous sets retain the
+general retry-capable augmenting machine. No PathMap crate change, list projection, or mixed set/map
+carrier was introduced.
+
+Commit `714d618c` closes the memory-layout residual without changing the abstract machine. Large
+heterogeneous states are boxed at the `Job`/`Frame` boundary, reducing the two contiguous enum slots
+from **1,504 / 1,112 bytes to 64 / 64 bytes**. A unit test makes those ceilings executable. For the
+singleton `PathMap<Par>` shape, a concrete key is compared in its canonical encoded PathMap form and
+the PDA descends directly into the dynamic value; only a connective-bearing key is decoded and spatially
+matched. This is a trie specialization, not a list projection, and the general ambiguous-key retry
+machine remains available.
+
+Commit `6f1412ee` removes the remaining singleton preflight lookup and redundant pattern-key decode.
+Every exact singleton is moved through the owned PathMap entry stream: concrete `PathMap<()>` members
+compare their canonical key bytes; concrete `PathMap<Par>` keys compare those bytes and concrete values
+compare directly; only connective-bearing keys or values enter the matcher PDA. Empty remains the
+neutral `EPathMapRepr::Empty` state until the first set or map insertion selects a homogeneous mode.
+The recursive-oracle corpus now pins empty behavior and concrete singleton set/map equality plus key and
+value refusal. No entry projection or PathMap crate change is involved.
+
+#### 5.16.3 Results
+
+All stack commands used one Cargo job, zero swap, and a systemd RSS ceiling. **MEASURED**:
+
+| subject | axis and ladder | debug minimum stack | release minimum stack | verdict |
+|---|---|---:|---:|---|
+| `spatial_binding` | depth 4 $`\rightarrow`$ 4,096 | about 80 KiB at both ends | about 36 KiB at both ends | **0 B/level**; free binding committed |
+| `spatial_concrete_binders` | depth 4 $`\rightarrow`$ 4,096 | about 88 KiB at both ends | about 32 KiB at both ends | **0 B/level**; concrete binder path reached |
+| `spatial_epathmap_map_depth` | depth 4 $`\rightarrow`$ 4,096 | 72 KiB at both ends | 28 KiB at both ends | **0 B/level**; deepest map value binds |
+| `spatial_epathmap_set_wide` | width 4 $`\rightarrow`$ 65,536 | 164 KiB at both ends | 92 KiB at both ends | **0 B/member**; `PathMap<()>` specialization |
+| `spatial_epathmap_map_wide` | width 4 $`\rightarrow`$ 65,536 | 80 KiB at both ends | 36 KiB at both ends | **0 B/member**; `PathMap<Par>` specialization |
+
+The complete matcher-inclusive register is **45 converted subjects = 37 depth + 8 width**, with empty
+production tripwire lists. Post-layout full debug/release gate runs completed in **172.07 s / 26.30 s**.
+Final `6f1412ee` revalidation completed with the same **8/8 active, 4 intentionally ignored** result in
+**200.40 s / 26.83 s** debug/release; elapsed variation is not used as a performance claim.
+The initially correct but clone-heavy nested map witness took **97.29 s** at depth 4,096 in debug;
+moving the singleton value through the owned zipper reduced it to **0.31 s** (about **314×**) without
+specializing away the general retry path.
+
+The bounded recursive oracle under `rholang/tests/support/spatial_matcher_oracle` compares both verdict
+and final `FreeMap`; the corpus now executes 32 explicit target/pattern comparisons, including the six
+empty/concrete-singleton additions. The generated boundary manifest
+passes **5/5**. Rocq's admission-free `spatial_match_pda_equivalent_to_recursive_match` instantiates the
+generic PDA theorem with state transformers and separately proves binding consistency/conflict, ordered
+retry, negation isolation, and singleton ownership equivalence. The independent TLA+ matcher model
+explores **607 generated / 478 distinct states** to depth 4 without error; the generic model explores
+**3,238 generated / 2,816 distinct states** to depth 8.
+
+#### 5.16.4 Complexity, allocation, and residuals
+
+Native stack is $`O(1)`$ in match depth and candidate width. Explicit control storage is
+$`O(d + w + r)`$ in the live depth, collection frontier, and retry frontier; candidate enumeration is
+necessarily data-dependent, but exact PathMap subtraction and singleton moves avoid manufacturing a
+dense bipartite problem for the common shapes. The measured 314× singleton improvement establishes the
+dominant clone removal.
+
+The previously missing allocator/RSS measurement is now closed with a matched fixture-only control.
+Both processes construct and validate the same nested `PathMap<Par>` target/pattern pair; only the
+subject enters the matcher. Heaptrack and `/usr/bin/time -v` ran at depths 512 and 4,096 in release,
+one Cargo job, `MemoryMax=9G`, and zero swap. Raw rows are versioned in
+[`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv).
+Heap columns below preserve heaptrack's own `M` display unit; RSS columns are the exact KiB emitted by
+GNU `time`.
+
+| metric | before `714d618c` | after `714d618c` | final `6f1412ee` | result |
+|---|---:|---:|---:|---|
+| matcher-minus-control allocation calls, depth 512 / 4,096 | 17,434 / 139,293 | 15,384 / 122,907 | 11,288 / 90,139 | slope **34.001 $`\rightarrow`$ 30.001 $`\rightarrow`$ 22.001 calls/level** |
+| matcher-minus-control temporary allocations, depth 512 / 4,096 | 2,561 / 20,481 | 1,537 / 12,289 | 1,025 / 8,193 | slope **5.000 $`\rightarrow`$ 3.000 $`\rightarrow`$ 2.000 calls/level** |
+| heaptrack peak heap, subject / control at 512 | 11.58 / 1.03 M | 1.03 / 1.03 M | 1.03 / 1.03 M | matcher does not raise the fixture peak |
+| heaptrack peak heap, subject / control at 4,096 | 91.98 / 7.63 M | 7.63 / 7.63 M | 7.63 / 7.63 M | matcher does not raise the fixture peak |
+| unprofiled maximum RSS, subject at 512 / 4,096 | 23,452 / 79,676 KiB | 23,276 / 23,240 KiB | 23,016 / 23,024 KiB | positive RSS slope eliminated |
+| unprofiled matcher-minus-control RSS, 512 / 4,096 | 628 / 56,780 KiB | 608 / 40 KiB | -536 / 48 KiB | no positive retained-work-stack slope; endpoint differences are process noise |
+| heaptrack runtime, depth 4,096 | 0.332 s | 0.097 s | 0.088 s | **3.77× faster than the pre-layout run** |
+
+The post-change negative fitted RSS difference is allocator/process noise, not a claim that deeper
+matching releases memory. The scientifically supported claim is narrower: subject RSS is flat across
+the ladder, the matched control sets the heap peak, and no positive retained-work-stack slope is visible.
+Allocation counts remain linear because every trie level must still be visited and decoded; the change
+removes oversized *live capacity*, not the necessary $`\Theta(d)`$ traversal work.
+
+Within the audited matcher component, no production recursive traversal remains. The recursive oracle is
+test-only and shallow-bounded. The strengthened source census (`e485a567`) keys functions by file, name,
+and source offset so overloaded impl methods cannot overwrite each other; it reports **585** recursive
+components, **50** term-family components across **29** files, **20** mutual components, and zero
+unmeasured dispositions. No `RUST_MIN_STACK`, `stacker`, traversal-depth limit, or PathMap fork is part of
+the repair.
 
 ---
 
@@ -2941,7 +3068,7 @@ still relies on.
 |---|---|---|---|
 | **#162 / #189** | the eleven generated `ast_*` drivers | ✅ **CONVERTED**, 0 B/level both profiles; root cause repaired at the classifier | [§8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
 | **#197** | the optional-collection generator defect inside #162's own commit (E0624/E0606) | ✅ **REPAIRED** (`6248f156`, SS-Y1): the generated carrier is classified once; `--all-targets` unblocked | §0, SS-Y1 row |
-| **#43** | f1r3node's hand-written/generated `Par` traversals | ✅ **40 converted, zero tripwires** | §5.12, §5.14 |
+| **#43** | f1r3node's hand-written/generated `Par` traversals, including the matcher SCC | ✅ **45 converted (37 depth + 8 width), zero tripwires** | §5.12, §5.14, §5.16 |
 | **#124** | the three `spliced_event_bytes` event-hash legs | ✅ **CLOSED** — the legs route through the flat cold encoder and the spliced dispatch died with its store (SS-Y6) | [PathMap §5.8](../pathmap/pathmap-report-2026-08-03.md#58-the-dissolved-intern-store) |
 | **#189** residual | `try_eval` category coverage | ✅ **CLOSED** — SS-G5's presence-flag repair plus the derived traversal table with zero unmeasured members (the `UNMEASURED_TRAVERSALS` ratchet retired by derivation) | §5.6.5 |
 | **#119 / #120** | the prost depth-33 read ceiling | ✅ **REMOVED** by the generated decode PDA — with the group-skip recursion made iterative first (§8.6.2) | §5.12, §8.6.2 |
@@ -3110,10 +3237,10 @@ guard must be replaced *before* the cap is touched, never after.
 ## 9. Conclusions
 
 1. **The class change is real and mechanically enforced over the complete audited `Par` traversal
-   registry.** **Forty production subjects — 34 depth and 6 width** — are in the converted sets at
-   `e67a6aaa`; both production tripwire sets are empty and still execute non-vacuous synthetic
-   controls, and the derived hand-written census has zero `Unmeasured` dispositions, including
-   `node/src`.
+   registry.** The Phase-7 anchor carried forty subjects; the living register carries **45 production
+   subjects — 37 depth and 8 width** after the matcher SCC conversion. Both production tripwire sets
+   are empty and still execute non-vacuous synthetic controls, and the strengthened hand-written census
+   has zero `Unmeasured` dispositions, including `node/src`.
 
 2. **The two headline availability defects are closed.** A term that could be *built* and not *destroyed* (8.8 kB of source aborting a node) and a pre-consensus ingress teardown reachable from unauthenticated gRPC (43.5 kB of source aborting a node) are both $`0`$ B/level with no ceiling below the search bound.
 
@@ -3366,6 +3493,7 @@ done
 | [`measurements/phase7-massif-2026-08-03.tsv`](measurements/phase7-massif-2026-08-03.tsv) | matched-control heap peaks at depths 256/1,024 and B/level for the four core conversions (§5.14.2) |
 | [`measurements/phase7-depth-histograms-2026-08-03.tsv`](measurements/phase7-depth-histograms-2026-08-03.tsv) | subject/root-kind depth histograms (§5.15.1) |
 | [`measurements/phase7-depth-corpora-2026-08-03.tsv`](measurements/phase7-depth-corpora-2026-08-03.tsv) | corpus denominators for the histograms (§5.15.1) |
+| [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
@@ -3389,11 +3517,16 @@ Appendix A are the durable evidence:
 
 ---
 
-## Appendix C — the complete fix inventory
+## Appendix C — historical July inventory snapshot
 
-**20 code fixes**, **18 instrument commits**, **1 rejected candidate**.
+> **Superseded as a completeness index.** At the original July report anchor this appendix contained
+> **20 code fixes**, **18 instrument commits**, and **1 rejected candidate**. It is retained as the
+> chronological snapshot behind the early sections, but it is not extended with later PathMap,
+> generated-PDA, matcher, proof, or resource-closure commits. The stable-ID register in [§0](#0-the-fix-register--the-scannable-index)
+> is the living and authoritative inventory. Treating this appendix as current would silently omit
+> SS-A8…SS-A10, SS-C5…SS-C10, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
 
-### C.1 Code fixes
+### C.1 Historical code fixes
 
 | # | commit | repo | what it converted / removed | key figure |
 |---|---|---|---|---|
@@ -3439,9 +3572,10 @@ DOCLINT_DOI=on /home/dylon/Workspace/f1r3fly.io/mettail-rust/docs/languages/vali
   /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-03) passes all 17 mechanised checks; the four
-editorially-judged guidelines are dispositioned in §E.3. A recorded 17/17 is a timestamped
-measurement, not a standing property — re-run the command after any edit.
+The run of record for this revision (2026-08-04) passes **16 of 17** mechanised checks with the
+network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
+editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
+standing property — re-run the command after any edit, and do not count the skip as a pass.
 
 ### E.1 The colour mapping, so it can be checked
 

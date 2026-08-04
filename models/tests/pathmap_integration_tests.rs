@@ -201,7 +201,7 @@ fn test_pathmap_to_e_pathmap_conversion() {
 fn test_e_pathmap_roundtrip() {
     let original_ps = mixed_elements();
 
-    // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+    // Use the invariant-preserving constructor instead of a struct literal.
     // (the wrapper's shadow cell is private).
     let e_pathmap1 = EPathMap::new(original_ps.clone(), vec![], false, None);
 

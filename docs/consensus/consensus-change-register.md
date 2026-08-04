@@ -2046,7 +2046,7 @@ $`\Rightarrow`$ Option 1 is the only one under which the **control** — five pr
   lf_bearing_pathmap   223 B | machine 0 allocs 0 B | derived 1 allocs 223 B
 ```
 
-**Test totals.** `models` **473 passed / 2 ignored across 37 targets** (baseline **469 / 2 / 37**); `bincode_encoder_differential` 13/13 and `bincode_decoder_differential` 13/13; `protobuf_encoder_differential` 13/13; `serializer_par_byte_goldens` 7/7; `epathmap_spliced_event_bytes` 11/11; `rholang` `epathmap_replay_equivalence_spec` 1/1, `trie_entry_invariant_spec` 8/8, `epathmap_charge_trace_spec` 9/9; `cargo check -p casper -p rholang --tests` clean.
+**Test totals.** `models` **473 passed / 2 ignored across 37 targets** (baseline **469 / 2 / 37**); `bincode_encoder_differential` 13/13 and `bincode_decoder_differential` 13/13; `protobuf_encoder_differential` 13/13; `serializer_par_byte_goldens` 7/7; `epathmap_spliced_event_bytes` 11/11; `rholang` `epathmap_replay_equivalence_spec` 1/1, `trie_entry_invariant_spec` 8/8, and the then-current `epathmap_charge_trace_spec` 9/9 (historical diagnostic target, superseded under CBR-044); `cargo check -p casper -p rholang --tests` clean.
 
 #### (h) Authority
 
@@ -2218,6 +2218,55 @@ visitor regressions pass for shared-prefix and dense topologies. It changes no w
 input, verdict, post-state, or metering rule, so it neither changes the seven-axis classification
 above nor creates a second register entry. The capped evidence and exact auxiliary-space delta are
 reported in [PathMap §5.7](../design/pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality).
+
+**Matcher/PDA and accounting-evidence refinement (2026-08-04).** Commits `78611b11`,
+`6799b406`, and `fc497f94` replace the recursive spatial-matcher component with one heterogeneous
+explicit PDA and match set-mode `PathMap<()>` and map-mode `PathMap<Par>` directly. No EPathMap is
+projected to `Vec<Par>`, a set, or a hash map. Exact members are removed by native trie subtraction;
+dynamic members use retry frames with binding snapshots; nested map values stay on the same PDA.
+Commit `98bb3d5e` moves singleton trie entries through owned PathMap zippers, reducing the depth-4,096
+debug witness from **97.29 s to 0.31 s** while preserving the general retry-capable path. Commit
+`714d618c` boxes large heterogeneous PDA states (**Job 1,504 $`\rightarrow`$ 64 bytes; Frame 1,112
+$`\rightarrow`$ 64 bytes**) and, for concrete singleton map keys, compares canonical PathMap bytes
+directly before descending into the dynamic value. The general dynamic-key retry path remains intact.
+Commit `6f1412ee` extends that owned-entry path to every exact singleton and removes the preliminary trie
+lookup plus duplicate pattern-key decode: concrete set keys and map keys compare canonical bytes,
+concrete values compare directly, and only dynamic keys or values enter the matcher PDA. The preserved
+recursive oracle agrees on empty mode and concrete singleton set/map equality and refusal cases.
+The complete gate is **45 converted subjects = 37 depth + 8 width, zero tripwires**; the post-layout
+PathMap-specific debug/release bounds are **72/28 KiB** (deep map value), **164/92 KiB** (wide set),
+and **80/36 KiB** (wide map), each flat across its ladder. `e485a567` strengthens the source census to **585** recursive
+components, **50** term-family components across **29** files, **20** mutual components, and zero
+unmeasured dispositions.
+
+Matched heap/RSS evidence closes the remaining resource question. At depths 512/4,096, the unprofiled
+matcher RSS changes from **23,452/79,676 KiB before** `714d618c` to **23,276/23,240 KiB after**;
+fixture-control RSS is **22,668/23,200 KiB after**. Heaptrack's subject/control peak heap becomes
+**1.03/1.03 M** at depth 512 and **7.63/7.63 M** at depth 4,096, so the matcher no longer raises the
+fixture peak. Necessary allocation work remains linear, but the retained live-RSS slope is eliminated.
+At final `6f1412ee`, subject RSS remains flat at **23,016/23,024 KiB**, heap peaks remain exactly at the
+matched controls, matcher-only allocation slope falls again from **30.001 to 22.001 calls/level**, and
+temporary-allocation slope falls from **3.000 to 2.000 calls/level**. Depth-4,096 profiled runtime is
+**0.088 s**, versus 0.097 s at `714d618c` and 0.332 s before the layout repair.
+The versioned raw rows live in the stack-safety report's
+`measurements/spatial-matcher-heap-2026-08-04.tsv`.
+
+`acfd194f` binds the production matcher and owned-zipper seam to the admission-free Rocq PDA theorem,
+including binding consistency, ordered retry, disjunction, conjunction, and negation snapshot
+isolation. The independent Temporal Logic of Actions Plus (TLA+) model explores **607 generated / 478 distinct states** at depth 4;
+the generic PDA model remains **3,238 generated / 2,816 distinct states** at depth 8; the formal
+manifest passes **5/5**. The bounded recursive Rust oracle remains under `rholang/tests/support`, not
+production.
+
+The accounting evidence was corrected at the same boundary. The removed
+`epathmap_charge_trace_spec.rs` pinned primitive/substitution weights from the superseded
+per-operation model even though CBR-044's Metering row is COMM-only. Its nonduplicated coverage now
+lives in `epathmap_fusion_equivalence_spec.rs`: exact semantic results and errors, budgets 0–4 with
+consumption 0/1/2/3/3, committed-COMM equality, and dynamic fused-vs-fallback diagnostic equivalence.
+The focused suite passes **3/3** without the feature and **6/6** with
+`epathmap-fusion-differential`. This cleanup changes no consensus axis: diagnostic event weights and
+their digest were already removed from consensus; `EvaluateResult::cost` remains exactly the committed
+COMM count.
 
 #### Authority and residuals
 
@@ -3172,7 +3221,7 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 
 | # | SHA | Subject | Reason | Evidence discharging it |
 |---|---|---|---|---|
-| 22 | `8fb813a7` | every `models` test target is declared, none compiled twice | `INFRA` | `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs` or `models/build/` path is touched, so no codec, sorter or wire table can move. **DERIVED** (file list). |
+| 22 | `8fb813a7` | every `models` test target is declared, none compiled twice | `INFRA` | `models/Cargo.toml` plus one new test file. No `models/src`, `models/build.rs`, or the then-named `models/build/` code-generator directory (now `models/codegen/`) is touched, so no codec, sorter, or schema table can move. **DERIVED** (file list). |
 | 23 | `09b80afe` | *"safe to regenerate, not worth tracking"* was FALSE — five counterexamples were being discarded | `TESTS_ONLY` | `.gitignore` plus two corpus files. A shrunk counterexample is **not regenerable**, which is why it is tracked, and it is read only by the proptest harness. **DERIVED** (file list). |
 | 24 | `decda6dd` | the massif heap profile — 923× less allocation churn | `INFRA` | A `[[bench]]` declaration and a massif harness. Benches are outside the derived path set; the commit reaches the obligation set **only** through the `models/Cargo.toml` declaration hunk. **DERIVED** (file list). |
 
