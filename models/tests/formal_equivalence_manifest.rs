@@ -186,6 +186,7 @@ fn rocq_kernel_contains_no_unproved_declarations() {
     for relative in [
         "formal/rocq/stack_safe_pda/theories/StackSafePDA.v",
         "formal/rocq/stack_safe_pda/theories/EPathMap.v",
+        "formal/rocq/stack_safe_pda/theories/EPM1.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom "] {

@@ -323,8 +323,8 @@ pub static BOUNDARY_PDA_EQUIVALENCE_EVIDENCE: &[BoundaryEquivalenceEvidence] = &
 
 /// A concrete EPathMap law proved in Rocq and exercised against the PathMap
 /// implementation. These rows cover neutral mode selection, specialized set
-/// and value-map algebra, mixed-mode rejection, prefix restriction, and direct
-/// EPM1 byte transport.
+/// and value-map algebra, mixed-mode rejection, prefix restriction, and the
+/// framed EPM1 topology/value-table contract.
 pub static EPATHMAP_FORMAL_EVIDENCE: &[EquivalenceEvidence] = &[
     EquivalenceEvidence {
         surface: "EPathMap::empty/join mode",
@@ -404,24 +404,59 @@ pub static EPATHMAP_FORMAL_EVIDENCE: &[EquivalenceEvidence] = &[
         executable_marker: "member_prefix_restriction_is_specialized_for_both_modes",
     },
     EquivalenceEvidence {
-        surface: "EPathMap::EPM1 round trip",
-        proof_file: "formal/rocq/stack_safe_pda/theories/EPathMap.v",
-        theorem: "epm1_decode_encode_identity",
+        surface: "EPathMap::EPM1 framed round trip",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "epm1_framed_decode_encode_identity",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
         executable_marker: "bincode_copies_the_same_epm1_snapshot_and_both_readers_agree",
     },
     EquivalenceEvidence {
-        surface: "EPathMap::EPM1 direct payload",
-        proof_file: "formal/rocq/stack_safe_pda/theories/EPathMap.v",
-        theorem: "epm1_payload_is_copied_without_projection",
+        surface: "EPathMap::EPM1 topology and ordered values",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "epm1_preserves_topology_and_ordered_value_table",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
         executable_marker: "value_bearing_map_is_a_lossless_nested_canonical_path_segment",
     },
     EquivalenceEvidence {
-        surface: "EPathMap::EPM1 topology identity",
-        proof_file: "formal/rocq/stack_safe_pda/theories/EPathMap.v",
-        theorem: "distinct_topology_or_values_remain_observable",
-        executable_file: "models/tests/epathmap_pathmap_native_zipper.rs",
-        executable_marker: "eq_hash_and_ord_include_value_free_pathmap_topology",
+        surface: "EPathMap::EPM1 topology/value ordinal association",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "epm1_round_trip_preserves_topology_value_association",
+        executable_file: "models/tests/epathmap_epm1_snapshot.rs",
+        executable_marker: "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::EPM1 ordinal uniqueness and range",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "associated_map_ordinals_are_in_range_and_unique",
+        executable_file: "models/tests/epathmap_epm1_snapshot.rs",
+        executable_marker: "map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::EPM1 generated-PDA value equivalence",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "epm1_generated_pda_values_equal_recursive_encoding",
+        executable_file: "models/tests/epathmap_epm1_snapshot.rs",
+        executable_marker: "nested_map_value_snapshots_stream_on_a_256_kib_stack",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::EPM1 malformed canonical varint rejection",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "canonical_varint_rejects_redundant_continuation",
+        executable_file: "models/src/rust/epathmap_trie_codec.rs",
+        executable_marker: "decoder_rejects_noncanonical_and_malformed_snapshots",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::EPM1 truncated frame rejection",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "length_frame_rejects_truncated_payload",
+        executable_file: "models/src/rust/epathmap_trie_codec.rs",
+        executable_marker: "decoder_rejects_noncanonical_and_malformed_snapshots",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::EPM1 trailing byte rejection",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "epm1_rejects_trailing_bytes",
+        executable_file: "models/src/rust/epathmap_trie_codec.rs",
+        executable_marker: "decoder_rejects_noncanonical_and_malformed_snapshots",
     },
 ];

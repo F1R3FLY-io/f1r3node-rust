@@ -20,6 +20,7 @@ fi
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 popd >/dev/null
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"

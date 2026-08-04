@@ -360,62 +360,6 @@ Theorem every_binary_operation_rejects_mixed_nonempty_modes :
   restrict_mode MapMode SetMode = ModeMismatch.
 Proof. repeat split; reflexivity. Qed.
 
-Definition byte := nat.
-Definition bytes := list byte.
-
-Definition epm_magic : bytes := [69; 80; 77; 49].
-Definition epm_version : byte := 1.
-
-Definition mode_code (storage_mode : mode) : byte :=
-  match storage_mode with Neutral => 0 | SetMode => 1 | MapMode => 2 end.
-
-Definition encode_epm1 (storage_mode : mode) (payload : bytes) : bytes :=
-  epm_magic ++ [epm_version; mode_code storage_mode] ++ payload.
-
-Definition decode_epm1 (encoded : bytes) : option (mode * bytes) :=
-  match encoded with
-  | 69 :: 80 :: 77 :: 49 :: 1 :: 0 :: payload => Some (Neutral, payload)
-  | 69 :: 80 :: 77 :: 49 :: 1 :: 1 :: payload => Some (SetMode, payload)
-  | 69 :: 80 :: 77 :: 49 :: 1 :: 2 :: payload => Some (MapMode, payload)
-  | _ => None
-  end.
-
-Theorem epm1_decode_encode_identity :
-  forall storage_mode payload,
-    decode_epm1 (encode_epm1 storage_mode payload) = Some (storage_mode, payload).
-Proof. destruct storage_mode; reflexivity. Qed.
-
-Theorem epm1_payload_is_copied_without_projection :
-  forall storage_mode payload,
-    skipn 6 (encode_epm1 storage_mode payload) = payload.
-Proof. destruct storage_mode; reflexivity. Qed.
-
-Theorem epm1_payload_is_injective :
-  forall storage_mode left_payload right_payload,
-    encode_epm1 storage_mode left_payload = encode_epm1 storage_mode right_payload ->
-    left_payload = right_payload.
-Proof.
-  intros storage_mode left_payload right_payload equal.
-  unfold encode_epm1 in equal.
-  apply (app_inv_head (epm_magic ++ [epm_version; mode_code storage_mode])).
-  exact equal.
-Qed.
-
-Corollary distinct_topology_or_values_remain_observable :
-  forall storage_mode left_payload right_payload,
-    left_payload <> right_payload ->
-    encode_epm1 storage_mode left_payload <> encode_epm1 storage_mode right_payload.
-Proof.
-  intros storage_mode left_payload right_payload different equal.
-  apply different.
-  exact (epm1_payload_is_injective equal).
-Qed.
-
-Theorem epm1_encoded_length_is_constant_header_plus_payload :
-  forall storage_mode payload,
-    length (encode_epm1 storage_mode payload) = 6 + length payload.
-Proof. destruct storage_mode; simpl; reflexivity. Qed.
-
 Definition restrict_by_prefix {KeyByte : Type}
   (base selectors : list KeyByte -> bool) : list KeyByte -> bool :=
   fun path => base path &&
