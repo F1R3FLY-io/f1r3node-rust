@@ -2385,7 +2385,10 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         bind_count: 1,
         p: Some({
             let mut p = GPrivateBuilder::new_par_from_string("zero".to_string());
-            p.locally_free = vec![0];
+            // Substitution keeps only indices below the environment shift. The
+            // raw prefix here used to be `[0]`, a second spelling of the empty
+            // member set; the producer now emits its canonical spelling.
+            p.locally_free = vec![];
             p
         }),
         uri: Vec::new(),
@@ -2394,6 +2397,11 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
     }]);
 
     let serialized_process = sub_proc.encode_to_vec();
+    assert_eq!(
+        serialized_process,
+        vec![34, 16, 8, 2, 18, 12, 58, 10, 10, 8, 10, 6, 10, 4, b'z', b'e', b'r', b'o',],
+        "the substituted process must not retain protobuf tag 9, length 1, payload [0]"
+    );
     let to_byte_array_call = Par::default().with_sends(vec![Send {
         chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
         data: vec![Par::default().with_exprs(vec![Expr {

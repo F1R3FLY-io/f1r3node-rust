@@ -88,7 +88,7 @@ CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface 
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
-derivation. **42 further changes were examined and retired** with typed reasons — 31 bug fixes, 3
+derivation. **43 further changes were examined and retired** with typed reasons — 32 bug fixes, 3
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -133,7 +133,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 19 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 42 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 43 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -444,7 +444,7 @@ optimizations are not consensus-breaking for this register's purpose**, and that
 conversions proven equivalent to their recursive counterparts definitely do not change consensus —
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
-under that criterion; the 42 that no longer qualify are retired to typed rows in
+under that criterion; the 43 that no longer qualify are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -587,8 +587,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **17 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **11 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 42 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 19 + 42 = 61 historical identifiers, none reused.
+resolved under the token model (§3.3). The 43 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 19 + 43 = 62 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -2786,7 +2786,7 @@ above is the maintenance mechanism.
 ## 8. Conclusions
 
 1. The register holds **19** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **5** on MeTTaIL's Rholang; **18 landed, 1 in flight**. **42** examined
+   on the F1r3node node, **5** on MeTTaIL's Rholang; **18 landed, 1 in flight**. **43** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -2921,7 +2921,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 42 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 43 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -2962,6 +2962,7 @@ material now lives.
 | `CBR-040` | `6192b4b9`, `fa234cdd` | Sibling order was not a total function of the term; it is now — `ScoredTerm::sort_vec` tie-breaks on the bytes the element emits | `BUG_FIX_RULED_NONCONSENSUS` | sibling-order totality repair (SS-Y4); stack-safety report §5.6.9 |
 | `CBR-045` | `ff244c69` | Genesis deploy-log order becomes a canonical function of event protobuf bytes while replay remains a function of the event multiset | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-046` | `0e487d4a` | A dense EPathMap set no longer panics the reverse zipper walk used by the pretty printer | `BUG_FIX_RULED_NONCONSENSUS` | reverse-zipper totality repair; PathMap report §5.7 |
+| `CBR-047` | **IN FLIGHT** | A substituted `locally_free` prefix has one canonical empty-set spelling | `BUG_FIX_RULED_NONCONSENSUS` | `models/tests/bit_vector_canonicity.rs` measures the 3-byte protobuf and event-hash movement; `rholang/tests/reduce_spec.rs::eval_of_to_byte_array_method_on_any_process_should_substitute_before_serialization` pins the corrected 18-byte value and replay-visible event |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -3032,6 +3033,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 
 ---
 
-*The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 42 entries
+*The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 43 entries
 to B.1 and removed the mechanised drift gate with its machine index; the pre-refactor revision, with
 every retired body and the gate's specification, remains in git history.*

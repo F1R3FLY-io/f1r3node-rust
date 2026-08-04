@@ -70,11 +70,14 @@
 //!    exhibits it so that it is a measured fact rather than an assumption.
 //!
 //! 1b. ★★★ **`union` PROPAGATES a non-canonical operand, and stopping it is a
-//!    CONSENSUS CHANGE.** That was built, measured and reverted:
+//!    CONSENSUS CHANGE.** Canonicalising `union` itself was built, measured and
+//!    reverted:
 //!    `reduce_spec::eval_of_to_byte_array_…_substitute_before_serialization` went
 //!    RED with three bytes of `Par` and an RSpace produce hash moving.
 //!    [`canonicalising_union_would_move_consensus_bytes`] carries the witness.
-//!    ⇒ the law landed here is `create_bit_vector`'s, which is byte-neutral.
+//!    The narrower producer repair in `set_bits_until` is now an explicit,
+//!    coordinated corrective change and the same reducer witness pins its byte
+//!    and event-hash movement. `union` itself deliberately remains unchanged.
 //!
 //! 2. **`rholang`'s own producers.** Two exist and this crate cannot reach them.
 //!    [`the_rholang_producers_are_named_with_their_verdicts`] records both, with
@@ -83,8 +86,9 @@
 //!    * `interpreter::util::filter_and_adjust_bitset` — a **suffix**; cannot
 //!      create a trailing clear byte from a canonical input.
 //!    * `interpreter::substitute_combine::set_bits_until` — a **prefix**, and
-//!      ★ it **can**: `set_bits_until([0, 1], 1) = [0]`. That is this defect's
-//!      one production-reachable sibling, and it is owned elsewhere.
+//!      historically produced `[0]` for `set_bits_until([0, 1], 1)`. It now
+//!      canonicalizes that raw prefix to `[]`; the executable model below pins
+//!      both the repaired answer and the whole finite member lattice.
 
 use models::rust::utils::union;
 use models::{canonical_bit_vector, create_bit_vector};
@@ -331,15 +335,15 @@ fn union_is_canonical_on_the_full_cross_product() {
 /// keeps its behaviour. **This test holds the evidence executable** so whoever
 /// takes the decision has the witness rather than a paragraph.
 ///
-/// # Where the producer-side repair belongs
+/// # Where the producer-side repair landed
 ///
 /// `rholang/src/rust/interpreter/substitute_combine.rs:63`,
 /// `set_bits_until(bits, until) = bits.into_iter().take(until).collect()`. It
 /// truncates at a **position**, so `set_bits_until([0, 1], 1) = [0]` — it cuts away
 /// the only set byte and leaves clear bytes behind — and it feeds `union` at eleven
-/// sites in that one file. Wrapping *its* return in `canonical_bit_vector` fixes the
-/// source instead of the accumulator, and moves the same bytes, so it carries the
-/// same decision.
+/// sites in that one file. Its return is now wrapped in `canonical_bit_vector`,
+/// fixing the source rather than changing the accumulator. This witness remains
+/// because it pins the exact consensus-byte movement made by that repair.
 #[test]
 fn canonicalising_union_would_move_consensus_bytes() {
     // 1. `union` PROPAGATES, which is the behaviour under decision.
@@ -586,14 +590,14 @@ fn the_rholang_producers_are_named_with_their_verdicts() {
         }
     }
 
-    // rholang/src/rust/interpreter/substitute_combine.rs:63 — `set_bits_until`:
+    // rholang/src/rust/interpreter/substitute_combine.rs — `set_bits_until`:
     //     if until <= 0 { return Vec::new(); }
-    //     bits.into_iter().take(until as usize).collect()
+    //     canonical_bit_vector(bits.into_iter().take(until as usize).collect())
     fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
         if until <= 0 {
             return Vec::new();
         }
-        bits.into_iter().take(until as usize).collect()
+        canonical_bit_vector(bits.into_iter().take(until as usize).collect())
     }
 
     // SUFFIX: safe. Over the whole lattice on 0..5 and every bound count, a
@@ -617,29 +621,38 @@ fn the_rholang_producers_are_named_with_their_verdicts() {
         "non-vacuity: the suffix verdict must be witnessed on the whole lattice"
     );
 
-    // PREFIX: ★ NOT safe, and this is the sibling.
+    // PREFIX: repaired at its single producer.
     assert_eq!(
         set_bits_until(vec![0, 1], 1),
-        vec![0u8],
-        "★ `set_bits_until` truncates at a POSITION, so it can cut away the only set byte and \
-         leave clear bytes behind. `[0, 1]` is the canonical spelling of {{1}}; truncating at 1 \
-         leaves `[0]`, the non-canonical spelling of ∅. This is the one PRODUCTION-REACHABLE \
-         sibling of the `create_bit_vector(&[])` defect, it lives in \
-         `rholang/src/rust/interpreter/substitute_combine.rs:63`, and `rholang/**` is owned \
-         elsewhere. Fixing it is `canonical_bit_vector(...)` around the return — this crate now \
-         exports it."
+        Vec::<u8>::new(),
+        "`set_bits_until` must canonicalize the raw `[0]` prefix to the unique empty-set spelling"
     );
 
-    // and the smallest witness that it defeats the reader the fix exists for
-    let cut = set_bits_until(vec![0, 1], 1);
-    assert!(!cut.is_empty(), "the truncated value is not Vec-empty …");
-    assert!(
-        members(&cut).is_empty(),
-        "… while denoting ∅ — which is exactly the disagreement `fold_match.rs:103` reads"
-    );
+    let mut prefix_witnessed = 0usize;
+    for indices in member_lattice(5) {
+        let bits = create_bit_vector(&indices);
+        for until in 0..=6usize {
+            let out = set_bits_until(bits.clone(), until as i32);
+            assert!(
+                is_canonical(&out),
+                "set_bits_until({bits:?}, {until}) = {out:?} ends in a clear byte"
+            );
+            let expected: Vec<usize> = indices
+                .iter()
+                .copied()
+                .filter(|index| *index < until)
+                .collect();
+            assert_eq!(
+                members(&out),
+                expected,
+                "set_bits_until({bits:?}, {until}) changed the represented member set"
+            );
+            prefix_witnessed += 1;
+        }
+    }
     assert_eq!(
-        canonical_bit_vector(cut),
-        Vec::<u8>::new(),
-        "and `canonical_bit_vector` is the one-call repair"
+        prefix_witnessed,
+        32 * 7,
+        "non-vacuity: the prefix verdict must be witnessed on the whole lattice"
     );
 }

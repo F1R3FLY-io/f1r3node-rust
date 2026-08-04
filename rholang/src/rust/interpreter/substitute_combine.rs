@@ -39,6 +39,7 @@
 //!
 //! See `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
 
+use models::canonical_bit_vector;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
@@ -58,15 +59,20 @@ use models::rust::sorted_par_map::SortedParMap;
 use super::errors::InterpreterError;
 use super::util::{prepend_connective, prepend_expr};
 
-/// `locally_free` truncation at the environment shift. Moved here verbatim from
-/// `substitute.rs` so that both the driver and the oracle read one copy.
+/// `locally_free` truncation at the environment shift.
+///
+/// Scala's `BitSet.until(n)` returns the members below `n`. A raw byte-prefix
+/// can end in zero (`[0, 1].take(1) == [0]`), which is a second encoding of the
+/// empty set and is observably different on the protobuf lane. Canonicalize at
+/// this single producer so every one of its eleven callers receives the
+/// shortest byte-per-index representation.
 pub(crate) fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
     if until <= 0 {
         return Vec::new();
     }
     // Truncate the bitvector at `until` positions, preserving bit positions.
     // Matches Scala's BitSet.until(n).
-    bits.into_iter().take(until as usize).collect()
+    canonical_bit_vector(bits.into_iter().take(until as usize).collect())
 }
 
 // ===========================================================================

@@ -346,11 +346,12 @@ mod binder_shift_law {
     }
 
     /// ⚠ The twin, asserted rather than described. `set_bits_until` is Scala's
-    /// `BitSet.until(n)` — the members `< n` — and in this representation that
-    /// is the PREFIX. Prefix and suffix must PARTITION the input: the bytes
-    /// `set_bits_until` keeps and the bytes `filter_and_adjust_bitset` keeps,
-    /// concatenated, are the input again. That is the one statement that pins
-    /// both halves of the family to the same reading of the representation.
+    /// `BitSet.until(n)` — the members `< n` — and `filter_and_adjust_bitset`
+    /// returns the re-indexed members `>= n`. Both outputs are canonical, so a
+    /// raw-byte concatenation is deliberately *not* the law: canonicalizing the
+    /// prefix may remove zero bytes immediately before the suffix. Re-indexing
+    /// the suffix and taking the union of represented member positions must
+    /// instead recover the input member set exactly.
     #[test]
     fn the_prefix_and_the_suffix_partition_the_bitset() {
         use crate::rust::interpreter::substitute_combine::set_bits_until;
@@ -359,14 +360,35 @@ mod binder_shift_law {
             let input = bits(&members);
             let prefix = set_bits_until(input.clone(), bound_count as i32);
             let suffix = filter_and_adjust_bitset(input.clone(), bound_count);
-            let mut rejoined = prefix.clone();
-            rejoined.extend_from_slice(&suffix);
-            // The prefix is `min(bound_count, len)` bytes; the suffix is the
-            // rest. Their concatenation is the input, byte for byte.
+
+            assert_ne!(
+                prefix.last(),
+                Some(&0),
+                "members {members:?} at {bound_count}: prefix {prefix:?} is not canonical"
+            );
+            assert_ne!(
+                suffix.last(),
+                Some(&0),
+                "members {members:?} at {bound_count}: suffix {suffix:?} is not canonical"
+            );
+
+            let mut partitioned: Vec<usize> = prefix
+                .iter()
+                .enumerate()
+                .filter_map(|(index, bit)| (*bit != 0).then_some(index))
+                .collect();
+            partitioned.extend(
+                suffix
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, bit)| (*bit != 0).then_some(index + bound_count)),
+            );
+            partitioned.sort_unstable();
+
             assert_eq!(
-                rejoined, input,
-                "members {members:?} at {bound_count}: until={prefix:?} ++ from={suffix:?} must \
-                 rejoin to {input:?}"
+                partitioned, members,
+                "members {members:?} at {bound_count}: until={prefix:?} and from={suffix:?} do \
+                 not partition the represented member set"
             );
         }
     }
