@@ -254,19 +254,21 @@ scrape_node_memory_timeseries() {
 			'NR > 1 && $2 == node { v = $3 } END { if (v == "") v = "-"; print v }' \
 			"$iteration_dir/resource-timeseries.csv" 2>/dev/null || printf '%s\n' '-')"
 		if [ ! -s "$tsv" ]; then
-			printf 'elapsed_s\tnode\tmemory_mb\treplay_cache_entries\treplay_cache_retained_bytes\tblock_processing_active\tblock_processing_parallel_limit\n' >"$tsv"
+			printf 'elapsed_s\tnode\tmemory_mb\treplay_cache_entries\treplay_cache_retained_bytes\tblock_processing_active\tblock_processing_parallel_limit\tblock_processing_queue_pending\n' >"$tsv"
 		fi
 		printf '%s\n' "$metrics_body" | awk -v elapsed="$elapsed" -v node="$node" -v rss="$rss" '
 			/^replay_cache_entries/ { entries = $NF }
 			/^replay_cache_retained_bytes/ { retained = $NF }
 			/^block_processing_active/ { active = $NF }
 			/^block_processing_parallel_limit/ { limit = $NF }
+			/^block_processing_queue_pending/ { queued = $NF }
 			END {
 				if (entries == "") entries = "-"
 				if (retained == "") retained = "-"
 				if (active == "") active = "-"
 				if (limit == "") limit = "-"
-				printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", elapsed, node, rss, entries, retained, active, limit
+				if (queued == "") queued = "-"
+				printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", elapsed, node, rss, entries, retained, active, limit, queued
 			}' >>"$tsv"
 	done < <(docker ps --filter 'name=rnode.' --format '{{.Names}}' 2>/dev/null || true)
 }

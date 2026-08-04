@@ -48,6 +48,7 @@ replay_cache_entries{source="casper"} 12
 replay_cache_retained_bytes{source="casper"} 1048576
 block_processing_active{source="block-processor"} 2
 block_processing_parallel_limit{source="block-processor"} 2
+block_processing_queue_pending{source="block-processor"} 7
 METRICS
 SH
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
@@ -72,13 +73,13 @@ done
 test -e "$TMP/output/iteration-00001-docker/.started"
 for _ in $(seq 1 20); do
 	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
-		grep -q 'test.validator1.*12.*1048576.*2.*2' \
+		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
 	sleep 0.25
 done
 test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
 test -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"
-grep -q 'test.validator1.*12.*1048576.*2.*2' \
+grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 	"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv"
 printf '%s\n' 'injected orchestrator host guardian breach' \
 	>"$TMP/output/host-guardian-breach.txt"

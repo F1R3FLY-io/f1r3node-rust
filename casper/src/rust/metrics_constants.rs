@@ -59,6 +59,7 @@ pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transiti
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
+pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
