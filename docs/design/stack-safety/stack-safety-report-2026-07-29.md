@@ -152,7 +152,7 @@ instrument; the instrument per family is named in §4.4):
 | cold-store **encoder** (release, in-binary control) | ~224 B/level | **0** | class change |
 | `inj_attempt` metering handshake (release) | 2,852 B/level, $`D_{\max}=729`$ | **0**, $`D_{\max} \geq 1{,}048{,}576`$ | $`\geq 1438\times`$ |
 | gRPC ingress teardown (release) | 96.0 B/level, $`D_{\max}=21{,}781`$ | **0**, no ceiling $`< 262{,}144`$ | $`\geq 12\times`$ |
-| metered wrapper `subst_and_charge` (release) | 2,852 B/level | **146** B/level | $`19.5\times`$ |
+| metered wrapper `subst_and_charge` (release) | 2,852 B/level | **0** B/level after generated `Clone` + `encoded_len`; intermediate 146 | class change |
 | end-to-end `plain_deploy` on a 2 MiB worker | 286 levels | **6,831** levels | $`23.9\times`$ |
 | end-to-end `env_get_deploy` — **the control** | 283 levels | **274** levels | **$`\approx 1\times`$, as predicted** |
 | cold-store encode, production-weighted wall clock | 1.0 (derived encoder) | **faster**, bracketed $`1.07\times`$–$`1.19\times`$ (paired instrument floor 1.073×) | see §5.4.1 — sign confirmed by two instruments; magnitude a bracket, not an interval |
@@ -387,6 +387,8 @@ with each $`S`$ obtained by **bisecting the thread's `stack_size`** to a 4,096 B
 | **value stack** | a companion `Vec` holding *completed* children, parked until their parent's combining step is reached. Only *bottom-up* (post-order) drivers need one. |
 | **fire-and-forget** | of a spawned asynchronous task: the spawner does **not** hold or await its `JoinHandle`. Completion and errors are conveyed by some other channel — here an atomic counter and an error sink (§5.2.2). |
 | **SCC** | strongly connected component of the call graph or of the type-child graph; the unit at which a conversion must be scoped, because converting a proper subset leaves the class intact. |
+| **ASLR** | address-space layout randomization, the operating-system mechanism that varies process memory addresses between runs. It can shift a stack probe by a small fixed amount without producing growth with input depth. |
+| **CLI** | command-line interface, here the user-facing executable path whose observation rendering must share the same stack-safe traversal as the library/runtime path. |
 | **converted / tripwire** | the two registers in `rholang/tests/stack_depth_gate.rs`. *Converted* = measured $`B = 0`$ at both ladder ends in both profiles. *Tripwire* = measured $`B > 0`$, held under a ceiling. |
 | **anti-vacuity** | a check that the *checker* can fail: a control the assertion must reject, run in-suite, so that a green result cannot be produced by a probe that measures nothing. |
 | **$`D_{\max}`$** | the greatest nesting depth a traversal survives on a given stack: $`\lfloor (S_{\text{avail}} - c)/B \rfloor`$. |
@@ -2479,7 +2481,7 @@ The obligations differ by traversal and were derived per traversal rather than a
 * **The codecs** owe *byte identity* on the write side and *language identity* — including the `Err` half — on the read side.
 * **The async driver** owes COMM order, checked by a differential on the ordered `(BillableKind, weight)` trace, not on a final state.
 
-★ **And `encoded_len` is called out as the one member not covered by the neutrality argument**, because **its return value *is* the charge**. That is why `subst_and_charge` remains sloped at 146 B/level after a $`19.5\times`$ improvement, and why it will stay sloped.
+★ **`encoded_len` is the one member for which neutrality cannot be inferred from control flow**, because **its return value *is* the charge**. At `64a5d2bc`, before the generated `prost::Message` family landed, that left `subst_and_charge` at 146 B/level after a $`19.5\times`$ improvement. The final schema-generated implementation delegates `encoded_len` to the memoized bottom-up protobuf PDA and is checked against both the recursive oracle and emitted byte length. The live `subst_and_charge` ladder is therefore **0 B/level**; 146 is an intermediate historical measurement, not a residual.
 
 ### 6.4 ★ The write/read asymmetry — one section, because it is one class
 

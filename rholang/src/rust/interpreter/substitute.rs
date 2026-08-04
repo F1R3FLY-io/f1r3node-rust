@@ -72,9 +72,9 @@ impl Substitute {
     ///
     /// Until 2026-07-28 this took `term: &A` and opened with `term.clone()`, so
     /// **every substitution deep-copied its input** — on the ordinary send path,
-    /// with no binder and no COMM. `<Par as Clone>::clone` is Θ(depth) (2,852
-    /// B/level release, 15,872 debug, measured by `stack_depth_gate`'s `clone`
-    /// and `subst_and_charge` subjects, which agree to the byte), and end to end
+    /// with no binder and no COMM. `<Par as Clone>::clone` was then Θ(depth)
+    /// (2,852 B/level release, 15,872 debug, measured by `stack_depth_gate`'s
+    /// `clone` and `subst_and_charge` subjects, which agreed to the byte), and end to end
     /// through the runtime on a 2 MiB tokio worker that copy measured 7,253
     /// B/level and capped a deploy at ~286 levels of nesting
     /// (`rholang/tests/deploy_depth_ceiling.rs`). A deeper deploy did not fail:
@@ -83,7 +83,7 @@ impl Substitute {
     /// (`casper/.../runtime.rs` installs `Cost::unsafe_max()` for liveness), and
     /// therefore a consensus-liveness defect rather than a robustness nit.
     ///
-    /// ## What the repair bought, measured
+    /// ## What the first repair bought, measured
     ///
     /// | measurement                          | before | after | factor |
     /// |--------------------------------------|-------:|------:|-------:|
@@ -92,13 +92,13 @@ impl Substitute {
     /// | `plain_deploy` max depth, 2 MiB worker|    286 | 6,831 | 23.9×  |
     /// | `env_get_deploy` max depth, same      |    283 |   283 | **1×** |
     ///
-    /// ⚠⚠ **The last row is not a footnote.** A deploy that receives a deep value
-    /// over a channel is bounded by `Env::get`'s clone in `eval_var`
-    /// (`rho-pure-eval/src/env.rs`) and again in `EnvView::get`
-    /// (`substitute_drive.rs`), at 7,247 B/level — a copy documented in both
-    /// places as un-removable, because *the copy IS the meaning of
-    /// substitution*. Nothing in this change touches it. Reporting the 23.9×
-    /// without the 1× would be a false account of what a node can now accept.
+    /// Those are historical intermediate figures. The semantic copy on the
+    /// `Env::get` path cannot be deleted because the copy is part of
+    /// substitution, so the final repair made generated `<Par as Clone>::clone`
+    /// itself stack-safe. Generated `prost::Message::encoded_len` now delegates
+    /// to the memoized bottom-up protobuf PDA as well. Consequently both paths
+    /// are in the zero-slope converted register; their linear copying/length work
+    /// remains visible on the heap/time axes rather than on the native stack.
     ///
     /// # Why by-value is EXACTLY equivalent, charge for charge
     ///
@@ -115,11 +115,9 @@ impl Substitute {
     /// Hoisting that read above the `match` buys the same number without the
     /// copy, and it is the same number rather than merely a similar one:
     /// [`prost::Message::encoded_len`] takes `&self`, and the one hand-written
-    /// override in the family — `EPathMap::encoded_len`
-    /// (`models/src/rust/rhoapi_ext.rs`) — only *reads* `self.intern.get()` and
-    /// never fills it, falling back to a pure field walk when the cell is empty.
-    /// It is a pure function of the value, so it is bit-identical before or
-    /// after the move.
+    /// generated implementation delegates to a pure memoized bottom-up length
+    /// pass. It does not mutate the term, so the value is bit-identical before
+    /// or after the move.
     ///
     /// `.max(1)` is retained for the same reason it was there: `reserve_cost`
     /// rejects a non-positive charge with `BugFoundError` (`metering.rs`), so a
@@ -138,18 +136,17 @@ impl Substitute {
     /// the input: after the move the input is gone, so the number has to be
     /// taken while it still exists.
     ///
-    /// It is not extra *stack*, though: the two walks are sequential, so the
-    /// peak is $`\max`$ of the two and not their sum — the same argument
-    /// `stack_depth_gate` makes for the `normalize_drop` composition.
+    /// It is not extra *stack*, though: both walks use the generated PDA and are
+    /// sequential, so native-stack use is constant in input depth.
     ///
     /// # ⚠⚠ Calling `encoded_len` earlier is safe. CHANGING it is not
     ///
-    /// The audit's §8.2 names `encoded_len` as the one exception in the
-    /// Θ(depth) family that must NOT be converted: its return value **is** the
-    /// charge, so an off-by-one in it is not a performance regression but a
-    /// consensus fork — two nodes would disagree about what a deploy cost. This
-    /// commit moves a CALL, not the callee. The distinction is the difference
-    /// between a scheduling change and a protocol change.
+    /// `encoded_len`'s return value **is** the charge, so its later PDA
+    /// conversion required result-equivalence evidence: an off-by-one would be a
+    /// consensus fork, not a performance regression. The current generated
+    /// implementation is checked against the recursive oracle and protobuf
+    /// output length; this method still changes neither charge count, order, nor
+    /// value.
     pub fn substitute_and_charge<A>(
         &self,
         term: A,

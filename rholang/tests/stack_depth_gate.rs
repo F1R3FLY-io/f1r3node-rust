@@ -1521,32 +1521,30 @@ fn substitute_no_sort_body(depth: usize) {
 /// `clone` subject's constant to the byte — the wrapper's entire slope was the
 /// copy.
 ///
-/// The wrapper now takes its term **by value**, and this subject moves `t` into
-/// it:
+/// The wrapper then took its term **by value**, and this subject moved `t` into
+/// it. The table records that intermediate state before the generated
+/// `prost::Message` PDA replaced recursive `encoded_len`:
 ///
 /// | profile | before          | after         | factor |
 /// |---------|-----------------|---------------|-------:|
 /// | release |  2,852 B/level  |   146 B/level | 19.5×  |
 /// | debug   | 15,872 B/level  | 1,462 B/level | 10.9×  |
 ///
-/// End to end, on the 2 MiB production worker, `plain_deploy` went from a
-/// maximum nesting depth of **286 to 6,831** — 23.9×.
+/// End to end at that intermediate commit, on the 2 MiB production worker,
+/// `plain_deploy` went from a maximum nesting depth of **286 to 6,831** —
+/// 23.9×.
 ///
-/// ⚠ `env_get_deploy` did NOT move: **283 before, 283 after.** A deploy that
-/// receives a deep value over a channel is bounded by `Env::get`'s clone, which
-/// is [`substitute_deep_binding_body`]'s subject and is documented there as
-/// un-removable — the copy IS the meaning of substitution. This subject's
-/// improvement is real and it is not that one.
+/// At that same intermediate commit, `env_get_deploy` did not move: **283
+/// before, 283 after**. Its semantic copy remained, so the later repair had to
+/// make `<Par as Clone>::clone` itself stack-safe rather than delete the copy.
 ///
-/// The subject stays, because a subject that is deleted when its defect is fixed
-/// cannot notice the defect coming back.
-///
-/// It is in [`TRIPWIRE_DEPTH`] and not in [`CONVERTED_DEPTH`] because it is
-/// composed of members whose audited disposition is Leg-1: `<Par as Clone>::clone`
-/// (row 5) and `EPathMap::encoded_len` (row 7). Removing the clone removed a
-/// CALL SITE; neither derived traversal goes away, and `encoded_len` — which the
-/// wrapper still walks, and must — keeps the subject sloped. A traversal enters
-/// `CONVERTED_DEPTH` only by being converted, never by having a ceiling lowered.
+/// The subject stays after conversion so the defect cannot return unnoticed.
+/// It is now in [`CONVERTED_DEPTH`], not [`TRIPWIRE_DEPTH`]: the generated
+/// `prost::Message::encoded_len` implementation delegates to the memoized
+/// bottom-up protobuf PDA, and the generated `Clone` implementation breaks the
+/// recursive schema cycle at its feedback vertex. The live 4 → 4,096 ladder is
+/// flat; the 146 / 1,462 B-per-level figures above are retained only as the
+/// measured intermediate state.
 ///
 /// ## ★★ Why this body is written EXACTLY like this
 ///
@@ -3668,16 +3666,11 @@ fn theta_depth_tripwire() {
     //
     //   subst_and_charge   15,872 -> 1,462 B/level debug   2,852 -> 146 release
     //
-    // ⚠ It STAYS in `TRIPWIRE_DEPTH`, and lowering a ceiling is not a promotion.
-    // `CONVERTED_DEPTH`'s admission rule is stated where that list is defined: a
-    // traversal enters only by being CONVERTED, never by having a ceiling
-    // lowered. What is left here is `encoded_len` — audit row 7, 1,932 B/level
-    // debug / 302 release as the `encode` subject measures it — which the wrapper
-    // must still walk because its return value IS the charge. This subject is
-    // sloped and will stay sloped.
-    //
-    // The new ceiling is ~2x the measured value in each profile, the same margin
-    // every other member of this list carries.
+    // That was an INTERMEDIATE state, not the final disposition. The generated
+    // `prost::Message` implementation now routes `encoded_len` through the
+    // memoized bottom-up protobuf PDA, and generated `Clone` breaks the recursive
+    // schema cycle. `subst_and_charge` therefore moved to `CONVERTED_DEPTH` and
+    // is held to the full 4 → 4,096 zero-slope ladder. No ceiling remains.
     //
     // ★ **Shown RED at the value it exists to refuse.** With the subject body
     // reverted to a copying call — `substitute_and_charge(t.clone(), …)`, which
