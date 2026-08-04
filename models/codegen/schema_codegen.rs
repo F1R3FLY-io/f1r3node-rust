@@ -8777,7 +8777,7 @@ fn emit_schema_meta_source(
 }
 
 // ===========================================================================
-// §8  ★★ THE PROTOBUF DESERIALIZER — stage S0: the unknown-field skipper
+// §8  ★★ THE PROTOBUF DESERIALIZER — iterative skipper + schema PDA
 // ===========================================================================
 //
 // ## Why this output is GENERATED and not a checked-in source file
@@ -8785,27 +8785,18 @@ fn emit_schema_meta_source(
 // Fifty-seven `rhoapi` messages are regenerated from the descriptor on every
 // build. A hand-written decoder table drifts from the derive silently — the
 // derive gains a field, the hand table does not, and the divergence surfaces as
-// a mis-decode rather than as a compile error. Every other driver in this
-// campaign is therefore emitted from the ONE descriptor walk above, and the
-// deserializer joins them from its FIRST stage rather than being converted into
-// a renderer after two thousand hand-written lines exist.
-//
-// S0 emits exactly one function and it is SCHEMA-INDEPENDENT: it takes a wire
-// type and a buffer and consults no field table. It is emitted here all the
-// same, because the alternative is to check a file into
-// `models/src/rust/rholang/` and then move it out again at S1 — and because a
-// renderer that starts as a constant and grows arms is a strictly smaller
-// change than a source file that has to become a renderer.
-//
-// ⚠ It is DORMANT. Nothing calls `skip_unknown_field` yet; the per-message
-// `merge_field` arms that will are S1's deliverable, and prost's own
-// `Message::merge_field` continues to serve every decode in the meantime.
+// a mis-decode rather than as a compile error. The iterative unknown-field
+// skipper and the schema-dependent heterogeneous decoder PDA are therefore
+// emitted together from the same descriptor walk as the other generated
+// drivers. Production `Message::merge_field` implementations delegate to this
+// machine; this module is not a dormant staging artefact.
 
 /// Emit the protobuf deserializer's runtime support.
 ///
-/// Takes no descriptor argument at S0 because the one function it emits is
-/// schema-independent. S1 gives it the same `(messages, resolved, oneofs,
-/// extern_set)` the other emitters take, and appends the per-message arms.
+/// The skipper itself is schema-independent. The same emission pass appends
+/// per-message arms from `(messages, resolved, oneofs, extern_set)`, so the
+/// unknown-field and known-field walks cannot drift into separate generated
+/// modules or lifecycle stages.
 fn emit_protobuf_decoder_source(
     messages: &[Message<'_>],
     resolved: &[(usize, Vec<Field>)],
@@ -8819,12 +8810,13 @@ fn emit_protobuf_decoder_source(
 // `OUT_DIR` while the build reports success.
 //
 // ===========================================================================
-// THE PROTOBUF DESERIALIZER, stage S0 — the UNKNOWN-FIELD SKIPPER
+// THE GENERATED PROTOBUF DESERIALIZER — ITERATIVE SKIPPER + MESSAGE PDA
 // ===========================================================================
 //
-// ⚠ NOTHING CALLS THIS YET. It is the first piece of the generated protobuf
-// deserializer, landed on its own so that its exactness against prost can be
-// argued and MEASURED before any decode path depends on it.
+// This is production code. Generated `Message::merge_field` implementations
+// enter the heterogeneous decoder PDA below, whose unknown-tag arm calls
+// `skip_unknown_field`. Exactness against prost is retained as an independent
+// differential even though the recursive prost walk is no longer production.
 //
 // ## What it is
 //
