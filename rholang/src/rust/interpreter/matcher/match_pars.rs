@@ -18,22 +18,11 @@ pub fn compare_sends_without_locally_free(a: &Send, b: &Send) -> bool {
 }
 
 pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
-    a.binds
-        .iter()
-        .zip(b.binds.iter())
-        .all(|(t, p)| compare_receive_binds_without_locally_free(t, p))
-        && match_pars(a.body.as_ref().unwrap(), b.body.as_ref().unwrap())
-        && a.persistent == b.persistent
-        && a.peek == b.peek
-        && a.bind_count == b.bind_count
-        && a.connective_used == b.connective_used
+    match_pars_drive(MatchWork::Receive(a, b))
 }
 
 pub fn compare_news_without_locally_free(a: &New, b: &New) -> bool {
-    a.bind_count == b.bind_count
-        && match_pars(a.p.as_ref().unwrap(), b.p.as_ref().unwrap())
-        && a.uri == b.uri
-        && a.injections == b.injections
+    match_pars_drive(MatchWork::New(a, b))
 }
 
 pub fn compare_exprs_without_locally_free(a: &Expr, b: &Expr) -> bool {
@@ -57,62 +46,148 @@ pub fn compare_connectives_without_locally_free(a: &Connective, b: &Connective) 
 }
 
 pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBind) -> bool {
-    a.patterns
-        .iter()
-        .zip(b.patterns.iter())
-        .all(|(t, p)| match_pars(t, p))
-        && match_pars(a.source.as_ref().unwrap(), b.source.as_ref().unwrap())
-        && a.remainder == b.remainder
-        && a.free_count == b.free_count
+    match_pars_drive(MatchWork::ReceiveBind(a, b))
 }
 
 pub fn match_pars(target: &Par, pattern: &Par) -> bool {
-    target.sends.len() == pattern.sends.len()
-        && target.receives.len() == pattern.receives.len()
-        && target.news.len() == pattern.news.len()
-        && target.exprs.len() == pattern.exprs.len()
-        && target.matches.len() == pattern.matches.len()
-        && target.unforgeables.len() == pattern.unforgeables.len()
-        && target.bundles.len() == pattern.bundles.len()
-        && target
-            .sends
-            .iter()
-            .zip(pattern.sends.iter())
-            .all(|(t, p)| compare_sends_without_locally_free(t, p))
-        && target
-            .receives
-            .iter()
-            .zip(pattern.receives.iter())
-            .all(|(t, p)| compare_receives_without_locally_free(t, p))
-        && target
-            .news
-            .iter()
-            .zip(pattern.news.iter())
-            .all(|(t, p)| compare_news_without_locally_free(t, p))
-        && target
-            .exprs
-            .iter()
-            .zip(pattern.exprs.iter())
-            .all(|(t, p)| compare_exprs_without_locally_free(t, p))
-        && target
-            .matches
-            .iter()
-            .zip(pattern.matches.iter())
-            .all(|(t, p)| compare_matches_without_locally_free(t, p))
-        && target
-            .unforgeables
-            .iter()
-            .zip(pattern.unforgeables.iter())
-            .all(|(t, p)| compare_unforgeables_without_locally_free(t, p))
-        && target
-            .bundles
-            .iter()
-            .zip(pattern.bundles.iter())
-            .all(|(t, p)| compare_bundles_without_locally_free(t, p))
-        && target
-            .connectives
-            .iter()
-            .zip(pattern.connectives.iter())
-            .all(|(t, p)| compare_connectives_without_locally_free(t, p))
-        && target.connective_used == pattern.connective_used
+    match_pars_drive(MatchWork::Par(target, pattern))
+}
+
+/// The recursive edges of the concrete fast path. All other fields are either
+/// scalars or use the schema-generated stack-safe equality PDA.
+enum MatchWork<'a> {
+    Par(&'a Par, &'a Par),
+    Receive(&'a Receive, &'a Receive),
+    New(&'a New, &'a New),
+    ReceiveBind(&'a ReceiveBind, &'a ReceiveBind),
+}
+
+fn match_pars_drive(root: MatchWork<'_>) -> bool {
+    let mut work = vec![root];
+    while let Some(task) = work.pop() {
+        match task {
+            MatchWork::Par(target, pattern) => {
+                if target.sends.len() != pattern.sends.len()
+                    || target.receives.len() != pattern.receives.len()
+                    || target.news.len() != pattern.news.len()
+                    || target.exprs.len() != pattern.exprs.len()
+                    || target.matches.len() != pattern.matches.len()
+                    || target.unforgeables.len() != pattern.unforgeables.len()
+                    || target.bundles.len() != pattern.bundles.len()
+                    || target.connective_used != pattern.connective_used
+                    || !target
+                        .sends
+                        .iter()
+                        .zip(&pattern.sends)
+                        .all(|(target, pattern)| {
+                            compare_sends_without_locally_free(target, pattern)
+                        })
+                    || !target
+                        .exprs
+                        .iter()
+                        .zip(&pattern.exprs)
+                        .all(|(target, pattern)| {
+                            compare_exprs_without_locally_free(target, pattern)
+                        })
+                    || !target
+                        .matches
+                        .iter()
+                        .zip(&pattern.matches)
+                        .all(|(target, pattern)| {
+                            compare_matches_without_locally_free(target, pattern)
+                        })
+                    || !target.unforgeables.iter().zip(&pattern.unforgeables).all(
+                        |(target, pattern)| {
+                            compare_unforgeables_without_locally_free(target, pattern)
+                        },
+                    )
+                    || !target
+                        .bundles
+                        .iter()
+                        .zip(&pattern.bundles)
+                        .all(|(target, pattern)| {
+                            compare_bundles_without_locally_free(target, pattern)
+                        })
+                    || !target.connectives.iter().zip(&pattern.connectives).all(
+                        |(target, pattern)| {
+                            compare_connectives_without_locally_free(target, pattern)
+                        },
+                    )
+                {
+                    return false;
+                }
+                work.extend(
+                    target
+                        .news
+                        .iter()
+                        .zip(&pattern.news)
+                        .rev()
+                        .map(|(target, pattern)| MatchWork::New(target, pattern)),
+                );
+                work.extend(
+                    target
+                        .receives
+                        .iter()
+                        .zip(&pattern.receives)
+                        .rev()
+                        .map(|(target, pattern)| MatchWork::Receive(target, pattern)),
+                );
+            }
+            MatchWork::Receive(target, pattern) => {
+                if target.persistent != pattern.persistent
+                    || target.peek != pattern.peek
+                    || target.bind_count != pattern.bind_count
+                    || target.connective_used != pattern.connective_used
+                {
+                    return false;
+                }
+                work.push(MatchWork::Par(
+                    target.body.as_ref().expect("Receive.body (target)"),
+                    pattern.body.as_ref().expect("Receive.body (pattern)"),
+                ));
+                work.extend(
+                    target
+                        .binds
+                        .iter()
+                        .zip(&pattern.binds)
+                        .rev()
+                        .map(|(target, pattern)| MatchWork::ReceiveBind(target, pattern)),
+                );
+            }
+            MatchWork::New(target, pattern) => {
+                if target.bind_count != pattern.bind_count
+                    || target.uri != pattern.uri
+                    || target.injections != pattern.injections
+                {
+                    return false;
+                }
+                work.push(MatchWork::Par(
+                    target.p.as_ref().expect("New.p (target)"),
+                    pattern.p.as_ref().expect("New.p (pattern)"),
+                ));
+            }
+            MatchWork::ReceiveBind(target, pattern) => {
+                if target.remainder != pattern.remainder || target.free_count != pattern.free_count
+                {
+                    return false;
+                }
+                work.push(MatchWork::Par(
+                    target.source.as_ref().expect("ReceiveBind.source (target)"),
+                    pattern
+                        .source
+                        .as_ref()
+                        .expect("ReceiveBind.source (pattern)"),
+                ));
+                work.extend(
+                    target
+                        .patterns
+                        .iter()
+                        .zip(&pattern.patterns)
+                        .rev()
+                        .map(|(target, pattern)| MatchWork::Par(target, pattern)),
+                );
+            }
+        }
+    }
+    true
 }

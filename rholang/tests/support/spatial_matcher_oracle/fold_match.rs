@@ -148,15 +148,20 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
     fn free_check(
         &self,
         trem: &[MatchCase],
-        _level: i32,
+        level: i32,
         mut acc: Vec<MatchCase>,
     ) -> Option<Vec<MatchCase>> {
-        for item in trem {
-            if !self.locally_free(item.to_owned(), 0).is_empty() {
-                return None;
+        match trem {
+            &[] => Some(acc),
+
+            [item, rem @ ..] => {
+                if self.locally_free(item.to_owned(), 0).is_empty() {
+                    acc.push(item.clone());
+                    self.free_check(rem, level, acc)
+                } else {
+                    None
+                }
             }
-            acc.push(item.clone());
         }
-        Some(acc)
     }
 }

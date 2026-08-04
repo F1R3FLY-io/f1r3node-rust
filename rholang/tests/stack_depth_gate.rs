@@ -73,7 +73,7 @@ use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_freevar_par, new_gint_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, SignedProcess};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -104,6 +104,27 @@ fn elist(ps: Vec<Par>) -> Par {
 
 /// `[[[…[0]…]]]` with `depth` bracket levels — the reported shape.
 fn nested_list(depth: usize) -> Par { nested_list_leaf(depth, 0) }
+
+/// The non-vacuous spatial pattern: a free leaf and a true cached
+/// `connective_used` bit at every enclosing list.
+fn nested_list_pattern(depth: usize) -> Par {
+    let mut p = new_freevar_par(0, Vec::new());
+    for _ in 0..depth {
+        p = models::par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![p],
+                    locally_free: Vec::new(),
+                    connective_used: true,
+                    remainder: None,
+                })),
+            }],
+            connective_used: true,
+            ..Default::default()
+        };
+    }
+    p
+}
 
 /// [`nested_list`] with the LEAF integer chosen.
 ///
@@ -604,6 +625,8 @@ fn subject(name: &str) -> fn(usize) {
         "bincode_ser_derived" => bincode_ser_derived_body,
         "bincode_de" => bincode_de_body,
         "normalize" => normalize_body,
+        "spatial_binding" => spatial_binding_body,
+        "spatial_concrete_binders" => spatial_concrete_binders_body,
         // -------- width axis --------
         "substitute_wide" => substitute_wide_body,
         "sort_wide" => sort_wide_body,
@@ -883,6 +906,10 @@ const CONVERTED_DEPTH: &[&str] = &[
     // validation are linear in depth and need no capped ladder or large stack.
     "clone_pathmap_chain",
     "pathmap_chain_drop",
+    // Matcher SCC closure. The first forces binding/connective semantics; the
+    // second forces the formerly recursive concrete Receive/New fast path.
+    "spatial_binding",
+    "spatial_concrete_binders",
 ];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
@@ -3104,6 +3131,46 @@ fn free_check_body(width: usize) {
     assert_carries("the free_check OUTPUT's element count", out.len(), width);
     dismantle_all(out);
     dismantle_all(trem);
+}
+
+/// Binding-path matcher subject. A concrete pattern would bypass the semantic
+/// matcher through `match_pars`, so the free leaf is load-bearing.
+fn spatial_binding_body(depth: usize) {
+    let target = nested_list(depth);
+    let pattern = nested_list_pattern(depth);
+    assert_carries("the spatial target's nesting", par_depth(&target), depth);
+    assert_carries("the spatial pattern's nesting", par_depth(&pattern), depth);
+    let mut context = SpatialMatcherContext::new();
+    let matched = context.spatial_match_result(target, pattern);
+    assert!(matched.is_some(), "the binding matcher refused its witness");
+    assert!(
+        context.free_map.contains_key(&0),
+        "the binding witness completed without binding level zero"
+    );
+    std::mem::forget(context);
+}
+
+/// Concrete fast-path subject. Alternating New/Receive/ReceiveBind is the
+/// schema shape on which `match_pars` formerly called itself.
+fn spatial_concrete_binders_body(depth: usize) {
+    let target = nested_binders(depth);
+    let pattern = nested_binders(depth);
+    assert_carries(
+        "the concrete spatial target's binder nesting",
+        binder_depth(&target),
+        depth,
+    );
+    assert_carries(
+        "the concrete spatial pattern's binder nesting",
+        binder_depth(&pattern),
+        depth,
+    );
+    let mut context = SpatialMatcherContext::new();
+    assert!(
+        context.spatial_match_result(target, pattern).is_some(),
+        "the concrete binder witness did not match"
+    );
+    std::mem::forget(context);
 }
 
 /// ⚠ `rho-pure-eval::eval_with`'s OWN Θ(depth) SCC — a separate crate, and one

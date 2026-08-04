@@ -555,6 +555,21 @@ fn run_probe(what: &str, depth: usize) {
             );
             std::mem::forget(ctx);
         }
+        "spatial_concrete_binders" => {
+            // Concrete patterns take the `match_pars` fast path. Alternating
+            // New/Receive/ReceiveBind nodes is the shape that forced its old
+            // direct Par recursion; a list ladder alone only reaches the
+            // generated equality PDA and would be vacuous for that edge.
+            let target = nested_binders(depth);
+            let pattern = nested_binders(depth);
+            let mut ctx = SpatialMatcherContext::new();
+            let r = ctx.spatial_match_result(target, pattern);
+            assert!(
+                r.is_some(),
+                "stack_depth_probe: concrete binder probe did not match"
+            );
+            std::mem::forget(ctx);
+        }
 
         // ---- the pretty printer ----
         "pretty" => {
