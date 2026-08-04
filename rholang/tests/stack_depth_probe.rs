@@ -45,13 +45,15 @@ use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_freevar_par, new_gint_par};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
+use rholang::rust::interpreter::matcher::par_count::ParCount;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
@@ -86,6 +88,27 @@ fn nested_list(depth: usize) -> Par {
     let mut p = new_gint_par(0, vec![], false);
     for _ in 0..depth {
         p = elist(vec![p]);
+    }
+    p
+}
+
+/// A list ladder whose leaf is a free variable and whose cached
+/// `connective_used` bit is therefore true at every enclosing level.
+///
+/// `nested_list(depth)` on both sides exercises only `match_pars`, because the
+/// pattern is concrete. This shape forces the production spatial matcher down
+/// its binding path at every level and is the anti-vacuity counterpart to the
+/// historical `spatial` probe.
+fn nested_list_pattern(depth: usize) -> Par {
+    let mut p = new_freevar_par(0, Vec::new());
+    for _ in 0..depth {
+        p = expr_par(ExprInstance::EListBody(EList {
+            ps: vec![p],
+            locally_free: vec![],
+            connective_used: true,
+            remainder: None,
+        }));
+        p.connective_used = true;
     }
     p
 }
@@ -521,6 +544,17 @@ fn run_probe(what: &str, depth: usize) {
             );
             std::mem::forget(ctx);
         }
+        "spatial_binding" => {
+            let target = nested_list(depth);
+            let pattern = nested_list_pattern(depth);
+            let mut ctx = SpatialMatcherContext::new();
+            let r = ctx.spatial_match_result(target, pattern);
+            assert!(
+                r.is_some(),
+                "stack_depth_probe: binding spatial probe did not match"
+            );
+            std::mem::forget(ctx);
+        }
 
         // ---- the pretty printer ----
         "pretty" => {
@@ -686,13 +720,34 @@ fn run_probe(what: &str, depth: usize) {
             std::mem::forget(t);
         }
         "min_max_par" => {
-            use rholang::rust::interpreter::matcher::par_count::ParCount;
             // Recursion here follows `connectives`, never `exprs`.
             let t = nested_conn_and(depth);
             let pc = ParCount::new(&Par::default());
             let (lo, hi) = pc.min_max_par(t);
             std::mem::forget(lo);
             std::mem::forget(hi);
+        }
+        "sub_pars_width" => {
+            // Force the old `worker` down one call per sibling while keeping
+            // the result population to exactly one subset: choose all `N`
+            // expressions, with minimum == maximum == N.
+            let mut par = Par::default();
+            par.exprs = (0..depth)
+                .map(|i| {
+                    new_gint_par(i as i64, Vec::new(), false)
+                        .exprs
+                        .pop()
+                        .expect("a GInt Par carries one Expr")
+                })
+                .collect();
+            let zero = ParCount::new(&Par::default());
+            let mut exact = zero.clone();
+            exact.exprs = depth;
+            let subsets = sub_pars(&par, &exact, &exact, &zero, &zero).collect::<Vec<_>>();
+            assert_eq!(subsets.len(), 1, "the exact-width subset is unique");
+            assert_eq!(subsets[0].0.exprs.len(), depth);
+            std::mem::forget(subsets);
+            std::mem::forget(par);
         }
         "free_check" => {
             // WIDTH axis: `free_check` recurses on the slice TAIL, so its

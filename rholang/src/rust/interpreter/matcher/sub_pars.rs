@@ -75,84 +75,131 @@ pub fn sub_pars(
         min_size: isize,
         max_size: isize,
     ) -> Vec<(Vec<A>, Vec<A>)> {
-        fn counted_max_subsets<A: Clone>(
-            _as: Vec<A>,
-            max_size: isize,
-        ) -> Vec<(Vec<A>, Vec<A>, isize)> {
-            match _as.split_first() {
-                None => vec![(_as.to_vec(), _as.to_vec(), 0)],
-                Some((head, rem)) => {
-                    let mut results = vec![(_as[0..0].to_vec(), _as.clone(), 0)];
+        type Counted<A> = (Vec<A>, Vec<A>, isize);
 
-                    let counted_tail = counted_max_subsets(rem.to_vec(), max_size);
+        /// Bottom-up form of `counted_max_subsets`. Processing suffixes from
+        /// right to left emits the same result order as the recursive
+        /// definition without retaining one native frame per element.
+        fn counted_max_subsets<A: Clone>(_as: &[A], max_size: isize) -> Vec<Counted<A>> {
+            let mut child = vec![(Vec::new(), Vec::new(), 0)];
+            for start in (0.._as.len()).rev() {
+                let head = &_as[start];
+                let mut results = vec![(Vec::new(), _as[start..].to_vec(), 0)];
+                for (mut tail, mut complement, count) in child {
+                    if count == max_size {
+                        complement.insert(0, head.clone());
+                        results.push((tail, complement, count));
+                    } else if tail.is_empty() {
+                        tail.insert(0, head.clone());
+                        results.push((tail, complement, 1));
+                    } else {
+                        complement.insert(0, head.clone());
+                        tail.insert(0, head.clone());
+                        results.push((tail.clone(), complement.clone(), count));
+                        results.push((tail, complement, count + 1));
+                    }
+                }
+                child = results;
+            }
+            child
+        }
+
+        enum SubsetWork {
+            Call {
+                start: usize,
+                min_size: isize,
+                max_size: isize,
+            },
+            Combine {
+                head: usize,
+                decr: isize,
+                min_size: isize,
+                max_size: isize,
+            },
+        }
+
+        // Explicit call/return machine for `worker`. A value-stack entry is
+        // exactly the vector one recursive invocation formerly returned.
+        let mut work = vec![SubsetWork::Call {
+            start: 0,
+            min_size,
+            max_size,
+        }];
+        let mut values: Vec<Vec<Counted<A>>> = Vec::new();
+
+        while let Some(task) = work.pop() {
+            match task {
+                SubsetWork::Call {
+                    start: _,
+                    min_size,
+                    max_size,
+                } if max_size < 0 || min_size > max_size => values.push(Vec::new()),
+                SubsetWork::Call {
+                    start,
+                    min_size,
+                    max_size,
+                } if min_size <= 0 => {
+                    if max_size == 0 {
+                        values.push(vec![(Vec::new(), _as[start..].to_vec(), 0)]);
+                    } else {
+                        values.push(counted_max_subsets(&_as[start..], max_size));
+                    }
+                }
+                SubsetWork::Call { start, .. } if start == _as.len() => {
+                    values.push(Vec::new());
+                }
+                SubsetWork::Call {
+                    start,
+                    min_size,
+                    max_size,
+                } => {
+                    let decr = min_size - 1;
+                    work.push(SubsetWork::Combine {
+                        head: start,
+                        decr,
+                        min_size,
+                        max_size,
+                    });
+                    work.push(SubsetWork::Call {
+                        start: start + 1,
+                        min_size: decr,
+                        max_size,
+                    });
+                }
+                SubsetWork::Combine {
+                    head,
+                    decr,
+                    min_size,
+                    max_size,
+                } => {
+                    let counted_tail = values
+                        .pop()
+                        .expect("the subset PDA reduces one child result");
+                    let mut results = Vec::new();
                     for (mut tail, mut complement, count) in counted_tail {
                         if count == max_size {
-                            complement.insert(0, head.clone());
+                            complement.insert(0, _as[head].clone());
                             results.push((tail, complement, count));
-                        } else if tail.is_empty() {
-                            tail.insert(0, head.clone());
-                            results.push((tail, complement, 1));
+                        } else if count == decr {
+                            tail.insert(0, _as[head].clone());
+                            results.push((tail, complement, min_size));
                         } else {
-                            complement.insert(0, head.clone());
-                            tail.insert(0, head.clone());
-
+                            complement.insert(0, _as[head].clone());
+                            tail.insert(0, _as[head].clone());
                             results.push((tail.clone(), complement.clone(), count));
                             results.push((tail, complement, count + 1));
                         }
                     }
-                    results
+                    values.push(results);
                 }
             }
         }
 
-        // This ideally should return type 'Iterator' instead of type 'Vec'
-        fn worker<A: Clone + std::fmt::Debug>(
-            _as: Vec<A>,
-            min_size: isize,
-            max_size: isize,
-        ) -> Vec<(Vec<A>, Vec<A>, isize)> {
-            if max_size < 0 {
-                vec![]
-            } else if min_size > max_size {
-                vec![]
-            } else if min_size <= 0 {
-                if max_size == 0 {
-                    vec![(_as[0..0].to_vec(), _as.clone(), 0)]
-                } else {
-                    counted_max_subsets(_as, max_size)
-                }
-            } else {
-                match _as.split_first() {
-                    None => vec![],
-                    Some((head, rem)) => {
-                        let decr = min_size - 1;
-                        let mut results = vec![];
-
-                        let counted_tail = worker(rem.to_vec(), decr, max_size);
-                        for (mut tail, mut complement, count) in counted_tail {
-                            if count == max_size {
-                                complement.insert(0, head.clone());
-                                results.push((tail, complement, count));
-                            } else if count == decr {
-                                tail.insert(0, head.clone());
-                                results.push((tail, complement, min_size));
-                            } else {
-                                complement.insert(0, head.clone());
-                                tail.insert(0, head.clone());
-
-                                results.push((tail.clone(), complement.clone(), count));
-                                results.push((tail, complement, count + 1));
-                            }
-                        }
-                        results
-                    }
-                }
-            }
-        }
-
-        worker(_as.to_vec(), min_size, max_size)
-            .iter()
-            .map(|x| (x.0.clone(), x.1.clone()))
+        let result = values.pop().expect("the subset PDA emits one root result");
+        debug_assert!(values.is_empty(), "the subset PDA leaves no sibling values");
+        result
+            .into_iter()
+            .map(|(selected, complement, _)| (selected, complement))
             .collect()
     }
 

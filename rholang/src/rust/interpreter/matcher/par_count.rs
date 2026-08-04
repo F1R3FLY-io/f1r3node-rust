@@ -1,5 +1,3 @@
-use models::rust::utils::no_frees;
-
 use super::exports::*;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
@@ -88,97 +86,142 @@ impl ParCount {
     }
 
     pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) {
-        let pc = ParCount::new(&no_frees(&par));
-        let wildcard: bool = par.exprs.iter().any(|expr| match &expr.expr_instance {
-            Some(EVarBody(EVar { v })) => match v.as_ref().unwrap().var_instance {
-                Some(Wildcard(_)) => true,
-                Some(FreeVar(_)) => true,
-                _ => false,
-            },
-
-            _ => false,
-        });
-
-        let min_init = pc.clone();
-        let max_init = if wildcard { self._max() } else { pc };
-
-        par.connectives
-            .iter()
-            .fold((min_init, max_init), |(min, max), con| {
-                let (cmin, cmax) = self.min_max_con(con.clone());
-                (min.add(&cmin), max.add(&cmax))
-            })
+        self.min_max_drive(CountNode::Par(&par))
     }
 
     pub fn min_max_con(&self, con: Connective) -> (ParCount, ParCount) {
-        match con.connective_instance {
-            Some(ConnAndBody(ConnectiveBody { ps })) => {
-                let p_min_max: Vec<(ParCount, ParCount)> =
-                    ps.iter().map(|p| self.min_max_par(p.clone())).collect();
+        self.min_max_drive(CountNode::Connective(&con))
+    }
 
-                let min = p_min_max
-                    .iter()
-                    .fold(self._new(), |acc, (min, _)| acc.max(min));
-                let max = p_min_max
-                    .iter()
-                    .fold(self._max(), |acc, (_, max)| acc.min(max));
-                (min, max)
-            }
+    /// Defunctionalized evaluator for the mutually recursive
+    /// `min_max_par`/`min_max_con` equations.
+    ///
+    /// The old implementation consumed one native frame for every nested
+    /// connective. `CountWork` is the generated-call shape made explicit:
+    /// children are evaluated left-to-right, their values are reduced in one
+    /// heap-resident frame, and the public entry points retain their original
+    /// owned signatures.
+    fn min_max_drive(&self, root: CountNode<'_>) -> (ParCount, ParCount) {
+        let mut work = vec![CountWork::Visit(root)];
+        let mut values = Vec::new();
 
-            Some(ConnOrBody(ConnectiveBody { ps })) => {
-                let p_min_max: Vec<(ParCount, ParCount)> =
-                    ps.iter().map(|p| self.min_max_par(p.clone())).collect();
-
-                let min = p_min_max
-                    .iter()
-                    .fold(self._max(), |acc, (min, _)| acc.min(min));
-                let max = p_min_max
-                    .iter()
-                    .fold(self._new(), |acc, (_, max)| acc.max(max));
-                (min, max)
-            }
-
-            Some(ConnNotBody(_)) => (self._new(), self._max()),
-
-            // Is this the same as 'ConnectiveInstance.Empty' in Scala?
-            None => (self._new(), self._new()),
-
-            Some(VarRefBody(_)) => (self._new(), self._new()),
-
-            Some(ConnBool(_)) => {
-                let mut p_count_1 = self._new();
-                p_count_1.exprs = 1;
-
-                (p_count_1.clone(), p_count_1)
-            }
-
-            Some(ConnInt(_)) => {
-                let mut p_count_1 = self._new();
-                p_count_1.exprs = 1;
-
-                (p_count_1.clone(), p_count_1)
-            }
-
-            Some(ConnString(_)) => {
-                let mut p_count_1 = self._new();
-                p_count_1.exprs = 1;
-
-                (p_count_1.clone(), p_count_1)
-            }
-
-            Some(ConnUri(_)) => {
-                let mut p_count_1 = self._new();
-                p_count_1.exprs = 1;
-
-                (p_count_1.clone(), p_count_1)
-            }
-
-            Some(ConnByteArray(_)) => {
-                let mut p_count_1 = self._new();
-                p_count_1.exprs = 1;
-
-                (p_count_1.clone(), p_count_1)
+        while let Some(task) = work.pop() {
+            match task {
+                CountWork::Visit(CountNode::Par(par)) => {
+                    let free_exprs = par
+                        .exprs
+                        .iter()
+                        .filter(|expr| {
+                            matches!(
+                                expr.expr_instance,
+                                Some(EVarBody(EVar {
+                                    v: Some(Var {
+                                        var_instance: Some(FreeVar(_) | Wildcard(_)),
+                                    }),
+                                }))
+                            )
+                        })
+                        .count();
+                    let wildcard = free_exprs != 0;
+                    let pc = ParCount {
+                        sends: par.sends.len(),
+                        receives: par.receives.len(),
+                        news: par.news.len(),
+                        exprs: par.exprs.len() - free_exprs,
+                        matches: par.matches.len(),
+                        unforgeables: par.unforgeables.len(),
+                        bundles: par.bundles.len(),
+                    };
+                    let base = (pc.clone(), if wildcard { self._max() } else { pc });
+                    work.push(CountWork::ReducePar {
+                        child_count: par.connectives.len(),
+                        base,
+                    });
+                    for connective in par.connectives.iter().rev() {
+                        work.push(CountWork::Visit(CountNode::Connective(connective)));
+                    }
+                }
+                CountWork::Visit(CountNode::Connective(connective)) => {
+                    match connective.connective_instance.as_ref() {
+                        Some(ConnAndBody(ConnectiveBody { ps })) => {
+                            work.push(CountWork::ReduceAnd(ps.len()));
+                            for par in ps.iter().rev() {
+                                work.push(CountWork::Visit(CountNode::Par(par)));
+                            }
+                        }
+                        Some(ConnOrBody(ConnectiveBody { ps })) => {
+                            work.push(CountWork::ReduceOr(ps.len()));
+                            for par in ps.iter().rev() {
+                                work.push(CountWork::Visit(CountNode::Par(par)));
+                            }
+                        }
+                        Some(ConnNotBody(_)) => values.push((self._new(), self._max())),
+                        None | Some(VarRefBody(_)) => {
+                            values.push((self._new(), self._new()));
+                        }
+                        Some(
+                            ConnBool(_) | ConnInt(_) | ConnString(_) | ConnUri(_)
+                            | ConnByteArray(_),
+                        ) => {
+                            let mut one = self._new();
+                            one.exprs = 1;
+                            values.push((one.clone(), one));
+                        }
+                    }
+                }
+                CountWork::ReducePar { child_count, base } => {
+                    let start = values.len() - child_count;
+                    let mut result = base;
+                    for (child_min, child_max) in values.drain(start..) {
+                        result.0 = result.0.add(&child_min);
+                        result.1 = result.1.add(&child_max);
+                    }
+                    values.push(result);
+                }
+                CountWork::ReduceAnd(child_count) => {
+                    let start = values.len() - child_count;
+                    let mut result = (self._new(), self._max());
+                    for (child_min, child_max) in values.drain(start..) {
+                        result.0 = result.0.max(&child_min);
+                        result.1 = result.1.min(&child_max);
+                    }
+                    values.push(result);
+                }
+                CountWork::ReduceOr(child_count) => {
+                    let start = values.len() - child_count;
+                    let mut result = (self._max(), self._new());
+                    for (child_min, child_max) in values.drain(start..) {
+                        result.0 = result.0.min(&child_min);
+                        result.1 = result.1.max(&child_max);
+                    }
+                    values.push(result);
+                }
             }
         }
+
+        let result = values
+            .pop()
+            .expect("the ParCount PDA emits one result for its root");
+        debug_assert!(
+            values.is_empty(),
+            "the ParCount PDA leaves no sibling values"
+        );
+        result
     }
+}
+
+#[derive(Clone, Copy)]
+enum CountNode<'a> {
+    Par(&'a Par),
+    Connective(&'a Connective),
+}
+
+enum CountWork<'a> {
+    Visit(CountNode<'a>),
+    ReducePar {
+        child_count: usize,
+        base: (ParCount, ParCount),
+    },
+    ReduceAnd(usize),
+    ReduceOr(usize),
 }
