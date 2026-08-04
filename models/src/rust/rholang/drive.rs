@@ -484,16 +484,16 @@
 //! `bincode_ser` / `bincode_de` depth subjects in
 //! `rholang/tests/stack_depth_gate.rs`.
 //!
-//! ## ⚠ CORRECTED 2026-07-29 — the `mettail-rust` analogue is NOT this trait
+//! ## ⚠ CORRECTED 2026-08-03 — which `mettail-rust` traversals share this trait
 //!
-//! This paragraph used to claim that *"there is a structurally identical driver
-//! in the `mettail-rust` workspace (`rholang-runtime`)"* and that the two were
-//! deliberate duplicates, "each documented as an instance of the other". **The
-//! second driver does not exist in that form.** A search of that workspace for
-//! `trait Traversal` and for `fn drive<T: Traversal>` returns nothing; there is
-//! no generic trampoline there to be an instance of.
+//! This paragraph first claimed that *"there is a structurally identical driver
+//! in the `mettail-rust` workspace (`rholang-runtime`)"* and then over-corrected
+//! that claim to say that no traversal there uses this trait. The accurate scope
+//! is narrower: there is no second generic trampoline in that repository, but
+//! its observation decoder now implements this repository's [`Traversal`] and
+//! calls [`drive`] directly (`mettail-rust` `19ac6f21`).
 //!
-//! What *does* exist is a **hand-written, monomorphic** machine in
+//! Separately, the Rholang lowering still uses a **hand-written, monomorphic** machine in
 //! `mettail-rust/rholang-runtime/src/rholang_ast.rs`: its own `enum Job<'a>`,
 //! `struct Stacks<'a>` and `fn drive(seed: Seed<'_>, root_env: &BoundEnv) ->
 //! Result<Par, RholangAstLowerError>`, specialised to that crate's AST and
@@ -502,12 +502,13 @@
 //! not the same *code*, so a change here neither propagates to it nor is
 //! constrained by it.
 //!
-//! The repository-independence argument the old paragraph gave is still the
-//! reason there are two machines rather than one: `mettail-rust` depends one-way
-//! on this repo, and a single shared generic trampoline would make every driver
-//! change a cross-repo rebuild. That argument is unaffected by the correction.
-//! What is affected is anybody who read "structurally identical" and expected to
-//! be able to port a fix across by copying a file.
+//! This is a per-traversal engineering choice, not a repository boundary:
+//! `mettail-rust` already depends one-way on this repository, so a borrowing
+//! traversal whose node/value/continuation shapes fit this interface can reuse
+//! it, as the observation decoder does. A specialised machine remains sensible
+//! where its state and ownership model do not fit. What a reader must not infer
+//! is either that every `mettail-rust` PDA is a duplicate of this module or that
+//! none can be a direct instance of it.
 
 use std::fmt::Write as _;
 

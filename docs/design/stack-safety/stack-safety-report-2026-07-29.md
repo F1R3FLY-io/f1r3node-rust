@@ -1368,7 +1368,7 @@ Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flat
 
 ★ **Anti-vacuity changed a conclusion here.** `lower_depth` first read **252 B/level**, and the obvious reading — *"the conversion is incomplete"* — was **wrong**: `ast_drop`, which lowers nothing at all, read **254**. The slope was the teardown of the AST (abstract syntax tree) itself. `lower_leak` (lower, then `mem::forget` both sides) isolates the conversion and reads **0**.
 
-**The named residue, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. The two `Drop`s are the derived-impl class and **are not reachable by the pushdown transform applied here: `drop_in_place` has no text to rewrite.**
+**The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): `render` is converted** (`mettail-rust` `19ac6f21`, gated by `f2a7711f`). A main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula` has a committed PDA (`3316adaf`) but remains open here until executable oracle equivalence and the post-conversion stack ladder both pass. The two `Drop`s are the derived-impl class and **are not reachable by the pushdown transform applied here: `drop_in_place` has no text to rewrite.**
 
 ⚠ **`ast_drop` is that class with a twist worth recording.** The `language!` macro *does* emit a pooled iterative `Drop`, and a pure `Proc::Add(Arc<Proc>, …)` chain is flat under it — but `Proc::CastList(Arc<List>)` $`\leftrightarrows`$ `List::ListLit(Vec<Proc>)` **alternates types**, and the worklist does not follow the hop.
 
@@ -2660,17 +2660,30 @@ sloped impl left for a caller to reach.
 churn** of the two early de-copying fixes (SS-A1, SS-D2), which a profile of the final
 implementation alone cannot reconstruct — the pre-conversion tree no longer exists.
 
-### 8.5 The `mettail-rust` residue — the two live sloped subjects
+### 8.5 The `mettail-rust` residue — one live sloped subject
 
-`render` **3,665 / 911** and `lower_formula` **4,094 / 978** B/level (debug / release), each with
-its own gate subject and named owner. These are the only production-reachable sloped traversals
-either repository's register carries at the anchor.
+At the report anchor, `render` measured **3,665 / 911** and `lower_formula` measured
+**4,094 / 978** B/level (debug / release), each with its own gate subject and named owner.
+
+**Living disposition (2026-08-03).** `render` is no longer ceilinged: `mettail-rust` commits
+`19ac6f21` and `f2a7711f` replace recursive observation decoding, rendering, Peano-index
+formatting, and temporary-value teardown with explicit PDA traversal, then change the gate from a
+growth budget to a zero-slope assertion. The isolated main-thread probe has the same common
+reliable bound at depth 512 and 4,096 in each profile (approximately 58 KiB debug, 28 KiB
+release). The older combined subject was also corrected to exclude the independently sloped AST
+teardown; otherwise it measured the maximum of two unrelated traversals.
+
+`lower_formula` is therefore the only production-reachable sloped traversal still open in either
+repository's living register. Its one-pass PDA is committed at `mettail-rust` `3316adaf`, but the
+row remains open until executable recursive-oracle equivalence and a post-conversion stack ladder
+establish the result rather than merely the implementation shape.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
-**Figure 10** — *`figures/converted-vs-tripwire-cross-repo.puml`*. The two registers at the
-anchor: f1r3node's 40 converted subjects with empty tripwire lists, and mettail-rust's converted
-drivers beside its two live residual slopes.
+**Figure 10** — *`figures/converted-vs-tripwire-cross-repo.puml`*. Historical anchor snapshot:
+f1r3node's 40 converted subjects with empty tripwire lists, and mettail-rust's converted drivers
+beside the two slopes then still live. The living disposition above supersedes that residual
+count without rewriting the anchor image.
 
 ---
 
