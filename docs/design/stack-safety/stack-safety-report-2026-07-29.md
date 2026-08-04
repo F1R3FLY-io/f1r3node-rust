@@ -47,7 +47,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Adding a fix is filling in a form, not inventing a shape.** The blank form is [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape); the mechanism that is supposed to notice when this register goes stale is [Appendix G](#appendix-g--the-maintenance-contract).
 
-**Conventions.** `$`B_0 \rightarrow B_1`$` is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
+**Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
 Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
@@ -88,7 +88,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G4** | `fab6de24`, `6e4abbd8`, `a21b0bf9`, `dc104aa3`, `4ee48db9` (#162); `844364d2` (#189) | mettail | ★★ **ALL ELEVEN generated `ast_*` drivers** — the `CollectionLiteral` arm divergence repaired at the classifier | `ast_cmp` 10,590 · `ast_debug` 10,542 · `ast_eq` 6,144 · `ast_match_pattern` 6,136 · `ast_term_depth` 3,408 · `ast_is_ground` 2,225 $`\rightarrow`$ **0, every one, both profiles** | **yes** — SS-Y1 is retained below as a repaired defect | [8.6.1](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162) |
 | **SS-Y1** | introduced `fab6de24`; repaired `6248f156` | mettail | The optional-collection generator defect inside SS-G4: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ★ **repaired**; the generated carrier is classified once and `--all-targets` is no longer blocked | [8.6.1a](#86-the-issue-keyed-residuals-at-their-final-dispositions) |
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
-| **SS-G6** | `3276c1ee` | mettail | **#174's hash-keyed collection cost, ATTRIBUTED** — `par_hash` / `par_hashmap` isolate `models`' `impl Hash for Par`; a subtraction control pins the attribution | 625 / 113 recorded with ceilings; ⚠ **both filed figures withdrawn** — `map_pair_lower` 10,491 $`\rightarrow`$ **227**, `list_pair_lower` 950 $`\rightarrow`$ **0** | **no** — a residue is *named*, not converted | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
+| **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
 | **SS-E2** | `26876b65` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence and EPathMap laws, SMT mode dispatch, TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
@@ -1374,7 +1374,17 @@ Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flat
 
 **Closure-audit extension (2026-08-03).** The flat neutral renderer did not by itself close every observation path: the CLI guest renderer still recursed through a child callback, while `RuntimeObservationValue` still derived recursive `Clone`, `Drop`, equality, ordering, hashing, and debugging and implemented recursive `Display`. These were absent from the anchor's measured register. `mettail-rust` `c99bd722` makes guest notation a layout-only hook whose children remain inside the renderer PDA; `9ee2f85f` replaces the observation-value trait family with explicit PDAs; and `3f35226b` adds a main-thread zero-slope gate. The combined trait subject has the same reliable **24 KiB** bound at depth 512 and 4,096 in both debug and release. A test-only mirror enum retains the old derives as a bounded oracle: `Clone`, equality/order, `DefaultHasher` images, compact and alternate `Debug`, and `Display` are identical across every variant and same-variant field-order controls. A 32,768-level witness exercises the deep implementations and ordinary teardown.
 
-⚠ **`ast_drop` is that class with a twist worth recording.** The `language!` macro *does* emit a pooled iterative `Drop`, and a pure `Proc::Add(Arc<Proc>, …)` chain is flat under it — but `Proc::CastList(Arc<List>)` $`\leftrightarrows`$ `List::ListLit(Vec<Proc>)` **alternates types**, and the worklist does not follow the hop.
+**Living correction for the historical `Drop` rows.** They were not reachable by the
+pushdown transform at that anchor because compiler-derived `drop_in_place` had no text to
+rewrite. The later generators changed that premise: f1r3node emits `Drop` over the shared
+explicit PDA, while mettail's collection-element PDA closes its AST destructor. Both production
+destructors now have direct zero-slope subjects.
+
+⚠ **`ast_drop` was that class with a twist worth recording.** The `language!` macro did emit a
+pooled iterative `Drop`, and a pure `Proc::Add(Arc<Proc>, …)` chain was flat under it. The old
+escape was not the alternating-type hop, however: the generated collection arm delegated the
+whole `Vec<Proc>` to a trait method that could not see the worklist. The collection-element PDA
+closed that escape; the current `ast_drop` row is flat.
 
 #### 5.6.2 The environment-as-delta result, reproduced independently
 
@@ -1407,6 +1417,14 @@ Asymptote **1,408 B/level**, stable to the byte across the last three intervals.
 ★ **Why the first measurement lied.** 471,040 B is the parser's **own fixed intercept** — ~460 KiB of generated recogniser tables and driver frame. It is not a harness artefact: the cheapest subject in the same binary bisects to 98,304 B. Below depth ~256 the per-level cost is entirely **masked** by that intercept.
 
 ★★ **The rule adopted, which generalises past this subject:** *both probe points of a slope measurement must sit clear of the subject's own floor, or the derived slope is understated — here, all the way to zero.* This is hazard (1) of §2.3, and it is the dual of the hazard the same file's header already warned about. **The superseded claim is left standing in the previous commit message rather than rewritten, because the retraction is part of the record.**
+
+**Living disposition (2026-08-03).** A fresh mettail integration build against f1r3node
+`26876b65` requires 476 KiB at depth 4 and 472 KiB at depth 4,096: **zero growth within the
+4 KiB instrument resolution**. Later generated semantic-hash and collection-element driver
+conversions removed the native-stack growth exercised by this parse-and-teardown fixture; the
+parser algorithm itself was not rewritten in this closure. The historical 1,408 B/level table
+therefore remains a before-measurement, while `parsing_is_depth_independent` now enforces the
+wide $`4 \rightarrow 4{,}096`$ zero-slope invariant. No parser ceiling remains.
 
 #### 5.6.4 Two further methodology corrections from the same repository
 
@@ -1516,7 +1534,10 @@ rholang_ast.rs:2460 new_emap_par → utils.rs:715 new_emap_expr
 
 ##### 5.6.6.3 How the fix was made
 
-Four probe subjects and a `lower_depth` control were added, plus two ceilinged gate rows and one **subtraction** assertion. ELIDED.
+Four probe subjects and a `lower_depth` control were added, plus two ceilinged gate rows and one
+**subtraction** assertion. That was the historical attribution instrument. After SS-Y2 converted
+the mechanism, the subtraction and both ceilings were deleted; `par_hash` and `par_hashmap` now
+carry independent zero-slope gates.
 
 ##### 5.6.6.4 Results
 
@@ -1548,9 +1569,17 @@ native-stack flat through depth 4,096; the PathMap set/map Ir exponents are 0.99
 
 ##### 5.6.6.7 Anti-vacuity
 
-★★ **A SUBTRACTION control, not merely an invariant one.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope` asserts `lower_depth` stays flat, so the two ceilinged rows **cannot go on passing while their attribution quietly becomes false**. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash` 339,968 $`\rightarrow`$ 2,580,480 against `lower_depth` flat at ~73,728 $`\Rightarrow`$ the excess **is** the whole slope, and it is the hash's.
+★★ **Historical anti-vacuity.** `par_hash_excess_over_the_unhashed_pipeline_is_the_whole_slope`
+asserted `lower_depth` stayed flat, so the two then-ceilinged rows could not pass while their
+attribution quietly became false. Measured debug $`512 \rightarrow 4{,}096`$: `par_hash`
+339,968 $`\rightarrow`$ 2,580,480 against `lower_depth` flat at ~73,728, so the excess was the
+whole slope and belonged to hashing.
 
-⚠ `par_hash` and `par_hashmap` are kept as **two** rows rather than folded into one, because **the pair is the attribution**: `par_hash` runs the hash alone, `par_hashmap` runs it plus `Eq for Par` on collision. Their agreement (625 vs 636 debug; 113 vs 113 release) is what says the collect adds nothing of its own. **If they diverge, the `Eq` half has started to matter and the attribution needs revisiting.** This is [§8.6](#86-the-issue-keyed-residuals-at-their-final-dispositions)'s *"an invariant control is not sufficient"* satisfied in code.
+⚠ `par_hash` and `par_hashmap` remain **two** rows rather than being folded into one:
+`par_hash` runs the hash alone, while `par_hashmap` also reaches `Eq for Par` on collision. Both
+are now required to be independently flat, which detects a regression in either generated trait
+path without preserving the old byte budgets. Fresh integration readings are 88 KiB at depth 4
+and 84 KiB at depth 4,096 for `par_hash`, and 84 KiB at both ends for `par_hashmap`.
 
 #### 5.6.7 `SS-E1` — 3b's prerequisite instrument, and the two checks that were blind
 
@@ -2707,6 +2736,25 @@ no longer requires LLVM code generation of a monolithic full-language test binar
 generated-language adapter is executed against the minimal carrier and type-checked against the
 real generated `Proc`, so no formula-PDA obligation is deferred to higher-memory CI. No
 `RUST_MIN_STACK`, `stacker`, traversal-depth limit, or raised RSS cap is part of the repair.
+
+**Integration closure extension (2026-08-03).** The remaining mettail integration tripwires have
+now been promoted rather than merely documented. A freshly generated test binary against
+f1r3node `26876b65` measures `par_drop` at 100 / 100 KiB, `par_hash` at 88 / 84 KiB,
+`par_hashmap` at 84 / 84 KiB, and `parse_depth` at 476 / 472 KiB (depth 4 / 4,096). All four
+satisfy the same zero-slope assertion as the converted register; the per-profile ceiling helper
+and the redundant hash-subtraction assertion have been removed. The three `Par` gates peak at
+35,628 KiB RSS (resident set size), and the parser gate peaks at 80,472 KiB, both with zero swap.
+The complete non-ignored integration gate passes **12 / 12** in 5 minutes 20 seconds under a
+4 GiB hard cgroup limit, peaking at **2,172,168 KiB RSS** with zero swap. That aggregate peak is
+reported separately because the exhaustive run includes the 65,536-sibling lowering ladder and
+16,384-sibling parser ladder; it is not the working set of a focused depth probe.
+
+Compile-time memory is recorded separately from runtime traversal memory. A clean, single-job
+`cargo test --no-run` for this generated-language binary completed in 2 minutes 54 seconds at a
+maximum RSS of **5,847,016 KiB**, with zero swap, inside a 10 GiB high / 12 GiB hard cgroup
+envelope. A 4 GiB attempt became reclaim-bound and was stopped rather than allowed to thrash.
+The 5.58 GiB compile peak is the current optimization baseline for generated-code volume; it is
+not a runtime requirement, a larger thread stack, or part of the stack-safety mechanism.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
