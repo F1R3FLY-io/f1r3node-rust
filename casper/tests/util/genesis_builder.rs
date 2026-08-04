@@ -9,13 +9,14 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::test_utils::util::genesis_builder::{
+    deterministic_genesis_fixture_key_pair, GenesisFixtureKeyCohort,
+};
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC, DEFAULT_SEC2};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use dashmap::DashMap;
 use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::{
@@ -36,10 +37,8 @@ pub type GenesisParameters = (
 lazy_static! {
 
   pub static ref DEFAULT_VALIDATOR_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
-    std::array::from_fn(|_| {
-      let secp = Secp256k1;
-      let (secret_key, public_key) = secp.new_key_pair();
-      (secret_key, public_key)
+    std::array::from_fn(|index| {
+      deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::Validator, index)
     })
   };
 
@@ -49,16 +48,6 @@ lazy_static! {
 
   pub static ref DEFAULT_VALIDATOR_PKS: [PublicKey; 4] = {
     std::array::from_fn(|i| DEFAULT_VALIDATOR_KEY_PAIRS[i].1.clone())
-  };
-
-  // Extra genesis vault key pairs (beyond DEFAULT_SEC/DEFAULT_PUB and DEFAULT_SEC2/DEFAULT_PUB2)
-  // These are used for additional validators (indices 3+) and must be static for cache consistency
-  static ref EXTRA_GENESIS_VAULT_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
-    std::array::from_fn(|_| {
-      let secp = Secp256k1;
-      let (secret_key, public_key) = secp.new_key_pair();
-      (secret_key, public_key)
-    })
   };
 
   pub static ref DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS: [String; 3] = [
@@ -284,17 +273,14 @@ impl GenesisBuilder {
             (DEFAULT_SEC2.clone(), DEFAULT_PUB2.clone()),
         ];
 
-        // Use static key pairs for cache consistency (indices 3+ need extra vault keys)
+        // Use the shared deterministic fixture keyspace for cache and
+        // cross-process genesis consistency (indices 3+ need extra vault keys).
         let extra_count = validator_key_pairs.len().saturating_sub(2);
-        for i in 0..extra_count {
-            if i < EXTRA_GENESIS_VAULT_KEY_PAIRS.len() {
-                genesis_vaults.push(EXTRA_GENESIS_VAULT_KEY_PAIRS[i].clone());
-            } else {
-                // Fallback for more validators than we have static keys
-                let secp = Secp256k1;
-                let (secret_key, public_key) = secp.new_key_pair();
-                genesis_vaults.push((secret_key, public_key));
-            }
+        for index in 0..extra_count {
+            genesis_vaults.push(deterministic_genesis_fixture_key_pair(
+                GenesisFixtureKeyCohort::FundedVault,
+                index,
+            ));
         }
 
         // ★★ LOAD-BEARING SORT — the `vaults` ORDER IS CONSENSUS-VISIBLE.

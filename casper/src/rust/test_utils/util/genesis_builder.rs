@@ -36,13 +36,40 @@ type GenesisParameters = (
     Genesis,
 );
 
+/// Disjoint deterministic key cohorts used by the default test genesis.
+///
+/// These keys are public test fixtures, never secrets. The cohort tag and index
+/// are encoded as a small, non-zero secp256k1 scalar so the result is stable
+/// across processes and architectures without carrying duplicate hex tables in
+/// the two GenesisBuilder implementations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenesisFixtureKeyCohort {
+    Validator,
+    FundedVault,
+}
+
+pub fn deterministic_genesis_fixture_key_pair(
+    cohort: GenesisFixtureKeyCohort,
+    index: usize,
+) -> (PrivateKey, PublicKey) {
+    let index = u64::try_from(index).expect("genesis fixture key index must fit u64");
+    let mut scalar = [0u8; 32];
+    scalar[23] = match cohort {
+        GenesisFixtureKeyCohort::Validator => 1,
+        GenesisFixtureKeyCohort::FundedVault => 2,
+    };
+    scalar[24..].copy_from_slice(&index.to_be_bytes());
+
+    let secret_key = PrivateKey::from_bytes(&scalar);
+    let public_key = Secp256k1.to_public(&secret_key);
+    (secret_key, public_key)
+}
+
 lazy_static! {
 
   static ref DEFAULT_VALIDATOR_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
-    std::array::from_fn(|_| {
-      let secp = Secp256k1;
-      let (secret_key, public_key) = secp.new_key_pair();
-      (secret_key, public_key)
+    std::array::from_fn(|index| {
+      deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::Validator, index)
     })
   };
 
@@ -255,10 +282,11 @@ impl GenesisBuilder {
             (DEFAULT_SEC2.clone(), DEFAULT_PUB2.clone()),
         ];
 
-        let secp = Secp256k1;
-        for _ in 3..=validator_key_pairs.len() {
-            let (secret_key, public_key) = secp.new_key_pair();
-            genesis_vaults.push((secret_key, public_key));
+        for index in 0..validator_key_pairs.len().saturating_sub(2) {
+            genesis_vaults.push(deterministic_genesis_fixture_key_pair(
+                GenesisFixtureKeyCohort::FundedVault,
+                index,
+            ));
         }
 
         // ★★ LOAD-BEARING SORT — the `vaults` ORDER IS CONSENSUS-VISIBLE.

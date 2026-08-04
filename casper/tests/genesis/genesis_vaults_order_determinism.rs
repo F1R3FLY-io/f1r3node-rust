@@ -55,6 +55,9 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::test_utils::util::genesis_builder::{
+    deterministic_genesis_fixture_key_pair, GenesisFixtureKeyCohort,
+};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -69,6 +72,8 @@ use crate::util::rholang::resources::generate_scope_id;
 /// cells use more because they cost microseconds and more draws is strictly more evidence.
 const N_BUILDS: usize = 6;
 const N_CHEAP_BUILDS: usize = 24;
+const DEFAULT_GENESIS_POST_STATE_HASH: &str =
+    "28ca4bcf56ec1987f14d1217272d1962c0032b2bbd0e825039c575df20a925ca";
 
 /// The consensus-visible projection of a vault list: the base58 addresses **in order**, paired with
 /// their balances. This is what `VaultsGenerator` renders, so two vault lists with this projection
@@ -78,6 +83,65 @@ fn vault_order_fingerprint(vaults: &[Vault]) -> Vec<(String, u64)> {
         .iter()
         .map(|v| (v.vault_address.to_base58(), v.initial_balance))
         .collect()
+}
+
+#[test]
+fn default_genesis_uses_the_shared_deterministic_keyspace() {
+    let (validators, funded_vaults, genesis) =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+
+    assert_eq!(
+        validators.len(),
+        4,
+        "the default fixture must have four validators"
+    );
+    for (index, (_, actual_pk)) in validators.iter().enumerate() {
+        let (_, expected_pk) =
+            deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::Validator, index);
+        assert_eq!(
+            actual_pk, &expected_pk,
+            "validator fixture key {index} drifted"
+        );
+    }
+    let mut expected_validator_pks: Vec<PublicKey> = (0..validators.len())
+        .map(|index| {
+            deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::Validator, index).1
+        })
+        .collect();
+    expected_validator_pks.sort_by(|left, right| left.bytes.cmp(&right.bytes));
+    assert_eq!(
+        genesis
+            .proof_of_stake
+            .validators
+            .iter()
+            .map(|validator| validator.pk.clone())
+            .collect::<Vec<_>>(),
+        expected_validator_pks,
+        "the deterministic validator cohort did not reach Genesis's canonically sorted validators"
+    );
+
+    assert_eq!(
+        funded_vaults.len(),
+        4,
+        "two fixed plus two cohort-funded vaults"
+    );
+    for (index, (_, actual_pk)) in funded_vaults.iter().skip(2).enumerate() {
+        let (_, expected_pk) =
+            deterministic_genesis_fixture_key_pair(GenesisFixtureKeyCohort::FundedVault, index);
+        assert_eq!(
+            actual_pk, &expected_pk,
+            "funded-vault fixture key {index} drifted"
+        );
+        assert!(
+            genesis.vaults.iter().any(|vault| {
+                vault.initial_balance == 9_000_000
+                    && vault.vault_address
+                        == VaultAddress::from_public_key(&expected_pk)
+                            .expect("fixture vault address")
+            }),
+            "funded-vault fixture key {index} did not reach the Genesis value"
+        );
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -186,6 +250,39 @@ fn vault_order_changes_the_signed_genesis_deploy() {
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // The expensive rung: the hash itself
 // ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// One independent process can only produce one observation. Pinning that
+/// observation makes the assertion cross-process: separate test processes must
+/// all arrive at the same constant from the same deterministic fixture keys.
+#[tokio::test]
+async fn default_genesis_post_state_hash_is_pinned_across_processes() {
+    let scope_id = generate_scope_id();
+    let mut kvs_manager = resources::mk_test_rnode_store_manager_shared(scope_id.clone());
+    let m_store = RuntimeManager::mergeable_store(&mut *kvs_manager)
+        .await
+        .expect("mergeable store");
+    let r_store = kvs_manager.r_space_stores().await.expect("rspace stores");
+    let runtime_manager = RuntimeManager::create_with_store(
+        r_store,
+        m_store,
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        rholang::rust::interpreter::external_services::ExternalServices::noop(),
+    );
+    let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+        .await
+        .expect("default genesis must build");
+    let actual = hex::encode(&block.body.state.post_state_hash);
+
+    assert_eq!(
+        actual, DEFAULT_GENESIS_POST_STATE_HASH,
+        "default test genesis moved. The prior process-scoped variance came from lazily generated \
+         validator and funded-vault fixture keys; if the fixture inputs intentionally changed, \
+         remeasure this golden in multiple independent processes before updating it"
+    );
+
+    let _ = std::fs::remove_dir_all(scope_id);
+}
 
 /// ★★ **`post_state_hash` must be identical across `N_BUILDS` independent genesis computations.**
 ///
@@ -335,9 +432,13 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
 /// microseconds and the total would sit near one build's cost, not six. So six genesis computations
 /// were actually performed.
 ///
-/// ⚠ **What this cell does NOT identify** is *which* per-process value it is. Naming it needs a
-/// probe that enumerates the process-scoped statics genesis reads, and that is a separate work item;
-/// attributing it from this evidence alone would be a guess dressed as a result.
+/// At the time this cell landed it did not identify *which* per-process value varied. That remaining
+/// attribution is now closed by [`default_genesis_uses_the_shared_deterministic_keyspace`]: the
+/// default builder's validator and funded-vault key cohorts were initialized by
+/// `Secp256k1::new_key_pair()` in `lazy_static!` values. After replacing them with the shared
+/// deterministic fixture keyspace,
+/// [`default_genesis_post_state_hash_is_pinned_across_processes`] passed in four independent
+/// processes at `28ca4bcf56ec1987…20a925ca` (14.58–14.82 s each).
 ///
 /// # ⚠ Why asserting agreement is the CORRECT gate and not merely the convenient one
 ///

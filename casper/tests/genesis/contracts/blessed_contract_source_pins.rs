@@ -74,7 +74,7 @@
 //! moves the length; a field-value change inside the encoder cannot. The two kinds of change are
 //! therefore distinguishable in the table below without consulting anything else.
 //!
-//! # ⚠ And why NOT the genesis post-state hash — MEASURED, and it is the stronger warning
+//! # The genesis post-state instability — measured, attributed, and closed
 //!
 //! `e3a4494b` published a before/after table of `post_state_hash`; `719f2432` retracted it as
 //! run-varying. This file adds a sharper measurement of the same defect:
@@ -83,12 +83,15 @@
 //! |---|---|---|---|
 //! | one | ONE, shared | **agree** (1 distinct value) | `genesis_vaults_order_determinism::genesis_post_state_hash_is_identical_across_independent_builds`, PASS in 88 s |
 //! | one | SIX, one per build | **agree** (1 distinct value) | `…::genesis_post_state_hash_is_identical_across_independent_rspace_scopes`, PASS in 76.63 s |
-//! | FOUR | four | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
+//! | FOUR, before the fixture repair | four | **DISAGREE** — 4 distinct values: `1083c5e0…`, `64088270…`, `a8f6ee11…`, `979b2fbc…` | the `--no-capture` log of `tree_hash_map_delete_restores_never_set`, four cells |
+//! | FOUR, after the fixture repair | four | **agree** — `28ca4bcf56ec1987…20a925ca` in every process | `default_genesis_post_state_hash_is_pinned_across_processes`, 4/4 independent processes, 14.58–14.82 s each |
 //!
-//! Each of those four processes built from `build_genesis_parameters_with_defaults(None, None)`, whose
-//! every component is a static key pair or a sorted derivation of one
-//! (`casper/tests/util/genesis_builder.rs:166-211`), and `do_build_genesis` consumes nothing but
-//! `parameters.clone()`. So the inputs were identical and the outputs were not.
+//! The historical premise that those four processes had identical inputs was false in one precise
+//! place. `build_genesis_parameters_with_defaults(None, None)` read two `lazy_static!` key cohorts
+//! initialized with `Secp256k1::new_key_pair()`: four default validator pairs and the extra funded
+//! vault pairs. They were stable within a process and different between processes — exactly the
+//! measured signature — and both cohorts reach the `Genesis` value. The sibling builder under
+//! `casper/src/rust/test_utils/` also generated its extra funded-vault keys per call.
 //!
 //! ★★ **The first two rows are the ATTRIBUTION, and the middle one had to be added to get it.** The
 //! original pair of rows differed in **two** variables at once — process *and* scope — so it could
@@ -104,8 +107,10 @@
 //! likewise excluded: Rust's `RandomState` re-keys per map instance, so it would vary *within* a
 //! process too.
 //!
-//! ⚠ **Naming the specific per-process value is a separate work item and is deliberately NOT guessed
-//! here.** It is reported, not fixed. **No genesis post-state hash may be blessed until it is.**
+//! The two builders now share one domain-separated deterministic test keyspace; the explicitly
+//! random API remains random. `default_genesis_uses_the_shared_deterministic_keyspace` pins both
+//! cohorts' reach into `Genesis`, and the four-process golden above proves the post-state closure.
+//! The former prohibition on blessing a genesis post-state hash is therefore discharged.
 
 use std::collections::{BTreeMap, BTreeSet};
 
