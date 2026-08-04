@@ -239,7 +239,7 @@ register rows (SS-C5…SS-C9, SS-Y6) and the stack-safety consequences.
   - [8.2 The derived `Drop` — the refuted direct route, and the route taken](#82-the-derived-drop--the-refuted-direct-route-and-the-route-taken)
   - [8.3 `<Par as Clone>::clone` — closed](#83-par-as-cloneclone--closed)
   - [8.4 The one heap measurement that remains unobtainable](#84-the-one-heap-measurement-that-remains-unobtainable)
-  - [8.5 The `mettail-rust` residue — the two live sloped subjects](#85-the-mettail-rust-residue--the-two-live-sloped-subjects)
+  - [8.5 The `mettail-rust` residue — zero live sloped subjects](#85-the-mettail-rust-residue--zero-live-sloped-subjects)
 - [8.6 The issue-keyed residuals, at their final dispositions](#86-the-issue-keyed-residuals-at-their-final-dispositions)
   - [8.6.1 ★★ #162/#189 — the eleven generated drivers converted, and the root cause that unifies #154 with #162](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)
   - [8.6.2 The group-skip trap — why the read cap had to outlive the reader](#862-the-group-skip-trap--why-the-read-cap-had-to-outlive-the-reader)
@@ -1368,7 +1368,7 @@ Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flat
 
 ★ **Anti-vacuity changed a conclusion here.** `lower_depth` first read **252 B/level**, and the obvious reading — *"the conversion is incomplete"* — was **wrong**: `ast_drop`, which lowers nothing at all, read **254**. The slope was the teardown of the AST (abstract syntax tree) itself. `lower_leak` (lower, then `mem::forget` both sides) isolates the conversion and reads **0**.
 
-**The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): `render` is converted** (`mettail-rust` `19ac6f21`, gated by `f2a7711f`). A main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula` has a committed PDA (`3316adaf`) but remains open here until executable oracle equivalence and the post-conversion stack ladder both pass. The two `Drop`s are the derived-impl class and **are not reachable by the pushdown transform applied here: `drop_in_place` has no text to rewrite.**
+**The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): both production-reachable mettail rows are converted.** `render` is replaced by the observation PDA (`mettail-rust` `19ac6f21`, gated by `f2a7711f`): a main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula`'s one-pass PDA (`3316adaf`) is checked against its recursive oracle by an executable import of the exact production source (`ed46fbc9`) and closed by the zero-slope gate plus Rocq proof (`4fb9c30f`). Repeated debug bisections keep both depth-512 and depth-4,096 endpoints inside a common reliable 28 KiB bound (at most one 4 KiB bucket of run-to-run variation); release reads 20 / 20 KiB. Rocq proves recursive/PDA equality for every constructor, continuation, and arbitrary-arity separation with no admissions. The two historical `Drop`s are the derived-impl class and **were not reachable by the pushdown transform applied at this anchor: `drop_in_place` has no text to rewrite.**
 
 **Closure-audit extension (2026-08-03).** The flat neutral renderer did not by itself close every observation path: the CLI guest renderer still recursed through a child callback, while `RuntimeObservationValue` still derived recursive `Clone`, `Drop`, equality, ordering, hashing, and debugging and implemented recursive `Display`. These were absent from the anchor's measured register. `mettail-rust` `c99bd722` makes guest notation a layout-only hook whose children remain inside the renderer PDA; `9ee2f85f` replaces the observation-value trait family with explicit PDAs; and `3f35226b` adds a main-thread zero-slope gate. The combined trait subject has the same reliable **24 KiB** bound at depth 512 and 4,096 in both debug and release. A test-only mirror enum retains the old derives as a bounded oracle: `Clone`, equality/order, `DefaultHasher` images, compact and alternate `Debug`, and `Display` are identical across every variant and same-variant field-order controls. A 32,768-level witness exercises the deep implementations and ordinary teardown.
 
@@ -2662,7 +2662,7 @@ sloped impl left for a caller to reach.
 churn** of the two early de-copying fixes (SS-A1, SS-D2), which a profile of the final
 implementation alone cannot reconstruct — the pre-conversion tree no longer exists.
 
-### 8.5 The `mettail-rust` residue — one live sloped subject
+### 8.5 The `mettail-rust` residue — zero live sloped subjects
 
 At the report anchor, `render` measured **3,665 / 911** and `lower_formula` measured
 **4,094 / 978** B/level (debug / release), each with its own gate subject and named owner.
@@ -2685,17 +2685,32 @@ both profiles. Bounded differentials against a test-only copy of the former deri
 observable images, including alternate `Debug`; the conversion therefore changes traversal
 space, not value semantics.
 
-`lower_formula` is therefore the only production-reachable sloped traversal still open in either
-repository's living register. Its one-pass PDA is committed at `mettail-rust` `3316adaf`, but the
-row remains open until executable recursive-oracle equivalence and a post-conversion stack ladder
-establish the result rather than merely the implementation shape.
+`lower_formula` is now closed as well. Its one-pass PDA is committed at `mettail-rust` `3316adaf`;
+`ed46fbc9` imports the exact production `languages/src/rholang/formula.rs` into a minimal
+generated-AST carrier and compares it with the former recursive equations over a bounded corpus
+covering every constructor, the three separation spellings, and multiple targets, then exercises
+a 32,768-level witness. `4fb9c30f` adds the main-thread `RLIMIT_STACK` gate and the
+`FormulaPdaEquivalence` Rocq theorem. The debug endpoints at depth 512 and 4,096 remain inside a
+common reliable **28 KiB** bound with at most one 4 KiB bucket of ASLR variation; release reads
+**20 / 20 KiB**. This is zero slope within instrument resolution in both profiles. The proof is
+suffix-parametric and covers every static/host reduction plus arbitrary-arity separation; the
+focused Rocq suite passes with no axioms or admissions (200.4 MiB peak under a 4 GiB/no-swap
+scope).
+
+⚠ **Validation boundary, stated rather than hidden.** LLVM code generation of the full generated
+`languages` test binary exceeds this host's fixed 4 GiB validation envelope, despite metadata
+type-checking the production adapter. The local executable differential and stack ladder therefore
+compile the exact production formula source against the minimal carrier; the full
+`lower_formula` probe remains in `rholang-runtime/tests/stack_depth_gate.rs` as a zero-slope
+assertion for higher-memory CI. No `RUST_MIN_STACK`, `stacker`, depth limit, or raised RSS cap is
+part of the repair.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
 **Figure 10** — *`figures/converted-vs-tripwire-cross-repo.puml`*. Historical anchor snapshot:
 f1r3node's 40 converted subjects with empty tripwire lists, and mettail-rust's converted drivers
-beside the two slopes then still live. The living disposition above supersedes that residual
-count without rewriting the anchor image.
+beside the two slopes then still live. The living disposition above closes both residual rows
+without rewriting the anchor image.
 
 ---
 
