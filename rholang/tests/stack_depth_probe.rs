@@ -40,7 +40,9 @@ use std::hash::{Hash, Hasher};
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Connective, ConnectiveBody, EList, Expr, New, Par, Receive, ReceiveBind};
+use models::rhoapi::{
+    Connective, ConnectiveBody, EList, EPathMap, Expr, New, Par, Receive, ReceiveBind,
+};
 use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
@@ -111,6 +113,86 @@ fn nested_list_pattern(depth: usize) -> Par {
         p.connective_used = true;
     }
     p
+}
+
+fn epathmap_par(map: EPathMap, connective_used: bool) -> Par {
+    let mut par = expr_par(ExprInstance::EPathmapBody(map));
+    par.connective_used = connective_used;
+    par
+}
+
+fn nested_pathmap_match_target(depth: usize) -> Par {
+    let mut value = new_gint_par(0, Vec::new(), false);
+    for level in 0..depth {
+        value = epathmap_par(
+            EPathMap::new_map(
+                [(new_gint_par(level as i64, Vec::new(), false), value)],
+                Vec::new(),
+                false,
+                None,
+            ),
+            false,
+        );
+    }
+    value
+}
+
+fn nested_pathmap_match_pattern(depth: usize) -> Par {
+    let mut value = new_freevar_par(0, Vec::new());
+    for level in 0..depth {
+        value = epathmap_par(
+            EPathMap::new_map(
+                [(new_gint_par(level as i64, Vec::new(), false), value)],
+                Vec::new(),
+                true,
+                None,
+            ),
+            true,
+        );
+    }
+    value
+}
+
+fn wide_pathmap_set_match(width: usize) -> (Par, Par) {
+    assert!(width > 0);
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for i in 0..width {
+        let entry = new_gint_par(i as i64, Vec::new(), false);
+        target.insert_entry(entry.clone());
+        pattern.insert_entry(if i + 1 == width {
+            new_freevar_par(0, Vec::new())
+        } else {
+            entry
+        });
+    }
+    pattern.connective_used = true;
+    (epathmap_par(target, false), epathmap_par(pattern, true))
+}
+
+fn wide_pathmap_map_match(width: usize) -> (Par, Par) {
+    assert!(width > 0);
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for i in 0..width {
+        let key = new_gint_par(i as i64, Vec::new(), false);
+        let value = new_gint_par((1_000_000 + i) as i64, Vec::new(), false);
+        target
+            .insert_map_entry(key.clone(), value.clone())
+            .expect("a fresh target remains map-mode");
+        pattern
+            .insert_map_entry(
+                key,
+                if i + 1 == width {
+                    new_freevar_par(0, Vec::new())
+                } else {
+                    value
+                },
+            )
+            .expect("a fresh pattern remains map-mode");
+    }
+    pattern.connective_used = true;
+    (epathmap_par(target, false), epathmap_par(pattern, true))
 }
 
 /// The same chain, lifted out of its enclosing `Par` so two of them can be made
@@ -568,6 +650,40 @@ fn run_probe(what: &str, depth: usize) {
                 r.is_some(),
                 "stack_depth_probe: concrete binder probe did not match"
             );
+            std::mem::forget(ctx);
+        }
+        "spatial_epathmap_map_depth" => {
+            let target = nested_pathmap_match_target(depth);
+            let pattern = nested_pathmap_match_pattern(depth);
+            let mut ctx = SpatialMatcherContext::new();
+            let r = ctx.spatial_match_result(target, pattern);
+            assert!(
+                r.is_some(),
+                "stack_depth_probe: deep map-mode probe refused"
+            );
+            assert!(ctx.free_map.contains_key(&0));
+            std::mem::forget(ctx);
+        }
+        "spatial_epathmap_set_wide" => {
+            let (target, pattern) = wide_pathmap_set_match(depth);
+            let mut ctx = SpatialMatcherContext::new();
+            let r = ctx.spatial_match_result(target, pattern);
+            assert!(
+                r.is_some(),
+                "stack_depth_probe: wide set-mode probe refused"
+            );
+            assert!(ctx.free_map.contains_key(&0));
+            std::mem::forget(ctx);
+        }
+        "spatial_epathmap_map_wide" => {
+            let (target, pattern) = wide_pathmap_map_match(depth);
+            let mut ctx = SpatialMatcherContext::new();
+            let r = ctx.spatial_match_result(target, pattern);
+            assert!(
+                r.is_some(),
+                "stack_depth_probe: wide map-mode probe refused"
+            );
+            assert!(ctx.free_map.contains_key(&0));
             std::mem::forget(ctx);
         }
 

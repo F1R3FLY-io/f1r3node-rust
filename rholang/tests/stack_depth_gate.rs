@@ -68,7 +68,7 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, New, Par, Receive, ReceiveBind};
+use models::rhoapi::{EList, EPathMap, Expr, New, Par, Receive, ReceiveBind};
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
@@ -124,6 +124,91 @@ fn nested_list_pattern(depth: usize) -> Par {
         };
     }
     p
+}
+
+fn epathmap_par(map: EPathMap, connective_used: bool) -> Par {
+    models::par_from_default! {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        }],
+        connective_used,
+        ..Default::default()
+    }
+}
+
+/// A map-value chain whose pattern binds only at the deepest value. Every
+/// enclosing map is therefore dynamic and traverses the PathMap-native matcher
+/// rather than taking the exact-key subtraction shortcut all the way down.
+fn nested_pathmap_match_pattern(depth: usize) -> Par {
+    let mut value = new_freevar_par(0, Vec::new());
+    for level in 0..depth {
+        let key = new_gint_par(level as i64, Vec::new(), false);
+        value = epathmap_par(
+            EPathMap::new_map([(key, value)], Vec::new(), true, None),
+            true,
+        );
+    }
+    value
+}
+
+/// Set-mode PathMap pair with `width - 1` exact members and one dynamic member.
+/// Exact subtraction leaves one candidate, avoiding a quadratic all-free
+/// fixture while still driving trie subtraction, trie-order iteration, and the
+/// augmenting-path state machine.
+fn wide_pathmap_set_match(width: usize) -> (Par, Par) {
+    assert!(width > 0);
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for i in 0..width {
+        let entry = new_gint_par(i as i64, Vec::new(), false);
+        target.insert_entry(entry.clone());
+        if i + 1 == width {
+            pattern.insert_entry(new_freevar_par(0, Vec::new()));
+        } else {
+            pattern.insert_entry(entry);
+        }
+    }
+    pattern.connective_used = true;
+    (epathmap_par(target, false), epathmap_par(pattern, true))
+}
+
+/// Map-mode counterpart of [`wide_pathmap_set_match`]. The final key remains
+/// exact while its value is dynamic, proving the `PathMap<Par>` specialization
+/// without projecting either keys or bindings into a collection.
+fn wide_pathmap_map_match(width: usize) -> (Par, Par) {
+    assert!(width > 0);
+    let mut target = EPathMap::default();
+    let mut pattern = EPathMap::default();
+    for i in 0..width {
+        let key = new_gint_par(i as i64, Vec::new(), false);
+        let value = new_gint_par((1_000_000 + i) as i64, Vec::new(), false);
+        target
+            .insert_map_entry(key.clone(), value.clone())
+            .expect("a fresh target remains map-mode");
+        pattern
+            .insert_map_entry(
+                key,
+                if i + 1 == width {
+                    new_freevar_par(0, Vec::new())
+                } else {
+                    value
+                },
+            )
+            .expect("a fresh pattern remains map-mode");
+    }
+    pattern.connective_used = true;
+    (epathmap_par(target, false), epathmap_par(pattern, true))
+}
+
+fn outer_epathmap_len(par: &Par) -> usize {
+    match par
+        .exprs
+        .first()
+        .and_then(|expr| expr.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EPathmapBody(map)) => map.len(),
+        _ => 0,
+    }
 }
 
 /// [`nested_list`] with the LEAF integer chosen.
@@ -627,6 +712,7 @@ fn subject(name: &str) -> fn(usize) {
         "normalize" => normalize_body,
         "spatial_binding" => spatial_binding_body,
         "spatial_concrete_binders" => spatial_concrete_binders_body,
+        "spatial_epathmap_map_depth" => spatial_epathmap_map_depth_body,
         // -------- width axis --------
         "substitute_wide" => substitute_wide_body,
         "sort_wide" => sort_wide_body,
@@ -634,6 +720,8 @@ fn subject(name: &str) -> fn(usize) {
         "pretty_wide" => pretty_wide_body,
         "free_check" => free_check_body,
         "normalize_wide" => normalize_wide_body,
+        "spatial_epathmap_set_wide" => spatial_epathmap_set_wide_body,
+        "spatial_epathmap_map_wide" => spatial_epathmap_map_wide_body,
         "eval_with_nots" => eval_with_nots_body,
         // -------- Phase 7 measurement controls (not production claims) --------
         "phase7_invariant" => phase7_invariant_body,
@@ -910,6 +998,7 @@ const CONVERTED_DEPTH: &[&str] = &[
     // second forces the formerly recursive concrete Receive/New fast path.
     "spatial_binding",
     "spatial_concrete_binders",
+    "spatial_epathmap_map_depth",
 ];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
@@ -920,6 +1009,8 @@ const CONVERTED_WIDTH: &[&str] = &[
     "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
     "pretty_wide",     // Stage D — the same driver, sibling axis
     "normalize_wide",  // Stage G — the same driver, collection-element axis
+    "spatial_epathmap_set_wide",
+    "spatial_epathmap_map_wide",
 ];
 
 /// No production depth traversal remains under a slope ceiling. The tripwire
@@ -3170,6 +3261,81 @@ fn spatial_concrete_binders_body(depth: usize) {
         context.spatial_match_result(target, pattern).is_some(),
         "the concrete binder witness did not match"
     );
+    std::mem::forget(context);
+}
+
+/// Deep `PathMap<Par>` value traversal through the production matcher PDA.
+/// The free leaf makes every enclosing EPathMap dynamic; matching only the
+/// outer map or taking the concrete fast path cannot satisfy the binding check.
+fn spatial_epathmap_map_depth_body(depth: usize) {
+    let target = nested_pathmap_chain(depth);
+    let pattern = nested_pathmap_match_pattern(depth);
+    assert_carries(
+        "the map-mode matcher target's PathMap value depth",
+        pathmap_chain_depth(&target),
+        depth,
+    );
+    assert_carries(
+        "the map-mode matcher pattern's PathMap value depth",
+        pathmap_chain_depth(&pattern),
+        depth,
+    );
+    let mut context = SpatialMatcherContext::new();
+    assert!(
+        context.spatial_match_result(target, pattern).is_some(),
+        "the deep PathMap<Par> matcher witness did not match"
+    );
+    assert!(
+        context.free_map.contains_key(&0),
+        "the deep PathMap<Par> witness completed without its leaf binding"
+    );
+    std::mem::forget(context);
+}
+
+/// Wide `PathMap<()>` matching. One dynamic member remains after native exact
+/// subtraction, so width reaches the trie matcher without manufacturing the
+/// cubic workload of an all-free bipartite graph.
+fn spatial_epathmap_set_wide_body(width: usize) {
+    let (target, pattern) = wide_pathmap_set_match(width);
+    assert_carries(
+        "the set-mode matcher target's member count",
+        outer_epathmap_len(&target),
+        width,
+    );
+    assert_carries(
+        "the set-mode matcher pattern's member count",
+        outer_epathmap_len(&pattern),
+        width,
+    );
+    let mut context = SpatialMatcherContext::new();
+    assert!(
+        context.spatial_match_result(target, pattern).is_some(),
+        "the wide PathMap<()> matcher witness did not match"
+    );
+    assert!(context.free_map.contains_key(&0));
+    std::mem::forget(context);
+}
+
+/// Wide `PathMap<Par>` matching with an exact final key and dynamic final
+/// value. This separately gates the value-bearing specialization.
+fn spatial_epathmap_map_wide_body(width: usize) {
+    let (target, pattern) = wide_pathmap_map_match(width);
+    assert_carries(
+        "the map-mode matcher target's member count",
+        outer_epathmap_len(&target),
+        width,
+    );
+    assert_carries(
+        "the map-mode matcher pattern's member count",
+        outer_epathmap_len(&pattern),
+        width,
+    );
+    let mut context = SpatialMatcherContext::new();
+    assert!(
+        context.spatial_match_result(target, pattern).is_some(),
+        "the wide PathMap<Par> matcher witness did not match"
+    );
+    assert!(context.free_map.contains_key(&0));
     std::mem::forget(context);
 }
 

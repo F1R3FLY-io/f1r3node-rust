@@ -61,12 +61,13 @@ converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score
                  clone_send_chain, ord, debug, substitute_deep_binding, clone_nested_set,
                  subst_and_charge, par_drop, normalize_drop, encode, protobuf_de, eq, hash,
                  hash_nested_set, hash_pathmap_set, hash_pathmap_map, message_clear,
-                 clone_pathmap_chain, pathmap_chain_drop
+                 clone_pathmap_chain, pathmap_chain_drop, spatial_binding,
+                 spatial_concrete_binders, spatial_epathmap_map_depth
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
-                 normalize_wide
+                 normalize_wide, spatial_epathmap_set_wide, spatial_epathmap_map_wide
 tripwire-depth:
 tripwire-width:
-totals:          converted=40, tripwired=0
+totals:          converted=45, tripwired=0
 ```
 <!-- GATE-SUBJECTS:END -->
 

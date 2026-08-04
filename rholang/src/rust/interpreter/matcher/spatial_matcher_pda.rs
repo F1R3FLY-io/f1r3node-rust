@@ -15,6 +15,7 @@ use models::rust::canonical_path::decode_trie_path;
 use models::rust::epathmap_trie_codec::EPathMapMode;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use models::rust::rhoapi_ext::OwnedEPathMapEntry;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
 
@@ -160,7 +161,7 @@ fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
             }
             Job::ListInit(request) => init_list(context, request, &mut frames),
             Job::List(machine) => step_list(context, machine, &mut frames),
-            Job::PathInit(target, pattern) => init_path(target, pattern),
+            Job::PathInit(target, pattern) => init_path(context, target, pattern, &mut frames),
             Job::Path(machine) => step_path(context, machine, &mut frames),
             Job::Return(result) => match frames.pop() {
                 Some(frame) => resume(context, frame, result, &mut frames),
@@ -1499,7 +1500,12 @@ struct PathMachine {
     search: Vec<PathSearchFrame>,
 }
 
-fn init_path(target: EPathMap, pattern: EPathMap) -> Job {
+fn init_path(
+    context: &mut SpatialMatcherContext,
+    target: EPathMap,
+    pattern: EPathMap,
+    frames: &mut FrameStack,
+) -> Job {
     let target_mode = target.mode();
     let pattern_mode = pattern.mode();
     if pattern_mode != EPathMapMode::Empty && target_mode != pattern_mode {
@@ -1514,6 +1520,18 @@ fn init_path(target: EPathMap, pattern: EPathMap) -> Job {
         Some(FreeVar(level)) => PathRemainder::Free(*level),
         _ => PathRemainder::None,
     };
+    // The overwhelmingly common nested-map shape has one dynamic binding on
+    // each level. Moving the two owned PathMap entries directly into the PDA
+    // avoids cloning the complete remaining Par suffix once per level (Θ(d²)
+    // bytes and time for a depth-d value chain). General unordered matching
+    // keeps the retry-capable augmenting machine below.
+    if matches!(remainder, PathRemainder::None)
+        && target.len() == 1
+        && pattern.len() == 1
+        && single_path_pattern_is_dynamic(&pattern)
+    {
+        return init_single_path(context, target, pattern, frames);
+    }
     let Some((target, dynamic_patterns)) = prepare_exact_path_entries(&target, &pattern) else {
         return Job::Return(false);
     };
@@ -1543,6 +1561,76 @@ fn init_path(target: EPathMap, pattern: EPathMap) -> Job {
     };
     machine.start_next_root();
     Job::Path(machine)
+}
+
+fn single_path_pattern_is_dynamic(pattern: &EPathMap) -> bool {
+    let Some(key) = pattern.next_value_key(&[]) else {
+        return false;
+    };
+    let decoded = decode_trie_path(&key).expect("EPathMap pattern keys are canonical Par paths");
+    decoded.connective_used
+        || match pattern.mode() {
+            EPathMapMode::Map => pattern
+                .entry_trie()
+                .get_map_value_by_encoded_key(&key)
+                .expect("PathMap pattern mode was checked")
+                .is_some_and(|value| value.connective_used),
+            EPathMapMode::Empty | EPathMapMode::Set => false,
+        }
+}
+
+fn take_single_path_entry(map: EPathMap) -> Option<OwnedEPathMapEntry> {
+    let mut entries = map.into_owned_parts().entries;
+    let first = entries.next()?;
+    debug_assert!(
+        entries.next().is_none(),
+        "singleton fast path received multiple entries"
+    );
+    Some(first)
+}
+
+fn init_single_path(
+    context: &mut SpatialMatcherContext,
+    target: EPathMap,
+    pattern: EPathMap,
+    frames: &mut FrameStack,
+) -> Job {
+    let Some(target) = take_single_path_entry(target) else {
+        return Job::Return(false);
+    };
+    let Some(pattern) = take_single_path_entry(pattern) else {
+        return Job::Return(false);
+    };
+    let pair = match (target, pattern) {
+        (OwnedEPathMapEntry::Set(target), OwnedEPathMapEntry::Set(pattern)) => MatchPair::Par(
+            decode_trie_path(&target).expect("set target key is a canonical Par path"),
+            decode_trie_path(&pattern).expect("set pattern key is a canonical Par path"),
+        ),
+        (
+            OwnedEPathMapEntry::Map {
+                key: target_key,
+                value: target_value,
+            },
+            OwnedEPathMapEntry::Map {
+                key: pattern_key,
+                value: pattern_value,
+            },
+        ) => MatchPair::ParPair(
+            (
+                decode_trie_path(&target_key).expect("map target key is a canonical Par path"),
+                target_value,
+            ),
+            (
+                decode_trie_path(&pattern_key).expect("map pattern key is a canonical Par path"),
+                pattern_value,
+            ),
+        ),
+        _ => return Job::Return(false),
+    };
+    frames.push(Frame::RestoreOnFailure {
+        snapshot: context.free_map.clone(),
+    });
+    Job::Match(pair)
 }
 
 impl PathMachine {
