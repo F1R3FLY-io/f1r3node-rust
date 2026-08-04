@@ -74,13 +74,13 @@ pda_entry!(match_receive_bind, ReceiveBind, ReceiveBind);
 pda_entry!(match_case, MatchCase, MatchCase);
 
 enum Job {
-    Match(MatchPair),
-    ParConnectives(ParConnectiveState),
-    ConnectiveCandidates(ConnectiveCandidates),
+    Match(Box<MatchPair>),
+    ParConnectives(Box<ParConnectiveState>),
+    ConnectiveCandidates(Box<ConnectiveCandidates>),
     ListInit(ListRequest),
-    List(ListMachine),
-    PathInit(EPathMap, EPathMap),
-    Path(PathMachine),
+    List(Box<ListMachine>),
+    PathInit(Box<(EPathMap, EPathMap)>),
+    Path(Box<PathMachine>),
     Return(bool),
 }
 
@@ -92,7 +92,7 @@ enum Frame {
         snapshot: FreeMap,
     },
     OrBranch {
-        target: Par,
+        target: Box<Par>,
         patterns: Arc<[Par]>,
         next: usize,
         snapshot: FreeMap,
@@ -102,20 +102,20 @@ enum Frame {
     },
     BindOnSuccess {
         level: i32,
-        value: Par,
+        value: Box<Par>,
     },
     ConnectiveCandidate {
-        state: ConnectiveCandidates,
+        state: Box<ConnectiveCandidates>,
         snapshot: Option<FreeMap>,
-        remainder: Par,
+        remainder: Box<Par>,
     },
     ListEdge {
-        machine: ListMachine,
+        machine: Box<ListMachine>,
         target_index: usize,
         snapshot: FreeMap,
     },
     PathEdge {
-        machine: PathMachine,
+        machine: Box<PathMachine>,
         target_key: Vec<u8>,
         snapshot: FreeMap,
     },
@@ -149,20 +149,23 @@ enum MatchPair {
 }
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
-    let mut job = Job::Match(root);
+    let mut job = match_job(root);
     let mut frames = FrameStack::new();
 
     loop {
         job = match job {
-            Job::Match(pair) => evaluate_pair(context, pair, &mut frames),
-            Job::ParConnectives(state) => step_par_connectives(state, &mut frames),
+            Job::Match(pair) => evaluate_pair(context, *pair, &mut frames),
+            Job::ParConnectives(state) => step_par_connectives(*state, &mut frames),
             Job::ConnectiveCandidates(state) => {
-                step_connective_candidates(context, state, &mut frames)
+                step_connective_candidates(context, *state, &mut frames)
             }
             Job::ListInit(request) => init_list(context, request, &mut frames),
-            Job::List(machine) => step_list(context, machine, &mut frames),
-            Job::PathInit(target, pattern) => init_path(context, target, pattern, &mut frames),
-            Job::Path(machine) => step_path(context, machine, &mut frames),
+            Job::List(machine) => step_list(context, *machine, &mut frames),
+            Job::PathInit(pair) => {
+                let (target, pattern) = *pair;
+                init_path(context, target, pattern, &mut frames)
+            }
+            Job::Path(machine) => step_path(context, *machine, &mut frames),
             Job::Return(result) => match frames.pop() {
                 Some(frame) => resume(context, frame, result, &mut frames),
                 None => return result.then_some(()),
@@ -204,7 +207,7 @@ fn resume(
             if result {
                 Job::Return(true)
             } else {
-                start_or_branch(context, target, patterns, next, frames)
+                start_or_branch(context, *target, patterns, next, frames)
             }
         }
         Frame::Not { snapshot } => {
@@ -213,7 +216,7 @@ fn resume(
         }
         Frame::BindOnSuccess { level, value } => {
             if result {
-                context.free_map.insert(level, value);
+                context.free_map.insert(level, *value);
             }
             Job::Return(result)
         }
@@ -229,8 +232,8 @@ fn resume(
             }
             if result {
                 let mut parent = state.parent;
-                parent.target = remainder;
-                Job::ParConnectives(parent)
+                parent.target = *remainder;
+                Job::ParConnectives(Box::new(parent))
             } else {
                 Job::ConnectiveCandidates(state)
             }
@@ -242,7 +245,7 @@ fn resume(
         } => {
             let produced = std::mem::replace(&mut context.free_map, snapshot);
             if result {
-                machine.accept_edge(target_index, produced)
+                (*machine).accept_edge(target_index, produced)
             } else {
                 Job::List(machine)
             }
@@ -254,13 +257,16 @@ fn resume(
         } => {
             let produced = std::mem::replace(&mut context.free_map, snapshot);
             if result {
-                machine.accept_edge(target_key, produced)
+                (*machine).accept_edge(target_key, produced)
             } else {
                 Job::Path(machine)
             }
         }
     }
 }
+
+#[inline]
+fn match_job(pair: MatchPair) -> Job { Job::Match(Box::new(pair)) }
 
 fn start_jobs(mut jobs: Vec<Job>, frames: &mut FrameStack) -> Job {
     jobs.reverse();
@@ -274,7 +280,7 @@ fn start_jobs(mut jobs: Vec<Job>, frames: &mut FrameStack) -> Job {
 }
 
 fn pair_jobs(pairs: impl IntoIterator<Item = MatchPair>) -> Vec<Job> {
-    pairs.into_iter().map(Job::Match).collect()
+    pairs.into_iter().map(match_job).collect()
 }
 
 fn evaluate_pair(
@@ -397,14 +403,14 @@ fn evaluate_par(target: Par, mut pattern: Par) -> Job {
         })
         .collect::<Vec<_>>();
 
-    Job::ParConnectives(ParConnectiveState {
+    Job::ParConnectives(Box::new(ParConnectiveState {
         target,
         pattern,
         plans: plans.into(),
         next: 0,
         remainder_level,
         wildcard,
-    })
+    }))
 }
 
 fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) -> Job {
@@ -430,13 +436,13 @@ fn step_par_connectives(mut state: ParConnectiveState, frames: &mut FrameStack) 
             | Some(VarRefBody(_))
             | None
     );
-    Job::ConnectiveCandidates(ConnectiveCandidates {
+    Job::ConnectiveCandidates(Box::new(ConnectiveCandidates {
         parent: state,
         connective: plan.connective,
         candidates,
         next: 0,
         free_map_is_unreachable,
-    })
+    }))
 }
 
 fn step_connective_candidates(
@@ -451,11 +457,11 @@ fn step_connective_candidates(
     let snapshot = (!state.free_map_is_unreachable).then(|| context.free_map.clone());
     let connective = state.connective.clone();
     frames.push(Frame::ConnectiveCandidate {
-        state,
+        state: Box::new(state),
         snapshot,
-        remainder,
+        remainder: Box::new(remainder),
     });
-    Job::Match(MatchPair::Connective(candidate, connective))
+    match_job(MatchPair::Connective(candidate, connective))
 }
 
 fn start_par_fields(state: ParConnectiveState, frames: &mut FrameStack) -> Job {
@@ -571,7 +577,7 @@ fn evaluate_connective(
             frames.push(Frame::RestoreOnFailure { snapshot });
             start_jobs(
                 ps.into_iter()
-                    .map(|pattern| Job::Match(MatchPair::Par(target.clone(), pattern)))
+                    .map(|pattern| match_job(MatchPair::Par(target.clone(), pattern)))
                     .collect(),
                 frames,
             )
@@ -582,7 +588,7 @@ fn evaluate_connective(
         Some(ConnNotBody(pattern)) => {
             let snapshot = context.free_map.clone();
             frames.push(Frame::Not { snapshot });
-            Job::Match(MatchPair::Par(target, pattern))
+            match_job(MatchPair::Par(target, pattern))
         }
         Some(VarRefBody(_)) | None => Job::Return(false),
         Some(ConnBool(_)) => Job::Return(matches!(
@@ -630,19 +636,19 @@ fn start_or_branch(
     };
     let snapshot = context.free_map.clone();
     frames.push(Frame::OrBranch {
-        target: target.clone(),
+        target: Box::new(target.clone()),
         patterns,
         next: next + 1,
         snapshot,
     });
-    Job::Match(MatchPair::Par(target, pattern))
+    match_job(MatchPair::Par(target, pattern))
 }
 
 fn evaluate_send(target: Send, pattern: Send, frames: &mut FrameStack) -> Job {
     if target.persistent != pattern.persistent {
         return Job::Return(false);
     }
-    let mut jobs = vec![Job::Match(MatchPair::Par(
+    let mut jobs = vec![match_job(MatchPair::Par(
         target.chan.expect("Send.chan (target)"),
         pattern.chan.expect("Send.chan (pattern)"),
     ))];
@@ -680,7 +686,7 @@ fn evaluate_receive(target: Receive, pattern: Receive, frames: &mut FrameStack) 
                 None,
                 false,
             )),
-            Job::Match(MatchPair::Par(
+            match_job(MatchPair::Par(
                 target.body.expect("Receive.body (target)"),
                 pattern.body.expect("Receive.body (pattern)"),
             )),
@@ -693,7 +699,7 @@ fn evaluate_new(target: New, pattern: New) -> Job {
     if target.bind_count != pattern.bind_count {
         Job::Return(false)
     } else {
-        Job::Match(MatchPair::Par(
+        match_job(MatchPair::Par(
             target.p.expect("New.p (target)"),
             pattern.p.expect("New.p (pattern)"),
         ))
@@ -734,7 +740,14 @@ fn ordered_pairs(
     {
         frames.push(Frame::BindOnSuccess {
             level,
-            value: new_elist_par(surplus, Vec::new(), false, None, Vec::new(), false),
+            value: Box::new(new_elist_par(
+                surplus,
+                Vec::new(),
+                false,
+                None,
+                Vec::new(),
+                false,
+            )),
         });
     }
 
@@ -743,7 +756,7 @@ fn ordered_pairs(
             .into_iter()
             .take(matched)
             .zip(patterns)
-            .map(|(target, pattern)| Job::Match(MatchPair::Par(target, pattern)))
+            .map(|(target, pattern)| match_job(MatchPair::Par(target, pattern)))
             .collect(),
     )
 }
@@ -809,18 +822,20 @@ fn evaluate_expr(target: Expr, pattern: Expr, frames: &mut FrameStack) -> Job {
                 wildcard,
             ))
         }
-        (Some(EPathmapBody(target)), Some(EPathmapBody(pattern))) => Job::PathInit(target, pattern),
+        (Some(EPathmapBody(target)), Some(EPathmapBody(pattern))) => {
+            Job::PathInit(Box::new((target, pattern)))
+        }
         (Some(EVarBody(EVar { v: target })), Some(EVarBody(EVar { v: pattern }))) => {
             Job::Return(target == pattern)
         }
         (Some(ENotBody(ENot { p: target })), Some(ENotBody(ENot { p: pattern }))) => {
-            Job::Match(MatchPair::Par(
+            match_job(MatchPair::Par(
                 target.expect("ENot.p (target)"),
                 pattern.expect("ENot.p (pattern)"),
             ))
         }
         (Some(ENegBody(ENeg { p: target })), Some(ENegBody(ENeg { p: pattern }))) => {
-            Job::Match(MatchPair::Par(
+            match_job(MatchPair::Par(
                 target.expect("ENeg.p (target)"),
                 pattern.expect("ENeg.p (pattern)"),
             ))
@@ -831,7 +846,7 @@ fn evaluate_expr(target: Expr, pattern: Expr, frames: &mut FrameStack) -> Job {
             {
                 return Job::Return(false);
             }
-            let mut jobs = vec![Job::Match(MatchPair::Par(
+            let mut jobs = vec![match_job(MatchPair::Par(
                 target.target.expect("EMethod.target (target)"),
                 pattern.target.expect("EMethod.target (pattern)"),
             ))];
@@ -840,7 +855,7 @@ fn evaluate_expr(target: Expr, pattern: Expr, frames: &mut FrameStack) -> Job {
                     .arguments
                     .into_iter()
                     .zip(pattern.arguments)
-                    .map(|(target, pattern)| Job::Match(MatchPair::Par(target, pattern))),
+                    .map(|(target, pattern)| match_job(MatchPair::Par(target, pattern))),
             );
             start_jobs(jobs, frames)
         }
@@ -848,7 +863,7 @@ fn evaluate_expr(target: Expr, pattern: Expr, frames: &mut FrameStack) -> Job {
             if target.pattern != pattern.pattern {
                 Job::Return(false)
             } else {
-                Job::Match(MatchPair::Par(
+                match_job(MatchPair::Par(
                     target.target.expect("EMatches.target (target)"),
                     pattern.target.expect("EMatches.target (pattern)"),
                 ))
@@ -868,11 +883,11 @@ fn binary_jobs(
 ) -> Job {
     start_jobs(
         vec![
-            Job::Match(MatchPair::Par(
+            match_job(MatchPair::Par(
                 target1.unwrap_or_else(|| panic!("{name}.p1 (target)")),
                 pattern1.unwrap_or_else(|| panic!("{name}.p1 (pattern)")),
             )),
-            Job::Match(MatchPair::Par(
+            match_job(MatchPair::Par(
                 target2.unwrap_or_else(|| panic!("{name}.p2 (target)")),
                 pattern2.unwrap_or_else(|| panic!("{name}.p2 (pattern)")),
             )),
@@ -920,7 +935,7 @@ fn evaluate_match(target: Match, pattern: Match, frames: &mut FrameStack) -> Job
     if target.cases.len() != pattern.cases.len() {
         return Job::Return(false);
     }
-    let mut jobs = vec![Job::Match(MatchPair::Par(
+    let mut jobs = vec![match_job(MatchPair::Par(
         target.target.expect("Match.target (target)"),
         pattern.target.expect("Match.target (pattern)"),
     ))];
@@ -929,7 +944,7 @@ fn evaluate_match(target: Match, pattern: Match, frames: &mut FrameStack) -> Job
             .cases
             .into_iter()
             .zip(pattern.cases)
-            .map(|(target, pattern)| Job::Match(MatchPair::MatchCase(target, pattern))),
+            .map(|(target, pattern)| match_job(MatchPair::MatchCase(target, pattern))),
     );
     start_jobs(jobs, frames)
 }
@@ -948,7 +963,7 @@ fn evaluate_receive_bind(target: ReceiveBind, pattern: ReceiveBind) -> Job {
     if target.patterns != pattern.patterns {
         Job::Return(false)
     } else {
-        Job::Match(MatchPair::Par(
+        match_job(MatchPair::Par(
             target.source.expect("ReceiveBind.source (target)"),
             pattern.source.expect("ReceiveBind.source (pattern)"),
         ))
@@ -959,7 +974,7 @@ fn evaluate_match_case(target: MatchCase, pattern: MatchCase) -> Job {
     if target.pattern != pattern.pattern {
         Job::Return(false)
     } else {
-        Job::Match(MatchPair::Par(
+        match_job(MatchPair::Par(
             target.source.expect("MatchCase.source (target)"),
             pattern.source.expect("MatchCase.source (pattern)"),
         ))
@@ -1239,7 +1254,7 @@ fn init_list(
         frames.push(Frame::RestoreOnFailure {
             snapshot: context.free_map.clone(),
         });
-        return Job::Match(pair);
+        return match_job(pair);
     }
     if pattern_len == 0 && target_len == 0 && request.remainder.is_none() {
         return Job::Return(true);
@@ -1288,7 +1303,7 @@ fn init_list(
         wildcard: request.wildcard,
     };
     machine.start_next_root();
-    Job::List(machine)
+    Job::List(Box::new(machine))
 }
 
 impl ListMachine {
@@ -1328,7 +1343,7 @@ impl ListMachine {
                 }
                 self.root_pattern += 1;
                 self.start_next_root();
-                Job::List(self)
+                Job::List(Box::new(self))
             }
             Some(previous) => {
                 let displaced = previous.pattern_index;
@@ -1338,7 +1353,7 @@ impl ListMachine {
                     next_target: 0,
                     pending: None,
                 });
-                Job::List(self)
+                Job::List(Box::new(self))
             }
         }
     }
@@ -1392,11 +1407,11 @@ fn step_list(
                 };
                 let snapshot = context.free_map.clone();
                 frames.push(Frame::ListEdge {
-                    machine,
+                    machine: Box::new(machine),
                     target_index,
                     snapshot,
                 });
-                return Job::Match(pair);
+                return match_job(pair);
             }
         }
     }
@@ -1560,7 +1575,7 @@ fn init_path(
         search: Vec::new(),
     };
     machine.start_next_root();
-    Job::Path(machine)
+    Job::Path(Box::new(machine))
 }
 
 fn single_path_pattern_is_dynamic(pattern: &EPathMap) -> bool {
@@ -1601,11 +1616,13 @@ fn init_single_path(
     let Some(pattern) = take_single_path_entry(pattern) else {
         return Job::Return(false);
     };
-    let pair = match (target, pattern) {
-        (OwnedEPathMapEntry::Set(target), OwnedEPathMapEntry::Set(pattern)) => MatchPair::Par(
-            decode_trie_path(&target).expect("set target key is a canonical Par path"),
-            decode_trie_path(&pattern).expect("set pattern key is a canonical Par path"),
-        ),
+    let job = match (target, pattern) {
+        (OwnedEPathMapEntry::Set(target), OwnedEPathMapEntry::Set(pattern)) => {
+            match_job(MatchPair::Par(
+                decode_trie_path(&target).expect("set target key is a canonical Par path"),
+                decode_trie_path(&pattern).expect("set pattern key is a canonical Par path"),
+            ))
+        }
         (
             OwnedEPathMapEntry::Map {
                 key: target_key,
@@ -1615,22 +1632,35 @@ fn init_single_path(
                 key: pattern_key,
                 value: pattern_value,
             },
-        ) => MatchPair::ParPair(
-            (
-                decode_trie_path(&target_key).expect("map target key is a canonical Par path"),
-                target_value,
-            ),
-            (
-                decode_trie_path(&pattern_key).expect("map pattern key is a canonical Par path"),
-                pattern_value,
-            ),
-        ),
+        ) => {
+            let decoded_pattern_key =
+                decode_trie_path(&pattern_key).expect("map pattern key is a canonical Par path");
+            if !decoded_pattern_key.connective_used {
+                // Canonical PathMap key bytes are the equality representation.
+                // A concrete singleton key therefore needs neither Par decoding
+                // nor a second PDA continuation: compare the compressed bytes
+                // and descend directly into the dynamic map value.
+                if target_key != pattern_key {
+                    return Job::Return(false);
+                }
+                match_job(MatchPair::Par(target_value, pattern_value))
+            } else {
+                match_job(MatchPair::ParPair(
+                    (
+                        decode_trie_path(&target_key)
+                            .expect("map target key is a canonical Par path"),
+                        target_value,
+                    ),
+                    (decoded_pattern_key, pattern_value),
+                ))
+            }
+        }
         _ => return Job::Return(false),
     };
     frames.push(Frame::RestoreOnFailure {
         snapshot: context.free_map.clone(),
     });
-    Job::Match(pair)
+    job
 }
 
 impl PathMachine {
@@ -1686,7 +1716,7 @@ impl PathMachine {
                     });
                 }
                 self.start_next_root();
-                Job::Path(self)
+                Job::Path(Box::new(self))
             }
             Some(displaced) => {
                 frame.pending = Some((target_key, free_map));
@@ -1695,7 +1725,7 @@ impl PathMachine {
                     next_target: Vec::new(),
                     pending: None,
                 });
-                Job::Path(self)
+                Job::Path(Box::new(self))
             }
         }
     }
@@ -1739,11 +1769,11 @@ fn step_path(
                     .expect("set-mode EPathMap keys are canonical Par paths");
                 let snapshot = context.free_map.clone();
                 frames.push(Frame::PathEdge {
-                    machine,
+                    machine: Box::new(machine),
                     target_key,
                     snapshot,
                 });
-                return Job::Match(MatchPair::Par(target, pattern.as_ref().clone()));
+                return match_job(MatchPair::Par(target, pattern.as_ref().clone()));
             }
             PathPattern::Map(pattern) => {
                 let key = decode_trie_path(&target_key)
@@ -1757,11 +1787,11 @@ fn step_path(
                     .clone();
                 let snapshot = context.free_map.clone();
                 frames.push(Frame::PathEdge {
-                    machine,
+                    machine: Box::new(machine),
                     target_key,
                     snapshot,
                 });
-                return Job::Match(MatchPair::ParPair((key, value), pattern.as_ref().clone()));
+                return match_job(MatchPair::ParPair((key, value), pattern.as_ref().clone()));
             }
         }
     }
@@ -1924,5 +1954,30 @@ fn next_dynamic_path_pattern(pattern: &EPathMap, after: &[u8]) -> Option<(Vec<u8
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn machine_layout_stays_compact() {
+        // These enums are stored in depth- and width-proportional contiguous
+        // vectors. Before the large states were boxed they were 1,504 and
+        // 1,112 bytes respectively, so a sequence of seven 64-byte
+        // ListRequests reserved more than 10 KiB. Keep this bound explicit:
+        // adding an inline schema payload to either enum is a memory-complexity
+        // regression even when the traversal remains stack-safe.
+        assert!(
+            std::mem::size_of::<Job>() <= 64,
+            "Job grew to {} bytes",
+            std::mem::size_of::<Job>()
+        );
+        assert!(
+            std::mem::size_of::<Frame>() <= 64,
+            "Frame grew to {} bytes",
+            std::mem::size_of::<Frame>()
+        );
     }
 }

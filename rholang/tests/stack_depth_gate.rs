@@ -713,6 +713,7 @@ fn subject(name: &str) -> fn(usize) {
         "spatial_binding" => spatial_binding_body,
         "spatial_concrete_binders" => spatial_concrete_binders_body,
         "spatial_epathmap_map_depth" => spatial_epathmap_map_depth_body,
+        "heap_fixture_spatial_epathmap_map_depth" => heap_fixture_spatial_epathmap_map_depth_body,
         // -------- width axis --------
         "substitute_wide" => substitute_wide_body,
         "sort_wide" => sort_wide_body,
@@ -3290,6 +3291,29 @@ fn spatial_epathmap_map_depth_body(depth: usize) {
         "the deep PathMap<Par> witness completed without its leaf binding"
     );
     std::mem::forget(context);
+}
+
+/// Matched fixture-only control for heap profiling
+/// [`spatial_epathmap_map_depth_body`]. It constructs and validates the exact
+/// target/pattern pair but never enters the matcher, so its allocation and RSS
+/// curve bounds the fixture cost separately from matcher/PDA storage. Compare
+/// the full curves: arithmetic subtraction of two maxima is only valid when the
+/// maxima occur in the same phase.
+fn heap_fixture_spatial_epathmap_map_depth_body(depth: usize) {
+    let target = nested_pathmap_chain(depth);
+    let pattern = nested_pathmap_match_pattern(depth);
+    assert_carries(
+        "the map-mode heap control target's PathMap value depth",
+        pathmap_chain_depth(&target),
+        depth,
+    );
+    assert_carries(
+        "the map-mode heap control pattern's PathMap value depth",
+        pathmap_chain_depth(&pattern),
+        depth,
+    );
+    std::mem::forget(target);
+    std::mem::forget(pattern);
 }
 
 /// Wide `PathMap<()>` matching. One dynamic member remains after native exact
