@@ -27,15 +27,15 @@
 //! class, and it is the reason a shared table is safer than two copies rather
 //! than merely shorter.
 //!
-//! ## What is deliberately NOT descended into
+//! ## PathMap specialization
 //!
-//! `EPathmapBody` and `EZipperBody` carry `Par` payloads and are returned
-//! untouched, because that is what `SubstituteTrait<Expr>::substitute_no_sort`
-//! does today (they fall to its catch-all arm). Descending into them would
-//! change substituted bytes, hence signed bytes, hence consensus. They appear
-//! here as [`ExprArm::NoDescent`], which is a **record of current behaviour**,
-//! and `models::rust::rholang::par_children::substitute_descends_into` carries
-//! the same statement in checkable form.
+//! `substitute_drive` intercepts `EPathmapBody` before this ordinary arm table.
+//! Its owned PathMap cursor decodes, substitutes, and reinserts one member or
+//! key/value binding at a time, so the collection is never projected through a
+//! `Vec<Par>`. `split_expr_instance` retains an opaque EPathMap case solely for
+//! the arm-table round-trip identity test; production substitution never takes
+//! that branch. `EZipperBody` remains opaque because it is runtime cursor state
+//! rather than surface pattern syntax.
 //!
 //! See `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
 
@@ -223,8 +223,8 @@ pub(crate) enum ExprArm {
         connective_used: bool,
     },
     /// Returned verbatim: grounds, `EVarBody` (handled by the caller before it
-    /// ever reaches here in the `sub_exp` fold), and the two path-map arms the
-    /// recursive form does not descend into.
+    /// ever reaches here in the `sub_exp` fold), `EZipperBody`, and the
+    /// EPathMap identity-test arm intercepted by both live traversal drivers.
     NoDescent(ExprInstance),
 }
 
@@ -354,7 +354,9 @@ pub(crate) fn split_expr_instance(instance: ExprInstance) -> (ExprArm, Vec<Optio
             )
         }
 
-        // ---- returned verbatim ----
+        // ---- returned verbatim by this generic table ----
+        // EPathMap is intercepted by the PDA and recursive oracle before this
+        // function; retaining it here keeps split/rebuild a total identity.
         other @ (ExprInstance::GBool(_)
         | ExprInstance::GInt(_)
         | ExprInstance::GString(_)
@@ -488,8 +490,8 @@ pub(crate) fn rebuild_expr_instance(
                 connective_used,
             })
         }
-        // ⚠ verbatim, `locally_free` untouched — matching the recursive form's
-        // `other => Ok(Expr { expr_instance: Some(other) })`.
+        // Verbatim within the generic table. EPathMap is intercepted by both
+        // substitution drivers; EZipper and grounds genuinely take this arm.
         ExprArm::NoDescent(instance) => instance,
     }
 }

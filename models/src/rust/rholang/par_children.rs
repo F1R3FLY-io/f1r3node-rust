@@ -27,8 +27,8 @@
 //! 3. **Per-traversal disposition.** Not every traversal descends into every
 //!    structural child. [`substitute_descends_into`] records — exhaustively,
 //!    and therefore checkably — which variants `Substitute` walks today. Two
-//!    variants (`EPathmapBody`, `EZipperBody`) are deliberately **NOT**
-//!    descended into by substitution; see that function's documentation.
+//!    `EZipperBody` is deliberately **not** descended into by substitution;
+//!    `EPathmapBody` uses its own incremental owned-trie cursor.
 //!
 //! ## Two tables, deliberately
 //!
@@ -534,16 +534,10 @@ pub(crate) fn dismantle_in_place(root: &mut Par) {
 
 /// Does `Substitute::substitute_no_sort` descend into this `ExprInstance`?
 ///
-/// ⚠ **This is a record of current behaviour, not of desirable behaviour.**
-/// `EPathmapBody` and `EZipperBody` both carry `Par` payloads and both fall to
-/// the catch-all arm of `SubstituteTrait<Expr>::substitute_no_sort`
-/// (`substitute.rs`, the `other => Ok(Expr { expr_instance: Some(other) })`
-/// arm), so a `Par` inside a path map is returned **unsubstituted**. Any
-/// worklist conversion must reproduce that verbatim: descending into them
-/// would change the substituted term, hence its protobuf bytes, hence the
-/// signature computed over them — a consensus fork dressed up as a bug fix.
-///
-/// Changing it is a separate, deliberate, protocol-visible decision.
+/// `EPathmapBody` is a specialized descent: set keys and map key/value pairs
+/// are moved from an owned PathMap cursor, substituted one entry at a time, and
+/// reinserted directly into the same homogeneous specialization. `EZipperBody`
+/// remains opaque runtime cursor state.
 pub fn substitute_descends_into(e: &ExprInstance) -> bool {
     match e {
         // grounds and vars: nothing to descend into in the first place
@@ -558,8 +552,9 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::GFixedPoint(_)
         | ExprInstance::EVarBody(_) => false,
 
-        // ⚠ NO DESCENT, and they DO have children — see the note above.
-        ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => false,
+        // Runtime cursor state is compared as one value; it is not surface
+        // syntax with substitutable children.
+        ExprInstance::EZipperBody(_) => false,
 
         ExprInstance::ENotBody(_)
         | ExprInstance::ENegBody(_)
@@ -584,7 +579,8 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
         | ExprInstance::ETupleBody(_)
         | ExprInstance::ESetBody(_)
         | ExprInstance::EMapBody(_)
-        | ExprInstance::EMethodBody(_) => true,
+        | ExprInstance::EMethodBody(_)
+        | ExprInstance::EPathmapBody(_) => true,
     }
 }
 
@@ -1366,7 +1362,7 @@ mod tests {
         }
     }
 
-    /// The twin of `substitute_disposition_excludes_exactly_the_two_pathmap_arms`
+    /// The twin of `substitute_disposition_excludes_exactly_the_zipper_arm`
     /// for the matcher. It pins the DECLARATION; the behaviour it declares is
     /// measured against the running matcher by
     /// `rholang/tests/spatial_matcher_disposition.rs`, which lives in the
@@ -1423,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn substitute_disposition_excludes_exactly_the_two_pathmap_arms() {
+    fn substitute_disposition_excludes_exactly_the_zipper_arm() {
         let not_descended: Vec<std::mem::Discriminant<ExprInstance>> = expr_instance_corpus()
             .iter()
             .filter(|(instance, expected_children)| {
@@ -1432,10 +1428,9 @@ mod tests {
             .map(|(instance, _)| std::mem::discriminant(instance))
             .collect();
 
-        let expected = vec![
-            std::mem::discriminant(&ExprInstance::EPathmapBody(pathmap_of(vec![]))),
-            std::mem::discriminant(&ExprInstance::EZipperBody(EZipper::default())),
-        ];
+        let expected = vec![std::mem::discriminant(&ExprInstance::EZipperBody(
+            EZipper::default(),
+        ))];
 
         assert_eq!(
             not_descended, expected,

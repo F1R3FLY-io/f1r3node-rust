@@ -90,9 +90,11 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EVar, Expr, GUnforgeable, If, Match, MatchCase, New, Par,
-    Receive, ReceiveBind, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, EPathMap, EVar, Expr, GUnforgeable, If, Match, MatchCase,
+    New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
+use models::rust::canonical_path::decode_trie_path;
+use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntries, OwnedEPathMapEntry};
 use rspace_plus_plus::rspace::history::Either;
 
 use super::env::Env;
@@ -102,7 +104,7 @@ use super::substitute_combine::{
     expr_arm_pattern_slots, fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
     missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
     rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
-    rebuild_receive_bind, rebuild_send, split_expr_instance, ConnArm, ExprArm,
+    rebuild_receive_bind, rebuild_send, set_bits_until, split_expr_instance, ConnArm, ExprArm,
 };
 
 // ===========================================================================
@@ -202,6 +204,10 @@ pub(crate) enum SubWork {
     Bundle(Bundle, SubCtx),
     Bind(ReceiveBind, SubCtx),
     Case(MatchCase, SubCtx),
+    /// Incremental EPathMap substitution. The owned cursor and rebuilt trie
+    /// remain compressed between entries; only the current key/value becomes
+    /// ordinary `Par` work.
+    PathMap(Box<PathMapSubstitution>),
     /// One step of `sub_exp`'s resumable left fold. `rest` is stored REVERSED,
     /// so `pop()` yields the next element in source order.
     SubExp {
@@ -240,6 +246,8 @@ pub(crate) enum SubKont {
         n: usize,
         shift: i32,
     },
+    PathMapSetK(Box<PathMapSubstitution>),
+    PathMapMapK(Box<PathMapSubstitution>),
     ParK {
         unforgeables: Vec<GUnforgeable>,
         locally_free: Vec<u8>,
@@ -299,6 +307,12 @@ pub(crate) enum SubKont {
     BundleK {
         shell: Bundle,
     },
+}
+
+pub(crate) struct PathMapSubstitution {
+    entries: OwnedEPathMapEntries,
+    result: EPathMap,
+    ctx: SubCtx,
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +476,7 @@ impl Substitute {
                 SubWork::Bundle(term, ctx) => descend_bundle(term, ctx, &mut work),
                 SubWork::Bind(term, ctx) => descend_bind(term, ctx, &mut work),
                 SubWork::Case(term, ctx) => descend_case(term, ctx, view, &mut work),
+                SubWork::PathMap(state) => step_pathmap(state, &mut work, &mut vals),
                 SubWork::SubExp { rest, acc, ctx } => {
                     step_sub_exp(rest, acc, ctx, view, &mut work, &mut vals)?
                 }
@@ -544,6 +559,21 @@ fn descend_expr(
     work: &mut Vec<SubWork>,
 ) -> Result<(), InterpreterError> {
     let instance = super::unwrap_option_safe(term.expr_instance)?;
+    if let ExprInstance::EPathmapBody(pathmap) = instance {
+        let parts = pathmap.into_owned_parts();
+        let result = EPathMap::new(
+            EntryTrie::default(),
+            set_bits_until(parts.locally_free, view.shift(ctx)),
+            parts.connective_used,
+            parts.remainder,
+        );
+        work.push(SubWork::PathMap(Box::new(PathMapSubstitution {
+            entries: parts.entries,
+            result,
+            ctx,
+        })));
+        return Ok(());
+    }
     let (arm, children) = split_expr_instance(instance);
 
     // `unwrap_option_safe` fires per operand, interleaved with the descent — p1
@@ -569,6 +599,34 @@ fn descend_expr(
         work.push(SubWork::Par(child, slot_ctx));
     }
     Ok(())
+}
+
+fn step_pathmap(
+    mut state: Box<PathMapSubstitution>,
+    work: &mut Vec<SubWork>,
+    vals: &mut Vec<SubVal>,
+) {
+    match state.entries.next() {
+        Some(OwnedEPathMapEntry::Set(key)) => {
+            let entry =
+                decode_trie_path(&key).expect("set-mode EPathMap keys are canonical Par paths");
+            let ctx = state.ctx;
+            work.push(SubWork::Combine(SubKont::PathMapSetK(state)));
+            work.push(SubWork::Par(Some(entry), ctx));
+        }
+        Some(OwnedEPathMapEntry::Map { key, value }) => {
+            let entry_key =
+                decode_trie_path(&key).expect("map-mode EPathMap keys are canonical Par paths");
+            let ctx = state.ctx;
+            work.push(SubWork::Combine(SubKont::PathMapMapK(state)));
+            // LIFO: key is substituted before its associated value.
+            work.push(SubWork::Par(Some(value), ctx));
+            work.push(SubWork::Par(Some(entry_key), ctx));
+        }
+        None => vals.push(SubVal::Expr(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(state.result)),
+        })),
+    }
 }
 
 fn descend_send(term: Send, ctx: SubCtx, view: EnvView<'_>, work: &mut Vec<SubWork>) {
@@ -904,6 +962,20 @@ fn combine(k: SubKont, _view: EnvView<'_>, work: &mut Vec<SubWork>, vals: &mut V
             vals.push(SubVal::Expr(Expr {
                 expr_instance: Some(rebuild_expr_instance(arm, children, shift)),
             }));
+        }
+        SubKont::PathMapSetK(mut state) => {
+            state.result.insert_entry(pop_par(vals));
+            work.push(SubWork::PathMap(state));
+        }
+        SubKont::PathMapMapK(mut state) => {
+            let mut children = pop_n_par(vals, 2).into_iter();
+            let key = children.next().expect("EPathMap map key result");
+            let value = children.next().expect("EPathMap map value result");
+            state
+                .result
+                .insert_map_entry(key, value)
+                .expect("a fresh map-mode substitution result cannot contain set entries");
+            work.push(SubWork::PathMap(state));
         }
         SubKont::ParK {
             unforgeables,

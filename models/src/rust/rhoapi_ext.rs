@@ -101,6 +101,51 @@ pub struct EntryTrie {
     epm_layout: Arc<OnceLock<epathmap_trie_codec::EpmLayout>>,
 }
 
+/// One entry moved out of homogeneous EPathMap storage.
+///
+/// Keys remain canonical byte paths until the consumer explicitly needs a
+/// semantic `Par`. Set mode therefore moves only bytes; map mode moves the
+/// associated `Par` value out of `PathMap<Par>` without cloning it.
+pub enum OwnedEPathMapEntry {
+    Set(Vec<u8>),
+    Map { key: Vec<u8>, value: Par },
+}
+
+/// A forward, trie-order cursor that owns the consumed PathMap root.
+///
+/// This is the incremental PDA boundary. It retains PathMap's prefix-compressed
+/// storage between `next` calls instead of projecting all members into a
+/// `Vec<Par>` or a vector of key/value pairs.
+pub enum OwnedEPathMapEntries {
+    Empty,
+    Set(pathmap::zipper::OwnedZipperIter<()>),
+    Map(pathmap::zipper::OwnedZipperIter<Par>),
+}
+
+impl Iterator for OwnedEPathMapEntries {
+    type Item = OwnedEPathMapEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            OwnedEPathMapEntries::Empty => None,
+            OwnedEPathMapEntries::Set(entries) => {
+                entries.next().map(|(key, ())| OwnedEPathMapEntry::Set(key))
+            }
+            OwnedEPathMapEntries::Map(entries) => entries
+                .next()
+                .map(|(key, value)| OwnedEPathMapEntry::Map { key, value }),
+        }
+    }
+}
+
+/// The metadata and owned trie cursor obtained by consuming an EPathMap.
+pub struct OwnedEPathMapParts {
+    pub entries: OwnedEPathMapEntries,
+    pub locally_free: Vec<u8>,
+    pub connective_used: bool,
+    pub remainder: Option<Var>,
+}
+
 /// Decode set members in trie order with a read-zipper walk and no sort.
 /// This is an explicit compatibility-boundary conversion, never retained in [`EntryTrie`].
 /// Set mode intentionally stores only `PathMap<()>` keys; callers that need
@@ -1538,6 +1583,23 @@ impl EntryTrie {
         }
     }
 
+    fn into_owned_entries(self) -> OwnedEPathMapEntries {
+        let EntryTrie {
+            repr,
+            len: _,
+            entries_stable: _,
+            union_locally_free: _,
+            any_connective_used: _,
+            trie_snapshot: _,
+            epm_layout: _,
+        } = self;
+        match repr {
+            EPathMapRepr::Empty => OwnedEPathMapEntries::Empty,
+            EPathMapRepr::Set(map) => OwnedEPathMapEntries::Set(map.into_iter()),
+            EPathMapRepr::Map(map) => OwnedEPathMapEntries::Map(map.into_iter()),
+        }
+    }
+
     /// Remove the entry with the GREATEST key in trie order, and return it.
     ///
     /// ⚠ This is the honest replacement for `ps.pop()`. A `Vec` has a last
@@ -2280,6 +2342,23 @@ impl EPathMap {
             remainder: _,
         } = self;
         ps.into_raw_map_entries(visit)
+    }
+
+    /// Consume this map into an incremental, trie-order entry cursor plus its
+    /// metadata. No decoded set-member or key/value collection is materialized.
+    pub fn into_owned_parts(self) -> OwnedEPathMapParts {
+        let EPathMap {
+            ps,
+            locally_free,
+            connective_used,
+            remainder,
+        } = self;
+        OwnedEPathMapParts {
+            entries: ps.into_owned_entries(),
+            locally_free,
+            connective_used,
+            remainder,
+        }
     }
 
     /// Number of PathMap-owned `Par` value retainers used by teardown tests.

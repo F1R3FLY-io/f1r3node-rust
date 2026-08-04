@@ -49,9 +49,11 @@
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind,
-    Send,
+    Bundle, Connective, ConnectiveBody, EPathMap, Expr, If, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send,
 };
+use models::rust::canonical_path::decode_trie_path;
+use models::rust::rhoapi_ext::{EntryTrie, OwnedEPathMapEntry};
 use rspace_plus_plus::rspace::history::Either;
 
 use super::env::Env;
@@ -61,7 +63,7 @@ use super::substitute_combine::{
     expr_arm_pattern_slots, fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
     missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
     rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
-    rebuild_receive_bind, rebuild_send, split_expr_instance, ConnArm,
+    rebuild_receive_bind, rebuild_send, set_bits_until, split_expr_instance, ConnArm,
 };
 use super::substitute_drive::{
     maybe_substitute_evar_view, maybe_substitute_var_ref_view, EnvView, SubCtx,
@@ -245,6 +247,11 @@ pub(crate) fn expr_recursive(
     env: EnvView<'_>,
 ) -> Result<Expr, InterpreterError> {
     let instance = unwrap_option_safe(term.expr_instance)?;
+    if let ExprInstance::EPathmapBody(pathmap) = instance {
+        return epathmap_recursive(pathmap, ctx, env).map(|pathmap| Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+        });
+    }
     let (arm, children) = split_expr_instance(instance);
     // Same per-slot depth table the driver reads, so the two cannot disagree
     // about which slots are pattern positions.
@@ -264,6 +271,39 @@ pub(crate) fn expr_recursive(
     Ok(Expr {
         expr_instance: Some(rebuild_expr_instance(arm, subbed, env.shift(ctx))),
     })
+}
+
+fn epathmap_recursive(
+    pathmap: EPathMap,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<EPathMap, InterpreterError> {
+    let parts = pathmap.into_owned_parts();
+    let mut result = EPathMap::new(
+        EntryTrie::default(),
+        set_bits_until(parts.locally_free, env.shift(ctx)),
+        parts.connective_used,
+        parts.remainder,
+    );
+    for entry in parts.entries {
+        match entry {
+            OwnedEPathMapEntry::Set(key) => {
+                let key =
+                    decode_trie_path(&key).expect("set-mode EPathMap keys are canonical Par paths");
+                result.insert_entry(par_recursive(key, ctx, env)?);
+            }
+            OwnedEPathMapEntry::Map { key, value } => {
+                let key =
+                    decode_trie_path(&key).expect("map-mode EPathMap keys are canonical Par paths");
+                let key = par_recursive(key, ctx, env)?;
+                let value = par_recursive(value, ctx, env)?;
+                result
+                    .insert_map_entry(key, value)
+                    .expect("a fresh recursive substitution result cannot mix modes");
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn send_recursive(
@@ -974,11 +1014,11 @@ mod differential_substitute_worklist {
         }
     }
 
-    /// `EPathmapBody` and `EZipperBody` must come back UNSUBSTITUTED — the
-    /// recursive form does not descend into them, and "fixing" that would
-    /// change signed bytes.
+    /// EPathMap substitution is now part of the consensus-visible traversal;
+    /// EZipper remains opaque because it is runtime cursor state, not surface
+    /// pattern syntax.
     #[test]
-    fn the_two_pathmap_arms_are_still_not_descended_into() {
+    fn epathmap_descends_incrementally_while_ezipper_remains_opaque() {
         use models::rust::rhoapi_ext::EPathMap;
         use models::rust::rholang::par_children::substitute_descends_into;
 
@@ -988,7 +1028,7 @@ mod differential_substitute_worklist {
         let inner = bound_var(0);
         let instance =
             ExprInstance::EPathmapBody(EPathMap::new(vec![inner.clone()], Vec::new(), false, None));
-        assert!(!substitute_descends_into(&instance));
+        assert!(substitute_descends_into(&instance));
 
         let term = models::par_from_default! {
             exprs: vec![Expr {
@@ -1000,12 +1040,16 @@ mod differential_substitute_worklist {
         let out = s
             .substitute_no_sort(term.clone(), 0, &env)
             .expect("path-map substitution failed");
-        assert_eq!(
+        let expected = par_recursive(term.clone(), SubCtx::root(0), EnvView::new(&env))
+            .expect("recursive EPathMap oracle");
+        assert_eq!(out.encode_to_vec(), expected.encode_to_vec());
+        assert_ne!(
             out.encode_to_vec(),
             term.encode_to_vec(),
-            "the path-map arm was descended into. Its child is a BoundVar that the \
-             populated environment WOULD have substituted, so this is the check that \
-             a conversion did not silently start walking it."
+            "the bound variable inside the EPathMap must be substituted"
         );
+
+        let zipper = ExprInstance::EZipperBody(Default::default());
+        assert!(!substitute_descends_into(&zipper));
     }
 }

@@ -1,5 +1,4 @@
 use std::cmp::Eq;
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -11,17 +10,27 @@ where
     R: Debug + Clone,
 {
     match_function: Box<dyn FnMut(P, T) -> Option<R>>,
-    matches: BTreeMap<Candidate<T>, (Pattern<P, T>, R)>,
-    seen_targets: BTreeSet<Candidate<T>>,
 }
 
-type Pattern<P, T> = (P, Vec<Candidate<T>>);
 type Candidate<T> = Indexed<T>;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct Indexed<A> {
     value: A,
     index: usize,
+}
+
+struct Assignment<R> {
+    pattern_index: usize,
+    result: R,
+}
+
+struct SearchFrame<R> {
+    pattern_index: usize,
+    next_target: usize,
+    /// The edge by which this frame displaced its pattern's current
+    /// assignment. It is committed only after the child finds an alternative.
+    pending: Option<(usize, R)>,
 }
 
 impl<P, T, R> MaximumBipartiteMatch<P, T, R>
@@ -31,125 +40,138 @@ where
     R: Debug + Clone,
 {
     pub fn new(match_function: Box<dyn FnMut(P, T) -> Option<R>>) -> Self {
-        MaximumBipartiteMatch {
-            match_function,
-            matches: BTreeMap::new(),
-            seen_targets: BTreeSet::new(),
-        }
+        MaximumBipartiteMatch { match_function }
     }
 
     pub fn find_matches(&mut self, patterns: Vec<P>, targets: Vec<T>) -> Option<Vec<(T, P, R)>> {
-        // println!("\nHit find_matches");
-        // println!("\ntargets in find_matches: {:#?}", targets);
-        // println!("\npatterns in find_matches: {:#?}", patterns);
+        let mut assignments: Vec<Option<Assignment<R>>> =
+            (0..targets.len()).map(|_| None).collect();
 
-        let ts: Vec<Candidate<T>> = targets
-            .into_iter()
-            .enumerate()
-            .map(|(index, value)| Indexed { value, index })
-            .collect();
-
-        let ps: Vec<Pattern<P, T>> = patterns
-            .into_iter()
-            .map(|pattern| (pattern, ts.clone()))
-            .collect();
-
-        // println!("\nts: {:#?}", ts);
-        // println!("\nps: {:#?}", ps);
-
-        for pattern in ps {
-            self.reset_seen();
-            if !self.find_match(pattern) {
-                // println!("\nreturning None in find_matches");
+        for pattern_index in 0..patterns.len() {
+            if !self.augment(pattern_index, &patterns, &targets, &mut assignments) {
                 return None;
             }
         }
 
+        let mut ordered: Vec<(Candidate<T>, usize, R)> = assignments
+            .into_iter()
+            .enumerate()
+            .filter_map(|(target_index, assignment)| {
+                assignment.map(|assignment| {
+                    (
+                        Indexed {
+                            value: targets[target_index].clone(),
+                            index: target_index,
+                        },
+                        assignment.pattern_index,
+                        assignment.result,
+                    )
+                })
+            })
+            .collect();
+        // Preserve the old BTreeMap<Candidate<T>, ...> observation order:
+        // target value first, original target index as the duplicate tie-break.
+        ordered.sort_by(|left, right| left.0.cmp(&right.0));
         Some(
-            self.matches
-                .iter()
-                .map(|(t, (p, r))| (t.value.clone(), p.0.clone(), r.clone()))
+            ordered
+                .into_iter()
+                .map(|(target, pattern_index, result)| {
+                    (target.value, patterns[pattern_index].clone(), result)
+                })
                 .collect(),
         )
     }
 
-    fn find_match(&mut self, pattern: Pattern<P, T>) -> bool {
-        // println!("\nHit find_match");
-        // println!("\nfind_match pattern: {:?}", pattern);
-
-        match pattern.clone() {
-            (_, candidates) if candidates.is_empty() => {
-                // println!("\ncandidates empty");
-                false
-            }
-            (p, candidates) => {
-                if let Some((candidate, candidates)) = candidates.split_first() {
-                    // println!("\ncandidate: {:?}", _candidate);
-                    // println!("\ncandidates: {:?}", _candidates);
-
-                    if self.not_seen(candidate.clone()) {
-                        match (self.match_function)(p.clone(), candidate.clone().value) {
-                            Some(match_result) => {
-                                // println!("\nadding seen");
-                                self.add_seen(candidate.clone());
-                                self.try_claim_match(candidate.clone(), pattern, match_result)
-                            }
-                            None => {
-                                // println!("\nthis candidate doesn't match, proceed to the others");
-                                self.find_match((p, candidates.to_vec()))
-                            }
-                        }
-                    } else {
-                        self.find_match((p, candidates.to_vec()))
-                    }
-                } else {
-                    // This should never happen
-                    // println!("\nthis should never happen");
-                    false
-                }
-            }
-        }
-    }
-
-    fn try_claim_match(
+    /// Iterative Kuhn augmenting-path search.
+    ///
+    /// The former implementation represented recursion by cloning the
+    /// remaining candidate slice into every `Pattern` frame. At width `T` that
+    /// retained Θ(P*T) candidates before useful matching state. Here one frame
+    /// stores only `(pattern index, next target, pending edge)`; the shared
+    /// target and pattern arrays are never copied.
+    fn augment(
         &mut self,
-        candidate: Candidate<T>,
-        pattern: Pattern<P, T>,
-        result: R,
+        root_pattern: usize,
+        patterns: &[P],
+        targets: &[T],
+        assignments: &mut [Option<Assignment<R>>],
     ) -> bool {
-        // println!("\nhit try_claim_match");
-        match self.get_match(candidate.clone()) {
-            None => {
-                // we're first, we claim a match
-                self.claim_match(candidate, pattern, result);
-                true
-            }
-            Some(previous_pattern) => {
-                // try to find a different match for the previous pattern
-                if self.find_match(previous_pattern) {
-                    // if found, we can match current pattern with this candidate despite it being taken
-                    self.claim_match(candidate, pattern, result);
-                    true
-                } else {
-                    // else, current pattern can't be matched with this candidate given the current matches, try others
-                    self.find_match(pattern)
+        let mut seen_targets = vec![false; targets.len()];
+        let mut stack = vec![SearchFrame {
+            pattern_index: root_pattern,
+            next_target: 0,
+            pending: None,
+        }];
+
+        loop {
+            let Some(frame) = stack.last_mut() else {
+                return false;
+            };
+            let mut descended = false;
+
+            while frame.next_target < targets.len() {
+                let target_index = frame.next_target;
+                frame.next_target += 1;
+                if seen_targets[target_index] {
+                    continue;
+                }
+
+                let Some(result) = (self.match_function)(
+                    patterns[frame.pattern_index].clone(),
+                    targets[target_index].clone(),
+                ) else {
+                    continue;
+                };
+                seen_targets[target_index] = true;
+
+                match assignments[target_index].as_ref() {
+                    None => {
+                        assignments[target_index] = Some(Assignment {
+                            pattern_index: frame.pattern_index,
+                            result,
+                        });
+
+                        // The leaf has an alternative. Commit every displaced
+                        // parent edge while unwinding the explicit PDA stack.
+                        stack.pop();
+                        while let Some(mut parent) = stack.pop() {
+                            let (parent_target, parent_result) = parent
+                                .pending
+                                .take()
+                                .expect("an augmenting parent has one displaced edge");
+                            assignments[parent_target] = Some(Assignment {
+                                pattern_index: parent.pattern_index,
+                                result: parent_result,
+                            });
+                        }
+                        return true;
+                    }
+                    Some(previous) => {
+                        let previous_pattern = previous.pattern_index;
+                        frame.pending = Some((target_index, result));
+                        stack.push(SearchFrame {
+                            pattern_index: previous_pattern,
+                            next_target: 0,
+                            pending: None,
+                        });
+                        descended = true;
+                        break;
+                    }
                 }
             }
+
+            if descended {
+                continue;
+            }
+
+            // This displaced pattern has no alternative. Its parent keeps the
+            // old assignment and resumes after the failed candidate.
+            stack.pop();
+            if let Some(parent) = stack.last_mut() {
+                parent.pending = None;
+            } else {
+                return false;
+            }
         }
-    }
-
-    fn reset_seen(&mut self) { self.seen_targets.clear(); }
-
-    fn not_seen(&self, candidate: Candidate<T>) -> bool { !self.seen_targets.contains(&candidate) }
-
-    fn add_seen(&mut self, candidate: Candidate<T>) { self.seen_targets.insert(candidate); }
-
-    fn get_match(&self, candidate: Candidate<T>) -> Option<Pattern<P, T>> {
-        self.matches.get(&candidate).map(|x| x.0.clone())
-    }
-
-    fn claim_match(&mut self, candidate: Candidate<T>, pattern: Pattern<P, T>, result: R) {
-        let new_match = (candidate, (pattern, result));
-        self.matches.insert(new_match.0, new_match.1);
     }
 }
