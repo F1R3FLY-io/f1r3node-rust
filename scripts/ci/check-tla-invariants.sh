@@ -95,30 +95,39 @@ if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 fi
 
+# Registered entries are hand-maintained above: a malformed entry or a
+# missing config file is a broken registration, not a skippable condition —
+# a silent SKIP here would let a renamed or deleted model quietly leave CI.
 failed=0
 for entry in "${POST_FIX_CONFIGS[@]}"; do
+    if [[ "$entry" != */* ]]; then
+        echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
+        exit 2
+    fi
     dir="$TLA_ROOT/${entry%/*}"
     cfg="${entry##*/}"
+    log="/tmp/tlc-${entry//\//-}.log"
     if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
-        echo "SKIP   $entry (missing $cfg.tla or $cfg.cfg in $dir)"
+        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+        failed=$((failed + 1))
         continue
     fi
     started_epoch="$(date +%s)"
     echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"/tmp/tlc-$cfg.log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(( $(date +%s) - started_epoch ))s"
     if (( status == 0 )); then
-        echo "OK     $cfg ($elapsed)"
+        echo "OK     $entry ($elapsed)"
     elif (( status == 124 )); then
-        echo "TIMEOUT $cfg after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
     else
-        echo "FAIL   $cfg ($elapsed)"
-        echo "--- last 40 lines of /tmp/tlc-$cfg.log ---"
-        tail -40 "/tmp/tlc-$cfg.log"
+        echo "FAIL   $entry ($elapsed)"
+        echo "--- last 40 lines of $log ---"
+        tail -40 "$log"
         echo "--- end log ---"
         failed=$((failed + 1))
     fi

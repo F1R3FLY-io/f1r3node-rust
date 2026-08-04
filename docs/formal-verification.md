@@ -98,7 +98,7 @@ The problem decomposes into four claims, each owned by a layer of the stack:
 
 The model proves the *design*; these are the obligations it places on the
 Rust that implements it. A PR implementing byte-bounded admission that does
-not discharge all three is diverging from the proof:
+not discharge all four is diverging from the proof:
 
 1. **Budget queued + in-flight bytes, not queued alone.** A dequeued
    `BlockMessage` stays resident through its replay
@@ -111,7 +111,15 @@ not discharge all three is diverging from the proof:
    proof that shedding converts a bounded-memory problem into a wedged
    shard — a strictly worse failure. Any future load-shedding transition
    must re-open the liveness argument.
-3. **Cap ≥ max block size.** The module `ASSUME`s
+3. **Deferral releases the payload buffer.** The model's `Defer` transition
+   moves a block from `resident` (bytes counted) back to `pending` (no
+   bytes retained): deferring must free the decoded `BlockMessage`, with
+   re-delivery coming from a retriever re-request — never from a buffer
+   held aside, which would re-create the unbounded retention off the
+   books. `Inv_TotalResidencyBounded` (admission budget plus the bounded
+   delivery window `MaxDeliveries × MaxBlockBytes`) is the checked form of
+   this accounting.
+4. **Cap ≥ max block size.** The module `ASSUME`s
    `MaxBlockBytes <= ByteCap`; the implementation must couple the byte cap
    to the protocol's block-size validation limit, otherwise an oversized
    block is unadmittable forever and liveness is forfeit by configuration.

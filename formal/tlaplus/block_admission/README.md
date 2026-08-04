@@ -11,17 +11,20 @@ message count (2048), not bytes.
 
 | Model | Code |
 |---|---|
-| `queued` (FIFO, `CountCap`) | `node/src/rust/runtime/setup.rs` — `block_processor_queue` mpsc |
+| `queued` (FIFO, `CountCap`) | `node/src/rust/runtime/setup.rs` — `block_processor_queue` mpsc (count cap in force in every mode) |
 | `processing` (≤ `MaxParallel`) | `node/src/rust/instances/block_processor_instance.rs` — semaphore drain |
-| `pending` re-request pool | `casper/src/rust/engine/block_retriever.rs` — requested-blocks / dependency recovery |
+| `resident` (≤ `MaxDeliveries`) | decoded inbound `BlockMessage` held by a receiving task between arrival and the admission decision |
+| `pending` re-request pool | `casper/src/rust/engine/block_retriever.rs` — requested-blocks / dependency recovery; retains **no** payload bytes |
+| `Defer` transition | deferral **releases** the payload buffer (resident → pending); re-delivery is a later `Deliver`, not a held buffer |
 | `RetainedBytes` | bytes held by queued **plus in-flight** messages |
+| `RetainedBytes + ResidentBytes` | total node-side residency incl. the delivery window (`Inv_TotalResidencyBounded`) |
 
 ## Configurations
 
 | Config | Knobs | Expected | Shows |
 |---|---|---|---|
-| `MC_BlockAdmission` | `ByteBounded`, `DeferralRerequests` | **clean** (CI-gated) | The fix: byte bound, nothing shed, every broadcast block eventually processed |
-| `MC_BlockAdmission_pre_fix` | `¬ByteBounded` | `Inv_RetainedBytesBounded` violated | Today's design: a count cap admits `CountCap × MaxBlockBytes` regardless of budget |
+| `MC_BlockAdmission` | `ByteBounded`, `DeferralRerequests` | **clean** (CI-gated) | The fix: byte bound and total-residency bound, nothing shed, every broadcast block eventually processed |
+| `MC_BlockAdmission_pre_fix` | `¬ByteBounded` | `Inv_RetainedBytesBounded` violated | Today's design: a count cap admits up to `(CountCap + MaxParallel) × MaxBlockBytes` (full queue plus in-flight replay) regardless of budget |
 | `MC_BlockAdmission_drop_pre_fix` | `ByteBounded`, `¬DeferralRerequests` | `Live_AllBroadcastProcessed` violated | The naive fix: shedding over-budget blocks wedges the shard |
 
 Pre-fix configs are the formal-side counter-examples; run them manually
@@ -34,8 +37,10 @@ java -jar ~/.tla/tla2tools.jar -workers auto \
 
 ## Implementation obligations
 
-This model imposes three obligations on any implementing PR (budget
-queued **and** in-flight; defer, never drop; cap ≥ max block size). The
+This model imposes four obligations on any implementing PR (budget
+queued **and** in-flight; defer, never drop; deferral releases the
+payload buffer — re-delivery comes from the retriever, not a held
+buffer; cap ≥ max block size). The
 full treatment — claims-to-tools mapping, the remaining verification
 ladder, and the process conventions this area follows — lives in
 [docs/formal-verification.md](../../../docs/formal-verification.md).
