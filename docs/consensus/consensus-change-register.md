@@ -2201,6 +2201,14 @@ tripwires — a revalidation of the registered representation and bytes, not a f
 PDAs remove the read ceiling, making writer and reader symmetric; the retired row is
 [Appendix B.1](#b1-retired-register-entries).
 
+The evaluator follow-up `7b25df5a` is likewise a byte- and value-neutral refinement inside CBR-044.
+It replaces a temporary forward `Vec<&Par>` with the already-proven reverse trie visitors; an
+external neutral/set/map regression preserves evaluated map associations, and the reverse-order
+visitor regressions pass for shared-prefix and dense topologies. It changes no wire field, accepted
+input, verdict, post-state, or metering rule, so it neither changes the seven-axis classification
+above nor creates a second register entry. The capped evidence and exact auxiliary-space delta are
+reported in [PathMap §5.7](../design/pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality).
+
 #### Authority and residuals
 
 The owner required direct trie serialization, specialized set/map modes, ordinary Rust stacks, no

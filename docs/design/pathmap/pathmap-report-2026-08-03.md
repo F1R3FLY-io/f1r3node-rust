@@ -4,7 +4,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata`
-**Report date** 2026-08-03 · **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33`
+**Report date** 2026-08-03, revised 2026-08-04 · **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33`
 **Companion reports** — the [stack-safety report](../stack-safety/stack-safety-report-2026-07-29.md)
 (the depth-safety programme these fixes also belong to) and the
 [consensus-change register](../../consensus/consensus-change-register.md)
@@ -67,6 +67,7 @@ register rows for these IDs point here.
 | **SS-C7** | `3a32cf07` | bincode FORM ②: $`U(m)`$ verbatim and contiguous, then the values; the reader splits frames by pure byte slicing | superseded by EPM1 (SS-C9) | [5.2](#52-the-wire-lineage-and-the-epm1-format) |
 | **SS-C8** | `8cf0b770` | FORM ② keyed by the entries **this surface writes** (`locally_free`-blanked); the blanked trie is memoized | folded into EPM1; the invariant it repaired is permanent | [5.2](#52-the-wire-lineage-and-the-epm1-format), [5.3](#53-negative-results) |
 | **SS-C9** | `26876b65` | `EPathMap = Empty \| Set(PathMap<()>) \| Map(PathMap<Par>)`; one versioned **EPM1** trie snapshot on protobuf **and** bincode; generated decode PDAs remove the read ceiling | **the final state**; refined by `9b3792ac` (zero-copy decode) and `2902f0d0` (reverse-zipper printer) | [5.1](#51-the-homogeneous-representation)–[5.5](#55-pathmap-native-operations) |
+| **SS-C10** | `7b25df5a` | the expression-evaluator PDA streams set keys and map key/value pairs from reverse PathMap order instead of retaining a forward `Vec<&Par>` projection | zero projected child pointers; canonical forward evaluation and map association preserved | [5.7](#57-reverse-zipper-totality) |
 | **SS-Y6** | `c0385b79` | the `InternedEPathMap` LRU store and its spliced event-hash emitter are **deleted**; `contains_par` is constant-false | discharged by deletion; zero byte goldens moved | [5.8](#58-the-dissolved-intern-store) |
 | **SS-E3** *(PathMap slice)* | `b2d84064` | independent `hash_pathmap_set` / `hash_pathmap_map` cachegrind ladders | both linear; exponents in [§5.6](#56-hash-and-clear-ladders) | [5.6](#56-hash-and-clear-ladders) |
 | **SS-E4** *(PathMap slice)* | `0e487d4a` | production reverse-zipper totality repair found by measurement | total; allocation-free reverse walk preserved without a PathMap fork | [5.7](#57-reverse-zipper-totality) |
@@ -649,6 +650,20 @@ empty accepts either typed visitor. Suite results: pretty-printer family 44/44, 
 62/62, oracle provenance 2/2, hand-written recursion census 3/3, under a 4 GiB RSS cap with zero
 swap; the recursive oracle lives under `rholang/tests/support`, outside production sources.
 
+**The evaluator uses the same bridge** (**DERIVED** and **MEASURED**, `7b25df5a`). The expression
+PDA formerly repeated the printer's old shape: a forward trie walk filled a `Vec<&Par>`, then a
+second loop pushed those pointers in reverse. A set retained $`n \operatorname{sizeof}(\&\mathrm{Par})`$ bytes
+of pointer payload and a map retained $`2n \operatorname{sizeof}(\&\mathrm{Par})`$ bytes, in addition to the
+arena that necessarily owns decoded byte keys. The replacement calls the reverse raw visitor
+directly. Set mode decodes and pushes one key per callback; map mode pushes the associated value
+and then its decoded key so LIFO execution remains key-before-value in forward canonical order.
+Thus the projected-pointer high-water changes from $`\Theta(n)`$ to zero while total evaluation
+work remains $`\Theta(n)`$. The external evaluator regression passes neutral empty, set mode, and
+two map bindings whose evaluated key/value associations detect a reversed push pair; the reverse
+visitor regressions pass 2/2, including the dense-zero-word topology. Both commands ran under
+RSS-capped, zero-swap systemd scopes with one Cargo job. No EPM1 bytes, metering rule, or PathMap
+source changed.
+
 The repair's consensus classification was CBR-046, retired 2026-08-03 as a bug fix under the
 register's inclusion criterion; the record is the register's
 [exemption appendix](../../consensus/consensus-change-register.md#b1-retired-register-entries).
@@ -708,6 +723,7 @@ checked (**MEASURED**, all under RSS caps; the complete matrix):
 | `epathmap_epm1_snapshot` | 15 passed |
 | zero-copy ACT decode refinement (`9b3792ac`) | codec 7/7; EPM1/cache/bincode-shape/native-zipper 42/42; independent byte differentials and goldens 59/59 |
 | reverse-zipper pretty-printer (`2902f0d0`) | printer 44/44; PathMap integration 62/62; provenance 2/2; recursion census 3/3 |
+| reverse-zipper evaluator (`7b25df5a`) | evaluator semantics 1/1; reverse set/map visitor order and dense topology 2/2 |
 | `epathmap_pathmap_native_zipper` | 7 passed |
 | `epathmap_collection_methods_spec` | 2 passed — methods stay `EPathmapBody`; neutral empty specializes on first insertion |
 | `zipper_path_management_spec` | 8 passed |
