@@ -2,8 +2,8 @@
   "$schema": "./schemas/ci-pins.schema.jsonc",
   "schemaVersion": 1,
   "systemIntegration": {
-    "runnerRef": "369d49df2f97e65b3d0ad869aa668a7383b11179",
-    "catalogRef": "369d49df2f97e65b3d0ad869aa668a7383b11179",
+    "runnerRef": "66de4f95141cbef9c1308d58fbb872b66cf75197",
+    "catalogRef": "66de4f95141cbef9c1308d58fbb872b66cf75197",
     "catalogSchemaVersion": 1
   },
   "ociCli": {

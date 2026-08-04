@@ -93,7 +93,8 @@ command -v jq >/dev/null || {
 mkdir -p "$OUT_DIR"
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
-find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 |
+find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
+	-path '*/bench-segment-*/metrics.json' -print0 |
 	sort -z |
 	xargs -0 --no-run-if-empty cat |
 	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
@@ -109,6 +110,12 @@ if [ -n "$BASELINE_JSON" ] && [ -s "$BASELINE_JSON" ]; then
 	BASELINE_ARG="$(cat "$BASELINE_JSON")"
 fi
 
+PROTECTION_BREACH=false
+if [ -s "$SOAK_DIR/host-guardian-breach.txt" ] ||
+	grep -q '^host_protection_breach:' "$SOAK_DIR/early-exit.txt" 2>/dev/null; then
+	PROTECTION_BREACH=true
+fi
+
 jq -n \
 	--slurpfile segments "$SEGMENTS_JSON" \
 	--argjson passive "$PASSIVE_ARG" \
@@ -118,6 +125,7 @@ jq -n \
 	--argjson duration "$DURATION_SECONDS" \
 	--argjson retry_attempt "$RETRY_ATTEMPT" \
 	--argjson window "$WINDOW_SECONDS" \
+	--argjson protection_breach "$PROTECTION_BREACH" \
 	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 	--arg status "$SOAK_STATUS" \
 	'
@@ -146,6 +154,7 @@ jq -n \
         restarted: ($retry_attempt > 0),
         retry_attempt: $retry_attempt,
         status: $status,
+        protection_breach: $protection_breach,
         # Seconds actually soaked so far, against the run
         # budget — lets the dashboard show progress on a checkpoint.
         elapsed_seconds: ($passive.elapsed_seconds // null)
@@ -181,6 +190,7 @@ jq -n \
 	--argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
 	--argjson baseline "$BASELINE_ARG" \
 	--argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
+	--argjson protection_breach "$PROTECTION_BREACH" \
 	--arg status "$SOAK_STATUS" \
 	'
   def pct_over(cur; base; pct):
@@ -196,6 +206,10 @@ jq -n \
       []
       | if $p == null
           then . + ["no passive soak summary was produced (no data)"] else . end
+      | if $p != null and (($p.failures // 0) > 0)
+          then . + ["\($p.failures) passive soak iteration(s) failed"] else . end
+      | if $protection_breach
+          then . + ["host protection breach aborted the soak"] else . end
       | if $bp != null and $p != null and $p.failure_rate != null and $bp.failure_rate != null
            and $p.failure_rate > ($bp.failure_rate + $thresholds.failure_rate_max_increase_pts)
           then . + ["failure rate \($p.failure_rate) exceeds baseline \($bp.failure_rate) by more than \($thresholds.failure_rate_max_increase_pts * 100)pts"] else . end

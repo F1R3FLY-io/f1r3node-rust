@@ -175,9 +175,29 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
+      - name: Verify soak schedule routing
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-soak-schedule-routing.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
+
+      - name: Verify soak verdicts
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-aggregate-perf-report.sh
+
+      - name: Verify latency benchmark readiness and finalization
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-latency-benchmark.sh
+
+      - name: Verify soak fail-closed driver
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-run-merge-recovery-soak.sh
+
+      - name: Verify soak dashboard restoration
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-restore-soak-dashboard-run.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
