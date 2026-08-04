@@ -645,7 +645,7 @@ pub(crate) fn combine_p_input<'ast>(
         }
 
         InputPhase::Body => {
-            let proc_visit_outputs = value.into_proc();
+            let mut proc_visit_outputs = value.into_proc();
             let InputK {
                 persistent,
                 peek,
@@ -659,7 +659,8 @@ pub(crate) fn combine_p_input<'ast>(
                 ..
             } = *k;
 
-            // ★ Leg-1: shallow reads, then MOVE both the guard and the body.
+            // The guard is copied in the recursive implementation, but the
+            // body cache is transferred to `Receive::locally_free`.
             let guard_locally_free = guard_out
                 .as_ref()
                 .map(|gr| gr.par.locally_free.clone())
@@ -669,7 +670,7 @@ pub(crate) fn combine_p_input<'ast>(
                 .map(|gr| gr.par.connective_used)
                 .unwrap_or(false);
             let guard_par = guard_out.map(|gr| gr.par);
-            let body_locally_free = proc_visit_outputs.par.locally_free.clone();
+            let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
             let body_connective_used = proc_visit_outputs.par.connective_used;
 
             Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {

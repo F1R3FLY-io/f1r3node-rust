@@ -237,18 +237,18 @@ pub(crate) fn combine_collect<'ast>(
     input_depth: i32,
     value: NormVal,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let result = value.into_proc();
+    let mut result = value.into_proc();
 
     // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
     // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so a
     // single deep clone anywhere in this traversal re-imposes the ceiling the
     // conversion just removed. It did: with the recursion gone the probe read
     // 15,850 B/level, which is that constant exactly. The recursive form cloned
-    // the child `Par` into the accumulator and then read `locally_free` /
-    // `connective_used` off the original; both are SHALLOW fields, so they are
-    // read first and the deep clone is deleted. Values are identical by
-    // construction — the clone and the original agree on every field.
-    let child_locally_free = result.par.locally_free.clone();
+    // the child `Par` into the accumulator and then transferred
+    // `locally_free` out of the original. Preserve that transfer while deleting
+    // the deep clone: the enclosing collection owns the cache; the nested
+    // child must not retain a duplicate.
+    let child_locally_free = std::mem::take(&mut result.par.locally_free);
     let child_connective_used = result.par.connective_used;
     acc_pars.push(result.par);
     let result_known_free = result.free_map;
@@ -384,7 +384,7 @@ pub(crate) fn combine_collect_map<'ast>(
     input_depth: i32,
     value: NormVal,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let result = value.into_proc();
+    let mut result = value.into_proc();
 
     if !on_value {
         // The KEY has just finished: schedule this pair's value against the
@@ -420,19 +420,18 @@ pub(crate) fn combine_collect_map<'ast>(
     }
 
     // The VALUE has just finished: close the pair.
-    let key = key_par.expect("combine_collect_map: a value arrived with no key");
+    let mut key = key_par.expect("combine_collect_map: a value arrived with no key");
     // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
     // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so a
     // single deep clone anywhere in this traversal re-imposes the ceiling the
     // conversion just removed. It did: with the recursion gone the probe read
     // 15,850 B/level, which is that constant exactly. The recursive form cloned
-    // the child `Par` into the accumulator and then read `locally_free` /
-    // `connective_used` off the original; both are SHALLOW fields, so they are
-    // read first and the deep clone is deleted. Values are identical by
-    // construction — the clone and the original agree on every field.
-    let key_locally_free = key.locally_free.clone();
+    // each child `Par` into the accumulator and then transferred
+    // `locally_free` out of the originals. Preserve that transfer while
+    // deleting the deep clones.
+    let key_locally_free = std::mem::take(&mut key.locally_free);
     let key_connective_used = key.connective_used;
-    let value_locally_free = result.par.locally_free.clone();
+    let value_locally_free = std::mem::take(&mut result.par.locally_free);
     let value_connective_used = result.par.connective_used;
     acc_pairs.push((key, result.par));
     let result_known_free = result.free_map;

@@ -97,14 +97,15 @@ pub(crate) fn combine_p_new<'ast>(
     value: NormVal,
     env: &HashMap<String, Par>,
 ) -> Result<Step<'ast>, InterpreterError> {
-    let body_result = value.into_proc();
+    let mut body_result = value.into_proc();
 
     // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-    // ★ Leg-1: shallow read, then MOVE.
-    let body_locally_free = body_result.par.locally_free.clone();
+    // Transfer the cache to `New::locally_free`, matching the recursive
+    // implementation. The nested body must not retain a duplicate cache.
+    let body_locally_free = std::mem::take(&mut body_result.par.locally_free);
     let result_new = New {
         bind_count: new_count as i32,
         p: Some(body_result.par),
@@ -409,9 +410,12 @@ mod tests {
                 create_bit_vector(&vec![4])
             ]
         );
+        // The child aggregate is transferred to `New::locally_free` and then
+        // adjusted for the five newly bound names. Individual sends retain
+        // their own caches; the nested `Par` must not duplicate the aggregate.
         assert_eq!(
             result.unwrap().par.news[0].p.clone().unwrap().locally_free,
-            create_bit_vector(&vec![0, 1, 2, 3, 4])
+            Vec::<u8>::new()
         );
     }
 }

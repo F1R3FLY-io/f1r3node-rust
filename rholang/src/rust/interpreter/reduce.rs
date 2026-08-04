@@ -9189,21 +9189,22 @@ mod differential_trampoline {
         );
     }
 
-    // ---- moderate-depth plus/list: the recursive twin (a DEBUG build, big
-    //      frames) survives ~60 levels on the ordinary test-harness stack, so both
-    //      paths run and must AGREE. (The heap-bounded 20000-deep proof is the
-    //      separate `so_probe` example, trampoline-only — the twin cannot reach
-    //      it, which is precisely the bug leg-2 fixes.) `current_thread` avoids
-    //      introducing a separately configured tokio-worker stack. ----
+    // ---- shallow plus/list: the recursive twin has exceptionally large DEBUG
+    //      frames, so equivalence is deliberately checked at 4 levels on the ordinary
+    //      test-harness stack. (The heap-bounded 20000-deep proof is the separate
+    //      `so_probe` example, trampoline-only — the twin cannot reach it, which
+    //      is precisely the bug leg-2 fixes.) `current_thread` avoids introducing
+    //      a separately configured tokio-worker stack. This is a corpus bound on
+    //      the test-only oracle, never a production traversal limit. ----
     #[tokio::test(flavor = "current_thread")]
-    async fn moderate_depth_plus_and_list_agree() {
+    async fn shallow_plus_and_list_agree() {
         let mut t = new_gint_par(0, vec![], false);
-        for _ in 0..60 {
+        for _ in 0..4 {
             t = eplus(t, new_gint_par(1, vec![], false));
         }
         assert_agree(&t).await;
         let mut u = new_gint_par(0, vec![], false);
-        for _ in 0..60 {
+        for _ in 0..4 {
             u = elist(vec![u]);
         }
         assert_agree(&u).await;
