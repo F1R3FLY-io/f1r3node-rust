@@ -26,10 +26,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TLA_DIR="$REPO_ROOT/formal/tlaplus/slashing"
+TLA_ROOT="$REPO_ROOT/formal/tlaplus"
 
-if [[ ! -d "$TLA_DIR" ]]; then
-    echo "ERROR: TLA+ slashing directory not found at $TLA_DIR" >&2
+if [[ ! -d "$TLA_ROOT/slashing" ]]; then
+    echo "ERROR: TLA+ slashing directory not found at $TLA_ROOT/slashing" >&2
     exit 2
 fi
 
@@ -64,25 +64,25 @@ if [[ -z "$TLC_CMD" ]]; then
     exit 3
 fi
 
-# Post-fix configs: each must TLC-clean.
+# Post-fix configs: each must TLC-clean. Entries are
+# <subdir under formal/tlaplus>/<config basename>.
 POST_FIX_CONFIGS=(
-    MC_EquivocationDetector
-    MC_EquivocationDetector_liveness
-    MC_EquivocationDetectorEager
-    MC_EquivocationDetectorEager_3v
-    MC_ConcurrentTracker
-    MC_SlashFlow
-    MC_TwoLevelSlashing
-    MC_AuthorizedSlashFlow
-    MC_JustificationProjection
-    MC_WithdrawFlow
+    slashing/MC_EquivocationDetector
+    slashing/MC_EquivocationDetector_liveness
+    slashing/MC_EquivocationDetectorEager
+    slashing/MC_EquivocationDetectorEager_3v
+    slashing/MC_ConcurrentTracker
+    slashing/MC_SlashFlow
+    slashing/MC_TwoLevelSlashing
+    slashing/MC_AuthorizedSlashFlow
+    slashing/MC_JustificationProjection
+    slashing/MC_WithdrawFlow
+    block_admission/MC_BlockAdmission
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
-    POST_FIX_CONFIGS+=(MC_EquivocationDetector_safety)
+    POST_FIX_CONFIGS+=(slashing/MC_EquivocationDetector_safety)
 fi
-
-cd "$TLA_DIR"
 
 # Per-config wall-clock cap: one wedged or state-exploded config must not
 # consume the whole job silently (observed: the first config alone exceeded
@@ -96,15 +96,17 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 
 failed=0
-for cfg in "${POST_FIX_CONFIGS[@]}"; do
-    if [[ ! -f "$cfg.tla" || ! -f "$cfg.cfg" ]]; then
-        echo "SKIP   $cfg (missing $cfg.tla or $cfg.cfg)"
+for entry in "${POST_FIX_CONFIGS[@]}"; do
+    dir="$TLA_ROOT/${entry%/*}"
+    cfg="${entry##*/}"
+    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "SKIP   $entry (missing $cfg.tla or $cfg.cfg in $dir)"
         continue
     fi
     started_epoch="$(date +%s)"
-    echo "CHECK  $cfg (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
+    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla" >"/tmp/tlc-$cfg.log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"/tmp/tlc-$cfg.log" 2>&1
     status=$?
     set -e
     elapsed="$(( $(date +%s) - started_epoch ))s"

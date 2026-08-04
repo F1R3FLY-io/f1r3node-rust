@@ -54,6 +54,16 @@ F1R3node Rust provides:
 - gRPC and HTTP APIs for deploys, proposals, status, and data queries
 - Docker and local standalone workflows for development and testing
 
+## Formal Verification
+
+Consensus-critical areas are verified with a layered stack — TLA+ models
+whose gating configurations run in CI (with pre-fix violation
+configurations kept as formal counter-examples), axiom-free Rocq
+mechanizations, Kani proof harnesses, and property/mutation testing tiers —
+under [`formal/`](formal). The methodology, the index of verified areas,
+and the obligations verification places on implementation work are
+documented in [docs/formal-verification.md](docs/formal-verification.md).
+
 ## Workspace Crates
 
 | Crate | Purpose |
