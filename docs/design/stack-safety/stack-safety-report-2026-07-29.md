@@ -1370,7 +1370,7 @@ Two numbers, both **MEASURED (q)**, that the "after" column would otherwise flat
 
 ★ **Anti-vacuity changed a conclusion here.** `lower_depth` first read **252 B/level**, and the obvious reading — *"the conversion is incomplete"* — was **wrong**: `ast_drop`, which lowers nothing at all, read **254**. The slope was the teardown of the AST (abstract syntax tree) itself. `lower_leak` (lower, then `mem::forget` both sides) isolates the conversion and reads **0**.
 
-**The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): both production-reachable mettail rows are converted.** `render` is replaced by the observation PDA (`mettail-rust` `19ac6f21`, gated by `f2a7711f`): a main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula`'s one-pass PDA (`3316adaf`) is checked against its recursive oracle by an executable import of the exact production source (`ed46fbc9`) and closed by the zero-slope gate plus Rocq proof (`4fb9c30f`). Repeated debug bisections keep both depth-512 and depth-4,096 endpoints inside a common reliable 28 KiB bound (at most one 4 KiB bucket of run-to-run variation); release reads 20 / 20 KiB. Rocq proves recursive/PDA equality for every constructor, continuation, and arbitrary-arity separation with no admissions. The two historical `Drop`s are the derived-impl class and **were not reachable by the pushdown transform applied at this anchor: `drop_in_place` has no text to rewrite.**
+**The named residue at this measurement anchor, with owners** (**MEASURED (q)**, debug / release): `par_drop` 368 / 95 · `ast_drop` 270 / 96 · `render` 3,665 / 911 · `lower_formula` 4,094 / 978. **Living disposition (2026-08-03): both production-reachable mettail rows are converted.** `render` is replaced by the observation PDA (`mettail-rust` `19ac6f21`, gated by `f2a7711f`): a main-thread probe over a directly constructed nested `Par` now finds a common reliable bound of approximately 58 KiB in debug and 28 KiB in release at both depth 512 and depth 4,096; variation below those bounds is ASLR noise rather than growth with depth. `lower_formula`'s one-pass PDA (`3316adaf`) is checked against its recursive oracle by an executable import of the exact generated-Rholang adapter (`ed46fbc9`) and closed by the zero-slope gate plus Rocq proof (`4fb9c30f`). Commit `c21b0efa` extracts the representation-independent production machine into `runtime/src/formula_pda.rs`; the imported adapter and the real generated-`Proc` adapter therefore call the same implementation. Repeated debug and release bisections keep depth-512 and depth-4,096 endpoints between 20 and 24 KiB, a single 4 KiB instrument bucket rather than growth with depth. Rocq proves recursive/PDA equality for every constructor, continuation, and arbitrary-arity separation with no admissions. The two historical `Drop`s are the derived-impl class and **were not reachable by the pushdown transform applied at this anchor: `drop_in_place` has no text to rewrite.**
 
 **Closure-audit extension (2026-08-03).** The flat neutral renderer did not by itself close every observation path: the CLI guest renderer still recursed through a child callback, while `RuntimeObservationValue` still derived recursive `Clone`, `Drop`, equality, ordering, hashing, and debugging and implemented recursive `Display`. These were absent from the anchor's measured register. `mettail-rust` `c99bd722` makes guest notation a layout-only hook whose children remain inside the renderer PDA; `9ee2f85f` replaces the observation-value trait family with explicit PDAs; and `3f35226b` adds a main-thread zero-slope gate. The combined trait subject has the same reliable **24 KiB** bound at depth 512 and 4,096 in both debug and release. A test-only mirror enum retains the old derives as a bounded oracle: `Clone`, equality/order, `DefaultHasher` images, compact and alternate `Debug`, and `Display` are identical across every variant and same-variant field-order controls. A 32,768-level witness exercises the deep implementations and ordinary teardown.
 
@@ -2688,24 +2688,25 @@ observable images, including alternate `Debug`; the conversion therefore changes
 space, not value semantics.
 
 `lower_formula` is now closed as well. Its one-pass PDA is committed at `mettail-rust` `3316adaf`;
-`ed46fbc9` imports the exact production `languages/src/rholang/formula.rs` into a minimal
+`ed46fbc9` imports the exact production `languages/src/rholang/formula.rs` adapter into a minimal
 generated-AST carrier and compares it with the former recursive equations over a bounded corpus
 covering every constructor, the three separation spellings, and multiple targets, then exercises
 a 32,768-level witness. `4fb9c30f` adds the main-thread `RLIMIT_STACK` gate and the
-`FormulaPdaEquivalence` Rocq theorem. The debug endpoints at depth 512 and 4,096 remain inside a
-common reliable **28 KiB** bound with at most one 4 KiB bucket of ASLR variation; release reads
-**20 / 20 KiB**. This is zero slope within instrument resolution in both profiles. The proof is
-suffix-parametric and covers every static/host reduction plus arbitrary-arity separation; the
-focused Rocq suite passes with no axioms or admissions (200.4 MiB peak under a 4 GiB/no-swap
-scope).
+`FormulaPdaEquivalence` Rocq theorem. Commit `c21b0efa` removes the former validation boundary by
+extracting the representation-independent production machine to `runtime/src/formula_pda.rs`.
+Both the executable minimal-carrier adapter and the real generated-`Proc` adapter call this same
+machine; the latter passes metadata type-checking with its actual generated representation. Fresh
+debug and release bisections place both depth-512 and depth-4,096 endpoints between **20 and 24
+KiB**, one 4 KiB instrument bucket and therefore zero slope within resolution. The full runtime
+suite passes, including the differential and 32,768-level witness. The suffix-parametric Rocq proof
+covers every static/host reduction plus arbitrary-arity separation with no axioms or admissions;
+the focused proof suite peaks at **207.2 MiB with zero swap** under the 4 GiB envelope.
 
-⚠ **Validation boundary, stated rather than hidden.** LLVM code generation of the full generated
-`languages` test binary exceeds this host's fixed 4 GiB validation envelope, despite metadata
-type-checking the production adapter. The local executable differential and stack ladder therefore
-compile the exact production formula source against the minimal carrier; the full
-`lower_formula` probe remains in `rholang-runtime/tests/stack_depth_gate.rs` as a zero-slope
-assertion for higher-memory CI. No `RUST_MIN_STACK`, `stacker`, depth limit, or raised RSS cap is
-part of the repair.
+★ **Validation boundary eliminated.** Executing and proving the small shared production machine
+no longer requires LLVM code generation of a monolithic full-language test binary. The exact
+generated-language adapter is executed against the minimal carrier and type-checked against the
+real generated `Proc`, so no formula-PDA obligation is deferred to higher-memory CI. No
+`RUST_MIN_STACK`, `stacker`, traversal-depth limit, or raised RSS cap is part of the repair.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
