@@ -2161,7 +2161,11 @@ is identical to the retained absolute-key scan, including result order.
   (`66aae765…640c01`), and `PAR_CONTS` $`4{,}575 \rightarrow 4{,}152`$ (`852dd38e…eec4ce`). The equal
   423-byte reduction is witnessed independently through all three cold-store roots carrying the
   same two-map fixture.
-- Rocq kernel-checks the generic PDA equivalence and EPathMap laws with no admissions; Z3 finds no mode
+- Rocq kernel-checks three files with no admissions or axioms: the generic PDA equivalence,
+  EPathMap mode/algebra laws, and the structural EPM1 envelope/value-table model. The latter proves
+  canonical base-128 framing, exact topology and ordered-value preservation, ordinal uniqueness and
+  range, malformed/truncated/trailing rejection, and equality of generated-PDA versus recursive
+  value bodies. PathMap's ACTree03 parser remains an explicit executable boundary. Z3 finds no mode
   counterexample; TLC explores 2,816 distinct states with no error.
 - At 1,024 entries the explicit list projection is 78.619× the EPM1 set size and 7.557× the EPM1
   map size; on the superseding warm rerun, projected lookup is 8,060.736× and 6,183.905× slower
@@ -2188,15 +2192,19 @@ is identical to the retained absolute-key scan, including result order.
   admission-free Rocq `compile_run_equivalence` theorem. This closes the reachability question inside
   CBR-044; it does not create a second consensus entry or change any axis classification.
 
-**Subsequent refinements and revalidation (consolidated).** Two later commits are byte-neutral
+**Subsequent refinements and revalidation (consolidated).** Three later commits are byte-neutral
 refinements inside this transition — the zero-copy ACT decode (`9b3792ac`) and the reverse-zipper
-pretty-printer walk (`2902f0d0`) — each with its own pointer-identity or reverse-equivalence
-regression and full suite matrix; both are reported in the
+pretty-printer walk (`2902f0d0`), plus the structural EPM1 proof replacement (`87e514b6`) — each
+with its own pointer-identity, reverse-equivalence, or theorem/manifest binding and full relevant
+suite matrix; all three are reported in the
 [PathMap report §5.2 and §5.7](../design/pathmap/pathmap-report-2026-08-03.md). The independent
 closure revalidation at `e67a6aaa` (`MemoryMax=4G`, zero swap, one Cargo job) passed **84/84**
 focused EPathMap/codec/manifest tests, **7/7** census/registry, the stack gate **8/8 active**, and
 the Rocq/Z3/TLC bundle (2,816 distinct TLC states), with 34 + 6 converted subjects and zero
 tripwires — a revalidation of the registered representation and bytes, not a further change.
+The 2026-08-04 proof refinement separately passed Rocq/Z3/TLC, the formal manifest 5/5, EPM1
+15/15, and codec 7/7 in zero-swap cgroups. It changes no byte, value, verdict, accepted input,
+post-state, or metering rule and therefore does not create another register entry.
 **This entry also closes the formerly-open wire-asymmetry hazard CBR-028**: the generated decode
 PDAs remove the read ceiling, making writer and reader symmetric; the retired row is
 [Appendix B.1](#b1-retired-register-entries).

@@ -731,19 +731,32 @@ checked (**MEASURED**, all under RSS caps; the complete matrix):
 | `trie_escape_arm_stack` | 6 passed — classifier and protobuf escape paths flat at depth 4,096 |
 | `par_read_stack_safety_registry` | 4 passed — production dispatch uses the generated PDA; retired limits and workarounds absent |
 | `serializer_par_byte_goldens` | 7 passed — EPM1 cold-store lengths and SHA-256 digests pinned (CBR-044) |
-| Rocq | kernel-checked with **no `Admitted`, `admit`, or `Axiom`** |
+| Rocq | three files kernel-checked with **no `Admitted`, `admit`, or `Axiom`**; `EPM1.v` models canonical length framing, topology bytes, the ordered value table, and generated-PDA value equivalence |
 | Z3 | the mode-dispatch counterexample query is **unsatisfiable** |
 | MeTTaIL `rho_rholang_conformance` | 64 passed, 0 failed, 5 intentional ignores — the former carrier failures execute on the native trie |
 
-Three bindings deserve names:
+Five bindings deserve names:
 
 - **`subtract_overlap_is_value_independent_key_mask`** (Rocq). The first model specified map
   subtraction as a value comparison; the Rust test specified the intended key-mask operation. The
   theorem was corrected and kernel-checked — evidence that the proof-to-test binding is live, since
   a divergence was caught as a red check rather than surviving as a green theorem about the wrong
   law.
-- **`distinct_topology_or_values_remain_observable`** (Rocq), bound to the Rust witness that
-  value-free topology participates in equality, hashing, and ordering (§5.5).
+- **`epm1_framed_decode_encode_identity`** and
+  **`epm1_preserves_topology_and_ordered_value_table`** (Rocq). Commit `87e514b6` replaced the
+  earlier header-plus-opaque-payload model with EPM1's actual canonical base-128 arena length,
+  topology frame, value count, and ordered length-framed value bodies. It also proves rejection of
+  redundant varints, truncated frames, and trailing bytes. The independent Rust evidence is EPM1
+  15/15, codec 7/7, and the formal manifest 5/5 under zero-swap RSS caps.
+- **`epm1_round_trip_preserves_topology_value_association`** and
+  **`associated_map_ordinals_are_in_range_and_unique`** (Rocq). The topology arena is preserved
+  byte-for-byte, and a PathMap ordinal extractor that reports the canonical table remains associated
+  with exactly one in-range value at each ordinal. PathMap owns the ACTree03 grammar and parser, so
+  their concrete correctness remains the explicitly named executable boundary exercised by the
+  compact-line, branch, dense, malformed, and key/value-association suites.
+- **`epm1_generated_pda_values_equal_recursive_encoding`** (Rocq), which instantiates the generic
+  fold theorem for every map value and lifts equality pointwise to the complete ordered value table.
+  The depth-4,096 and nested-map-value tests exercise that binding on a 256 KiB native stack.
 - **Generated `Ord` is consensus-reachable, and checked three ways.** The production reachability
   edge is map algebra: `EntryTrie::exact_map_value_eq` compares overlapping `PathMap<Par>` values
   through the generated `Par` ordering, reached by the metered evaluator through `union`,

@@ -92,7 +92,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
-| **SS-E2** | `26876b65` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence and EPathMap laws, SMT mode dispatch, TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
+| **SS-E2** | `26876b65`, `87e514b6` | f1r3node | generated traversal registry $`\leftrightarrow`$ proof/oracle manifest; Rocq generic PDA equivalence, EPathMap algebra, and structural EPM1 framing/value-table laws; SMT mode dispatch; TLA+ transition model | 30 depth + 6 width production subjects, **zero tripwire subjects** | enabling and closure evidence | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-E3** | `b2d84064`, `68e8290d` | f1r3node | Phase 7 resource closure: independent PathMap set/map hash and `Message::clear` ladders; derived-register Cachegrind axis; matched-control Massif axis | **40** converted subjects, all subquadratic; four stack-to-heap transfers measured linear | enabling and closure evidence | [5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3); PathMap slice: [PathMap §5.6](../pathmap/pathmap-report-2026-08-03.md#56-hash-and-clear-ladders) |
 | **SS-E4** | `0e487d4a` | f1r3node | Phase 7 subject-specific entry-depth histograms; production-shaped reverse PathMap zipper totality repair | four non-vacuous populations; allocation-free reverse walk preserved without a PathMap fork | enabling, measurement, and corrective evidence | [5.15](#515-subject-depth-distributions-ss-e4); PathMap slice: [PathMap §5.7](../pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality) |
 | **SS-Y3** | measured `6a264e05`; repaired `26876b65` | f1r3node | The three collection arms formerly re-scored each element three times per nesting level on the canonical-form path | $`\Theta(3^d)`$; $`3.016\times`$/level $`\rightarrow`$ generated sorter PDA, **Ir exponent 1.0068 set / 1.0023 map** | ★ **repaired**; stack flat and linear observed | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
@@ -2175,7 +2175,7 @@ are the term-family closure):
 | `absent_required_child_reachability` | 5 passed; the malformed-shape axis remains independently witnessed |
 | `stack_depth_gate` | 8 passed active; **4 ignored = 3 measurement-only probes + 1 forked-child driver** |
 | stack gate production matrix | 40 depth+width subjects at the anchor; zero tripwire subjects |
-| Rocq | both files kernel-checked; no `Admitted`, `admit`, or `Axiom` |
+| Rocq | all three files kernel-checked; no `Admitted`, `admit`, or `Axiom` |
 | Z3 | mode-dispatch counterexample query unsatisfiable |
 | TLC | 422 initial roots; 3,238 states generated; 2,816 distinct; depth 8; no error |
 | MeTTaIL `rho_rholang_conformance` | 64 passed, 0 failed, 5 intentional ignores |
@@ -2199,8 +2199,14 @@ and 30 dispositioned files, with **zero unmeasured files**.
 
 The manifest compares the generated traversal registry and the proof/oracle evidence table in
 **both** directions, then resolves every theorem and executable marker. Rocq proves the parametric
-post-order PDA fold equivalent to recursive folding for every finite tree (with the EPathMap
-mode/algebra/EPM1 laws in the companion report's scope); TLC independently checks stack
+post-order PDA fold equivalent to recursive folding for every finite tree. Commit `87e514b6`
+replaces the former six-byte-header-plus-opaque-suffix EPM1 lemma with the actual structural
+envelope: canonical base-128 lengths, a framed ACTree03 arena, an ordered count-delimited value
+table, exact end-of-input checks, mode well-formedness, ordinal uniqueness/range, and equality of
+the generated-PDA and recursive value bodies. The proof preserves the topology arena byte-for-byte
+and states ordinal extraction parametrically; PathMap's internal ACTree03 parser therefore remains
+an explicit executable-library obligation rather than being misrepresented as a Rocq-verified
+parser. TLC independently checks stack
 orientation, arity, program-counter progress, and completion over every configured tree; and the
 executable differentials retain bounded recursive or generated-reference oracles for bytes, rebuild
 order, errors, Eq/Hash/Ord/Debug, Clone, Drop, and Message behavior. The node-boundary inventory is
@@ -2268,7 +2274,7 @@ All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`
 | whole-worktree recursion census | node crate absent from source roots | **580** recursive components; **54** term-family components, **20** mutual, **30** files, **0** unmeasured | **MEASURED**, 3/3; 2.0 GiB peak RSS, zero swap |
 | formal binding | no row for this boundary | six production surfaces resolve to the generic Rocq theorem and executable evidence; manifest **5/5** | **MEASURED**, 1.4 GiB peak RSS, zero swap |
 | complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width) at `26d3e3b9`; ★ current register **40** (34 + 6) after the independent EPathMap hash/`Message::clear` controls, zero tripwires | **MEASURED**, original 2.3 GiB peak RSS; current full register 406.6 MiB, zero swap ([§5.14](#514-resource-closure--heap-and-deterministic-time-ss-e3)) |
-| deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks both files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script |
+| deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks all three files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script; structural EPM1 refinement re-run 2026-08-04 |
 | B/level | NOT MEASURED — no pre-change frame bisection was retained for this boundary | NOT MEASURED — the explicit-loop class and 256 KiB deep probe establish bounded execution but not a byte slope | stated limitation |
 | throughput / allocation profile | NOT MEASURED — no stable boundary benchmark exists | NOT MEASURED — correctness and depth closure were gated first | stated limitation |
 
