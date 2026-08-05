@@ -11,11 +11,11 @@ This repository tracks the Rust node implementation that lives on `rust/dev` in 
 
 ## Project Status
 
-The badges above report **shard behaviour under sustained load**, not build status. Per-commit CI status is already on the repository home page, above the file list, and in every pull request — a badge duplicating it adds nothing, so the space goes to the signal you cannot get anywhere else.
+The badges above report **shard behaviour under sustained load**. They do not report build status. GitHub already shows per-commit CI status on the repository home page, above the file list, and in each pull request. A badge that duplicates this status adds nothing. This space shows the signal that you cannot get anywhere else.
 
 | Badge | Reads | From |
 | --- | --- | --- |
-| `soak · master` | `pass` / `regress` for the last ~60h weekend soak — this is the release gate | verdict |
+| `soak · master` | `pass` / `regress` for the last ~60h weekend soak. This is the release gate | verdict |
 | `soak · dev` | same, for the last daily soak (up to 22h) | verdict |
 | `stability` | share of soak iterations that completed a full bring-up → load → finalize cycle, plus the iteration count | weekend soak |
 | `perf` | finalization p95 and iteration throughput | weekend soak |
@@ -24,16 +24,16 @@ The badges above report **shard behaviour under sustained load**, not build stat
 
 **`stability` is a success rate, not uptime.** The soak builds a fresh shard for each iteration, drives load through it, and checks that deploys finalize. `99.5% · 193 iters` means 192 of 193 such cycles succeeded. Nothing here watches a long-lived deployment, so no claim is made about the availability of one.
 
-**Everything is a snapshot of the last completed soak.** The `master` figures can be up to a week old; `dev` up to a day. They describe one commit — named on the [dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) along with the node version it was built from — and not the current branch head.
+**Everything is a snapshot of the last completed soak.** The `master` figures can be up to a week old. The `dev` figures can be up to a day old. They describe one commit, not the current branch head. The [dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) names that commit and the node version it was built from.
 
-**`perf` is a readout, never a judgement.** It is always blue. Absolute latency and throughput have no fixed threshold in this project; the gate is week-over-week movement, and that verdict lives in the soak badges. A shard can be slow and still `pass` if it was equally slow last week — the dashboard's trend charts are where that shows up.
+**`perf` is a readout, never a judgement.** It is always blue. Absolute latency and throughput have no fixed threshold in this project. The gate is week-over-week movement, and that verdict lives in the soak badges. A shard can be slow and still `pass` if it was equally slow last week. The dashboard's trend charts show that movement.
 
 ### Colours
 
 | Badge | Meaning |
 | --- | --- |
 | `soak` `pass` (green) | completed, nothing regressed past threshold |
-| `soak` `regress` (red) | at least one metric crossed its threshold — the dashboard lists which |
+| `soak` `regress` (red) | at least one metric crossed its threshold. The dashboard lists which |
 | `soak` `14h/22h` (grey) | in flight; the number is progress, not a verdict |
 | `soak` `pass · no baseline` (yellow-green) | completed with no prior run to compare, so passing is not yet meaningful |
 | `stability` green to orange | advisory bands on the absolute rate: 100%, ≥99%, ≥95%, below |
@@ -43,7 +43,7 @@ A `stability` of 100% alongside a red `soak · master` is consistent and worth u
 
 Every badge is generated from the same `verdict.json` and `weekly-summary.json` the [dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) renders, so a badge cannot disagree with the page behind it. The dashboard adds week-over-week history for failure rate, throughput, peak RSS and finalization latency, per series, with the commit and version for each run.
 
-For build and test status, use the commit status on the file listing above, or the [Actions tab](https://github.com/F1R3FLY-io/f1r3node-rust/actions) — note that the [Slashing test suite](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/slashing-tests.yml) is a separate workflow from [`ci.yml`](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml).
+For build and test status, use the commit status on the file listing above, or the [Actions tab](https://github.com/F1R3FLY-io/f1r3node-rust/actions). Note that the [Slashing test suite](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/slashing-tests.yml) is a separate workflow from [`ci.yml`](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml).
 
 ## Overview
 
@@ -112,7 +112,7 @@ Both hooks auto-skip in CI environments (the same gates run server-side in `.git
 - All three pre-commit checks (fmt, clippy, deny) must pass.
 - The pre-push test suite must pass.
 - Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI; bypassing locally only defers the failure.
-- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local in-progress experimentation only — every commit and push that reaches the remote must pass without skips.
+- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local in-progress experimentation only. Every commit and push that reaches the remote must pass without skips.
 
 See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and `setup-hooks.sh --status` / `--remove` management commands.
 
@@ -157,7 +157,7 @@ See [`docker/README.md`](docker/README.md) for building local images, port map, 
 
 #### Pull The Prebuilt Image
 
-CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR) on pushes to `master`, on release tags, and on a nightly schedule. The repository is public — **no Oracle Cloud account or `docker login` is required** to pull.
+CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR) on pushes to `master`, on release tags, and on a nightly schedule. The repository is public. **No Oracle Cloud account or `docker login` is required** to pull.
 
 ```bash
 docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
@@ -190,8 +190,8 @@ To build a local image:
 | --- | --- |
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
-| [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide — local Docker, generic SSH VPSes, or Oracle Cloud |
-| [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan — distributed shard, integration tests, latency/throughput |
+| [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide: local Docker, generic SSH VPSes, or Oracle Cloud |
+| [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan: distributed shard, integration tests, latency/throughput |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
 | [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
 | [node/README.md](node/README.md) | Node binary crate and CLI entry points |

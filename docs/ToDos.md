@@ -83,9 +83,12 @@ claimed_at: 2026-08-05T00:00:00Z
 tasks:
   - id: TASK-011-1
     title: "Add run_exhaustive workflow_dispatch input to slashing-tests.yml"
-    status: in_progress
+    status: complete
     claimed_by: claude-session-917f64e8
+    completed_at: 2026-08-05T13:20:00Z
     branch: fix/tla-3v-liveness-split
+    notes:
+      - "Implemented in commit 7e38ab1f; YAML validated, all 9 check-workflow-invariants.sh invariants pass. Local-only for now per maintainer — branch not pushed."
     acceptance:
       - "workflow_dispatch gains a boolean input run_exhaustive (default false)"
       - "tla-model-check job sets RUN_EXHAUSTIVE_TLA=1 only when the input is true; push/pull_request/schedule behavior is unchanged (nightly keeps gating on the 8 fast configs)"
@@ -93,8 +96,13 @@ tasks:
 
   - id: TASK-011-2
     title: "Dispatch the exhaustive tier and capture the red run"
-    status: pending
+    status: complete
+    claimed_by: claude-session-917f64e8
+    completed_at: 2026-08-05T13:58:00Z
     blocked_by: [TASK-011-1]
+    notes:
+      - "RESCOPED to local-only per maintainer (2026-08-05): red baseline captured via RUN_EXHAUSTIVE_TLA=1 TLC_PER_CONFIG_TIMEOUT=6m locally instead of CI dispatch. Result: 8 fast configs OK; MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety each distinctly labeled TIMEOUT at the cap; run failed (red for the right reason). Full-45m evidence: 11 nightlies 2026-07-25..08-04 + 2026-08-04 local repro. CI-dispatch red baseline deferred to push time. Full log in TDD plan cycle_log (B1)."
+      - "DISCOVERED: script roll-up says 'FAILED: N config(s) violated invariants' for cap timeouts — mislabels timeout as violation; candidate fix tracked as TDD plan B7 pending ratification."
     acceptance:
       - "gh workflow run slashing-tests.yml --ref <branch> -f run_exhaustive=true executed (env -u GITHUB_TOKEN)"
       - "Run goes red with all three exhaustive-tier configs (MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety) reported as TIMEOUT at the 45m per-config cap — distinctly labeled as timeouts, not invariant violations"
