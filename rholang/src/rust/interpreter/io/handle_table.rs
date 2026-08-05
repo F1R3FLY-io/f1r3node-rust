@@ -828,7 +828,13 @@ mod tests {
     /// (in debug builds) when passed a hash shorter than 8 bytes.
     /// Guards against a future refactor passing a truncated hash
     /// which would silently reduce entropy.
+    ///
+    /// Gated on `debug_assertions` because the panic is via
+    /// `debug_assert!`, which is a no-op in `--release` mode.
+    /// Without the gate, the pre-push hook's release-mode test
+    /// pass fails with "test did not panic as expected."
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "requires at least 8 bytes of hash")]
     fn seed_from_short_hash_debug_asserts() {
         let short_hash = vec![0xffu8, 0x00, 0x00, 0x00];
