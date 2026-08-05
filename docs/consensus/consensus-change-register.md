@@ -89,7 +89,7 @@ CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface 
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
-derivation. **45 further changes were examined and retired** with typed reasons — 34 bug fixes, 3
+derivation. **46 further changes were examined and retired** with typed reasons — 35 bug fixes, 3
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -134,7 +134,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 20 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 45 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 46 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -445,7 +445,7 @@ optimizations are not consensus-breaking for this register's purpose**, and that
 conversions proven equivalent to their recursive counterparts definitely do not change consensus —
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
-under that criterion; the 45 that no longer qualify are retired to typed rows in
+under that criterion; the 46 that no longer qualify are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -589,8 +589,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **18 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **12 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 45 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 20 + 45 = 65 historical identifiers, none reused.
+resolved under the token model (§3.3). The 46 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 20 + 46 = 66 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -2600,7 +2600,7 @@ Three distinct defects at one site, all created by the DECLARATION rather than c
 | `Float %`/`bitand`/`bitor` stay `error` BY RULING | `rholang_arith_carrier_matrix.rs::RULED_NON_PRESERVING`, checked in BOTH directions — a ruled cell that STARTS preserving its carrier also fails |
 | float ÷0 answers IEEE-754 | `rholang_arith_carrier_matrix.rs::float_division_by_zero_answers_ieee_754` |
 | every exact carrier fails closed on ÷0 and %0 | `::modulo_and_division_by_zero_fail_closed_at_the_exact_carriers` (9 cells) |
-| the two `Fixed` divergences are known and unrepaired | `::the_two_fixed_point_divergences_are_pinned_with_upstreams_answer`, with upstream's answer written down |
+| the fixed-point divergence set remains closed against upstream | `::fixed_point_modulo_agrees_with_upstream`, `::mixed_scale_fixed_point_is_refused_like_upstream`, `::fixed_point_multiplication_matches_upstream_scale_and_floor`, `::fixed_point_zero_keeps_declared_scale`, and `rho_rholang_conformance::divergence_d_closed_fixed_scale_policy_is_the_reducers` |
 
 ★ **All eight falsifiers are executable test functions**, which is why this row set is admissible as a
 falsifier table at all. ⚠ Contrast the defect recorded against
@@ -2626,7 +2626,41 @@ The derived domain moves $`5 \rightarrow 6`$. Byte rows, under the same revert, 
 
 **MEASURED** — the acceptance matrix at `93155150`: `languages` 1072 rows / 17 suites green; `rholang-runtime` 107 rows green; `rholang-codegen` byte identity 5/5, zero fingerprints moved; `macros` 438 green after the census re-derivation. Derived counts that moved and why: `gen_rholang_rewrite` $`171 \rightarrow 174`$ (+3 congruences), `gen_rholang_unit` $`176 \rightarrow 179`$ (+3 rules), `rholang_dovetail_fold` $`6 \rightarrow 7`$, `factoring.rs` method cohort $`44 \rightarrow 47`$ (three `LoneRootChild` singletons, still zero factorable groups).
 
-**UNVERIFIED** — the two `Fixed` divergences surfaced by the matrix are reported, pinned, and NOT repaired, because each moves a computed value and needs an owner ruling: (1) `Fixed %` computes $`a - \operatorname{trunc}_{p}(a/b)\,b`$ where upstream computes the integer-quotient remainder (`7.00p2 % 3.00p2` is `0.01p2` here, `1.00p2` upstream; `7.50p2 % 2.00p2` is `0p0` here, `1.50p2` upstream) — not an arithmetic slip, since `checked_rem` is the matched pair of `checked_div` and the two satisfy $`q b + r = a`$; (2) mixed scales are accepted here (`7.00p2 + 3.000p3` $`\Rightarrow`$ `10.000p3`) and refused upstream (`OperatorExpectedError`).
+#### Retired evidence for CBR-L16
+
+**SETTLED — CONVERGENT / CORRECTIVE.** The owner ruled on 2026-07-30: *“Adopt upstream's
+semantics for all operators unless it is determined that they are buggy.”* No fixed-point operator
+in this set was found buggy upstream. MeTTaIL commits `afcc9e8f`, `717efdc5`, and `51d84ae3`
+therefore close the former divergences: remainder is the unscaled-integer remainder; equality and
+hashing preserve the exact `(unscaled, places)` identity; zero retains its declared scale; binary
+arithmetic and ordered comparison refuse unequal scales; and multiplication preserves the common
+scale using floor division. The old divergence-D witness was removed and its formerly ignored target
+is now an executing conformance test. This ruled repair is retired, rather than added to the active
+register, under §3.2's `BUG_FIX_RULED_NONCONSENSUS` criterion.
+
+The upstream refusal census was re-derived at `f1r3node-rust-mettail@419f03fa`; it has **six** sites,
+not the older transcribed count of five: `combine_mult` (`reduce.rs:3348`), `combine_div` (`:3431`),
+`combine_mod` (`:3508`), `combine_plus` (`:3601`), `combine_minus` (`:3723`), and
+`compare_fixed_points` (`:8779`). The last site makes Rust `Ord`'s deterministic scale tie-break
+unobservable through the four language ordered relations.
+
+| Axis | Movement established by the aggregate repair |
+|---|---|
+| 1 · computed value | **MOVES — CORRECTIVE.** `%` moves from the division residual to $`u_a \bmod u_b`$; multiplication moves from a places-summing exact product to $`\lfloor u_a u_b / 10^p \rfloor`$ at scale $`p`$; and zero-producing operations preserve $`p`$ instead of collapsing to `p0`. |
+| 2 · verdict | **MOVES — CONVERGENT.** Different-scale fixed values are structurally unequal; mixed-scale binary arithmetic, fixed bitwise operations, and ordered comparisons refuse instead of producing a value. These are upstream's verdicts. |
+| 3 · bytes (Lane B, bincode) | **MOVES** for affected MeTTaIL terms and results because the structural scale and corrected operator result are part of the generated AST payload. Canonical-byte and dedup gates distinguish equal-number/different-scale values. |
+| 3 · bytes (Lane P, protobuf) | **MOVES downstream** when an affected folded value is lowered: the fixed-point `unscaled` and `scale` fields now carry the upstream result. F1r3node's existing protobuf definition and reducer are unchanged; this is second-implementation convergence. |
+| 4 · post-state hash | **MOVES downstream of Lane P** for a hypothetical pre-convergence MeTTaIL-produced result entering state; after convergence, both implementations supply the same fixed-point payload. Surface L is not a consensus participant today. |
+| 5 · accepted programs | **MOVES — NARROWS toward the floor.** Parsing is unchanged, but unequal-scale binary fixed-point programs leave the successful reduction domain and produce the language error/refusal. Explicit `fixed(value, places)` rescaling is the migration path. |
+| 6 · metering | **NO.** No F1r3node accounting function, token rule, or COMM path changed: the node already had these semantics. MeTTaIL has no node token meter, and the fixed operator trace does not introduce or remove a committed COMM. |
+
+**MEASURED** at `mettail-rust@51d84ae3`, under the bounded-RSS harness: `runtime` 261 unit rows
+plus its integration and doctest suites; Calculator fixed-point identity/refusal 9/9; Rholang
+identity 2/2 and arithmetic-carrier matrix 8/8; the fixed-point `rholang_tests` selection 10/10;
+and `rho_rholang_conformance::divergence_d_closed_fixed_scale_policy_is_the_reducers` 1/1. The
+guards cover positive and negative scale-preserving multiplication, structural zero, explicit
+rescaling, all five arithmetic operators, two fixed bitwise operators, and all four ordered
+relations. No equation or congruence declaration changed.
 
 ★ **This entry CLOSES [open question 8](#63-known-open-questions)** — *"MeTTaIL cannot construct a byte array at
 all … so `"deadbeef".hexToBytes()` is unsayable"* — whose premise is now false by measurement. ⚠ The
@@ -2981,7 +3015,7 @@ above is the maintenance mechanism.
 ## 8. Conclusions
 
 1. The register holds **20** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **45** examined
+   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **46** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3116,7 +3150,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 45 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 46 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3169,6 +3203,7 @@ material now lives.
 | `CBR-L09` | `b77e657c`, `ab885336` ⚠, `19510082` | ★ DIVERGENCE WITHDRAWN AND WIDENED — every float arithmetic arm ($`+`$, $`-`$, $`\times`$, $`\div`$, unary $`-`$) answers IEEE 754, and comparison follows §5.11 | `BUG_FIX_RULED_NONCONSENSUS` | IEEE 754 convergence (all five float arithmetic arms + §5.11 comparison split) |
 | `CBR-L12` | `f5b2e820` | A pathmap's `EMap` pair order stops being a function of the process's hash seed | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L13` | `ef49d8c2` | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
+| `CBR-L16` | `mettail-rust@afcc9e8f`, `717efdc5`, `51d84ae3` | Fixed-point identity, remainder, scale refusal, zero, multiplication, and ordered comparison converge on upstream | `BUG_FIX_RULED_NONCONSENSUS` | full six-axis account in [the retired evidence retained with CBR-L14](#retired-evidence-for-cbr-l16); upstream's six refusal sites re-derived at `f1r3node-rust-mettail@419f03fa` |
 
 ### B.2 The original commit-level exemptions
 
@@ -3230,6 +3265,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 
 ---
 
-*The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 45 entries
+*The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
 to B.1 and removed the mechanised drift gate with its machine index; the pre-refactor revision, with
 every retired body and the gate's specification, remains in git history.*
