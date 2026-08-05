@@ -35,6 +35,12 @@ use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
+// Slice 30: WAL root computation for per-deploy observability.  In
+// slice 30b this hash goes on-chain via a proto extension of
+// ProcessedDeploy (hard fork); until then it's logged for operator
+// diagnostics.
+use rholang::rust::interpreter::io::snapshot::compute_wal_root;
+use rholang::rust::interpreter::io::wal::{Wal, WalEntry, WalMark};
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
@@ -68,6 +74,72 @@ use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crate::rust::util::{construct_deploy, event_converter};
 
 static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
+
+/// C-30-1 review fix (slice 30 round 2): RAII drain guard for the
+/// per-deploy WAL boundary.  Captures `Wal::begin_deploy` on
+/// construction and guarantees `Wal::take_deploy_entries` runs on
+/// **every** exit path (success, `?`-propagated error, panic),
+/// preventing per-deploy WAL entries from leaking into the next
+/// deploy's slice.
+///
+/// # Correctness
+///
+/// The pre-round-2 code drained only on the two `Ok`-return paths;
+/// five `?` operators between `begin_deploy` and the drain sites
+/// could early-return with WAL entries still in the per-runtime
+/// buffer, poisoning the next deploy's `take_deploy_entries(mark)`
+/// with entries the previous deploy contributed (Critical finding
+/// C-30-1).  This guard closes the gap by making drain-on-drop the
+/// default and drain-and-attach the explicit opt-in via
+/// `take_and_commit`.
+struct WalDeployScope {
+    /// Arc-shared clone of the per-runtime WAL — cheap; shares the
+    /// underlying `Arc<Mutex<Vec<WalEntry>>>` so appends and drains
+    /// see the same buffer.
+    wal: Wal,
+    mark: WalMark,
+    /// Once `take_and_commit` runs, Drop skips the discard-drain
+    /// (the entries are already in the caller's hands).
+    committed: bool,
+}
+
+impl WalDeployScope {
+    fn new(wal: Wal) -> Self {
+        let mark = wal.begin_deploy();
+        Self {
+            wal,
+            mark,
+            committed: false,
+        }
+    }
+
+    /// Success path: drain entries and mark committed so Drop is a
+    /// no-op.
+    fn take_and_commit(&mut self) -> Vec<WalEntry> {
+        self.committed = true;
+        self.wal.take_deploy_entries(self.mark)
+    }
+}
+
+impl Drop for WalDeployScope {
+    fn drop(&mut self) {
+        if !self.committed {
+            // Discard-drain: entries produced during a failed deploy
+            // are removed from the per-runtime buffer so the next
+            // deploy's `begin_deploy` mark points at an empty tail.
+            // Logged at debug level so an incident review can find
+            // leaked entries.
+            let leaked = self.wal.take_deploy_entries(self.mark);
+            if !leaked.is_empty() {
+                tracing::debug!(
+                    target: "f1r3fly.casper.fs_wal",
+                    n_entries = leaked.len(),
+                    "fs-wal discard-drain on error path (deploy did not commit its WAL)"
+                );
+            }
+        }
+    }
+}
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
@@ -296,8 +368,74 @@ impl RuntimeOps {
         }
 
         let mut res = Vec::with_capacity(terms.len());
+        // H-30-2 slice-30b fix: per-block WAL aggregator.
+        // `play_deploy_with_cost_accounting` returns each deploy's
+        // WAL contribution; we accumulate them in block order and,
+        // at the end of the block, compute + log the per-block WAL
+        // root.  Slice 30c will hand this vec to the snapshot
+        // cadence writer + on-chain WAL commitment.
+        let mut block_fs_wal: Vec<WalEntry> = Vec::new();
         for deploy in terms {
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            let (pd, mc, fs_wal) = self.play_deploy_with_cost_accounting(deploy).await?;
+            if !fs_wal.is_empty() {
+                block_fs_wal.extend(fs_wal);
+            }
+            res.push((pd, mc));
+        }
+        if !block_fs_wal.is_empty() {
+            let root = compute_wal_root(&block_fs_wal);
+            // H-30b-4 review note (slice 30b round 2): OPERATOR-VISIBLE
+            // LOG SCHEMA — do not rename these fields without
+            // coordinating with dashboards.  `target` is the
+            // aggregator for downstream observability filters.
+            //   - `n_entries` (u64): count of WalEntries in this block's slice.
+            //   - `block_wal_root` (String): first 8 hex bytes of the Blake2b256
+            //     content-address of the encoded slice.
+            // Slice 30c will add the full 32-byte root to on-chain
+            // ProcessedDeploy metadata; this log becomes secondary.
+            tracing::info!(
+                target: "f1r3fly.casper.fs_wal",
+                n_entries = block_fs_wal.len(),
+                block_wal_root = %hex::encode(&root[..8]),
+                "per-block consensus WAL slice computed"
+            );
+            // Slice 30b MVP + H-30b-2 round-2 + M-P7-1 whole-review
+            // fix: read the shared snapshot writer via the runtime's
+            // Arc<RwLock<_>> (populated by RuntimeManager::spawn_runtime
+            // via `share_fs_snapshot_writer`).  Reading each time keeps
+            // any boot-time set on the RuntimeManager visible to this
+            // runtime immediately.  Clone the writer + entries out of
+            // the read guard so we can drop the lock BEFORE the
+            // blocking I/O (which uses `std::fs::write` + `sync_all` +
+            // `rename` + dir fsync — can be seconds on slow disks).
+            // Then dispatch the blocking work via `spawn_blocking` so
+            // we don't stall the tokio worker or block a concurrent
+            // `RuntimeManager::set_fs_snapshot_writer` awaiting the
+            // write lock.
+            let writer_opt = self.runtime.fs_snapshot_writer.read().await.clone();
+            if let Some(writer) = writer_opt {
+                let block_number = self.runtime.block_data_ref.read().await.block_number;
+                let entries_for_snapshot = block_fs_wal.clone();
+                let snapshot_result = tokio::task::spawn_blocking(move || {
+                    writer.maybe_write(block_number, &entries_for_snapshot)
+                })
+                .await;
+                match snapshot_result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        block_number,
+                        error = %e,
+                        "snapshot write failed; consensus proceeds but joining validators may fall further behind"
+                    ),
+                    Err(join_err) => tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        block_number,
+                        error = %join_err,
+                        "snapshot spawn_blocking failed (task panicked or was cancelled)"
+                    ),
+                }
+            }
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -337,10 +475,22 @@ impl RuntimeOps {
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
 
+        // Slice 31 + H-P7-5 review fix: RAII exemption for the URN
+        // filter.  Genesis composition needs `rho:io:fs:native:*`
+        // URNs available so the FsGenesis deploy can bind `fsRead`,
+        // `fsWrite`, etc.  The Drop impl re-enables the filter on
+        // ALL exit paths — including panics and tokio-task
+        // cancellation — so a subsequent user deploy on this runtime
+        // cannot inherit the exemption even under adversarial or
+        // buggy execution.  Guard holds an Arc<AtomicBool> clone of
+        // the flag (not a runtime borrow), so mutable-runtime access
+        // inside the loop is unblocked.
+        let _filter_exemption = self.runtime.exempt_fs_native_urn_filter();
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
             res.push(self.process_deploy_with_mergeable_data(deploy).await?);
         }
+        drop(_filter_exemption); // Explicit drop before create_checkpoint (below).
 
         let final_checkpoint = self.runtime.create_checkpoint().await;
         Ok((final_checkpoint.root.to_bytes_prost(), res))
@@ -348,17 +498,41 @@ impl RuntimeOps {
 
     /**
      * Evaluates deploy with cost accounting (PoS Pre-charge and Refund calls)
+     *
+     * # Return value (H-30-2 slice-30b fix)
+     *
+     * Returns `(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>)`.
+     * The third element is the per-deploy consensus WAL contribution
+     * drained via `WalDeployScope::take_and_commit`.  Pre-fix, these
+     * entries were populated in `EvalCollector.fs_wal_entries` and
+     * silently dropped on function return — a real observability sink
+     * for any operator running `consensus-static-*` provisioning.  The
+     * block emitter aggregates the per-deploy entries into a
+     * per-block `Vec<WalEntry>` for the cadence loop to snapshot and
+     * (in slice 30c) for the on-chain WAL Merkle root commitment.
      */
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
-    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
         tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
         let mut eval_collector_state = EvalCollector::new();
+
+        // Slice 30 (C-30-1 round-2 fix): RAII drain guard for the
+        // per-deploy WAL boundary.  Everything between here and the
+        // `take_and_commit` call at the end of the deploy is the
+        // deploy's WAL contribution — precharge + user deploy +
+        // refund all share the same boundary (they are one atomic
+        // deploy from the consensus-commitment perspective).  On any
+        // `?`-propagated error, `wal_scope`'s Drop drains-and-discards
+        // so entries produced by a failed deploy do not leak into the
+        // next deploy's slice.  Pre-fix, five `?` operators between
+        // begin_deploy and the drain sites could leak entries.
+        let mut wal_scope = WalDeployScope::new(self.runtime.fs_handles.wal.clone());
 
         let deploy_pk = deploy.pk.bytes.clone();
         let deploy_pk_hex = hex::encode(&deploy_pk);
@@ -447,15 +621,38 @@ impl RuntimeOps {
                             .await?;
 
                         let deploy_log = mem::take(&mut eval_collector_state.event_log);
+                        // Slice 30 (C-30-1 round-2 fix): drain via
+                        // RAII scope — success path opts in via
+                        // `take_and_commit`; any `?`-error above
+                        // discards via Drop, closing the pre-fix
+                        // cross-deploy leak.
+                        let fs_wal = wal_scope.take_and_commit();
+                        if !fs_wal.is_empty() {
+                            let wal_root = compute_wal_root(&fs_wal);
+                            tracing::debug!(
+                                target: "f1r3fly.casper.fs_wal",
+                                deploy_sig = deploy_sig_hex.as_str(),
+                                n_entries = fs_wal.len(),
+                                wal_root = %hex::encode(&wal_root[..8]),
+                                "fs-wal per-deploy drain (committed)"
+                            );
+                            eval_collector_state.add_fs_wal_entries(fs_wal);
+                        }
                         if let Some(rss_kb) =
                             crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
                         {
                             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_collect_result", rss_kb);
                         }
 
+                        // H-30-2 slice-30b fix: hand fs_wal_entries
+                        // to the caller (block emitter) instead of
+                        // dropping via EvalCollector.
+                        let fs_wal_entries =
+                            std::mem::take(&mut eval_collector_state.fs_wal_entries);
                         Ok((
                             ProcessedDeploy { deploy_log, ..pd },
                             mergeable_channels_data,
+                            fs_wal_entries,
                         ))
                     }
 
@@ -498,13 +695,30 @@ impl RuntimeOps {
                     .await?;
 
                 let deploy_log = mem::take(&mut eval_collector_state.event_log);
+                // Slice 30 (round-2 fix): drain via RAII scope — the
+                // pre-charge-failure path still yields an Ok
+                // ProcessedDeploy, so we commit the scope explicitly.
+                // Pre-charge failures typically leave the WAL empty
+                // (no fs handlers ran) but the drain is free.
+                let fs_wal = wal_scope.take_and_commit();
+                if !fs_wal.is_empty() {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.fs_wal",
+                        deploy_sig = deploy_sig_hex.as_str(),
+                        n_entries = fs_wal.len(),
+                        "fs-wal drain on pre-charge failure (committed)"
+                    );
+                    eval_collector_state.add_fs_wal_entries(fs_wal);
+                }
 
+                let fs_wal_entries = std::mem::take(&mut eval_collector_state.fs_wal_entries);
                 Ok((
                     ProcessedDeploy {
                         deploy_log,
                         ..empty_pd
                     },
                     mergeable_channels_data,
+                    fs_wal_entries,
                 ))
             }
         }
@@ -1431,7 +1645,299 @@ impl RuntimeOps {
 
 #[cfg(test)]
 mod tests {
+    use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp};
+
     use super::*;
+
+    fn mk_entry(tag: &str) -> WalEntry {
+        WalEntry {
+            op: WalOp::Write,
+            path: std::path::PathBuf::from(format!("/{tag}")),
+            extra_path: None,
+            offset: None,
+            length: Some(tag.len() as u64),
+            payload_ref: Some(PayloadRef::hash(tag.as_bytes())),
+            mode_bits: None,
+            owner: None,
+            group: None,
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // C-30-1 / C-30-2 round-2 review-fix tests: WalDeployScope
+    // ---------------------------------------------------------------
+
+    /// C-30-2: success path drains via `take_and_commit` and hands
+    /// entries to the caller; the underlying Wal is empty after.
+    #[test]
+    fn wal_deploy_scope_take_and_commit_returns_entries_and_empties_wal() {
+        let wal = Wal::new();
+        wal.append(mk_entry("pre")).unwrap();
+        let mut scope = WalDeployScope::new(wal.clone());
+        wal.append(mk_entry("a")).unwrap();
+        wal.append(mk_entry("b")).unwrap();
+        let entries = scope.take_and_commit();
+        assert_eq!(entries.len(), 2, "committed entries include only post-mark");
+        assert_eq!(wal.len(), 1, "pre-mark entry survives the drain");
+        assert_eq!(entries[0].path, std::path::PathBuf::from("/a"));
+        assert_eq!(entries[1].path, std::path::PathBuf::from("/b"));
+        // Dropping a committed scope is a no-op.
+        drop(scope);
+        assert_eq!(wal.len(), 1, "Drop after commit does not double-drain");
+    }
+
+    /// C-30-1: the *core* invariant.  Dropping a scope WITHOUT
+    /// commit discards entries appended during its lifetime.  This
+    /// pins the fix for the `?`-early-return leak that the pre-fix
+    /// code had.
+    #[test]
+    fn wal_deploy_scope_drop_without_commit_discards_entries() {
+        let wal = Wal::new();
+        wal.append(mk_entry("pre")).unwrap();
+        {
+            let _scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("leak-1")).unwrap();
+            wal.append(mk_entry("leak-2")).unwrap();
+            // `_scope` drops here without commit — discard-drain.
+        }
+        assert_eq!(
+            wal.len(),
+            1,
+            "Drop without commit MUST discard post-mark entries so the next \
+             deploy's begin_deploy sees an empty tail (C-30-1 regression pin)"
+        );
+        let remaining = wal.snapshot();
+        assert_eq!(remaining[0].path, std::path::PathBuf::from("/pre"));
+    }
+
+    /// C-30-1 simulated `?`-early-return: a function that
+    /// constructs a scope, appends, then returns Err before
+    /// committing.  Verifies the scope's Drop still discards.
+    #[test]
+    fn wal_deploy_scope_early_return_pattern_does_not_leak() {
+        let wal = Wal::new();
+
+        fn simulated_deploy(wal: Wal) -> Result<(), &'static str> {
+            let _scope = WalDeployScope::new(wal.clone());
+            wal.append(WalEntry {
+                op: WalOp::Truncate,
+                path: std::path::PathBuf::from("/leaked"),
+                extra_path: None,
+                offset: Some(0),
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+            })
+            .unwrap();
+            // Simulate a `?`-propagated error: return without commit.
+            Err("simulated deploy failure")
+        }
+
+        let r = simulated_deploy(wal.clone());
+        assert!(r.is_err(), "test precondition: simulated deploy fails");
+        assert_eq!(
+            wal.len(),
+            0,
+            "early-return via error must discard-drain (C-30-1 fix)"
+        );
+    }
+
+    /// Sequential deploys: deploy A commits, deploy B commits — each
+    /// sees only its own entries.  Pins per-deploy isolation.
+    #[test]
+    fn wal_deploy_scope_sequential_deploys_are_isolated() {
+        let wal = Wal::new();
+        let a_entries = {
+            let mut scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("a1")).unwrap();
+            wal.append(mk_entry("a2")).unwrap();
+            scope.take_and_commit()
+        };
+        let b_entries = {
+            let mut scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("b1")).unwrap();
+            scope.take_and_commit()
+        };
+        assert_eq!(a_entries.len(), 2);
+        assert_eq!(b_entries.len(), 1);
+        assert_eq!(a_entries[0].path, std::path::PathBuf::from("/a1"));
+        assert_eq!(b_entries[0].path, std::path::PathBuf::from("/b1"));
+        assert_eq!(wal.len(), 0, "both deploys drained; WAL is empty");
+    }
+
+    /// Failed deploy followed by successful deploy: the successful
+    /// deploy's commit MUST NOT include the failed deploy's entries.
+    #[test]
+    fn wal_deploy_scope_failed_deploy_does_not_pollute_next_deploy() {
+        let wal = Wal::new();
+        {
+            let _scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("failed")).unwrap();
+            // Drop without commit — discard-drain.
+        }
+        let b_entries = {
+            let mut scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("clean")).unwrap();
+            scope.take_and_commit()
+        };
+        assert_eq!(
+            b_entries.len(),
+            1,
+            "next deploy's slice must be exactly its own contributions"
+        );
+        assert_eq!(b_entries[0].path, std::path::PathBuf::from("/clean"));
+        assert!(!b_entries
+            .iter()
+            .any(|e| e.path == std::path::Path::new("/failed")));
+    }
+
+    // ---------------------------------------------------------------
+    // C-30b-1 round-2 review-fix test: the play_deploys_for_state
+    // aggregation composition.  Pre-fix, the extend + compute_wal_root
+    // + maybe_write loop had zero test coverage; a refactor that
+    // swapped `extend`→`push` (nesting Vec<Vec<...>>), reordered
+    // per-deploy WALs, or called maybe_write on the wrong slice would
+    // compile and pass every existing test.  This test exercises the
+    // SAME composition — WalDeployScope drain × N deploys, aggregate
+    // into a block-scope Vec, compute the root, hand to SnapshotWriter
+    // — WITHOUT the full RuntimeManager weight.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn play_deploys_aggregation_composition_writes_correct_snapshot() {
+        use rholang::rust::interpreter::io::snapshot::{
+            compute_wal_root, read_snapshot_bytes, snapshot_path, SnapshotWriter,
+        };
+
+        let snapshot_dir = tempfile::tempdir().unwrap();
+        let wal = Wal::new();
+        let writer = SnapshotWriter {
+            dir: snapshot_dir.path().to_path_buf(),
+            cadence: 1, // every block
+            retain: 10,
+        };
+
+        // Simulate play_deploys_for_state's block-scan loop with 3
+        // deploys.  Each deploy: WalDeployScope::new → append via WAL
+        // → take_and_commit → extend aggregator.
+        let mut block_fs_wal: Vec<WalEntry> = Vec::new();
+        for (deploy_idx, tag) in [("deploy0", 3), ("deploy1", 1), ("deploy2", 2)]
+            .iter()
+            .enumerate()
+        {
+            let (label, n_entries) = tag;
+            let mut scope = WalDeployScope::new(wal.clone());
+            for i in 0..*n_entries {
+                let path = format!("/{label}-e{i}");
+                wal.append(mk_entry(&path[1..])).unwrap();
+            }
+            let fs_wal = scope.take_and_commit();
+            assert_eq!(
+                fs_wal.len(),
+                *n_entries,
+                "deploy {deploy_idx} committed the wrong number of entries"
+            );
+            block_fs_wal.extend(fs_wal);
+        }
+        assert_eq!(
+            block_fs_wal.len(),
+            6,
+            "aggregation must accumulate ALL per-deploy contributions"
+        );
+        // Insertion order (deploy0's 3 entries, then deploy1's 1, then deploy2's 2)
+        // MUST be preserved — the WAL root is order-sensitive.
+        assert_eq!(
+            block_fs_wal[0].path,
+            std::path::PathBuf::from("/deploy0-e0")
+        );
+        assert_eq!(
+            block_fs_wal[3].path,
+            std::path::PathBuf::from("/deploy1-e0")
+        );
+        assert_eq!(
+            block_fs_wal[4].path,
+            std::path::PathBuf::from("/deploy2-e0")
+        );
+
+        // Compute the block WAL root — same call play_deploys_for_state
+        // makes.
+        let block_root = compute_wal_root(&block_fs_wal);
+
+        // maybe_write on a cadence=1 block writes.
+        let block_number = 5i64;
+        let write_root = writer
+            .maybe_write(block_number, &block_fs_wal)
+            .expect("maybe_write must succeed with valid writer")
+            .expect("cadence=1, non-empty entries: must produce a snapshot");
+        assert_eq!(
+            write_root, block_root,
+            "SnapshotWriter's write must produce the SAME root as compute_wal_root on the same slice"
+        );
+
+        // The snapshot file exists at the content-addressed path.
+        let snap_path = snapshot_path(snapshot_dir.path(), &write_root);
+        assert!(snap_path.exists(), "snapshot file must be written to disk");
+        // Read back + verify root.
+        let bytes = read_snapshot_bytes(snapshot_dir.path(), &write_root).unwrap();
+        assert!(!bytes.is_empty());
+
+        // Per-runtime WAL was drained (no leftover entries).
+        assert_eq!(
+            wal.len(),
+            0,
+            "after 3 deploys × take_and_commit, per-runtime WAL is empty"
+        );
+    }
+
+    /// C-30b-1 companion: pin the aggregation-order invariant.  If a
+    /// future refactor accidentally reversed per-deploy order (e.g.,
+    /// via a `.rev()`) or bucketed via a HashMap iteration, the block
+    /// WAL root would flip.  This test asserts the exact root for a
+    /// canonical 2-deploy sequence.
+    #[tokio::test]
+    async fn play_deploys_aggregation_preserves_deploy_scan_order() {
+        use rholang::rust::interpreter::io::snapshot::compute_wal_root;
+
+        let wal = Wal::new();
+        let mut block_fs_wal: Vec<WalEntry> = Vec::new();
+
+        // Deploy A appends "a".
+        {
+            let mut scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("a")).unwrap();
+            block_fs_wal.extend(scope.take_and_commit());
+        }
+        // Deploy B appends "b".
+        {
+            let mut scope = WalDeployScope::new(wal.clone());
+            wal.append(mk_entry("b")).unwrap();
+            block_fs_wal.extend(scope.take_and_commit());
+        }
+        let root_ab = compute_wal_root(&block_fs_wal);
+
+        // Redo with reversed deploy order — different root.
+        let wal2 = Wal::new();
+        let mut block_fs_wal2: Vec<WalEntry> = Vec::new();
+        {
+            let mut scope = WalDeployScope::new(wal2.clone());
+            wal2.append(mk_entry("b")).unwrap();
+            block_fs_wal2.extend(scope.take_and_commit());
+        }
+        {
+            let mut scope = WalDeployScope::new(wal2.clone());
+            wal2.append(mk_entry("a")).unwrap();
+            block_fs_wal2.extend(scope.take_and_commit());
+        }
+        let root_ba = compute_wal_root(&block_fs_wal2);
+
+        assert_ne!(
+            root_ab, root_ba,
+            "deploy-scan order MUST be part of the block WAL root — \
+             a refactor that reorders would silently fork consensus"
+        );
+    }
 
     #[test]
     fn fold_bitmask_or_empty_returns_none() {

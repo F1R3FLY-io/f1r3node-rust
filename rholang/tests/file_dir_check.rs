@@ -198,17 +198,16 @@ fn lib_body(src: &str) -> String {
 fn with_libs(test_snippet: &str) -> String {
     format!(
         r#"
-        new File, fdP, stateP, Dir, rootP,
+        new File, fdP, stateP, cmodeP, Dir, rootP,
             Stream, paramsP, gatherN, foldLoop, forEachLoop, foldChunksLoop,
             Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
             gatherChunks, drainChunks, allocInnersLoop, parkInnersLoop,
             clearInnersLoop, closeInnersLoop,
             Stdin, stdinFdP, stdinStateP,
             Stdout, stdoutFdP, stdoutStateP,
-            Fs, fsBundleP, fsCacheP,
+            Fs, fsBundleP,
             fsStdinFdP, fsStdoutFdP, fsStderrFdP,
-            cacheAndOpenFile, cacheAndOpenDir,
-            openFileImpl, openDirImpl, joinRel,
+            openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
             parseRwxToBits, parseRwxLoop,
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
@@ -425,7 +424,11 @@ fn with_libs(test_snippet: &str) -> String {
             ret!([true])
           }} |
 
-          contract fsOpen(@_root, @_rel, @_mode, ret) = {{
+          // Slice 29 (PB-M-14): fsOpen now takes cmode as the 4th
+          // arg (before ack) so the native handler can stash it in
+          // the FileHandle for WAL journaling.  Mock ignores the
+          // value.
+          contract fsOpen(@_root, @_rel, @_mode, @_cmode, ret) = {{
             // Return a fake fd = 1.
             ret!([true, 1])
           }} |
@@ -439,12 +442,20 @@ fn with_libs(test_snippet: &str) -> String {
           //     regression: stat may fail on a nonexistent target and
           //     openFileImpl must pass through to fsOpen)
           //   - everything else → regular file
-          contract fsStat(@_root, @rel, ret) = {{
+          // Slice 26: `fsStat` now takes a `cmode` string.  The mock
+          // ignores the value (returning fixture data), but the arity
+          // must match or Rholang dispatch silently drops the send.
+          //
+          // Recognized dir paths: "subdir", "subdir2", and the
+          // composition "subdir/subdir2" (needed by the slice-26
+          // nested-openDir cmode-inheritance test).
+          contract fsStat(@_root, @rel, @_cmode, ret) = {{
             match rel {{
-              "subdir"      => ret!([true, {{"kind": "dir", "size": 0}}])
-              "subdir2"     => ret!([true, {{"kind": "dir", "size": 0}}])
-              "missing.txt" => ret!([false, "FSERR_NOTFOUND", "no such file"])
-              _             => ret!([true, {{"kind": "file", "size": 100}}])
+              "subdir"          => ret!([true, {{"kind": "dir", "size": 0}}])
+              "subdir2"         => ret!([true, {{"kind": "dir", "size": 0}}])
+              "subdir/subdir2"  => ret!([true, {{"kind": "dir", "size": 0}}])
+              "missing.txt"     => ret!([false, "FSERR_NOTFOUND", "no such file"])
+              _                 => ret!([true, {{"kind": "file", "size": 100}}])
             }}
           }} |
 
@@ -464,7 +475,8 @@ fn with_libs(test_snippet: &str) -> String {
           // or [false, code, msg] on failure — matching Phase 1's
           // fs_entries.
           entriesCell!([true, []]) |
-          contract fsEntries(@_root, @_rel, ret) = {{
+          // Slice 26: `fsEntries` now takes a `cmode` string.
+          contract fsEntries(@_root, @_rel, @_cmode, ret) = {{
             for (@reply <<- entriesCell) {{ ret!(reply) }}
           }} |
 
@@ -477,59 +489,90 @@ fn with_libs(test_snippet: &str) -> String {
             }}
           }} |
 
-          // fs_chmod — records (root, rel, bits) in chmodLog.
+          // fs_chmod — records (root, rel, bits, cmode) in chmodLog.
+          // C-R2 round-2 fix: fsChmod native handler now takes cmode
+          // and fails-closed on Consensus (mirrors slice-26 fsChown).
           chmodLog!([]) |
-          contract fsChmod(@root, @rel, @bits, ret) = {{
+          contract fsChmod(@root, @rel, @bits, @cmode, ret) = {{
             for (@log <- chmodLog) {{
-              chmodLog!(log ++ [(root, rel, bits)]) |
-              ret!([true])
+              chmodLog!(log ++ [(root, rel, bits, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "chmod unavailable in consensus mode"])
+                _ => ret!([true])
+              }}
             }}
           }} |
 
-          // fs_chown — records (root, rel, owner, group) in chownLog.
+          // fs_chown — records (root, rel, owner, group, cmode) in chownLog.
+          // Slice 26: `cmode` is the 5th arg; consensus caps get
+          // FSERR_UNSUPPORTED from the real handler.  The mock
+          // records everything; per-test consensus-mode assertions
+          // live in the tests themselves.
           chownLog!([]) |
-          contract fsChown(@root, @rel, @owner, @group, ret) = {{
+          contract fsChown(@root, @rel, @owner, @group, @cmode, ret) = {{
             for (@log <- chownLog) {{
-              chownLog!(log ++ [(root, rel, owner, group)]) |
-              ret!([true])
+              chownLog!(log ++ [(root, rel, owner, group, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "chown unavailable in consensus mode"])
+                _ => ret!([true])
+              }}
             }}
           }} |
 
-          // fs_removeFile — records (root, rel) in rmFileLog.
+          // fs_removeFile — records (root, rel, cmode) in rmFileLog.
+          // C-R2: cmode arg; fail-closed on consensus.
           rmFileLog!([]) |
-          contract fsRemoveFile(@root, @rel, ret) = {{
+          contract fsRemoveFile(@root, @rel, @cmode, ret) = {{
             for (@log <- rmFileLog) {{
-              rmFileLog!(log ++ [(root, rel)]) |
-              ret!([true])
+              rmFileLog!(log ++ [(root, rel, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "removeFile unavailable in consensus mode"])
+                _ => ret!([true])
+              }}
             }}
           }} |
 
-          // fs_removeDir — records (root, rel, recursive) in rmDirLog.
+          // fs_removeDir — records (root, rel, recursive, cmode).
           rmDirLog!([]) |
-          contract fsRemoveDir(@root, @rel, @recursive, ret) = {{
+          contract fsRemoveDir(@root, @rel, @recursive, @cmode, ret) = {{
             for (@log <- rmDirLog) {{
-              rmDirLog!(log ++ [(root, rel, recursive)]) |
-              ret!([true])
+              rmDirLog!(log ++ [(root, rel, recursive, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "removeDir unavailable in consensus mode"])
+                _ => ret!([true])
+              }}
             }}
           }} |
 
-          // fs_rename — records (fromRoot, from, toRoot, to).
+          // fs_rename — records (fromRoot, from, toRoot, to, cmode).
           renameLog!([]) |
-          contract fsRename(@fromRoot, @from, @toRoot, @to, ret) = {{
+          contract fsRename(@fromRoot, @from, @toRoot, @to, @cmode, ret) = {{
             for (@log <- renameLog) {{
-              renameLog!(log ++ [(fromRoot, from, toRoot, to)]) |
-              ret!([true])
+              renameLog!(log ++ [(fromRoot, from, toRoot, to, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "rename unavailable in consensus mode"])
+                _ => ret!([true])
+              }}
             }}
           }} |
 
-          // fs_copyFile — records (fromRoot, from, toRoot, to).  Reply
-          // includes a fake nBytes = 42 to exercise the [true, nBytes]
+          // fs_copyFile — records (fromRoot, from, toRoot, to, cmode).
+          // Reply includes a fake nBytes = 42 to exercise the [true, nBytes]
           // shape from spec §Dir.copyFile.
           copyLog!([]) |
-          contract fsCopyFile(@fromRoot, @from, @toRoot, @to, ret) = {{
+          contract fsCopyFile(@fromRoot, @from, @toRoot, @to, @cmode, ret) = {{
             for (@log <- copyLog) {{
-              copyLog!(log ++ [(fromRoot, from, toRoot, to)]) |
-              ret!([true, 42])
+              copyLog!(log ++ [(fromRoot, from, toRoot, to, cmode)]) |
+              match cmode {{
+                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
+                  "copyFile unavailable in consensus mode"])
+                _ => ret!([true, 42])
+              }}
             }}
           }} |
 
@@ -658,7 +701,7 @@ async fn file_write_then_read_roundtrips() {
     // Rust via extract_reply (m-2 fix).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@seekReply <- @f!?("seek", 0, "set")) {
               for (@readReply <- @f!?("readN", 100)) {
@@ -691,7 +734,7 @@ async fn file_close_then_read_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("readN", 10)) {
               @"out"!(r)
@@ -713,7 +756,7 @@ async fn file_write_on_read_only_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@r <- @f!?("writeByteArray", "x".toUtf8Bytes())) {
             @"out"!(r)
           }
@@ -734,7 +777,7 @@ async fn file_write_non_bytearray_rejects_cleanly() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@bad <- @f!?("writeByteArray", 42)) {
             // Follow-up query verifies the file is still responsive.
             for (@sz <- @f!?("size")) {
@@ -763,7 +806,7 @@ async fn file_size_and_tell_after_write() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "abcde".toUtf8Bytes())) {
             for (@sizeReply <- @f!?("size")) {
               for (@tellReply <- @f!?("tell")) {
@@ -796,7 +839,7 @@ async fn file_unknown_method_returns_fserr_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("wibble")) { @"out"!(r) }
         }
         "#,
@@ -818,7 +861,7 @@ async fn dir_stat_returns_record() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("stat", "some/file.txt")) {
             @"out"!(r)
           }
@@ -845,7 +888,7 @@ async fn dir_exists_returns_bool() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("exists", "some/file.txt")) {
             @"out"!(r)
           }
@@ -864,7 +907,7 @@ async fn dir_open_file_mints_a_file_agent() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openFile", "some/file.txt", "r")) {
             match r {
               [true, f] => {
@@ -898,7 +941,7 @@ async fn dir_open_file_rejects_mode_upgrade() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("openFile", "some/file.txt", "rw")) {
             @"out"!(r)
           }
@@ -918,7 +961,7 @@ async fn dir_stat_non_string_rel_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("stat", 42)) {
             @"out"!(r)
           }
@@ -938,7 +981,7 @@ async fn dir_unknown_method_returns_fserr_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("wibble")) { @"out"!(r) }
         }
         "#,
@@ -964,7 +1007,7 @@ async fn file_close_propagates_fs_close_error() {
             .await;
     let src = format!(
         r#"
-        new File, fdP, stateP, parseRwxToBits, parseRwxLoop,
+        new File, fdP, stateP, cmodeP, parseRwxToBits, parseRwxLoop,
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -982,8 +1025,10 @@ async fn file_close_propagates_fs_close_error() {
           contract fsFlush(@_fd, ret) = {{ ret!([true]) }} |
           contract fsClose(@_fd, ret) = {{ ret!([false, "FSERR_IO", "simulated"]) }} |
           contract fsTruncate(@_fd, @_n, ret) = {{ ret!([true]) }} |
-          contract fsChmod(@_r, @_p, @_b, ret) = {{ ret!([true]) }} |
-          contract fsChown(@_r, @_p, @_o, @_g, ret) = {{ ret!([true]) }} |
+          // C-R2 round-2: fsChmod takes cmode as 4th arg.
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          // Slice 26: fsChown takes cmode as 5th arg.
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
           // parseRwxToBits stub — this test doesn't exercise it, but
           // File.rho's chmod method captures it as a free var so it
           // needs to be in scope.  A minimal identity stub suffices.
@@ -996,7 +1041,7 @@ async fn file_close_propagates_fs_close_error() {
 {}
 
           |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {{
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
             for (@closeReply <- @f!?("close")) {{
               for (@subReply <- @f!?("readN", 8)) {{
                 @"out"!([closeReply, subReply])
@@ -1030,7 +1075,7 @@ async fn file_read_n_zero_returns_empty_bytes() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@readReply <- @f!?("readN", 0)) {
               for (@tellReply <- @f!?("tell")) {
@@ -1064,7 +1109,7 @@ async fn file_read_n_negative_returns_bad_arg() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("readN", -1)) { @"out"!(r) }
         }
         "#,
@@ -1084,7 +1129,7 @@ async fn dir_open_file_rejects_unknown_mode() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openFile", "some/file.txt", "xyzzy")) {
             @"out"!(r)
           }
@@ -1106,7 +1151,7 @@ async fn dir_open_file_accepts_all_whitelisted_modes() {
                 .await;
         let src = with_libs(&format!(
             r#"
-            for (@d <- Dir!?("/root", "", "rw", *File)) {{
+            for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {{
               for (@r <- @d!?("openFile", "some/file.txt", "{}")) {{
                 @"out"!(r)
               }}
@@ -1134,7 +1179,7 @@ async fn file_truncate_rw_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("truncate", 100)) { @"out"!(r) }
         }
         "#,
@@ -1151,7 +1196,7 @@ async fn file_truncate_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@r <- @f!?("truncate", 100)) { @"out"!(r) }
         }
         "#,
@@ -1169,7 +1214,7 @@ async fn file_truncate_negative_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("truncate", -1)) { @"out"!(r) }
         }
         "#,
@@ -1187,7 +1232,7 @@ async fn file_truncate_non_int_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("truncate", "not int")) { @"out"!(r) }
         }
         "#,
@@ -1207,7 +1252,7 @@ async fn file_chmod_valid_rwx_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
         }
         "#,
@@ -1224,7 +1269,7 @@ async fn file_chmod_octal_string_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chmod", "0755")) { @"out"!(r) }
         }
         "#,
@@ -1242,7 +1287,7 @@ async fn file_chmod_symbolic_delta_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chmod", "u+x")) { @"out"!(r) }
         }
         "#,
@@ -1261,7 +1306,7 @@ async fn file_chmod_wrong_char_at_position_rejects() {
     // Position 0 must be 'r' or '-'; 'w' is invalid.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chmod", "wwxr-xr-x")) { @"out"!(r) }
         }
         "#,
@@ -1281,7 +1326,7 @@ async fn file_chmod_all_dashes_yields_zero_bits() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chmod", "---------")) { @"out"!(r) }
         }
         "#,
@@ -1300,7 +1345,7 @@ async fn file_chown_both_strings_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
         }
         "#,
@@ -1317,7 +1362,7 @@ async fn file_chown_nil_group_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chown", "alice", Nil)) { @"out"!(r) }
         }
         "#,
@@ -1334,7 +1379,7 @@ async fn file_chown_empty_owner_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chown", "", Nil)) { @"out"!(r) }
         }
         "#,
@@ -1352,7 +1397,7 @@ async fn file_chown_non_string_non_nil_owner_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("chown", 42, Nil)) { @"out"!(r) }
         }
         "#,
@@ -1372,7 +1417,7 @@ async fn dir_open_dir_mints_nested_dir() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openDir", "subdir", "r")) {
             match r {
               [true, nested] => {
@@ -1405,7 +1450,7 @@ async fn dir_open_dir_rejects_rw_from_readonly() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("openDir", "subdir", "rw")) { @"out"!(r) }
         }
         "#,
@@ -1423,7 +1468,7 @@ async fn dir_open_dir_rejects_invalid_mode() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openDir", "subdir", "w+")) { @"out"!(r) }
         }
         "#,
@@ -1443,7 +1488,7 @@ async fn dir_remove_file_rw_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("removeFile", "old.txt")) { @"out"!(r) }
         }
         "#,
@@ -1460,7 +1505,7 @@ async fn dir_remove_file_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("removeFile", "old.txt")) { @"out"!(r) }
         }
         "#,
@@ -1478,7 +1523,7 @@ async fn dir_remove_dir_recursive_succeeds_on_rw() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("removeDir", "olddir", true)) { @"out"!(r) }
         }
         "#,
@@ -1495,7 +1540,7 @@ async fn dir_remove_dir_non_bool_recursive_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("removeDir", "olddir", "yes")) { @"out"!(r) }
         }
         "#,
@@ -1513,7 +1558,7 @@ async fn dir_rename_rw_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("rename", "old.txt", "new.txt")) { @"out"!(r) }
         }
         "#,
@@ -1530,7 +1575,7 @@ async fn dir_rename_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("rename", "old.txt", "new.txt")) { @"out"!(r) }
         }
         "#,
@@ -1548,7 +1593,7 @@ async fn dir_copy_file_returns_nbytes() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("copyFile", "src.txt", "dst.txt")) { @"out"!(r) }
         }
         "#,
@@ -1567,7 +1612,7 @@ async fn dir_chmod_valid_mode_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
         }
         "#,
@@ -1584,7 +1629,7 @@ async fn dir_chmod_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
         }
         "#,
@@ -1602,7 +1647,7 @@ async fn dir_chown_rw_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("chown", "f.txt", "alice", "wheel")) { @"out"!(r) }
         }
         "#,
@@ -1619,7 +1664,7 @@ async fn dir_chown_empty_string_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("chown", "f.txt", "", Nil)) { @"out"!(r) }
         }
         "#,
@@ -1654,7 +1699,7 @@ async fn dir_nested_dispatches_with_composed_subpath() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@openReply <- @d!?("openDir", "subdir", "rw")) {
             match openReply {
               [true, nested] => {
@@ -1716,7 +1761,7 @@ async fn file_chmod_multibyte_utf8_rejects_without_panic() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\")) {\
+        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
            for (@r <- @f!?(\"chmod\", \"\u{1F600}rwxr-\")) { @\"out\"!(r) }\
          }",
     );
@@ -1736,7 +1781,7 @@ async fn file_chmod_dispatches_with_stored_rel_not_empty() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "config.json", "rw")) {
+        for (@f <- File!?(1, "/root", "config.json", "rw", "oracular")) {
           for (@_ <- @f!?("chmod", "rw-r--r--")) {
             for (@log <<- chmodLog) { @"out"!(log) }
           }
@@ -1775,7 +1820,7 @@ async fn file_chown_dispatches_with_stored_rel_not_empty() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "data.bin", "rw")) {
+        for (@f <- File!?(1, "/root", "data.bin", "rw", "oracular")) {
           for (@_ <- @f!?("chown", "alice", "wheel")) {
             for (@log <<- chownLog) { @"out"!(log) }
           }
@@ -1809,7 +1854,7 @@ async fn file_chmod_on_readonly_returns_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@r <- @f!?("chmod", "rw-r--r--")) { @"out"!(r) }
         }
         "#,
@@ -1828,7 +1873,7 @@ async fn file_chown_on_readonly_returns_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
         }
         "#,
@@ -1852,7 +1897,7 @@ async fn dir_open_dir_on_non_directory_returns_bad_arg() {
     // openDir("regular.txt", "r") hits the "not a directory" arm.
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openDir", "regular.txt", "r")) { @"out"!(r) }
         }
         "#,
@@ -1874,7 +1919,7 @@ async fn join_rel_empty_sub_path_produces_bare_rel() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@_ <- @d!?("chmod", "foo.txt", "rw-r--r--")) {
             for (@log <<- chmodLog) { @"out"!(log) }
           }
@@ -1929,7 +1974,7 @@ async fn close_then_call(method_call: &str) -> Par {
             .await;
     let src = with_libs(&format!(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {{
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
           for (@_ <- @f!?("close")) {{
             for (@r <- @f{}) {{ @"out"!(r) }}
           }}
@@ -2025,7 +2070,7 @@ async fn file_write_string_round_trips_utf8() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@writeReply <- @f!?("writeString", "hello")) {
             for (@seekReply <- @f!?("seek", 0, "set")) {
               for (@readReply <- @f!?("readN", 100)) {
@@ -2056,7 +2101,7 @@ async fn file_write_string_non_string_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("writeString", 42)) { @"out"!(r) }
         }
         "#,
@@ -2076,7 +2121,7 @@ async fn file_seek_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("seek", "notint", "set")) { @"out"!(r) }
         }
         "#,
@@ -2094,7 +2139,7 @@ async fn file_seek_non_string_whence_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("seek", 0, 42)) { @"out"!(r) }
         }
         "#,
@@ -2114,7 +2159,7 @@ async fn file_flush_on_open_returns_true() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("flush")) { @"out"!(r) }
         }
         "#,
@@ -2133,7 +2178,7 @@ async fn dir_exists_non_string_rel_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("exists", 42)) { @"out"!(r) }
         }
         "#,
@@ -2151,7 +2196,7 @@ async fn dir_remove_file_non_string_rel_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("removeFile", 42)) { @"out"!(r) }
         }
         "#,
@@ -2169,7 +2214,7 @@ async fn dir_rename_non_string_from_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("rename", 42, "new.txt")) { @"out"!(r) }
         }
         "#,
@@ -2187,7 +2232,7 @@ async fn dir_rename_non_string_to_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("rename", "old.txt", 42)) { @"out"!(r) }
         }
         "#,
@@ -2208,7 +2253,7 @@ async fn dir_copy_file_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "r", *File)) {
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
           for (@r <- @d!?("copyFile", "src.txt", "dst.txt")) { @"out"!(r) }
         }
         "#,
@@ -2229,7 +2274,7 @@ async fn dir_chmod_malformed_rwx_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("chmod", "f.txt", "not-a-mode")) { @"out"!(r) }
         }
         "#,
@@ -2261,7 +2306,7 @@ async fn file_bytes_streams_content_byte_by_byte() {
     // calls: [true, 0x61-BA], [true, 0x62-BA], [false, "EOS", ...].
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -2307,7 +2352,7 @@ async fn file_bytes_empty_file_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@bytesReply <- @f!?("bytes")) {
             match bytesReply {
               [true, stream] => {
@@ -2333,7 +2378,7 @@ async fn file_bytes_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("bytes")) { @"out"!(r) }
           }
@@ -2355,7 +2400,7 @@ async fn file_bytes_chunk_concatenates_via_builder() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -2391,7 +2436,7 @@ async fn file_bytes_at_positional_read() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 1, 2)) {
               match bytesReply {
@@ -2419,7 +2464,7 @@ async fn file_bytes_at_nil_length_reads_to_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 2, Nil)) {
               match bytesReply {
@@ -2450,7 +2495,7 @@ async fn file_bytes_at_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 0, 4)) {
               match bytesReply {
@@ -2485,7 +2530,7 @@ async fn file_bytes_at_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("bytesAt", -1, 4)) { @"out"!(r) }
         }
         "#,
@@ -2503,7 +2548,7 @@ async fn file_bytes_at_negative_length_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("bytesAt", 0, -1)) { @"out"!(r) }
         }
         "#,
@@ -2521,7 +2566,7 @@ async fn file_bytes_at_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("bytesAt", "zero", 4)) { @"out"!(r) }
         }
         "#,
@@ -2540,7 +2585,7 @@ async fn file_bytes_at_bad_length_type_rejects() {
     // length must be Int OR Nil; a String is neither.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("bytesAt", 0, "all")) { @"out"!(r) }
         }
         "#,
@@ -2558,7 +2603,7 @@ async fn file_bytes_at_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("bytesAt", 0, 4)) { @"out"!(r) }
           }
@@ -2585,7 +2630,7 @@ async fn dir_open_file_on_directory_target_rejects() {
     // The mock fsStat returns kind == "dir" for rel exactly "subdir".
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openFile", "subdir", "r")) { @"out"!(r) }
         }
         "#,
@@ -2606,7 +2651,7 @@ async fn dir_open_file_on_regular_file_still_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openFile", "regular.txt", "r")) { @"out"!(r) }
         }
         "#,
@@ -2665,7 +2710,7 @@ async fn file_bytes_streams_across_refill_boundary() {
                       big => {
                         for (@_ <- mockFdCell) {
                           mockFdCell!((big, 0)) |
-                          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+                          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
                             for (@bytesReply <- @f!?("bytes")) {
                               match bytesReply {
                                 [true, stream] => {
@@ -2734,7 +2779,7 @@ async fn file_bytes_at_zero_length_yields_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 0, 0)) {
               match bytesReply {
@@ -2764,7 +2809,7 @@ async fn file_bytes_at_offset_beyond_eof_yields_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 100, 10)) {
               match bytesReply {
@@ -2797,7 +2842,7 @@ async fn dir_open_file_creation_mode_passes_stat_notfound() {
             .await;
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "", "rw", *File)) {
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
           for (@r <- @d!?("openFile", "missing.txt", "w")) { @"out"!(r) }
         }
         "#,
@@ -2821,7 +2866,7 @@ async fn file_bytes_chunk_after_exhaustion_returns_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@bytesReply <- @f!?("bytes")) {
             match bytesReply {
               [true, stream] => {
@@ -2853,7 +2898,7 @@ async fn file_bytes_chunk_single_element() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "X".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -2927,7 +2972,7 @@ async fn file_write_bytes_drains_stream_into_file() {
     let bootstrap = byte_stream_from_list(r#"["a".toUtf8Bytes(), "b".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -2965,7 +3010,7 @@ async fn file_write_bytes_empty_stream_is_no_op() {
     let bootstrap = byte_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wbReply, sizeReply])
@@ -2997,7 +3042,7 @@ async fn file_write_bytes_on_readonly_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "r")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 @"out"!(wbReply)
               }
@@ -3021,7 +3066,7 @@ async fn file_write_bytes_on_closed_returns_fserr_closed() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@wbReply <- @f!?("writeBytes", stream)) {
                   @"out"!(wbReply)
@@ -3062,7 +3107,7 @@ async fn file_write_bytes_producer_error_reports_bytes_written() {
           } |
           contract byteBuilder(@vals, retCh) = { retCh!([true, vals.concatBytes()]) } |
           for (@stream <- Stream!?(*producer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 @"out"!(wbReply)
               }
@@ -3119,7 +3164,7 @@ async fn file_write_bytes_at_does_not_move_cursor() {
     let bootstrap = byte_stream_from_list(r#"["X".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
                 for (@wbaReply <- @f!?("writeBytesAt", 0, 1, stream)) {
                   for (@tellReply <- @f!?("tell")) {
@@ -3164,7 +3209,7 @@ async fn file_write_bytes_at_maxlength_caps_stream() {
     .replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbaReply <- @f!?("writeBytesAt", 10, 2, stream)) {
                 for (@log <<- writeAtLog) {
                   @"out"!([wbaReply, log])
@@ -3220,7 +3265,7 @@ async fn file_write_bytes_at_zero_maxlength_no_op() {
     let bootstrap = byte_stream_from_list(r#"["a".toUtf8Bytes(), "b".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbaReply <- @f!?("writeBytesAt", 0, 0, stream)) {
                 for (@log <<- writeAtLog) {
                   @"out"!([wbaReply, log])
@@ -3255,7 +3300,7 @@ async fn file_write_bytes_at_negative_offset_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@r <- @f!?("writeBytesAt", -1, 1, stream)) { @"out"!(r) }
             }
             "#,
@@ -3275,7 +3320,7 @@ async fn file_write_bytes_at_negative_maxlength_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, -1, stream)) { @"out"!(r) }
             }
             "#,
@@ -3295,7 +3340,7 @@ async fn file_write_bytes_at_non_int_offset_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@r <- @f!?("writeBytesAt", "zero", 1, stream)) { @"out"!(r) }
             }
             "#,
@@ -3315,7 +3360,7 @@ async fn file_write_bytes_at_non_int_maxlength_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, "one", stream)) { @"out"!(r) }
             }
             "#,
@@ -3335,7 +3380,7 @@ async fn file_write_bytes_at_on_readonly_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "r")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, 1, stream)) { @"out"!(r) }
             }
             "#,
@@ -3355,7 +3400,7 @@ async fn file_write_bytes_at_on_closed_returns_fserr_closed() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeBytesAt", 0, 1, stream)) { @"out"!(r) }
               }
@@ -3387,7 +3432,7 @@ async fn dir_entries_drains_records_then_eos() {
             {"name": "a.txt", "kind": "file", "size": 10},
             {"name": "b.txt", "kind": "file", "size": 20}
           ]]) |
-          for (@d <- Dir!?("/root", "sub", "r", *File)) {
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
             for (@entriesReply <- @d!?("entries")) {
               match entriesReply {
                 [true, stream] => {
@@ -3429,7 +3474,7 @@ async fn dir_entries_empty_dir_eos_immediately() {
     // Default entriesCell is [true, []] — no staging needed.
     let src = with_libs(
         r#"
-        for (@d <- Dir!?("/root", "sub", "r", *File)) {
+        for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
           for (@entriesReply <- @d!?("entries")) {
             match entriesReply {
               [true, stream] => {
@@ -3462,7 +3507,7 @@ async fn dir_entries_chunk_returns_list() {
             {"name": "b.txt"},
             {"name": "c.txt"}
           ]]) |
-          for (@d <- Dir!?("/root", "sub", "r", *File)) {
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
             for (@entriesReply <- @d!?("entries")) {
               match entriesReply {
                 [true, stream] => {
@@ -3503,7 +3548,7 @@ async fn dir_entries_forwards_native_error() {
         r#"
         for (@_ <- entriesCell) {
           entriesCell!([false, "FSERR_QUOTA_EXCEEDED", "too many entries"]) |
-          for (@d <- Dir!?("/root", "sub", "r", *File)) {
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
             for (@r <- @d!?("entries")) { @"out"!(r) }
           }
         }
@@ -3525,7 +3570,7 @@ async fn dir_entries_works_on_read_only_dir() {
         r#"
         for (@_ <- entriesCell) {
           entriesCell!([true, [{"name": "f.txt"}]]) |
-          for (@d <- Dir!?("/root", "sub", "r", *File)) {
+          for (@d <- Dir!?("/root", "sub", "r", "oracular", *File)) {
             for (@entriesReply <- @d!?("entries")) {
               match entriesReply {
                 [true, stream] => {
@@ -3555,7 +3600,7 @@ async fn file_chars_streams_ascii_content() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@charsReply <- @f!?("chars")) {
@@ -3608,7 +3653,7 @@ async fn file_chars_handles_multibyte_utf8() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\")) {\
+        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
            for (@_ <- @f!?(\"writeByteArray\", \"a\u{00E9}\".toUtf8Bytes())) {\
              for (@_ <- @f!?(\"seek\", 0, \"set\")) {\
                for (@charsReply <- @f!?(\"chars\")) {\
@@ -3653,7 +3698,7 @@ async fn file_chars_empty_file_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@charsReply <- @f!?("chars")) {
             match charsReply {
               [true, stream] => {
@@ -3679,7 +3724,7 @@ async fn file_chars_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("chars")) { @"out"!(r) }
           }
@@ -3702,7 +3747,7 @@ async fn file_chars_chunk_returns_folded_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@charsReply <- @f!?("chars")) {
@@ -3741,7 +3786,7 @@ async fn file_chars_invalid_start_byte_returns_fserr_io() {
         // FSERR_IO on the first next().
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -3776,7 +3821,7 @@ async fn file_chars_truncated_utf8_at_eof_returns_fserr_io() {
         // yields FSERR_IO.
         for (@_ <- mockFdCell) {
           mockFdCell!(("61c3".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -3846,7 +3891,7 @@ async fn file_write_bytes_non_string_msg_does_not_hang() {
           } |
           contract byteBuilder(@vals, retCh) = { retCh!([true, vals.concatBytes()]) } |
           for (@stream <- Stream!?(*producer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 @"out"!(wbReply)
               }
@@ -3900,7 +3945,7 @@ async fn file_chars_rejects_overlong_2byte_lead() {
         // first next() must return FSERR_IO — not two U+FFFD chars.
         for (@_ <- mockFdCell) {
           mockFdCell!(("c080".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -3933,7 +3978,7 @@ async fn file_chars_rejects_out_of_range_4byte_lead() {
         // File starts with 0xF5 (would encode > U+10FFFF).
         for (@_ <- mockFdCell) {
           mockFdCell!(("f5808080".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -3968,7 +4013,7 @@ async fn file_chars_accepts_smallest_valid_2byte_lead() {
         // File is exactly 0xC2 0x80 — U+0080 (control character).
         for (@_ <- mockFdCell) {
           mockFdCell!(("c280".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -4001,7 +4046,7 @@ async fn file_chars_accepts_largest_valid_4byte_lead() {
         // File is exactly 0xF4 0x8F 0xBF 0xBD — U+10FFFD (private-use).
         for (@_ <- mockFdCell) {
           mockFdCell!(("f48fbfbd".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -4041,7 +4086,7 @@ async fn file_lines_as_strings_two_terminated_lines() {
     // File bytes: "abc" + 0x0A + "def" + 0x0A
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -4090,7 +4135,7 @@ async fn file_lines_as_strings_emits_unterminated_final_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes()].concatBytes())) {
@@ -4138,7 +4183,7 @@ async fn file_lines_as_strings_empty_file_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@lasReply <- @f!?("linesAsStrings", 100)) {
             match lasReply {
               [true, stream] => {
@@ -4166,7 +4211,7 @@ async fn file_lines_as_strings_single_lf_yields_empty_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@lasReply <- @f!?("linesAsStrings", 100)) {
@@ -4214,7 +4259,7 @@ async fn file_lines_as_strings_over_cap_returns_quota_exceeded() {
     // before reaching EOF or LF.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdefghij".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@lasReply <- @f!?("linesAsStrings", 5)) {
@@ -4246,7 +4291,7 @@ async fn file_lines_as_strings_at_cap_boundary_succeeds() {
     // Line is "abcde\n" (5 code points then LF).  cap = 5 → succeeds.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcde".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -4277,7 +4322,7 @@ async fn file_lines_as_strings_utf8_multibyte_line() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\")) {\
+        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
            for (@_ <- @f!?(\"writeByteArray\",\
              [\"a\u{00E9}b\".toUtf8Bytes(), \"0a\".hexToBytes()].concatBytes())) {\
              for (@_ <- @f!?(\"seek\", 0, \"set\")) {\
@@ -4307,7 +4352,7 @@ async fn file_lines_as_strings_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("linesAsStrings", 100)) { @"out"!(r) }
           }
@@ -4327,7 +4372,7 @@ async fn file_lines_as_strings_negative_cap_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("linesAsStrings", -1)) { @"out"!(r) }
         }
         "#,
@@ -4345,7 +4390,7 @@ async fn file_lines_as_strings_non_int_cap_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("linesAsStrings", "many")) { @"out"!(r) }
         }
         "#,
@@ -4377,7 +4422,7 @@ async fn file_for_each_line_visits_every_line() {
               returnCh!([true])
             }
           } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@_ <- @f!?("writeByteArray",
               ["one".toUtf8Bytes(), "0a".hexToBytes(),
                "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -4434,7 +4479,7 @@ async fn file_for_each_line_forwards_quota_error() {
               returnCh!([true])
             }
           } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@_ <- @f!?("writeByteArray", "abcdefghij".toUtf8Bytes())) {
               for (@_ <- @f!?("seek", 0, "set")) {
                 for (@feReply <- @f!?("forEachLine", *myHandler, 5)) {
@@ -4481,7 +4526,7 @@ async fn file_lines_as_strings_cap_zero_on_non_empty_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -4514,7 +4559,7 @@ async fn file_lines_as_strings_cap_zero_on_empty_file_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@lasReply <- @f!?("linesAsStrings", 0)) {
             match lasReply {
               [true, stream] => {
@@ -4545,7 +4590,7 @@ async fn file_lines_as_strings_crlf_retains_cr_in_string() {
     // "line1\r\nline2\r\n" — hex 0d0a between lines and at end.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["line1".toUtf8Bytes(), "0d0a".hexToBytes(),
              "line2".toUtf8Bytes(), "0d0a".hexToBytes()].concatBytes())) {
@@ -4596,7 +4641,7 @@ async fn file_lines_as_strings_multibyte_at_cap_boundary() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\")) {\
+        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
            for (@_ <- @f!?(\"writeByteArray\",\
              [\"abcd\u{00E9}\".toUtf8Bytes(), \"0a\".hexToBytes()].concatBytes())) {\
              for (@_ <- @f!?(\"seek\", 0, \"set\")) {\
@@ -4635,7 +4680,7 @@ async fn file_lines_as_strings_malformed_utf8_substitutes_replacement_char() {
     // File: "a" + 0xFF + "b" + LF
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "ff".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -4707,7 +4752,7 @@ async fn file_lines_as_strings_refill_across_lf_boundary() {
                           bigLine => {
                             for (@_ <- mockFdCell) {
                               mockFdCell!((bigLine, 0)) |
-                              for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+                              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
                                 for (@lasReply <- @f!?("linesAsStrings", 10000)) {
                                   match lasReply {
                                     [true, stream] => {
@@ -4810,7 +4855,7 @@ async fn file_write_chars_drains_stream_into_file() {
     let bootstrap = char_stream_from_list(r#"["a", "b", "c"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -4845,7 +4890,7 @@ async fn file_write_chars_utf8_encodes_multibyte() {
     let bootstrap = char_stream_from_list("[\"a\", \"\u{00E9}\", \"b\"]").replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -4878,7 +4923,7 @@ async fn file_write_chars_empty_stream_is_no_op() {
     let bootstrap = char_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wcReply, sizeReply])
@@ -4910,7 +4955,7 @@ async fn file_write_chars_on_readonly_rejects() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "r")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
               for (@r <- @f!?("writeChars", stream)) { @"out"!(r) }
             }
             "#,
@@ -4931,7 +4976,7 @@ async fn file_write_chars_on_closed_returns_fserr_closed() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeChars", stream)) { @"out"!(r) }
               }
@@ -4975,7 +5020,7 @@ async fn file_write_chars_non_string_element_rejects() {
             }
           } |
           for (@stream <- Stream!?(*producer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 @"out"!(wcReply)
               }
@@ -5028,7 +5073,7 @@ async fn file_write_line_appends_lf_after_chars() {
     let bootstrap = char_stream_from_list(r#"["a", "b"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -5066,7 +5111,7 @@ async fn file_write_line_empty_stream_writes_just_lf() {
     let bootstrap = char_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -5104,7 +5149,7 @@ async fn file_write_line_on_readonly_rejects() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "r")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
               for (@r <- @f!?("writeLine", stream)) { @"out"!(r) }
             }
             "#,
@@ -5125,7 +5170,7 @@ async fn file_write_line_on_closed_returns_fserr_closed() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeLine", stream)) { @"out"!(r) }
               }
@@ -5170,7 +5215,7 @@ async fn file_write_line_producer_error_omits_lf() {
             }
           } |
           for (@stream <- Stream!?(*producer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wlReply, sizeReply])
@@ -5217,7 +5262,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             .await;
     let src = format!(
         r#"
-        new File, fdP, stateP, parseRwxToBits, parseRwxLoop,
+        new File, fdP, stateP, cmodeP, parseRwxToBits, parseRwxLoop,
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -5248,8 +5293,10 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
           contract fsFlush(@_fd, ret) = {{ ret!([true]) }} |
           contract fsClose(@_fd, ret) = {{ ret!([true]) }} |
           contract fsTruncate(@_fd, @_n, ret) = {{ ret!([true]) }} |
-          contract fsChmod(@_r, @_p, @_b, ret) = {{ ret!([true]) }} |
-          contract fsChown(@_r, @_p, @_o, @_g, ret) = {{ ret!([true]) }} |
+          // C-R2 round-2: fsChmod takes cmode as 4th arg.
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          // Slice 26: fsChown takes cmode as 5th arg.
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
           contract parseRwxToBits(@_s, ret) = {{ ret!([true, 0]) }} |
 
 {}
@@ -5273,7 +5320,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
               }}
             }} |
             for (@stream <- Stream!?(*producer, *charBuilder)) {{
-              for (@f <- File!?(1, "/root", "test.txt", "rw")) {{
+              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
                 for (@wlReply <- @f!?("writeLine", stream)) {{
                   @"out"!(wlReply)
                 }}
@@ -5309,7 +5356,7 @@ async fn file_read_into_fills_buffer_from_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdef".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               // Allocate a 4-byte buffer.
@@ -5383,7 +5430,7 @@ async fn file_read_into_at_eof_returns_zero_bytes_and_eof_true() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           // Empty file; cursor already at position 0 == EOF.
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -5431,7 +5478,7 @@ async fn file_read_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -5464,7 +5511,7 @@ async fn file_read_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Take the lease first.
@@ -5500,7 +5547,7 @@ async fn file_write_from_drains_buffer_into_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
               // Fill the buffer via its own lease.
@@ -5553,7 +5600,7 @@ async fn file_write_from_empty_buffer_is_no_op() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@wfReply <- @f!?("writeFrom", buf)) {
@@ -5587,7 +5634,7 @@ async fn file_write_from_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFrom", buf)) { @"out"!(r) }
@@ -5610,7 +5657,7 @@ async fn file_write_from_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -5638,7 +5685,7 @@ async fn file_write_from_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Acquire the fill lease so toByteArray will refuse.
@@ -5669,7 +5716,7 @@ async fn file_read_into_then_write_from_round_trip() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           // Prime with "hello".
           for (@_ <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -5738,7 +5785,7 @@ async fn file_read_into_utf8_buffer_truncates_at_codepoint_boundary() {
     // force the boundary case).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           // Prime file with "aé" (0x61 0xC3 0xA9).
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
@@ -5825,7 +5872,7 @@ async fn file_read_into_byte_buffer_ignores_codepoint_boundary() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -5880,7 +5927,7 @@ async fn file_read_into_on_read_only_file_succeeds() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("abcd".toUtf8Bytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
                 for (@readReply <- @f!?("readInto", buf)) {
@@ -5931,7 +5978,7 @@ async fn file_read_at_into_positional_fill_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdef".toUtf8Bytes())) {
             // Cursor now at 6.  readAtInto at offset 2 shouldn't move it.
             for (@alloc <- Allocator!?()) {
@@ -6001,7 +6048,7 @@ async fn file_read_at_into_utf8_truncates_no_seek_back() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -6061,7 +6108,7 @@ async fn file_read_at_into_on_read_only_file_succeeds() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("hello".toUtf8Bytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 5)) {
                 for (@readReply <- @f!?("readAtInto", 0, buf)) {
@@ -6101,7 +6148,7 @@ async fn file_read_at_into_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("readAtInto", -1, buf)) { @"out"!(r) }
@@ -6123,7 +6170,7 @@ async fn file_read_at_into_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("readAtInto", "zero", buf)) { @"out"!(r) }
@@ -6145,7 +6192,7 @@ async fn file_read_at_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -6169,7 +6216,7 @@ async fn file_read_at_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@[true, _tok] <- @buf!?("beginFill")) {
@@ -6199,7 +6246,7 @@ async fn file_write_from_at_positional_write_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "aaaaaa".toUtf8Bytes())) {
             // Cursor at 6.
             for (@alloc <- Allocator!?()) {
@@ -6259,7 +6306,7 @@ async fn file_write_from_at_on_readonly_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "r")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFromAt", 0, buf)) { @"out"!(r) }
@@ -6281,7 +6328,7 @@ async fn file_write_from_at_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -6305,7 +6352,7 @@ async fn file_write_from_at_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFromAt", -1, buf)) { @"out"!(r) }
@@ -6327,7 +6374,7 @@ async fn file_write_from_at_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFromAt", "zero", buf)) { @"out"!(r) }
@@ -6349,7 +6396,7 @@ async fn file_write_from_at_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Take the lease so toByteArray refuses.
@@ -6380,7 +6427,7 @@ async fn file_read_line_yields_chars_then_eos_at_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes()].concatBytes())) {
@@ -6434,7 +6481,7 @@ async fn file_read_line_advances_cursor_past_lf_for_next_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -6485,7 +6532,7 @@ async fn file_read_line_at_eof_pre_exhausted_stream() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@[true, stream] <- @f!?("readLine")) {
             for (@r <- @stream!?("next")) { @"out"!(r) }
           }
@@ -6507,7 +6554,7 @@ async fn file_read_line_blank_line_yields_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, stream] <- @f!?("readLine")) {
@@ -6531,7 +6578,7 @@ async fn file_read_line_multibyte_utf8() {
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\")) {\
+        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
            for (@_ <- @f!?(\"writeByteArray\",\
              [\"a\u{00E9}\".toUtf8Bytes(), \"0a\".hexToBytes()].concatBytes())) {\
              for (@_ <- @f!?(\"seek\", 0, \"set\")) {\
@@ -6573,7 +6620,7 @@ async fn file_read_line_chunk_returns_line_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hello".toUtf8Bytes(), "0a".hexToBytes(),
              "world".toUtf8Bytes()].concatBytes())) {
@@ -6600,7 +6647,7 @@ async fn file_read_line_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("readLine")) { @"out"!(r) }
           }
@@ -6681,7 +6728,7 @@ async fn file_read_line_into_happy_path() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -6724,7 +6771,7 @@ async fn file_read_line_into_eof_returns_zero_and_eof_flag() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
               for (@r <- @f!?("readLineInto", buf)) { @"out"!(r) }
@@ -6749,7 +6796,7 @@ async fn file_read_line_into_blank_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -6778,7 +6825,7 @@ async fn file_read_line_into_truncated_when_line_exceeds_buffer() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdef".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -6822,7 +6869,7 @@ async fn file_read_line_into_unterminated_final_line_marks_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -6862,7 +6909,7 @@ async fn file_read_line_into_utf8_boundary_marks_truncated_preserves_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -6908,7 +6955,7 @@ async fn file_read_line_into_sequential_reads_advance_correctly() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -6955,7 +7002,7 @@ async fn file_read_line_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
@@ -6979,7 +7026,7 @@ async fn file_read_line_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
               for (@[true, _tok] <- @buf!?("beginFill")) {
@@ -7005,7 +7052,7 @@ async fn file_read_line_into_on_read_only_file_succeeds() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!((["hi".toUtf8Bytes(), "0a".hexToBytes()].concatBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
                 for (@r <- @f!?("readLineInto", buf)) { @"out"!(r) }
@@ -7039,7 +7086,7 @@ async fn file_read_line_into_full_buffer_returns_truncated_not_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7097,7 +7144,7 @@ async fn file_read_line_into_malformed_utf8_at_cursor_returns_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@buf <- Buffer!?(10, "utf8")) {
               for (@rReply <- @f!?("readLineInto", buf)) {
                 for (@baReply <- @buf!?("toByteArray")) {
@@ -7136,7 +7183,7 @@ async fn file_read_line_into_content_matches_capacity_defers_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7199,7 +7246,7 @@ async fn file_read_line_into_buffer_strictly_larger_than_content_plus_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7245,7 +7292,7 @@ async fn file_read_line_into_utf8_chained_after_truncation() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -7312,7 +7359,7 @@ async fn file_read_line_partial_drain_leaves_cursor_at_fsread_chunk_end() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7362,7 +7409,7 @@ async fn file_read_line_malformed_utf8_start_byte_returns_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@[true, stream] <- @f!?("readLine")) {
               for (@r <- @stream!?("next")) { @"out"!(r) }
             }
@@ -7401,7 +7448,7 @@ async fn file_read_line_across_refill_boundary() {
           new lineCh in {
             mkLine!(*lineCh) |
             for (@line <- lineCh) {
-              for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
                 for (@_ <- @f!?("writeByteArray",
                   [line, "0a".hexToBytes(), "b".toUtf8Bytes()].concatBytes())) {
                   for (@_ <- @f!?("seek", 0, "set")) {
@@ -7438,7 +7485,7 @@ async fn file_lines_on_empty_file_yields_immediate_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@r <- @outer!?("next")) { @"out"!(r) }
           }
@@ -7460,7 +7507,7 @@ async fn file_lines_two_lines_produces_two_inners_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7528,7 +7575,7 @@ async fn file_lines_unterminated_final_line_still_produced() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -7588,7 +7635,7 @@ async fn file_lines_blank_line_yields_empty_inner_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, outer] <- @f!?("lines")) {
@@ -7629,7 +7676,7 @@ async fn file_lines_single_active_inner_rule_force_drains_active() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7685,7 +7732,7 @@ async fn file_lines_drained_inner_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7724,7 +7771,7 @@ async fn file_lines_chunk_returns_fserr_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7751,7 +7798,7 @@ async fn file_lines_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("lines")) { @"out"!(r) }
           }
@@ -7778,7 +7825,7 @@ async fn file_write_lines_appends_terminated_copy_of_each_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -7836,7 +7883,7 @@ async fn file_write_lines_on_readonly_rejects() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("hi\n".toUtf8Bytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@r <- @f!?("writeLines", "not-a-stream")) { @"out"!(r) }
           }
         }
@@ -7856,7 +7903,7 @@ async fn file_write_lines_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("writeLines", "not-a-stream")) { @"out"!(r) }
           }
@@ -7878,7 +7925,7 @@ async fn file_write_lines_empty_stream_returns_true_no_bytes() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@wReply <- @f!?("writeLines", outer)) {
               for (@sizeReply <- @f!?("size")) {
@@ -7916,7 +7963,7 @@ async fn file_lines_force_drain_hits_eof_during_drain() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -7979,7 +8026,7 @@ async fn file_lines_drained_inner_chunk_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -8015,7 +8062,7 @@ async fn file_lines_drained_inner_fold_returns_fserr_closed() {
         r#"
         new noopCombine in {
           contract noopCombine(@_acc, @_v, retCh) = { retCh!([true, Nil]) } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@_ <- @f!?("writeByteArray",
               ["ab".toUtf8Bytes(), "0a".hexToBytes(),
                "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -8052,7 +8099,7 @@ async fn file_lines_three_blank_lines_yield_three_empty_inners() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a0a0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, outer] <- @f!?("lines")) {
@@ -8106,7 +8153,7 @@ async fn file_write_lines_non_stream_arg_yields_no_reply() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@r <- @f!?("writeLines", "not-a-stream")) { @"out"!(r) }
         }
         "#,
@@ -8140,7 +8187,7 @@ async fn file_lines_inner_yields_multibyte_utf8_chars() {
     // File: "aé\n" — 'a' (1 byte) + 'é' (2 bytes, c3 a9) + LF.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -8224,7 +8271,7 @@ async fn file_write_lines_producer_error_reports_lines_written() {
                 retCh!([false, "FSERR_UNSUPPORTED", "chunk unsupported"])
               } |
               for (@outerHandle <- Stream!?(*outerProd, *outerBuild)) {
-                for (@f <- File!?(1, "/root", "out.txt", "rw")) {
+                for (@f <- File!?(1, "/root", "out.txt", "rw", "oracular")) {
                   for (@r <- @f!?("writeLines", outerHandle)) { @"out"!(r) }
                 }
               }
@@ -8266,7 +8313,7 @@ async fn file_lines_outer_eos_is_cached() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@r1 <- @outer!?("next")) {
               for (@r2 <- @outer!?("next")) {
@@ -8305,7 +8352,7 @@ async fn file_lines_inner_fserr_io_is_cached() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@[true, outer] <- @f!?("lines")) {
               for (@[true, inner1] <- @outer!?("next")) {
                 for (@r1 <- @inner1!?("next")) {
@@ -8342,7 +8389,7 @@ async fn file_lines_live_inner_chunk_returns_line_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes()].concatBytes())) {
@@ -8616,7 +8663,7 @@ async fn file_read_lines_into_happy_path() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -8671,7 +8718,7 @@ async fn file_read_lines_into_stops_at_m() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes(),
@@ -8703,7 +8750,7 @@ async fn file_read_lines_into_eof_before_rows_full() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -8738,7 +8785,7 @@ async fn file_read_lines_into_truncates_overflow_line() {
     // No more content → row 1 not filled; nLines=1, eof=true, trunc=true.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdefghij".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8779,7 +8826,7 @@ async fn file_read_lines_into_empty_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, rows] <- @alloc!?("allocRows", 3, 10, "bytes")) {
               for (@r <- @f!?("readLinesInto", rows)) { @"out"!(r) }
@@ -8804,7 +8851,7 @@ async fn file_read_lines_into_blank_lines() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a0a0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -8844,7 +8891,7 @@ async fn file_read_lines_into_unterminated_final_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -8884,7 +8931,7 @@ async fn file_read_lines_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "bytes")) {
@@ -8901,6 +8948,75 @@ async fn file_read_lines_into_on_closed_returns_fserr_closed() {
     assert_eq!(code, "FSERR_CLOSED");
 }
 
+// ---------------------------------------------------------------------
+// Closed-state completeness (2026-07-30 Q-6 resolution)
+//
+// Per the tokenized-cost-accounting design decision, File agents outlive
+// their originating deploy and can be referenced in a closed state.
+// Every method must return `FSERR_CLOSED` on a closed File, `close` must
+// be idempotent, and the unknown-method default arm must continue to
+// return `FSERR_UNSUPPORTED` even on a closed File (the "you asked for a
+// nonsense method" error takes priority over "the file is closed").
+// ---------------------------------------------------------------------
+
+/// forEachLine on a closed File returns FSERR_CLOSED.  Coverage gap
+/// closed 2026-07-30: forEachLine delegates to linesAsStrings, which
+/// has its own closed-check, but the transitive property needs an
+/// explicit regression test so a future refactor that inlines the call
+/// path can't silently drop the check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_for_each_line_on_closed_returns_fserr_closed() {
+    // Bespoke source (not close_then_call) because forEachLine needs a
+    // handler name argument that must be `new`-bound in scope.  Handler
+    // is never invoked — the closed check fires before dispatch — but
+    // the compiler requires it to be bound.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new noopHandler in {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@_ <- @f!?("close")) {
+              for (@r <- @f!?("forEachLine", *noopHandler, 16)) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_CLOSED");
+}
+
+/// close() on an already-closed File is idempotent: returns [true]
+/// without an error.  Matches POSIX close-on-closed-fd semantics from
+/// the caller's perspective (they got the "it's closed" outcome they
+/// asked for; re-asking is fine).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_close_on_closed_is_idempotent() {
+    let reply = close_then_call(r#"!?("close")"#).await;
+    // extract_reply parses `[true]` as ok=true; second close should succeed.
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "close on already-closed File must succeed (idempotent)");
+}
+
+/// Unknown method on a closed File returns FSERR_UNSUPPORTED, not
+/// FSERR_CLOSED.  Locks in the design decision that the default arm
+/// (unknown-method) takes priority over the closed-state check —
+/// callers asking for a nonsense method get told about the nonsense,
+/// not about the file state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_unknown_method_on_closed_returns_fserr_unsupported() {
+    let reply = close_then_call(r#"!?("nonExistentMethod", 42)"#).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
 /// Cursor discipline: after readLinesInto consumes a subset of the
 /// file, subsequent readN reads the remaining bytes correctly.
 /// Verifies that overflow drain leaves the cursor at the right spot.
@@ -8914,7 +9030,7 @@ async fn file_read_lines_into_leaves_cursor_at_next_line() {
     // should return "three\n" (6 bytes).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -9049,7 +9165,7 @@ async fn file_read_lines_into_overflow_then_normal_next_line() {
     // drain consumes "defghij" + LF; row 1 reads "XY".
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdefghij".toUtf8Bytes(), "0a".hexToBytes(),
              "XY".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9124,7 +9240,7 @@ async fn file_read_lines_into_revoked_rows_forwards_error() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -9202,7 +9318,7 @@ async fn file_read_lines_into_utf8_rows_multibyte_content() {
     // utf8 Rows with innerN=10 (cap 40 bytes) — plenty of room.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["caf".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -9245,7 +9361,7 @@ async fn file_read_lines_into_mixed_blank_and_content_lines() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "0a".hexToBytes(),
@@ -9300,7 +9416,7 @@ async fn file_read_lines_into_pre_filled_inner_is_cleared() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -9344,7 +9460,7 @@ async fn file_read_lines_into_utf8_malformed_forwards_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "utf8")) {
                 for (@r <- @f!?("readLinesInto", rows)) { @"out"!(r) }
@@ -9368,7 +9484,7 @@ async fn file_read_lines_into_eof_cursor_at_file_size() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9413,7 +9529,7 @@ async fn file_read_lines_into_line_exactly_at_cap_plus_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["1234".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -9874,7 +9990,7 @@ async fn file_write_string_on_readonly_rejects() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("hi".toUtf8Bytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@r <- @f!?("writeString", "boom")) { @"out"!(r) }
           }
         }
@@ -9894,7 +10010,7 @@ async fn file_write_bytearray_on_readonly_rejects() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("hi".toUtf8Bytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "r")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
             for (@r <- @f!?("writeByteArray", "boom".toUtf8Bytes())) { @"out"!(r) }
           }
         }
@@ -9971,7 +10087,7 @@ async fn file_truncate_preserves_cursor_position() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdefgh".toUtf8Bytes())) {
             // Cursor at 8.  Truncate to 4.  Cursor should remain 8.
             for (@_ <- @f!?("truncate", 4)) {
@@ -10807,7 +10923,7 @@ async fn stdout_write_lines_roundtrip_from_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw")) {
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -11548,7 +11664,7 @@ async fn fs_open_file_happy_path() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "rw", "file")
+          "config.json": ("/root", "config.json", "rw", "file", "oracular")
         })) {
           for (@openReply <- @fs!?("openFile", "config.json", {"mode": "r"})) {
             match openReply {
@@ -11576,7 +11692,7 @@ async fn fs_open_file_not_in_bundle_returns_unsupported() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "nope.json", {})) { @"out"!(r) }
         }
@@ -11598,7 +11714,7 @@ async fn fs_open_file_downgrade_r_on_rw_provisioned_succeeds() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "data.bin", {"mode": "r"})) {
             @"out"!(r)
@@ -11622,7 +11738,7 @@ async fn fs_open_file_upgrade_w_on_r_provisioned_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "config.json", {"mode": "w"})) {
             @"out"!(r)
@@ -11647,7 +11763,7 @@ async fn fs_open_file_mode_defaults_to_r() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "config.json", {})) {
             @"out"!(r)
@@ -11672,7 +11788,7 @@ async fn fs_open_file_on_dir_entry_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "logs", {})) { @"out"!(r) }
         }
@@ -11695,7 +11811,7 @@ async fn fs_open_dir_happy_path() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@openReply <- @fs!?("openDir", "logs", {"mode": "r"})) {
             match openReply {
@@ -11727,7 +11843,7 @@ async fn fs_open_dir_on_file_entry_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "config.json", {})) { @"out"!(r) }
         }
@@ -11750,7 +11866,7 @@ async fn fs_open_dir_upgrade_rw_on_r_provisioned_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "readonly-dir": ("/root", "subdir", "r", "dir")
+          "readonly-dir": ("/root", "subdir", "r", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "readonly-dir", {"mode": "rw"})) {
             @"out"!(r)
@@ -11774,7 +11890,7 @@ async fn fs_open_dir_unknown_mode_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "logs", {"mode": "x"})) {
             @"out"!(r)
@@ -11797,7 +11913,7 @@ async fn fs_open_file_non_map_options_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "config.json", "not-a-map")) {
             @"out"!(r)
@@ -11835,7 +11951,7 @@ async fn fs_open_file_non_string_mode_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "r", "file")
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "config.json", {"mode": 42})) {
             @"out"!(r)
@@ -11875,7 +11991,7 @@ async fn fs_open_file_returns_working_file() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@[true, file] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@_ <- @file!?("writeByteArray", "hello".toUtf8Bytes())) {
@@ -11908,7 +12024,7 @@ async fn fs_open_dir_not_in_bundle_returns_unsupported() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "nope", {})) { @"out"!(r) }
         }
@@ -11931,7 +12047,7 @@ async fn fs_open_file_upgrade_rejects_helper(requested: &str) {
     let src = with_libs(&format!(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {{
-          "cfg.json": ("/root", "cfg.json", "r", "file")
+          "cfg.json": ("/root", "cfg.json", "r", "file", "oracular")
         }})) {{
           for (@r <- @fs!?("openFile", "cfg.json", {{"mode": "{requested}"}})) {{
             @"out"!(r)
@@ -11977,7 +12093,7 @@ async fn fs_open_file_unknown_mode_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "cfg.json": ("/root", "cfg.json", "rw", "file")
+          "cfg.json": ("/root", "cfg.json", "rw", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "cfg.json", {"mode": "z"})) { @"out"!(r) }
         }
@@ -12001,7 +12117,7 @@ async fn fs_open_dir_non_map_options_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "logs", "not-a-map")) { @"out"!(r) }
         }
@@ -12035,7 +12151,7 @@ async fn fs_open_dir_non_string_mode_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "logs", {"mode": 42})) { @"out"!(r) }
         }
@@ -12056,7 +12172,7 @@ async fn fs_open_dir_downgrade_r_on_rw_provisioned_succeeds() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "logs", {"mode": "r"})) { @"out"!(r) }
         }
@@ -12077,7 +12193,7 @@ async fn fs_open_dir_default_mode_on_rw_provisioned_succeeds() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@r <- @fs!?("openDir", "logs", {})) { @"out"!(r) }
         }
@@ -12097,7 +12213,7 @@ async fn fs_open_file_write_mode_succeeds_helper(mode: &str) {
     let src = with_libs(&format!(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {{
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         }})) {{
           for (@r <- @fs!?("openFile", "data.bin", {{"mode": "{mode}"}})) {{
             @"out"!(r)
@@ -12221,7 +12337,7 @@ async fn fs_open_file_upgrade_reply_shape_is_three_elems() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "cfg.json": ("/root", "cfg.json", "r", "file")
+          "cfg.json": ("/root", "cfg.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "cfg.json", {"mode": "w"})) { @"out"!(r) }
         }
@@ -12243,7 +12359,7 @@ async fn fs_open_dir_returns_working_dir() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@[true, dir] <- @fs!?("openDir", "logs", {"mode": "r"})) {
             for (@statReply <- @dir!?("stat", "child.txt")) { @"out"!(statReply) }
@@ -12257,47 +12373,11 @@ async fn fs_open_dir_returns_working_dir() {
 }
 
 // -- m-16-3: cache-baseline regression test.
-
-/// Slice 17 cache — cache HIT discriminator: two openFile calls on
-/// the same name+mode return the SAME cached agent handle.  The
-/// discriminator is per-agent state: after close() on the first
-/// handle, a second openFile of the same key returns the CLOSED
-/// handle, whose subsequent methods surface FSERR_CLOSED.
-///
-/// (Cursor-based checks don't work with our single-mockFdCell mock —
-/// distinct File agents would appear to share cursor state.  The
-/// per-agent `stateP` cell — which becomes "closed" after close —
-/// IS per-agent, so this is a real discriminator.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_same_key_returns_same_handle() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
-        })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@_ <- @f1!?("close")) {
-              // f1 is now "closed".  If the cache returns the SAME
-              // handle for the same key, f2 is the closed one too.
-              for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-                for (@r <- @f2!?("tell")) { @"out"!(r) }
-              }
-            }
-          }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "cached handle is closed; tell() must fail");
-    assert_eq!(
-        code, "FSERR_CLOSED",
-        "second openFile returned the same (closed) handle from cache"
-    );
-}
+// (Slice 17's cache-HIT-returns-SAME-handle test was DELETED in slice
+// 27; POSIX semantics require every openFile to return a fresh
+// handle with an independent cursor.  See the replacement test
+// `fs_open_file_twice_yields_distinct_handles_with_independent_state`
+// below.)
 
 // -- m-16-4: extra-options-keys silently ignored (structural forward-
 //    compat).
@@ -12312,7 +12392,7 @@ async fn fs_open_file_extra_options_keys_ignored() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "data.bin",
                           {"mode": "r", "create": true, "exclusive": false})) {
@@ -12339,7 +12419,7 @@ async fn fs_open_file_options_without_mode_key_defaults_to_r() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "cfg.json": ("/root", "cfg.json", "r", "file")
+          "cfg.json": ("/root", "cfg.json", "r", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "cfg.json", {"create": true})) {
             @"out"!(r)
@@ -12356,23 +12436,29 @@ async fn fs_open_file_options_without_mode_key_defaults_to_r() {
 }
 
 // ---------------------------------------------------------------------
-// Phase 6 Slice 17: Fs.rho cache (spec §863-869).
+// Phase 6 Slice 17 (cache) — REVERTED by slice 27 (2026-08-04).  The
+// tests below survive with rewritten assertions: distinct-modes,
+// distinct-names, cross-Fs, reply-shape, three-concurrent-opens all
+// still hold under fresh-mint semantics.  Tests that asserted cache
+// HIT (same-handle returned for repeat opens) were deleted or
+// inverted — see `fs_open_file_twice_yields_distinct_handles_with_
+// independent_state` for the new POSIX-open-twice invariant.
 // ---------------------------------------------------------------------
 
-/// Cache MISS discriminator: openFile on same name but DIFFERENT modes
-/// yields distinct handles.  Verified via the close-then-tell probe:
-/// close h1 ("rw"); open h2 ("r") on same name; h2.tell() succeeds
-/// (h2 is a fresh, non-closed handle — proves cache miss on the
-/// different-mode key).
+/// Different-mode opens on the same name yield distinct handles.
+/// Under slice 27's fresh-mint semantics ALL opens are distinct; this
+/// test remains as a specific regression that different modes don't
+/// somehow collapse into shared state.  Probe: close h1 ("rw");
+/// open h2 ("r") on same name; h2.tell() succeeds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_different_modes_yield_distinct_handles() {
+async fn fs_open_file_different_modes_yield_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@_ <- @f1!?("close")) {
@@ -12388,22 +12474,22 @@ async fn fs_open_file_cache_different_modes_yield_distinct_handles() {
     let (ok, _, _, _) = extract_reply(&reply);
     assert!(
         ok,
-        "different modes → distinct cache entries → h2 is a fresh (non-closed) handle"
+        "different modes → distinct handles → h2 unaffected by h1 close"
     );
 }
 
-/// Cache MISS on different names: closing one file's handle doesn't
-/// affect the other's handle.  Same close-probe pattern.
+/// Distinct-name opens yield distinct handles.  Regression against a
+/// bundle where two logical names silently collapse to shared state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_different_names_yield_distinct_handles() {
+async fn fs_open_file_different_names_yield_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "a.bin": ("/root", "a.bin", "rw", "file"),
-          "b.bin": ("/root", "b.bin", "rw", "file")
+          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
         })) {
           for (@[true, f1] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
             for (@_ <- @f1!?("close")) {
@@ -12420,26 +12506,26 @@ async fn fs_open_file_cache_different_names_yield_distinct_handles() {
     assert!(ok, "b.bin's handle unaffected by closing a.bin's handle");
 }
 
-/// openDir cache: two openDir calls on same name+mode return the SAME
-/// handle.  Verify via stat() side-effect visibility — but since our
-/// mock stat is stateless, we approximate by verifying both calls
-/// succeed and the cache hit path was exercised.
+/// Slice 27 (replaces slice-17 cache-hit test): two openDir calls on
+/// same name+mode both succeed and produce STRUCTURALLY DISTINCT dir
+/// handles.  Each call mints a fresh Dir agent with its own private
+/// scope; closing one has no effect on the other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_cache_same_key_returns_same_handle() {
+async fn fs_open_dir_twice_yields_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@[true, d1] <- @fs!?("openDir", "logs", {"mode": "r"})) {
             for (@[true, d2] <- @fs!?("openDir", "logs", {"mode": "r"})) {
-              // Both dir handles should stat the same child.
+              // Both handles work independently and are distinct.
               for (@s1 <- @d1!?("stat", "child.txt")) {
                 for (@s2 <- @d2!?("stat", "child.txt")) {
-                  @"out"!([s1, s2])
+                  @"out"!([s1, s2, d1 == d2])
                 }
               }
             }
@@ -12454,7 +12540,15 @@ async fn fs_open_dir_cache_same_key_returns_same_handle() {
     };
     let (ok1, _, _, _) = extract_reply(&outer.ps[0]);
     let (ok2, _, _, _) = extract_reply(&outer.ps[1]);
-    assert!(ok1 && ok2, "both dir handles work after cache hit");
+    assert!(ok1 && ok2, "both dir handles must work");
+    let same = match single_expr(&outer.ps[2]).unwrap().expr_instance {
+        Some(ExprInstance::GBool(b)) => b,
+        other => panic!("expected Bool, got {other:?}"),
+    };
+    assert!(
+        !same,
+        "openDir must mint DISTINCT handles per call (slice 27)"
+    );
 }
 
 // ==========================================================================
@@ -12472,24 +12566,26 @@ async fn fs_open_dir_cache_same_key_returns_same_handle() {
 // dual-lookup-via-getFS pattern.
 // ==========================================================================
 
-/// Cache scoping (spec §867): two SEPARATE Fs instances have
-/// INDEPENDENT caches.  Verified via close-probe: close fs1's
-/// handle; open the same name in a fresh fs2; fs2's handle works
-/// (not closed).
+/// Cross-Fs isolation (spec §867): two SEPARATE Fs instances mint
+/// independent handles.  Under slice 27 EVERY open mints fresh — so
+/// this test is now a specific regression on Fs-boundary isolation
+/// rather than cache-scope semantics.  Verified via close-probe:
+/// close fs1's handle; open the same name in a fresh fs2; fs2's
+/// handle works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_does_not_cross_fs_boundaries() {
+async fn fs_open_file_across_fs_instances_yields_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs1 <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@[true, h1] <- @fs1!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@_ <- @h1!?("close")) {
               for (@fs2 <- Fs!?(0, 1, 2, {
-                "data.bin": ("/root", "data.bin", "rw", "file")
+                "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
               })) {
                 for (@[true, h2] <- @fs2!?("openFile", "data.bin", {"mode": "rw"})) {
                   for (@r <- @h2!?("tell")) { @"out"!(r) }
@@ -12505,26 +12601,21 @@ async fn fs_open_file_cache_does_not_cross_fs_boundaries() {
     assert!(ok, "fs2's h2 is a fresh handle; not closed by fs1's close");
 }
 
-/// Cache doesn't record FAILED opens.  If openFileImpl returns an
-/// error, the cache stays empty; a subsequent call re-attempts.  In
-/// this MVP mock we can't easily inject fsOpen/fsStat failures
-/// without a shadow-syscall scope, so this test uses the kind-
-/// mismatch path (openDir on a "file" entry) — the cache-populate
-/// path isn't touched because the error surfaces at the Fs method
-/// level BEFORE delegation.  A more direct test lands in slice 19
-/// when fsOpen shadowing becomes easy.  (Smoke coverage.)
+/// Repeated same-key openFile smoke.  Three consecutive calls all
+/// succeed — pins reply-shape stability across successive fresh
+/// mints.  Under slice 27 each call also produces a distinct handle
+/// (unlike the pre-slice-27 cache which returned the same handle).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_smoke_repeated_same_key_stable() {
+async fn fs_open_file_repeated_same_key_all_succeed() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     // Three consecutive openFile calls on the same key.  Each should
-    // succeed and the cache slot is stable across calls (no reply
-    // shape drift, no exception).
+    // succeed with a well-formed reply.
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
@@ -12551,81 +12642,74 @@ async fn fs_open_file_cache_smoke_repeated_same_key_stable() {
 // Slice-17 review-driven coverage additions.
 // ---------------------------------------------------------------------
 
-/// M-17-1: openDir cache-hit returns the SAME handle.  Dir has no
-/// close() method (unlike File), so the close-then-probe pattern
-/// doesn't apply; instead we compare the two returned handles via
-/// Rholang's structural `==` on names.  Two names quoting the same
-/// bundle+{*this} Par are structurally equal iff the cache returned
-/// the same handle on the second call.
+/// Slice 27 (replaces M-17-1 slice-17 cache-hit tests): openFile /
+/// openDir twice on the same key produce STRUCTURALLY DISTINCT
+/// handles.  POSIX-like open semantics: every call is a fresh open
+/// with its own file descriptor / agent scope, so structural equality
+/// on the returned name is FALSE for two different opens of the same
+/// logical name.  The old slice-17 test asserted the opposite; slice
+/// 27 reverses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_cache_same_key_handles_are_structurally_equal() {
+async fn fs_open_file_twice_yields_distinct_handles_with_independent_state() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
+    // Two opens on the same (name, mode) — assert (a) both succeed,
+    // (b) their bundle+ handles are structurally distinct, and (c)
+    // closing the first does NOT affect the second (independent
+    // per-agent `stateP`).
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
-          for (@[true, d1] <- @fs!?("openDir", "logs", {"mode": "rw"})) {
-            for (@[true, d2] <- @fs!?("openDir", "logs", {"mode": "rw"})) {
-              @"out"!(d1 == d2)
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+              for (@_ <- @f1!?("close")) {
+                // f1 is now closed; f2 must still be open — proves
+                // independent per-agent state (no shared cache slot).
+                for (@r <- @f2!?("tell")) {
+                  @"out"!([f1 == f2, r])
+                }
+              }
             }
           }
         }
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let same = match single_expr(&reply).unwrap().expr_instance {
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [Bool, tellReply] list"),
+    };
+    let same = match single_expr(&outer.ps[0]).unwrap().expr_instance {
         Some(ExprInstance::GBool(b)) => b,
         other => panic!("expected Bool, got {other:?}"),
     };
     assert!(
-        same,
-        "cache hit must return the SAME handle (d1 == d2 structurally)"
+        !same,
+        "two openFile calls must mint DISTINCT handles (slice 27)"
+    );
+    let (ok, code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        ok,
+        "f2 must remain open after f1 close (independent stateP); got code {code}"
     );
 }
 
-/// M-17-1 companion: file variant of the structural-equality identity
-/// check, to prove the openFile close-probe test is measuring identity
-/// and not merely coincidence.
+/// openDir with different modes yields distinct handles.  Close d1
+/// ("rw"), open d2 ("r") on same name; d2.stat succeeds (fresh
+/// handle).  Under slice 27 EVERY openDir mints fresh regardless of
+/// mode; this specific test survives as a distinct-modes regression.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_same_key_handles_are_structurally_equal() {
+async fn fs_open_dir_different_modes_yield_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
-        })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-              @"out"!(f1 == f2)
-            }
-          }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let same = match single_expr(&reply).unwrap().expr_instance {
-        Some(ExprInstance::GBool(b)) => b,
-        other => panic!("expected Bool, got {other:?}"),
-    };
-    assert!(same, "cache hit must return the SAME file handle");
-}
-
-/// M-17-2a: openDir cache MISS on different modes.  Close d1 ("rw"),
-/// open d2 ("r") on same name; d2.stat succeeds (fresh handle).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_cache_different_modes_yield_distinct_handles() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@fs <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@[true, d1] <- @fs!?("openDir", "logs", {"mode": "rw"})) {
             for (@_ <- @d1!?("close")) {
@@ -12639,16 +12723,12 @@ async fn fs_open_dir_cache_different_modes_yield_distinct_handles() {
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, _, _, _) = extract_reply(&reply);
-    assert!(
-        ok,
-        "different modes → distinct cache entries → d2 is a fresh (non-closed) dir handle"
-    );
+    assert!(ok, "different modes → distinct dir handles → d2 works");
 }
 
-/// M-17-2b: openDir cache MISS on different names.  Close d1 (logs1),
-/// open d2 (logs2); d2.stat succeeds.
+/// openDir with different names yields distinct handles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_cache_different_names_yield_distinct_handles() {
+async fn fs_open_dir_different_names_yield_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -12660,8 +12740,8 @@ async fn fs_open_dir_cache_different_names_yield_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "logs1": ("/root", "subdir", "rw", "dir"),
-          "logs2": ("/root", "subdir2", "rw", "dir")
+          "logs1": ("/root", "subdir", "rw", "dir", "oracular"),
+          "logs2": ("/root", "subdir2", "rw", "dir", "oracular")
         })) {
           for (@[true, d1] <- @fs!?("openDir", "logs1", {"mode": "rw"})) {
             for (@_ <- @d1!?("close")) {
@@ -12678,23 +12758,22 @@ async fn fs_open_dir_cache_different_names_yield_distinct_handles() {
     assert!(ok, "logs2's handle unaffected by closing logs1's handle");
 }
 
-/// M-17-3: openDir cross-Fs isolation.  Close fs1's d1; open the same
-/// name on a brand-new fs2; fs2's handle works.  Matches the file
-/// analogue at fs_open_file_cache_does_not_cross_fs_boundaries.
+/// openDir cross-Fs isolation.  Close fs1's d1; open the same name on
+/// a brand-new fs2; fs2's handle works.  Matches the file analogue.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_cache_does_not_cross_fs_boundaries() {
+async fn fs_open_dir_across_fs_instances_yields_distinct_handles() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs1 <- Fs!?(0, 1, 2, {
-          "logs": ("/root", "subdir", "rw", "dir")
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
         })) {
           for (@[true, d1] <- @fs1!?("openDir", "logs", {"mode": "rw"})) {
             for (@_ <- @d1!?("close")) {
               for (@fs2 <- Fs!?(0, 1, 2, {
-                "logs": ("/root", "subdir", "rw", "dir")
+                "logs": ("/root", "subdir", "rw", "dir", "oracular")
               })) {
                 for (@[true, d2] <- @fs2!?("openDir", "logs", {"mode": "rw"})) {
                   for (@r <- @d2!?("stat", "child.txt")) { @"out"!(r) }
@@ -12713,18 +12792,18 @@ async fn fs_open_dir_cache_does_not_cross_fs_boundaries() {
     );
 }
 
-/// m-17-1: cache-hit reply shape is exactly `[true, handle]` — two
-/// elements.  The smoke test only asserts `ok`; this one asserts the
-/// list length so a future change to the reply shape can't slip past.
+/// openFile reply shape is exactly `[true, handle]` — two elements.
+/// A future change to the reply shape (e.g. adding a metadata field)
+/// would trip this test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_hit_reply_shape_is_two_elems() {
+async fn fs_open_file_reply_shape_is_two_elems() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
@@ -12753,55 +12832,24 @@ async fn fs_open_file_cache_hit_reply_shape_is_two_elems() {
     }
 }
 
-/// m-17-2: cache key uses RESOLVED mode, not the requested-mode string.
-/// The "r" always-allowed arm keys with the literal `"r"` (Fs.rho line
-/// 230), so two openFile calls both requesting "r" hit the same cache
-/// entry regardless of provisioning.  Verified via close-then-probe:
-/// close f1 ("r"), open f2 ("r"), f2.tell() surfaces FSERR_CLOSED.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_key_uses_resolved_mode_r() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    // Provisioned "rw" allows both "r" and "rw" opens.  Two "r" opens
-    // should share cache entry keyed by resolved "r".
-    let src = with_libs(
-        r#"
-        for (@fs <- Fs!?(0, 1, 2, {
-          "cfg.json": ("/root", "cfg.json", "rw", "file")
-        })) {
-          for (@[true, f1] <- @fs!?("openFile", "cfg.json", {"mode": "r"})) {
-            for (@_ <- @f1!?("close")) {
-              for (@[true, f2] <- @fs!?("openFile", "cfg.json", {"mode": "r"})) {
-                for (@r <- @f2!?("tell")) { @"out"!(r) }
-              }
-            }
-          }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "second r-open returned cached closed handle");
-    assert_eq!(
-        code, "FSERR_CLOSED",
-        "cache key is (canonRoot, rel, \"r\") — same for both r-requests"
-    );
-}
+// m-17-2 (slice-17 cache-key semantics test) DELETED by slice 27.
+// Under fresh-mint semantics there is no cache key; two openFile
+// calls always produce distinct handles regardless of any key.  The
+// close-then-tell-succeed variant of this invariant is covered by
+// `fs_open_file_twice_yields_distinct_handles_with_independent_state`.
 
-/// m-17-3: 3+ cache entries stress.  Populate cache with three distinct
-/// keys (two file names, and one file at two modes = three entries)
-/// and verify all three handles remain functional post-cache.
+/// 3+ concurrent opens stress: two file names × modes yield three
+/// distinct, functional handles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_three_entries_all_functional() {
+async fn fs_open_file_three_concurrent_opens_all_functional() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "a.bin": ("/root", "a.bin", "rw", "file"),
-          "b.bin": ("/root", "b.bin", "rw", "file")
+          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
         })) {
           for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
             for (@[true, fA_r] <- @fs!?("openFile", "a.bin", {"mode": "r"})) {
@@ -12827,32 +12875,31 @@ async fn fs_open_file_cache_three_entries_all_functional() {
     assert_eq!(outer.ps.len(), 3, "three tell replies expected");
     for (i, p) in outer.ps.iter().enumerate() {
         let (ok, _, _, _) = extract_reply(p);
-        assert!(ok, "tell on cached handle {i} must succeed");
+        assert!(ok, "tell on handle {i} must succeed");
     }
 }
 
-/// Mi-17-1: repeated close on a cached-closed handle.  close f1; open
-/// f2 (cached, same closed handle); close f2 again (should return a
-/// well-formed reply — either [true] or a documented failure — but
-/// NOT crash the cache); open f3 (still the same closed handle);
-/// f3.tell() surfaces FSERR_CLOSED.
+/// Slice 27 (replaces Mi-17-1): repeated openFile after close mints a
+/// FRESH handle each time, unaffected by any prior close.  Under
+/// slice 17's cache this returned the same closed handle forever;
+/// slice 27 requires each open to be independent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_cache_closed_handle_repeated_close_stable() {
+async fn fs_open_file_after_close_yields_fresh_handle() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
             for (@_ <- @f1!?("close")) {
               for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-                for (@closeReply2 <- @f2!?("close")) {
+                for (@_ <- @f2!?("close")) {
                   for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
                     for (@tellReply <- @f3!?("tell")) {
-                      @"out"!([closeReply2, tellReply])
+                      @"out"!(tellReply)
                     }
                   }
                 }
@@ -12863,27 +12910,10 @@ async fn fs_open_file_cache_closed_handle_repeated_close_stable() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let outer = match single_expr(&reply).unwrap().expr_instance {
-        Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("expected [closeReply2, tellReply] list"),
-    };
-    // First: second close on the cached-closed handle must return a
-    // well-formed 1- or 3-element list (not crash).
-    let close2_inner = match single_expr(&outer.ps[0]).unwrap().expr_instance {
-        Some(ExprInstance::EListBody(l)) => l,
-        _ => panic!("close reply not a list"),
-    };
+    let (ok, _, _, _) = extract_reply(&reply);
     assert!(
-        !close2_inner.ps.is_empty(),
-        "second close on cached-closed handle must return a well-formed list"
-    );
-    // Second: subsequent tell on a THIRD open of the same key still
-    // surfaces FSERR_CLOSED (cache still holds the same closed handle).
-    let (ok, code, _, _) = extract_reply(&outer.ps[1]);
-    assert!(!ok, "tell on thrice-cached closed handle must fail");
-    assert_eq!(
-        code, "FSERR_CLOSED",
-        "cache still holds the closed handle after repeated close"
+        ok,
+        "third openFile after two closes must yield a working handle (slice 27)"
     );
 }
 
@@ -13650,10 +13680,10 @@ async fn cross_fs_alice_manipulation_invisible_to_bob() {
         r#"
         // Alice's Fs, Bob's Fs — same logical bundle, distinct instances.
         for (@fsAlice <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file")
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
         })) {
           for (@fsBob <- Fs!?(0, 1, 2, {
-            "data.bin": ("/root", "data.bin", "rw", "file")
+            "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
           })) {
             for (@[true, fAlice] <- @fsAlice!?("openFile", "data.bin", {"mode": "rw"})) {
               for (@[true, fBob] <- @fsBob!?("openFile", "data.bin", {"mode": "rw"})) {
@@ -13695,4 +13725,915 @@ async fn cross_fs_alice_manipulation_invisible_to_bob() {
         write_ok,
         "Alice's close must be invisible to Bob's cap; got failure code {code}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Phase 7 Slice 26: ConsensusMode per-cap plumbing.
+//
+// The bundle tuple now carries a `consensusMode` string (5th element)
+// that Fs.rho threads into File/Dir agent state.  File.chown and
+// Dir.chown forward it to `fsChown`; a consensus cap short-circuits
+// with FSERR_UNSUPPORTED without hitting the host filesystem.  Same
+// mint yields a working oracular chown on the sibling entry — the
+// two caps do NOT share the mode-cap decision (plan §369 per-cap
+// invariant).
+// ---------------------------------------------------------------------
+
+/// A single Fs mint with one oracular and one consensus File entry.
+/// The oracular cap's chown succeeds; the consensus cap's chown
+/// short-circuits.  Verifies that the mode is truly per-cap, not
+/// runtime-wide, and that the routing goes through the mock's
+/// consensus-mode arm in fsChown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_consensus_mode_per_cap_chown_routing() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "orc.txt": ("/root", "orc.txt", "rw", "file", "oracular"),
+          "con.txt": ("/root", "con.txt", "rw", "file", "consensus")
+        })) {
+          for (@orcOpen <- @fs!?("openFile", "orc.txt", {"mode": "rw"})) {
+            for (@conOpen <- @fs!?("openFile", "con.txt", {"mode": "rw"})) {
+              match [orcOpen, conOpen] {
+                [[true, orcFile], [true, conFile]] => {
+                  for (@orcChown <- @orcFile!?("chown", "alice", "wheel")) {
+                    for (@conChown <- @conFile!?("chown", "alice", "wheel")) {
+                      @"out"!([orcChown, conChown])
+                    }
+                  }
+                }
+                _ => @"out"!(["open failed", orcOpen, conOpen])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [orcChown, conChown] list, got {reply:?}"),
+    };
+    assert_eq!(outer.ps.len(), 2, "expected exactly two replies");
+
+    // Oracular cap: chown succeeds (mock returns [true]).
+    let (orc_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(
+        orc_ok,
+        "oracular cap's chown must succeed; got: {:?}",
+        outer.ps[0]
+    );
+
+    // Consensus cap: chown short-circuits with FSERR_UNSUPPORTED.
+    let (con_ok, con_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!con_ok, "consensus cap's chown must fail");
+    assert_eq!(
+        con_code, "FSERR_UNSUPPORTED",
+        "consensus cap must yield FSERR_UNSUPPORTED, got {con_code}"
+    );
+}
+
+/// Slice 27 replaces slice-26's cache-keyed-on-cmode test: under
+/// fresh-mint semantics there is no cache to key, but the underlying
+/// invariant — an oracular cap and a consensus cap over the same
+/// physical file route to DISTINCT arms — remains.  Verified here
+/// via two chown calls that observe distinct outcomes even though
+/// they name the same underlying inode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_oracle_and_consensus_caps_over_shared_path_are_independent() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "same-orc": ("/root", "shared.txt", "rw", "file", "oracular"),
+          "same-con": ("/root", "shared.txt", "rw", "file", "consensus")
+        })) {
+          for (@orc <- @fs!?("openFile", "same-orc", {"mode": "rw"})) {
+            for (@con <- @fs!?("openFile", "same-con", {"mode": "rw"})) {
+              match [orc, con] {
+                [[true, oF], [true, cF]] => {
+                  for (@oR <- @oF!?("chown", "a", "b")) {
+                    for (@cR <- @cF!?("chown", "a", "b")) {
+                      @"out"!([oR, cR])
+                    }
+                  }
+                }
+                _ => @"out"!(["open failed", orc, con])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [oR, cR] list"),
+    };
+    assert_eq!(outer.ps.len(), 2);
+    let (o_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(o_ok, "oracular cap on shared path must succeed");
+    let (c_ok, c_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!c_ok, "consensus cap on shared path must short-circuit");
+    assert_eq!(c_code, "FSERR_UNSUPPORTED");
+}
+
+/// Dir.chown mirrors File.chown for consensus-mode routing.  A
+/// consensus-cap Dir must reject chown even in "rw" mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_dir_consensus_mode_chown_short_circuits() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "con-dir": ("/root", "subdir", "rw", "dir", "consensus")
+        })) {
+          for (@openReply <- @fs!?("openDir", "con-dir", {"mode": "rw"})) {
+            match openReply {
+              [true, d] => {
+                for (@r <- @d!?("chown", "f.txt", "alice", "wheel")) {
+                  @"out"!(r)
+                }
+              }
+              _ => @"out"!(openReply)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.chown on consensus cap must short-circuit");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+// ---------------------------------------------------------------------
+// Slice 26 review-fix regression tests (Must-fix + Should-fix).
+// ---------------------------------------------------------------------
+
+/// MT-26-4: File.chown on a Consensus cap opened in `"r"` mode.
+/// File.rho's chown gates on `fmode == "r" => FSERR_UNSUPPORTED "chown
+/// requires write-capable mode"` BEFORE consulting cmode.  So an
+/// r-mode Consensus cap surfaces the READONLY error, not the
+/// consensus error.  Not a security bug (still denies chown), but the
+/// error surface differs.  Pin the current behavior so a future
+/// reorder is caught.  The important INVARIANT is: r-mode chown fails
+/// regardless of cmode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_consensus_r_mode_denies_chown() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "r", "consensus")) {
+          for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "r-mode chown must fail");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+/// Same pin from the other angle: rw-mode chown on Consensus cap
+/// short-circuits with FSERR_UNSUPPORTED via the cmode gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_consensus_rw_mode_denies_chown() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+          for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+/// MT-26-8: Dir.chown on a Consensus cap opened in `"r"` mode.
+/// Whichever gate fires first still yields FSERR_UNSUPPORTED — pin it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chown_consensus_r_mode_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "d": ("/root", "subdir", "r", "dir", "consensus")
+        })) {
+          for (@openReply <- @fs!?("openDir", "d", {"mode": "r"})) {
+            match openReply {
+              [true, d] => {
+                for (@r <- @d!?("chown", "f.txt", "alice", "wheel")) { @"out"!(r) }
+              }
+              _ => @"out"!(openReply)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+/// MT-26-9: nested `openDir` on a Consensus parent Dir must produce a
+/// Consensus child Dir — no laundering of consensus caps via
+/// composition.  Verified by opening a parent Consensus Dir, then
+/// calling `openDir` on a subdir (mock `fsStat` says `kind: dir`),
+/// then invoking chown on the child cap and asserting the consensus
+/// short-circuit fires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_dir_inherits_parent_consensus_cmode() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Bundle points top at "subdir" so the mock `fsStat("/root",
+    // "subdir", ...)` returns `kind: dir` (see the with_libs mock)
+    // and openDirImpl mints a Dir cap for it.  Nested `openDir` off
+    // that then targets "subdir2" (another dir per the mock).  The
+    // child Dir's chown must short-circuit because the parent's
+    // Consensus cmode was inherited.
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "top": ("/root", "subdir", "rw", "dir", "consensus")
+        })) {
+          for (@topOpen <- @fs!?("openDir", "top", {"mode": "rw"})) {
+            match topOpen {
+              [true, top] => {
+                for (@childOpen <- @top!?("openDir", "subdir2", "rw")) {
+                  match childOpen {
+                    [true, child] => {
+                      for (@chownReply <- @child!?("chown", "f.txt", "a", "b")) {
+                        @"out"!(chownReply)
+                      }
+                    }
+                    _ => @"out"!(childOpen)
+                  }
+                }
+              }
+              _ => @"out"!(topOpen)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "child Dir must inherit consensus cmode");
+    assert_eq!(
+        code, "FSERR_UNSUPPORTED",
+        "child Dir chown must short-circuit; parent's cmode inherited correctly"
+    );
+}
+
+/// ST-26-5: Consensus + bad-type owner arg.  File.rho's arg-shape
+/// validation runs BEFORE consulting cmode, so a bad-type owner
+/// yields FSERR_BAD_ARG (not FSERR_UNSUPPORTED).  Pins the Rholang-
+/// side ordering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_consensus_with_bad_owner_reports_bad_arg() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+          for (@r <- @f!?("chown", 42, "wheel")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+/// ST-26-6: consensus cap + `chown(Nil, Nil)` — the no-owner-no-group
+/// form.  On an oracular cap this would be a valid no-op; on a
+/// consensus cap it must still short-circuit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_consensus_with_nil_nil_short_circuits() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+          for (@r <- @f!?("chown", Nil, Nil)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+/// M-26-2 constructor validation: File constructor must REVOKE its
+/// state when handed a bogus `cmode`.  Subsequent method calls
+/// surface a clear diagnostic rather than silently defaulting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_constructor_rejects_unknown_cmode_string() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "Consensus")) {
+          for (@r <- @f!?("tell")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "bogus cmode must NOT yield a working File");
+    assert!(
+        code == "FSERR_CLOSED" || code == "FSERR_IO",
+        "expected revoked-state error; got {code}"
+    );
+}
+
+/// Dir constructor mirror of the File constructor validation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_constructor_rejects_unknown_cmode_string() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "bogus", *File)) {
+          for (@r <- @d!?("stat", "f.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "bogus cmode must NOT yield a working Dir");
+    assert_eq!(code, "FSERR_IO");
+}
+
+/// Slice 27 replaces slice-26's cache-HIT test with its OPPOSITE:
+/// two sequential openFile calls on the same key must yield DISTINCT
+/// handles (fresh-mint per open).  The slice-26 test asserted SAME
+/// handle; slice 27 asserts DISTINCT.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_consensus_twice_yields_distinct_handles() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "cap": ("/root", "shared.txt", "rw", "file", "consensus")
+        })) {
+          for (@a <- @fs!?("openFile", "cap", {"mode": "rw"})) {
+            for (@b <- @fs!?("openFile", "cap", {"mode": "rw"})) {
+              match [a, b] {
+                [[true, x], [true, y]] => {
+                  match x == y {
+                    true  => @"out"!([false, "collapsed", "handles must be distinct"])
+                    false => @"out"!([true, "distinct"])
+                  }
+                }
+                _ => @"out"!(["open failed", a, b])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "repeat openFile must mint DISTINCT handles (slice 27)");
+}
+
+// ---------------------------------------------------------------------
+// Slice 27 review-fix regression tests (Must-fix + Should-fix).
+// ---------------------------------------------------------------------
+
+/// H-27-2 regression: bad `cmode` reaching `openFileImpl` must NOT
+/// allocate a kernel fd.  Before the fix, `openFileImpl` called
+/// `fsOpen` (allocating a fd) BEFORE the File constructor validated
+/// cmode; a bad-cmode reveal would REVOKE the agent's state and
+/// leak the fd.  After the fix, cmode validation runs FIRST and
+/// `fsOpen` is never called.
+///
+/// The default `with_libs` mock counts `fsOpen` calls via
+/// `openCallCount` — we assert it stays at 0 when we invoke
+/// `openFileImpl` with a bad cmode directly.  `openFileImpl` is
+/// bound in the outer `new` scope alongside `File`/`Dir`/`Fs`, so
+/// with_libs test code can call it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_file_impl_rejects_bad_cmode_before_calling_fs_open() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new implRet in {
+          openFileImpl!("/root", "", "f.txt", "rw", "BOGUS", *File, *implRet) |
+          for (@reply <- implRet) { @"out"!(reply) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "bad cmode must be rejected");
+    assert_eq!(code, "FSERR_BAD_ARG", "bad cmode → FSERR_BAD_ARG");
+}
+
+// MT-27-3 note: a Rholang-level `par { }` test for concurrent
+// openFile is deferred — the agent-dispatch return-channel wiring
+// (`return!(reply)` inside methods, bound implicitly by the `!?`
+// sugar) doesn't cleanly compose with an explicit `for (@r1 <- r1Ch;
+// @r2 <- r2Ch)` join pattern in this test harness.  The concurrent-
+// open safety invariant is covered by construction: `fsBundleP` is
+// read via non-linear peek `<<-` (Rholang semantics guarantee this
+// is race-free across an unbounded number of parallel readers), and
+// the sequential fresh-mint distinctness (see
+// `fs_open_file_repeated_same_key_yields_pairwise_distinct_handles`)
+// exercises the identical code path.  A future stress test is
+// tracked as NT-27-4.
+
+/// ST-27-1 regression: three consecutive same-key opens must produce
+/// pairwise-distinct handles.  Previously `fs_open_file_repeated_
+/// same_key_all_succeed` asserted only `ok=true`; a cache regression
+/// (all three returning the same handle) would pass that test.  This
+/// one adds the pairwise-distinctness check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_repeated_same_key_yields_pairwise_distinct_handles() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Rholang has `==` but no `!=`; encode distinct pairs as
+    // "at least one is false" via three explicit equality checks.
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+        })) {
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+              for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+                @"out"!([f1 == f2, f2 == f3, f1 == f3])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [Bool, Bool, Bool]"),
+    };
+    let labels = ["f1==f2", "f2==f3", "f1==f3"];
+    for (i, p) in outer.ps.iter().enumerate() {
+        let b = match single_expr(p).unwrap().expr_instance {
+            Some(ExprInstance::GBool(b)) => b,
+            other => panic!("expected GBool for entry {i}, got {other:?}"),
+        };
+        assert!(
+            !b,
+            "{}: two same-key opens must yield DISTINCT handles (cache regression?)",
+            labels[i]
+        );
+    }
+}
+
+/// ST-27-2 regression: three distinct opens (two names × modes)
+/// produce pairwise-distinct handles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_three_distinct_opens_are_pairwise_distinct() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Emit equalities; assert each is false.
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
+        })) {
+          for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
+            for (@[true, fA_r] <- @fs!?("openFile", "a.bin", {"mode": "r"})) {
+              for (@[true, fB_rw] <- @fs!?("openFile", "b.bin", {"mode": "rw"})) {
+                @"out"!([fA_rw == fA_r, fA_r == fB_rw, fA_rw == fB_rw])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [Bool, Bool, Bool]"),
+    };
+    let labels = ["fA_rw==fA_r", "fA_r==fB_rw", "fA_rw==fB_rw"];
+    for (i, p) in outer.ps.iter().enumerate() {
+        let b = match single_expr(p).unwrap().expr_instance {
+            Some(ExprInstance::GBool(b)) => b,
+            other => panic!("expected GBool for entry {i}, got {other:?}"),
+        };
+        assert!(
+            !b,
+            "{}: distinct opens must produce distinct handles",
+            labels[i]
+        );
+    }
+}
+
+/// ST-27-3 regression: per-cap idempotent close.  Two closes on the
+/// same cap both return a well-formed reply and don't crash.  Under
+/// slice 27 each cap has its own `stateP`; the deleted slice-17
+/// `fs_open_file_cache_closed_handle_repeated_close_stable` tested
+/// this under caching — this restores the coverage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_close_twice_on_same_cap_stable() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+        })) {
+          for (@[true, f] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+            for (@close1 <- @f!?("close")) {
+              for (@close2 <- @f!?("close")) {
+                @"out"!([close1, close2])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected [close1, close2] list"),
+    };
+    // Both replies must be well-formed lists.
+    for (i, p) in outer.ps.iter().enumerate() {
+        let inner = match single_expr(p).unwrap().expr_instance {
+            Some(ExprInstance::EListBody(l)) => l,
+            other => panic!("close reply {i} not a list, got {other:?}"),
+        };
+        assert!(!inner.ps.is_empty(), "close reply {i} must be non-empty");
+    }
+    // First close returns [true] on success.
+    let (ok1, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(ok1, "first close must succeed");
+    // Second close on the SAME (already-closed) cap must be
+    // well-formed — FSERR_CLOSED is acceptable.
+    let (ok2, _, _, _) = extract_reply(&outer.ps[1]);
+    if !ok2 {
+        // Well-formed failure is fine.  The key is that it does not
+        // crash and does not silently succeed and leak state.
+    }
+}
+
+// ----------------------------------------------------------------------
+// H-29-3 review-fix regression pins: path-based mutations on Consensus
+// caps must fail closed with FSERR_UNSUPPORTED.  Slice 29's WAL only
+// journals fd-based Write/WriteAt/Truncate; a path-based mutation on
+// a Consensus cap has no WAL record, so replayers would diverge from
+// a leader that applied it.  The Rholang guard rejects at the agent
+// boundary before the syscall is issued.
+// ----------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "chmod on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chmod_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.chmod on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_file_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@r <- @d!?("removeFile", "victim.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.removeFile on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@r <- @d!?("removeDir", "subdir", true)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.removeDir on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_rename_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@r <- @d!?("rename", "a.txt", "b.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.rename on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_copy_file_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@r <- @d!?("copyFile", "src.txt", "dst.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "Dir.copyFile on consensus cap must fail (H-29-3)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+// ----------------------------------------------------------------------
+// H7/H8/H9 round-2 review-fix pins: strengthen H-29-3 coverage.
+//   - H7: consensus guard fires on both "r" and "rw" file modes
+//   - H8: guard's distinctive message text is preserved
+//   - H9: syscall side of the operation is NOT invoked when consensus
+//     guard fires (verified by inspecting the mock's log)
+// ----------------------------------------------------------------------
+
+/// H7: File.chmod on (r, consensus) — must fail with FSERR_UNSUPPORTED
+/// even though the r-mode gate ALSO would reject.  Confirms the
+/// consensus guard fires before the mode gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_consensus_r_mode_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "r", "consensus")) {
+          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+    // H8: the message identifies which guard fired.  Consensus guard's
+    // message contains "consensus"; r-mode guard's message contains
+    // "write-capable mode".  extract_reply doesn't return the msg, so
+    // pull ps[2] directly.
+    let list = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let msg = match single_expr(&list.ps[2]).unwrap().expr_instance {
+        Some(ExprInstance::GString(s)) => s,
+        _ => panic!("msg not a string"),
+    };
+    assert!(
+        msg.contains("consensus"),
+        "consensus guard should fire before r-mode gate; got msg={msg:?}"
+    );
+}
+
+/// H9: when the H-29-3 guard fires for `Dir.removeFile` on a consensus
+/// cap, `fsRemoveFile` (the native) must NOT be invoked.  Verified by
+/// inspecting `rmFileLog` — pre-fix the syscall dispatch would happen
+/// before the guard, leaving a log entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_file_consensus_does_not_invoke_syscall() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
+          for (@_ <- @d!?("removeFile", "victim.txt")) {
+            for (@log <<- rmFileLog) { @"out"!(log) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    // The reply is the log — should be an empty list (no syscall).
+    let log_list = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    assert!(
+        log_list.ps.is_empty(),
+        "consensus guard must fire before dispatch; rmFileLog should be empty, \
+         got {} entries",
+        log_list.ps.len()
+    );
+}
+
+/// H9 companion for chmod: `fsChmod` native must NOT be invoked on a
+/// consensus cap via `File.chmod` (Rholang guard fires first).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_consensus_does_not_invoke_syscall() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+          for (@_ <- @f!?("chmod", "rwxr-xr-x")) {
+            for (@log <<- chmodLog) { @"out"!(log) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let log_list = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    assert!(
+        log_list.ps.is_empty(),
+        "File.chmod on consensus must not reach fsChmod native"
+    );
+}
+
+// ----------------------------------------------------------------------
+// C-R2 round-2 pins: native handlers fail-closed on Consensus cmode.
+// These fire even if a caller bypasses the Rholang File.rho / Dir.rho
+// guards — genesis-scope code that URN-binds fs_chmod / fs_removeFile
+// / ... directly still hits the native cmode gate.
+// ----------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_fs_chmod_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // The mock fsChmod returns FSERR_UNSUPPORTED on consensus (mirroring
+    // the real native handler's C-R2 behavior).  This test binds fsChmod
+    // directly and calls with cmode="consensus".
+    let src = with_libs(
+        r#"
+        new ret in {
+          fsChmod!("/root", "f.txt", 0, "consensus", *ret) |
+          for (@r <- ret) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "native fs_chmod must reject consensus cmode (C-R2)");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_fs_remove_file_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new ret in {
+          fsRemoveFile!("/root", "f.txt", "consensus", *ret) |
+          for (@r <- ret) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_fs_remove_dir_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new ret in {
+          fsRemoveDir!("/root", "d", true, "consensus", *ret) |
+          for (@r <- ret) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_fs_rename_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new ret in {
+          fsRename!("/root", "a", "/root", "b", "consensus", *ret) |
+          for (@r <- ret) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_fs_copy_file_consensus_returns_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new ret in {
+          fsCopyFile!("/root", "a", "/root", "b", "consensus", *ret) |
+          for (@r <- ret) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
 }

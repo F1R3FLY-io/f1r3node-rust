@@ -140,11 +140,28 @@ impl ReplayRuntimeOps {
         // Time user deploys phase
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
+        // Slice 31 gap fix + H-P7-5 round-2: RAII exemption for the
+        // URN filter around genesis replay.  Genesis replay
+        // re-executes the FsGenesis ProcessedDeploy which binds
+        // `rho:io:fs:native:*` URNs — the play side disables the
+        // filter around genesis, and we mirror on replay so the
+        // block-approver / validate-checkpoint paths don't fail
+        // with `ReplayStatusMismatch`.  Drop guarantees re-enable
+        // on every exit path including panic; pre-fix bare toggle
+        // could leak the exemption if the async block panicked.
+        // `with_cost_accounting == false` is the caller's
+        // genesis-mode signal (see `compute_state` at line 113).
+        let _filter_exemption = if !with_cost_accounting {
+            Some(self.runtime_ops.runtime.exempt_fs_native_urn_filter())
+        } else {
+            None
+        };
         let mut deploy_results = Vec::new();
         for term in terms {
             let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
             deploy_results.push(result);
         }
+        drop(_filter_exemption); // Explicit drop before subsequent runtime ops.
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(user_deploys_start.elapsed().as_secs_f64());
 

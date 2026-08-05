@@ -82,6 +82,17 @@ pub struct RuntimeManager {
     /// Optional state hash cache for skipping known replays
     pub state_hash_cache: Option<Arc<StateHashCache>>,
     pub external_services: ExternalServices,
+    /// Slice 30b: shared snapshot-writer config threaded into every
+    /// runtime spawned by this manager.  `None` when the operator
+    /// has no consensus-static provisioning (backward compat).
+    /// Populated at boot via `set_fs_snapshot_writer` from
+    /// `node::configuration::snapshot_config::build_snapshot_writer`.
+    /// Wrapped in `Arc<RwLock<_>>` so a Cloned `RuntimeManager`
+    /// shares the same slot — a boot-time set on one clone is
+    /// visible to all others (the runtime is Cloned into every
+    /// engine that spawns runtimes).
+    pub fs_snapshot_writer:
+        Arc<tokio::sync::RwLock<Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>>>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -263,7 +274,7 @@ impl RuntimeManager {
     pub async fn spawn_runtime(&self) -> RhoRuntimeImpl {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
-        let runtime = rho_runtime::create_rho_runtime(
+        let mut runtime = rho_runtime::create_rho_runtime(
             new_space,
             self.mergeable_tags.clone(),
             true,
@@ -271,6 +282,15 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await;
+        // Slice 30b: attach the shared snapshot writer (if any) so
+        // per-block WAL slices from `play_deploys_for_state` can be
+        // persisted at the operator-configured cadence.
+        // H-30b-2 round-2 fix: SHARE the Arc<RwLock<...>> so every
+        // runtime spawned from this manager reads the same slot.
+        // Boot-time `RuntimeManager::set_fs_snapshot_writer` is
+        // immediately visible to every runtime — no cached-per-spawn
+        // staleness.
+        runtime.share_fs_snapshot_writer(self.fs_snapshot_writer.clone());
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -284,7 +304,7 @@ impl RuntimeManager {
             .spawn()
             .expect("Failed to spawn ReplayRSpace");
 
-        let runtime = rho_runtime::create_replay_rho_runtime(
+        let mut runtime = rho_runtime::create_replay_rho_runtime(
             new_replay_space,
             self.mergeable_tags.clone(),
             true,
@@ -292,6 +312,17 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await;
+        // Slice 30b: replay runtimes also get the snapshot writer;
+        // they don't write snapshots themselves (that's the leader
+        // side), but the writer is cheaply cloneable and keeping
+        // parity avoids leader/follower divergence in the runtime
+        // shape.
+        // H-30b-2 round-2 fix: SHARE the Arc<RwLock<...>> so every
+        // runtime spawned from this manager reads the same slot.
+        // Boot-time `RuntimeManager::set_fs_snapshot_writer` is
+        // immediately visible to every runtime — no cached-per-spawn
+        // staleness.
+        runtime.share_fs_snapshot_writer(self.fs_snapshot_writer.clone());
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -1252,7 +1283,21 @@ impl RuntimeManager {
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
             external_services,
+            // Slice 30b: default None; boot sets via
+            // `set_fs_snapshot_writer`.
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Slice 30b: boot hook — install (or clear) the shared
+    /// snapshot writer.  Every subsequent `spawn_runtime` /
+    /// `spawn_replay_runtime` call attaches the current value to
+    /// the returned `RhoRuntimeImpl.fs_snapshot_writer`.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
     }
 
     pub fn create_with_store(
@@ -1312,5 +1357,130 @@ impl RuntimeManager {
         let store = kvm.store("mergeable-channel-cache".to_string()).await?;
 
         Ok(KeyValueTypedStoreImpl::new(store))
+    }
+}
+
+#[cfg(test)]
+mod snapshot_writer_wiring_tests {
+    //! C-30b-2 round-2 review-fix tests: `RuntimeManager`
+    //! `set_fs_snapshot_writer` + spawn attach chain.
+    //!
+    //! Pre-fix, this whole chain (Arc<RwLock<Option<SnapshotWriter>>>
+    //! shared between manager and every spawned runtime) was
+    //! untested.  A regression that forgot the `share_fs_snapshot_writer`
+    //! call in `spawn_runtime` / `spawn_replay_runtime` would leave
+    //! production silently non-snapshotting.
+
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use rholang::rust::interpreter::io::snapshot::SnapshotWriter;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    async fn empty_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm).await.unwrap();
+        RuntimeManager::create_with_store(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+    }
+
+    /// Set-before-spawn: the writer set on the manager is visible
+    /// to a subsequently spawned runtime.
+    #[tokio::test]
+    async fn manager_set_before_spawn_visible_to_runtime() {
+        let manager = empty_manager().await;
+        let writer = SnapshotWriter {
+            dir: PathBuf::from("/tmp/does-not-need-to-exist-for-this-test"),
+            cadence: 5,
+            retain: 10,
+        };
+        manager.set_fs_snapshot_writer(Some(writer.clone())).await;
+        let runtime = manager.spawn_runtime().await;
+        let attached = runtime.fs_snapshot_writer.read().await;
+        assert!(
+            attached.is_some(),
+            "spawned runtime must see the manager's set writer"
+        );
+        assert_eq!(attached.as_ref().unwrap().cadence, 5);
+        assert_eq!(attached.as_ref().unwrap().retain, 10);
+    }
+
+    /// H-30b-2 round-2 core: set-AFTER-spawn is ALSO visible to
+    /// the previously spawned runtime.  This is the property the
+    /// pre-fix caching design lacked — each spawn used to snapshot
+    /// the value into a per-runtime Option, so subsequent sets
+    /// didn't propagate.  Post-fix, both share the Arc<RwLock<_>>.
+    #[tokio::test]
+    async fn manager_set_after_spawn_still_visible_to_runtime() {
+        let manager = empty_manager().await;
+        let runtime = manager.spawn_runtime().await;
+        // Pre-set, the runtime sees None.
+        assert!(runtime.fs_snapshot_writer.read().await.is_none());
+        // Boot set fires AFTER spawn.
+        let writer = SnapshotWriter {
+            dir: PathBuf::from("/tmp"),
+            cadence: 7,
+            retain: 14,
+        };
+        manager.set_fs_snapshot_writer(Some(writer)).await;
+        // The already-spawned runtime observes the new value —
+        // shared Arc<RwLock<_>> semantics.
+        let attached = runtime.fs_snapshot_writer.read().await;
+        assert!(
+            attached.is_some(),
+            "H-30b-2: post-spawn set MUST propagate to already-spawned runtime \
+             (pre-fix cached per-spawn and this failed)"
+        );
+        assert_eq!(attached.as_ref().unwrap().cadence, 7);
+    }
+
+    /// Multiple runtimes spawned from the same manager share the
+    /// SAME writer slot.  Setting once updates all.
+    #[tokio::test]
+    async fn multiple_runtimes_share_same_writer_slot() {
+        let manager = empty_manager().await;
+        let r1 = manager.spawn_runtime().await;
+        let r2 = manager.spawn_runtime().await;
+        let writer = SnapshotWriter {
+            dir: PathBuf::from("/tmp"),
+            cadence: 3,
+            retain: 6,
+        };
+        manager.set_fs_snapshot_writer(Some(writer)).await;
+        assert_eq!(
+            r1.fs_snapshot_writer.read().await.as_ref().unwrap().cadence,
+            3
+        );
+        assert_eq!(
+            r2.fs_snapshot_writer.read().await.as_ref().unwrap().cadence,
+            3
+        );
+        // Clear via set-None also propagates.
+        manager.set_fs_snapshot_writer(None).await;
+        assert!(r1.fs_snapshot_writer.read().await.is_none());
+        assert!(r2.fs_snapshot_writer.read().await.is_none());
+    }
+
+    /// Replay runtimes also get the shared slot (parity with
+    /// leader runtimes).
+    #[tokio::test]
+    async fn replay_runtimes_also_share_the_writer_slot() {
+        let manager = empty_manager().await;
+        let writer = SnapshotWriter {
+            dir: PathBuf::from("/tmp"),
+            cadence: 100,
+            retain: 200,
+        };
+        manager.set_fs_snapshot_writer(Some(writer)).await;
+        let replay_rt = manager.spawn_replay_runtime().await;
+        assert!(replay_rt.fs_snapshot_writer.read().await.is_some());
     }
 }

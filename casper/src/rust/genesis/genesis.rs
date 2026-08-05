@@ -19,7 +19,16 @@ use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+// H-25-1 slice-25 review fix: manual `Hash` impl.  `Vec<BundleEntry>`'s
+// derived Hash is order-sensitive, but `format_bundle_for_rholang` sorts
+// before emission — so two Genesis structs with reordered `fs_bundle`
+// produce the same composed source but would hash differently under the
+// derived impl.  We sort `fs_bundle` by logical_name before hashing to
+// keep `hash()` consistent with the composed-source identity.  The
+// derived `PartialEq` remains order-sensitive; that's a known caveat
+// (documented above the struct) but no consumer today relies on Genesis
+// equality across bundle orderings.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Genesis {
     pub shard_id: String,
     pub timestamp: i64,
@@ -35,6 +44,37 @@ pub struct Genesis {
     pub native_token_symbol: String,
     /// Number of decimal places for native token display (dust per token = 10^decimals).
     pub native_token_decimals: u32,
+    /// File I/O FIP static-provisioning bundle (Phase 7 slice 25).
+    /// Threaded into `fs_generator`'s composed source as the 4th
+    /// argument of `Fs!?(0, 1, 2, <bundle>)`.  Node's boot pipeline
+    /// projects this from the merged config+CLI `FileIoProvisioning`
+    /// via `provisioning_merge::project_bundle`.  Empty vec if no
+    /// provisioning is configured (preserves pre-slice-25 behavior).
+    pub fs_bundle: Vec<super::contracts::fs_genesis::BundleEntry>,
+}
+
+impl std::hash::Hash for Genesis {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.shard_id.hash(state);
+        self.timestamp.hash(state);
+        self.block_number.hash(state);
+        self.proof_of_stake.hash(state);
+        self.vaults.hash(state);
+        self.supply.hash(state);
+        self.version.hash(state);
+        self.native_token_name.hash(state);
+        self.native_token_symbol.hash(state);
+        self.native_token_decimals.hash(state);
+        // H-25-1: sort by logical_name before hashing so two Genesis
+        // with reordered bundles hash the same (matches the
+        // sort-then-emit invariant in `format_bundle_for_rholang`).
+        let mut sorted: Vec<&super::contracts::fs_genesis::BundleEntry> =
+            self.fs_bundle.iter().collect();
+        sorted.sort_by(|a, b| a.logical_name.cmp(&b.logical_name));
+        for e in sorted {
+            e.hash(state);
+        }
+    }
 }
 
 impl Genesis {
@@ -59,6 +99,7 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -105,7 +146,7 @@ impl Genesis {
             native_token_decimals,
             shard_id,
         );
-        let fs_generator = standard_deploys::fs_generator(shard_id);
+        let fs_generator = standard_deploys::fs_generator(shard_id, fs_bundle);
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
         let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
@@ -135,6 +176,7 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -147,6 +189,7 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
         )
     }
 
@@ -162,6 +205,7 @@ impl Genesis {
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
+            &genesis.fs_bundle,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
@@ -236,5 +280,150 @@ impl Genesis {
                 stake,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{DefaultHasher, Hash as _, Hasher};
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::rust::genesis::contracts::fs_genesis::{
+        BundleConsensusMode, BundleEntry, BundleEntryKind,
+    };
+    use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+
+    fn stub_genesis(bundle: Vec<BundleEntry>) -> Genesis {
+        Genesis {
+            shard_id: "root".into(),
+            timestamp: 0,
+            block_number: 0,
+            proof_of_stake: ProofOfStake {
+                minimum_bond: 1,
+                maximum_bond: 1_000_000,
+                validators: vec![],
+                epoch_length: 100,
+                quarantine_length: 100,
+                number_of_active_validators: 1,
+                fault_tolerance_threshold_ppm: 0,
+                pos_multi_sig_public_keys: vec![],
+                pos_multi_sig_quorum: 1,
+            },
+            vaults: vec![],
+            supply: 0,
+            version: 1,
+            native_token_name: "F1R3fly".into(),
+            native_token_symbol: "F1R".into(),
+            native_token_decimals: 8,
+            fs_bundle: bundle,
+        }
+    }
+
+    fn hash_of(g: &Genesis) -> u64 {
+        let mut h = DefaultHasher::new();
+        g.hash(&mut h);
+        h.finish()
+    }
+
+    // H-25-1: `Genesis::hash` must be order-insensitive on
+    // `fs_bundle` so two structs with reordered entries hash
+    // identically — matching the sort-then-emit invariant in
+    // `format_bundle_for_rholang` (which controls the composed source
+    // that goes on-chain).  A per-field derived `Hash` would violate
+    // this.
+    #[test]
+    fn genesis_hash_ignores_fs_bundle_order() {
+        let a = BundleEntry {
+            logical_name: "a".into(),
+            canon_path: PathBuf::from("/1"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let b = BundleEntry {
+            logical_name: "b".into(),
+            canon_path: PathBuf::from("/2"),
+            kind: BundleEntryKind::Dir,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let g1 = stub_genesis(vec![a.clone(), b.clone()]);
+        let g2 = stub_genesis(vec![b, a]);
+        assert_eq!(
+            hash_of(&g1),
+            hash_of(&g2),
+            "Genesis hash must be order-insensitive on fs_bundle"
+        );
+    }
+
+    #[test]
+    fn genesis_hash_differs_when_bundle_content_differs() {
+        let a = BundleEntry {
+            logical_name: "a".into(),
+            canon_path: PathBuf::from("/1"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let b = BundleEntry {
+            logical_name: "b".into(),
+            canon_path: PathBuf::from("/2"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let g1 = stub_genesis(vec![a.clone()]);
+        let g2 = stub_genesis(vec![a, b]);
+        assert_ne!(
+            hash_of(&g1),
+            hash_of(&g2),
+            "distinct fs_bundle content should hash differently"
+        );
+    }
+
+    // MT-26-19 review fix: changing ONLY the consensus_mode field
+    // must change the Genesis hash.  Guards against a derive-Hash
+    // slip that omitted the field (which would silently launder a
+    // consensus cap as oracular in the block hash).
+    #[test]
+    fn genesis_hash_differs_when_only_cmode_differs() {
+        let base = BundleEntry {
+            logical_name: "n".into(),
+            canon_path: PathBuf::from("/p"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let flipped = BundleEntry {
+            consensus_mode: BundleConsensusMode::Consensus,
+            ..base.clone()
+        };
+        let g1 = stub_genesis(vec![base]);
+        let g2 = stub_genesis(vec![flipped]);
+        assert_ne!(
+            hash_of(&g1),
+            hash_of(&g2),
+            "Genesis hash must differ when only cmode differs"
+        );
+    }
+
+    // ST-26-20 review fix: two BundleEntrys differing ONLY in cmode
+    // must be unequal — load-bearing for merge dedup so an accidental
+    // partial-Eq derive that dropped the field trips a test.
+    #[test]
+    fn bundle_entry_ne_when_only_cmode_differs() {
+        let base = BundleEntry {
+            logical_name: "n".into(),
+            canon_path: PathBuf::from("/p"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        };
+        let flipped = BundleEntry {
+            consensus_mode: BundleConsensusMode::Consensus,
+            ..base.clone()
+        };
+        assert_ne!(base, flipped);
     }
 }

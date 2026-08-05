@@ -53,3 +53,51 @@ pub fn err(code: &str, msg: impl Into<String>) -> Par {
         RhoString::create_par(msg.into()),
     ])
 }
+
+/// C-R1 review fix: extract the head-`true` + second-element-u64 shape
+/// from a cached `previous` reply.  Returns `Some(n)` if the Par is
+/// `[true, n_int]` with `n_int >= 0`; `None` otherwise (error reply,
+/// wrong shape, or negative).  Used by handlers whose `is_replay = true`
+/// branch needs the leader's returned value (e.g., `fs_open` to
+/// reconstruct the fd for shadow-handle insertion).
+pub fn extract_ok_u64(previous: &[Par]) -> Option<u64> {
+    let head = previous.first()?;
+    let expr = head.exprs.first()?;
+    let list = match expr.expr_instance.as_ref()? {
+        ExprInstance::EListBody(l) => l,
+        _ => return None,
+    };
+    // Shape: [true_par, u64_par].
+    let ok_par = list.ps.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let val_par = list.ps.get(1)?;
+    let n = RhoNumber::unapply(val_par)?;
+    if n < 0 {
+        None
+    } else {
+        Some(n as u64)
+    }
+}
+
+/// Slice 32 (PB-M-14 read-hash) counterpart to `extract_ok_u64`:
+/// extract the bytes payload from a cached `[true, ByteArray]`
+/// reply.  Used by `fs_read` / `fs_read_at`'s `is_replay = true`
+/// branch to re-hash the leader's returned bytes and append a
+/// matching Read/ReadAt WAL entry — keeping leader/follower WALs
+/// byte-identical without re-issuing the syscall on the follower.
+pub fn extract_ok_bytes(previous: &[Par]) -> Option<Vec<u8>> {
+    let head = previous.first()?;
+    let expr = head.exprs.first()?;
+    let list = match expr.expr_instance.as_ref()? {
+        ExprInstance::EListBody(l) => l,
+        _ => return None,
+    };
+    let ok_par = list.ps.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let val_par = list.ps.get(1)?;
+    RhoByteArray::unapply(val_par)
+}

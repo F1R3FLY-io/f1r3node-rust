@@ -202,6 +202,72 @@ fn map_open_err(e: std::io::Error) -> QuarantineError {
 /// and drop the free-form message.
 pub fn io_msg_scrub(e: &std::io::Error) -> String { format!("{:?}", e.kind()) }
 
+/// M-R2 review fix (slice 29 round 2): lexically normalize
+/// `PathBuf::from(root).join(rel)` so equivalent rel forms produce
+/// identical `PathBuf`s.  Removes `.` components (`Component::CurDir`)
+/// and relies on `Path::components()` to collapse duplicate separators
+/// (`//` → `/`).  Does NOT resolve symlinks (that's canonicalize's job
+/// and requires disk I/O) — this is a pure lexical rewrite suitable
+/// for consensus WAL entries where the canonical string must be
+/// deterministic per-input independent of host state.
+///
+/// Rejects `..` implicitly: `safe_descend` upstream already forbids
+/// parent-references in `rel`, so `..` never reaches here.  If a future
+/// caller bypassed that check, `..` would appear as
+/// `Component::ParentDir` and pass through unchanged (still a
+/// footgun — the safe_descend gate is the load-bearing check).
+pub fn canonicalize_lexical(root: &str, rel: &str) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    let joined = PathBuf::from(root).join(rel);
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {} // skip `.`
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn canonicalize_lexical_removes_cur_dir_components() {
+        assert_eq!(
+            canonicalize_lexical("/root", "./a/./b.txt"),
+            std::path::PathBuf::from("/root/a/b.txt")
+        );
+    }
+
+    #[test]
+    fn canonicalize_lexical_collapses_double_separators() {
+        assert_eq!(
+            canonicalize_lexical("/root", "a//b.txt"),
+            std::path::PathBuf::from("/root/a/b.txt")
+        );
+    }
+
+    #[test]
+    fn canonicalize_lexical_plain_paths_are_unchanged() {
+        assert_eq!(
+            canonicalize_lexical("/root", "a/b.txt"),
+            std::path::PathBuf::from("/root/a/b.txt")
+        );
+    }
+
+    #[test]
+    fn canonicalize_lexical_two_equivalent_forms_agree() {
+        // The M-R2 property: equivalent rel forms produce the SAME PathBuf.
+        let a = canonicalize_lexical("/root", "a/b.txt");
+        let b = canonicalize_lexical("/root", "./a/b.txt");
+        let c = canonicalize_lexical("/root", "a//b.txt");
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+    }
+}
+
 /// Translate `QuarantineError` to the (code, message) pair for the
 /// `[false, code, msg]` reply shape.
 pub fn quarantine_err_reply(e: &QuarantineError) -> (&'static str, String) {

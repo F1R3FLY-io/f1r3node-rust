@@ -48,15 +48,15 @@ fn versioned_registry_embedded_source_compiles() {
 /// Stdin.rho / Stdout.rho / Fs.rho — or in the composition template
 /// itself — fails here.
 #[test]
-fn fs_generator_embedded_source_compiles() { let _ = standard_deploys::fs_generator("root"); }
+fn fs_generator_embedded_source_compiles() { let _ = standard_deploys::fs_generator("root", &[]); }
 
 /// The signature computation is deterministic (function of PK, timestamp,
 /// NONCE only).  Calling twice must return identical hex — otherwise
 /// validators would compute different genesis blocks.
 #[test]
 fn fs_generator_signature_is_deterministic() {
-    let d1 = standard_deploys::fs_generator("root");
-    let d2 = standard_deploys::fs_generator("root");
+    let d1 = standard_deploys::fs_generator("root", &[]);
+    let d2 = standard_deploys::fs_generator("root", &[]);
     assert_eq!(
         d1.data.term, d2.data.term,
         "FsGenesis source (including embedded signature) must be identical across calls"
@@ -118,7 +118,7 @@ fn fs_generator_signature_verifies_against_pubkey() {
 /// parse; these substring checks catch that.
 #[test]
 fn fs_generator_composed_source_contains_expected_shape() {
-    let d = standard_deploys::fs_generator("root");
+    let d = standard_deploys::fs_generator("root", &[]);
     let term = &d.data.term;
     // Footer: mint fs and publish.
     assert!(
@@ -147,6 +147,17 @@ fn fs_generator_composed_source_contains_expected_shape() {
         assert!(
             term.contains(marker),
             "composed source missing library marker: {marker}"
+        );
+    }
+    // ST-27-4 review fix: negative assertions — the composed source
+    // must NOT contain slice-17's cache identifiers.  A regression
+    // that re-added the Fs cache would slip past the positive shape
+    // checks above; these lock in the slice-27 revert.
+    for forbidden in ["fsCacheP", "cacheAndOpenFile", "cacheAndOpenDir"] {
+        assert!(
+            !term.contains(forbidden),
+            "composed source unexpectedly contains slice-17 cache name: {forbidden} \
+             (slice 27 reverted the Fs cache — regression?)"
         );
     }
 }
@@ -207,7 +218,8 @@ fn fs_generator_appears_in_deploy_sequence_after_registry() {
         pos_multi_sig_quorum: 1,
     };
     let vaults = vec![];
-    let deploys = Genesis::default_blessed_terms(&pos, &vaults, 0, "root", "F1R3fly", "F1R", 8);
+    let deploys =
+        Genesis::default_blessed_terms(&pos, &vaults, 0, "root", "F1R3fly", "F1R", 8, &[]);
     // The FsGenesis deploy is the only one whose term binds
     // `rho:io:fs:native:1.0.0/open`.
     let fs_pos = deploys

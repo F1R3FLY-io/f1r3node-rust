@@ -238,13 +238,13 @@ pub fn stack(shard_id: &str) -> Signed<DeployData> {
 ///
 /// See `fs_genesis` module docstring for the MVP simplifications
 /// (shared-Fs model, empty static bundle, hardwired stdio fds).
-pub fn fs_generator(shard_id: &str) -> Signed<DeployData> {
+pub fn fs_generator(shard_id: &str, bundle: &[fs_genesis::BundleEntry]) -> Signed<DeployData> {
     let sk = PrivateKey::from_bytes(
         &hex::decode(FS_GENERATOR_PK).expect("FS_GENERATOR_PK must be valid hex"),
     );
     let sig_hex = fs_genesis::fs_genesis_signature_hex(&sk, FS_GENERATOR_TIMESTAMP);
     let pk_hex = hex::encode(FS_GENERATOR_PUB_KEY.bytes.clone());
-    let source = fs_genesis::compose_fs_genesis_source(&pk_hex, &sig_hex);
+    let source = fs_genesis::compose_fs_genesis_source(&pk_hex, &sig_hex, bundle);
     to_deploy(
         embedded_source("FsGenesis.rho", &source),
         FS_GENERATOR_PK,

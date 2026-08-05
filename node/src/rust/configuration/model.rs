@@ -186,6 +186,56 @@ pub struct Storage {
     /// parses unchanged.
     #[serde(default, flatten)]
     pub file_io_provisioning: crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
+
+    /// Slice 30 (PB-M-15): consensus filesystem snapshot cadence in
+    /// blocks.  A snapshot of the consensus WAL is emitted every N
+    /// blocks so joining validators can bootstrap without replaying
+    /// the entire history.  **No default** per FIP §Q-6 resolution:
+    /// operators must set this value explicitly because the
+    /// trade-off (snapshot cost vs. late-join replay length) is
+    /// deployment-specific and cannot be defaulted safely.  Boot
+    /// validation in `snapshot_config::validate_snapshot_config`
+    /// rejects `None` with a diagnostic pointing at the trade-off.
+    #[serde(default, rename = "consensus-fs-snapshot-cadence")]
+    pub consensus_fs_snapshot_cadence: Option<u64>,
+
+    /// Slice 30 (PB-M-15): on-disk directory for consensus filesystem
+    /// snapshots.  Files are content-addressed
+    /// (`{root_hex}.wal`); the directory is created at boot if it
+    /// does not exist and validated writable via a touch-and-remove
+    /// probe.  **No default:** paired with the cadence key above,
+    /// operators must set both.
+    #[serde(default, rename = "consensus-fs-snapshot-dir")]
+    pub consensus_fs_snapshot_dir: Option<PathBuf>,
+
+    /// Slice 35 (MED-5, Phase 7 whole-review FIPS fix): per-node
+    /// override for the snapshot retention count.  `Some(n)` keeps
+    /// the `n` most-recently-written snapshots on disk (older ones
+    /// pruned after each successful write); `None` (default) uses
+    /// the built-in `max(2, cadence * 2)` heuristic.
+    ///
+    /// Unlike cadence — which is a shard-wide parameter (all
+    /// validators must agree on which blocks are snapshot
+    /// boundaries or the join protocol has no canonical answer for
+    /// "give me the snapshot at block N") — retention is a purely
+    /// local concern.  Two validators with different retain values
+    /// still produce identical snapshot files at the same cadence
+    /// hits; a smaller-retain validator just serves a shorter
+    /// history window to joining peers.
+    ///
+    /// **How to size:** if you want to support joining validators
+    /// spanning up to `N` blocks of history from a single-peer
+    /// fetch, set `retain = ceil(N / cadence) + 1`.  For example,
+    /// cadence = 100 and N = 20000 blocks → retain = 201.
+    /// The default `cadence * 2` gives a joining window of roughly
+    /// `2 * cadence²` blocks, which is quadratic in cadence and
+    /// almost certainly overprovisioned for small cadences and
+    /// underprovisioned for very large ones — the built-in default
+    /// is a placeholder heuristic pending the slice-30c
+    /// joining-protocol design; operators with concrete SLA targets
+    /// should set this explicitly.
+    #[serde(default, rename = "consensus-fs-snapshot-retain")]
+    pub consensus_fs_snapshot_retain: Option<usize>,
 }
 
 /// TLS configuration

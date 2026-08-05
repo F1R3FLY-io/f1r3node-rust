@@ -4,10 +4,13 @@
 //! including command-line argument parsing, configuration file loading,
 //! and configuration merging with proper precedence.
 
+pub mod boot_validation;
 pub mod commandline;
 pub mod config_check;
 pub mod file_io_provisioning;
 pub mod model;
+pub mod provisioning_merge;
+pub mod snapshot_config;
 
 pub use commandline::Options;
 pub use model::{NodeConf, Profile};

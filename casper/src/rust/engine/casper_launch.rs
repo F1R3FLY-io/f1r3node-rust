@@ -77,6 +77,15 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    /// Static-provisioning bundle for the FsGenesis deploy (Phase
+    /// 7 slice 25, C-25-1 review-fix wire-up).  Threaded through
+    /// both the proposer path (`ApproveBlockProtocolFactory::create`)
+    /// and the validator path (`BlockApproverProtocol::new`) so
+    /// they agree on the genesis blessed-deploy sequence.  Node's
+    /// boot pipeline populates this via `merge_and_validate` +
+    /// `project_bundle`; if it isn't set, defaults to empty (safe
+    /// pre-slice-25 behavior).
+    fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -141,6 +150,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
@@ -219,6 +229,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            fs_bundle,
         }
     }
 
@@ -537,6 +548,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.fs_bundle.clone(),
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
@@ -635,6 +647,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

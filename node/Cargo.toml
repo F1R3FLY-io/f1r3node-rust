@@ -83,6 +83,7 @@ rspace_plus_plus = { path = "../rspace++" }
 casper = { path = "../casper", features = ["test-utils"] }
 tower = { workspace = true }
 serial_test = { workspace = true }
+tempfile = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

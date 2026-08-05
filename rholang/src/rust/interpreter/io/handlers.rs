@@ -37,10 +37,16 @@ use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
 use super::mode::{fopen_flags, parse_open_mode, AccessMode};
-use super::path::{io_msg_scrub, quarantine_err_reply, safe_descend, safe_open, SafeParent};
+// C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
+// branch to reconstruct the leader's returned fd for shadow-handle
+// insertion.
+use super::path::{
+    canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend, safe_open, SafeParent,
+};
 use super::response::*;
 use super::stat::{error_record, stat_record};
-use super::ConsensusMode;
+use super::wal::{PayloadRef, WalEntry, WalOp};
+use super::{ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 
 /// Cap on `fs_entries` output size — prevents a malicious caller pointing
 /// the native at a million-entry directory and OOMing the node.
@@ -81,6 +87,139 @@ impl FsProcesses {
         }
     }
 
+    /// Redesign helper: journal a Write / WriteAt to the WAL from
+    /// data fully derivable from args (fd + bytes + offset).  Called
+    /// from `fs_write` and `fs_write_at` BEFORE the `is_replay`
+    /// short-circuit so leader and follower populate identical WALs
+    /// (C-29-F1 review fix).
+    ///
+    /// Returns:
+    ///   * `Ok(true)`  — fd is a Consensus cap and entry was appended.
+    ///   * `Ok(false)` — fd is not Consensus (Oracular or unknown), no-op.
+    ///   * `Err(())`   — WAL is at cap (`MAX_WAL_ENTRIES`); caller must
+    ///     translate to `FSERR_QUOTA_EXCEEDED` and NOT proceed with the
+    ///     syscall so leader/follower stay symmetric (both hit the same
+    ///     cap moment).
+    ///
+    /// Note on partial writes (M-29-3 trade-off): we record the
+    /// REQUESTED byte length + a hash of the REQUESTED payload.  On a
+    /// partial-write the actual on-disk state is n<len; the FIP
+    /// documents this as a caller-responsibility retry pattern.
+    /// Recording requested-bytes keeps the WAL fully derivable from
+    /// contract args, which is what makes leader/follower symmetric
+    /// on the `is_replay` short-circuit path (the follower does NOT
+    /// re-issue the syscall and therefore does not know `n`).
+    async fn journal_write(&self, fd: u64, bytes: &[u8], offset: Option<u64>) -> Result<bool, ()> {
+        let wal_meta = self
+            .handles
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .await;
+        match wal_meta {
+            Some((ConsensusMode::Consensus, canon_path)) => {
+                let op = if offset.is_some() {
+                    WalOp::WriteAt
+                } else {
+                    WalOp::Write
+                };
+                self.handles
+                    .wal
+                    .append(WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::hash(bytes)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                    })
+                    .map(|()| true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Slice 32 (PB-M-14 read-hash): journal a Read/ReadAt to the WAL.
+    /// Called AFTER a successful read (leader path) OR from the
+    /// `is_replay` branch after extracting the cached bytes (follower
+    /// path) — both sides append the SAME entry (same op, path,
+    /// offset, length, and `Hash(bytes)` payload) so the WAL is
+    /// byte-identical across leader and follower.
+    ///
+    /// The hash is over the RETURNED bytes (post-truncate to the
+    /// actual read length), not the requested length — mirrors how
+    /// fs_read's reply carries `ok_bytes(bytes)` with the actual
+    /// truncated length after `buf.truncate(got as usize)`.
+    ///
+    /// Under PB-M-14 semantics, a joining validator replaying the
+    /// deploy against reconstructed state must observe the same
+    /// bytes on `fs_read`.  A mismatch (hash of freshly-read bytes
+    /// != WAL entry's hash) indicates disk state divergence between
+    /// leader and follower — the read-verify path (implemented
+    /// symmetrically via `journal_read` on both sides) catches this
+    /// at WAL-root-comparison time rather than as a silent tuplespace
+    /// fork downstream.
+    async fn journal_read(&self, fd: u64, bytes: &[u8], offset: Option<u64>) -> Result<bool, ()> {
+        let wal_meta = self
+            .handles
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .await;
+        match wal_meta {
+            Some((ConsensusMode::Consensus, canon_path)) => {
+                let op = if offset.is_some() {
+                    WalOp::ReadAt
+                } else {
+                    WalOp::Read
+                };
+                self.handles
+                    .wal
+                    .append(WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::hash(bytes)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                    })
+                    .map(|()| true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Redesign helper: journal a Truncate to the WAL from data
+    /// fully derivable from args (fd + n).  Called from `fs_truncate`
+    /// BEFORE the `is_replay` short-circuit (C-29-F1 review fix).
+    /// Return semantics identical to `journal_write`.
+    async fn journal_truncate(&self, fd: u64, n: u64) -> Result<bool, ()> {
+        let wal_meta = self
+            .handles
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .await;
+        match wal_meta {
+            Some((ConsensusMode::Consensus, canon_path)) => self
+                .handles
+                .wal
+                .append(WalEntry {
+                    op: WalOp::Truncate,
+                    path: canon_path,
+                    extra_path: None,
+                    offset: Some(n),
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                })
+                .map(|()| true),
+            _ => Ok(false),
+        }
+    }
+
     // -------------------------------------------------------------------
     // open — (rootCanon, rel, mode) -> [true, fd] | [false, code, msg]
     // -------------------------------------------------------------------
@@ -93,37 +232,113 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_open"));
         };
-        let [root_par, rel_par, mode_par, ack] = args.as_slice() else {
+        // Slice 29 (PB-M-14): `(root, rel, mode, cmode, ack)` — the
+        // cmode arg is stashed in the returned `FileHandle` so
+        // subsequent mutating handlers can journal to the consensus
+        // WAL when the cap is `Consensus`.  Same fail-closed
+        // semantics as the slice-26 cmode threading: invalid cmode
+        // → `FSERR_BAD_ARG`.
+        let [root_par, rel_par, mode_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_open"));
         };
         if is_replay {
+            // C-R1 review fix (slice 29 round 2): the leader's fs_open
+            // populates a FileHandle with (cmode, canon_path); on the
+            // follower we must populate a *shadow* handle at the same
+            // fd so subsequent replay-branch mutating handlers'
+            // `journal_write` / `journal_truncate` can look up
+            // `(cmode, canon_path)` and append an identical WAL entry.
+            // Pre-fix: follower's fs_open short-circuited without
+            // inserting into the fd table → follower's journal_write
+            // no-op'd on unknown fd → leader/follower WAL divergence.
+            if let Some(fd) = extract_ok_u64(&previous) {
+                // Only Consensus caps need shadow handles for
+                // journaling — Oracular writes don't append to the
+                // WAL either way.  But we insert regardless so any
+                // future handler consulting FileHandle metadata on
+                // the replay branch sees consistent state.
+                if let (Some(root), Some(rel), Some(mode_str)) = (
+                    RhoString::unapply(root_par),
+                    RhoString::unapply(rel_par),
+                    RhoString::unapply(mode_par),
+                ) {
+                    // resolve_cmode: fail-closed on bogus values, but a
+                    // bogus cmode with a `[true, fd]` cached reply is
+                    // definitionally a bug (leader wouldn't have
+                    // returned success on a rejected cmode).  Fall
+                    // back to `Consensus` (most restrictive) rather
+                    // than skip the insert so any divergence surfaces
+                    // via WAL comparison rather than silently masking.
+                    let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
+                    let intent = parse_open_mode(&mode_str);
+                    // Same canon_path derivation as `open_impl`
+                    // (C-29-1 fix) — must be byte-identical so WAL
+                    // paths match across leader/follower.
+                    let shadow = FileHandle {
+                        file: None,
+                        // M-R2: same lexical normalization as the leader's
+                        // open_impl so follower's WAL entries match.
+                        canon_path: canonicalize_lexical(&root, &rel),
+                        mode: intent.map(|i| i.mode).unwrap_or(AccessMode::Read),
+                        cmode,
+                    };
+                    // Ignore the return value: if the slot is already
+                    // occupied (shouldn't happen on a fresh follower),
+                    // the pre-existing handle wins.  Any real
+                    // divergence surfaces later via WAL mismatch.
+                    let _ = self.handles.insert_at(fd, shadow).await;
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
         let reply = match (
             RhoString::unapply(root_par),
             RhoString::unapply(rel_par),
             RhoString::unapply(mode_par),
         ) {
-            (Some(root), Some(rel), Some(mode_str)) => self.open_impl(root, rel, mode_str).await,
-            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
+            (Some(root), Some(rel), Some(mode_str)) => {
+                self.open_impl(root, rel, mode_str, cmode).await
+            }
+            _ => err(FSERR_BAD_ARG, "expected (String, String, String, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
     }
 
-    async fn open_impl(&self, root: String, rel: String, mode: String) -> Par {
+    async fn open_impl(
+        &self,
+        root: String,
+        rel: String,
+        mode: String,
+        cmode: ConsensusMode,
+    ) -> Par {
         let intent = match parse_open_mode(&mode) {
             Some(i) => i,
             None => return err(FSERR_BAD_ARG, format!("unknown fopen mode {mode:?}")),
         };
         let root_pb = PathBuf::from(&root);
         let intent_copy = intent;
+        // C-29-1 review fix: keep `rel` accessible for canon_path
+        // construction below.  Clone into the blocking closure and
+        // retain the original for later use.
+        let rel_for_open = rel.clone();
         // openat descent + safe_open in a blocking task — sync fs.
         let opened = spawn_blocking(move || {
             let (flags, mode_bits) = fopen_flags(intent_copy);
-            super::path::safe_open(&root_pb, &rel, flags, mode_bits)
+            super::path::safe_open(&root_pb, &rel_for_open, flags, mode_bits)
         })
         .await;
         let file = match opened {
@@ -144,10 +359,20 @@ impl FsProcesses {
         if !meta.file_type().is_file() {
             return err(FSERR_UNSUPPORTED, "not a regular file");
         }
+        // C-29-1 review fix: include the resolved `rel` in the
+        // canonical path so WAL entries can distinguish files under
+        // the same canonRoot.  Pre-fix the `.join("")` no-op dropped
+        // `rel` entirely, causing every WAL entry to record only the
+        // canonRoot — replay had no way to tell which file to apply
+        // the payload to.
         let handle = FileHandle {
-            file,
-            canon_path: PathBuf::from(root).join(""),
+            file: Some(file),
+            // M-R2 round-2 fix: lexically normalize so `a/b.txt` and
+            // `./a/b.txt` produce byte-identical canon_paths, keeping
+            // WAL entries stable across equivalent rel forms.
+            canon_path: canonicalize_lexical(&root, &rel),
             mode: intent.mode,
+            cmode,
         };
         match self.handles.insert(handle).await {
             Ok(fd) => ok_u64(fd),
@@ -188,6 +413,16 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // read — (fd, n) -> [true, bytes]
+    //
+    // Slice 32 (PB-M-14 read-hash): on Consensus caps, `journal_read`
+    // appends a `Read` WAL entry whose `payload_ref = Hash(bytes)`
+    // AFTER the leader's syscall completes successfully.  The
+    // `is_replay = true` follower branch symmetrically re-extracts
+    // the bytes from `previous` and appends the SAME entry, so the
+    // per-deploy WAL is byte-identical across leader and follower.
+    // The follower does NOT re-execute the syscall — the tuplespace
+    // `previous` cache already supplies the correct return value.
+    // Non-Consensus caps skip journaling on both sides.
     // -------------------------------------------------------------------
     pub async fn fs_read(
         &self,
@@ -202,12 +437,29 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_read"));
         };
         if is_replay {
+            // Follower: hash the leader's cached bytes and append a
+            // matching WAL entry.  Fd is derivable from the arg;
+            // journal_read is a no-op on non-Consensus caps and on
+            // reply shapes without a bytes payload (error replies).
+            if let (Some(fd), Some(bytes)) =
+                (RhoNumber::unapply(fd_par), extract_ok_bytes(&previous))
+            {
+                if fd >= 0 {
+                    let _ = self.journal_read(fd as u64, &bytes, None).await;
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
         let reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
             (Some(fd), Some(n)) if fd >= 0 && n >= 0 => {
-                self.read_impl(fd as u64, n as u64, None).await
+                let r = self.read_impl(fd as u64, n as u64, None).await;
+                // Journal on success.  extract_ok_bytes returns None
+                // for error replies, so this is a clean guard.
+                if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
+                    let _ = self.journal_read(fd as u64, &bytes, None).await;
+                }
+                r
             }
             _ => err(FSERR_BAD_ARG, "expected (u64, u64)"),
         };
@@ -218,6 +470,9 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // readAt — (fd, offset, n) -> [true, bytes]
+    //
+    // Slice 32 (PB-M-14 read-hash): see `fs_read` docstring.  Same
+    // leader/follower journal_read pattern, with offset populated.
     // -------------------------------------------------------------------
     pub async fn fs_read_at(
         &self,
@@ -232,6 +487,15 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_read_at"));
         };
         if is_replay {
+            if let (Some(fd), Some(off), Some(bytes)) = (
+                RhoNumber::unapply(fd_par),
+                RhoNumber::unapply(off_par),
+                extract_ok_bytes(&previous),
+            ) {
+                if fd >= 0 && off >= 0 {
+                    let _ = self.journal_read(fd as u64, &bytes, Some(off as u64)).await;
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -241,7 +505,11 @@ impl FsProcesses {
             RhoNumber::unapply(n_par),
         ) {
             (Some(fd), Some(off), Some(n)) if fd >= 0 && off >= 0 && n >= 0 => {
-                self.read_impl(fd as u64, n as u64, Some(off as u64)).await
+                let r = self.read_impl(fd as u64, n as u64, Some(off as u64)).await;
+                if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
+                    let _ = self.journal_read(fd as u64, &bytes, Some(off as u64)).await;
+                }
+                r
             }
             _ => err(FSERR_BAD_ARG, "expected (u64, u64, u64)"),
         };
@@ -305,13 +573,47 @@ impl FsProcesses {
         let [fd_par, bytes_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_write"));
         };
+        // Parse args deterministically for both leader and follower.
+        let parsed = match (RhoNumber::unapply(fd_par), RhoByteArray::unapply(bytes_par)) {
+            (Some(fd), Some(bytes)) if fd >= 0 => Some((fd as u64, bytes)),
+            _ => None,
+        };
+        // M-R3 review fix (round 2): enforce MAX_WRITE_BYTES BEFORE
+        // journaling so an oversized write cannot consume a WAL slot
+        // for a call that will error out.  Mirror fs_truncate's
+        // pre-check-then-journal ordering (which was already correct).
+        if let Some((_, bytes)) = &parsed {
+            if bytes.len() as u64 > MAX_WRITE_BYTES {
+                let out = vec![err(
+                    FSERR_QUOTA_EXCEEDED,
+                    format!("write {} exceeds MAX_WRITE_BYTES", bytes.len()),
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        // C-29-F1 review fix: journal to WAL on BOTH leader and
+        // follower — before the `is_replay` short-circuit — so both
+        // sides populate identical WALs.  Populated purely from
+        // args (path via fd lookup, payload hash of requested
+        // bytes).  A cap-exceeded return here is deterministic
+        // (both sides hit the same cap moment) and produces a
+        // symmetric FSERR_QUOTA_EXCEEDED reply that is cached in
+        // `previous` on the leader and replayed on the follower.
+        if let Some((fd, bytes)) = &parsed {
+            if self.journal_write(*fd, bytes, None).await.is_err() {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoNumber::unapply(fd_par), RhoByteArray::unapply(bytes_par)) {
-            (Some(fd), Some(bytes)) if fd >= 0 => self.write_impl(fd as u64, bytes, None).await,
-            _ => err(FSERR_BAD_ARG, "expected (u64, ByteArray)"),
+        let reply = match parsed {
+            Some((fd, bytes)) => self.write_impl(fd, bytes, None).await,
+            None => err(FSERR_BAD_ARG, "expected (u64, ByteArray)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -333,19 +635,45 @@ impl FsProcesses {
         let [fd_par, off_par, bytes_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_write_at"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match (
+        let parsed = match (
             RhoNumber::unapply(fd_par),
             RhoNumber::unapply(off_par),
             RhoByteArray::unapply(bytes_par),
         ) {
             (Some(fd), Some(off), Some(bytes)) if fd >= 0 && off >= 0 => {
-                self.write_impl(fd as u64, bytes, Some(off as u64)).await
+                Some((fd as u64, off as u64, bytes))
             }
-            _ => err(FSERR_BAD_ARG, "expected (u64, u64, ByteArray)"),
+            _ => None,
+        };
+        // M-R3 review fix (round 2): MAX_WRITE_BYTES check BEFORE
+        // journaling; see fs_write for rationale.
+        if let Some((_, _, bytes)) = &parsed {
+            if bytes.len() as u64 > MAX_WRITE_BYTES {
+                let out = vec![err(
+                    FSERR_QUOTA_EXCEEDED,
+                    format!("write {} exceeds MAX_WRITE_BYTES", bytes.len()),
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        // C-29-F1 review fix: journal to WAL on both leader and follower
+        // before the `is_replay` short-circuit (see `fs_write` for the
+        // full rationale).
+        if let Some((fd, off, bytes)) = &parsed {
+            if self.journal_write(*fd, bytes, Some(*off)).await.is_err() {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
+        if is_replay {
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        let reply = match parsed {
+            Some((fd, off, bytes)) => self.write_impl(fd, bytes, Some(off)).await,
+            None => err(FSERR_BAD_ARG, "expected (u64, u64, ByteArray)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -363,6 +691,10 @@ impl FsProcesses {
             Some(rfd) => rfd,
             None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
         };
+        // Redesign note: WAL journaling for Consensus caps happens in
+        // `fs_write` / `fs_write_at` BEFORE this function is called,
+        // so both leader and follower populate identical WALs
+        // (C-29-F1 review fix).  Do NOT append here.
         let result = spawn_blocking(move || {
             let n = unsafe {
                 if let Some(off) = offset {
@@ -563,19 +895,34 @@ impl FsProcesses {
         let [fd_par, n_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_truncate"));
         };
+        let parsed = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
+            (Some(fd), Some(n)) if fd >= 0 && n >= 0 => Some((fd as u64, n as u64)),
+            _ => None,
+        };
+        // C-29-F1 review fix: journal to WAL on both leader and
+        // follower before the `is_replay` short-circuit.  We do the
+        // MAX_TRUNCATE_BYTES check first so an oversize truncate does
+        // not consume a WAL slot for a call that will error out.
+        if let Some((fd, n)) = &parsed {
+            if *n <= super::MAX_TRUNCATE_BYTES && self.journal_truncate(*fd, *n).await.is_err() {
+                let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        }
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
-            (Some(fd), Some(n)) if fd >= 0 && n >= 0 => {
-                if n as u64 > super::MAX_TRUNCATE_BYTES {
+        let reply = match parsed {
+            Some((fd, n)) => {
+                if n > super::MAX_TRUNCATE_BYTES {
                     err(
                         FSERR_QUOTA_EXCEEDED,
                         format!("truncate {n} exceeds MAX_TRUNCATE_BYTES"),
                     )
                 } else {
-                    let raw_fd = match self.handles.raw_fd(fd as u64).await {
+                    let raw_fd = match self.handles.raw_fd(fd).await {
                         Some(r) => r,
                         None => {
                             let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
@@ -584,7 +931,7 @@ impl FsProcesses {
                         }
                     };
                     let r = spawn_blocking(move || unsafe {
-                        if libc::ftruncate(raw_fd, n) < 0 {
+                        if libc::ftruncate(raw_fd, n as i64) < 0 {
                             Err(std::io::Error::last_os_error())
                         } else {
                             Ok(())
@@ -598,7 +945,7 @@ impl FsProcesses {
                     }
                 }
             }
-            _ => err(FSERR_BAD_ARG, "expected (u64, u64)"),
+            None => err(FSERR_BAD_ARG, "expected (u64, u64)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -668,14 +1015,31 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_stat"));
         };
-        let [root_par, rel_par, ack] = args.as_slice() else {
+        // Slice 26: `(root, rel, cmode, ack)`.  `cmode` is
+        // `"oracular"` / `"consensus"` and controls whether the
+        // record omits host-transient fields.  On an unrecognized
+        // cmode string we fall back to `self.mode` (Oracular by
+        // default) — this preserves behavior for any caller that
+        // hasn't been updated yet.
+        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_stat"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let mode = self.mode;
+        // C-26-F1 review fix: fail-closed on unrecognized cmode.
+        let mode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let leaf_name = leaf_of(&rel);
@@ -696,7 +1060,7 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String)"),
+            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -773,14 +1137,26 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_entries"));
         };
-        let [root_par, rel_par, ack] = args.as_slice() else {
+        // Slice 26: `(root, rel, cmode, ack)`.
+        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_entries"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let mode = self.mode;
+        // C-26-F1 review fix: fail-closed on unrecognized cmode.
+        let mode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
@@ -863,12 +1239,35 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_rename"));
         };
-        let [from_root_par, from_rel_par, to_root_par, to_rel_par, ack] = args.as_slice() else {
+        // C-R2 review fix: `(from_root, from_rel, to_root, to_rel, cmode, ack)`.
+        // Consensus cap short-circuits — see fs_chmod for rationale.
+        let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
+            args.as_slice()
+        else {
             return Err(illegal_argument_error("fs_rename"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
+        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "rename unavailable in consensus mode",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
         }
         let reply = match (
             RhoString::unapply(from_root_par),
@@ -917,7 +1316,7 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected 4 String args"),
+            _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -937,12 +1336,34 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_copy_file"));
         };
-        let [from_root_par, from_rel_par, to_root_par, to_rel_par, ack] = args.as_slice() else {
+        // C-R2 review fix: `(from_root, from_rel, to_root, to_rel, cmode, ack)`.
+        let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
+            args.as_slice()
+        else {
             return Err(illegal_argument_error("fs_copy_file"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
+        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "copyFile unavailable in consensus mode",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
         }
         let reply = match (
             RhoString::unapply(from_root_par),
@@ -981,7 +1402,7 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected 4 String args"),
+            _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -1000,12 +1421,32 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
-        let [root_par, rel_par, ack] = args.as_slice() else {
+        // C-R2 review fix: `(root, rel, cmode, ack)`.
+        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
+        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "removeFile unavailable in consensus mode",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
         }
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
@@ -1029,7 +1470,7 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String)"),
+            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -1050,12 +1491,32 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_remove_dir"));
         };
-        let [root_par, rel_par, recursive_par, ack] = args.as_slice() else {
+        // C-R2 review fix: `(root, rel, recursive, cmode, ack)`.
+        let [root_par, rel_par, recursive_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_remove_dir"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
+        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "removeDir unavailable in consensus mode",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
         }
         let reply = match (
             RhoString::unapply(root_par),
@@ -1097,7 +1558,7 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, Bool)"),
+            _ => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -1117,12 +1578,37 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_chmod"));
         };
-        let [root_par, rel_par, mode_par, ack] = args.as_slice() else {
+        // C-R2 review fix (slice 29 round 2): `(root, rel, bits, cmode, ack)`.
+        // A Consensus cap short-circuits with FSERR_UNSUPPORTED — path-based
+        // mutations are not journaled to the WAL in slice 29, so allowing
+        // them on Consensus would silently diverge leader/follower state.
+        // Mirrors slice-26 fs_chown pattern; defense-in-depth beneath the
+        // Rholang-side H-29-3 guards in File.rho / Dir.rho.
+        let [root_par, rel_par, mode_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chmod"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
+        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "chmod unavailable in consensus mode",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
         }
         let reply = match (
             RhoString::unapply(root_par),
@@ -1171,7 +1657,10 @@ impl FsProcesses {
                 .await
                 .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, u64<=0o7777)"),
+            _ => err(
+                FSERR_BAD_ARG,
+                "expected (String, String, u64<=0o7777, String)",
+            ),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -1192,14 +1681,32 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_chown"));
         };
-        let [root_par, rel_par, owner_par, group_par, ack] = args.as_slice() else {
+        // Slice 26: `(root, rel, owner, group, cmode, ack)`.  A
+        // `Consensus` cmode short-circuits with FSERR_UNSUPPORTED
+        // without touching the host filesystem, matching plan §369
+        // and spec §Storage cases 2 / 4 / 6.
+        let [root_par, rel_par, owner_par, group_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chown"));
         };
         if is_replay {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = if self.mode == ConsensusMode::Consensus {
+        // C-26-F1 review fix: fail-closed on unrecognized cmode.  This
+        // check comes BEFORE the Consensus short-circuit so a
+        // malformed cmode never silently reaches the fallback.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        let reply = if cmode == ConsensusMode::Consensus {
             err(FSERR_UNSUPPORTED, "chown unavailable in consensus mode")
         } else {
             match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
@@ -1211,7 +1718,7 @@ impl FsProcesses {
                 }
                 _ => err(
                     FSERR_BAD_ARG,
-                    "expected (String, String, String|Nil, String|Nil)",
+                    "expected (String, String, String|Nil, String|Nil, String)",
                 ),
             }
         };
@@ -1309,6 +1816,35 @@ impl FsProcesses {
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
+
+/// Resolve the Rholang-supplied cmode string into a `ConsensusMode`.
+/// Slice 26 + C-26-F1 review fix: `fs_stat` / `fs_entries` / `fs_chown`
+/// now take the per-cap consensus mode as a REQUIRED positional arg
+/// (the library agents peek their `cmodeP` cell and forward the exact
+/// string).  Any Par shape other than `String("oracular")` /
+/// `String("consensus")` returns `None`; callers surface
+/// `FSERR_BAD_ARG` and refuse to proceed.
+///
+/// Fail-closed rationale: the pre-fix behavior silently defaulted to
+/// `self.mode` (Oracular by default), which is a downgrade for
+/// Consensus caps.  Under the URN-filter gap (MVP #5 / slice 31) a
+/// user deploy could omit the cmode entirely and get chown / host
+/// metadata for free.  Under FIPS threat modeling, a per-cap mode arg
+/// that fails to parse must reject the call, not silently pick the
+/// weaker mode.
+///
+/// String constants live in `io/mod.rs` (`CMODE_ORACULAR_STR` /
+/// `CMODE_CONSENSUS_STR`) and are re-exported by
+/// `casper::genesis::contracts::fs_genesis::BundleConsensusMode` so the
+/// composer and the resolver agree byte-for-byte.  A drift-assertion
+/// test in `fs_genesis.rs` pins the pair.
+fn resolve_cmode(par: &Par) -> Option<ConsensusMode> {
+    match RhoString::unapply(par).as_deref() {
+        Some(s) if s == CMODE_CONSENSUS_STR => Some(ConsensusMode::Consensus),
+        Some(s) if s == CMODE_ORACULAR_STR => Some(ConsensusMode::Oracular),
+        _ => None,
+    }
+}
 
 fn leaf_of(rel: &str) -> String {
     std::path::Path::new(rel)
@@ -1556,4 +2092,123 @@ unsafe fn errno_reset() { *libc::__errno_location() = 0; }
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 unsafe fn errno_reset() {
     compile_error!("Unsupported platform for File I/O FIP native primitives");
+}
+
+// ---------------------------------------------------------------------
+// Slice 26 review-fix tests: `resolve_cmode` (MT-26-1, ST-26-2).
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod cmode_tests {
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::Expr;
+    use models::rust::utils::{new_boundvar_par, new_gbool_par, new_gint_par, new_gstring_par};
+
+    use super::*;
+
+    fn s(v: &str) -> Par { new_gstring_par(v.to_string(), Vec::new(), false) }
+    fn nil() -> Par { Par::default() }
+    fn i(n: i64) -> Par { new_gint_par(n, Vec::new(), false) }
+    fn b(x: bool) -> Par { new_gbool_par(x, Vec::new(), false) }
+    fn bytes() -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GByteArray(vec![0u8, 1, 2])),
+        }])
+    }
+
+    #[test]
+    fn resolve_cmode_accepts_oracular_lowercase() {
+        assert_eq!(resolve_cmode(&s("oracular")), Some(ConsensusMode::Oracular));
+    }
+
+    #[test]
+    fn resolve_cmode_accepts_consensus_lowercase() {
+        assert_eq!(
+            resolve_cmode(&s("consensus")),
+            Some(ConsensusMode::Consensus)
+        );
+    }
+
+    // ST-26-2: case-sensitivity — capitalized / uppercase forms must
+    // NOT be accepted.  A caller passing `"Consensus"` (mismatched
+    // convention) MUST get rejected, not silently downgraded.
+    #[test]
+    fn resolve_cmode_rejects_capitalized() {
+        assert_eq!(resolve_cmode(&s("Oracular")), None);
+        assert_eq!(resolve_cmode(&s("Consensus")), None);
+        assert_eq!(resolve_cmode(&s("CONSENSUS")), None);
+    }
+
+    // ST-26-2: whitespace-padded / trailing-space variants also
+    // rejected.
+    #[test]
+    fn resolve_cmode_rejects_whitespace() {
+        assert_eq!(resolve_cmode(&s(" oracular")), None);
+        assert_eq!(resolve_cmode(&s("consensus ")), None);
+        assert_eq!(resolve_cmode(&s("\toracular")), None);
+        assert_eq!(resolve_cmode(&s("consensus\n")), None);
+    }
+
+    // MT-26-1: non-String Par shapes must all fall to None so the
+    // handler surfaces FSERR_BAD_ARG.  Under the pre-fix fallback
+    // behavior each of these would have silently defaulted to
+    // Oracular.
+    #[test]
+    fn resolve_cmode_rejects_nil() {
+        assert_eq!(resolve_cmode(&nil()), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_int() {
+        assert_eq!(resolve_cmode(&i(0)), None);
+        assert_eq!(resolve_cmode(&i(1)), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_bool() {
+        assert_eq!(resolve_cmode(&b(true)), None);
+        assert_eq!(resolve_cmode(&b(false)), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_bytearray() {
+        assert_eq!(resolve_cmode(&bytes()), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_empty_string() {
+        assert_eq!(resolve_cmode(&s("")), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_unknown_string() {
+        assert_eq!(resolve_cmode(&s("bogus")), None);
+        assert_eq!(resolve_cmode(&s("oracle")), None);
+        assert_eq!(resolve_cmode(&s("cons")), None);
+    }
+
+    #[test]
+    fn resolve_cmode_rejects_boundvar_par() {
+        // BoundVar par (an unbound Rholang variable position) must
+        // also fall to None — RhoString::unapply returns None for it.
+        let bv = new_boundvar_par(0, Vec::new(), false);
+        assert_eq!(resolve_cmode(&bv), None);
+    }
+
+    // NT-26-3: pin `ConsensusMode::default()` so a future refactor
+    // flipping the default would trip a test rather than silently
+    // change every fallback direction.
+    #[test]
+    fn consensus_mode_default_is_consensus() {
+        assert_eq!(ConsensusMode::default(), ConsensusMode::Consensus);
+    }
+
+    // Drift assertion for the shared constants (M-26-3): the
+    // handler-side and composer-side constants MUST match byte-for-
+    // byte or the composed source becomes unroutable.
+    #[test]
+    fn cmode_string_constants_are_stable() {
+        assert_eq!(CMODE_ORACULAR_STR, "oracular");
+        assert_eq!(CMODE_CONSENSUS_STR, "consensus");
+    }
 }

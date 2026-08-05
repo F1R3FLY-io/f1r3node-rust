@@ -262,10 +262,41 @@ pub struct RhoRuntimeImpl {
     /// `FsProcesses` handler via `Arc` under the hood so fds opened by
     /// `fs_open` are visible to `fs_read` / `fs_close` etc.
     pub fs_handles: super::io::handle_table::FileHandleTable,
-    /// Snapshot of the fd counter captured at soft-checkpoint time.
-    /// On revert we truncate to this value, freeing every fd allocated
-    /// after the checkpoint (spec §Fd-table lifecycle).
-    fs_snapshot: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Stack of fd-counter snapshots captured at soft-checkpoint
+    /// time.  On revert we pop the innermost snapshot and truncate
+    /// the fd table to it, freeing every fd allocated after the
+    /// checkpoint (spec §Fd-table lifecycle).  Stack (not single
+    /// slot) so nested `create_soft_checkpoint` calls preserve the
+    /// outer marks — H4/M1 review fix (slice 29 round 2).  Pre-fix
+    /// design was `Option<u64>` which silently dropped the outer
+    /// mark on the inner `create`.
+    fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of WAL length snapshots captured at soft-checkpoint
+    /// time.  On revert we pop the innermost mark and truncate the
+    /// WAL back to it, discarding any entries appended during the
+    /// failed deploy.  Prevents divergence where a leader's
+    /// reverted-but-journaled write would be replayed by followers.
+    /// H-29-1 review fix; stack semantics from H4/M1 round-2 fix.
+    wal_snapshot_stack: Arc<std::sync::Mutex<Vec<super::io::wal::WalMark>>>,
+    /// Slice 30b (H-30b-2 round-2 fix): optional snapshot writer,
+    /// configured at boot from `storage.consensus-fs-snapshot-
+    /// {cadence,dir}`.  `None` (inside the RwLock) when the
+    /// operator has no consensus-static provisioning.
+    ///
+    /// **Arc-shared with `RuntimeManager.fs_snapshot_writer`:**
+    /// `RuntimeManager::spawn_runtime` clones ITS Arc into this
+    /// field via `share_fs_snapshot_writer`, so every runtime
+    /// spawned by a given manager reads from the SAME `RwLock`.
+    /// A boot-time `set_fs_snapshot_writer` on the manager is
+    /// immediately visible to every spawned runtime — closes the
+    /// pre-fix H-30b-2 race where each spawn cached a per-runtime
+    /// snapshot of the writer value.
+    ///
+    /// `play_deploys_for_state` reads via `.read().await` on every
+    /// call.  The lock is a read-write lock (tokio's) so many
+    /// runtimes can read concurrently; only boot-time set is a
+    /// writer.
+    pub fs_snapshot_writer: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -287,13 +318,122 @@ impl RhoRuntimeImpl {
             deploy_data_ref,
             merge_chs,
             fs_handles,
-            fs_snapshot: Arc::new(std::sync::Mutex::new(None)),
+            fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            wal_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            // Slice 30b: default None inside a fresh RwLock.  Boot
+            // typically replaces via `share_fs_snapshot_writer`
+            // (RuntimeManager path) so all sibling runtimes read the
+            // same slot.
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Slice 30b boot hook: attach a snapshot writer to THIS
+    /// runtime only.  Acquires the internal write lock.  Used by
+    /// tests and standalone runtimes that aren't spawned via a
+    /// `RuntimeManager`; production spawn goes through
+    /// `share_fs_snapshot_writer` instead so multiple runtimes
+    /// share the same Arc.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<super::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
+    }
+
+    /// H-30b-2 round-2 fix: replace this runtime's writer slot
+    /// with a shared `Arc<RwLock<...>>` so all runtimes spawned
+    /// from the same `RuntimeManager` read live from the same
+    /// source.  Called by `RuntimeManager::spawn_runtime`.
+    pub fn share_fs_snapshot_writer(
+        &mut self,
+        shared: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
+    ) {
+        self.fs_snapshot_writer = shared;
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    /// Slice 31: enable the rho:io:fs:native:* URN filter.  Every
+    /// subsequent `new x(rho:io:fs:native:.../*)` inside a deploy
+    /// returns `ReduceError` from `eval_new`.  This is the default
+    /// state.  Idempotent.
+    pub fn enable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Slice 31: disable the rho:io:fs:native:* URN filter for the
+    /// duration of a genesis-composition run.  MUST be re-enabled
+    /// via `enable_fs_native_urn_filter` after the genesis deploys
+    /// complete — leaving it disabled would expose raw fs syscalls
+    /// to every subsequent user deploy on this runtime.
+    pub fn disable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// H-P7-5 review fix (Phase 7 whole-review round): RAII exemption
+    /// guard for the `rho:io:fs:native:*` URN filter.  Disables the
+    /// filter on construction and re-enables on Drop — including
+    /// panics and tokio-task cancellation.
+    ///
+    /// Pre-fix, `play_deploys_for_genesis` and `replay_deploys` toggled
+    /// the filter via bare atomic stores wrapped in async-block +
+    /// unwrap dance.  A panic or task cancellation between disable
+    /// and re-enable would leave the filter OFF, exposing raw
+    /// `fs:native:*` URNs to every subsequent user deploy on the
+    /// same runtime.  With this guard, the re-enable runs on all
+    /// exit paths (including panic unwinding, unless the runtime is
+    /// compiled with `-C panic=abort`).
+    ///
+    /// The guard holds an `Arc<AtomicBool>` clone of the filter flag
+    /// rather than a borrow of the runtime, so the caller retains
+    /// full `&mut self` access to the runtime for the duration of
+    /// the exemption (needed by `process_deploy_with_mergeable_data`
+    /// etc.).
+    pub fn exempt_fs_native_urn_filter(&self) -> FsNativeUrnFilterExemption {
+        self.disable_fs_native_urn_filter();
+        FsNativeUrnFilterExemption {
+            flag: self.reducer.filter_fs_native_urns.clone(),
+        }
+    }
+
+    /// Slice 31: introspection helper for tests and diagnostics.
+    pub fn fs_native_urn_filter_enabled(&self) -> bool {
+        self.reducer
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// H-P7-5 review fix: RAII drop-guard for the
+/// `rho:io:fs:native:*` URN-filter exemption granted by
+/// `RhoRuntimeImpl::exempt_fs_native_urn_filter`.  Drop re-enables
+/// the filter on all exit paths (normal return, `?`-error, panic
+/// unwind).  Callers should hold this guard for the exact
+/// dynamic scope where fs-native URN binding is permitted (the
+/// genesis composition batch); the guard's Drop closes the window
+/// as soon as the guard goes out of scope.
+///
+/// Holds an `Arc<AtomicBool>` clone of the filter flag (not a
+/// borrow of the runtime) so the caller can still exercise `&mut
+/// self` on the runtime during the exemption — the guard and
+/// mutable-runtime access are independent borrows of disjoint
+/// data.
+#[must_use = "the exemption ends when the guard is dropped; letting it drop \
+              immediately after construction re-enables the filter and \
+              the enclosed code sees the filter ON"]
+pub struct FsNativeUrnFilterExemption {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for FsNativeUrnFilterExemption {
+    fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::Release); }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -334,9 +474,18 @@ impl RhoRuntime for RhoRuntimeImpl {
         // any opens issued during the deploy — spec §Phase 1 fd-table
         // lifecycle.  Monotonic counter guarantees no fd aliasing across
         // rollback boundaries.
+        // H4/M1 review fix (round 2): PUSH onto a stack rather than
+        // overwriting a single slot, so nested soft-checkpoints
+        // preserve outer marks.  Revert POPs the innermost.
         {
-            let mut snap = self.fs_snapshot.lock().unwrap();
-            *snap = Some(self.fs_handles.snapshot_next_fd());
+            let mut stack = self.fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.snapshot_next_fd());
+        }
+        // H-29-1 review fix: snapshot the consensus WAL length
+        // alongside the fd counter so revert can truncate both.
+        {
+            let mut stack = self.wal_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.wal.snapshot_mark());
         }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
@@ -379,9 +528,17 @@ impl RhoRuntime for RhoRuntimeImpl {
         // eval are closed and removed; the monotonic counter is not
         // rewound so stale fds observed by any caller reliably see
         // FSERR_CLOSED rather than aliasing a later open.
-        let snap = { self.fs_snapshot.lock().unwrap().take() };
+        // H4/M1 round-2 fix: POP the innermost snapshot from the stack
+        // so nested checkpoints unwind correctly.  A revert without a
+        // matching create is a no-op (defensive against unbalanced calls).
+        let snap = { self.fs_snapshot_stack.lock().unwrap().pop() };
         if let Some(s) = snap {
             self.fs_handles.truncate_to(s).await;
+        }
+        // H-29-1: same stack semantics for WAL rollback.
+        let wal_snap = { self.wal_snapshot_stack.lock().unwrap().pop() };
+        if let Some(mark) = wal_snap {
+            self.fs_handles.wal.truncate_to(mark);
         }
         self.reducer
             .space
@@ -402,6 +559,57 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
+        // Slice 28 (PB-M-13): seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via
+        // this path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`,
+        // `play_exploratory_par_with_mode`), and every validator
+        // resetting to the same root computes the same watermark —
+        // so fd values captured by the leader are reproducibly
+        // replayable by followers.
+        //
+        // **Consensus commitment (M-28-F2 review note):** fd values
+        // are consensus-observable via Rholang tuplespace state
+        // (`fdP` cells inside File agents).  This seed derivation
+        // is therefore an implicit consensus commitment — any
+        // future change to `seed_next_fd_from_state_hash`'s
+        // derivation constants or hash algorithm is a hard fork.
+        //
+        // **Aliasing-prevention claim (M-28-2 clarification):**
+        // slice 28 prevents post-restart fd aliasing by ensuring
+        // that a fresh runtime spawned per block (via
+        // `RuntimeManager::spawn_runtime`) starts allocation from
+        // the state-hash-derived watermark, NOT from `next_fd = 1`.
+        // Two independent runtimes at the same state hash allocate
+        // identical fd sequences (leader/follower replay).  Cross-
+        // block aliasing risk is not "guaranteed impossible" but is
+        // statistically negligible given the 44-bit entropy
+        // derivation and 20-bit per-lifetime headroom (see
+        // `handle_table.rs::FD_ENTROPY_HEADROOM_BITS` and
+        // `seed_next_fd_from_state_hash`).
+        //
+        // **Side-effect note (M-28-F1):** `reset()` mutates
+        // `fs_handles.next_fd` — a side-effect that predates slice
+        // 28 (via `snapshot_next_fd` / `truncate_to` on soft
+        // checkpoints).  All current callers are consensus-relevant
+        // paths that spawn a fresh runtime for their scope, so the
+        // seeding side-effect is contained.
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // H-29-F2 review fix (defense in depth): clear the consensus
+        // WAL on reset.  All correctness paths already drain the WAL
+        // per-deploy via `Wal::take_deploy_entries`; this clear
+        // guarantees that if a caller resets to a state root without
+        // first draining, the follower observes an empty WAL — no
+        // ghost entries from an earlier block leak into the next.
+        self.fs_handles.wal.clear();
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark or the WAL
+        // to a length below the cleared zero).  A reset semantically
+        // means "start fresh at this state root"; leaving a mark
+        // stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.wal_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
 
@@ -796,16 +1004,15 @@ fn std_system_processes() -> Vec<Definition> {
         // ------------------------------------------------------------------
         // File I/O native primitives (rho:io:fs:native:1.0.0/*).
         //
-        // Registered here for fixed-channel dispatch.  As of slice 19 these
-        // URNs are GLOBALLY lookupable via `new x(`rho:io:fs:...`) in ...`
-        // (the previous `is_internal_fs_native_urn` filter was removed so
-        // the composed FsGenesis deploy could bind them).  This is a
-        // documented "MUST FIX BEFORE PRODUCTION" deferral — see the slice-
-        // 19 §MVP simplification #5 note in
-        // `casper/src/rust/genesis/contracts/fs_genesis.rs` for the plan:
-        // a future powerbox / blessed-deploy slice must reinstate the
-        // filter with a genesis-only exception.  Until then, user code
-        // that binds these URNs directly bypasses Fs.rho's sandbox.
+        // Registered here for fixed-channel dispatch.  Slice 31
+        // (2026-08-04) reinstated the URN filter as a phase-scoped
+        // flag on the reducer (`DebruijnInterpreter::filter_fs_native_urns`):
+        // ON by default so state-execution deploys reject fs-native
+        // URN bindings with `ReduceError`; the genesis entry
+        // (`casper::rholang::runtime::play_deploys_for_genesis`)
+        // toggles it OFF for the duration of the FsGenesis batch and
+        // back ON before returning.  User code can only reach the
+        // filesystem via the `Fs` cap published at genesis.
         //
         // URN naming: the "rho:io:fs:native:1.0.0/" prefix and the
         // per-primitive suffixes below are duplicated in
@@ -820,7 +1027,9 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/open",
             FixedChannels::fs_open(),
-            4,
+            // Slice 29 (PB-M-14): arity is 5 = (root, rel, mode, cmode, ack).
+            // cmode plumbed to `FileHandle.cmode` for later WAL routing.
+            5,
             BodyRefs::FS_OPEN,
             |sp, args| Box::pin(async move { sp.fs.fs_open(args).await }),
         ),
@@ -1427,6 +1636,8 @@ async fn setup_reducer(
         mergeable_tags,
         cost: cost.clone(),
         substitute: Substitute { cost: cost.clone() },
+        // Slice 31: default ON — genesis path toggles off per-batch.
+        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1466,20 +1677,15 @@ fn setup_maps_and_refs(
         .iter()
         .map(|process| process.to_urn_map())
         .for_each(|(key, value)| {
-            // Slice 19: fs-native URNs are now globally lookupable so the
-            // genesis FsGenesis deploy can bind `fsRead`, `fsWrite`, etc.
-            // via `new fsRead(`rho:io:fs:native:1.0.0/read`) in { ... }`.
-            //
-            // The prior filter (`is_internal_fs_native_urn`) was a
-            // defense-in-depth measure to keep user code away from raw
-            // syscalls.  Sandbox enforcement now lives at the config /
-            // powerbox layer (Phase 7 static provisioning): only agents
-            // holding a properly-provisioned Fs cap can perform I/O with
-            // the correct sandbox.  Rholang-level access to fs-native
-            // primitives remains dangerous (raw fds) — user code SHOULD
-            // NOT bind these URNs directly, and future work may reintroduce
-            // a genesis-only filter once the runtime can distinguish
-            // genesis-blessed deploys from user deploys.
+            // Every URN — including `rho:io:fs:native:1.0.0/*` — is
+            // registered in urn_map so it's dispatchable when
+            // needed.  Slice 31 (2026-08-04) added phase-scoped
+            // filtering at the reducer's `eval_new` level: the
+            // fs-native family is REJECTED during user (state-
+            // execution) deploys and PERMITTED during genesis
+            // composition.  See DebruijnInterpreter::
+            // filter_fs_native_urns and RhoRuntimeImpl::
+            // enable_fs_native_urn_filter / disable_fs_native_urn_filter.
             urn_map.insert(key, value);
         });
 
@@ -1560,14 +1766,15 @@ where
     // clone into their own ProcessContext but the underlying table is
     // Arc-shared so fds survive across dispatches within the runtime.
     let fs_handles = super::io::handle_table::FileHandleTable::new();
-    // TODO(Phase 7 / PB-M-12): `fs_mode` is always Oracular under the
-    // Phase 6 MVP — there's no per-deploy setter yet.  Phase 7's
-    // config-bucket routing (`oracle-static-*` vs `consensus-static-*`)
-    // determines this value per principal; wire the setter here when
-    // that plumbing lands.  Until then `handlers.rs::fs_chown`'s
-    // Consensus short-circuit and `stat_record`'s field omission
-    // never engage.  See implementation-plan.md §Phase 7 and
-    // FIPS/fileio/.../powerbox-requirements.md PB-M-12.
+    // Slice 26 / H-26-F3 review fix: `fs_mode` is a per-runtime FALLBACK
+    // that is only consulted if a native handler receives a caller
+    // without a per-cap cmode arg — but slice 26's `resolve_cmode` now
+    // rejects such calls with `FSERR_BAD_ARG` (C-26-F1 fail-closed),
+    // so this value is effectively unreachable from the library-agent
+    // dispatch path.  It remains here for future handlers that might
+    // read `self.mode` directly.  `Default` returns `Consensus` — the
+    // more restrictive mode — so any refactor that lands a handler
+    // consulting `self.mode` fails closed.
     let fs_mode = super::io::ConsensusMode::default();
 
     let reducer = setup_reducer(

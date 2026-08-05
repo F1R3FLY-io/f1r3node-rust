@@ -54,19 +54,23 @@
 //!    resolve.  Interim: deploys should substitute the `rho:id:...`
 //!    form returned by `fs_genesis_uri(&FS_GENERATOR_PUB_KEY)`.
 //!
-//! 5. **`rho:io:fs:native:*` URN filter removed.**  The Rust runtime
-//!    previously filtered these URNs from the user-lookupable urn_map
-//!    so only the genesis Fs agent could bind them.  The filter was
-//!    removed to let this composed deploy compile.  Consequence:
-//!    ANY user deploy can now `new fsOpen(`rho:io:fs:native:1.0.0/open`)
-//!    in { fsOpen!(...) }` and hit the raw syscalls directly,
-//!    bypassing Fs.rho's sandbox / mode-cap / bundle checks.  This is
-//!    a documented "MUST FIX BEFORE PRODUCTION" deferral: a future
-//!    powerbox / blessed-deploy slice must reinstate the filter with
-//!    a genesis-only exception (either by pre-binding the URNs into
-//!    the fs_generator's Env before applying the filter, or by
-//!    tagging deploys with signer identity and consulting a
-//!    whitelist at URN-lookup time).
+//! 5. **`rho:io:fs:native:*` URN filter (Phase 7 slice 31 — RESOLVED
+//!    2026-08-04).**  Every `rho:io:fs:native:*` URN is registered in
+//!    the runtime's `urn_map` for fixed-channel dispatch, but the
+//!    reducer's `filter_fs_native_urns` flag (set to `true` at
+//!    runtime construction) causes `eval_new` to reject any user
+//!    deploy that binds one — the caller sees a `ReduceError`
+//!    referencing the rejected URN, not a raw fd.  The flag is
+//!    toggled off around `play_deploys_for_genesis` (casper's
+//!    `runtime.rs::play_deploys_for_genesis`) so the composed
+//!    FsGenesis deploy can bind `fsRead` / `fsWrite` / etc. via
+//!    `new fsRead(`rho:io:fs:native:1.0.0/read`) in { ... }`.  The
+//!    prefix-based check (`FS_NATIVE_URN_PREFIX` in
+//!    `rholang/interpreter/io/mod.rs`) catches every current and
+//!    future suffix without per-URN maintenance.  User deploys can
+//!    only reach the filesystem through the Fs cap published at
+//!    genesis via `insertSigned`, which enforces sandbox / mode-cap /
+//!    bundle checks.
 //!
 //! 6. **`Buffer` / `Allocator` compiled but unreachable.**  The composed
 //!    source splices in Buffer.rho's body (agent definitions live at
@@ -79,15 +83,20 @@
 //!    delegation at `rho:lang:buffer:1.0.0`.  Deploys cannot obtain a
 //!    Buffer without that publication.
 //!
-//! 7. **`ConsensusMode` always Oracular.**  Phase 1 threaded a
-//!    `ConsensusMode` enum from `ProcessContext` to native handlers,
-//!    but no code path currently sets it to `Consensus` — Fs.rho takes
-//!    no mode arg and rho_runtime.rs hardcodes `ConsensusMode::default()`.
-//!    `chown` short-circuit and `stat`/`entries` field-omission are
-//!    therefore unreachable.  Real fix belongs to Phase 7 config wiring
-//!    (per PB-M-12 / PB-M-4 mode routing) — a principal's mode must be
-//!    derived from the config bucket (`oracle-static-*` vs
-//!    `consensus-static-*`) their bundle came from.
+//! 7. **`ConsensusMode` per-cap plumbing (Phase 7 slice 26).**  Each
+//!    bundle entry carries a `consensus_mode` (`Oracular` / `Consensus`)
+//!    derived from its config bucket.  The mode is emitted as the 5th
+//!    tuple element in the composed source, threaded through Fs.rho →
+//!    File/Dir constructor → agent state cell → passed explicitly to
+//!    the native `fs_chown` / `fs_stat` / `fs_entries` handlers on
+//!    every dispatch.  The runtime-wide `ConsensusMode::default()`
+//!    remains as a fallback for callers that omit the arg but is no
+//!    longer relied on by the library agents.  `chown`
+//!    short-circuits (returns `FSERR_UNSUPPORTED`) and `stat`/
+//!    `entries` omit host-transient fields (`mtime`/`ctime`/`atime`/
+//!    `owner`/`group`) when the cap's mode is `Consensus`.
+
+use std::path::PathBuf;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
@@ -101,6 +110,287 @@ use prost::Message;
 use rholang::rust::interpreter::registry::registry::Registry;
 
 use super::embedded_rho;
+
+/// Static-provisioning bundle-entry kind.  Matches slice 23's
+/// `EntryKind` shape but redefined here to avoid a `node → casper`
+/// dependency direction issue (casper is a lower-level crate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BundleEntryKind {
+    File,
+    Dir,
+}
+
+/// Per-cap consensus mode (plan §369, spec §Storage cases 1-6).
+/// Determines whether host-transient fields (`mtime`, `ctime`,
+/// `atime`, `owner`, `group`) appear in `stat`/`entries` records
+/// and whether `chown` succeeds.  Slice 26 threads this from the
+/// bundle tuple through Fs.rho → File/Dir agent state → native
+/// dispatch, replacing the runtime-wide `ConsensusMode::default()`
+/// fallback that Phase 1 stubbed in.
+///
+/// String encoding at the Rholang boundary: `"oracular"` /
+/// `"consensus"` — chosen for readability in composed sources and
+/// symmetry with the operator's config-bucket prefixes
+/// (`oracle-static-*` / `consensus-static-*`).  `as_str()` and
+/// `parse_str()` bracket the serde boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BundleConsensusMode {
+    Oracular,
+    Consensus,
+}
+
+impl BundleConsensusMode {
+    // M-26-3 review fix: single-source the cmode strings from
+    // `rholang/interpreter/io/mod.rs` — the composer emits them into
+    // the tuplespace, the native `resolve_cmode` matches them, and
+    // both must agree byte-for-byte or the composed source becomes
+    // unroutable at the syscall boundary.  A drift-assertion test
+    // below pins the pair.
+    pub const ORACULAR_STR: &'static str = rholang::rust::interpreter::io::CMODE_ORACULAR_STR;
+    pub const CONSENSUS_STR: &'static str = rholang::rust::interpreter::io::CMODE_CONSENSUS_STR;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BundleConsensusMode::Oracular => Self::ORACULAR_STR,
+            BundleConsensusMode::Consensus => Self::CONSENSUS_STR,
+        }
+    }
+
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            Self::ORACULAR_STR => Some(BundleConsensusMode::Oracular),
+            Self::CONSENSUS_STR => Some(BundleConsensusMode::Consensus),
+            _ => None,
+        }
+    }
+}
+
+/// One entry in the static-provisioning bundle handed to
+/// `fs_generator` (Phase 7 slice 25).  Projected from the merged
+/// `FileIoProvisioning` produced by slice 24's `merge_and_validate`.
+///
+/// `consensus_mode` (slice 26): derived by `project_bundle` from
+/// the bucket a config entry came from — `oracle-static-*` →
+/// `Oracular`, `consensus-static-*` → `Consensus` — and emitted as
+/// the 5th tuple element in `format_bundle_for_rholang`.  Fs.rho
+/// threads it through openFileImpl/openDirImpl into the File/Dir
+/// constructor's state cell, and File/Dir's chown/stat/entries
+/// methods pass it back to the native handler as an explicit arg.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BundleEntry {
+    pub logical_name: String,
+    pub canon_path: PathBuf,
+    pub kind: BundleEntryKind,
+    pub mode: String,
+    pub consensus_mode: BundleConsensusMode,
+}
+
+impl BundleEntry {
+    /// Fallible constructor (H-25-3 slice-25 review fix) that
+    /// re-runs the invariants slice 21/22/23 enforce upstream, as
+    /// defense in depth against programmatic-construction bypasses.
+    ///
+    /// Checks:
+    /// - `logical_name`, `mode`, and `canon_path.to_str()` contain
+    ///   no NUL, control chars, DEL, C1 controls, BOM, RTL
+    ///   overrides, or line separators (would break the Rholang
+    ///   lexer or produce log-injection / visual-confusable
+    ///   hazards).
+    /// - `canon_path` is UTF-8 (Fs.rho's `bMap` keys and tuple
+    ///   values are Rholang strings).
+    /// - `canon_path` is absolute (Fs.rho expects `canonRoot` to
+    ///   be an absolute host path).
+    ///
+    /// Slice 24's `project_bundle` uses this constructor so all
+    /// projection-path entries are validated.  Direct field
+    /// initialization is still permitted (`pub` fields) for tests
+    /// and future callers who have their own validation pipeline;
+    /// prefer `try_new` when constructing from operator-derived
+    /// data.
+    pub fn try_new(
+        logical_name: String,
+        canon_path: PathBuf,
+        kind: BundleEntryKind,
+        mode: String,
+        consensus_mode: BundleConsensusMode,
+    ) -> Result<Self, String> {
+        // Reject empties (should be caught upstream).
+        if logical_name.is_empty() {
+            return Err("logical_name is empty".into());
+        }
+        if mode.is_empty() {
+            return Err("mode is empty".into());
+        }
+        if canon_path.as_os_str().is_empty() {
+            return Err("canon_path is empty".into());
+        }
+        // UTF-8.
+        let path_str = canon_path
+            .to_str()
+            .ok_or_else(|| format!("canon_path {canon_path:?} is not valid UTF-8"))?;
+        // Absolute.
+        if !canon_path.is_absolute() {
+            return Err(format!("canon_path {canon_path:?} is not absolute"));
+        }
+        // Forbidden chars (NUL, C0/C1, DEL, BOM, RTL overrides,
+        // line separators).  Same set as slice 21 / 22 enforce.
+        reject_char_set(&logical_name).map_err(|d| format!("logical_name: {d}"))?;
+        reject_char_set(path_str).map_err(|d| format!("canon_path: {d}"))?;
+        reject_char_set(&mode).map_err(|d| format!("mode: {d}"))?;
+        Ok(BundleEntry {
+            logical_name,
+            canon_path,
+            kind,
+            mode,
+            consensus_mode,
+        })
+    }
+}
+
+/// Mirror of `node::configuration::file_io_provisioning::reject_forbidden_chars`.
+/// Duplicated here (rather than re-imported) to keep `casper`'s
+/// dependency footprint independent of `node` — casper is the lower
+/// crate.  The set MUST stay in sync with `reject_forbidden_chars`
+/// in node.
+fn reject_char_set(value: &str) -> Result<(), String> {
+    if let Some((i, c)) = value.char_indices().find(|(_, c)| {
+        let cp = *c as u32;
+        cp < 0x20
+            || cp == 0x7F
+            || (0x80..=0x9F).contains(&cp)
+            || matches!(
+                cp,
+                0x200E | 0x200F
+                | 0x202A..=0x202E
+                | 0x2028 | 0x2029
+                | 0xFEFF
+                | 0x2066..=0x2069
+            )
+    }) {
+        return Err(format!(
+            "forbidden control character U+{:04X} at byte {i}",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// Format a bundle as a Rholang map literal suitable for splicing
+/// into the `Fs!?(0, 1, 2, <bundle>)` position of the composed
+/// source.  Produces:
+///
+/// ```text
+/// {"logical/name": ("/canon/path", "", "r", "file", "oracular"), ...}
+/// ```
+///
+/// The tuple shape matches Fs.rho's `bMap.get(n)` match pattern
+/// `(canonRoot, rel, provisioned, kind, consensusMode)` (slice 26).
+/// For projection we use `rel = ""` (the whole provisioned path IS
+/// the canonical root of that entry's cap).  `consensusMode` is
+/// `"oracular"` or `"consensus"` per `BundleConsensusMode::as_str`.
+///
+/// Deterministic output: entries sorted by logical name so the
+/// composed source is byte-identical across runs (required for
+/// genesis-block consensus).
+pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
+    if bundle.is_empty() {
+        return "{}".to_string();
+    }
+    let mut sorted: Vec<&BundleEntry> = bundle.iter().collect();
+    sorted.sort_by(|a, b| a.logical_name.cmp(&b.logical_name));
+
+    // M-25-6 slice-25 review fix: assert no duplicate logical
+    // names.  Slice 24's merge guarantees per-bucket uniqueness;
+    // slice 23's cross-bucket check (M-25-7) covers the remaining
+    // case.  A duplicate here would silently overwrite in the
+    // Rholang map — panic before emitting.
+    for window in sorted.windows(2) {
+        assert!(
+            window[0].logical_name != window[1].logical_name,
+            "format_bundle_for_rholang: duplicate logical name `{}` — \
+             slice-23 cross-bucket-name check should have caught this",
+            window[0].logical_name
+        );
+    }
+
+    let mut out = String::from("{");
+    for (i, entry) in sorted.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        // H-25-4 slice-25 review fix: require UTF-8 paths.  Slice
+        // 21 and slice 22 both enforce; a non-UTF-8 path here
+        // indicates programmatic bypass.  Panic rather than emit
+        // U+FFFD (which would silently open a different file at
+        // runtime).
+        let path_str = entry.canon_path.to_str().unwrap_or_else(|| {
+            panic!(
+                "format_bundle_for_rholang: non-UTF-8 canon_path {:?}; \
+                 upstream validators should have rejected this input",
+                entry.canon_path
+            )
+        });
+        let name = rholang_string_escape(&entry.logical_name);
+        let path = rholang_string_escape(path_str);
+        let mode = rholang_string_escape(&entry.mode);
+        let kind = match entry.kind {
+            BundleEntryKind::File => "file",
+            BundleEntryKind::Dir => "dir",
+        };
+        let cmode = entry.consensus_mode.as_str();
+        // ("canonRoot", "rel", "provisioned", "kind", "cmode") —
+        // rel is empty at projection time.  Cap consumers derive
+        // relative subpaths from the caller's rel argument on
+        // openFile/openDir.  `cmode` (slice 26) is
+        // "oracular"/"consensus" — routed by Fs.rho into the
+        // File/Dir constructor and back into native chown/stat/
+        // entries dispatch.
+        out.push_str(&format!(
+            r#""{name}": ("{path}", "", "{mode}", "{kind}", "{cmode}")"#
+        ));
+    }
+    out.push('}');
+    out
+}
+
+/// Escape a string for safe embedding in a Rholang `"..."` literal.
+///
+/// Rholang string grammar (`rholang_mercury.cf`):
+///   StringLiteral ::= '"' ((char - ["\"\\"]) | ('\\' ["\"\\nt"]))* '"'
+///
+/// Only `\"`, `\\`, `\n`, `\t` are valid escapes; `\r` and other
+/// escape sequences would produce a lexer error.  Slice 21's HOCON
+/// deserializer + slice 22's CLI parser + slice 23's boot
+/// validation all call `reject_forbidden_chars`, which rejects NUL
+/// / C0 controls / DEL / C1 controls / BOM / RTL overrides / line
+/// separators before this function is ever reached.  Any control
+/// char that does reach this function indicates a programmatic-
+/// construction bypass — we panic rather than emit a Rholang
+/// source that would fail at deploy time (C-25-2 slice-25 review
+/// fix: previously we emitted `\r` which the Rholang lexer rejects,
+/// causing genesis-time panic on legitimate Windows-CRLF input).
+fn rholang_string_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '"' => out.push_str(r#"\""#),
+            '\n' => out.push_str(r"\n"),
+            '\t' => out.push_str(r"\t"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => {
+                panic!(
+                    "rholang_string_escape: control char U+{:04X} unexpectedly \
+                     reached the composer; upstream validators should have \
+                     rejected this input.  If this fires in production, some \
+                     caller bypassed reject_forbidden_chars.",
+                    c as u32
+                );
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
 
 /// Nonce used in the FsGenesis signed-registry insertion.  MAX_LONG
 /// so nobody can overwrite the entry once published.
@@ -331,15 +621,19 @@ fn is_ident_char(b: u8) -> bool { matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..
 /// `pk_hex` and `sig_hex` MUST be lowercase ASCII hex strings; the
 /// debug-asserts below prevent a future refactor from passing
 /// untrusted bytes through the `format!` boundary.
-pub fn compose_fs_genesis_source(pk_hex: &str, sig_hex: &str) -> String {
-    debug_assert!(
+pub fn compose_fs_genesis_source(pk_hex: &str, sig_hex: &str, bundle: &[BundleEntry]) -> String {
+    // H-25-2 slice-25 review fix: promoted from debug_assert! to
+    // assert! so release builds also reject non-hex input.  Genesis
+    // runs once at boot; the constant-time hex check is negligible.
+    assert!(
         pk_hex.chars().all(|c| c.is_ascii_hexdigit()),
         "pk_hex must be ASCII hex"
     );
-    debug_assert!(
+    assert!(
         sig_hex.chars().all(|c| c.is_ascii_hexdigit()),
         "sig_hex must be ASCII hex"
     );
+    let bundle_rho = format_bundle_for_rholang(bundle);
 
     let file_body = lib_body(embedded_rho::FILE);
     let dir_body = lib_body(embedded_rho::DIR);
@@ -354,17 +648,16 @@ pub fn compose_fs_genesis_source(pk_hex: &str, sig_hex: &str) -> String {
     format!(
         r#"
 new
-  File, fdP, stateP, Dir, rootP,
+  File, fdP, stateP, cmodeP, Dir, rootP,
   Stream, paramsP, gatherN, foldLoop, forEachLoop, foldChunksLoop,
   Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
   gatherChunks, drainChunks, allocInnersLoop, parkInnersLoop,
   clearInnersLoop, closeInnersLoop,
   Stdin, stdinFdP, stdinStateP,
   Stdout, stdoutFdP, stdoutStateP,
-  Fs, fsBundleP, fsCacheP,
+  Fs, fsBundleP,
   fsStdinFdP, fsStdoutFdP, fsStderrFdP,
-  cacheAndOpenFile, cacheAndOpenDir,
-  openFileImpl, openDirImpl, joinRel,
+  openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
   parseRwxToBits, parseRwxLoop,
   writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
   readLinesIntoLoop, drainToNextLF,
@@ -406,11 +699,12 @@ in {{
   |
   {fs_body}
   |
-  // MVP: mint one shared Fs instance (stdio fds 0/1/2, empty static
-  // bundle) and publish it at the registry URI derived from
-  // FS_GENERATOR_PK.  Per-principal delegation via powerbox is a
-  // future slice (see fs_genesis.rs docstring for deferral notes).
-  for (@fs <- Fs!?(0, 1, 2, {{}})) {{
+  // Slice 25: mint one shared Fs instance (stdio fds 0/1/2, static
+  // bundle populated from operator config+CLI merge) and publish
+  // it at the registry URI derived from FS_GENERATOR_PK.  Per-
+  // principal delegation via powerbox is a future slice (see
+  // fs_genesis.rs docstring).
+  for (@fs <- Fs!?(0, 1, 2, {bundle_rho})) {{
     rs!(
       "{pk_hex}".hexToBytes(),
       ({nonce}, fs),
@@ -524,7 +818,7 @@ mod tests {
         // the composed source.  This is a drift assertion: if someone
         // adds a suffix to the constant without updating the format!
         // template, this test fails.
-        let src = compose_fs_genesis_source("00", "00");
+        let src = compose_fs_genesis_source("00", "00", &[]);
         for suffix in FS_NATIVE_URN_SUFFIXES {
             let expected = format!("`{FS_NATIVE_URN_PREFIX}{suffix}`");
             assert!(
@@ -532,5 +826,528 @@ mod tests {
                 "composed source missing URN binding: {expected}"
             );
         }
+    }
+
+    // -------------------- Slice 25: bundle formatting --------------------
+
+    #[test]
+    fn format_bundle_empty_yields_empty_map() {
+        assert_eq!(format_bundle_for_rholang(&[]), "{}");
+    }
+
+    #[test]
+    fn format_bundle_single_file_entry() {
+        let b = [BundleEntry {
+            logical_name: "cfg".into(),
+            canon_path: PathBuf::from("/etc/cfg"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&b),
+            r#"{"cfg": ("/etc/cfg", "", "r", "file", "oracular")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_single_dir_entry() {
+        let b = [BundleEntry {
+            logical_name: "logs/".into(),
+            canon_path: PathBuf::from("/var/log/rnode"),
+            kind: BundleEntryKind::Dir,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&b),
+            r#"{"logs/": ("/var/log/rnode", "", "rw", "dir", "oracular")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_sorts_by_logical_name() {
+        // Deterministic composition — required for consensus.
+        let b = [
+            BundleEntry {
+                logical_name: "b".into(),
+                canon_path: PathBuf::from("/2"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "a".into(),
+                canon_path: PathBuf::from("/1"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "c".into(),
+                canon_path: PathBuf::from("/3"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+        ];
+        let formatted = format_bundle_for_rholang(&b);
+        let a_pos = formatted.find("\"a\":").unwrap();
+        let b_pos = formatted.find("\"b\":").unwrap();
+        let c_pos = formatted.find("\"c\":").unwrap();
+        assert!(a_pos < b_pos && b_pos < c_pos, "not sorted: {formatted}");
+    }
+
+    #[test]
+    fn format_bundle_escapes_quote_and_backslash() {
+        let b = [BundleEntry {
+            logical_name: r#"has"quote"#.into(),
+            canon_path: PathBuf::from(r"/back\slash"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        let out = format_bundle_for_rholang(&b);
+        // Escaped `"` becomes `\"`; escaped `\` becomes `\\`.
+        assert!(out.contains(r#""has\"quote""#), "quote not escaped: {out}");
+        assert!(
+            out.contains(r"/back\\slash"),
+            "backslash not escaped: {out}"
+        );
+    }
+
+    #[test]
+    fn compose_fs_genesis_source_injects_bundle_map() {
+        let b = [BundleEntry {
+            logical_name: "cfg/theme.json".into(),
+            canon_path: PathBuf::from("/etc/myapp/theme.json"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        let src = compose_fs_genesis_source("00", "00", &b);
+        // The composed source's Fs!?(...) call should carry the
+        // formatted bundle, not `{}`.
+        assert!(
+            src.contains(
+                r#"Fs!?(0, 1, 2, {"cfg/theme.json": ("/etc/myapp/theme.json", "", "r", "file", "oracular")})"#
+            ),
+            "bundle not injected into Fs!? call:\n{src}"
+        );
+    }
+
+    #[test]
+    fn compose_fs_genesis_source_empty_bundle_still_uses_empty_map() {
+        let src = compose_fs_genesis_source("00", "00", &[]);
+        assert!(src.contains("Fs!?(0, 1, 2, {})"));
+    }
+
+    // -------------------- Slice 25 review-fix regression tests --------------------
+
+    // M-25-6: `format_bundle_for_rholang` must panic on duplicate
+    // logical names — the Rholang map would silently overwrite one
+    // entry.  Slice 23 boot validation catches this cross-bucket; this
+    // asserts defense-in-depth if a caller constructs the bundle
+    // programmatically without going through validation.
+    #[test]
+    #[should_panic(expected = "duplicate logical name")]
+    fn format_bundle_panics_on_duplicate_logical_name() {
+        let b = vec![
+            BundleEntry {
+                logical_name: "dup".into(),
+                canon_path: PathBuf::from("/a"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "dup".into(),
+                canon_path: PathBuf::from("/b"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+        ];
+        let _ = format_bundle_for_rholang(&b);
+    }
+
+    // C-25-2: `rholang_string_escape` must panic on any C0 control
+    // character.  Previously it emitted `\r` which the Rholang lexer
+    // rejects — a Windows-CRLF operator input would crash genesis.
+    // Now upstream must reject before we get here; if it slips
+    // through, we panic locally rather than emitting invalid source.
+    #[test]
+    #[should_panic(expected = "control char U+000D")]
+    fn rholang_string_escape_panics_on_carriage_return() {
+        let _ = rholang_string_escape("line\r\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "control char U+0000")]
+    fn rholang_string_escape_panics_on_nul() { let _ = rholang_string_escape("a\0b"); }
+
+    #[test]
+    #[should_panic(expected = "control char U+0007")]
+    fn rholang_string_escape_panics_on_bell() { let _ = rholang_string_escape("a\x07b"); }
+
+    // Newline and tab are the two valid escapes; they must NOT panic.
+    #[test]
+    fn rholang_string_escape_allows_newline_and_tab() {
+        assert_eq!(rholang_string_escape("a\nb"), r"a\nb");
+        assert_eq!(rholang_string_escape("a\tb"), r"a\tb");
+    }
+
+    // H-25-2: promoted debug_assert! → assert! for hex validation on
+    // pk_hex / sig_hex.  Release builds must reject non-hex.
+    #[test]
+    #[should_panic(expected = "pk_hex must be ASCII hex")]
+    fn compose_fs_genesis_source_panics_on_non_hex_pk() {
+        let _ = compose_fs_genesis_source("zz", "00", &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "sig_hex must be ASCII hex")]
+    fn compose_fs_genesis_source_panics_on_non_hex_sig() {
+        let _ = compose_fs_genesis_source("00", "zz", &[]);
+    }
+
+    // H-25-3: `BundleEntry::try_new` is the defense-in-depth
+    // constructor for programmatic callers.  Verify each rejection.
+    #[test]
+    fn try_new_rejects_empty_logical_name() {
+        let r = BundleEntry::try_new(
+            "".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_empty_mode() {
+        let r = BundleEntry::try_new(
+            "n".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_relative_path() {
+        let r = BundleEntry::try_new(
+            "n".into(),
+            PathBuf::from("etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err(), "relative canon_path must be rejected");
+    }
+
+    #[test]
+    fn try_new_rejects_nul_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "a\0b".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_newline_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "a\nb".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_cr_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "a\rb".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_bom_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "\u{FEFF}n".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_rtl_override_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "a\u{202E}b".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_rejects_line_separator_in_logical_name() {
+        let r = BundleEntry::try_new(
+            "a\u{2028}b".into(),
+            PathBuf::from("/etc/x"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn try_new_accepts_valid_input() {
+        let r = BundleEntry::try_new(
+            "cfg/theme.json".into(),
+            PathBuf::from("/etc/myapp/theme.json"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(r.is_ok(), "valid input rejected: {r:?}");
+    }
+
+    // MT-25-1: a non-empty-bundle composed source must actually parse
+    // through the Rholang normalizer, not just format as a string.
+    // Compiles the composed source via CompiledRholangSource with a
+    // fake but hex-valid pk/sig to catch template drift that only
+    // shows up on the parse path (e.g. missing punctuation, mismatched
+    // braces).
+    #[test]
+    fn compose_fs_genesis_source_with_bundle_compiles() {
+        use std::collections::HashMap;
+
+        use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+        let b = [BundleEntry {
+            logical_name: "cfg/theme.json".into(),
+            canon_path: PathBuf::from("/etc/myapp/theme.json"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        // Use realistic hex — non-hex would panic at compose time
+        // (H-25-2), and a short empty-hex would fail signature
+        // validation only at runtime, but that's not what we test
+        // here — we just want the parser to accept the source.
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisBundle".into());
+        assert!(
+            r.is_ok(),
+            "composed source failed to compile: {}",
+            r.err().map(|e| format!("{e:?}")).unwrap_or_default()
+        );
+    }
+
+    // MT-25-2: escape-heavy bundle values (quote, backslash, newline,
+    // tab) all round-trip through the composer + parser.
+    #[test]
+    fn compose_fs_genesis_source_with_escape_heavy_bundle_compiles() {
+        use std::collections::HashMap;
+
+        use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+        let b = [BundleEntry {
+            logical_name: "has\"quote\tand\\backslash".into(),
+            canon_path: PathBuf::from("/etc/\"awkward\\path"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisEscape".into());
+        assert!(
+            r.is_ok(),
+            "escape-heavy composed source failed to compile: {}",
+            r.err().map(|e| format!("{e:?}")).unwrap_or_default()
+        );
+    }
+
+    // -------------------- Slice 26: consensus-mode plumbing --------------------
+
+    #[test]
+    fn consensus_mode_as_str_round_trips() {
+        assert_eq!(BundleConsensusMode::Oracular.as_str(), "oracular");
+        assert_eq!(BundleConsensusMode::Consensus.as_str(), "consensus");
+        assert_eq!(
+            BundleConsensusMode::parse_str("oracular"),
+            Some(BundleConsensusMode::Oracular)
+        );
+        assert_eq!(
+            BundleConsensusMode::parse_str("consensus"),
+            Some(BundleConsensusMode::Consensus)
+        );
+        assert_eq!(BundleConsensusMode::parse_str("bogus"), None);
+    }
+
+    // The Rholang boundary is a string.  A stray tuple-position drift
+    // in the composer would land the cmode string in the wrong tuple
+    // slot; assert the 5th element is exactly the cmode string, in
+    // the exact position Fs.rho's `bMap.get(n)` match expects.
+    #[test]
+    fn format_bundle_emits_consensus_mode_as_5th_tuple_element() {
+        let b = [
+            BundleEntry {
+                logical_name: "orc".into(),
+                canon_path: PathBuf::from("/o"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "con".into(),
+                canon_path: PathBuf::from("/c"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+        ];
+        let out = format_bundle_for_rholang(&b);
+        assert!(
+            out.contains(r#""con": ("/c", "", "rw", "dir", "consensus")"#),
+            "consensus tuple missing: {out}"
+        );
+        assert!(
+            out.contains(r#""orc": ("/o", "", "r", "file", "oracular")"#),
+            "oracular tuple missing: {out}"
+        );
+    }
+
+    // Composed-source parse test with mixed consensus modes: catches
+    // any composed-template drift that only fires when both modes
+    // appear (e.g. one arm hard-codes "oracular").
+    #[test]
+    fn compose_fs_genesis_source_with_mixed_consensus_modes_compiles() {
+        use std::collections::HashMap;
+
+        use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+        let b = [
+            BundleEntry {
+                logical_name: "orc-file".into(),
+                canon_path: PathBuf::from("/etc/orc"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "con-dir".into(),
+                canon_path: PathBuf::from("/var/con"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+        ];
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        // MT-26-18 review fix: assert both cmode strings actually
+        // appear in the composed source, in the correct 5th-position
+        // syntactic slot.  A template regression that hard-coded
+        // `"oracular"` would still compile — this test catches that.
+        assert!(
+            src.contains(r#"("/etc/orc", "", "rw", "file", "oracular")"#),
+            "oracular 5-tuple missing from composed source:\n{src}"
+        );
+        assert!(
+            src.contains(r#"("/var/con", "", "rw", "dir", "consensus")"#),
+            "consensus 5-tuple missing from composed source:\n{src}"
+        );
+        let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisMixed".into());
+        assert!(
+            r.is_ok(),
+            "mixed-mode composed source failed to compile: {}",
+            r.err().map(|e| format!("{e:?}")).unwrap_or_default()
+        );
+    }
+
+    // ST-26-21 review fix: determinism under mixed cmodes.  Running
+    // compose_fs_genesis_source multiple times over the same input
+    // must produce byte-identical output (composed source goes into
+    // genesis-block computation; validator/proposer drift = network
+    // fork).  format_bundle_for_rholang sorts by logical_name; this
+    // pins the invariant so a future refactor that dropped either
+    // sort would trip a test rather than fork the network.
+    #[test]
+    fn compose_fs_genesis_source_is_deterministic_across_runs() {
+        let b = [
+            BundleEntry {
+                logical_name: "z".into(),
+                canon_path: PathBuf::from("/z"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "a".into(),
+                canon_path: PathBuf::from("/a"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+        ];
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let baseline = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        for _ in 0..20 {
+            assert_eq!(
+                compose_fs_genesis_source(&pk_hex, &sig_hex, &b),
+                baseline,
+                "compose_fs_genesis_source must be deterministic"
+            );
+        }
+    }
+
+    // A composed source with only consensus caps must still compile
+    // (defense against a template arm that assumes at least one
+    // oracular cap).
+    #[test]
+    fn compose_fs_genesis_source_with_only_consensus_compiles() {
+        use std::collections::HashMap;
+
+        use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+        let b = [BundleEntry {
+            logical_name: "con-only".into(),
+            canon_path: PathBuf::from("/var/con"),
+            kind: BundleEntryKind::File,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisConsensusOnly".into());
+        assert!(
+            r.is_ok(),
+            "consensus-only composed source failed to compile: {}",
+            r.err().map(|e| format!("{e:?}")).unwrap_or_default()
+        );
     }
 }

@@ -136,6 +136,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -194,6 +195,12 @@ impl ApproveBlockProtocolFactory {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            // Slice 25 (C-25-1 review fix): static-provisioning
+            // bundle passed in by casper_launch, ultimately derived
+            // from node's boot pipeline via merge_and_validate +
+            // project_bundle.  Empty vec preserves pre-slice-25
+            // behavior when no operator config is set.
+            fs_bundle,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;

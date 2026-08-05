@@ -115,3 +115,44 @@ in {{
         .await
         .expect("FsGenerator E2E spec tests failed");
 }
+
+// -------------------------------------------------------------------
+// H-P7-8 / H-25-COV-1 (Phase 7 whole-review) — DEFERRED to a
+// follow-up slice.
+//
+// A populated-bundle end-to-end test attempted here uncovered a
+// genuine integration gap in the openFile chain for
+// `consensus-static-files` entries:
+//
+//   - `project_bundle` sets `BundleEntry.canon_path` to the FULL
+//     file path and emits `("<fullFilePath>", "", ...)` in the
+//     Rholang tuple (rel = "").
+//   - `Fs.openFile(name, options)` for a matched bMap entry
+//     invokes `openFileImpl!(canonRoot="<fullFilePath>",
+//     subPath="", rel="", ...)`.
+//   - `openFileImplInner` then calls `joinRel("", "") = ""` and
+//     `fsStat!(canonRoot, "", ...)` — which fails inside
+//     `safe_descend` with `QuarantineError::Empty` ("empty
+//     relative path") because the descent code requires a
+//     non-empty leaf component.
+//   - `fsOpen` on the same `(canonRoot, "")` shape has the same
+//     `safe_descend` gate, so the user-visible reply is
+//     `[false, "FSERR_BAD_ARG", "empty relative path"]` rather
+//     than the intended `[true, fileCap]`.
+//
+// Fixing this correctly is a design decision:
+//   (a) change `project_bundle` to emit `(parent_dir, filename)`
+//       for file entries so `safe_descend` sees a real leaf, OR
+//   (b) special-case the `rel == ""` path in
+//       `openFileImplInner` / `safe_descend` to stat the root
+//       itself (opens up whole-file-as-cap semantics).
+//
+// Both touch the consensus-critical mint pipeline and want their
+// own review round.  The empty-bundle spec above still pins the
+// FSERR_UNSUPPORTED path, and the file_dir_check spec covers the
+// canonRoot=dir/rel=file API — the gap is specifically the
+// project_bundle → Fs.openFile join for consensus-static-file
+// bundle entries.  Tracked as H-P7-8-DEFERRED for the follow-up
+// slice; no test lives here today rather than shipping a red one
+// that would block CI.
+// -------------------------------------------------------------------

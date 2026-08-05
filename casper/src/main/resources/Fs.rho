@@ -1,16 +1,18 @@
 // Fs.rho — File I/O FIP §The Fs agent.
 //
 // Top-level entry point.  Provisioned at genesis with a static bundle
-// mapping logical names to (canonRoot, rel, mode, kind) tuples; the
-// powerbox delegates the resulting Fs cap to deploys.  Deploys open
-// files/dirs by their logical name, never by absolute host path.
+// mapping logical names to
+//   (canonRoot, rel, mode, kind, consensusMode)
+// tuples (5-ary as of slice 26); the powerbox delegates the resulting
+// Fs cap to deploys.  Deploys open files/dirs by their logical name,
+// never by absolute host path.
 //
-// ## Delivered methods (through slice 19)
+// ## Delivered methods
 //
 //   constructor(stdinFd, stdoutFd, stderrFd, bMap)
 //                                              — stash stdio fds + bundle
-//   openFile(name, options)  → [true, fileCap] — look up + mode-cap + open (cached)
-//   openDir(name, options)   → [true, dirCap]  — look up + mode-cap + open (cached)
+//   openFile(name, options)  → [true, fileCap] — look up + mode-cap + open (fresh mint)
+//   openDir(name, options)   → [true, dirCap]  — look up + mode-cap + open (fresh mint)
 //   stdin()   → [true, stdinCap]               — mint fresh Stdin(fd)
 //   stdout()  → [true, stdoutCap]              — mint fresh Stdout(stdoutFd)
 //   stderr()  → [true, stderrCap]              — mint fresh Stdout(stderrFd)
@@ -43,12 +45,6 @@
 // Caching would break those clauses: a well-meaning `close()` would
 // permanently disable stdio for the rest of the Fs's life.
 //
-// Stdio does NOT participate in the `fsCacheP` used by openFile /
-// openDir — three dedicated cells hold just the fds passed by the
-// powerbox at construction (`fsStdinFdP` / `fsStdoutFdP` /
-// `fsStderrFdP`), and each stdio method peeks its cell then invokes
-// the Stdin / Stdout constructor.
-//
 // Cross-Fs isolation (spec §867) holds trivially: Alice's Fs holds
 // its own `*private` cells with its own fd values; Bob's Fs holds
 // its own.  Any minted Stdin / Stdout has a fresh `*private` scope
@@ -72,33 +68,30 @@
 // (which likewise trust their fd) and to bMap lookups (which
 // tolerate empty/missing entries via `.contains`).
 //
-// ## Cache (slice 17 — spec §863-869)
+// ## Fresh-mint semantics (slice 27)
 //
-// Repeated `openFile(name, options)` on the same Fs instance for the
-// same `(canonicalPath, resolvedMode)` returns the SAME cached agent
-// handle.  Two calls sharing the cache also share the underlying fd
-// and cursor state, so a client who reads part of the file and then
-// re-opens can pick up where it left off (spec §865).
+// Every `openFile(name, options)` / `openDir(name, options)` returns
+// a FRESH agent handle with an independent cursor and independent
+// lifecycle — regardless of whether the same `(name, options)` pair
+// was opened earlier on this Fs.  Slice 17 memoized handles per
+// `(canonicalPath, resolvedMode)`; slice 27 (2026-08-04) reverted that
+// on POSIX-semantics grounds: two `openFile(same-name, same-mode)`
+// calls MUST yield distinct `File` agents with independent read/
+// write positions, otherwise Alice's `read` would silently advance
+// Bob's cursor.  Shared byte-level coordination is Phase 8's job
+// (range locks), not Fs-level cap memoization.
 //
-// Cache scope: per-Fs-instance.  The `fsCacheP` cell lives at
-// `@[*private, *fsCacheP]` — since `*private` is per-instance, two
-// distinct Fs caps have distinct caches.  A subordinate handed an
-// attenuated File cap (or an entire Fs) via powerbox delegation
-// operates on its own state (spec §867).
-//
-// Cache key: `(canonRoot, rel, resolvedMode)` tuple.  Different modes
-// on the same name yield distinct entries (different capability;
-// distinct fd in the real system).
-//
-// Cache semantics on error paths: if `openFileImpl` / `openDirImpl`
-// return `[false, code, msg]` (stat-verify fail, fsOpen fail, etc.),
-// no entry is added; a subsequent retry re-attempts the underlying
-// open.
+// The `openFile` / `openDir` methods therefore invoke
+// `openFileImpl` / `openDirImpl` (defined by Dir.rho and shared with
+// nested Dir.openFile/openDir call sites) directly — no cache lookup,
+// no cache-set on the success path.  This mirrors the slice-18 stdio
+// design: each stdio method mints fresh, so its close doesn't
+// invalidate subsequent calls.
 //
 // ## Bundle shape
 //
-// Each bundle entry is a 4-tuple `(canonRoot, rel, provisionedMode,
-// kind)`:
+// Each bundle entry is a 5-tuple `(canonRoot, rel, provisionedMode,
+// kind, consensusMode)`:
 //   canonRoot         — absolute directory (validated at load time to
 //                       be absolute and symlink-free per spec §1269)
 //   rel               — path within canonRoot; joinRel(subPath="", rel)
@@ -107,9 +100,20 @@
 //   provisionedMode   — max attenuation ("r" / "rw" for dirs; any file
 //                       mode from spec §File modes for files)
 //   kind              — "file" or "dir"
+//   consensusMode     — "oracular" or "consensus" (slice 26).  Derived
+//                       from the operator's config bucket
+//                       (`oracle-static-*` vs `consensus-static-*`)
+//                       and threaded through into the File/Dir
+//                       constructor's state cell.  File/Dir chown/
+//                       stat/entries pass it to the native handler,
+//                       which short-circuits `chown` on consensus and
+//                       omits host-transient fields from stat/entries
+//                       records.
 //
 // The genesis wiring slice (19) converts the config-block shape
-// `{"path": "...", "mode": "..."}` into these tuples before minting Fs.
+// `{"path": "...", "mode": "...", "consensusMode": "..."}` into these
+// tuples before minting Fs (see casper/src/rust/genesis/contracts/
+// fs_genesis.rs::format_bundle_for_rholang).
 //
 // ## Options handling
 //
@@ -155,116 +159,8 @@
 // `[false, "FSERR_UNSUPPORTED", "logical name not in static bundle"]`
 // per spec §846.
 
-new Fs, fsBundleP, fsCacheP,
-    fsStdinFdP, fsStdoutFdP, fsStderrFdP,
-    cacheAndOpenFile, cacheAndOpenDir in {
-
-  // -- cacheAndOpenFile(privateName, canonRoot, rel, mode, ret) -
-  //
-  // Cache-aware wrapper around openFileImpl.  Linear-recv on
-  // fsCacheP (held on the Fs instance's `*private` channel; scoping
-  // is safe because helper is invoked from inside an Fs method
-  // whose `*this` — and thus `*private` — is fixed for the call).
-  //
-  // Module-level: this contract lives in the outer `new` scope
-  // alongside `Fs` itself.  It is NOT exposed to Fs clients — the
-  // `Fs` bundle exports only the agent's methods (openFile, openDir,
-  // default).  Callers cannot fabricate a `privateName` argument
-  // for another agent's cache because `*private` is minted inside
-  // the Fs agent block and never leaks.
-  //
-  // - Hit:  put fsCacheP back unchanged, forward cached handle.
-  // - Miss: put fsCacheP back unchanged (so other calls can proceed
-  //         during the syscall), invoke openFileImpl.  On success,
-  //         re-consume fsCacheP and set the entry — a concurrent
-  //         second caller for the same key could race and mint a
-  //         second handle; the second one wins the cache slot but
-  //         the first caller's handle isn't invalidated.  Both
-  //         handles are functional; only the caching contract is
-  //         weakened under contention.  Acceptable MVP concurrency
-  //         behavior (spec §863-869 doesn't require strict single-
-  //         mint semantics).
-  //
-  // Cache key: (canonRoot, rel, mode, "file") tuple.  The "file" tag
-  // guards against a bundle with two logical names — one file, one
-  // dir — collapsing to the same (canonRoot, rel, mode) triple.
-  // Without the tag such a bundle would silently hand back the
-  // wrong-kind handle (m-P6-4).
-  contract cacheAndOpenFile(@privateName, @canonRoot, @rel, @mode, ret) = {
-    for (@cache <- @[privateName, *fsCacheP]) {
-      new keyCh in {
-        keyCh!((canonRoot, rel, mode, "file")) |
-        for (@key <- keyCh) {
-          match cache.contains(key) {
-            true => {
-              @[privateName, *fsCacheP]!(cache) |
-              ret!([true, cache.get(key)])
-            }
-            false => {
-              @[privateName, *fsCacheP]!(cache) |
-              new implRet in {
-                openFileImpl!(canonRoot, "", rel, mode, *File, *implRet) |
-                for (@reply <- implRet) {
-                  match reply {
-                    [true, handle] => {
-                      for (@c2 <- @[privateName, *fsCacheP]) {
-                        @[privateName, *fsCacheP]!(c2.set(key, handle)) |
-                        ret!([true, handle])
-                      }
-                    }
-                    _ => ret!(reply)
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  } |
-
-  // -- cacheAndOpenDir(privateName, canonRoot, rel, mode, ret) --
-  //
-  // Same discipline as cacheAndOpenFile but delegating to
-  // openDirImpl.  Cache slot is the same shape — kind-tagged
-  // ("dir") in the key so an openDir cannot collide with an openFile
-  // cache entry at the same (canonRoot, rel, mode) triple.
-  //
-  // Module-level: same scoping caveat as cacheAndOpenFile — this
-  // contract is not exposed via the Fs bundle; `privateName` is
-  // always the calling Fs method's `*private`.
-  contract cacheAndOpenDir(@privateName, @canonRoot, @rel, @mode, ret) = {
-    for (@cache <- @[privateName, *fsCacheP]) {
-      new keyCh in {
-        keyCh!((canonRoot, rel, mode, "dir")) |
-        for (@key <- keyCh) {
-          match cache.contains(key) {
-            true => {
-              @[privateName, *fsCacheP]!(cache) |
-              ret!([true, cache.get(key)])
-            }
-            false => {
-              @[privateName, *fsCacheP]!(cache) |
-              new implRet in {
-                openDirImpl!(canonRoot, "", rel, mode, *File, *implRet) |
-                for (@reply <- implRet) {
-                  match reply {
-                    [true, handle] => {
-                      for (@c2 <- @[privateName, *fsCacheP]) {
-                        @[privateName, *fsCacheP]!(c2.set(key, handle)) |
-                        ret!([true, handle])
-                      }
-                    }
-                    _ => ret!(reply)
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  } |
+new Fs, fsBundleP,
+    fsStdinFdP, fsStdoutFdP, fsStderrFdP in {
 
   agent Fs {
     // -- constructor(stdinFd, stdoutFd, stderrFd, bMap) -----------
@@ -275,7 +171,6 @@ new Fs, fsBundleP, fsCacheP,
     // fresh-cap-after-close).
     constructor(@stdinFd, @stdoutFd, @stderrFd, @bMap) {
       @[*private, *fsBundleP]!(bMap) |
-      @[*private, *fsCacheP]!({}) |
       @[*private, *fsStdinFdP]!(stdinFd) |
       @[*private, *fsStdoutFdP]!(stdoutFd) |
       @[*private, *fsStderrFdP]!(stderrFd)
@@ -311,6 +206,11 @@ new Fs, fsBundleP, fsCacheP,
     } |
 
     // -- openFile(name, options) -----------------------------------
+    //
+    // Slice 27: fresh-mint per call — every invocation invokes
+    // `openFileImpl` directly (no cache lookup).  Two calls with the
+    // same `(name, options)` yield DISTINCT File agents with
+    // independent cursors; closing one has no effect on the other.
     method openFile(@name, @options) {
       match name {
         n /\ String => {
@@ -333,14 +233,14 @@ new Fs, fsBundleP, fsCacheP,
                          "logical name not in static bundle"])
                       true => {
                         match bMap.get(n) {
-                          (canonRoot, rel, provisioned, "file") => {
+                          (canonRoot, rel, provisioned, "file", cmode) => {
                             match m {
-                              "r" => cacheAndOpenFile!(
-                                *private, canonRoot, rel, "r", *return)
+                              "r" => openFileImpl!(
+                                canonRoot, "", rel, "r", cmode, *File, *return)
                               "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                                 match provisioned {
-                                  "rw" => cacheAndOpenFile!(
-                                    *private, canonRoot, rel, m, *return)
+                                  "rw" => openFileImpl!(
+                                    canonRoot, "", rel, m, cmode, *File, *return)
                                   _ => return!(
                                     [false, "FSERR_UNSUPPORTED",
                                      "requested mode exceeds provisioned attenuation"])
@@ -350,7 +250,7 @@ new Fs, fsBundleP, fsCacheP,
                                 [false, "FSERR_BAD_ARG", "unknown file mode"])
                             }
                           }
-                          (_, _, _, "dir") => return!(
+                          (_, _, _, "dir", _) => return!(
                             [false, "FSERR_BAD_ARG",
                              "logical name is a directory; use openDir"])
                           _ => return!(
@@ -373,6 +273,8 @@ new Fs, fsBundleP, fsCacheP,
     } |
 
     // -- openDir(name, options) ------------------------------------
+    //
+    // Slice 27: fresh-mint per call — same rationale as openFile.
     method openDir(@name, @options) {
       match name {
         n /\ String => {
@@ -395,14 +297,14 @@ new Fs, fsBundleP, fsCacheP,
                          "logical name not in static bundle"])
                       true => {
                         match bMap.get(n) {
-                          (canonRoot, rel, provisioned, "dir") => {
+                          (canonRoot, rel, provisioned, "dir", cmode) => {
                             match m {
-                              "r" => cacheAndOpenDir!(
-                                *private, canonRoot, rel, "r", *return)
+                              "r" => openDirImpl!(
+                                canonRoot, "", rel, "r", cmode, *File, *return)
                               "rw" => {
                                 match provisioned {
-                                  "rw" => cacheAndOpenDir!(
-                                    *private, canonRoot, rel, m, *return)
+                                  "rw" => openDirImpl!(
+                                    canonRoot, "", rel, m, cmode, *File, *return)
                                   _ => return!(
                                     [false, "FSERR_UNSUPPORTED",
                                      "requested mode exceeds provisioned attenuation"])
@@ -413,7 +315,7 @@ new Fs, fsBundleP, fsCacheP,
                                  "dir mode must be \"r\" or \"rw\""])
                             }
                           }
-                          (_, _, _, "file") => return!(
+                          (_, _, _, "file", _) => return!(
                             [false, "FSERR_BAD_ARG",
                              "logical name is a file; use openFile"])
                           _ => return!(

@@ -17,7 +17,8 @@
 //
 // ## State layout — sandbox safety
 //
-//   @[*private, *rootP] — (canonRoot, subPath, mode, FileCtorCh)
+//   @[*private, *rootP]  — (canonRoot, subPath, mode, FileCtorCh)
+//   @[*private, *cmodeP] — "oracular" | "consensus" (slice 26)
 //
 // `canonRoot` is IMMUTABLE from the initial ctor call: it is the boot-
 // canonicalized sandbox root and never changes for any Dir minted from
@@ -25,6 +26,16 @@
 // `canonRoot` to this Dir's logical directory.  `""` for the root Dir;
 // each `openDir(rel, ...)` produces a child Dir with `subPath ++ "/" ++
 // rel` (or just `rel` when the parent's subPath is empty).
+//
+// `cmodeP` (slice 26) is a separate cell so the existing 4-arity
+// `rootP` state pattern doesn't have to fan out into every
+// `match params` site (~15 in Dir.rho, ~24 in File.rho).  Only the
+// methods that need to route consensus-mode into native dispatch —
+// `stat`, `entries`, `chown`, and the openFile/openDir mint paths —
+// peek the cell.  `cmode` is a persistent non-linear receive
+// (`<<-`) so unbounded parallel reads are safe.  The value is set
+// once at constructor time and never rewritten (a child Dir inherits
+// its parent's `cmode`; there is no in-band re-attenuation).
 //
 // This closes the sandbox-escape vector from the prior slice: previously
 // `openDir` composed a new `canonRoot = canonRoot ++ "/" ++ rel` and
@@ -43,25 +54,42 @@
 //                                "wx", "w+x"};  openDir "r" or "rw"
 // A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
 
-new Dir, rootP in {
+new Dir, rootP, cmodeP in {
 
   agent Dir {
-    constructor(@canonRoot, @subPath, @mode, @FileCtorCh) {
-      @[*private, *rootP]!((canonRoot, subPath, mode, FileCtorCh))
+    // M-26-2 review fix: validate `cmode` at mint time.  See File.rho's
+    // matching constructor.  A malformed cmode causes rootP to hold a
+    // REVOKED sentinel so every subsequent method's `match params`
+    // falls into its FSERR_IO arm.
+    constructor(@canonRoot, @subPath, @mode, @cmode, @FileCtorCh) {
+      match cmode {
+        "oracular" \/ "consensus" => {
+          @[*private, *rootP]!((canonRoot, subPath, mode, FileCtorCh)) |
+          @[*private, *cmodeP]!(cmode)
+        }
+        _ => {
+          @[*private, *rootP]!("REVOKED") |
+          @[*private, *cmodeP]!("consensus")
+        }
+      }
     } |
 
     // -- stat(rel) --------------------------------------------------
+    // Slice 26: peeks the persistent `cmodeP` cell and forwards the
+    // consensus mode string to `fsStat` — the native handler uses
+    // this to decide whether to omit host-transient fields
+    // (mtime/ctime/atime/owner/group).
     method stat(@rel) {
       match rel {
         r /\ String => {
-          for (@params <<- @[*private, *rootP]) {
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
             match params {
               (canonRoot, subPath, _mode, _fileCtor) => {
                 new joinedCh in {
                   joinRel!(subPath, r, *joinedCh) |
                   for (@joined <- joinedCh) {
                     new retCh in {
-                      fsStat!(canonRoot, joined, *retCh) |
+                      fsStat!(canonRoot, joined, cmode, *retCh) |
                       for (@reply <- retCh) { return!(reply) }
                     }
                   }
@@ -97,11 +125,11 @@ new Dir, rootP in {
     // enables the root case; deferred until the streaming backing
     // arrives so both changes land together.
     method entries() {
-      for (@params <<- @[*private, *rootP]) {
+      for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
         match params {
           (canonRoot, subPath, _mode, _fileCtor) => {
             new retCh in {
-              fsEntries!(canonRoot, subPath, *retCh) |
+              fsEntries!(canonRoot, subPath, cmode, *retCh) |
               for (@reply <- retCh) {
                 match reply {
                   [true, entryList] => {
@@ -169,12 +197,14 @@ new Dir, rootP in {
     // -- openFile(rel, mode) ----------------------------------------
     //
     // Mode-attenuates monotonically against the Dir's own mode.
+    // Slice 26: peeks `cmodeP` and threads consensusMode into
+    // openFileImpl so the minted File inherits the parent Dir's mode.
     method openFile(@rel, @mode) {
       match rel {
         r /\ String => {
           match mode {
             m /\ String => {
-              for (@params <<- @[*private, *rootP]) {
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                 match params {
                   (canonRoot, subPath, dirMode, fileCtor) => {
                     // Mode whitelist via \/ disjunction — patterns match
@@ -183,10 +213,10 @@ new Dir, rootP in {
                     // ground), so we pass `m` through unchanged rather
                     // than a per-arm literal.
                     match m {
-                      "r" => openFileImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
+                      "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
                       "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" => {
                         match dirMode {
-                          "rw" => openFileImpl!(canonRoot, subPath, r, m, fileCtor, *return)
+                          "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                           _ => return!([false, "FSERR_UNSUPPORTED",
                             "requested mode exceeds Dir attenuation"])
                         }
@@ -217,14 +247,14 @@ new Dir, rootP in {
         r /\ String => {
           match mode {
             m /\ String => {
-              for (@params <<- @[*private, *rootP]) {
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                 match params {
                   (canonRoot, subPath, dirMode, fileCtor) => {
                     match m {
-                      "r" => openDirImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
+                      "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
                       "rw" => {
                         match dirMode {
-                          "rw" => openDirImpl!(canonRoot, subPath, r, m, fileCtor, *return)
+                          "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                           _ => return!([false, "FSERR_UNSUPPORTED",
                             "requested mode exceeds Dir attenuation"])
                         }
@@ -248,26 +278,35 @@ new Dir, rootP in {
     method removeFile(@rel) {
       match rel {
         r /\ String => {
-          for (@params <<- @[*private, *rootP]) {
-            match params {
-              (canonRoot, subPath, dirMode, _fileCtor) => {
-                match dirMode {
-                  "rw" => {
-                    new joinedCh in {
-                      joinRel!(subPath, r, *joinedCh) |
-                      for (@joined <- joinedCh) {
-                        new retCh in {
-                          fsRemoveFile!(canonRoot, joined, *retCh) |
-                          for (@reply <- retCh) { return!(reply) }
+          // H-29-3 review fix: path-based mutations on Consensus
+          // caps are not journaled to the WAL in slice 29.  Fail
+          // closed so a replayer cannot diverge.
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+            match cmode {
+              "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                "removeFile not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+              _ => {
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new joinedCh in {
+                          joinRel!(subPath, r, *joinedCh) |
+                          for (@joined <- joinedCh) {
+                            new retCh in {
+                              fsRemoveFile!(canonRoot, joined, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
                         }
                       }
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "removeFile requires \"rw\" Dir mode"])
                     }
                   }
-                  _ => return!([false, "FSERR_UNSUPPORTED",
-                    "removeFile requires \"rw\" Dir mode"])
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
-              _ => return!([false, "FSERR_IO", "root params malformed"])
             }
           }
         }
@@ -281,26 +320,33 @@ new Dir, rootP in {
         r /\ String => {
           match recursive {
             b /\ Bool => {
-              for (@params <<- @[*private, *rootP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new joinedCh in {
-                          joinRel!(subPath, r, *joinedCh) |
-                          for (@joined <- joinedCh) {
-                            new retCh in {
-                              fsRemoveDir!(canonRoot, joined, b, *retCh) |
-                              for (@reply <- retCh) { return!(reply) }
+              // H-29-3: fail-closed on Consensus cap.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match cmode {
+                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                    "removeDir not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+                  _ => {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new joinedCh in {
+                              joinRel!(subPath, r, *joinedCh) |
+                              for (@joined <- joinedCh) {
+                                new retCh in {
+                                  fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
+                                  for (@reply <- retCh) { return!(reply) }
+                                }
+                              }
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "removeDir requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "removeDir requires \"rw\" Dir mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -317,29 +363,36 @@ new Dir, rootP in {
         f /\ String => {
           match to {
             t /\ String => {
-              for (@params <<- @[*private, *rootP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new jFromCh, jToCh in {
-                          joinRel!(subPath, f, *jFromCh) |
-                          joinRel!(subPath, t, *jToCh) |
-                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
-                            new retCh in {
-                              // Phase 1 fs_rename signature:
-                              // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
-                              fsRename!(canonRoot, jFrom, canonRoot, jTo, *retCh) |
-                              for (@reply <- retCh) { return!(reply) }
+              // H-29-3: fail-closed on Consensus cap.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match cmode {
+                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                    "rename not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+                  _ => {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new jFromCh, jToCh in {
+                              joinRel!(subPath, f, *jFromCh) |
+                              joinRel!(subPath, t, *jToCh) |
+                              for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                                new retCh in {
+                                  // Phase 1 fs_rename signature:
+                                  // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
+                                  fsRename!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                                  for (@reply <- retCh) { return!(reply) }
+                                }
+                              }
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "rename requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "rename requires \"rw\" Dir mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -356,27 +409,34 @@ new Dir, rootP in {
         f /\ String => {
           match to {
             t /\ String => {
-              for (@params <<- @[*private, *rootP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new jFromCh, jToCh in {
-                          joinRel!(subPath, f, *jFromCh) |
-                          joinRel!(subPath, t, *jToCh) |
-                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
-                            new retCh in {
-                              fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, *retCh) |
-                              for (@reply <- retCh) { return!(reply) }
+              // H-29-3: fail-closed on Consensus cap.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match cmode {
+                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                    "copyFile not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+                  _ => {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new jFromCh, jToCh in {
+                              joinRel!(subPath, f, *jFromCh) |
+                              joinRel!(subPath, t, *jToCh) |
+                              for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                                new retCh in {
+                                  fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, cmode, *retCh) |
+                                  for (@reply <- retCh) { return!(reply) }
+                                }
+                              }
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "copyFile requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "copyFile requires \"rw\" Dir mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -393,36 +453,43 @@ new Dir, rootP in {
         r /\ String => {
           match mode {
             m /\ String => {
-              for (@params <<- @[*private, *rootP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new parsedCh in {
-                          parseRwxToBits!(m, *parsedCh) |
-                          for (@parsed <- parsedCh) {
-                            match parsed {
-                              [true, bits] => {
-                                new joinedCh in {
-                                  joinRel!(subPath, r, *joinedCh) |
-                                  for (@joined <- joinedCh) {
-                                    new retCh in {
-                                      fsChmod!(canonRoot, joined, bits, *retCh) |
-                                      for (@reply <- retCh) { return!(reply) }
+              // H-29-3: fail-closed on Consensus cap.
+              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                match cmode {
+                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                    "chmod not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+                  _ => {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new parsedCh in {
+                              parseRwxToBits!(m, *parsedCh) |
+                              for (@parsed <- parsedCh) {
+                                match parsed {
+                                  [true, bits] => {
+                                    new joinedCh in {
+                                      joinRel!(subPath, r, *joinedCh) |
+                                      for (@joined <- joinedCh) {
+                                        new retCh in {
+                                          fsChmod!(canonRoot, joined, bits, cmode, *retCh) |
+                                          for (@reply <- retCh) { return!(reply) }
+                                        }
+                                      }
                                     }
                                   }
+                                  _ => return!(parsed)
                                 }
                               }
-                              _ => return!(parsed)
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "chmod requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "chmod requires \"rw\" Dir mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
@@ -465,7 +532,7 @@ new Dir, rootP in {
                 for (@ov <- ownerOk; @gv <- groupOk) {
                   match [ov, gv] {
                     [[true, o], [true, g]] => {
-                      for (@params <<- @[*private, *rootP]) {
+                      for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                         match params {
                           (canonRoot, subPath, dirMode, _fileCtor) => {
                             match dirMode {
@@ -474,7 +541,7 @@ new Dir, rootP in {
                                   joinRel!(subPath, r, *joinedCh) |
                                   for (@joined <- joinedCh) {
                                     new retCh in {
-                                      fsChown!(canonRoot, joined, o, g, *retCh) |
+                                      fsChown!(canonRoot, joined, o, g, cmode, *retCh) |
                                       for (@reply <- retCh) { return!(reply) }
                                     }
                                   }
@@ -524,7 +591,27 @@ new Dir, rootP in {
     }
   } |
 
-  contract openFileImpl(@canonRoot, @subPath, @rel, @mode, @fileCtor, ret) = {
+  contract openFileImpl(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    // H-27-2 review fix: validate `cmode` BEFORE issuing `fsOpen` so a
+    // bad cmode doesn't allocate a kernel fd that the REVOKED-state
+    // File constructor would then leak (File.close short-circuits on
+    // `state = "closed"` without dispatching fsClose).  Rejects
+    // unknown/typo/non-String cmode with FSERR_BAD_ARG at the mint
+    // boundary — matches the fail-closed posture of `resolve_cmode`
+    // in the native handlers (C-26-F1 review fix).
+    match cmode {
+      "oracular" \/ "consensus" => openFileImplInner!(
+        canonRoot, subPath, rel, mode, cmode, fileCtor, *ret)
+      _ => ret!(
+        [false, "FSERR_BAD_ARG",
+         "cmode must be String \"oracular\" or \"consensus\""])
+    }
+  } |
+
+  // Extracted body from openFileImpl so the cmode validation above
+  // can guard the entire mint pipeline (stat + open + agent-mint).
+  // Signature/behavior identical to the pre-slice-27-review `openFileImpl`.
+  contract openFileImplInner(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
     new joinedCh in {
       joinRel!(subPath, rel, *joinedCh) |
       for (@joined <- joinedCh) {
@@ -546,8 +633,13 @@ new Dir, rootP in {
         // Racy against a directory being created between stat and open;
         // the alternative (bind fd first, fstat inode) requires a
         // native we don't have.  Phase 6+ can add fs_openIfNotDir.
+        //
+        // Slice 26: the mint-time `fsStat` uses the CAP's `cmode` so
+        // the record shape is consistent — a consensus cap's mint
+        // never leaks host-transient fields through the mint-path
+        // stat check.
         new statRetCh in {
-          fsStat!(canonRoot, joined, *statRetCh) |
+          fsStat!(canonRoot, joined, cmode, *statRetCh) |
           for (@statReply <- statRetCh) {
             new statOk in {
               match statReply {
@@ -565,15 +657,23 @@ new Dir, rootP in {
                   [false, code, msg] => ret!([false, code, msg])
                   [true, _] => {
                     new openRetCh in {
-                      fsOpen!(canonRoot, joined, mode, *openRetCh) |
+                      // Slice 29 (PB-M-14): fsOpen takes the cap's
+                      // `cmode` so the native handler can stash it
+                      // in the FileHandle for subsequent WAL
+                      // journaling on mutating ops (fs_write,
+                      // fs_write_at, fs_truncate).
+                      fsOpen!(canonRoot, joined, mode, cmode, *openRetCh) |
                       for (@openReply <- openRetCh) {
                         match openReply {
                           [true, fd] => {
-                            // File carries (fd, canonRoot, joined, mode)
-                            // — its chmod/chown/... methods dispatch to
-                            // fs_* with a real rel (B-3 fix).
+                            // File carries (fd, canonRoot, joined, mode,
+                            // cmode) — its chmod/chown/... methods
+                            // dispatch to fs_* with a real rel (B-3 fix)
+                            // and forward `cmode` to `fsChown` (slice
+                            // 26) so chown short-circuits on consensus
+                            // caps.
                             new fileCh in {
-                              @fileCtor!(*fileCh, fd, canonRoot, joined, mode) |
+                              @fileCtor!(*fileCh, fd, canonRoot, joined, mode, cmode) |
                               for (@fileHandle <- fileCh) {
                                 ret!([true, fileHandle])
                               }
@@ -599,12 +699,28 @@ new Dir, rootP in {
   // absent, non-directory, or escapes the sandbox (safe_descend rejects
   // `..`), the caller receives the underlying error instead of a
   // handle that later fails on every method.
-  contract openDirImpl(@canonRoot, @subPath, @rel, @mode, @fileCtor, ret) = {
+  contract openDirImpl(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
+    // H-27-2 review fix mirror: cmode validation before we call
+    // `fsStat`/mint.  Dir mint doesn't allocate a kernel fd so there
+    // is no fd-leak vector here, but the fail-closed posture is
+    // consistent with openFileImpl and prevents a bogus-cmode Dir
+    // from being minted (which would then REVOKE its own state
+    // per the M-26-2 Dir constructor validation).
+    match cmode {
+      "oracular" \/ "consensus" => openDirImplInner!(
+        canonRoot, subPath, rel, mode, cmode, fileCtor, *ret)
+      _ => ret!(
+        [false, "FSERR_BAD_ARG",
+         "cmode must be String \"oracular\" or \"consensus\""])
+    }
+  } |
+
+  contract openDirImplInner(@canonRoot, @subPath, @rel, @mode, @cmode, @fileCtor, ret) = {
     new joinedCh in {
       joinRel!(subPath, rel, *joinedCh) |
       for (@joined <- joinedCh) {
         new statRetCh in {
-          fsStat!(canonRoot, joined, *statRetCh) |
+          fsStat!(canonRoot, joined, cmode, *statRetCh) |
           for (@statReply <- statRetCh) {
             match statReply {
               [true, rec] => {
@@ -615,8 +731,9 @@ new Dir, rootP in {
                 // rather than escaping the mint.
                 match rec.get("kind") {
                   "dir" => {
+                    // Slice 26: child Dir inherits parent's `cmode`.
                     new dirCh in {
-                      Dir!(*dirCh, canonRoot, joined, mode, fileCtor) |
+                      Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
                       for (@dirHandle <- dirCh) {
                         ret!([true, dirHandle])
                       }

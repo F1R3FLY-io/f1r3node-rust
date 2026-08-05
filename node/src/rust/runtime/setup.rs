@@ -250,6 +250,65 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         result
     };
 
+    // Slice 33 (HIGH-4 FIPS fix, Phase 7 whole-review): wire the
+    // SnapshotWriter into the RuntimeManager so consensus-mode WAL
+    // slices actually get persisted to disk on cadence-hit blocks.
+    //
+    // Pre-fix, `build_snapshot_writer` existed and was unit-tested,
+    // and `RuntimeManager::set_fs_snapshot_writer` accepted a writer
+    // — but nothing in the boot path called them together, so every
+    // production validator ran with `fs_snapshot_writer = None` and
+    // PB-M-15's joining-validator story was nonfunctional.
+    //
+    // Build order matters: `merge_and_validate` runs later (line
+    // ~511) inside the CasperLaunch scope, but here we only need
+    // the boot-time provisioning to decide whether ANY consensus-
+    // static buckets are provisioned.  Re-merging here is cheap
+    // and keeps the two validation sites independent.
+    {
+        use crate::rust::configuration::provisioning_merge::merge_and_validate;
+        use crate::rust::configuration::snapshot_config::build_snapshot_writer;
+
+        let merged = merge_and_validate(
+            conf.storage.file_io_provisioning.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap_or_else(|errs| {
+            // The CasperLaunch site below will re-run this validation
+            // and panic with the full diagnostic; here we quietly
+            // fall through to the empty-provisioning path so the
+            // panic below carries the operator-facing message.
+            let _ = errs;
+            crate::rust::configuration::file_io_provisioning::FileIoProvisioning::default()
+        });
+        let writer = build_snapshot_writer(
+            &merged,
+            conf.storage.consensus_fs_snapshot_cadence,
+            conf.storage.consensus_fs_snapshot_dir.as_deref(),
+            conf.storage.consensus_fs_snapshot_retain,
+        )
+        .unwrap_or_else(|e| {
+            panic!("snapshot-config validation failed at boot; refusing to start: {e}")
+        });
+        if writer.is_some() {
+            tracing::info!(
+                target: "f1r3fly.fs_wal.snapshot",
+                cadence = ?conf.storage.consensus_fs_snapshot_cadence,
+                dir = ?conf.storage.consensus_fs_snapshot_dir,
+                "SnapshotWriter attached — consensus-mode WAL slices will be persisted on cadence-hit blocks"
+            );
+        } else {
+            tracing::debug!(
+                target: "f1r3fly.fs_wal.snapshot",
+                "no consensus-static provisioning; SnapshotWriter not attached"
+            );
+        }
+        runtime_manager.set_fs_snapshot_writer(writer).await;
+    }
+
     // Reporting runtime
     let reporting_runtime = {
         use casper::rust::reporting_casper;
@@ -497,6 +556,41 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            // Slice 25 (C-25-1 review-fix wire-up): project the
+            // merged FileIoProvisioning into the bundle format
+            // `fs_generator` consumes.  merge_and_validate combines
+            // config-file entries with any CLI `--*-static-*` flags
+            // and applies boot-time invariants (canonicity, mode
+            // whitelist, PB-M-16 bucket disjointness, forbidden
+            // chars, cross-source name conflicts).  On validation
+            // failure we panic — an invalid provisioning would
+            // yield a genesis block that no validator could accept,
+            // so failing loud at boot is the correct outcome.
+            {
+                let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
+                    conf.storage.file_io_provisioning.clone(),
+                    // CLI-side entries land in slice 26 wire-up
+                    // (RunOptions → project into Vec<CliStatic*>).
+                    // For now the CLI vecs are empty; the config
+                    // surface alone is honored.
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap_or_else(|errs| {
+                    let msg = errs
+                        .iter()
+                        .map(|e| format!("  - {e}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    panic!(
+                        "static-provisioning validation failed at boot; refusing \
+                         to proceed to genesis:\n{msg}"
+                    );
+                });
+                crate::rust::configuration::provisioning_merge::project_bundle(&merged)
+            },
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");

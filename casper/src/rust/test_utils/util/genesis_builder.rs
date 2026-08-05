@@ -261,6 +261,7 @@ impl GenesisBuilder {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
+            fs_bundle: Vec::new(),
         })
     }
 

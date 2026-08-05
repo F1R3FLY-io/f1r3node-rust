@@ -44,6 +44,14 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
 
+    /// Static-provisioning bundle to hand to the FsGenesis deploy
+    /// (Phase 7 slice 25 wire-up).  MUST equal the value used by
+    /// `ApproveBlockProtocolFactory::create` on the proposer;
+    /// otherwise validator reconstruction of the genesis blessed-
+    /// contract sequence hashes differently and the block is
+    /// rejected.  Empty vec preserves pre-slice-25 behavior.
+    pub fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+
     // Infrastructure
     transport: Arc<T>,
     conf: Arc<RPConf>,
@@ -68,6 +76,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -106,6 +115,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
             transport,
             conf,
         })
@@ -161,6 +171,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -222,7 +233,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             "genesis parameters resolved",
         );
 
-        // Expected blessed contracts
+        // Expected blessed contracts.  Slice 25 (C-25-1 review
+        // fix): use the fs_bundle passed to `validate_candidate`
+        // rather than a hardcoded empty vec.  MUST equal the
+        // proposer's bundle byte-for-byte; the caller
+        // (`get_block_approval` chain) reads it from
+        // `self.fs_bundle` which was set at BlockApproverProtocol
+        // construction — same config source as
+        // `ApproveBlockProtocolFactory::create`.
         let genesis_blessed_contracts =
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
@@ -232,6 +250,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
+                fs_bundle,
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -328,6 +347,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            &self.fs_bundle,
         )
         .await
     }

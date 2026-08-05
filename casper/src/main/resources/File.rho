@@ -22,16 +22,46 @@
 //   @[*private, *stateP]  — "open" | "closed", consumed via linear-
 //                            receive on every mutating call to serialize
 //                            concurrent holders.
+//
+//   @[*private, *cmodeP]  — "oracular" | "consensus" (slice 26).
+//                            Kept in a SEPARATE cell rather than
+//                            appended to the `fdP` 4-tuple to avoid
+//                            fanning out into ~24 `match params` sites
+//                            in this file — only `chown` (the sole
+//                            currently-implemented method that
+//                            differs by consensus mode) peeks it.
+//                            Persistent non-linear (`<<-`), set once
+//                            at construction and never rewritten.
 
-new File, fdP, stateP,
+new File, fdP, stateP, cmodeP,
     writeBytesLoop, writeBytesAtLoop, writeCharsLoop,
     codepointLen, concatStringsLoop, scanLineForLF
 in {
 
   agent File {
-    constructor(@fd, @canonRoot, @rel, @mode) {
-      @[*private, *fdP]!((fd, canonRoot, rel, mode)) |
-      @[*private, *stateP]!("open")
+    // M-26-2 review fix: validate `cmode` at mint time.  Only the two
+    // Rholang string literals "oracular" and "consensus" are accepted;
+    // any other value (Nil, Int, tuple, mistyped string) causes the
+    // agent to REVOKE its own state so subsequent method calls fail
+    // fast with a clear diagnostic rather than silently defaulting.
+    // Today only openFileImpl in Dir.rho reaches this constructor and
+    // it always passes the parent Dir's known-good `cmode`; the
+    // validation is defense-in-depth against a FUTURE library added
+    // to the composed `new` scope that mints File caps with an
+    // attacker-chosen cmode.
+    constructor(@fd, @canonRoot, @rel, @mode, @cmode) {
+      match cmode {
+        "oracular" \/ "consensus" => {
+          @[*private, *fdP]!((fd, canonRoot, rel, mode)) |
+          @[*private, *stateP]!("open") |
+          @[*private, *cmodeP]!(cmode)
+        }
+        _ => {
+          @[*private, *fdP]!("REVOKED") |
+          @[*private, *stateP]!("closed") |
+          @[*private, *cmodeP]!("consensus")
+        }
+      }
     } |
 
     // -- writeByteArray ---------------------------------------------
@@ -420,7 +450,21 @@ in {
                 return!([false, "FSERR_CLOSED", "file is closed"])
               }
               "open" => {
-                for (@params <<- @[*private, *fdP]) {
+                // H-29-3 review fix: path-based mutations on
+                // Consensus caps are not journaled to the WAL in
+                // slice 29 (only fd-based Write/WriteAt/Truncate
+                // are).  Fail closed on Consensus so a replayer
+                // never diverges from a leader that silently
+                // mutated on-disk state without leaving a WAL
+                // record.
+                for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                  match cmode {
+                    "consensus" => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_UNSUPPORTED",
+                        "chmod not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
+                    }
+                    _ => {
                   match params {
                     (_fd, canonRoot, rel, fmode) => {
                       match fmode {
@@ -436,7 +480,7 @@ in {
                               match parsed {
                                 [true, bits] => {
                                   new retCh in {
-                                    fsChmod!(canonRoot, rel, bits, *retCh) |
+                                    fsChmod!(canonRoot, rel, bits, cmode, *retCh) |
                                     for (@reply <- retCh) {
                                       @[*private, *stateP]!("open") |
                                       return!(reply)
@@ -456,6 +500,8 @@ in {
                     _ => {
                       @[*private, *stateP]!("open") |
                       return!([false, "FSERR_IO", "fd params malformed"])
+                    }
+                  }
                     }
                   }
                 }
@@ -511,7 +557,7 @@ in {
                     return!([false, "FSERR_CLOSED", "file is closed"])
                   }
                   "open" => {
-                    for (@params <<- @[*private, *fdP]) {
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                       match params {
                         (_fd, canonRoot, rel, fmode) => {
                           match fmode {
@@ -522,7 +568,12 @@ in {
                             }
                             _ => {
                               new retCh in {
-                                fsChown!(canonRoot, rel, o, g, *retCh) |
+                                // Slice 26: forward the cap's `cmode`
+                                // to `fsChown`.  On a consensus cap
+                                // the native short-circuits with
+                                // FSERR_UNSUPPORTED without touching
+                                // the host filesystem.
+                                fsChown!(canonRoot, rel, o, g, cmode, *retCh) |
                                 for (@reply <- retCh) {
                                   @[*private, *stateP]!("open") |
                                   return!(reply)

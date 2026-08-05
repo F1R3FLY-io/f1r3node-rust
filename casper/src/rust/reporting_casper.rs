@@ -144,7 +144,22 @@ impl ReportingCasper for RhoReporterCasper {
 }
 
 impl RhoReporterCasper {
-    /// Replay deploys and collect reporting events
+    /// Replay deploys and collect reporting events.
+    ///
+    /// L-30-COV-2 (Phase 7 whole-review) note: reporting is a
+    /// read-only trace pass — it does NOT append to a WAL and does
+    /// NOT trigger snapshot writes.  The `ReportingRuntime` wraps a
+    /// `RhoRuntimeImpl` whose reducer's `wal` is present but its
+    /// `SnapshotWriter` hook (populated only in the primary
+    /// `runtime.rs` boot path) stays `None`.  As a result, invoking
+    /// `report(block)` on a validator whose primary runtime is
+    /// configured with WAL+snapshots will replay the fs-native
+    /// syscalls (fd allocation, reads, stats) but the resulting
+    /// entries stay in the buffer for the deploy's local scope and
+    /// are dropped when the reporting runtime is torn down.  This
+    /// is desired: reporting is a debug/introspection tool, and
+    /// admin-triggered reports must not perturb the on-disk
+    /// snapshot cadence of the primary chain runtime.
     async fn replay_deploys(
         runtime: &mut ReportingRuntime,
         start_hash: &Blake2b256Hash,
@@ -164,6 +179,26 @@ impl RhoReporterCasper {
 
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
+
+        // H-P7-7 review fix (Phase 7 whole-review round): mirror the
+        // URN-filter toggle that the primary `replay_deploys` in
+        // `casper::rholang::replay_runtime.rs` performs for genesis
+        // replay.  Reporting typically operates on post-genesis
+        // blocks, but if a report is ever requested for the genesis
+        // block the reporting runtime re-executes the FsGenesis
+        // ProcessedDeploy which binds `rho:io:fs:native:*` URNs.
+        // Without the exemption those bindings fail with a
+        // ReduceError just as they did in the pre-slice-31-round-2
+        // primary `replay_deploys`.
+        //
+        // `with_cost_accounting == false` is the caller's
+        // genesis-mode signal (mirrors the primary path).  RAII
+        // guard drops on all exit paths including panic unwind.
+        let _filter_exemption = if !with_cost_accounting {
+            Some(runtime.runtime.exempt_fs_native_urn_filter())
+        } else {
+            None
+        };
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {

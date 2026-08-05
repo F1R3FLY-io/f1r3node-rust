@@ -123,6 +123,19 @@ pub struct DebruijnInterpreter {
     pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub cost: _cost,
     pub substitute: Substitute,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose string
+    /// starts with `FS_NATIVE_URN_PREFIX` (`rho:io:fs:native:`).
+    /// Genesis composition needs those URNs to bind the raw fs
+    /// primitives into `FsGenesis`'s new-scope; user deploys must
+    /// not, because that would bypass Fs.rho's sandbox / mode-cap /
+    /// bundle checks.  The runtime's genesis entry
+    /// (`play_deploys_for_genesis`) sets this to `false` before
+    /// running deploys and back to `true` after; the state entry
+    /// (`play_deploys_for_state`) leaves it at the default.  Uses
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -1292,6 +1305,25 @@ impl DebruijnInterpreter {
                     });
 
             let add_urn = |new_env: &mut Env<Par>, urn: String| {
+                // Slice 31 (H-26-F4 / H-27-3 fix, MVP #5): reject
+                // fs-native URNs during state-execution deploys.
+                // Genesis flips the flag off so `FsGenesis` can bind
+                // the raw `fsRead`/`fsWrite`/... primitives.  User
+                // deploys attempting `new x(rho:io:fs:native:...)`
+                // get an explicit ReduceError instead of a raw fd.
+                if self
+                    .filter_fs_native_urns
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && urn.starts_with(super::io::FS_NATIVE_URN_PREFIX)
+                {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
                 if !self.urn_map.contains_key(&urn) {
                     // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
                     // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
@@ -7266,6 +7298,10 @@ impl DebruijnInterpreter {
             mergeable_tags,
             cost: cost.clone(),
             substitute: Substitute { cost: cost.clone() },
+            // Slice 31: default ON — state-execution deploys reject
+            // fs-native URNs.  Genesis path toggles this off around
+            // `play_deploys_for_genesis` (see runtime.rs).
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

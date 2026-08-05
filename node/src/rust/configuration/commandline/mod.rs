@@ -3,6 +3,7 @@
 //! This module provides command-line argument parsing functionality using the `clap` crate,
 //! replacing the Scala Scallop library.
 
+pub mod cli_static_provisioning;
 pub mod config_mapper;
 pub mod converters;
 pub mod options;

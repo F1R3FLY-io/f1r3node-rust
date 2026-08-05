@@ -12,6 +12,9 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
 
+use super::cli_static_provisioning::{
+    parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
+};
 use super::converters::{PrivateKeyConverter, PublicKeyConverter, VecNameConverter};
 
 pub const GRPC_INTERNAL_PORT: u16 = 40402;
@@ -579,6 +582,50 @@ pub struct RunOptions {
         hide_short_help = true
     )]
     pub heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Option<i64>,
+
+    /// File I/O static-provisioning entry for the oracle bucket, file
+    /// surface.  Repeatable.  Value syntax:
+    /// `<logical-name>=<value>` where `<value>` is a JSON string
+    /// (path, defaults to mode `"r"`) or a JSON object
+    /// `{"path":"...","mode":"r|r+|w|w+|a|a+"}`.
+    #[arg(
+        long = "oracle-static-file",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_file),
+    )]
+    pub oracle_static_files: Vec<CliStaticFileArg>,
+
+    /// File I/O static-provisioning entry for the oracle bucket, dir
+    /// surface.  Repeatable.  CLI default mode is `"rw"` (spec §1245);
+    /// use object form to select `"r"`.
+    #[arg(
+        long = "oracle-static-dir",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_dir),
+    )]
+    pub oracle_static_dirs: Vec<CliStaticDirArg>,
+
+    /// File I/O static-provisioning entry for the consensus bucket,
+    /// file surface.  Repeatable.  Same syntax as `--oracle-static-file`.
+    #[arg(
+        long = "consensus-static-file",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_file),
+    )]
+    pub consensus_static_files: Vec<CliStaticFileArg>,
+
+    /// File I/O static-provisioning entry for the consensus bucket,
+    /// dir surface.  Repeatable.  Same syntax as `--oracle-static-dir`.
+    #[arg(
+        long = "consensus-static-dir",
+        value_name = "NAME=VALUE",
+        action = ArgAction::Append,
+        value_parser = ValueParser::new(parse_cli_static_dir),
+    )]
+    pub consensus_static_dirs: Vec<CliStaticDirArg>,
 }
 
 /// Keygen subcommand - Generates a public/private key pair
@@ -750,5 +797,296 @@ mod native_token_clap_tests {
     fn accepts_decimals_at_max() {
         let res = Options::try_parse_from(["f1r3fly", "run", "--native-token-decimals=18"]);
         assert!(res.is_ok(), "decimals=18 should parse cleanly");
+    }
+}
+
+#[cfg(test)]
+mod static_provisioning_clap_tests {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::*;
+
+    /// Extract the `RunOptions` from a parsed top-level `Options`, or
+    /// panic (used only in tests).
+    fn run_opts(o: Options) -> RunOptions {
+        match o.subcommand {
+            Some(OptionsSubCommand::Run(r)) => r,
+            other => panic!("expected Run subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_oracle_static_file_flags_accumulate() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-file",
+            r#""cfg1"={"path":"/etc/cfg1","mode":"r"}"#,
+            "--oracle-static-file",
+            r#""cfg2"={"path":"/etc/cfg2","mode":"r+"}"#,
+        ])
+        .expect("two --oracle-static-file flags should parse");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_files.len(), 2);
+        assert_eq!(r.oracle_static_files[0].logical_name, "cfg1");
+        assert_eq!(
+            r.oracle_static_files[0].entry.path,
+            PathBuf::from("/etc/cfg1")
+        );
+        assert_eq!(r.oracle_static_files[0].entry.mode, "r");
+        assert_eq!(r.oracle_static_files[1].logical_name, "cfg2");
+        assert_eq!(r.oracle_static_files[1].entry.mode, "r+");
+    }
+
+    #[test]
+    fn oracle_static_dir_defaults_to_rw_via_clap() {
+        // Bare-JSON-string form on the CLI defaults to "rw" per spec §1245.
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-dir",
+            r#""logs/"="/var/log/rnode""#,
+        ])
+        .expect("bare-string dir value should parse with default rw");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_dirs.len(), 1);
+        assert_eq!(r.oracle_static_dirs[0].entry.mode, "rw");
+    }
+
+    #[test]
+    fn consensus_flags_are_disjoint_from_oracle_flags() {
+        // Verify the four vectors are independent — a --consensus-static-*
+        // flag must NOT append into the oracle vector and vice versa.
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-file",
+            r#""oracle-cfg"=/etc/o.cfg"#,
+            "--consensus-static-file",
+            r#""consensus-cfg"=/etc/c.cfg"#,
+            "--oracle-static-dir",
+            r#""oracle-dir/"=/var/o"#,
+            "--consensus-static-dir",
+            r#""consensus-dir/"=/var/c"#,
+        ])
+        .expect("all four flags together should parse");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_files.len(), 1);
+        assert_eq!(r.oracle_static_files[0].logical_name, "oracle-cfg");
+        assert_eq!(r.consensus_static_files.len(), 1);
+        assert_eq!(r.consensus_static_files[0].logical_name, "consensus-cfg");
+        assert_eq!(r.oracle_static_dirs.len(), 1);
+        assert_eq!(r.oracle_static_dirs[0].logical_name, "oracle-dir/");
+        assert_eq!(r.consensus_static_dirs.len(), 1);
+        assert_eq!(r.consensus_static_dirs[0].logical_name, "consensus-dir/");
+    }
+
+    #[test]
+    fn absent_flags_yield_empty_vectors() {
+        let o = Options::try_parse_from(["f1r3fly", "run"]).expect("bare `run` should parse");
+        let r = run_opts(o);
+        assert!(r.oracle_static_files.is_empty());
+        assert!(r.oracle_static_dirs.is_empty());
+        assert!(r.consensus_static_files.is_empty());
+        assert!(r.consensus_static_dirs.is_empty());
+    }
+
+    #[test]
+    fn clap_surfaces_value_parser_error_for_bad_mode() {
+        // If the value parser rejects (e.g., invalid mode), clap must
+        // surface a parse error instead of silently dropping the flag.
+        let err = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-file",
+            r#""cfg"={"path":"/etc/cfg","mode":"wx"}"#,
+        ])
+        .err()
+        .expect("invalid mode should fail clap parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid mode") || msg.contains("wx"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn clap_surfaces_value_parser_error_for_relative_path() {
+        let err = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--consensus-static-dir",
+            r#""logs/"="rel/path""#,
+        ])
+        .err()
+        .expect("relative path should fail clap parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not absolute") || msg.contains("rel/path"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // M-22-5: accumulation coverage for the three remaining flags.
+    // The oracle-static-file variant is covered by
+    // `repeated_oracle_static_file_flags_accumulate` above.
+
+    #[test]
+    fn repeated_oracle_static_dir_flags_accumulate() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-dir",
+            r#""d1/"=/var/d1"#,
+            "--oracle-static-dir",
+            r#""d2/"={"path":"/var/d2","mode":"r"}"#,
+        ])
+        .expect("two --oracle-static-dir flags should parse");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_dirs.len(), 2);
+        assert_eq!(r.oracle_static_dirs[0].logical_name, "d1/");
+        assert_eq!(r.oracle_static_dirs[0].entry.mode, "rw"); // CLI default
+        assert_eq!(r.oracle_static_dirs[1].entry.mode, "r");
+    }
+
+    #[test]
+    fn repeated_consensus_static_file_flags_accumulate() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--consensus-static-file",
+            r#""a"=/etc/a"#,
+            "--consensus-static-file",
+            r#""b"={"path":"/etc/b","mode":"a+"}"#,
+        ])
+        .expect("two --consensus-static-file flags should parse");
+        let r = run_opts(o);
+        assert_eq!(r.consensus_static_files.len(), 2);
+        assert_eq!(r.consensus_static_files[0].logical_name, "a");
+        assert_eq!(r.consensus_static_files[1].entry.mode, "a+");
+    }
+
+    #[test]
+    fn repeated_consensus_static_dir_flags_accumulate() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--consensus-static-dir",
+            r#""x/"=/var/x"#,
+            "--consensus-static-dir",
+            r#""y/"=/var/y"#,
+        ])
+        .expect("two --consensus-static-dir flags should parse");
+        let r = run_opts(o);
+        assert_eq!(r.consensus_static_dirs.len(), 2);
+        assert_eq!(r.consensus_static_dirs[0].logical_name, "x/");
+        assert_eq!(r.consensus_static_dirs[1].logical_name, "y/");
+    }
+
+    // S-22-7: additional clap integration coverage.
+
+    /// `=`-attached form (`--flag=VALUE`) is common shell syntax; clap
+    /// supports it — verify our value-parser doesn't misread the flag's
+    /// own `=` as the intra-value split.
+    #[test]
+    fn equals_attached_flag_form_parses() {
+        let o =
+            Options::try_parse_from(["f1r3fly", "run", r#"--oracle-static-file="cfg"=/etc/cfg"#])
+                .expect("=-attached form should parse");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_files.len(), 1);
+        assert_eq!(r.oracle_static_files[0].logical_name, "cfg");
+        assert_eq!(
+            r.oracle_static_files[0].entry.path,
+            PathBuf::from("/etc/cfg")
+        );
+    }
+
+    /// Reversed order of the four flag families still yields the same
+    /// per-bucket vectors — no clap ordering surprises.
+    #[test]
+    fn reversed_flag_order_yields_same_vectors() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--consensus-static-dir",
+            r#""cd/"=/var/cd"#,
+            "--oracle-static-dir",
+            r#""od/"=/var/od"#,
+            "--consensus-static-file",
+            r#""cf"=/etc/cf"#,
+            "--oracle-static-file",
+            r#""of"=/etc/of"#,
+        ])
+        .expect("reversed order should parse");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_files[0].logical_name, "of");
+        assert_eq!(r.oracle_static_dirs[0].logical_name, "od/");
+        assert_eq!(r.consensus_static_files[0].logical_name, "cf");
+        assert_eq!(r.consensus_static_dirs[0].logical_name, "cd/");
+    }
+
+    /// Coexists with `--config-file` (slice 24 handles merging; slice
+    /// 22 just needs to prove clap doesn't reject the combination).
+    #[test]
+    fn coexists_with_config_file_flag() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--config-file",
+            "/tmp/x.conf",
+            "--oracle-static-file",
+            r#""cfg"=/etc/cfg"#,
+        ])
+        .expect("`--config-file` alongside `--oracle-static-file` should parse");
+        let r = run_opts(o);
+        assert_eq!(r.config_file, Some(PathBuf::from("/tmp/x.conf")));
+        assert_eq!(r.oracle_static_files.len(), 1);
+    }
+
+    /// Coexists with other unrelated `RunOptions` flags.
+    #[test]
+    fn coexists_with_other_run_flags() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--standalone",
+            "--host",
+            "localhost",
+            "--oracle-static-file",
+            r#""cfg"=/etc/cfg"#,
+        ])
+        .expect("static-file flag alongside other run flags should parse");
+        let r = run_opts(o);
+        assert!(r.standalone);
+        assert_eq!(r.host.as_deref(), Some("localhost"));
+        assert_eq!(r.oracle_static_files.len(), 1);
+    }
+
+    /// N-22-5: duplicate logical names in the same flag are silently
+    /// preserved as separate `Vec` entries in slice 22.  Slice 24 will
+    /// dedup at merge time.  Pin the behavior so slice 24's change is
+    /// a clear signal.
+    #[test]
+    fn duplicate_logical_name_within_flag_preserved_pre_slice_24() {
+        let o = Options::try_parse_from([
+            "f1r3fly",
+            "run",
+            "--oracle-static-file",
+            r#""dup"=/etc/a"#,
+            "--oracle-static-file",
+            r#""dup"={"path":"/etc/b","mode":"r+"}"#,
+        ])
+        .expect("duplicate logical name across repetitions parses (dedup deferred to slice 24)");
+        let r = run_opts(o);
+        assert_eq!(r.oracle_static_files.len(), 2);
+        assert_eq!(r.oracle_static_files[0].logical_name, "dup");
+        assert_eq!(r.oracle_static_files[1].logical_name, "dup");
+        assert_ne!(
+            r.oracle_static_files[0].entry.path,
+            r.oracle_static_files[1].entry.path
+        );
     }
 }
