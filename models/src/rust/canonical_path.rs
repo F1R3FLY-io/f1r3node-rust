@@ -2334,7 +2334,7 @@ mod tests {
     /// * a `PathMap<Par>` map can use its value slot for the actual associated
     ///   value rather than a key-equals-value mirror.
     #[test]
-    fn generated_escape_and_message_decode_are_total_past_the_retired_prost_ceiling() {
+    fn generated_escape_and_message_decode_are_total_past_the_retired_protobuf_ceiling() {
         // ── NEGATIVE CONTROL: shallow escapes round-trip, so the failure below
         //    is about DEPTH and not about the escape arm being broken. ────────
         let shallow = escaped_nest(2);

@@ -214,7 +214,7 @@ pub static PDA_EQUIVALENCE_EVIDENCE: &[EquivalenceEvidence] = &[
         proof_file: PDA_PROOF,
         theorem: "drop_machine_reaches_one_completion",
         executable_file: "models/tests/par_protobuf_stack_safety.rs",
-        executable_marker: "message_clear_matches_prost_default_semantics",
+        executable_marker: "message_clear_matches_protobuf_default_semantics",
     },
     EquivalenceEvidence {
         surface: "Oneof::encode",

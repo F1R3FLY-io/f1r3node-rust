@@ -222,7 +222,7 @@ fn message_clear_tears_down_a_deep_term_iteratively() {
 }
 
 #[test]
-fn message_clear_matches_prost_default_semantics() {
+fn message_clear_matches_protobuf_default_semantics() {
     let mut term = nested_list(64);
     term.locally_free = vec![0xA5, 0x5A];
     term.connective_used = true;

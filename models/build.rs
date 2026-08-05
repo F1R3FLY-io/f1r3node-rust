@@ -207,7 +207,8 @@ fn main() {
             debug_stripped.push(item);
         }
     }
-    let modified_content = strip_prost_field_attributes(&rewritten.join("\n"), &message_stripped);
+    let modified_content =
+        strip_protobuf_field_attributes(&rewritten.join("\n"), &message_stripped);
 
     // Normalize locally_free in serde serialization — always serialize as empty vec.
     // This matches Scala's AlwaysEqual semantics where locally_free is a transient
@@ -395,7 +396,7 @@ fn item_declared_after(lines: &[&str], i: usize) -> String {
     )
 }
 
-fn strip_prost_field_attributes(source: &str, items: &[String]) -> String {
+fn strip_protobuf_field_attributes(source: &str, items: &[String]) -> String {
     use std::collections::BTreeSet;
 
     let wanted: BTreeSet<&str> = items.iter().map(String::as_str).collect();
