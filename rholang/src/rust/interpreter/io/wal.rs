@@ -181,26 +181,79 @@ impl PayloadRef {
 /// Per-runtime append-only WAL buffer.  Cloneable (shares the
 /// underlying `Arc<Mutex<Vec<...>>>` via reference-counting) so every
 /// handler closure can journal into the same list.
+///
+/// # H-R3 fix (slice 30c H-R3 PoC): log-order-derived drain
+///
+/// The `entries` Vec is scheduler-order (tokio-work-stealing);
+/// under `Par` two runs of the same deploy can populate it in
+/// different orders — non-deterministic WAL root.  The sidecar
+/// `ack_hashes` Vec (index-aligned) records each entry's ack-
+/// channel Blake2b256 hash at append time.  At drain, the caller
+/// can either use `take_deploy_entries(mark)` (insertion order —
+/// scheduler-dependent, kept for tests / soft-checkpoint) OR the
+/// new `take_deploy_entries_in_log_order(mark, deploy_log)`
+/// which walks the log's Produce events, matches each Produce's
+/// `channel_hash` against sidecar hashes, and emits in log order.
+///
+/// Log order is canonical per block (captured on the leader's
+/// initial play, then frozen in the block; followers consume the
+/// same log verbatim during replay), so log-order drain is
+/// deterministic across validators + across re-executions on the
+/// same validator regardless of `Par` scheduling.
 #[derive(Clone, Debug, Default)]
 pub struct Wal {
     entries: Arc<Mutex<Vec<WalEntry>>>,
+    /// Slice 30c H-R3 PoC: parallel to `entries`, index-aligned.
+    /// Each element is the Blake2b256 hash of the ack channel Par
+    /// the syscall published its reply on.  Every fs syscall's ack
+    /// is a fresh unforgeable per call, so this is a unique key
+    /// within a deploy.  A subsequent `take_deploy_entries_in_log_order`
+    /// walk finds each entry by matching its sidecar hash to a
+    /// Produce event's `channel_hash` in the deploy_log.
+    ///
+    /// Stored as `Vec<[u8; 32]>` rather than `Vec<Blake2b256Hash>`
+    /// to keep the `wal.rs` module free of `rspace_plus_plus`
+    /// dependency (the caller in `handlers.rs` computes the hash
+    /// via `stable_hash_provider::hash(ack)` and passes bytes).
+    ack_hashes: Arc<Mutex<Vec<[u8; 32]>>>,
 }
 
 impl Wal {
     pub fn new() -> Self { Self::default() }
 
-    /// Append one entry to the log.  H-29-2 review fix: returns
-    /// `Err(())` if the log would exceed `MAX_WAL_ENTRIES` —
-    /// callers translate to `FSERR_QUOTA_EXCEEDED`.  Unit error is
-    /// deliberate: the only failure mode is cap-exceeded and all
-    /// call sites map it to the same code.
+    /// Legacy append: no ack-hash sidecar populated (records
+    /// `[0u8; 32]`, which is guaranteed not to match any real
+    /// Produce event's channel_hash for a fresh unforgeable).
+    /// Kept for tests + soft-checkpoint machinery.  Production
+    /// handler paths should use `append_with_ack`.
+    ///
+    /// H-29-2 review fix: returns `Err(())` if the log would
+    /// exceed `MAX_WAL_ENTRIES` — callers translate to
+    /// `FSERR_QUOTA_EXCEEDED`.
     #[allow(clippy::result_unit_err)]
     pub fn append(&self, entry: WalEntry) -> Result<(), ()> {
+        self.append_with_ack(entry, [0u8; 32])
+    }
+
+    /// Slice 30c H-R3 PoC: append an entry with its ack-channel
+    /// hash for later log-order-based drain.  The hash comes from
+    /// `stable_hash_provider::hash(ack_par)` on the handler side.
+    /// A sentinel `[0u8; 32]` disables log-order matching for
+    /// that entry (falls back to insertion order).
+    #[allow(clippy::result_unit_err)]
+    pub fn append_with_ack(&self, entry: WalEntry, ack_hash: [u8; 32]) -> Result<(), ()> {
         let mut guard = self.entries.lock().expect("Wal mutex poisoned");
         if guard.len() >= MAX_WAL_ENTRIES {
             return Err(());
         }
         guard.push(entry);
+        // Mutex order matters: `entries` lock is held while we
+        // grab `ack_hashes` so the two Vecs stay index-aligned
+        // under concurrent appends.
+        self.ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned")
+            .push(ack_hash);
         Ok(())
     }
 
@@ -218,7 +271,13 @@ impl Wal {
 
     /// Clear all entries.  Called on `RhoRuntimeImpl::reset()`
     /// (H-29-F2 review fix — defense in depth) and by tests.
-    pub fn clear(&self) { self.entries.lock().expect("Wal mutex poisoned").clear(); }
+    pub fn clear(&self) {
+        self.entries.lock().expect("Wal mutex poisoned").clear();
+        self.ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned")
+            .clear();
+    }
 
     /// H-29-1 review fix: rollback support for soft-checkpoints.
     /// Records the current length so a subsequent `truncate_to`
@@ -238,6 +297,11 @@ impl Wal {
         let mut guard = self.entries.lock().expect("Wal mutex poisoned");
         if mark.len < guard.len() {
             guard.truncate(mark.len);
+            // Slice 30c H-R3 PoC: keep sidecar index-aligned.
+            self.ack_hashes
+                .lock()
+                .expect("Wal ack_hashes mutex poisoned")
+                .truncate(mark.len);
         }
     }
 
@@ -256,12 +320,97 @@ impl Wal {
     /// Symmetric with `begin_deploy`.  If a caller wants to peek
     /// without draining, use `snapshot()` + `snapshot_mark()`
     /// arithmetic.
+    ///
+    /// **Insertion-order caveat (H-R3):** the returned Vec's
+    /// order reflects `Par` scheduling on this run and is
+    /// therefore scheduler-dependent.  Callers that will hash
+    /// this Vec into a consensus commitment (e.g., a snapshot
+    /// root) should use `take_deploy_entries_in_log_order`
+    /// instead — that path re-orders by the canonical event log
+    /// and is deterministic across validators.
     pub fn take_deploy_entries(&self, mark: WalMark) -> Vec<WalEntry> {
         let mut guard = self.entries.lock().expect("Wal mutex poisoned");
+        // Also drain the ack_hash sidecar to keep it aligned.
+        let mut ack_guard = self
+            .ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned");
         if mark.len >= guard.len() {
             return Vec::new();
         }
+        let _ = ack_guard.split_off(mark.len);
         guard.split_off(mark.len)
+    }
+
+    /// Slice 30c H-R3 fix (option B PoC): drain entries appended
+    /// after `mark` in DETERMINISTIC log order.
+    ///
+    /// Walks `produce_channel_hashes` (sequence of
+    /// `channel_hash` bytes from the deploy's `deploy_log`'s
+    /// Produce events, in log order).  For each hash present in
+    /// the WAL's ack_hash sidecar, emits the corresponding
+    /// entry.  Entries whose sidecar hash never appears in the
+    /// log (should not happen for well-formed fs syscalls, but
+    /// defense in depth) are appended at the end in insertion
+    /// order so nothing is silently dropped.
+    ///
+    /// The caller drains + removes from the buffer just like
+    /// `take_deploy_entries`.
+    ///
+    /// Correctness relies on: the deploy_log's produces are in a
+    /// canonical order (frozen when the leader publishes the
+    /// block; followers consume the same log verbatim during
+    /// replay).  So the re-ordered output is byte-identical
+    /// across validators and across re-executions on the same
+    /// validator, regardless of `Par` scheduling on this run.
+    pub fn take_deploy_entries_in_log_order(
+        &self,
+        mark: WalMark,
+        produce_channel_hashes: &[[u8; 32]],
+    ) -> Vec<WalEntry> {
+        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
+        let mut ack_guard = self
+            .ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned");
+        if mark.len >= entries_guard.len() {
+            return Vec::new();
+        }
+        let drained_entries: Vec<WalEntry> = entries_guard.split_off(mark.len);
+        let drained_acks: Vec<[u8; 32]> = ack_guard.split_off(mark.len);
+        debug_assert_eq!(
+            drained_entries.len(),
+            drained_acks.len(),
+            "Wal invariant: entries and ack_hashes must be index-aligned"
+        );
+        // Build ack_hash → entry-index map for O(1) lookup.
+        // Duplicate ack hashes shouldn't occur (fresh unforgeables)
+        // but if they did, first-wins mirrors insertion order.
+        use std::collections::HashMap;
+        let mut index_by_ack: HashMap<[u8; 32], usize> = HashMap::with_capacity(drained_acks.len());
+        for (i, h) in drained_acks.iter().enumerate() {
+            index_by_ack.entry(*h).or_insert(i);
+        }
+        let mut ordered: Vec<WalEntry> = Vec::with_capacity(drained_entries.len());
+        let mut emitted = vec![false; drained_entries.len()];
+        for h in produce_channel_hashes {
+            if let Some(&i) = index_by_ack.get(h) {
+                if !emitted[i] {
+                    ordered.push(drained_entries[i].clone());
+                    emitted[i] = true;
+                }
+            }
+        }
+        // Defense in depth: any drained entries not matched by
+        // the log walk (sentinel ack_hash `[0u8; 32]` or a
+        // future-refactor gap) get appended at the end so
+        // nothing is silently dropped.
+        for (i, e) in drained_entries.into_iter().enumerate() {
+            if !emitted[i] {
+                ordered.push(e);
+            }
+        }
+        ordered
     }
 }
 
@@ -416,5 +565,154 @@ mod tests {
         let entries = wal.take_deploy_entries(mark);
         assert!(entries.is_empty());
         assert_eq!(wal.len(), 1);
+    }
+
+    // ---------------------------------------------------------------
+    // Slice 30c H-R3 fix (option B PoC) tests: log-order drain
+    // produces the same output regardless of insertion order,
+    // so long as the log walk is the same.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn log_order_drain_permutes_insertion_order_to_match_log_order() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        // Two entries with distinct ack hashes.  Their INSERTION
+        // order into the WAL differs from the LOG order (imagine
+        // two Par branches: A appended first (won the scheduler
+        // race) but B's produce landed first in the log).
+        let ack_a = [0xAAu8; 32];
+        let ack_b = [0xBBu8; 32];
+        wal.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        wal.append_with_ack(mk_write_entry(b"B"), ack_b).unwrap();
+        // Log walks produces in order: B first, then A.
+        let log_order = vec![ack_b, ack_a];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log_order);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].payload_ref, Some(PayloadRef::hash(b"B")));
+        assert_eq!(drained[1].payload_ref, Some(PayloadRef::hash(b"A")));
+    }
+
+    #[test]
+    fn log_order_drain_is_deterministic_across_insertion_permutations() {
+        // Same set of entries + same log order → identical output
+        // regardless of which order the scheduler happened to
+        // append them in.  This IS the H-R3 fix.
+        let ack_a = [0xAAu8; 32];
+        let ack_b = [0xBBu8; 32];
+        let ack_c = [0xCCu8; 32];
+        let log_order = vec![ack_c, ack_a, ack_b];
+
+        // Permutation 1: insertion = A, B, C
+        let wal1 = Wal::new();
+        let mark1 = wal1.begin_deploy();
+        wal1.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        wal1.append_with_ack(mk_write_entry(b"B"), ack_b).unwrap();
+        wal1.append_with_ack(mk_write_entry(b"C"), ack_c).unwrap();
+        let drained1 = wal1.take_deploy_entries_in_log_order(mark1, &log_order);
+
+        // Permutation 2: insertion = C, A, B (different scheduler)
+        let wal2 = Wal::new();
+        let mark2 = wal2.begin_deploy();
+        wal2.append_with_ack(mk_write_entry(b"C"), ack_c).unwrap();
+        wal2.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        wal2.append_with_ack(mk_write_entry(b"B"), ack_b).unwrap();
+        let drained2 = wal2.take_deploy_entries_in_log_order(mark2, &log_order);
+
+        // Permutation 3: insertion = B, C, A (yet another scheduler)
+        let wal3 = Wal::new();
+        let mark3 = wal3.begin_deploy();
+        wal3.append_with_ack(mk_write_entry(b"B"), ack_b).unwrap();
+        wal3.append_with_ack(mk_write_entry(b"C"), ack_c).unwrap();
+        wal3.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        let drained3 = wal3.take_deploy_entries_in_log_order(mark3, &log_order);
+
+        // All three drain to the same sequence: C, A, B (log order).
+        assert_eq!(drained1, drained2);
+        assert_eq!(drained2, drained3);
+        assert_eq!(drained1[0].payload_ref, Some(PayloadRef::hash(b"C")));
+        assert_eq!(drained1[1].payload_ref, Some(PayloadRef::hash(b"A")));
+        assert_eq!(drained1[2].payload_ref, Some(PayloadRef::hash(b"B")));
+    }
+
+    #[test]
+    fn log_order_drain_appends_unmatched_entries_at_end() {
+        // Defense in depth: any drained entry whose ack_hash
+        // doesn't appear in the log gets emitted at the tail
+        // rather than being silently dropped.  Guards against
+        // future refactor gaps (missed handler, sentinel-hash
+        // use, etc.).
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        let ack_a = [0xAAu8; 32];
+        let ack_orphan = [0x99u8; 32]; // NOT in the log
+        wal.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        wal.append_with_ack(mk_write_entry(b"orphan"), ack_orphan)
+            .unwrap();
+        // Log only contains ack_a.
+        let drained = wal.take_deploy_entries_in_log_order(mark, &[ack_a]);
+        assert_eq!(drained.len(), 2, "orphan must not be dropped");
+        assert_eq!(drained[0].payload_ref, Some(PayloadRef::hash(b"A")));
+        assert_eq!(drained[1].payload_ref, Some(PayloadRef::hash(b"orphan")));
+    }
+
+    #[test]
+    fn log_order_drain_ignores_log_entries_without_matching_wal() {
+        // Log contains produce channel hashes for non-fs syscalls
+        // (they're the vast majority in a real deploy log — every
+        // Rholang send emits a Produce).  Only produce hashes that
+        // match a WAL ack sidecar produce output.
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        let ack_a = [0xAAu8; 32];
+        wal.append_with_ack(mk_write_entry(b"A"), ack_a).unwrap();
+        let log_order = vec![
+            [0x11u8; 32], // unrelated Rholang send
+            [0x22u8; 32], // unrelated Rholang send
+            ack_a,        // the fs syscall's ack
+            [0x33u8; 32], // unrelated Rholang send
+        ];
+        let drained = wal.take_deploy_entries_in_log_order(mark, &log_order);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].payload_ref, Some(PayloadRef::hash(b"A")));
+    }
+
+    #[test]
+    fn log_order_drain_empty_mark_returns_empty() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"pre"), [0x55u8; 32])
+            .unwrap();
+        let mark = wal.begin_deploy();
+        let drained = wal.take_deploy_entries_in_log_order(mark, &[[0x55u8; 32]]);
+        assert!(drained.is_empty());
+        assert_eq!(wal.len(), 1);
+    }
+
+    #[test]
+    fn ack_sidecar_stays_index_aligned_across_soft_checkpoint_revert() {
+        // If truncate_to didn't also truncate the ack sidecar,
+        // subsequent take_deploy_entries_in_log_order would
+        // read stale ack hashes and misalign.
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"pre"), [0x11u8; 32])
+            .unwrap();
+        let checkpoint = wal.snapshot_mark();
+        wal.append_with_ack(mk_write_entry(b"revert_me"), [0x22u8; 32])
+            .unwrap();
+        wal.truncate_to(checkpoint);
+        // After revert, appending a new entry should place its
+        // ack at index 1 (right after the surviving pre entry),
+        // not at index 2 (which would leak the stale revert_me
+        // sidecar).
+        wal.append_with_ack(mk_write_entry(b"post_revert"), [0x33u8; 32])
+            .unwrap();
+        let drained =
+            wal.take_deploy_entries_in_log_order(WalMark { len: 0 }, &[[0x11u8; 32], [0x33u8; 32]]);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].payload_ref, Some(PayloadRef::hash(b"pre")));
+        assert_eq!(
+            drained[1].payload_ref,
+            Some(PayloadRef::hash(b"post_revert"))
+        );
     }
 }
