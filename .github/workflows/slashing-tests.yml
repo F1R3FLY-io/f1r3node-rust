@@ -27,9 +27,10 @@ on:
       run_exhaustive:
         description: >-
           Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
-          cap-busting detector configs parked by PR #201. Expect TIMEOUT
-          reds at the 45m per-config cap until the liveness/safety split
-          lands (EPIC-011).
+          unbounded reference configs parked by PR #201. Each exceeds the
+          45m per-config cap by design, so expect distinctly-labeled
+          TIMEOUT reds; their bounded nightly-tier counterparts (EPIC-011)
+          carry the gating coverage.
         type: boolean
         default: false
   schedule:

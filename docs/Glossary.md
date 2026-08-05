@@ -33,7 +33,7 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 A verification tier is the CI budget class a formal check runs under: the
 **PR-gate tier** (fast checks on every push and pull request), the **nightly
-tier** (the eight fast TLC configurations that gate the scheduled
+tier** (the fast TLC configurations that gate the scheduled
 `slashing-tests` run), and the **exhaustive tier** (opt-in via
 `RUN_EXHAUSTIVE_TLA=1`, dispatch-only, holding the configurations whose state
 spaces exceed the per-config cap). Tier membership is defined in
