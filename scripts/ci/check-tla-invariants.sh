@@ -4,8 +4,8 @@
 #
 # Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
-#   • MC_EquivocationDetector{,_liveness}.tla / .cfg
-#   • MC_EquivocationDetectorEager{,_3v}.tla / .cfg
+#   • MC_EquivocationDetector_liveness.tla / .cfg
+#   • MC_EquivocationDetectorEager.tla / .cfg
 #   • MC_ConcurrentTracker{,_pre_fix}.tla / .cfg
 #   • MC_SlashFlow.tla / .cfg
 #   • MC_TwoLevelSlashing.tla / .cfg
@@ -18,9 +18,14 @@
 # are *expected* to violate their invariants and are skipped here (they
 # are the formal-side counter-examples, run manually for validation).
 #
-# MC_EquivocationDetector_safety is the exhaustive detector safety check.
-# It is intentionally opt-in because it can run for many hours; run it
-# with RUN_EXHAUSTIVE_TLA=1 after the shorter frontier has stabilized.
+# The exhaustive tier (RUN_EXHAUSTIVE_TLA=1) holds the configs whose state
+# spaces exceed the per-config wall-clock cap: MC_EquivocationDetector and
+# MC_EquivocationDetectorEager_3v hit the 45m cap on every nightly since
+# the schedule began (2026-07-25) — their interleaved liveness passes go
+# superlinear past ~100M states — alongside MC_EquivocationDetector_safety,
+# which can run for many hours. The nightly tier therefore gates on the
+# fast configs only; the heavy pair runs opt-in until it gets the
+# liveness/safety split that rescued MC_EquivocationDetector_liveness.
 
 set -euo pipefail
 
@@ -66,10 +71,8 @@ fi
 
 # Post-fix configs: each must TLC-clean.
 POST_FIX_CONFIGS=(
-    MC_EquivocationDetector
     MC_EquivocationDetector_liveness
     MC_EquivocationDetectorEager
-    MC_EquivocationDetectorEager_3v
     MC_ConcurrentTracker
     MC_SlashFlow
     MC_TwoLevelSlashing
@@ -79,7 +82,11 @@ POST_FIX_CONFIGS=(
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
-    POST_FIX_CONFIGS+=(MC_EquivocationDetector_safety)
+    POST_FIX_CONFIGS+=(
+        MC_EquivocationDetector
+        MC_EquivocationDetectorEager_3v
+        MC_EquivocationDetector_safety
+    )
 fi
 
 cd "$TLA_DIR"
