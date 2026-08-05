@@ -22,6 +22,33 @@ pub fn eval_stable_epathmap(e_pathmap: &EPathMap) -> bool {
         && e_pathmap.entry_trie().entries_stable()
 }
 
+/// Certify that reducer `eval_expr` is the identity for an EPathMap.
+///
+/// This is intentionally distinct from [`eval_stable_epathmap`].  The latter
+/// defines the canonical-path codec's narrow ground alphabet and therefore
+/// rejects every `Par` carrying process fields such as sends and receives.
+/// Reducer `eval_expr`, however, evaluates only a `Par`'s top-level `exprs`;
+/// a reflected process subtree with no top-level expressions is copied
+/// byte-for-byte.  `EntryTrie` maintains this sufficient identity certificate
+/// as entries are inserted, removed, or combined, so querying it is O(1).
+///
+/// A false result means "take the evaluating PDA", not "evaluation certainly
+/// changes the value".  Keeping the certificate conservative prevents a fast
+/// path from depending on metadata that may itself require normalization.
+pub fn reducer_eval_identity_epathmap(e_pathmap: &EPathMap) -> bool {
+    e_pathmap.remainder.is_none() && e_pathmap.entry_trie().entries_reducer_eval_identity()
+}
+
+/// A sufficient, byte-exact certificate for one EPathMap key or value.
+///
+/// * canonical-codec stable terms are evaluator normal forms;
+/// * a `Par` with no top-level expressions is returned unchanged by
+///   `eval_expr`, regardless of the process fields it reflects.
+#[inline]
+pub(crate) fn reducer_eval_identity_par(par: &Par, codec_stable: bool) -> bool {
+    codec_stable || par.exprs.is_empty()
+}
+
 /// Classify a `Par` as ground normal form: either a single-expr carrier over
 /// the stable expression alphabet, or the reflect `GPrivate` leaf. Every other
 /// `Par` field must be empty and `locally_free`/`connective_used` must have their

@@ -1,6 +1,6 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    BindPattern, EPathMap, EPlus, Expr, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, EPathMap, EPlus, Expr, ListParWithRandom, Par, Send, TaggedContinuation,
 };
 use models::rust::utils::new_gint_par;
 use rho_pure_eval::Env;
@@ -74,4 +74,64 @@ async fn evaluator_streams_set_and_map_children_in_canonical_forward_order() {
         evaluated_map.get_map_value(&gint(6)).unwrap(),
         Some(&gint(22))
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn evaluator_preserves_native_roots_when_eval_is_identity() {
+    let (_space, reducer) = create_test_space::<TestSpace>().await;
+    let env = Env::new();
+
+    let mut reflected_process = Par::default();
+    reflected_process.sends.push(Send::default());
+
+    let fixtures = [
+        (
+            "set",
+            EPathMap::new(vec![gint(3), gint(1), gint(2)], Vec::new(), false, None),
+        ),
+        (
+            "map",
+            EPathMap::new_map(
+                [
+                    (gint(3), gint(30)),
+                    (gint(1), gint(10)),
+                    (gint(2), gint(20)),
+                ],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+        (
+            "map-reflected-process-value",
+            EPathMap::new_map(
+                [(gint(1), reflected_process)],
+                Vec::new(),
+                false,
+                None,
+            ),
+        ),
+    ];
+
+    for (label, map) in fixtures {
+        // Warm the shared snapshot only to give this test a stable allocation
+        // identity.  Production evaluation never needs to force the snapshot.
+        let original_snapshot = map.trie_snapshot().to_vec();
+        let original_snapshot_ptr = map.trie_snapshot().as_ptr();
+        let evaluated = reducer
+            .eval_expr(&pathmap_expr(map), &env)
+            .unwrap_or_else(|error| panic!("{label} EPathMap evaluates: {error}"));
+        let evaluated = evaluated_pathmap(&evaluated);
+
+        assert_eq!(
+            evaluated.trie_snapshot().as_ptr(),
+            original_snapshot_ptr,
+            "{label}: eval-stable evaluation must retain the shared PathMap/snapshot root"
+        );
+        assert_eq!(
+            evaluated.trie_snapshot(),
+            original_snapshot,
+            "{label}: preserving the root must remain byte-identical"
+        );
+    }
 }

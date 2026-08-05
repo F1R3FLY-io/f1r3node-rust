@@ -2861,6 +2861,25 @@ impl DebruijnInterpreter {
                 Ok(())
             }
             ExprInstance::EPathmapBody(e1) => {
+                // A closed EPathMap is already an evaluator normal form.  Its
+                // maintained stability fold certifies that neither its keys nor
+                // its map values contain a variable, operation, connective, or
+                // remainder that evaluation could change.  Preserve the native
+                // PathMap root (and its shared EPM1 cache) with the O(1)
+                // EPathMap clone instead of decoding every key and rebuilding
+                // the trie.  This is especially important for method targets:
+                // an exact `contains`/`atPath` lookup must not pay O(|map|)
+                // preparation before reaching PathMap's lookup.
+                //
+                // Non-stable maps still take the PDA below, so substitution and
+                // evaluation of open keys/values retain their existing order,
+                // charges, errors, and semantics.
+                if models::rust::pathmap_crate_type_mapper::reducer_eval_identity_epathmap(e1) {
+                    vals.push(EvVal::Expr(Expr {
+                        expr_instance: Some(ExprInstance::EPathmapBody(e1.clone())),
+                    }));
+                    return Ok(());
+                }
                 let child_count = match e1.mode() {
                     EPathMapMode::Empty | EPathMapMode::Set => e1.len(),
                     EPathMapMode::Map => e1
@@ -8914,7 +8933,8 @@ mod differential_trampoline {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{
         BindPattern, Bundle, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq,
-        ENot, EOr, EPlus, ETuple, Expr, ListParWithRandom, Par, TaggedContinuation,
+        ENot, EOr, EPathMap, EPlus, ETuple, Expr, ListParWithRandom, Par, Send,
+        TaggedContinuation,
     };
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
     use proptest::prelude::*;
@@ -9011,6 +9031,11 @@ mod differential_trampoline {
             locally_free: vec![],
             connective_used: false,
         }))
+    }
+    fn reflected_send() -> Par {
+        let mut par = Par::default();
+        par.sends.push(Send::default());
+        par
     }
 
     /// The observable trace of one evaluation path: result bytes (or Err string)
@@ -9114,6 +9139,33 @@ mod differential_trampoline {
             eplus(eplus(eplus(i(1), i(2)), i(3)), i(4)),
             // nested collections
             elist(vec![elist(vec![elist(vec![i(0)])])]),
+            // Stable EPathMap: the PDA preserves the shared PathMap root while
+            // the recursive oracle walks and rebuilds it.  Byte and charge
+            // equality proves that the O(1) normal-form fast path is invisible.
+            expr_par(ExprInstance::EPathmapBody(EPathMap::new(
+                vec![i(3), i(1), i(2)],
+                vec![],
+                false,
+                None,
+            ))),
+            // Reflected process key: outside the canonical codec's ground
+            // alphabet, but `eval_expr` is exactly the identity because the
+            // Par has no top-level expressions. This distinguishes the two
+            // certificates and exercises the E-6a value shape.
+            expr_par(ExprInstance::EPathmapBody(EPathMap::new(
+                vec![reflected_send()],
+                vec![],
+                false,
+                None,
+            ))),
+            // Open EPathMap: defeats the stability gate and proves the original
+            // evaluating traversal remains connected.
+            expr_par(ExprInstance::EPathmapBody(EPathMap::new(
+                vec![eplus(i(1), i(2)), i(5)],
+                vec![],
+                false,
+                None,
+            ))),
             // mixed
             eand(
                 expr_par(ExprInstance::ELtBody(models::rhoapi::ELt {

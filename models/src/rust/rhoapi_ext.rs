@@ -40,7 +40,9 @@ use prost::DecodeError;
 
 use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
-use super::pathmap_crate_type_mapper::{eval_stable_par, PathFrameError, PathFrames};
+use super::pathmap_crate_type_mapper::{
+    eval_stable_par, reducer_eval_identity_par, PathFrameError, PathFrames,
+};
 use super::pathmap_integration::{
     cursor_entry_key as encode_cursor_entry_key, entry_key_at as encode_entry_key_at, par_to_path,
     segments_to_key, CursorKind, RholangMapPathMap, RholangSetPathMap,
@@ -81,6 +83,10 @@ pub struct EntryTrie {
     /// This no longer selects a protobuf representation; all EPathMaps use the
     /// EPM1 snapshot. It remains exact for canonical-path consumers.
     entries_stable: bool,
+    /// Every entry is certified byte-identical under reducer `eval_expr`.
+    /// This fold is deliberately separate from `entries_stable`: the latter
+    /// is the canonical-path codec's stricter ground-domain predicate.
+    entries_reducer_eval_identity: bool,
     /// Union of the entries' `locally_free` bitsets — the value
     /// `create_set_pathmap_from_elements` used to compute on every conversion.
     union_locally_free: Vec<u8>,
@@ -422,6 +428,7 @@ impl EntryTrie {
             repr,
             len,
             entries_stable: true,
+            entries_reducer_eval_identity: true,
             union_locally_free: Vec::new(),
             any_connective_used: false,
             trie_snapshot: Arc::new(OnceLock::new()),
@@ -573,11 +580,13 @@ impl EntryTrie {
     }
 
     fn fold_par_metadata(&mut self, par: &Par) {
-        self.fold_par_metadata_with_stability(par, eval_stable_par(par));
+        let codec_stable = eval_stable_par(par);
+        self.fold_par_metadata_with_stability(par, codec_stable);
     }
 
     fn fold_par_metadata_with_stability(&mut self, par: &Par, stable: bool) {
         self.entries_stable &= stable;
+        self.entries_reducer_eval_identity &= reducer_eval_identity_par(par, stable);
         self.any_connective_used |= par.connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
@@ -596,6 +605,12 @@ impl EntryTrie {
     /// `true` iff every entry is in the codec's ground domain
     /// (`eval_stable_par`) — the entry half of the GROUND wire predicate. O(1).
     pub fn entries_stable(&self) -> bool { self.entries_stable }
+
+    /// `true` when every key and map value is certified byte-identical under
+    /// reducer `eval_expr`. O(1), maintained with the other entry folds.
+    pub fn entries_reducer_eval_identity(&self) -> bool {
+        self.entries_reducer_eval_identity
+    }
 
     /// Union of the entries' `locally_free` bitsets.
     pub fn union_locally_free(&self) -> &[u8] { &self.union_locally_free }
@@ -680,6 +695,7 @@ impl EntryTrie {
             panic!("set insertion attempted on map-mode EPathMap");
         }
         self.entries_stable &= stable;
+        self.entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
         self.any_connective_used |= par.connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
@@ -1186,6 +1202,8 @@ impl EntryTrie {
             repr,
             len,
             entries_stable: left.entries_stable && right.entries_stable,
+            entries_reducer_eval_identity: left.entries_reducer_eval_identity
+                && right.entries_reducer_eval_identity,
             union_locally_free: crate::rust::utils::union(
                 left.union_locally_free.clone(),
                 right.union_locally_free.clone(),
@@ -1407,6 +1425,7 @@ impl EntryTrie {
         // the union may overlap, so `self.len + other.len` would over-count. Only the insert's
         // return value distinguishes a new key from a replaced one.
         self.entries_stable &= other.entries_stable;
+        self.entries_reducer_eval_identity &= other.entries_reducer_eval_identity;
         self.any_connective_used |= other.any_connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
@@ -1507,23 +1526,33 @@ impl EntryTrie {
     /// There is exactly one `Par` retainer to drain: map-mode PathMap values.
     /// The snapshot/layout caches contain bytes only, and set mode stores unit
     /// values, so neither can reintroduce recursive `Par` destruction.
-    /// `PathMap`'s by-move `IntoIterator` is a true move on a uniquely-owned trie and
-    /// clones nothing. On a shared root the crate copies-on-write, one
-    ///   `<Par as Clone>::clone` per value — but that clone is **converted and stack-flat**
-    ///   (`CONVERTED_DEPTH`), so it cannot overflow, and it is exactly what the `.cloned()` this
-    ///   replaces paid *unconditionally*. ⇒ never a regression, and strictly better whenever the
-    ///   trie is unique.
+    ///
+    /// ★ A clone-family member that is NOT the last owner must not drive the
+    /// PathMap by value. `PathMap::into_iter` makes a shared root unique and
+    /// therefore clones every `Par` value merely so this alias can discard it.
+    /// `trie_snapshot` is reset on every mutation and shared by every unmodified
+    /// `EntryTrie::clone`, so its Arc count is an exact O(1) witness for this
+    /// case: another snapshot-cell owner also owns the identical PathMap root.
+    /// Releasing the root refcount is sufficient and cannot destroy a value.
+    /// The last owner still moves every value into the explicit teardown PDA.
     pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
         // ⚠ NO `..` — see the doc above.
         let EntryTrie {
             repr,
             len: _,
             entries_stable: _,
+            entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
-            trie_snapshot: _,
+            trie_snapshot,
             epm_layout: _,
         } = self;
+        if Arc::strong_count(&trie_snapshot) > 1 {
+            // Dropping `repr` here only decrements the shared PathMap root. The
+            // sibling witnessed by `trie_snapshot` keeps every value alive, so
+            // no recursive value destructor can run on this edge.
+            return;
+        }
         match repr {
             EPathMapRepr::Empty | EPathMapRepr::Set(_) => {}
             EPathMapRepr::Map(map) => out.extend(map.into_iter().map(|(_, value)| value)),
@@ -1535,6 +1564,7 @@ impl EntryTrie {
             repr,
             len: _,
             entries_stable: _,
+            entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
             trie_snapshot: _,
@@ -1563,6 +1593,7 @@ impl EntryTrie {
             repr,
             len: _,
             entries_stable: _,
+            entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
             trie_snapshot: _,
@@ -1588,6 +1619,7 @@ impl EntryTrie {
             repr,
             len: _,
             entries_stable: _,
+            entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
             trie_snapshot: _,
@@ -1679,6 +1711,7 @@ impl EntryTrie {
     /// path needs this — insertion folds forward.
     fn recompute_folds(&mut self) {
         let mut entries_stable = true;
+        let mut entries_reducer_eval_identity = true;
         let mut any_connective_used = false;
         let mut union_locally_free = Vec::new();
         match &self.repr {
@@ -1687,7 +1720,9 @@ impl EntryTrie {
                 for (key, ()) in map.iter() {
                     let par = decode_trie_path(&key)
                         .expect("set-mode EPathMap keys are canonical_path encodings");
-                    entries_stable &= eval_stable_par(&par);
+                    let stable = eval_stable_par(&par);
+                    entries_stable &= stable;
+                    entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
                     any_connective_used |= par.connective_used;
                     union_locally_free =
                         crate::rust::utils::union(union_locally_free, par.locally_free.clone());
@@ -1699,7 +1734,9 @@ impl EntryTrie {
                     let key = decode_trie_path(&key)
                         .expect("map-mode EPathMap keys are canonical_path encodings");
                     for par in [&key, value] {
-                        entries_stable &= eval_stable_par(par);
+                        let stable = eval_stable_par(par);
+                        entries_stable &= stable;
+                        entries_reducer_eval_identity &= reducer_eval_identity_par(par, stable);
                         any_connective_used |= par.connective_used;
                         union_locally_free =
                             crate::rust::utils::union(union_locally_free, par.locally_free.clone());
@@ -1709,6 +1746,7 @@ impl EntryTrie {
             }
         }
         self.entries_stable = entries_stable;
+        self.entries_reducer_eval_identity = entries_reducer_eval_identity;
         self.any_connective_used = any_connective_used;
         self.union_locally_free = union_locally_free;
         self.trie_snapshot = Arc::new(OnceLock::new());
@@ -1747,6 +1785,7 @@ impl EntryTrie {
         let mut keys_canonical = true;
         let mut len = 0usize;
         let mut entries_stable = true;
+        let mut entries_reducer_eval_identity = true;
         let mut any_connective_used = false;
         let mut union_locally_free: Vec<u8> = Vec::new();
         {
@@ -1757,7 +1796,9 @@ impl EntryTrie {
                 // Re-encoding proves the decoded key is in canonical form. Both
                 // directions are stack-safe and accept arbitrary finite depth.
                 keys_canonical &= encode_trie_path(&par) == rz.path();
-                entries_stable &= eval_stable_par(&par);
+                let stable = eval_stable_par(&par);
+                entries_stable &= stable;
+                entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
                 any_connective_used |= par.connective_used;
                 union_locally_free =
                     crate::rust::utils::union(union_locally_free, par.locally_free.clone());
@@ -1786,6 +1827,7 @@ impl EntryTrie {
             },
             len,
             entries_stable,
+            entries_reducer_eval_identity,
             union_locally_free,
             any_connective_used,
             trie_snapshot: Arc::new(OnceLock::new()),
@@ -1836,6 +1878,7 @@ impl Clone for EntryTrie {
             repr: self.repr.clone(),
             len: self.len,
             entries_stable: self.entries_stable,
+            entries_reducer_eval_identity: self.entries_reducer_eval_identity,
             union_locally_free: self.union_locally_free.clone(),
             any_connective_used: self.any_connective_used,
             trie_snapshot: Arc::clone(&self.trie_snapshot),
@@ -1852,6 +1895,7 @@ impl Default for EntryTrie {
             repr: EPathMapRepr::Empty,
             len: 0,
             entries_stable: true,
+            entries_reducer_eval_identity: true,
             union_locally_free: Vec::new(),
             any_connective_used: false,
             trie_snapshot: Arc::new(OnceLock::new()),
@@ -2787,6 +2831,34 @@ mod pathmap_native_semantics_tests {
             expr_instance: Some(ExprInstance::EPathmapBody(map)),
         });
         par
+    }
+
+    #[test]
+    fn shared_clone_teardown_releases_only_the_root_and_last_owner_drains_values() {
+        let map = EPathMap::new_map(
+            [(int(1), int(10)), (int(2), int(20))],
+            Vec::new(),
+            false,
+            None,
+        );
+        let alias = map.clone();
+
+        let mut drained = Vec::new();
+        alias.drain_owned_pars(&mut drained);
+        assert!(
+            drained.is_empty(),
+            "a shared alias must not copy-on-write and clone every PathMap value during Drop"
+        );
+
+        map.drain_owned_pars(&mut drained);
+        assert_eq!(
+            drained.len(),
+            2,
+            "the last owner must still hand every Par value to iterative teardown"
+        );
+        for value in drained {
+            crate::rust::rholang::par_children::dismantle(value);
+        }
     }
 
     #[test]
