@@ -166,10 +166,10 @@ fn deploy_cleanup_sets_for_finalized_frontier(
         .unwrap_or((lfb_height - deploy_lifespan).max(0));
 
     for block_hash in &dag.finalized_blocks_set {
-        if block_hash == finalized_lfb || dag.is_in_main_chain(block_hash, finalized_lfb)? {
+        if block_hash == finalized_lfb {
             continue;
         }
-        let height = dag.block_number(&block_hash).ok_or_else(|| {
+        let height = dag.block_number(block_hash).ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "finalized block {} has no block number",
                 PrettyPrinter::build_string_bytes(block_hash)
@@ -178,7 +178,10 @@ fn deploy_cleanup_sets_for_finalized_frontier(
         if height < scan_floor {
             continue;
         }
-        let block = block_store.get(&block_hash)?.ok_or_else(|| {
+        if dag.is_in_main_chain(block_hash, finalized_lfb)? {
+            continue;
+        }
+        let block = block_store.get(block_hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "finalized block {} not present in store",
                 PrettyPrinter::build_string_bytes(block_hash)

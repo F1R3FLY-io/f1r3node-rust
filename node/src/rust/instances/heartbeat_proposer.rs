@@ -108,16 +108,16 @@ fn empty_frontier_pressure(
     max_unfinalized_blocks: i64,
     has_pending_deploys: bool,
     has_new_parent_with_user_deploys: bool,
-    has_unfinalized_user_deploys: bool,
     deploy_grace_active: bool,
     self_recently_proposed: bool,
+    recovery_leader_window_open: bool,
 ) -> Result<EmptyFrontierPressure, casper::rust::errors::CasperError> {
     let max_unfinalized_blocks = usize::try_from(max_unfinalized_blocks).unwrap_or(usize::MAX);
     if has_pending_deploys
         || has_new_parent_with_user_deploys
-        || has_unfinalized_user_deploys
         || deploy_grace_active
         || !self_recently_proposed
+        || recovery_leader_window_open
     {
         return Ok(EmptyFrontierPressure {
             max_unfinalized_blocks,
@@ -337,14 +337,10 @@ fn random_initial_delay(check_interval: Duration) -> Duration {
 
 fn frontier_follow_leadership_allowed(
     has_new_parent_with_user_deploys: bool,
-    deploy_grace_active: bool,
     idle_recovery_window_open: bool,
     lag_recovery_leader: bool,
 ) -> bool {
-    has_new_parent_with_user_deploys
-        || deploy_grace_active
-        || idle_recovery_window_open
-        || lag_recovery_leader
+    lag_recovery_leader && (has_new_parent_with_user_deploys || idle_recovery_window_open)
 }
 
 /// Check if a heartbeat propose is needed and trigger one if so.
@@ -530,29 +526,12 @@ async fn check_lfb_and_propose(
     // Treat "deploy recovery" as actively deploy-driven conditions only.
     // Keeping grace-only mode out of this hint avoids prolonged frontier-chase churn
     // once deploy pressure is gone.
-    let has_unfinalized_user_deploys =
-        snapshot
-            .dag
-            .non_finalized_blocks()?
-            .into_iter()
-            .any(|block_hash| {
-                casper
-                    .block_store()
-                    .get(&block_hash)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|block| {
-                        block
-                            .body
-                            .deploys
-                            .iter()
-                            .any(|processed| !is_system_deploy_id(&processed.deploy.sig))
-                    })
-            });
-    let deploy_recovery_hint =
-        has_pending_deploys || has_new_parent_with_user_deploys || has_unfinalized_user_deploys;
+    let deploy_recovery_hint = has_pending_deploys || has_new_parent_with_user_deploys;
     let deploy_recovery_max_lag =
         std::cmp::max(pending_deploy_max_lag, advanced_deploy_recovery_max_lag);
+    let idle_recovery_window_open =
+        finality_progress.stalled && finality_progress.recovery_round_due;
+    let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
 
     let effective_frontier_chase_cap = effective_frontier_chase_cap(
         frontier_chase_max_lag,
@@ -564,9 +543,9 @@ async fn check_lfb_and_propose(
         config.advanced.empty_frontier_max_unfinalized_blocks,
         has_pending_deploys,
         has_new_parent_with_user_deploys,
-        has_unfinalized_user_deploys,
         deploy_grace_active,
         self_recently_proposed,
+        idle_recovery_window_open && lag_recovery_leader,
     )?;
     let empty_frontier_backpressure = empty_frontier_pressure.backpressure;
     if empty_frontier_backpressure {
@@ -581,8 +560,6 @@ async fn check_lfb_and_propose(
         );
     }
     let stale_recovery_interval_elapsed = frontier_age_ms >= stale_recovery_min_interval_ms;
-    let idle_recovery_window_open =
-        finality_progress.stalled && finality_progress.recovery_round_due;
     let stale_recovery_window_open =
         stale_recovery_interval_elapsed || deploy_recovery_hint || idle_recovery_window_open;
 
@@ -604,8 +581,6 @@ async fn check_lfb_and_propose(
     } else {
         lfb_lag_blocks <= pending_deploy_max_lag
     };
-    let lag_recovery_leader =
-        is_lag_recovery_leader(&snapshot, validator_identity, last_finalized_block_number);
     let pending_deploys_due =
         has_pending_deploys && (!self_recently_proposed || can_propose_pending_deploys_while_ahead);
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
@@ -617,10 +592,8 @@ async fn check_lfb_and_propose(
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
             .unwrap_or(true)
         && (!self_proposed_too_recently || deploy_grace_active);
-    let can_follow_frontier_without_pending_deploys = deploy_recovery_hint
-        || deploy_grace_active
-        || stale_recovery_interval_elapsed
-        || idle_recovery_window_open;
+    let can_follow_frontier_without_pending_deploys =
+        deploy_recovery_hint || stale_recovery_interval_elapsed || idle_recovery_window_open;
     // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
     // recovery/finalization we should not wait out the full cooldown before advancing finality.
     let allow_cooldown_override_for_deploy_recovery =
@@ -637,12 +610,11 @@ async fn check_lfb_and_propose(
         && has_new_parents
         && frontier_follow_leadership_allowed(
             has_new_parent_with_user_deploys,
-            deploy_grace_active,
             idle_recovery_window_open,
             lag_recovery_leader,
         )
         && !empty_frontier_backpressure
-        && (has_new_parent_with_user_deploys || deploy_grace_active || idle_recovery_window_open)
+        && (has_new_parent_with_user_deploys || idle_recovery_window_open)
         && can_follow_frontier_without_pending_deploys
         && (!self_recently_proposed
             || can_chase_frontier_while_ahead
@@ -1039,7 +1011,6 @@ fn inspect_parent_updates(
 fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
-    last_finalized_block_number: i64,
 ) -> bool {
     let validators: Vec<Validator> = match snapshot.parents.first() {
         Some(parent) => parent
@@ -1055,22 +1026,16 @@ fn is_lag_recovery_leader(
         return true;
     }
 
-    let validator_latest_heights: Vec<(Validator, i64)> = validators
-        .into_iter()
-        .map(|validator| {
-            let latest_height = snapshot
-                .dag
-                .latest_message(&validator)
-                .ok()
-                .flatten()
-                .map(|meta| meta.block_number)
-                .unwrap_or(0);
-            (validator, latest_height)
-        })
-        .collect();
-
-    select_lag_recovery_leader(validator_latest_heights, last_finalized_block_number)
-        .is_none_or(|leader| leader == validator_identity.public_key.bytes)
+    select_lag_recovery_leader(validators, |validator| {
+        snapshot
+            .dag
+            .latest_message(validator)
+            .ok()
+            .flatten()
+            .map(|meta| meta.block_number)
+            .unwrap_or(0)
+    })
+    .is_none_or(|leader| leader == validator_identity.public_key.bytes)
 }
 
 fn effective_frontier_chase_cap(
@@ -1089,19 +1054,15 @@ fn effective_frontier_chase_cap(
 }
 
 fn select_lag_recovery_leader(
-    validator_latest_heights: Vec<(Validator, i64)>,
-    last_finalized_block_number: i64,
+    mut validators: Vec<Validator>,
+    latest_height: impl Fn(&Validator) -> i64,
 ) -> Option<Validator> {
-    let mut active: Vec<(Validator, i64)> = validator_latest_heights
-        .iter()
-        .filter(|(_, height)| *height > last_finalized_block_number)
-        .cloned()
-        .collect();
-    if active.is_empty() {
-        active = validator_latest_heights;
-    }
-    active.sort_by(|(a, a_height), (b, b_height)| a_height.cmp(b_height).then_with(|| a.cmp(b)));
-    active.into_iter().next().map(|(validator, _)| validator)
+    validators.sort_by(|a, b| {
+        latest_height(a)
+            .cmp(&latest_height(b))
+            .then_with(|| a.cmp(b))
+    });
+    validators.into_iter().next()
 }
 
 /// Unit tests for HeartbeatProposer configuration validation.
@@ -1122,22 +1083,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deploy_recovery_frontier_follow_does_not_wait_for_recovery_leader() {
-        assert!(frontier_follow_leadership_allowed(
-            true, false, false, false
-        ));
-        assert!(frontier_follow_leadership_allowed(
-            false, true, false, false
-        ));
-        assert!(frontier_follow_leadership_allowed(
-            false, false, true, false
-        ));
-        assert!(frontier_follow_leadership_allowed(
-            false, false, false, true
-        ));
-        assert!(!frontier_follow_leadership_allowed(
-            false, false, false, false
-        ));
+    fn deploy_recovery_frontier_follow_requires_recovery_leader() {
+        assert!(!frontier_follow_leadership_allowed(true, false, false));
+        assert!(!frontier_follow_leadership_allowed(false, true, false));
+        assert!(!frontier_follow_leadership_allowed(false, false, true));
+        assert!(frontier_follow_leadership_allowed(true, false, true));
+        assert!(frontier_follow_leadership_allowed(false, true, true));
+        assert!(!frontier_follow_leadership_allowed(false, false, false));
     }
 
     fn create_test_validator_identity() -> ValidatorIdentity {
@@ -1266,8 +1218,15 @@ mod tests {
         let b = prost::bytes::Bytes::from_static(b"b");
         let c = prost::bytes::Bytes::from_static(b"c");
 
-        let leader =
-            select_lag_recovery_leader(vec![(b.clone(), 4), (c.clone(), 9), (a.clone(), 12)], 0);
+        let leader = select_lag_recovery_leader(vec![b.clone(), c.clone(), a.clone()], |v| {
+            if *v == a {
+                12
+            } else if *v == b {
+                4
+            } else {
+                9
+            }
+        });
 
         assert_eq!(leader, Some(b));
     }
@@ -1278,21 +1237,9 @@ mod tests {
         let b = prost::bytes::Bytes::from_static(b"b");
         let c = prost::bytes::Bytes::from_static(b"c");
 
-        let leader =
-            select_lag_recovery_leader(vec![(c.clone(), 7), (b.clone(), 7), (a.clone(), 7)], 0);
+        let leader = select_lag_recovery_leader(vec![c.clone(), b.clone(), a.clone()], |_| 7);
 
         assert_eq!(leader, Some(a));
-    }
-
-    #[test]
-    fn lag_recovery_leader_excludes_validators_not_ahead_of_finality() {
-        let a = prost::bytes::Bytes::from_static(b"a");
-        let b = prost::bytes::Bytes::from_static(b"b");
-        let c = prost::bytes::Bytes::from_static(b"c");
-
-        let leader = select_lag_recovery_leader(vec![(a, 4), (b.clone(), 7), (c, 9)], 4);
-
-        assert_eq!(leader, Some(b));
     }
 
     #[test]
@@ -1508,21 +1455,27 @@ mod tests {
         fn empty_frontier_pressure_blocks_only_empty_recovery() {
             let validator = create_test_validator_identity();
             let snapshot = wide_unfinalized_snapshot(validator.public_key.bytes);
-            let pressure = empty_frontier_pressure(&snapshot, 2, false, false, false, false, true)
+            let pressure = empty_frontier_pressure(&snapshot, 2, false, false, false, true, false)
                 .expect("pressure");
             assert!(pressure.backpressure);
             assert_eq!(pressure.unfinalized_blocks, 3);
 
-            let pending = empty_frontier_pressure(&snapshot, 2, true, false, false, false, true)
+            let pending = empty_frontier_pressure(&snapshot, 2, true, false, false, true, false)
                 .expect("pending");
             assert!(!pending.backpressure);
             assert_eq!(pending.unfinalized_blocks, 0);
 
             let unfinalized =
-                empty_frontier_pressure(&snapshot, 2, false, false, true, false, true)
+                empty_frontier_pressure(&snapshot, 2, false, false, false, true, false)
                     .expect("unfinalized");
-            assert!(!unfinalized.backpressure);
-            assert_eq!(unfinalized.unfinalized_blocks, 0);
+            assert!(unfinalized.backpressure);
+            assert_eq!(unfinalized.unfinalized_blocks, 3);
+
+            let recovery_leader =
+                empty_frontier_pressure(&snapshot, 2, false, false, false, true, true)
+                    .expect("recovery leader");
+            assert!(!recovery_leader.backpressure);
+            assert_eq!(recovery_leader.unfinalized_blocks, 0);
         }
 
         #[tokio::test]
