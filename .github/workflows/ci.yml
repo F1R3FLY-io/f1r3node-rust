@@ -171,6 +171,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-aggregate-perf-report.sh
 
+      - name: Verify latency benchmark readiness and finalization
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-latency-benchmark.sh
+
       - name: Verify soak fail-closed driver
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-merge-recovery-soak.sh

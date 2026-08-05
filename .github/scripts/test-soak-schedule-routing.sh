@@ -36,18 +36,36 @@ cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   *"/commits?"*) printf '1\n' ;;
-  *) printf '%s\n' '{"workflow_runs":[]}' ;;
+  *"runs?event=workflow_dispatch"*)
+    if [ -n "${FAKE_CLAIM_QUERY_FAIL:-}" ]; then
+      exit 1
+    fi
+    if [ -n "${FAKE_CLAIMED_SLOT:-}" ]; then
+      printf '{"workflow_runs":[{"id":123,"display_title":"Merge Recovery Soak [scheduled:%s]","status":"%s","conclusion":%s}]}\n' \
+        "$FAKE_CLAIMED_SLOT" "${FAKE_CLAIMED_STATUS:-in_progress}" "${FAKE_CLAIMED_CONCLUSION:-null}"
+    else
+      printf '%s\n' '{"workflow_runs":[]}'
+    fi
+    ;;
+  *)
+    printf 'unexpected gh invocation: %s\n' "$*" >&2
+    exit 1
+    ;;
 esac
 SH
 chmod +x "$TMP/bin/date" "$TMP/bin/gh"
 
 run_gate() {
-	local mode="$1" weekday="$2" slot="$3" output
-	output="$TMP/output-$mode-$weekday"
+	local mode="$1" weekday="$2" slot="$3" tag="${4:-}" output
+	output="$TMP/output-$mode-$weekday${tag:+-$tag}"
 	: >"$output"
 	PATH="$TMP/bin:$PATH" \
 		FAKE_NOW_EPOCH="$((slot + 60))" \
 		FAKE_SLOT_EPOCH="$slot" \
+		FAKE_CLAIMED_SLOT="${FAKE_CLAIMED_SLOT:-}" \
+		FAKE_CLAIMED_STATUS="${FAKE_CLAIMED_STATUS:-}" \
+		FAKE_CLAIMED_CONCLUSION="${FAKE_CLAIMED_CONCLUSION:-}" \
+		FAKE_CLAIM_QUERY_FAIL="${FAKE_CLAIM_QUERY_FAIL:-}" \
 		FAKE_PACIFIC_WEEKDAY="$weekday" \
 		EVENT_NAME="$([ "$mode" = oci ] && printf workflow_dispatch || printf schedule)" \
 		EVENT_SCHEDULE="30 2 * * *" \
@@ -81,6 +99,26 @@ for mode in oci cron; do
 	grep -qx 'kind=daily' "$monday"
 	grep -qx 'run_benchmarks=false' "$monday"
 done
+
+# A cron delivery whose slot was claimed by a live OCI-dispatched run must
+# yield: the soak concurrency group cancels in-progress, so a late cron
+# would otherwise kill a soak hours into its run.
+claimed="$(FAKE_CLAIMED_SLOT=1785810600 run_gate cron 1 1785810600 live-claim)"
+grep -qx 'should_run=false' "$claimed"
+# A dispatch that failed or was cancelled left no soak running, so the cron
+# fallback must still soak the night rather than yield to a dead claim.
+dead_claim="$(FAKE_CLAIMED_SLOT=1785810600 FAKE_CLAIMED_STATUS=completed \
+	FAKE_CLAIMED_CONCLUSION='"failure"' run_gate cron 1 1785810600 dead-claim)"
+grep -qx 'should_run=true' "$dead_claim"
+# A completed successful dispatch keeps the claim (nothing left to soak).
+done_claim="$(FAKE_CLAIMED_SLOT=1785810600 FAKE_CLAIMED_STATUS=completed \
+	FAKE_CLAIMED_CONCLUSION='"success"' run_gate cron 1 1785810600 done-claim)"
+grep -qx 'should_run=false' "$done_claim"
+# The unclaimed cron delivery from the loop above must still have run.
+grep -qx 'should_run=true' "$TMP/output-cron-1"
+# A failed claim query must fail OPEN: soak anyway rather than silently skip.
+open_fail="$(FAKE_CLAIM_QUERY_FAIL=1 run_gate cron 1 1785810600 query-fail)"
+grep -qx 'should_run=true' "$open_fail"
 
 if PATH="$TMP/bin:$PATH" \
 	FAKE_NOW_EPOCH=1785551460 \

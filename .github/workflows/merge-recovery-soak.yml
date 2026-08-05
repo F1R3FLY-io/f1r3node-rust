@@ -392,6 +392,52 @@ jobs:
               target_ref=master
               duration_seconds=216000
             fi
+            # The OCI Function scheduler dispatches this workflow at the exact
+            # slot instant; this cron survives as its late-delivered fallback.
+            # If a dispatch already claimed tonight's slot, running again would
+            # not merely duplicate it — the soak concurrency group cancels
+            # in-progress, so the hours-late cron would kill a soak already
+            # hours into its run. Fails OPEN like the idle check above: if the
+            # query cannot be trusted, soak anyway — a duplicate start is
+            # recoverable, a silently skipped soak is not.
+            # Only a live or successful dispatch claims the slot: one that
+            # failed at its own gate or was cancelled left no soak running,
+            # and yielding to it would silently skip the night — the failure
+            # this fallback exists to prevent.
+            #
+            # The claim is matched by display title, so any collaborator's
+            # dispatch that passes scheduled_slot_epoch can hold the slot.
+            # Accepted: such a run goes through this same gate and either
+            # soaks or, on failure, stops claiming under the status filter.
+            #
+            # per_page=100 without pagination leans on the API's newest-first
+            # ordering — the claiming dispatch is at most hours old and this
+            # workflow runs a handful of times per day, so page one holds it.
+            if [ "$should_run" = "true" ]; then
+              expected_title="Merge Recovery Soak [scheduled:${slot_epoch}]"
+              claim_runs="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/merge-recovery-soak.yml/runs?event=workflow_dispatch&per_page=100" 2>/dev/null)" \
+                || claim_runs=""
+              if [ -z "$claim_runs" ]; then
+                # Fail-open must be observable: without this line a broken
+                # token looks identical to "no claim found", and a masked
+                # duplicate would surface only as a concurrency cancel.
+                echo "::warning::slot-claim query failed; failing open and soaking anyway"
+                canonical_run=""
+              else
+                canonical_run="$(jq -r --arg title "$expected_title" \
+                  '[.workflow_runs[]
+                    | select(.display_title == $title)
+                    | select(.status != "completed" or .conclusion == "success")
+                    | .id] | min // empty' <<<"$claim_runs" 2>/dev/null \
+                  || { echo "::warning::slot-claim response unparseable; failing open and soaking anyway" >&2; printf ''; })"
+              fi
+              if [ -n "$canonical_run" ]; then
+                should_run=false
+                duplicate_skip=true
+                echo "slot already claimed by OCI-dispatched run $canonical_run; cron fallback yields"
+              fi
+            fi
           fi
           kind=daily
           if [ "$duration_seconds" = "216000" ]; then

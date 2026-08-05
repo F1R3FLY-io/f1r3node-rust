@@ -12,6 +12,7 @@ use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
+    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
@@ -296,6 +297,33 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(
             block_processor_queue_max_pending,
         );
+
+    // Queue depth is where memory pressure moves when parallel drain is
+    // bounded, so it must be observable alongside block-processing.active.
+    // Sampled from the channel's own permit accounting via a WeakSender so
+    // the sampler can never hold the queue open past the last real producer.
+    metrics::gauge!(
+        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+    )
+    .set(0.0);
+    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
+                break;
+            };
+            let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
+            metrics::gauge!(
+                BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
+                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+            )
+            .set(pending as f64);
+        }
+    });
 
     // Block processing state - set of items currently in processing
     let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
