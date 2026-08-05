@@ -902,6 +902,24 @@ impl RuntimeOps {
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
 
+        // Slice 30c F-30b-8 fix: wrap the standalone system deploy
+        // path with a WalDeployScope so any Consensus WAL entries a
+        // system deploy would produce are drained + discarded per-
+        // deploy rather than leaking into the next user deploy's
+        // slice.  Currently no system deploy (CloseBlock, Slash,
+        // PreCharge, Refund) touches Consensus caps at all — they
+        // dispatch only to PoS/vault Rholang contracts, none of
+        // which invoke fs-native URNs.  If a future system deploy
+        // is written to touch Consensus caps, its WAL entries
+        // land in `_leaked_entries` here, get logged at warn, and
+        // are discarded rather than silently attributed to the
+        // next user deploy.  A follow-up slice can extend the
+        // block-level WAL aggregator to include system-deploy
+        // contributions (needs a proto extension: system deploys
+        // don't have per-deploy WAL attribution on
+        // `ProcessedSystemDeploy` today).
+        let _wal_scope = WalDeployScope::new(self.runtime.fs_handles.wal.clone());
+
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
 

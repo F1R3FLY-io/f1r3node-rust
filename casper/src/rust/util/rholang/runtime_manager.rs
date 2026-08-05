@@ -1293,6 +1293,26 @@ impl RuntimeManager {
     /// snapshot writer.  Every subsequent `spawn_runtime` /
     /// `spawn_replay_runtime` call attaches the current value to
     /// the returned `RhoRuntimeImpl.fs_snapshot_writer`.
+    ///
+    /// Slice 30c F-30b-2 disposition: hot-reload is INTENTIONAL.
+    /// H-30b-2 refactored the writer slot to
+    /// `Arc<RwLock<Option<SnapshotWriter>>>` so post-boot
+    /// operator adjustments (retention tuning, dir migration,
+    /// snapshot disable) can take effect on already-spawned
+    /// runtimes without a node restart.  Every runtime reads the
+    /// slot on every `SnapshotWriter::maybe_write` call, so the
+    /// next block-boundary write picks up the new config.
+    ///
+    /// Consensus-safety note: `cadence` is NOT a per-node knob
+    /// (see slice 30c Phase A — cadence is a shard-wide Genesis
+    /// parameter).  Hot-reload here therefore does not fork
+    /// consensus even if operators disagree on when to change
+    /// `dir` or `retain`, because those are per-node local
+    /// concerns.  If a future slice adds Genesis-committed
+    /// fields to `SnapshotWriter`, hot-reload semantics must be
+    /// revisited (the RwLock write on a live runtime while a
+    /// deploy is mid-flight is safe — the runtime reads the
+    /// slot ONLY at end-of-block, not during deploy execution).
     pub async fn set_fs_snapshot_writer(
         &self,
         writer: Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>,

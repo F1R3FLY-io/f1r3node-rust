@@ -342,6 +342,45 @@ impl Wal {
         guard.split_off(mark.len)
     }
 
+    /// Slice 30c M-29-3 fix: find the entry with the given
+    /// ack_hash (from a prior `append_with_ack`) and replace it
+    /// with `new_entry`.  Returns `true` if a match was found and
+    /// updated, `false` otherwise (no change).
+    ///
+    /// Used by `fs_write` / `fs_write_at` on partial writes: the
+    /// pre-syscall reservation records a placeholder with the
+    /// REQUESTED payload hash + length; if the syscall returns
+    /// `n < requested`, the post-syscall finalize replaces the
+    /// entry with the ACTUAL payload hash + length (`hash(bytes[..n])`).
+    /// Both leader (`n` from reply) and follower (`n` from `previous`
+    /// cache) perform this finalize deterministically, so the two
+    /// sides end with byte-identical entries even under partial-
+    /// write divergence between hosts.
+    ///
+    /// Search is O(n) worst case but starts from the tail (the
+    /// entry was appended recently), so common case is O(1).  A
+    /// duplicate ack_hash across entries (shouldn't happen for
+    /// fresh unforgeables) updates the most-recent one.
+    pub fn update_last_entry_by_ack_hash(&self, ack_hash: [u8; 32], new_entry: WalEntry) -> bool {
+        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
+        let ack_guard = self
+            .ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned");
+        debug_assert_eq!(
+            entries_guard.len(),
+            ack_guard.len(),
+            "Wal invariant: entries and ack_hashes must be index-aligned"
+        );
+        for i in (0..ack_guard.len()).rev() {
+            if ack_guard[i] == ack_hash {
+                entries_guard[i] = new_entry;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Slice 30c H-R3 fix (option B PoC): drain entries appended
     /// after `mark` in DETERMINISTIC log order.
     ///
@@ -714,5 +753,71 @@ mod tests {
             drained[1].payload_ref,
             Some(PayloadRef::hash(b"post_revert"))
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Slice 30c M-29-3 tests: partial-write finalize.
+    //
+    // The pre-syscall placeholder records the REQUESTED bytes'
+    // hash; a post-syscall `update_last_entry_by_ack_hash` swaps
+    // in the ACTUAL bytes' hash when `n < requested`.  Both leader
+    // (n from syscall reply) and follower (n from `previous`
+    // cache) finalize deterministically, so the two sides converge
+    // on identical WAL entries.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn update_last_entry_by_ack_hash_replaces_matching_entry() {
+        let wal = Wal::new();
+        let ack = [0xAAu8; 32];
+        // Pre-syscall placeholder: full-length write.
+        wal.append_with_ack(mk_write_entry(b"full requested payload"), ack)
+            .unwrap();
+        // Simulate partial write: syscall wrote only "full req".
+        let updated = WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/x"),
+            extra_path: None,
+            offset: None,
+            length: Some(8),
+            payload_ref: Some(PayloadRef::hash(b"full req")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+        };
+        assert!(wal.update_last_entry_by_ack_hash(ack, updated.clone()));
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0], updated);
+    }
+
+    #[test]
+    fn update_last_entry_by_ack_hash_returns_false_when_no_match() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"anything"), [0xAAu8; 32])
+            .unwrap();
+        let bogus = mk_write_entry(b"other");
+        // Different ack hash — no match.
+        assert!(!wal.update_last_entry_by_ack_hash([0xBBu8; 32], bogus));
+        // Original entry unchanged.
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].payload_ref, Some(PayloadRef::hash(b"anything")));
+    }
+
+    #[test]
+    fn update_last_entry_finalize_replaces_only_most_recent_match() {
+        // Duplicate ack hashes shouldn't occur for fresh unforgeables,
+        // but defense-in-depth: only the LAST match gets updated.
+        let wal = Wal::new();
+        let ack = [0xCCu8; 32];
+        wal.append_with_ack(mk_write_entry(b"first"), ack).unwrap();
+        wal.append_with_ack(mk_write_entry(b"second"), ack).unwrap();
+        let updated = mk_write_entry(b"second_updated");
+        assert!(wal.update_last_entry_by_ack_hash(ack, updated.clone()));
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].payload_ref, Some(PayloadRef::hash(b"first")));
+        assert_eq!(snap[1], updated);
     }
 }

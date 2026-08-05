@@ -550,9 +550,21 @@ pub struct BlockData {
 }
 
 impl BlockData {
+    /// Sentinel used before `set_block_data` runs for a real
+    /// block.  Slice 30c F-30b-3 fix: `block_number = -1` signals
+    /// "no block yet" so consumers (notably `SnapshotWriter::maybe_write`)
+    /// can distinguish it from a real block 0.  Pre-fix
+    /// `block_number = 0` was a cadence hit for any cadence,
+    /// which was harmless in practice only because empty-entries
+    /// skipped the write path — but a runtime spawned in this
+    /// state that ever accumulated WAL entries before
+    /// `set_block_data` would have silently persisted them as
+    /// "block 0" content.  The negative-block-number branch in
+    /// `SnapshotWriter::maybe_write` already skips negatives, so
+    /// the sentinel is safe throughout.
     pub fn empty() -> Self {
         BlockData {
-            block_number: 0,
+            block_number: -1,
             sender: PublicKey::from_bytes(&hex::decode("00").unwrap()),
             seq_num: 0,
             time_stamp: 0,

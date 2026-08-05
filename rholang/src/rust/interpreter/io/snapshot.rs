@@ -544,9 +544,36 @@ pub struct SnapshotWriter {
     /// validation.
     pub cadence: u64,
     /// How many snapshots to retain on disk.  Older ones are pruned
-    /// after each successful write.  Defaults to `cadence * 2` if not
-    /// set explicitly by config — enough to serve a joining validator
-    /// spanning up to `cadence * 2` blocks of history.
+    /// after each successful write.
+    ///
+    /// # Default heuristic and its ratification
+    ///
+    /// Defaults to `max(2, cadence * 2)` snapshots when the
+    /// operator has not set `storage.consensus-fs-snapshot-retain`
+    /// explicitly (via `snapshot_config::build_snapshot_writer`).
+    /// The resulting on-disk history window is roughly
+    /// `2 * cadence²` blocks, which scales quadratically in
+    /// cadence — almost certainly overprovisioned for small
+    /// cadences and underprovisioned for very large ones.
+    ///
+    /// Slice 30c F-30b-1 disposition: the `cadence * 2` formula
+    /// is RATIFIED AS A PLACEHOLDER.  It ships as the default
+    /// because (a) it has a defensible minimum-viable rationale
+    /// ("keep at least 2 × current cadence's worth of history"),
+    /// (b) the retention floor of 2 guarantees any joining
+    /// validator can always fetch at least prior + current, and
+    /// (c) it's operator-tunable per-node via
+    /// `storage.consensus-fs-snapshot-retain` (slice 35).
+    /// Operators with concrete joining-SLA targets should set
+    /// this explicitly using the sizing formula in the HOCON
+    /// docstring: `retain = ceil(N_blocks / cadence) + 1`.
+    ///
+    /// A future slice may replace the default with a principled
+    /// formula (fixed N-blocks joining window regardless of
+    /// cadence).  That change would flip existing operator
+    /// defaults, so it wants a coordinated rollout with an
+    /// explicit config-schema migration.  Until then, the
+    /// heuristic ships with this ratification note.
     pub retain: usize,
 }
 
@@ -1579,6 +1606,43 @@ mod tests {
         // must not persist.
         assert!(writer.maybe_write(-1, &entries).unwrap().is_none());
         assert!(writer.maybe_write(-100, &entries).unwrap().is_none());
+    }
+
+    /// Slice 30c F-30b-3 fix pin: `BlockData::empty()` returns
+    /// `block_number = -1` as a sentinel meaning "no block yet."
+    /// A runtime that ever calls `maybe_write` in that state must
+    /// not persist a snapshot (would otherwise land at block 0 or
+    /// some cadence-hit due to a bogus initial value).  The
+    /// negative-block-number skip above catches this; this test
+    /// pins the intent explicitly.
+    #[test]
+    fn snapshot_writer_skips_block_data_empty_sentinel() {
+        use crate::rust::interpreter::system_processes::BlockData;
+        let sentinel_block_number = BlockData::empty().block_number;
+        assert!(
+            sentinel_block_number < 0,
+            "BlockData::empty must use a negative sentinel (F-30b-3); got {sentinel_block_number}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 1, // any cadence — negative < 0 skip triggers first
+            retain: 3,
+        };
+        let entries = vec![mk_write_entry(b"x", "/x")];
+        assert!(
+            writer
+                .maybe_write(sentinel_block_number, &entries)
+                .unwrap()
+                .is_none(),
+            "BlockData::empty sentinel must NOT trigger a snapshot write"
+        );
+        // Companion pin: manifest is also NOT touched.
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.is_empty(),
+            "sentinel-block writes must not append manifest entries"
+        );
     }
 
     #[test]

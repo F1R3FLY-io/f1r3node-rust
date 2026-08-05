@@ -228,6 +228,62 @@ impl FsProcesses {
     /// fully derivable from args (fd + n).  Called from `fs_truncate`
     /// BEFORE the `is_replay` short-circuit (C-29-F1 review fix).
     /// Return semantics identical to `journal_write`.
+    /// Slice 30c M-29-3 fix: finalize a previously-reserved write
+    /// WAL entry with the ACTUAL bytes written.  Called by
+    /// `fs_write` / `fs_write_at` on partial writes (n < requested).
+    ///
+    /// Semantics:
+    /// - Locates the entry with matching ack_hash (the placeholder
+    ///   appended by `journal_write` pre-syscall).
+    /// - Replaces it in-place with `bytes[..n]` hash + n as length.
+    /// - On leader: `n` comes from the syscall reply.
+    /// - On follower: `n` comes from the cached `previous` reply.
+    /// Both sides derive the same `n` from `bytes` (same args, same
+    /// deterministic reply) and produce a byte-identical final entry.
+    ///
+    /// Full-length writes (n == requested) don't call this — the
+    /// pre-syscall placeholder already has the correct content.
+    /// Failed writes (error reply) similarly skip (nothing on disk
+    /// to reconcile).
+    async fn finalize_write_journal(
+        &self,
+        fd: u64,
+        requested_bytes: &[u8],
+        actual_n: u64,
+        offset: Option<u64>,
+        ack: &Par,
+    ) {
+        // Only Consensus caps have a placeholder to finalize.
+        let cmode_and_path = self
+            .handles
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .await;
+        if let Some((ConsensusMode::Consensus, canon_path)) = cmode_and_path {
+            let n = (actual_n as usize).min(requested_bytes.len());
+            let actual_slice = &requested_bytes[..n];
+            let op = if offset.is_some() {
+                WalOp::WriteAt
+            } else {
+                WalOp::Write
+            };
+            let updated = WalEntry {
+                op,
+                path: canon_path,
+                extra_path: None,
+                offset,
+                length: Some(actual_n),
+                payload_ref: Some(PayloadRef::hash(actual_slice)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+            };
+            let _ = self
+                .handles
+                .wal
+                .update_last_entry_by_ack_hash(ack_channel_hash(ack), updated);
+        }
+    }
+
     async fn journal_truncate(&self, fd: u64, n: u64, ack: &Par) -> Result<bool, ()> {
         let wal_meta = self
             .handles
@@ -648,13 +704,40 @@ impl FsProcesses {
             }
         }
         if is_replay {
+            // Slice 30c M-29-3: on the follower, extract the
+            // leader's cached `n` and finalize the WAL entry with
+            // the actual bytes on partial writes.  Full-length
+            // writes leave the pre-syscall placeholder in place
+            // (already correct).
+            if let (Some((fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
+                if n < bytes.len() as u64 {
+                    self.finalize_write_journal(*fd, bytes, n, None, ack).await;
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed {
+        let reply = match parsed.clone() {
             Some((fd, bytes)) => self.write_impl(fd, bytes, None).await,
             None => err(FSERR_BAD_ARG, "expected (u64, ByteArray)"),
         };
+        // Slice 30c M-29-3: on the leader, extract the actual `n`
+        // from the reply and finalize the WAL entry with the
+        // actual bytes on partial writes.
+        if let (Some((fd, bytes)), Some(n)) =
+            (&parsed, extract_ok_u64(std::slice::from_ref(&reply)))
+        {
+            if n < bytes.len() as u64 {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal",
+                    fd = fd,
+                    requested = bytes.len(),
+                    actual = n,
+                    "partial write on Consensus cap; finalizing WAL entry with actual bytes"
+                );
+                self.finalize_write_journal(*fd, bytes, n, None, ack).await;
+            }
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -712,13 +795,37 @@ impl FsProcesses {
             }
         }
         if is_replay {
+            // Slice 30c M-29-3: follower finalize on partial write.
+            if let (Some((fd, off, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
+                if n < bytes.len() as u64 {
+                    self.finalize_write_journal(*fd, bytes, n, Some(*off), ack)
+                        .await;
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed {
+        let reply = match parsed.clone() {
             Some((fd, off, bytes)) => self.write_impl(fd, bytes, Some(off)).await,
             None => err(FSERR_BAD_ARG, "expected (u64, u64, ByteArray)"),
         };
+        // Slice 30c M-29-3: leader finalize on partial write.
+        if let (Some((fd, off, bytes)), Some(n)) =
+            (&parsed, extract_ok_u64(std::slice::from_ref(&reply)))
+        {
+            if n < bytes.len() as u64 {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal",
+                    fd = fd,
+                    offset = off,
+                    requested = bytes.len(),
+                    actual = n,
+                    "partial write_at on Consensus cap; finalizing WAL entry"
+                );
+                self.finalize_write_journal(*fd, bytes, n, Some(*off), ack)
+                    .await;
+            }
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
