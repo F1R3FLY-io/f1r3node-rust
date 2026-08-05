@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-04 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -89,7 +89,7 @@ CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface 
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
-derivation. **46 further changes were examined and retired** with typed reasons — 35 bug fixes, 3
+derivation. **47 further changes were examined and retired** with typed reasons — 35 bug fixes, 4
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -134,7 +134,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 20 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 46 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 47 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -445,7 +445,8 @@ optimizations are not consensus-breaking for this register's purpose**, and that
 conversions proven equivalent to their recursive counterparts definitely do not change consensus —
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
-under that criterion; the 46 that no longer qualify are retired to typed rows in
+under that criterion; the 46 that no longer qualified at re-scope—and the later CBR-050
+measured-neutral optimization—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -589,8 +590,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **18 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **12 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 46 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 20 + 46 = 66 historical identifiers, none reused.
+resolved under the token model (§3.3). The 47 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 20 + 47 = 67 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3015,7 +3016,7 @@ above is the maintenance mechanism.
 ## 8. Conclusions
 
 1. The register holds **20** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **46** examined
+   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **47** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3150,7 +3151,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 46 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 47 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3194,6 +3195,7 @@ material now lives.
 | `CBR-047` | `3dda2186` | A substituted `locally_free` prefix has one canonical empty-set spelling | `BUG_FIX_RULED_NONCONSENSUS` | `models/tests/bit_vector_canonicity.rs` measures the 3-byte protobuf and event-hash movement; `rholang/tests/reduce_spec.rs::eval_of_to_byte_array_method_on_any_process_should_substitute_before_serialization` pins the corrected 18-byte value and replay-visible event |
 | `CBR-048` | `dd11241d` | Replay COMM choice stops inheriting `Counter` / `HashMap` iteration order | `BUG_FIX_RULED_NONCONSENSUS` | `rspace++/tests/replay_comm_order.rs` checks all 720 insertion orders under adversarial hash collisions, total-order laws, both ingress sites, and multiplicity preservation; existing replay 24/24 and guarded play/replay 15/15 suites pass |
 | `CBR-049` | `5d511a10` | Default test genesis stops inheriting process-random validator and funded-vault fixture keys | `BUG_FIX_RULED_NONCONSENSUS` | the shared deterministic keyspace reaches both Genesis cohorts; post-state golden `28ca4bcf…925ca` passes in 4/4 independent processes at 14.58–14.82 s each under the capped harness |
+| `CBR-050` | `b30a1568`; measurement harness `mettail-rust@bb98055b`, metadata guard `9dccb346` | Reducer-identity EPathMaps preserve their native trie root, and shared clone-family teardown releases one root without copy-on-write cloning every `Par` | `OPTIMIZATION_MEASURED_NEUTRAL` | target evaluator/root and recursive-oracle differentials pass; treatment values, COMM schedule, attempts, successes, and D3 token count are unchanged by `b30a1568`; all 45 stack subjects remain flat. Pgmcp experiment 171 accepted 18.730472 ms treatment vs 32.280954 ms control with 51 samples/arm; allocations 4,119,482 $`\rightarrow`$ 278,527. PathMap report §5.4.1; stack-safety report §5.17 |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -3266,5 +3268,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1 and removed the mechanised drift gate with its machine index; the pre-refactor revision, with
-every retired body and the gate's specification, remains in git history.*
+to B.1; the later measured-neutral CBR-050 brings the living appendix to 47. The re-scope also removed
+the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
+body and the gate's specification, remains in git history.*

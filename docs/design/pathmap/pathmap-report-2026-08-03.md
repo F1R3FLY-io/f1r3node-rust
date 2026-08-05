@@ -4,7 +4,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata`
-**Report date** 2026-08-03, revised 2026-08-04 · **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33`
+**Report date** 2026-08-03, revised 2026-08-04 · **Fixed-scale measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@98901e33` · **Latest integration anchor** `f1r3node-rust-mettail@b30a1568` · `mettail-rust@9dccb346` (runtime change `bb98055b`)
 **Companion reports** — the [stack-safety report](../stack-safety/stack-safety-report-2026-07-29.md)
 (the depth-safety programme these fixes also belong to) and the
 [consensus-change register](../../consensus/consensus-change-register.md)
@@ -68,6 +68,7 @@ register rows for these IDs point here.
 | **SS-C8** | `8cf0b770` | FORM ② keyed by the entries **this surface writes** (`locally_free`-blanked); the blanked trie is memoized | folded into EPM1; the invariant it repaired is permanent | [5.2](#52-the-wire-lineage-and-the-epm1-format), [5.3](#53-negative-results) |
 | **SS-C9** | `26876b65` | `EPathMap = Empty \| Set(PathMap<()>) \| Map(PathMap<Par>)`; one versioned **EPM1** trie snapshot on protobuf **and** bincode; generated decode PDAs remove the read ceiling | **the final state**; refined by `9b3792ac` (zero-copy decode) and `2902f0d0` (reverse-zipper printer) | [5.1](#51-the-homogeneous-representation)–[5.5](#55-pathmap-native-operations) |
 | **SS-C10** | `7b25df5a` | the expression-evaluator PDA streams set keys and map key/value pairs from reverse PathMap order instead of retaining a forward `Vec<&Par>` projection | zero projected child pointers; canonical forward evaluation and map association preserved | [5.7](#57-reverse-zipper-totality) |
+| **SS-C11** | `b30a1568`; integration harness `mettail-rust@bb98055b`, metadata guard `9dccb346` | reducer-identity maps preserve their native root; shared clone-family teardown releases one root instead of copy-on-write cloning every `Par`; E-6a binds the persistent index once per query phase | 4,119,482 $`\rightarrow`$ 278,527 allocation events; accepted E-8b treatment mean 18.730 ms against 32.281 ms control; native stack remains flat | [5.4.1](#541-integration-path-root-preservation-and-e-8b) |
 | **SS-Y6** | `c0385b79` | the `InternedEPathMap` LRU store and its spliced event-hash emitter are **deleted**; `contains_par` is constant-false | discharged by deletion; zero byte goldens moved | [5.8](#58-the-dissolved-intern-store) |
 | **SS-E3** *(PathMap slice)* | `b2d84064` | independent `hash_pathmap_set` / `hash_pathmap_map` cachegrind ladders | both linear; exponents in [§5.6](#56-hash-and-clear-ladders) | [5.6](#56-hash-and-clear-ladders) |
 | **SS-E4** *(PathMap slice)* | `0e487d4a` | production reverse-zipper totality repair found by measurement | total; allocation-free reverse walk preserved without a PathMap fork | [5.7](#57-reverse-zipper-totality) |
@@ -111,6 +112,13 @@ production-common case — with crossover before depth 8 and **233.874×** at de
 EPM1's gain is canonicity and single-sourcing, **not** compression: the serialized key stream does not
 exploit prefix sharing (measured false, §5.3).
 
+The cross-repository integration path now confirms the same direction at runtime (**MEASURED**, §5.4.1).
+After reducer evaluation and shared-root teardown stopped reconstructing or copy-on-write cloning the
+native `PathMap<Par>`, the preregistered E-8b `swap_comb`, $`n=16`$ treatment averaged **18.730 ms**
+against **32.281 ms** for control (**41.98 % lower**, 51 samples per arm). Allocation events fell from
+**4,119,482 to 278,527**. The full fired-result equivalence suite and all 45 stack-gate subjects pass;
+no PathMap source changed.
+
 Two production defects were found by measurement rather than review and repaired without forking
 PathMap: an ACTree03 reader that turned internal compression nodes into observable terminating paths
 on dense maps (§5.2), and a reverse-zipper sibling walk that panicked on a dense zero mask word
@@ -132,6 +140,7 @@ single-sourcing rule (§5.3).
   - [5.2 The wire lineage and the EPM1 format](#52-the-wire-lineage-and-the-epm1-format)
   - [5.3 Negative results](#53-negative-results)
   - [5.4 EPM1 performance at fixed scale](#54-epm1-performance-at-fixed-scale)
+    - [5.4.1 Integration-path root preservation and E-8b](#541-integration-path-root-preservation-and-e-8b)
   - [5.5 PathMap-native operations](#55-pathmap-native-operations)
   - [5.6 Hash and clear ladders](#56-hash-and-clear-ladders)
   - [5.7 Reverse-zipper totality](#57-reverse-zipper-totality)
@@ -550,6 +559,73 @@ These are fixed-machine comparative measurements, not universal latency claims. 
 conclusion is the ratio and the complexity class**: flattening destroys trie compression (78.6× /
 7.6× on bytes) and turns indexed lookup into a linear scan (8,061× / 6,184× at this scale, and
 growing with $`n`$).
+
+#### 5.4.1 Integration-path root preservation and E-8b
+
+The fixed-scale rows above proved that a native lookup is fast, but the first end-to-end E-6a
+measurement did not exercise *only* that lookup. **MEASURED**, pgmcp experiment 170: the current
+control averaged **32.083 ms** while the supposedly native treatment averaged **804.187 ms** over
+51 samples per arm. The locked criterion was rejected. That negative result was retained rather
+than re-labelled, and profiling the current path found three integration costs around the trie:
+
+1. the evaluator decoded every EPathMap key and rebuilt a complete `PathMap<Par>` before each
+   indexed query, even when `eval_expr` was byte-identical for every key and value;
+2. dropping a shared `EntryTrie` alias consumed its PathMap iterator, which invoked copy-on-write
+   and cloned every associated `Par` merely to tear the alias down;
+3. the E-6a treatment rebound the same persistent index around every site query instead of once
+   around the parallel phase body.
+
+The repair preserves the homogeneous representation rather than changing it. Commit `b30a1568`
+maintains an $`\mathcal{O}(1)`$ `entries_reducer_eval_identity` fold separately from the stricter
+canonical-codec `entries_stable` fold. A `Par` is conservatively certified when it is codec-stable
+or has no top-level expressions—the exact condition under which the reducer returns that `Par`
+byte-for-byte. A closed certified EPathMap therefore clones the native root once; any open or dynamic
+case falls back to the complete evaluating PDA. The same commit uses the existing shared snapshot
+`Arc` as an exact clone-family witness: a shared, unmodified alias releases only its root, while the
+last owner still moves every map value into the generated iterative `Drop` PDA. Mutation invalidates
+the witness with the other derived caches. Commit `mettail-rust@bb98055b` binds the phase-2 queries
+under one receive, reducing index COMMs from 17 to 2 at $`n=16`$ without changing lookup semantics.
+
+**Allocation profile.** Heaptrack over one release treatment repetition at the same cell reported
+**4,119,482** allocation events before either target repair, **1,351,335** after evaluator root
+preservation, and **278,527** after shared-alias teardown was corrected: **93.2 % fewer** than the
+initial integration and **79.4 % fewer** than the evaluator-only state. The final release
+`converted_traversals_are_depth_independent` gate remains green for all **45** production subjects.
+`clone_pathmap_chain` and `pathmap_chain_drop` both stay below the instrument's 12 KiB floor at depth
+4 and depth 4,096; last-owner teardown is still exercised independently by the native semantics suite.
+
+**Locked timing result.** Corrective pgmcp experiment 171 (E-8b) was preregistered before its valid
+capture: one-sided Welch test, $`\alpha=0.05`$, minimum Cohen effect 0.5, three warmups, 51 measured
+samples per arm, CPU 0, `performance` governor, boost enabled, `MemoryMax=10G`, and swap disabled.
+The exact submitted rows are
+[`e8b-native-pathmap-par-e6a-2026-08-04.tsv`](../stack-safety/measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv).
+
+| arm | mean | median | minimum | maximum |
+|---|---:|---:|---:|---:|
+| current spread-and-drive control | 32.280954 ms | 32.276612 ms | 32.188405 ms | 32.436245 ms |
+| native `PathMap<Par>` treatment | **18.730472 ms** | **18.712728 ms** | 18.673604 ms | 18.931242 ms |
+
+The mean difference is **−13.550482 ms (−41.98 %)** with a 95 % confidence interval of
+**[−13.569871, −13.531093] ms**, one-sided $`p=9.8799\times10^{-210}`$, and Cohen's
+$`d=-274.697`$. Both arms depart from normality, so the prescribed robustness result is reported too:
+Mann–Whitney $`p=0`$ and Cliff's $`\delta=-1`$; every treatment sample is below every control sample.
+Treatment phase means are 9.121150 ms for publication/discovery and 9.609322 ms for guard/value
+queries.
+
+**Semantic and accounting boundary.** The five-case E-6a suite proves equal fired results, not equal
+implementation traces. The control uses 79 matching-tau plus 16 visible COMMs and consumes 301 tokens;
+the treatment uses 2 PathMap-index plus 16 visible COMMs and consumes 33. Those differences are the
+algorithm being measured and predate `b30a1568`; the target optimization preserves the treatment's
+values, COMM schedule, attempts, and token count. Consequently `b30a1568` is a measured-neutral
+optimization in the consensus register (retired CBR-050), while adopting the distinct E-6a lowering
+as a consensus execution strategy would require its own explicit token-model decision. Neither result
+licenses a pair-path encoding, a `Vec<Par>` projection, or a PathMap fork.
+
+The first E-8b preflight was excluded before submission because its inherited header said experiment
+170 and 51 *total* iterations left only 48 post-warmup samples. Artifact 307 preserves that refusal.
+Commit `mettail-rust@9dccb346` makes the experiment ID mandatory, records `measured_reps`, and rejects
+a configuration with no measured samples. The valid run used 54 total iterations and is the only run
+in experiment 171's decision.
 
 ### 5.5 PathMap-native operations
 
@@ -988,11 +1064,26 @@ for s in docs/design/pathmap/figures/*.svg; do
 done
 ```
 
+**A.6 — the E-8b integration cell** (§5.4.1; run from the companion `mettail-rust` root after
+building `bench_e6a_pathmap_driver` in release mode with the four features named by its module docs):
+
+```bash
+systemd-run --user --scope -p MemoryHigh=8G -p MemoryMax=10G -p MemorySwapMax=0 \
+  taskset -c 0 target/release/bench_e6a_pathmap_driver \
+  --experiment 171 --workload swap_comb --arm control --n 16 \
+  --reps 54 --warmups 3 --out /tmp/e8b-control.jsonl
+systemd-run --user --scope -p MemoryHigh=8G -p MemoryMax=10G -p MemorySwapMax=0 \
+  taskset -c 0 target/release/bench_e6a_pathmap_driver \
+  --experiment 171 --workload swap_comb --arm treatment --n 16 \
+  --reps 54 --warmups 3 --out /tmp/e8b-treatment.jsonl
+```
+
 ## Appendix B — raw data locations
 
 | artifact | location | durability |
 |---|---|---|
 | EPM1 fixed-scale table (transcription of record, anchor SHA in header) | [`measurements/epm1-fixed-scale-2026-08-03.tsv`](measurements/epm1-fixed-scale-2026-08-03.tsv) | **durable** (committed) |
+| E-8b raw submitted samples, phase split, refs, finalized digests, and decision statistics | [`../stack-safety/measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](../stack-safety/measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | **durable** (committed) |
 | cachegrind exponents for `hash_pathmap_set` / `hash_pathmap_map` (full 40-subject table) | [`../stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv`](../stack-safety/measurements/phase7-cachegrind-fits-2026-08-03.tsv) | **durable** (committed) |
 | depth histograms incl. the escape-arm population | [`../stack-safety/measurements/phase7-depth-histograms-2026-08-03.tsv`](../stack-safety/measurements/phase7-depth-histograms-2026-08-03.tsv), [`…corpora…tsv`](../stack-safety/measurements/phase7-depth-corpora-2026-08-03.tsv) | **durable** (committed) |
 | suite and bench logs (`/tmp/pathmap_matrix.log`, `/tmp/epm1_fixed_scale.log`, `/tmp/trie_key_bench.log`, `/tmp/phase7.log`) | `/tmp` | **VOLATILE** — regeneration commands in Appendix A are the durable evidence |
