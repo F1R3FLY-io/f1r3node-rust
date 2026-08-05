@@ -16,10 +16,15 @@ in {
     new retCh in {
       getBlockData!(*retCh) |
       for (@blockNumber, @timestamp, @sender <- retCh) {
+        // Slice 30c F-30b-3 fix: `BlockData::empty()` uses
+        // `block_number = -1` as a sentinel meaning "no block
+        // yet."  This test runs in a runtime scope where
+        // `set_block_data` was never called, so the sentinel is
+        // exactly what `rho:block:data` should return.
         rhoSpec!("assertMany",
           [
             ((0, "==", timestamp), "timestamp is zero"),
-            ((0, "==", blockNumber), "the blocknumber is zero"),
+            ((-1, "==", blockNumber), "blocknumber is -1 sentinel (F-30b-3)"),
             (("00".hexToBytes(), "==", sender), "sender is 0x00")
           ], *ackCh)
       }
