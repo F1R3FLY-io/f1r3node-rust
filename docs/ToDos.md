@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.0"
-last_updated: 2026-08-01
+last_updated: 2026-08-05
 mr_status:
   ready: false
   target_branch: master
@@ -63,7 +63,82 @@ mr_status:
 
 ## Active Epics
 
-<!-- Epics ordered by priority. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
+<!-- Epics ordered by priority. EPIC-011 is the current top priority. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
+
+---
+
+### EPIC-011: TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)
+
+```yaml
+---
+epic_id: EPIC-011
+title: "TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)"
+status: in_progress
+priority: p0
+user_story: null
+blocked_by: []
+created_at: 2026-08-05
+claimed_by: claude-session-917f64e8
+claimed_at: 2026-08-05T00:00:00Z
+tasks:
+  - id: TASK-011-1
+    title: "Add run_exhaustive workflow_dispatch input to slashing-tests.yml"
+    status: in_progress
+    claimed_by: claude-session-917f64e8
+    branch: fix/tla-3v-liveness-split
+    acceptance:
+      - "workflow_dispatch gains a boolean input run_exhaustive (default false)"
+      - "tla-model-check job sets RUN_EXHAUSTIVE_TLA=1 only when the input is true; push/pull_request/schedule behavior is unchanged (nightly keeps gating on the 8 fast configs)"
+      - "Change lives on a feature branch from dev (fix/tla-3v-liveness-split) so the exhaustive tier can be dispatched against the branch before anything merges"
+
+  - id: TASK-011-2
+    title: "Dispatch the exhaustive tier and capture the red run"
+    status: pending
+    blocked_by: [TASK-011-1]
+    acceptance:
+      - "gh workflow run slashing-tests.yml --ref <branch> -f run_exhaustive=true executed (env -u GITHUB_TOKEN)"
+      - "Run goes red with all three exhaustive-tier configs (MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety) reported as TIMEOUT at the 45m per-config cap — distinctly labeled as timeouts, not invariant violations"
+      - "Run URL and per-config outcomes recorded in the epic work log as the red baseline"
+
+  - id: TASK-011-3
+    title: "Split MC_EquivocationDetectorEager_3v into safety + bounded liveness configs"
+    status: pending
+    blocked_by: [TASK-011-2]
+    acceptance:
+      - "formal/tlaplus/slashing/ gains MC_EquivocationDetectorEager_3v_safety.{tla,cfg} (INVARIANTS only) and MC_EquivocationDetectorEager_3v_liveness.{tla,cfg} (PROPERTIES, constants bounded to complete under the cap), mirroring the existing MC_EquivocationDetector_liveness pattern (~3s where the combined config times out)"
+      - "Both new configs still model 3 validators — bounding must not reduce validator count, or the coverage-gap fix is illusory"
+      - "Both complete locally well under TLC_PER_CONFIG_TIMEOUT=45m via scripts/ci/check-tla-invariants.sh"
+      - "CONTINGENCY: if the liveness config, completing for the first time at 3 validators, reports a genuine counterexample, this task stops and the trace is reported — green then comes from an algorithm/model fix investigated under a new task, not from tuning the model until it passes"
+
+  - id: TASK-011-4
+    title: "Restore _3v coverage to the nightly tier, sync docs, capture the green run"
+    status: pending
+    blocked_by: [TASK-011-3]
+    acceptance:
+      - "scripts/ci/check-tla-invariants.sh adds the two new _3v configs to the default (nightly-gating) tier; combined MC_EquivocationDetectorEager_3v stays in the exhaustive tier as the unbounded reference"
+      - "docs/theory/slashing/design/14-test-plan.md §14.6/§14.9 updated to match the new tier membership"
+      - "Default-tier dispatch (or PR run) goes green with the _3v configs included; run URL recorded next to the red baseline"
+      - "Edits to check-tla-invariants.sh stay minimal to keep the pending PR #198 reconciliation conflict (namespaced entries + fail-on-missing) tractable"
+
+  - id: TASK-011-5
+    title: "Apply the same split to MC_EquivocationDetector"
+    status: pending
+    blocked_by: [TASK-011-4]
+    acceptance:
+      - "MC_EquivocationDetector gets the same safety/liveness split treatment once the _3v recipe is proven (its safety half, MC_EquivocationDetector_safety, already exists — the liveness half is the new work)"
+      - "Exhaustive tier dispatch goes fully green, or remaining timeouts are explicitly accepted and documented as unbounded-reference runs"
+---
+```
+
+**Context:** The "TLA+ invariant check" nightly job was red on every run from its start (2026-07-25) until hotfix PR #201 — not from invariant violations, but because `MC_EquivocationDetector` and `MC_EquivocationDetectorEager_3v` hit the 45-minute per-config cap (interleaved liveness checking goes superlinear; locally reproduced over a 106M-state graph). PR #201 parked them behind `RUN_EXHAUSTIVE_TLA=1`, but no CI path sets that variable, so the exhaustive tier currently never runs anywhere. Meanwhile the nightly tier checks the inherently multi-validator equivocation property at ≤2 validators, because `_3v` is the only 3-validator detector model (flagged by spreston8 in the PR #201 review).
+
+**Plan (confirmed with maintainer 2026-08-05):** make the exhaustive tier dispatchable, run it **red** (honest timeout-red — TLC has never found a violation in these models; every config that completes, passes), then make it **green** via the causal liveness/safety split — not by raising the cap (see the causal-diagnosis-before-resources rule). The one open risk is deliberate: these liveness properties have never completed at 3 validators, so the split may surface a real counterexample, in which case the green path becomes an algorithm/model fix (TASK-011-3 contingency).
+
+**Scope:**
+
+- Included: dispatch input, red baseline run, `_3v` safety/liveness split, nightly-tier restoration, docs sync, follow-on `MC_EquivocationDetector` split
+- Excluded: raising `TLC_PER_CONFIG_TIMEOUT`; reducing validator count to make models cheap; the cargo-mutants nightly deadline overrun (separate, second independent nightly red — still untracked)
+- Coordination: touches `scripts/ci/check-tla-invariants.sh`, which the pending PR #198 reconciliation also modifies — keep tier-list edits minimal
 
 ---
 

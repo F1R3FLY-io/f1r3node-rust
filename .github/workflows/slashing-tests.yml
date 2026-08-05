@@ -23,6 +23,15 @@ name: Slashing test suite
 
 on:
   workflow_dispatch:
+    inputs:
+      run_exhaustive:
+        description: >-
+          Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
+          cap-busting detector configs parked by PR #201. Expect TIMEOUT
+          reds at the 45m per-config cap until the liveness/safety split
+          lands (EPIC-011).
+        type: boolean
+        default: false
   schedule:
     # Nightly run at 06:30 UTC for the extended-budget jobs.
     - cron: "30 6 * * *"
@@ -198,6 +207,10 @@ jobs:
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
+          # Opt-in exhaustive tier: only a manual dispatch with
+          # run_exhaustive=true sets this; schedule and default dispatches
+          # keep gating on the fast tier alone.
+          RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
         run: bash scripts/ci/check-tla-invariants.sh
 
   rocq-build:
