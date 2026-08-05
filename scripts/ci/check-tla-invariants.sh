@@ -72,7 +72,9 @@ fi
 # Post-fix configs: each must TLC-clean.
 POST_FIX_CONFIGS=(
     MC_EquivocationDetector_liveness
+    MC_EquivocationDetector_liveness_2v
     MC_EquivocationDetectorEager
+    MC_EquivocationDetectorEager_3v2s
     MC_ConcurrentTracker
     MC_SlashFlow
     MC_TwoLevelSlashing
@@ -103,6 +105,8 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 
 failed=0
+timeouts=0
+violations=0
 for cfg in "${POST_FIX_CONFIGS[@]}"; do
     if [[ ! -f "$cfg.tla" || ! -f "$cfg.cfg" ]]; then
         echo "SKIP   $cfg (missing $cfg.tla or $cfg.cfg)"
@@ -120,17 +124,19 @@ for cfg in "${POST_FIX_CONFIGS[@]}"; do
     elif (( status == 124 )); then
         echo "TIMEOUT $cfg after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
+        timeouts=$((timeouts + 1))
     else
         echo "FAIL   $cfg ($elapsed)"
         echo "--- last 40 lines of /tmp/tlc-$cfg.log ---"
         tail -40 "/tmp/tlc-$cfg.log"
         echo "--- end log ---"
         failed=$((failed + 1))
+        violations=$((violations + 1))
     fi
 done
 
 if (( failed > 0 )); then
-    echo "FAILED: $failed config(s) violated invariants."
+    echo "FAILED: $failed config(s) did not verify — $timeouts cap timeout(s), $violations violation-or-error(s)."
     exit 1
 fi
 

@@ -110,11 +110,13 @@ tasks:
 
   - id: TASK-011-3
     title: "Split MC_EquivocationDetectorEager_3v into safety + bounded liveness configs"
-    status: in_progress
+    status: complete
     claimed_by: claude-session-917f64e8
+    completed_at: 2026-08-05T14:50:00Z
     blocked_by: [TASK-011-2]
     notes:
       - "PREMISE CORRECTED 2026-08-05 (maintainer-ratified; supersedes the title and first acceptance line): MC_EquivocationDetectorEager_3v is already safety-only — the Eager rewrite checks liveness as the Inv_LivenessAsSafety invariant and the .cfg has no PROPERTY line, so its 45m timeouts are state-space cost (3v×3s×2b), not liveness-graph blowup. There is no split to make. Fix = bound-tightening: new MC_EquivocationDetectorEager_3v2s (3 validators × 2 seqnums × 2 blocks, full _3v invariant list, symmetry) for the nightly tier; full 3v×3s×2b stays exhaustive. The liveness/safety split remains valid for MC_EquivocationDetector (its .cfg has PROPERTY Live_DetectionComplete) — that is TASK-011-5's scope. TDD plan B2 (merged with B3) tracks execution."
+      - "GREEN 2026-08-05T14:48Z: MC_EquivocationDetectorEager_3v2s completes in 2m08s (57.2M states generated, 5.72M distinct, depth 37) with ZERO violations — first-ever completed detector check at 3 validators; the stop-on-violation contingency did not fire. Fast-tier regression suite clean (8/8 OK). Model files created; tier-list wiring is TASK-011-4."
     acceptance:
       - "formal/tlaplus/slashing/ gains MC_EquivocationDetectorEager_3v_safety.{tla,cfg} (INVARIANTS only) and MC_EquivocationDetectorEager_3v_liveness.{tla,cfg} (PROPERTIES, constants bounded to complete under the cap), mirroring the existing MC_EquivocationDetector_liveness pattern (~3s where the combined config times out)"
       - "Both new configs still model 3 validators — bounding must not reduce validator count, or the coverage-gap fix is illusory"
@@ -123,8 +125,12 @@ tasks:
 
   - id: TASK-011-4
     title: "Restore _3v coverage to the nightly tier, sync docs, capture the green run"
-    status: pending
+    status: complete
+    claimed_by: claude-session-917f64e8
+    completed_at: 2026-08-05T15:12:00Z
     blocked_by: [TASK-011-3]
+    notes:
+      - "MC_EquivocationDetectorEager_3v2s added to POST_FIX_CONFIGS (one line); 14-test-plan §14.6/§14.9 synced to the corrected diagnosis. Local green run: 9/9 OK, _3v2s 128s, ~4.2 min total. Per the local-only rescope, the CI-dispatch green run is deferred to push time (TASK-011-5 / plan B6)."
     acceptance:
       - "scripts/ci/check-tla-invariants.sh adds the two new _3v configs to the default (nightly-gating) tier; combined MC_EquivocationDetectorEager_3v stays in the exhaustive tier as the unbounded reference"
       - "docs/theory/slashing/design/14-test-plan.md §14.6/§14.9 updated to match the new tier membership"
@@ -133,8 +139,11 @@ tasks:
 
   - id: TASK-011-5
     title: "Apply the same split to MC_EquivocationDetector"
-    status: pending
+    status: in_progress
+    claimed_by: claude-session-917f64e8
     blocked_by: [TASK-011-4]
+    notes:
+      - "Split treatment landed 2026-08-05: MC_EquivocationDetector_liveness_2v (2v×1s×2b) verifies Live_DetectionComplete at 2 validators in 8s, wired into the nightly tier (10/10 green, ~4.3 min). Safety half (MC_EquivocationDetector_safety) already existed. Remaining acceptance: the exhaustive-tier dispatch green-or-documented bookend (TDD plan B6) — deferred until the branch is pushed per the local-only rescope."
     acceptance:
       - "MC_EquivocationDetector gets the same safety/liveness split treatment once the _3v recipe is proven (its safety half, MC_EquivocationDetector_safety, already exists — the liveness half is the new work)"
       - "Exhaustive tier dispatch goes fully green, or remaining timeouts are explicitly accepted and documented as unbounded-reference runs"
