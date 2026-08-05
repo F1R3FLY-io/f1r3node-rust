@@ -573,12 +573,15 @@ impl SnapshotWriter {
             return Ok(None);
         }
         if entries.is_empty() {
-            // Cadence-hit but nothing to snapshot; that's fine — a
-            // block with no fs mutations still emits the empty-slice
-            // root as a canonical no-op checkpoint.  For MVP we skip
-            // to avoid writing thousands of identical empty-slice
-            // files; slice 30c will decide whether the "no-op
-            // checkpoint" is a useful joining signal.
+            // Slice 30c Phase C (F-30b-4 fix): empty-slice cadence
+            // hit.  Pre-30c this was a silent skip — indistinguishable
+            // from a cadence miss to a joining validator.  Now we
+            // append an "empty" sentinel to the manifest so joiners
+            // can verify they have not missed a snapshot boundary.
+            // No `.wal` file is written on disk (empty payloads all
+            // hash to the same content-address; one file per empty
+            // slice would waste disk without adding replay value).
+            let _ = append_manifest_entry(&self.dir, ManifestEntry::empty(block_number));
             return Ok(None);
         }
         let (_, root) = write_snapshot(&self.dir, entries)?;
@@ -596,11 +599,327 @@ impl SnapshotWriter {
             n_entries = entries.len(),
             "snapshot persisted"
         );
+        // Slice 30c Phase C: append to the join-protocol manifest so
+        // peers can enumerate this validator's available snapshots
+        // by block_number without probing the directory.  Best-
+        // effort: manifest append failures do not abort the write
+        // path (the snapshot file is already durable; missing
+        // manifest lines can be reconstructed by directory scan).
+        if let Err(e) = append_manifest_entry(
+            &self.dir,
+            ManifestEntry::data(block_number, root, entries.len()),
+        ) {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot.manifest",
+                block_number,
+                error = %e,
+                "manifest append failed; snapshot persisted but join-protocol \
+                 enumeration will need to fall back to directory scan"
+            );
+        }
         // Best-effort retention prune.  Failures logged, not
         // propagated — retention is bounded by future writes anyway.
         let _ = prune_snapshot_dir(&self.dir, self.retain);
         Ok(Some(root))
     }
+}
+
+// ---------------------------------------------------------------
+// Slice 30c Phase C: join-protocol manifest substrate.
+//
+// A joining validator catching up from genesis (or after a long
+// downtime) needs to know WHICH snapshots each peer has on disk
+// without listing directories or probing every possible content-
+// hash.  The manifest is an append-only file at
+// `<snapshot-dir>/manifest.jsonl` recording one line per
+// cadence-hit block: block_number, snapshot root (or the "empty"
+// sentinel for F-30b-4), entry count, timestamp.
+//
+// The line format is intentionally simple (JSON per line, no
+// serde dependency) so a joining validator's client can parse it
+// with a hand-rolled reader if it lives outside the Rust node
+// (e.g., a browser-side lightweight explorer, an operator's
+// diagnostic script).
+//
+// # What this slice delivers
+//
+// - Append side: `SnapshotWriter.maybe_write` emits a manifest
+//   entry per cadence hit (both data and empty-sentinel).
+// - Read side: `read_manifest(dir)` for peers to publish + for
+//   catch-up clients to plan fetches.
+// - Empty-slice sentinel: distinguishes "block had zero
+//   mutations" from "cadence miss" (F-30b-4 resolution).
+//
+// # What this slice deliberately DOES NOT deliver
+//
+// - Network transport (`GET /snapshots/<root_hex>` or similar
+//   peer-level RPC): the actual client/server for fetching
+//   snapshot bytes across the network.  Requires comm-crate
+//   integration, new protobuf messages, retry/peer-selection
+//   logic, and a state machine for progress tracking.  A
+//   follow-up slice (30c-4 or similar) wires this once the
+//   catch-up state machine design is agreed.
+// - Manifest signing / attestation.  Currently the manifest is
+//   unsigned per-node reporting.  A joining validator asking
+//   multiple peers can cross-check root hashes (content-
+//   addressed, so mismatches surface as hash mismatches at
+//   fetch time).  A signed-manifest protocol may lift this to
+//   an attested claim about "which snapshots exist" for
+//   audit; deferred pending threat-model review.
+// - Automatic reconstruction from directory scan if the manifest
+//   is absent.  For now, missing/corrupt manifest → peer serves
+//   no discovery (their snapshots are still fetchable by hash
+//   if the joiner learns the hash elsewhere).
+
+/// One line in the manifest.  Serialized to a compact JSON
+/// object with fixed field ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestEntry {
+    /// Block_number the snapshot corresponds to.  For LFB-cadence
+    /// (slice 30c Phase B, deferred): the finalized-block height
+    /// at which this snapshot was written.
+    pub block_number: i64,
+    /// `Some(root)` for a data snapshot; `None` for the empty-
+    /// slice sentinel (F-30b-4).
+    pub root: Option<[u8; 32]>,
+    /// Number of `WalEntry` records the snapshot encodes.  Zero
+    /// for the empty sentinel; strictly positive for data.
+    pub entries: u64,
+    /// Wall-clock write timestamp, ms since UNIX_EPOCH.  Best-
+    /// effort — a validator whose clock is skewed still produces
+    /// a valid manifest, but comparisons across peers are noisy.
+    pub ts_ms: i64,
+}
+
+impl ManifestEntry {
+    pub fn data(block_number: i64, root: [u8; 32], entries: usize) -> Self {
+        Self {
+            block_number,
+            root: Some(root),
+            entries: entries as u64,
+            ts_ms: now_ms(),
+        }
+    }
+
+    pub fn empty(block_number: i64) -> Self {
+        Self {
+            block_number,
+            root: None,
+            entries: 0,
+            ts_ms: now_ms(),
+        }
+    }
+
+    /// Serialize to a single JSON line (no trailing newline).
+    /// Fixed field order + minimal whitespace so peers parsing
+    /// with a hand-rolled reader don't have to canonicalize.
+    pub fn to_line(&self) -> String {
+        let root_field = match &self.root {
+            Some(r) => format!("\"{}\"", hex_encode(r)),
+            None => "null".to_string(),
+        };
+        format!(
+            "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
+            self.block_number, root_field, self.entries, self.ts_ms,
+        )
+    }
+
+    /// Parse a single manifest line.  Rejects any input that
+    /// doesn't match the strict schema — a corrupted line
+    /// surfaces here rather than mid-catchup.
+    pub fn from_line(line: &str) -> Result<Self, String> {
+        // Hand-rolled parser — deliberately not serde to keep
+        // the line format independent of any Rust crate's
+        // deserializer behavior and to make the wire format
+        // reproducible in other languages.
+        let trimmed = line.trim();
+        let inner = trimmed
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .ok_or_else(|| format!("manifest line missing braces: {line:?}"))?;
+        let mut block_number: Option<i64> = None;
+        let mut root: Option<Option<[u8; 32]>> = None;
+        let mut entries: Option<u64> = None;
+        let mut ts_ms: Option<i64> = None;
+        for part in split_top_level_commas(inner) {
+            let (key, value) = part
+                .split_once(':')
+                .ok_or_else(|| format!("manifest kv missing `:` in {part:?}"))?;
+            let key = key.trim().trim_matches('"');
+            let value = value.trim();
+            match key {
+                "block_number" => {
+                    block_number = Some(
+                        value
+                            .parse()
+                            .map_err(|e| format!("block_number parse: {e}"))?,
+                    );
+                }
+                "root" => {
+                    if value == "null" {
+                        root = Some(None);
+                    } else {
+                        let hex = value.trim_matches('"');
+                        if hex.len() != 64 {
+                            return Err(format!("root hex must be 64 chars; got {}", hex.len()));
+                        }
+                        let bytes = hex_decode_32(hex)?;
+                        root = Some(Some(bytes));
+                    }
+                }
+                "entries" => {
+                    entries = Some(value.parse().map_err(|e| format!("entries parse: {e}"))?);
+                }
+                "ts_ms" => {
+                    ts_ms = Some(value.parse().map_err(|e| format!("ts_ms parse: {e}"))?);
+                }
+                other => {
+                    return Err(format!("unknown manifest key `{other}`"));
+                }
+            }
+        }
+        Ok(Self {
+            block_number: block_number.ok_or("missing block_number")?,
+            root: root.ok_or("missing root")?,
+            entries: entries.ok_or("missing entries")?,
+            ts_ms: ts_ms.ok_or("missing ts_ms")?,
+        })
+    }
+}
+
+/// Manifest filename inside the snapshot directory.
+pub const MANIFEST_FILENAME: &str = "manifest.jsonl";
+
+/// Append a manifest entry to `<snapshot_dir>/manifest.jsonl`.
+/// Creates the file with `0o644` on first append.  Uses
+/// `O_APPEND` semantics — multiple concurrent processes writing
+/// to the same manifest see line-atomic appends (POSIX
+/// guarantee for writes ≤ PIPE_BUF; a manifest line is under
+/// that limit).
+pub fn append_manifest_entry(
+    snapshot_dir: &Path,
+    entry: ManifestEntry,
+) -> Result<(), SnapshotError> {
+    use std::io::Write;
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let mut file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o644)
+                .open(&path)?
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?
+        }
+    };
+    let mut line = entry.to_line();
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Read every manifest entry from `<snapshot_dir>/manifest.jsonl`.
+/// Returns entries in file order (append order = block-number
+/// order under a single writer; under concurrent-writer append
+/// races two entries may interleave at line boundaries, still
+/// well-formed).  A corrupt line halts parsing at that line
+/// and surfaces the error — join clients treat "we have manifest
+/// entries up to line K" as a valid partial view.
+pub fn read_manifest(snapshot_dir: &Path) -> Result<Vec<ManifestEntry>, SnapshotError> {
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(SnapshotError::Io(e)),
+    };
+    let mut out = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = ManifestEntry::from_line(line).map_err(|e| {
+            SnapshotError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("manifest line {}: {}", i + 1, e),
+            ))
+        })?;
+        out.push(entry);
+    }
+    Ok(out)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!("expected 64 hex chars; got {}", hex.len()));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("hex byte {i}: {e}"))?;
+        out[i] = b;
+    }
+    Ok(out)
+}
+
+/// Split a JSON-object body on top-level commas (no depth
+/// tracking beyond top level — manifest entries are flat, so a
+/// naive splitter is correct).  Handles quoted strings so a
+/// comma inside a string literal (there shouldn't be one in
+/// well-formed entries, but defense) doesn't split.
+fn split_top_level_commas(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut in_string = false;
+    let mut escape = false;
+    for c in inner.chars() {
+        if escape {
+            buf.push(c);
+            escape = false;
+            continue;
+        }
+        match c {
+            '\\' if in_string => {
+                buf.push(c);
+                escape = true;
+            }
+            '"' => {
+                in_string = !in_string;
+                buf.push(c);
+            }
+            ',' if !in_string => {
+                out.push(std::mem::take(&mut buf));
+            }
+            _ => buf.push(c),
+        }
+    }
+    if !buf.trim().is_empty() {
+        out.push(buf);
+    }
+    out
 }
 
 /// F-30-5 review fix (slice 30b): retention policy for the snapshot
@@ -1217,10 +1536,34 @@ mod tests {
             cadence: 1,
             retain: 3,
         };
-        // Cadence=1 means every block is a hit, but empty entries skip.
+        // Cadence=1 means every block is a hit, but empty entries
+        // don't produce a `.wal` file (empty payloads all hash to
+        // the same content-address; one file per empty slice would
+        // waste disk).  Slice 30c Phase C (F-30b-4 resolution):
+        // empty cadence hits DO append a manifest sentinel line so
+        // joining validators can distinguish "block had no fs
+        // mutations" from "cadence miss."
         assert!(writer.maybe_write(0, &[]).unwrap().is_none());
         assert!(writer.maybe_write(1, &[]).unwrap().is_none());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        // No `.wal` files — the byte-heavy artifact is what we
+        // skip on empty slices.
+        let wal_files: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|s| s == "wal"))
+            .collect();
+        assert!(
+            wal_files.is_empty(),
+            "empty slice must NOT write a .wal file; got {} files",
+            wal_files.len()
+        );
+        // But manifest.jsonl DOES exist and contains 2 sentinel
+        // entries (one per cadence-hit block).
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.len(), 2, "one sentinel per cadence-hit block");
+        for e in &manifest {
+            assert!(e.root.is_none(), "sentinel entries have root = None");
+        }
     }
 
     #[test]
@@ -1737,5 +2080,193 @@ mod tests {
                  docstring AND this test's `items` array"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Slice 30c Phase C: manifest / join-protocol substrate tests.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn manifest_entry_data_round_trips_through_line_format() {
+        let root = [0xABu8; 32];
+        let e = ManifestEntry {
+            block_number: 12345,
+            root: Some(root),
+            entries: 42,
+            ts_ms: 1_722_400_000_000,
+        };
+        let line = e.to_line();
+        // Sanity: line must be single-line JSON (no interior newlines).
+        assert!(!line.contains('\n'));
+        assert!(line.starts_with('{') && line.ends_with('}'));
+        let parsed = ManifestEntry::from_line(&line).expect("round-trip");
+        assert_eq!(parsed, e);
+    }
+
+    #[test]
+    fn manifest_entry_empty_sentinel_round_trips() {
+        let e = ManifestEntry::empty(999);
+        let line = e.to_line();
+        assert!(
+            line.contains("\"root\":null"),
+            "empty entry must serialize root as null; got {line}"
+        );
+        let parsed = ManifestEntry::from_line(&line).expect("round-trip");
+        assert_eq!(parsed, e);
+        assert!(parsed.root.is_none());
+        assert_eq!(parsed.entries, 0);
+    }
+
+    #[test]
+    fn append_and_read_manifest_preserves_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = vec![
+            ManifestEntry::data(100, [0x11; 32], 5),
+            ManifestEntry::empty(200),
+            ManifestEntry::data(300, [0x33; 32], 7),
+        ];
+        for e in &entries {
+            append_manifest_entry(dir.path(), e.clone()).unwrap();
+        }
+        let read = read_manifest(dir.path()).unwrap();
+        assert_eq!(read.len(), 3);
+        for (i, (r, w)) in read.iter().zip(entries.iter()).enumerate() {
+            assert_eq!(
+                r, w,
+                "manifest entry {i} order mismatch: read={r:?}, wrote={w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_manifest_returns_empty_when_file_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = read_manifest(dir.path()).unwrap();
+        assert!(
+            read.is_empty(),
+            "absent manifest is not an error — empty is the valid partial view for a joining validator"
+        );
+    }
+
+    #[test]
+    fn read_manifest_surfaces_corrupt_line_as_error() {
+        let dir = tempfile::tempdir().unwrap();
+        append_manifest_entry(dir.path(), ManifestEntry::data(100, [0x11; 32], 5)).unwrap();
+        // Corrupt the manifest by appending a bogus line.
+        use std::io::Write;
+        let path = dir.path().join(MANIFEST_FILENAME);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"this is not JSON\n").unwrap();
+        drop(f);
+        let err = read_manifest(dir.path()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("manifest line 2"),
+            "error must identify the corrupt line number; got {msg}"
+        );
+    }
+
+    /// F-30b-4 (slice 30c Phase C fix): `SnapshotWriter.maybe_write`
+    /// appends an "empty" sentinel manifest entry on a cadence-hit
+    /// block with zero WAL entries.  Pre-30c this was a silent
+    /// skip — joiners couldn't distinguish "block had no fs
+    /// mutations" from "cadence miss."  Now the sentinel makes the
+    /// former explicit.
+    #[test]
+    fn maybe_write_empty_slice_appends_sentinel_manifest_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 10,
+            retain: 4,
+        };
+        // Block 20: cadence hit (20 % 10 == 0) with zero entries.
+        let res = writer.maybe_write(20, &[]).unwrap();
+        assert!(res.is_none(), "empty slice returns None (no snapshot file)");
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.len(), 1, "empty sentinel must land in manifest");
+        assert_eq!(manifest[0].block_number, 20);
+        assert!(manifest[0].root.is_none(), "sentinel entry: root = null");
+        assert_eq!(manifest[0].entries, 0);
+    }
+
+    /// Data slice writes both the snapshot file AND a manifest
+    /// entry with the concrete root.  A joiner reading the
+    /// manifest can then fetch the snapshot bytes by the root
+    /// hex via `read_snapshot_bytes`.
+    #[test]
+    fn maybe_write_data_slice_appends_data_manifest_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 5,
+            retain: 4,
+        };
+        let entries = vec![WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/x"),
+            extra_path: None,
+            offset: None,
+            length: Some(3),
+            payload_ref: Some(PayloadRef::hash(b"abc")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+        }];
+        let root = writer.maybe_write(5, &entries).unwrap().unwrap();
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].block_number, 5);
+        assert_eq!(manifest[0].root, Some(root));
+        assert_eq!(manifest[0].entries, 1);
+        // The manifest root points at a real snapshot file the
+        // joiner can fetch.
+        let bytes = read_snapshot_bytes(dir.path(), &root).unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    /// Cadence-miss blocks must NOT touch the manifest.  Manifest
+    /// is only for cadence-hit blocks (data + empty sentinel);
+    /// cadence-miss blocks contribute nothing to the join-protocol
+    /// view.
+    #[test]
+    fn maybe_write_cadence_miss_does_not_touch_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 100,
+            retain: 4,
+        };
+        // Block 3 is a cadence miss (3 % 100 != 0).
+        let res = writer.maybe_write(3, &[]).unwrap();
+        assert!(res.is_none());
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.is_empty(),
+            "cadence miss must not contribute to manifest"
+        );
+    }
+
+    #[test]
+    fn manifest_entry_from_line_rejects_wrong_root_hex_length() {
+        // 63 chars (not 64) — a truncated root that would silently
+        // hash-mismatch if accepted.
+        let bogus = "{\"block_number\":1,\"root\":\"aa\",\"entries\":1,\"ts_ms\":1}";
+        let err = ManifestEntry::from_line(bogus).unwrap_err();
+        assert!(
+            err.contains("64 hex chars") || err.contains("64 chars"),
+            "must reject wrong-length root hex; got {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_entry_from_line_rejects_missing_field() {
+        // Missing ts_ms.
+        let bogus = "{\"block_number\":1,\"root\":null,\"entries\":0}";
+        let err = ManifestEntry::from_line(bogus).unwrap_err();
+        assert!(err.contains("missing ts_ms"), "got {err}");
     }
 }
