@@ -79,11 +79,38 @@ pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineErro
         return Err(QuarantineError::RootSelf);
     }
 
-    // Open the root itself.  We don't set O_NOFOLLOW on the root open —
-    // if the caller passed a symlinked root, that's a configuration
-    // choice.  Root is boot-time canonicalized by the static-provisioning
-    // layer, so this is fine.
-    let mut cur = open_dir(root, false)?;
+    // Open the root itself.  Slice 30c H-P7-6 fix: set O_NOFOLLOW
+    // on the root open so a post-boot symlink-swap attack fails
+    // cleanly.
+    //
+    // Attack it closes: attacker replaces the boot-canonicalized
+    // root path with a symlink post-boot, e.g., after the
+    // provisioning validator has recorded the canonical path but
+    // before or between syscalls.  Without O_NOFOLLOW, subsequent
+    // `open_dir(root, false)` would follow the symlink into an
+    // attacker-controlled tree.  With O_NOFOLLOW, the open fails
+    // with ELOOP (Linux) or ENOTDIR (macOS) which maps to
+    // `QuarantineError::SymlinkComponent`.
+    //
+    // Consistency with boot invariant: the provisioning validator
+    // (node/src/rust/configuration/boot_validation.rs) rejects any
+    // provisioned path that is a symlink at boot, so a legitimately
+    // provisioned root can never be a symlink.  Enforcing
+    // O_NOFOLLOW on the root open just extends that invariant to
+    // every subsequent syscall for the lifetime of the process.
+    //
+    // What this DOESN'T close: rename-and-recreate.  If an attacker
+    // does `mv /legit /legit.bak && mkdir /legit && populate` with
+    // attacker files, the new `/legit` is a real directory with a
+    // different inode.  O_NOFOLLOW allows opening real directories,
+    // so this attack succeeds.  A full defense requires the
+    // provisioning layer to record the boot-time `(dev, inode)`
+    // pair and this function to verify via `fstat` after open —
+    // documented in the H-P7-6 follow-up.  Practical mitigation
+    // today: operators should mount `consensus-static-*` /
+    // `oracle-static-*` roots on filesystems the node user does
+    // not have write access to (e.g., read-only bind mounts).
+    let mut cur = open_dir(root, true)?;
 
     let leaf_name = comps.last().unwrap();
     for intermediate in &comps[..comps.len() - 1] {
@@ -137,10 +164,43 @@ fn open_dir(path: &Path, nofollow: bool) -> Result<OwnedFd, QuarantineError> {
         let fd = libc::open(cpath.as_ptr(), flags);
         if fd < 0 {
             let e = std::io::Error::last_os_error();
+            // Slice 30c H-P7-6 fix: mirror `openat_dir`'s ELOOP-vs-
+            // ENOTDIR disambiguation on the root open.  macOS returns
+            // ENOTDIR when `open(O_DIRECTORY|O_NOFOLLOW)` hits a
+            // symlink (the symlink itself isn't a directory); Linux
+            // returns ELOOP.  Both mean the same thing at the safety
+            // layer: the requested path is a symlink and we refused
+            // to follow it.  Surface as `SymlinkComponent` for a
+            // consistent operator-facing error regardless of host OS.
+            let raw = e.raw_os_error();
+            if raw == Some(libc::ELOOP)
+                || (nofollow && raw == Some(libc::ENOTDIR) && is_symlink_at_path(&cpath))
+            {
+                return Err(QuarantineError::SymlinkComponent);
+            }
             return Err(map_open_err(e));
         }
         Ok(OwnedFd::from_raw_fd(fd))
     }
+}
+
+/// H-P7-6 helper: absolute-path variant of `is_symlink_at`.  Used
+/// on the ENOTDIR fallback path in `open_dir` to distinguish
+/// symlink-swap-attack from a genuine "expected a directory, got
+/// a regular file" error.
+unsafe fn is_symlink_at_path(cpath: &CString) -> bool {
+    let mut sb: libc::stat = std::mem::zeroed();
+    // AT_FDCWD + AT_SYMLINK_NOFOLLOW = lstat semantics.
+    if libc::fstatat(
+        libc::AT_FDCWD,
+        cpath.as_ptr(),
+        &mut sb,
+        libc::AT_SYMLINK_NOFOLLOW,
+    ) != 0
+    {
+        return false;
+    }
+    (sb.st_mode & libc::S_IFMT) == libc::S_IFLNK
 }
 
 fn openat_dir(
@@ -386,5 +446,62 @@ mod tests {
         symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
         let err = safe_open(&root, "link.txt", libc::O_RDONLY, 0).unwrap_err();
         assert_eq!(err, QuarantineError::SymlinkComponent);
+    }
+
+    /// Slice 30c H-P7-6 fix regression pin: post-boot symlink-swap
+    /// attack on the root path fails cleanly.  Pre-fix, `open_dir`
+    /// on the root did NOT set O_NOFOLLOW — an attacker replacing
+    /// the canonicalized root with a symlink post-boot would
+    /// silently redirect every subsequent syscall to the symlink's
+    /// target.  Post-fix, the root open uses O_NOFOLLOW so the
+    /// swap surfaces as `SymlinkComponent`.
+    #[test]
+    fn safe_descend_rejects_root_replaced_with_symlink_post_boot() {
+        // Simulate boot: canonicalize a real directory.
+        let attacker_tree = TempDir::new().unwrap();
+        std::fs::write(
+            attacker_tree.path().join("gotcha.txt"),
+            b"attacker-controlled",
+        )
+        .unwrap();
+
+        let staging = TempDir::new().unwrap();
+        let root_path = staging.path().join("legit-root");
+        std::fs::create_dir(&root_path).unwrap();
+        // Legitimate content that would live under this root.
+        std::fs::write(root_path.join("legit.txt"), b"legit").unwrap();
+
+        // Sanity: safe_descend works pre-attack.
+        let ok = safe_descend(&root_path, "legit.txt");
+        assert!(ok.is_ok(), "pre-attack descend should succeed");
+
+        // Attack: remove the real directory, replace with a symlink
+        // to the attacker tree.
+        std::fs::remove_dir_all(&root_path).unwrap();
+        symlink(attacker_tree.path(), &root_path).unwrap();
+
+        // Post-attack: safe_descend must fail with SymlinkComponent
+        // (H-P7-6 fix).  Pre-fix this would silently succeed against
+        // `gotcha.txt` in the attacker tree.
+        let post_attack = safe_descend(&root_path, "legit.txt");
+        assert!(
+            matches!(&post_attack, Err(QuarantineError::SymlinkComponent)),
+            "post-boot root symlink-swap must surface as SymlinkComponent \
+             (H-P7-6 fix); pre-fix this would have followed the symlink into \
+             the attacker tree.  Got: {:?}",
+            post_attack.as_ref().err()
+        );
+
+        // Companion: the ATTACKER file itself must not be reachable
+        // via the compromised root path either — even if it exists
+        // in the attacker tree, safe_descend can't traverse a
+        // symlinked root.
+        let attacker_path = safe_descend(&root_path, "gotcha.txt");
+        assert!(
+            matches!(&attacker_path, Err(QuarantineError::SymlinkComponent)),
+            "attacker file must NOT be reachable via compromised root path; \
+             got: {:?}",
+            attacker_path.as_ref().err()
+        );
     }
 }
