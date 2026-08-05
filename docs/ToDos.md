@@ -1,6 +1,6 @@
 ---
 doc_type: todos
-version: "1.0"
+version: "1.1"
 last_updated: 2026-08-01
 mr_status:
   ready: false
@@ -32,6 +32,7 @@ This document tracks implementation work through **epics** (logical groupings of
      docs/work-logs/ for durable cross-agent notes, and keep this section to
      current operative facts only. -->
 
+- **Randomized exercise soak collaboration is active.** This repository owns value-stream documentation, epoch contracts, seeded scheduling, orchestration, aggregation, and replay on `feature/randomized-exercise-soak`. The parallel `system-integration` branch `feature/randomized-exercise-soak-catalogue` owns the executable catalog, valid workload generators, invariants, and shard reset. Handoff files are ephemeral coordination aids; durable cross-repository state lives in the canonical executor contract at `../system-integration/docs/specs/randomized-exercise-soak-contract.md` and in EPIC-011 through EPIC-016 below.
 - **PR #182** (`hotfix/renormalize-system-integration-pin-post-79` → `dev`, head `121029f1`) normalizes all three `SYSTEM_INTEGRATION_REF` sites to system-integration `main` `369d49df2f97e65b3d0ad869aa668a7383b11179` (the post-#79/#80 promotion). Multi-agent review posted 2026-08-01: approved 3-0 (anthropic abstained on an API billing error). This completes and supersedes the 2026-07-31T19:33 PDT handoff; the similarly named local branch `hotfix/normalize-system-integration-pin-post-79` is stale and has no PR.
 - **Hold `dev` → `master` until the weekend soak snapshot is verified.** The Friday 19:30 Pacific scheduled `Merge Recovery Soak` run must exist with its `headSha` recorded, confirming it launched from the pre-normalization `master` (PR #181 pin `79262d8b`), before promoting. Merging first would silently move the weekend soak to the post-#79 `369d49df` pin. If no scheduled run appears, hold the promotion and investigate or manually dispatch from the intended pre-normalization `master`. Known discrepancy: scheduled runs initialize `target_ref=dev` although comments say the Friday weekend run targets `master` — treat the captured workflow `headSha`/pin and the resolved target SHA as separate evidence.
 - **Run 30661821085 (2026-07-31 dispatch) is CLOSED.** Root cause: a 52-minute OCI host stall froze the VM's userspace ("runner lost, VM healthy" class) — not a node or test failure; the node was healthy at block 141 when output stopped. Evidence was extracted and hash-verified, and the evidence VMs were released with durable OCI backups remaining. Full analysis: `../system-integration/docs/ToDos.md` and the archive work log.
@@ -780,6 +781,428 @@ tasks:
 
 ---
 
+### EPIC-011: Exercise Epoch Contract & Catalog Governance
+
+```yaml
+---
+epic_id: EPIC-011
+title: "Exercise Epoch Contract & Catalog Governance"
+status: pending
+priority: p1
+user_story: US-005
+blocked_by: []
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-011-1
+    title: "Ratify the cross-repository exercise epoch identity and schema"
+    status: pending
+    acceptance:
+      - "Catalog schema defines permanent SOAK-EPOCH-NNN IDs, semantic epoch_revision, catalog_schema_version, definition SHA, normalized definition digest, seed, topology, provider, effective limits, policy, and provenance"
+      - "Versioning rules distinguish semantic workload changes from editorial Git changes and make the exact historical implementation replayable"
+      - "Unknown schema versions, revisions, or digest mismatches fail closed"
+
+  - id: TASK-011-2
+    title: "Create mirrored contract fixtures and compatibility tests"
+    status: pending
+    blocked_by: [TASK-011-1]
+    acceptance:
+      - "Both repositories validate the same representative catalog entry, execution request, execution result, and replay manifest fixtures"
+      - "Contract tests detect missing required fields, incompatible enum values, revision drift, digest drift, and unsupported providers or topologies"
+      - "Fixture evolution documents backward-compatible and breaking schema changes"
+
+  - id: TASK-011-3
+    title: "Validate the pinned catalog before OCI runner launch"
+    status: pending
+    blocked_by: [TASK-011-2]
+    acceptance:
+      - "The soak schedule gate validates that systemIntegration.catalogRef from .github/ci-pins.jsonc exposes a compatible executor and catalog before provisioning OCI resources"
+      - "Required epoch IDs and revisions resolve at the pinned catalog SHA"
+      - "A compatibility failure is visible as a preflight failure and cannot silently fall back to test_load.py"
+
+  - id: TASK-011-4
+    title: "Define epoch authoring, revision, and promotion governance"
+    status: pending
+    blocked_by: [TASK-011-1]
+    acceptance:
+      - "Authoring guidance requires valid-operation preconditions, bounded limits, finalized-state invariants, reset requirements, provider support, and provenance"
+      - "A revision decision table covers new epoch versus new revision versus editorial-only change"
+      - "Experimental-to-gating promotion requires stable evidence and maintainer approval"
+---
+```
+
+**Context:** Establishes the durable contract between the soak orchestrator and the executable workload catalog. The canonical value stream and versioning model are documented in `docs/randomized-exercise-soak.md`.
+
+**Scope:**
+
+- Included: identity, schema, compatibility fixtures, pin preflight, and governance
+- Excluded: executable workload generators (EPIC-012)
+- Excluded: randomized scheduling (EPIC-013)
+
+---
+
+### EPIC-012: Valid Single-Shard Exercise Epoch Library
+
+```yaml
+---
+epic_id: EPIC-012
+title: "Valid Single-Shard Exercise Epoch Library"
+status: pending
+priority: p1
+user_story: US-005
+blocked_by: [EPIC-011]
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-012-1
+    title: "Implement the system-integration epoch executor and result protocol"
+    status: pending
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    coordination_note: "Owned on feature/randomized-exercise-soak-catalogue; canonical contract is docs/specs/randomized-exercise-soak-contract.md in that repository"
+    acceptance:
+      - "Executor accepts epoch ID, revision, seed, provider, topology, deadline, output directory, and orchestrator-supplied safety limits"
+      - "Executor emits a structured result and replay manifest conforming to EPIC-011 fixtures"
+      - "Result classification distinguishes workload failure, safety breach, host breach, reset failure, deadline exhaustion, and infrastructure loss"
+
+  - id: TASK-012-2
+    title: "Implement steady-stream and burst-cooldown epochs"
+    status: pending
+    blocked_by: [TASK-012-1]
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    acceptance:
+      - "SOAK-EPOCH-001 sustains a bounded valid deploy rate and verifies finalization drain"
+      - "SOAK-EPOCH-002 applies deterministic valid bursts, cooldowns, and convergence checks"
+      - "Both epochs record submitted, accepted, rejected, included, and finalized counts"
+
+  - id: TASK-012-3
+    title: "Implement contention and large-valid-deploy epochs"
+    status: pending
+    blocked_by: [TASK-012-1]
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    acceptance:
+      - "SOAK-EPOCH-003 exercises concurrent valid contracts over shared channels or state without invalid races in the generator"
+      - "SOAK-EPOCH-004 exercises deploys near approved payload and phlo bounds without crossing operational limits"
+      - "Seeds deterministically reproduce generated contracts, ordering, rates, and concurrency"
+
+  - id: TASK-012-4
+    title: "Implement dependent-chain and mixed-contract epochs"
+    status: pending
+    blocked_by: [TASK-012-1]
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    acceptance:
+      - "SOAK-EPOCH-005 waits for finalized prerequisite state before every dependent operation"
+      - "SOAK-EPOCH-006 deterministically interleaves configured valid contract families"
+      - "Failure evidence identifies the first operation whose finalized invariant diverged"
+
+  - id: TASK-012-5
+    title: "Prove operational validity, provider parity, and clean reset"
+    status: pending
+    blocked_by: [TASK-012-2, TASK-012-3, TASK-012-4]
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    acceptance:
+      - "Generators enforce valid signatures, balances, phlo limits, dependencies, shard routing, and finalized prerequisites"
+      - "Every epoch passes deterministic contract tests under Docker and subprocess providers unless explicitly provider-specific with ratified rationale"
+      - "Shard reset proves clean state before another epoch; inability to prove reset is a distinct fatal result"
+      - "Epochs inherit and never increase orchestrator-supplied RSS and host-free safety limits"
+---
+```
+
+**Context:** The executable catalog belongs in system-integration because that repository owns shard lifecycle, providers, deploy submission, and finalized-state assertions. This repository mirrors the external work so the pin and orchestration dependencies remain visible.
+
+**Scope:**
+
+- Included: first six transaction-only valid-operation epochs, executor protocol, provider parity, reset
+- Excluded: validator lifecycle and fault injection
+- Excluded: multi-shard workloads (EPIC-015)
+
+---
+
+### EPIC-013: Seeded Weekend Epoch Scheduling & Segment Integration
+
+```yaml
+---
+epic_id: EPIC-013
+title: "Seeded Weekend Epoch Scheduling & Segment Integration"
+status: pending
+priority: p1
+user_story: US-006
+blocked_by: [EPIC-011, EPIC-012, EPIC-016]
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-013-1
+    title: "Build a deterministic coverage-constrained epoch planner"
+    status: pending
+    acceptance:
+      - "Planner filters catalog entries by schema, policy, topology, provider, and effective window"
+      - "Every required compatible epoch receives one reserved slot before weighted random fill"
+      - "The same catalog, seed, constraints, and duration estimates produce the same plan"
+      - "Immediate repetition is avoided when another eligible epoch fits"
+
+  - id: TASK-013-2
+    title: "Derive and persist run and per-epoch seeds"
+    status: pending
+    blocked_by: [TASK-013-1]
+    acceptance:
+      - "One run seed deterministically derives each selection and workload seed without relying on ambient process randomness"
+      - "Manual dispatch may supply a seed; scheduled runs derive one from immutable run identity"
+      - "Artifacts record the run seed and every derived seed needed for replay"
+
+  - id: TASK-013-3
+    title: "Integrate epoch admission with soak segment deadlines"
+    status: pending
+    blocked_by: [TASK-013-1]
+    acceptance:
+      - "An epoch starts only when its declared upper duration plus reset and checkpoint reserve fits before the segment deadline"
+      - "Approaching a checkpoint stops admission cleanly and preserves the remaining plan"
+      - "Planned, executed, skipped, and deferred epochs are recorded with reasons"
+
+  - id: TASK-013-4
+    title: "Invoke the pinned system-integration executor from weekend segments"
+    status: pending
+    blocked_by: [TASK-013-2, TASK-013-3]
+    acceptance:
+      - "Weekend segments pass identity, revision, digest, seed, provider, topology, deadline, output path, image, binary, and safety limits through the ratified interface"
+      - "Docker and subprocess coverage remains balanced across the complete run"
+      - "Daily soaks retain their existing behavior until separately enabled"
+
+  - id: TASK-013-5
+    title: "Test deterministic planning, coverage, and deadline behavior"
+    status: pending
+    blocked_by: [TASK-013-4]
+    acceptance:
+      - "Tests cover catalog order changes, incompatible entries, undersized windows, exact-fit boundaries, weighted fill, provider constraints, and segment resume"
+      - "Tests prove required coverage is never silently omitted"
+      - "A replayed plan does not depend on filesystem traversal order or shell associative-array order"
+---
+```
+
+**Context:** Replaces repeated fixed-load iterations during weekend segments with a precomputed, replayable workload sequence while preserving checkpoint boundaries and host protection.
+
+**Scope:**
+
+- Included: weekend scheduler, deterministic seeds, coverage guarantees, segment admission, executor invocation
+- Excluded: daily randomized epochs until weekend evidence is stable
+- Excluded: weakening or tuning existing host-protection limits
+
+---
+
+### EPIC-014: Epoch Evidence, Replay & Regression Promotion
+
+```yaml
+---
+epic_id: EPIC-014
+title: "Epoch Evidence, Replay & Regression Promotion"
+status: pending
+priority: p2
+user_story: US-007
+blocked_by: [EPIC-013]
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-014-1
+    title: "Aggregate per-epoch execution and catalog coverage results"
+    status: pending
+    acceptance:
+      - "Run summary records planned and actual sequence, required coverage, epoch ID/revision/digest, policy, provider, seeds, timing, and outcome"
+      - "Per-epoch metrics include transaction lifecycle counts, finalization, throughput, convergence, RSS, and CPU where available"
+      - "Incomplete coverage is explicit and cannot appear as full coverage"
+
+  - id: TASK-014-2
+    title: "Preserve classified failure evidence and reset outcomes"
+    status: pending
+    blocked_by: [TASK-014-1]
+    acceptance:
+      - "Ordinary workload failures preserve evidence, verify reset, and allow later epochs to continue"
+      - "Safety, host-protection, and reset failures preserve evidence and stop immediately"
+      - "Infrastructure loss remains classified separately and uses existing in-window recovery"
+      - "API and artifact output includes checksums and the first failing operation without exposing keys or secrets"
+
+  - id: TASK-014-3
+    title: "Provide deterministic replay from an execution manifest"
+    status: pending
+    blocked_by: [TASK-014-2]
+    acceptance:
+      - "Replay resolves the recorded system-integration definition SHA, revision, digest, provider, topology, seeds, and limits"
+      - "Replay fails closed when any immutable dependency is unavailable or incompatible"
+      - "Replay can target a locally supplied node image or subprocess binary while preserving the workload identity"
+
+  - id: TASK-014-4
+    title: "Implement regression intake and experimental-to-gating promotion"
+    status: pending
+    blocked_by: [TASK-014-3]
+    acceptance:
+      - "A new epoch or revision links its originating run or issue and demonstrates failure before the fix and success afterward"
+      - "Experimental failures are visible but excluded from the release-gating verdict until promotion"
+      - "Promotion requires stable provider evidence and explicit maintainer approval recorded in Git"
+
+  - id: TASK-014-5
+    title: "Add dashboard epoch coverage and failure trends after schema stabilization"
+    status: pending
+    blocked_by: [TASK-014-1, TASK-014-4]
+    acceptance:
+      - "Dashboard distinguishes required coverage, experimental outcomes, and gating outcomes"
+      - "History groups results by permanent epoch ID and semantic revision without conflating incompatible revisions"
+      - "Artifact and replay links remain available from each failed epoch result"
+---
+```
+
+**Context:** Turns a randomized failure into reproducible engineering evidence and governs when an experimental workload becomes part of the release contract.
+
+**Scope:**
+
+- Included: aggregation, classification, evidence, replay, intake, promotion, later dashboard views
+- Excluded: infrastructure postmortem tooling already tracked under EPIC-010
+
+---
+
+### EPIC-015: Multi-Shard Randomized Exercise Expansion
+
+```yaml
+---
+epic_id: EPIC-015
+title: "Multi-Shard Randomized Exercise Expansion"
+status: pending
+priority: p3
+user_story: US-008
+blocked_by: [EPIC-012, EPIC-013, EPIC-014]
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-015-1
+    title: "Extend the epoch contract with multi-shard topology capabilities"
+    status: pending
+    acceptance:
+      - "Catalog entries declare shard count, node roles, routing capabilities, and cross-shard prerequisites"
+      - "Compatibility checks reject a workload when the requested topology cannot satisfy its capabilities"
+      - "Replay records enough topology identity to reconstruct the exercised shard relationships"
+
+  - id: TASK-015-2
+    title: "Implement valid inter-shard workload profiles and invariants"
+    status: pending
+    blocked_by: [TASK-015-1]
+    external: true
+    external_repo: F1R3FLY-io/system-integration
+    acceptance:
+      - "Profiles submit only valid operations and wait for finalized cross-shard prerequisites"
+      - "Invariants cover routing, state convergence, dependency completion, and absence of duplicate effects"
+      - "Generated routing and operation order are deterministic from recorded seeds"
+
+  - id: TASK-015-3
+    title: "Integrate multi-shard profiles with seeded planning and replay"
+    status: pending
+    blocked_by: [TASK-015-2]
+    acceptance:
+      - "Planner preserves required coverage among workloads compatible with the active topology"
+      - "Execution and replay propagate topology, routing, provider, identity, revision, digest, and seeds"
+      - "Multi-shard epochs remain experimental until single-shard reset and replay contracts have stable soak evidence"
+---
+```
+
+**Context:** Applies the proven single-shard model to shard interoperability without making multi-shard complexity a prerequisite for the first randomized weekend suite.
+
+**Scope:**
+
+- Included: topology capabilities, valid inter-shard workloads, deterministic routing, replay
+- Excluded: redesign of inter-shard consensus itself
+
+---
+
+### EPIC-016: Trusted Single-Source CI Pin Registry
+
+```yaml
+---
+epic_id: EPIC-016
+title: "Trusted Single-Source CI Pin Registry"
+status: in_progress
+priority: p1
+user_story: US-009
+blocked_by: []
+created_at: 2026-08-01
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-016-1
+    title: "Define ci-pins.jsonc schema and offline resolver"
+    status: in_progress
+    acceptance:
+      - ".github/ci-pins.jsonc is the only source for systemIntegration.runnerRef, systemIntegration.catalogRef, catalogSchemaVersion, and OCI CLI URL/version/checksums"
+      - "A committed schema and offline parser support JSONC comments and trailing commas while rejecting duplicate keys, missing keys, unknown security-sensitive keys, mutable refs, malformed SHAs, malformed checksums, and OCI URL/version mismatch"
+      - "Resolver runs on ubuntu-latest, emits validated non-secret job outputs, and downloads no parser package at runtime"
+      - "Only lowercase 40-character system-integration SHAs are accepted; tags and branches are rejected"
+
+  - id: TASK-016-2
+    title: "Split privileged runner and exercise catalog trust domains"
+    status: pending
+    blocked_by: [TASK-016-1]
+    acceptance:
+      - "Secret-bearing launcher and cloud-init checkouts consume runnerRef"
+      - "Integration harness, compatibility probe, and exercise catalog checkouts consume catalogRef"
+      - "A job requiring both roles uses explicit outputs and cannot silently substitute one ref for the other"
+      - "Routine compatible epoch additions require only a catalogRef bump"
+
+  - id: TASK-016-3
+    title: "Apply trigger-specific trusted pin selection"
+    status: pending
+    blocked_by: [TASK-016-1, TASK-016-2]
+    acceptance:
+      - "Protected pushes, schedules, and trusted manual dispatches resolve pins from their workflow/control commit"
+      - "Fork pull_request_target privileged jobs always use base-branch runner and OCI pins; fork-controlled candidate configuration cannot influence privileged execution"
+      - "Same-repository PRs validate candidate catalog pins under existing branch and environment controls"
+      - "Full OCI validation may use candidate pins only after exact PR-head, maintainer permission, approval-comment, and environment gates succeed"
+
+  - id: TASK-016-4
+    title: "Migrate all system-integration and OCI CLI consumers"
+    status: pending
+    blocked_by: [TASK-016-2, TASK-016-3]
+    acceptance:
+      - "Reusable integration, ordinary CI, fork CI, full OCI validation, merge-recovery soak, soak signal, runner reaper, and relevant scripts consume resolver outputs"
+      - ".github/oci-validation.env and workflow-level duplicate pin literals are removed without fallback copies"
+      - "Every OCI installer consumer verifies the installer script and downloaded install.py checksums before execution"
+      - "Resolver failure prevents OCI runner, instance, or shard launch"
+
+  - id: TASK-016-5
+    title: "Enforce single-source and trust-boundary invariants"
+    status: pending
+    blocked_by: [TASK-016-4]
+    acceptance:
+      - "Workflow invariants reject inline duplicate pins, mutable refs, missing resolver dependencies, unchecked OCI installers, and fork-controlled privileged pin selection"
+      - "Mutation tests cover malformed JSONC, duplicate/missing/unknown keys, invalid SHAs/checksums, URL/version mismatch, and each trigger trust path"
+      - "Diagnostics name the violated property and fail before resource provisioning"
+      - "Ordinary CI, fork CI, full OCI validation, soak, signal, and reaper dry-run paths are validated"
+
+  - id: TASK-016-6
+    title: "Design reviewed catalog pin-bump automation"
+    status: pending
+    blocked_by: [TASK-016-5]
+    acceptance:
+      - "Initial rollout keeps pin bumps manual while resolver and catalog compatibility gain real-run evidence"
+      - "Future system-integration automation may open a PR changing only catalogRef and attaching old..new plus epoch/revision evidence"
+      - "Automation cannot merge, change runnerRef, or promote required/gating policy"
+      - "Required and release-gating epoch policy remains an explicit separately reviewed control in this repository"
+---
+```
+
+**Context:** Replaces duplicated trusted dependency values with `.github/ci-pins.jsonc` while preserving fork isolation and the immutable supply-chain boundary. The runner/catalog split lets new compatible exercise epochs arrive through one catalog pin edit without implicitly replacing privileged launcher code. The canonical design is `docs/ci-pins.md`.
+
+**Scope:**
+
+- Included: system-integration runner/catalog SHAs, accepted catalog schema, OCI CLI URL/version/checksums, resolver, trust matrix, migration, invariants, future PR-opening automation
+- Excluded: OCI compartment OCIDs and other blast-radius literals
+- Excluded: automatic merge or automatic experimental-to-gating promotion
+
+---
+
 ## Epic Dependency Graph
 
 ```
@@ -799,6 +1222,19 @@ EPIC-002 (monitoring separation)               |
                                                  v
                                             EPIC-008
                                          (deprecation/archive)
+
+EPIC-011 (epoch contract/catalog)       EPIC-016 (single-source CI pins)
+    |                  |                       |
+    v                  v                       v
+EPIC-012 (workloads)   EPIC-013 (scheduler; blocked by 011/012/016)
+    |                  |
+    +--------+---------+
+             v
+EPIC-014 (evidence/replay/promotion)
+    |        |
+    +---+----+
+        v
+EPIC-015 (multi-shard expansion; also blocked by 012/013)
 ```
 
 ---
@@ -833,3 +1269,6 @@ EPIC-002 (monitoring separation)               |
 - **Completed Work:** `docs/CompletedTasks.md`
 - **Backlog:** `docs/Backlog.md`
 - **System-Integration Migration Plan:** `../system-integration/docs/migration-to-rust-node.md`
+- **Randomized Exercise Soak Value Stream:** `docs/randomized-exercise-soak.md`
+- **Canonical Trusted CI Pin Registry:** `docs/ci-pins.md`
+- **Canonical Executor Contract:** `../system-integration/docs/specs/randomized-exercise-soak-contract.md`
