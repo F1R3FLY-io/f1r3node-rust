@@ -232,6 +232,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
     };
 
     let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
@@ -472,6 +473,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
     };
 
     let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
@@ -720,6 +722,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
     };
 
     let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
@@ -949,6 +952,7 @@ async fn run_visible_blocks_scope_test() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
+            consensus_fs_snapshot_cadence: None,
     };
 
     let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)

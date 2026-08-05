@@ -254,17 +254,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // SnapshotWriter into the RuntimeManager so consensus-mode WAL
     // slices actually get persisted to disk on cadence-hit blocks.
     //
-    // Pre-fix, `build_snapshot_writer` existed and was unit-tested,
-    // and `RuntimeManager::set_fs_snapshot_writer` accepted a writer
-    // — but nothing in the boot path called them together, so every
-    // production validator ran with `fs_snapshot_writer = None` and
-    // PB-M-15's joining-validator story was nonfunctional.
-    //
-    // Build order matters: `merge_and_validate` runs later (line
-    // ~511) inside the CasperLaunch scope, but here we only need
-    // the boot-time provisioning to decide whether ANY consensus-
-    // static buckets are provisioned.  Re-merging here is cheap
-    // and keeps the two validation sites independent.
+    // Slice 30c (LFB-cadence semantics, Phase A): cadence is now a
+    // shard-wide `Genesis` parameter — all validators agree at
+    // genesis on which block heights are snapshot boundaries, so
+    // the join protocol has a canonical answer for "give me the
+    // snapshot at finalized block N."  The HOCON key
+    // `storage.consensus-fs-snapshot-cadence` is DEPRECATED.  This
+    // boot-time site is a transitional bridge that still reads
+    // HOCON so slice-30c-1 doesn't regress HIGH-4: a follow-up
+    // slice (30c-2) will move the SnapshotWriter attachment to
+    // after `Genesis` is loaded and drop the HOCON read.  If both
+    // are set and disagree, Genesis will win at that point.
+    #[allow(deprecated)]
     {
         use crate::rust::configuration::provisioning_merge::merge_and_validate;
         use crate::rust::configuration::snapshot_config::build_snapshot_writer;
@@ -277,13 +278,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             Vec::new(),
         )
         .unwrap_or_else(|errs| {
-            // The CasperLaunch site below will re-run this validation
-            // and panic with the full diagnostic; here we quietly
-            // fall through to the empty-provisioning path so the
-            // panic below carries the operator-facing message.
             let _ = errs;
             crate::rust::configuration::file_io_provisioning::FileIoProvisioning::default()
         });
+        if conf.storage.consensus_fs_snapshot_cadence.is_some() {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot",
+                "storage.consensus-fs-snapshot-cadence is DEPRECATED (slice 30c): \
+                 cadence is a shard-wide Genesis parameter.  This HOCON value is \
+                 read as a transitional bridge until slice 30c-2 relocates the \
+                 SnapshotWriter attachment to after genesis-load."
+            );
+        }
         let writer = build_snapshot_writer(
             &merged,
             conf.storage.consensus_fs_snapshot_cadence,

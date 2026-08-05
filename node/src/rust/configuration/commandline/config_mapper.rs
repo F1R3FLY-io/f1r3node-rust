@@ -747,17 +747,21 @@ mod tests {
                 max_connection_age: Duration::from_secs(3600),
                 max_connection_age_grace: Duration::from_secs(5),
             },
-            storage: crate::rust::configuration::model::Storage {
-                data_dir: PathBuf::from("/var/lib/rnode"),
-                file_io_provisioning: Default::default(),
-                // Slice 30: snapshot config keys default to None here
-                // (the CLI-flag / no-file boot path).  If the operator
-                // provisions consensus-static buckets, they must set
-                // both keys explicitly — enforced by
-                // `snapshot_config::validate_snapshot_config`.
-                consensus_fs_snapshot_cadence: None,
-                consensus_fs_snapshot_dir: None,
-                consensus_fs_snapshot_retain: None,
+            storage: {
+                // Slice 30c: cadence is deprecated as of shard-Genesis
+                // migration; still set to None to satisfy the struct
+                // shape.  Silenced with `#[allow(deprecated)]`.
+                #[allow(deprecated)]
+                let s = crate::rust::configuration::model::Storage {
+                    data_dir: PathBuf::from("/var/lib/rnode"),
+                    file_io_provisioning: Default::default(),
+                    // Slice 30: snapshot config keys default to None
+                    // here (the CLI-flag / no-file boot path).
+                    consensus_fs_snapshot_cadence: None,
+                    consensus_fs_snapshot_dir: None,
+                    consensus_fs_snapshot_retain: None,
+                };
+                s
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),

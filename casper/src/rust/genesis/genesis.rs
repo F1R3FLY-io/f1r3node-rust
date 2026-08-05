@@ -51,6 +51,25 @@ pub struct Genesis {
     /// via `provisioning_merge::project_bundle`.  Empty vec if no
     /// provisioning is configured (preserves pre-slice-25 behavior).
     pub fs_bundle: Vec<super::contracts::fs_genesis::BundleEntry>,
+    /// Slice 30c (PB-M-15 cadence-in-DAG fix): consensus-mode
+    /// filesystem snapshot cadence, in blocks.  Shard-wide parameter
+    /// agreed at genesis so all validators decide identically which
+    /// blocks are snapshot boundaries — required for the join
+    /// protocol to have a canonical "give me the snapshot at
+    /// finalized block N" answer.
+    ///
+    /// `None` = no consensus filesystem snapshotting on this shard
+    /// (default; also the setting for shards with no `consensus-
+    /// static-*` provisioning).  `Some(n)` = snapshot every `n`
+    /// finalized blocks; `n >= 1` enforced by boot validation.
+    ///
+    /// Pre-slice-30c, cadence was a per-node HOCON key
+    /// (`storage.consensus-fs-snapshot-cadence`); that key is now
+    /// deprecated and ignored (`build_snapshot_writer` reads
+    /// cadence from this Genesis field).  Retention (`retain`)
+    /// remains per-node local (see
+    /// `NodeConfig.storage.consensus_fs_snapshot_retain`).
+    pub consensus_fs_snapshot_cadence: Option<u64>,
 }
 
 impl std::hash::Hash for Genesis {
@@ -74,6 +93,10 @@ impl std::hash::Hash for Genesis {
         for e in sorted {
             e.hash(state);
         }
+        // Slice 30c: shard-wide cadence is part of the Genesis
+        // identity — a shard whose operators disagree on cadence
+        // would fork the join protocol.
+        self.consensus_fs_snapshot_cadence.hash(state);
     }
 }
 
@@ -317,6 +340,7 @@ mod tests {
             native_token_symbol: "F1R".into(),
             native_token_decimals: 8,
             fs_bundle: bundle,
+            consensus_fs_snapshot_cadence: None,
         }
     }
 
@@ -379,6 +403,41 @@ mod tests {
             hash_of(&g1),
             hash_of(&g2),
             "distinct fs_bundle content should hash differently"
+        );
+    }
+
+    // Slice 30c: cadence is a shard-wide Genesis parameter.  Two
+    // Genesises with different cadence values MUST produce
+    // different hashes — otherwise a shard whose validators
+    // disagreed on cadence would still hash-agree at genesis, and
+    // the join-protocol divergence would only surface when
+    // finalization advanced.  Pin here.
+    #[test]
+    fn genesis_hash_differs_when_only_cadence_differs() {
+        let mut g1 = stub_genesis(vec![]);
+        let mut g2 = stub_genesis(vec![]);
+        g1.consensus_fs_snapshot_cadence = Some(100);
+        g2.consensus_fs_snapshot_cadence = Some(200);
+        assert_ne!(
+            hash_of(&g1),
+            hash_of(&g2),
+            "Genesis hash must differ when only the shard-wide cadence differs"
+        );
+    }
+
+    // Companion: None vs Some(n) must also differ — a shard that
+    // opts out of snapshotting is a different shard than one that
+    // opts in.
+    #[test]
+    fn genesis_hash_differs_when_cadence_toggles_none_to_some() {
+        let mut g1 = stub_genesis(vec![]);
+        let mut g2 = stub_genesis(vec![]);
+        g1.consensus_fs_snapshot_cadence = None;
+        g2.consensus_fs_snapshot_cadence = Some(1);
+        assert_ne!(
+            hash_of(&g1),
+            hash_of(&g2),
+            "None vs Some(_) cadence must produce distinct Genesis hashes"
         );
     }
 

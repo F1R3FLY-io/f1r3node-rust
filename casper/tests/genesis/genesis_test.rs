@@ -249,6 +249,7 @@ async fn from_input_files(
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
     };
 
     let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;

@@ -139,12 +139,20 @@ mod tests {
                 max_connection_age: Duration::from_secs(60),
                 max_connection_age_grace: Duration::from_secs(60),
             },
-            storage: Storage {
-                data_dir: PathBuf::from("/tmp/test"),
-                file_io_provisioning: Default::default(),
-                consensus_fs_snapshot_cadence: None,
-                consensus_fs_snapshot_dir: None,
-                consensus_fs_snapshot_retain: None,
+            storage: {
+                // Slice 30c: consensus_fs_snapshot_cadence is
+                // deprecated on Storage but still part of the struct
+                // shape; silence the deprecation warning at the
+                // construction site.
+                #[allow(deprecated)]
+                let s = Storage {
+                    data_dir: PathBuf::from("/tmp/test"),
+                    file_io_provisioning: Default::default(),
+                    consensus_fs_snapshot_cadence: None,
+                    consensus_fs_snapshot_dir: None,
+                    consensus_fs_snapshot_retain: None,
+                };
+                s
             },
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),

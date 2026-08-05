@@ -187,16 +187,31 @@ pub struct Storage {
     #[serde(default, flatten)]
     pub file_io_provisioning: crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
 
-    /// Slice 30 (PB-M-15): consensus filesystem snapshot cadence in
-    /// blocks.  A snapshot of the consensus WAL is emitted every N
-    /// blocks so joining validators can bootstrap without replaying
-    /// the entire history.  **No default** per FIP §Q-6 resolution:
-    /// operators must set this value explicitly because the
-    /// trade-off (snapshot cost vs. late-join replay length) is
-    /// deployment-specific and cannot be defaulted safely.  Boot
-    /// validation in `snapshot_config::validate_snapshot_config`
-    /// rejects `None` with a diagnostic pointing at the trade-off.
+    /// **DEPRECATED (slice 30c):** cadence is now a shard-wide
+    /// parameter agreed at genesis (`Genesis.consensus_fs_snapshot_cadence`),
+    /// not a per-node HOCON key.  All validators must observe the
+    /// same cadence value or the join protocol has no canonical
+    /// answer for "give me the snapshot at finalized block N"
+    /// (sibling blocks in the DAG can share a `block_number`, so
+    /// per-node cadence choice would fork the snapshot boundary
+    /// question).
+    ///
+    /// The key is kept in the schema for backwards compatibility
+    /// with existing HOCON files.  Boot validation logs a warning
+    /// if set and prefers the Genesis-committed value.  A future
+    /// slice will remove this field entirely.
+    ///
+    /// (Historical, pre-slice-30c intent — kept for reference:
+    /// consensus filesystem snapshot cadence in blocks; a snapshot
+    /// of the consensus WAL is emitted every N blocks so joining
+    /// validators can bootstrap without replaying the entire
+    /// history.)
     #[serde(default, rename = "consensus-fs-snapshot-cadence")]
+    #[deprecated(
+        since = "0.4.22",
+        note = "cadence is a shard-wide Genesis parameter as of slice 30c; \
+                setting this HOCON key has no effect and will be removed"
+    )]
     pub consensus_fs_snapshot_cadence: Option<u64>,
 
     /// Slice 30 (PB-M-15): on-disk directory for consensus filesystem

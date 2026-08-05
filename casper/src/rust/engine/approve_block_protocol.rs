@@ -201,6 +201,13 @@ impl ApproveBlockProtocolFactory {
             // project_bundle.  Empty vec preserves pre-slice-25
             // behavior when no operator config is set.
             fs_bundle,
+            // Slice 30c (LFB-cadence): shard-wide snapshot cadence
+            // agreed at genesis.  `None` here preserves current
+            // behavior (no consensus filesystem snapshotting).  A
+            // future slice will plumb this through from a genesis-
+            // ceremony CLI arg or shard-config file so ALL validators
+            // observe the same value at genesis composition time.
+            consensus_fs_snapshot_cadence: None,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
