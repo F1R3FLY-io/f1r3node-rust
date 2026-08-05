@@ -113,12 +113,49 @@ impl WalDeployScope {
         }
     }
 
-    /// Success path: drain entries and mark committed so Drop is a
-    /// no-op.
-    fn take_and_commit(&mut self) -> Vec<WalEntry> {
+    /// Success path: drain entries in canonical (deploy_log) order
+    /// and mark committed so Drop is a no-op.
+    ///
+    /// Slice 30c H-R3 integration: instead of returning entries in
+    /// insertion order (scheduler-dependent under Par), walk the
+    /// deploy's `event_log` Produces to derive a canonical order.
+    /// Log order is frozen when the leader publishes the block; all
+    /// validators consume the same log verbatim during replay, so
+    /// the output is byte-identical across validators and across
+    /// re-executions on the same validator regardless of tokio
+    /// scheduling.  Resolves H-R3.
+    fn take_and_commit(&mut self, deploy_log: &[Event]) -> Vec<WalEntry> {
         self.committed = true;
-        self.wal.take_deploy_entries(self.mark)
+        let hashes = produce_channel_hashes(deploy_log);
+        self.wal
+            .take_deploy_entries_in_log_order(self.mark, &hashes)
     }
+}
+
+/// Slice 30c H-R3 integration: extract each Produce event's
+/// `channels_hash` from a deploy's event log, in log order.  These
+/// hashes are the keys the log-order WAL drain matches against the
+/// per-entry ack-channel sidecar recorded by `Wal::append_with_ack`.
+///
+/// ConsumeEvents and CommEvents are skipped — the WAL sidecar is
+/// keyed by ack-channel hash, which appears in the Produce that
+/// publishes the syscall's reply.
+fn produce_channel_hashes(deploy_log: &[Event]) -> Vec<[u8; 32]> {
+    let mut out = Vec::with_capacity(deploy_log.len());
+    for e in deploy_log {
+        if let Event::Produce(pe) = e {
+            // `channels_hash` is bytes::Bytes; expected to be exactly
+            // 32 bytes (Blake2b256).  Anything else is malformed;
+            // skip silently rather than panic — the drain has
+            // defense-in-depth to append unmatched entries.
+            if pe.channels_hash.len() == 32 {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&pe.channels_hash);
+                out.push(buf);
+            }
+        }
+    }
+    out
 }
 
 impl Drop for WalDeployScope {
@@ -626,7 +663,12 @@ impl RuntimeOps {
                         // `take_and_commit`; any `?`-error above
                         // discards via Drop, closing the pre-fix
                         // cross-deploy leak.
-                        let fs_wal = wal_scope.take_and_commit();
+                        //
+                        // Slice 30c H-R3 integration: pass the deploy
+                        // log so the drain uses log-order (canonical
+                        // across validators) rather than the
+                        // scheduler-dependent insertion order.
+                        let fs_wal = wal_scope.take_and_commit(&deploy_log);
                         if !fs_wal.is_empty() {
                             let wal_root = compute_wal_root(&fs_wal);
                             tracing::debug!(
@@ -700,7 +742,9 @@ impl RuntimeOps {
                 // ProcessedDeploy, so we commit the scope explicitly.
                 // Pre-charge failures typically leave the WAL empty
                 // (no fs handlers ran) but the drain is free.
-                let fs_wal = wal_scope.take_and_commit();
+                //
+                // Slice 30c H-R3 integration: log-order drain.
+                let fs_wal = wal_scope.take_and_commit(&deploy_log);
                 if !fs_wal.is_empty() {
                     tracing::debug!(
                         target: "f1r3fly.casper.fs_wal",
@@ -1676,7 +1720,7 @@ mod tests {
         let mut scope = WalDeployScope::new(wal.clone());
         wal.append(mk_entry("a")).unwrap();
         wal.append(mk_entry("b")).unwrap();
-        let entries = scope.take_and_commit();
+        let entries = scope.take_and_commit(&[]);
         assert_eq!(entries.len(), 2, "committed entries include only post-mark");
         assert_eq!(wal.len(), 1, "pre-mark entry survives the drain");
         assert_eq!(entries[0].path, std::path::PathBuf::from("/a"));
@@ -1753,12 +1797,12 @@ mod tests {
             let mut scope = WalDeployScope::new(wal.clone());
             wal.append(mk_entry("a1")).unwrap();
             wal.append(mk_entry("a2")).unwrap();
-            scope.take_and_commit()
+            scope.take_and_commit(&[])
         };
         let b_entries = {
             let mut scope = WalDeployScope::new(wal.clone());
             wal.append(mk_entry("b1")).unwrap();
-            scope.take_and_commit()
+            scope.take_and_commit(&[])
         };
         assert_eq!(a_entries.len(), 2);
         assert_eq!(b_entries.len(), 1);
@@ -1780,7 +1824,7 @@ mod tests {
         let b_entries = {
             let mut scope = WalDeployScope::new(wal.clone());
             wal.append(mk_entry("clean")).unwrap();
-            scope.take_and_commit()
+            scope.take_and_commit(&[])
         };
         assert_eq!(
             b_entries.len(),
@@ -1833,7 +1877,7 @@ mod tests {
                 let path = format!("/{label}-e{i}");
                 wal.append(mk_entry(&path[1..])).unwrap();
             }
-            let fs_wal = scope.take_and_commit();
+            let fs_wal = scope.take_and_commit(&[]);
             assert_eq!(
                 fs_wal.len(),
                 *n_entries,
@@ -1907,13 +1951,13 @@ mod tests {
         {
             let mut scope = WalDeployScope::new(wal.clone());
             wal.append(mk_entry("a")).unwrap();
-            block_fs_wal.extend(scope.take_and_commit());
+            block_fs_wal.extend(scope.take_and_commit(&[]));
         }
         // Deploy B appends "b".
         {
             let mut scope = WalDeployScope::new(wal.clone());
             wal.append(mk_entry("b")).unwrap();
-            block_fs_wal.extend(scope.take_and_commit());
+            block_fs_wal.extend(scope.take_and_commit(&[]));
         }
         let root_ab = compute_wal_root(&block_fs_wal);
 
@@ -1923,12 +1967,12 @@ mod tests {
         {
             let mut scope = WalDeployScope::new(wal2.clone());
             wal2.append(mk_entry("b")).unwrap();
-            block_fs_wal2.extend(scope.take_and_commit());
+            block_fs_wal2.extend(scope.take_and_commit(&[]));
         }
         {
             let mut scope = WalDeployScope::new(wal2.clone());
             wal2.append(mk_entry("a")).unwrap();
-            block_fs_wal2.extend(scope.take_and_commit());
+            block_fs_wal2.extend(scope.take_and_commit(&[]));
         }
         let root_ba = compute_wal_root(&block_fs_wal2);
 

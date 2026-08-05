@@ -48,6 +48,21 @@ use super::stat::{error_record, stat_record};
 use super::wal::{PayloadRef, WalEntry, WalOp};
 use super::{ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 
+/// Slice 30c H-R3 integration: compute the ack channel's Blake2b256
+/// hash the same way rspace computes `channel_hash` for a produce
+/// event.  The result is the sidecar key on `Wal::append_with_ack`;
+/// the same hash appears in the deploy_log's `ProduceEvent::channels_hash`
+/// when the handler publishes its reply, so the log-order drain
+/// can match them.
+fn ack_channel_hash(ack: &Par) -> [u8; 32] {
+    let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(ack).bytes();
+    let mut out = [0u8; 32];
+    debug_assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
+    let n = h.len().min(32);
+    out[..n].copy_from_slice(&h[..n]);
+    out
+}
+
 /// Cap on `fs_entries` output size — prevents a malicious caller pointing
 /// the native at a million-entry directory and OOMing the node.
 pub const MAX_ENTRIES: usize = 65_536;
@@ -109,7 +124,13 @@ impl FsProcesses {
     /// contract args, which is what makes leader/follower symmetric
     /// on the `is_replay` short-circuit path (the follower does NOT
     /// re-issue the syscall and therefore does not know `n`).
-    async fn journal_write(&self, fd: u64, bytes: &[u8], offset: Option<u64>) -> Result<bool, ()> {
+    async fn journal_write(
+        &self,
+        fd: u64,
+        bytes: &[u8],
+        offset: Option<u64>,
+        ack: &Par,
+    ) -> Result<bool, ()> {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -123,17 +144,20 @@ impl FsProcesses {
                 };
                 self.handles
                     .wal
-                    .append(WalEntry {
-                        op,
-                        path: canon_path,
-                        extra_path: None,
-                        offset,
-                        length: Some(bytes.len() as u64),
-                        payload_ref: Some(PayloadRef::hash(bytes)),
-                        mode_bits: None,
-                        owner: None,
-                        group: None,
-                    })
+                    .append_with_ack(
+                        WalEntry {
+                            op,
+                            path: canon_path,
+                            extra_path: None,
+                            offset,
+                            length: Some(bytes.len() as u64),
+                            payload_ref: Some(PayloadRef::hash(bytes)),
+                            mode_bits: None,
+                            owner: None,
+                            group: None,
+                        },
+                        ack_channel_hash(ack),
+                    )
                     .map(|()| true)
             }
             _ => Ok(false),
@@ -160,7 +184,13 @@ impl FsProcesses {
     /// symmetrically via `journal_read` on both sides) catches this
     /// at WAL-root-comparison time rather than as a silent tuplespace
     /// fork downstream.
-    async fn journal_read(&self, fd: u64, bytes: &[u8], offset: Option<u64>) -> Result<bool, ()> {
+    async fn journal_read(
+        &self,
+        fd: u64,
+        bytes: &[u8],
+        offset: Option<u64>,
+        ack: &Par,
+    ) -> Result<bool, ()> {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -174,17 +204,20 @@ impl FsProcesses {
                 };
                 self.handles
                     .wal
-                    .append(WalEntry {
-                        op,
-                        path: canon_path,
-                        extra_path: None,
-                        offset,
-                        length: Some(bytes.len() as u64),
-                        payload_ref: Some(PayloadRef::hash(bytes)),
-                        mode_bits: None,
-                        owner: None,
-                        group: None,
-                    })
+                    .append_with_ack(
+                        WalEntry {
+                            op,
+                            path: canon_path,
+                            extra_path: None,
+                            offset,
+                            length: Some(bytes.len() as u64),
+                            payload_ref: Some(PayloadRef::hash(bytes)),
+                            mode_bits: None,
+                            owner: None,
+                            group: None,
+                        },
+                        ack_channel_hash(ack),
+                    )
                     .map(|()| true)
             }
             _ => Ok(false),
@@ -195,7 +228,7 @@ impl FsProcesses {
     /// fully derivable from args (fd + n).  Called from `fs_truncate`
     /// BEFORE the `is_replay` short-circuit (C-29-F1 review fix).
     /// Return semantics identical to `journal_write`.
-    async fn journal_truncate(&self, fd: u64, n: u64) -> Result<bool, ()> {
+    async fn journal_truncate(&self, fd: u64, n: u64, ack: &Par) -> Result<bool, ()> {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -204,17 +237,20 @@ impl FsProcesses {
             Some((ConsensusMode::Consensus, canon_path)) => self
                 .handles
                 .wal
-                .append(WalEntry {
-                    op: WalOp::Truncate,
-                    path: canon_path,
-                    extra_path: None,
-                    offset: Some(n),
-                    length: None,
-                    payload_ref: None,
-                    mode_bits: None,
-                    owner: None,
-                    group: None,
-                })
+                .append_with_ack(
+                    WalEntry {
+                        op: WalOp::Truncate,
+                        path: canon_path,
+                        extra_path: None,
+                        offset: Some(n),
+                        length: None,
+                        payload_ref: None,
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                    },
+                    ack_channel_hash(ack),
+                )
                 .map(|()| true),
             _ => Ok(false),
         }
@@ -445,7 +481,7 @@ impl FsProcesses {
                 (RhoNumber::unapply(fd_par), extract_ok_bytes(&previous))
             {
                 if fd >= 0 {
-                    let _ = self.journal_read(fd as u64, &bytes, None).await;
+                    let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
                 }
             }
             produce(&previous, ack).await?;
@@ -457,7 +493,7 @@ impl FsProcesses {
                 // Journal on success.  extract_ok_bytes returns None
                 // for error replies, so this is a clean guard.
                 if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
-                    let _ = self.journal_read(fd as u64, &bytes, None).await;
+                    let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
                 }
                 r
             }
@@ -493,7 +529,9 @@ impl FsProcesses {
                 extract_ok_bytes(&previous),
             ) {
                 if fd >= 0 && off >= 0 {
-                    let _ = self.journal_read(fd as u64, &bytes, Some(off as u64)).await;
+                    let _ = self
+                        .journal_read(fd as u64, &bytes, Some(off as u64), ack)
+                        .await;
                 }
             }
             produce(&previous, ack).await?;
@@ -507,7 +545,9 @@ impl FsProcesses {
             (Some(fd), Some(off), Some(n)) if fd >= 0 && off >= 0 && n >= 0 => {
                 let r = self.read_impl(fd as u64, n as u64, Some(off as u64)).await;
                 if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
-                    let _ = self.journal_read(fd as u64, &bytes, Some(off as u64)).await;
+                    let _ = self
+                        .journal_read(fd as u64, &bytes, Some(off as u64), ack)
+                        .await;
                 }
                 r
             }
@@ -601,7 +641,7 @@ impl FsProcesses {
         // symmetric FSERR_QUOTA_EXCEEDED reply that is cached in
         // `previous` on the leader and replayed on the follower.
         if let Some((fd, bytes)) = &parsed {
-            if self.journal_write(*fd, bytes, None).await.is_err() {
+            if self.journal_write(*fd, bytes, None, ack).await.is_err() {
                 let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
                 produce(&out, ack).await?;
                 return Ok(out);
@@ -661,7 +701,11 @@ impl FsProcesses {
         // before the `is_replay` short-circuit (see `fs_write` for the
         // full rationale).
         if let Some((fd, off, bytes)) = &parsed {
-            if self.journal_write(*fd, bytes, Some(*off)).await.is_err() {
+            if self
+                .journal_write(*fd, bytes, Some(*off), ack)
+                .await
+                .is_err()
+            {
                 let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
                 produce(&out, ack).await?;
                 return Ok(out);
@@ -904,7 +948,8 @@ impl FsProcesses {
         // MAX_TRUNCATE_BYTES check first so an oversize truncate does
         // not consume a WAL slot for a call that will error out.
         if let Some((fd, n)) = &parsed {
-            if *n <= super::MAX_TRUNCATE_BYTES && self.journal_truncate(*fd, *n).await.is_err() {
+            if *n <= super::MAX_TRUNCATE_BYTES && self.journal_truncate(*fd, *n, ack).await.is_err()
+            {
                 let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
                 produce(&out, ack).await?;
                 return Ok(out);
