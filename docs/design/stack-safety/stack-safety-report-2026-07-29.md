@@ -7,7 +7,10 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@c875ab94` (recursive-carrier lifecycle plus operational, Rholang, AST/grammar, and token-codec closure; §5.18)
+**Companion decision head** `mettail-rust@0dc135a4` (recursive-carrier lifecycle plus operational,
+Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, and linear-temporal-logic
+(LTL) parser closure;
+§5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -76,7 +79,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
+Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are allocated while defects are open**, they are never "class change: yes", and a row is discharged only by a commit that repairs it — never by deletion. Repaired rows remain in the register with their repair SHA and status, preserving the defect history. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -133,6 +136,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G19** | `mettail-rust@2fe2a2c4` | mettail | surface send-sugar canonicalization: `Proc`/`Name`, query desugaring, binders, collections, and parallel normalization | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** unary/list/parallel levels on **256 KiB**; direct gate **0.09 s / 51,660 KiB** | **yes**; zero production direct or mutual recursion in `runtime.rs` | [5.18.18](#51818-surface-send-canonicalizer-closure-ss-g19) |
 | **SS-G20** | `mettail-rust@c875ab94` | mettail | AST grammar-shape `syn::Expr` walks, regex token rendering, and compact token-tree encode/decode | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; nested codec copy work $`\Theta(d^2) \rightarrow \Theta(d)`$; three **20,000**-depth gates on **256 KiB** | **yes**; zero production direct or mutual recursion in all three files | [5.18.19](#51819-ast-grammar-and-token-codec-closure-ss-g20) |
 | **SS-G21** | `mettail-rust@aebba39b` | mettail | REPL observation de-reflection: constructor/lambda/bag surface rendering, free-name collection, and Peano decoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; unary-spine string copying $`\Theta(d^2) \rightarrow \Theta(d)`$; bound lookup $`\Theta(d) \rightarrow O(1)`$; **20,000** levels on **256 KiB** | **yes**; renderer SCC and three direct functions absent from the fresh production call graph | [5.18.20](#51820-observation-surface-de-reflection-closure-ss-g21) |
+| **SS-G22** | `mettail-rust@0dc135a4` | mettail | PraTTaIL LTL precedence parser: implication, disjunction, conjunction, temporal operators, unary prefixes, and parenthesized primaries | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(t)`$ time and heap for $`t`$ tokens; four **20,000**-depth gates on **256 KiB** | **yes**; six-function parser SCC and three direct-recursion findings absent from the fresh production call graph | [5.18.21](#51821-ltl-precedence-parser-closure-ss-g22) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3641,6 +3645,78 @@ and exact error results; the end-to-end goldens pin parse-back alpha-equivalence
 non-capture. It changes no generated term, reduction, COMM schedule, canonical byte, charge, EPathMap
 representation, or PathMap operation. It adds no recursion cap, stack enlargement, `stacker` path, or
 production recursive fallback.
+
+---
+
+#### 5.18.21 LTL precedence-parser closure [SS-G22]
+
+`mettail-rust@0dc135a4` replaces PraTTaIL's six-function recursive-descent component with one
+explicit-stack predictive parser. Linear temporal logic (LTL) is the property language compiled to
+Buchi automata by `prattail/src/ltl.rs`. The retired component comprised `parse_implies`, `parse_or`,
+`parse_and`, `parse_until`, `parse_unary`, and `parse_primary`. Three members directly self-recursed:
+implication and the temporal operators to obtain right associativity, and unary parsing to consume a
+prefix chain. Parenthesized primary parsing called back to implication parsing, completing the
+six-member strongly connected component (SCC). Token-controlled depth was therefore native-call-stack
+depth, with no semantic bound.
+
+The replacement defunctionalizes those calls into a `Job` continuation enum and a formula-value
+stack. A continuation records the exact suspended precedence equation: parse or finish implication,
+continue the left folds for disjunction and conjunction, parse or finish a right-associative temporal
+operator, finish a unary-prefix sequence, or close a parenthesized formula. The precedence order is
+unchanged, from tightest to loosest: primary, unary, temporal, conjunction, disjunction, implication.
+The parser retains left associativity for conjunction/disjunction and right associativity for temporal
+operators/implication. In literate pseudocode, the machine is:
+
+```text
+PARSE-LTL(tokens):
+    jobs := [ParseImplies]
+    values := []
+    while jobs is nonempty:
+        job := pop(jobs)
+        if job requests a precedence level:
+            push its exact completion continuation
+            push the next-tighter parse job
+        else if job observes a binary operator:
+            retain the completed left formula in the continuation
+            push the required right parse job
+        else if job consumes unary prefixes:
+            scan the maximal prefix sequence and retain its operators
+            push ParsePrimary
+        else if job finishes a production:
+            pop its completed child formula or formulas
+            construct exactly one LtlFormula node and push it
+    require exactly one value and no unconsumed token
+```
+
+For $`t`$ tokens and maximum pending parse depth $`d`$, tokenization and parsing take
+$`\Theta(t)`$ time, $`O(t)`$ heap space (including tokens, continuations, and the output syntax tree),
+and $`O(1)`$ native stack. The parser introduces no depth ceiling. It retains the original tokenizer,
+token spellings, precedence, associativity, abstract-syntax-tree shape, and error strings. Its internal
+continuations carry completed left operands by ownership, so no subtree clone or repeated prefix scan
+is introduced.
+
+The superseded recursive equations live only in
+`prattail/tests/support/ltl_parser_recursive_oracle.rs`. A bounded differential compares the complete
+`Result<LtlFormula, String>` on valid and malformed corpora, including mixed precedence, every temporal
+operator, multiword atoms, missing operands and delimiters, trailing tokens, and generated depths
+1 through 64. The production machine independently parses and drops **20,000** unary prefixes,
+**20,000** nested parentheses, **20,000** right-associated implications, and **20,000**
+right-associated until operators on a **256 KiB** thread stack. The two oracle/deep tests pass in
+**0.06 seconds** with **30,904 KiB** maximum process resident set size (RSS); the 21 established parser
+tests pass separately. The complete PraTTaIL library passes **3,642/3,642** tests in **1.55 seconds**
+with **147,220 KiB** maximum RSS, inside a 512 MiB cgroup with swap disabled.
+
+Compiler memory is again reported separately from runtime traversal memory. The focused eight-job
+test build completed in **50.79 seconds** with **2,277,720 KiB** maximum RSS inside an 8 GiB cgroup,
+with zero swap. Fresh pgmcp whole-project production analysis reports **110** direct and **11** mutual
+recursion findings, down from **113/12** immediately before SS-G22. The three removed direct entries
+are `parse_implies`, `parse_until`, and `parse_unary`; the removed mutual entry is the six-function LTL
+parser SCC.
+
+SS-G22 is a parser-control-flow conversion whose bounded oracle pins exact accepted formulas, rejected
+inputs, tree shapes, and diagnostics. It changes no generated term, reduction, COMM schedule,
+canonical byte, charge, EPathMap representation, or PathMap operation. It adds no production recursive
+fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, or enlarged-stack dependency.
 
 ---
 
