@@ -719,31 +719,67 @@ new Dir, rootP, cmodeP in {
     new joinedCh in {
       joinRel!(subPath, rel, *joinedCh) |
       for (@joined <- joinedCh) {
-        new statRetCh in {
-          fsStat!(canonRoot, joined, cmode, *statRetCh) |
-          for (@statReply <- statRetCh) {
-            match statReply {
-              [true, rec] => {
-                // Verify the path is actually a directory.  Reading
-                // `rec.get("kind")` returns Nil on absent key rather
-                // than raising — a malformed stat record therefore
-                // routes through the non-"dir" arm as FSERR_BAD_ARG
-                // rather than escaping the mint.
-                match rec.get("kind") {
-                  "dir" => {
-                    // Slice 26: child Dir inherits parent's `cmode`.
-                    new dirCh in {
-                      Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
-                      for (@dirHandle <- dirCh) {
-                        ret!([true, dirHandle])
+        match joined {
+          // CRIT-1 fix (2026-08-06): root-Dir mint via `Fs.openDir`
+          // carries `subPath=""` and `rel=""` (post-H-P7-8 Dir bundle
+          // emit shape at `fs_genesis.rs::format_bundle_for_rholang`
+          // — Dir entries stay `(canon_path, "")` so the sandbox root
+          // is the provisioned path itself, not its parent).  joinRel
+          // of two empty strings yields `""`, and Phase 1's
+          // `safe_descend(root, "")` short-circuits to
+          // `QuarantineError::Empty` → every populated Dir bundle
+          // entry would cascade to
+          // `[false, "FSERR_BAD_ARG", "empty relative path"]`
+          // silently.  Skip the mint-time fsStat verify in this
+          // specific case: boot validation (`node/src/rust/
+          // configuration/boot_validation.rs::validate_provisioning_
+          // boot`, slice 23) has already confirmed the root exists,
+          // is a directory (KindMismatch check), is not a symlink
+          // (IsSymlink check), and holds no hard-linked children
+          // (HardLinked walker), so mint-time verification is
+          // redundant for the root.  Nested `Dir.openDir("child")`
+          // still runs the fsStat verify because joined is non-empty
+          // (`"child"` or `"parent/child"`).
+          "" => {
+            // Slice 26: child (root) Dir inherits parent's `cmode`.
+            // Even though this is the "root" mint, we still pass
+            // `cmode` through the Dir constructor for consistency
+            // with the nested-mint path — same shape either way.
+            new dirCh in {
+              Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
+              for (@dirHandle <- dirCh) {
+                ret!([true, dirHandle])
+              }
+            }
+          }
+          _ => {
+            new statRetCh in {
+              fsStat!(canonRoot, joined, cmode, *statRetCh) |
+              for (@statReply <- statRetCh) {
+                match statReply {
+                  [true, rec] => {
+                    // Verify the path is actually a directory.  Reading
+                    // `rec.get("kind")` returns Nil on absent key rather
+                    // than raising — a malformed stat record therefore
+                    // routes through the non-"dir" arm as FSERR_BAD_ARG
+                    // rather than escaping the mint.
+                    match rec.get("kind") {
+                      "dir" => {
+                        // Slice 26: child Dir inherits parent's `cmode`.
+                        new dirCh in {
+                          Dir!(*dirCh, canonRoot, joined, mode, cmode, fileCtor) |
+                          for (@dirHandle <- dirCh) {
+                            ret!([true, dirHandle])
+                          }
+                        }
                       }
+                      _ => ret!([false, "FSERR_BAD_ARG",
+                        "path exists but is not a directory"])
                     }
                   }
-                  _ => ret!([false, "FSERR_BAD_ARG",
-                    "path exists but is not a directory"])
+                  _ => ret!(statReply)
                 }
               }
-              _ => ret!(statReply)
             }
           }
         }

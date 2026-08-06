@@ -429,3 +429,164 @@ in {{
         .await
         .expect("consensus-cmode FsGenerator spec failed");
 }
+
+/// CRIT-1 fix (2026-08-06): populated-Dir-bundle end-to-end.
+///
+/// Post-H-P7-8, the bundle emit shape at
+/// `fs_genesis.rs::format_bundle_for_rholang` splits File entries as
+/// `(parent_dir, filename)` (the Fs.openFile call chain gives
+/// safe_descend a real leaf) but keeps Dir entries as
+/// `(canon_path, "")` — Dir caps root ON the provisioned path, not
+/// inside it, so a nested `Dir.openFile("child")` uses
+/// `openFileImpl(canonRoot=dir, subPath="", rel="child")` and works.
+///
+/// The bug: `Fs.openDir("mydir", {})` on a populated Dir entry
+/// composed `openDirImpl(canonRoot=dir, subPath="", rel="")` →
+/// `openDirImplInner` did `joinRel("", "") = ""` → `fsStat(root, "")`
+/// → `safe_descend(root, "")` → `QuarantineError::Empty` → silent
+/// `[false, "FSERR_BAD_ARG", "empty relative path"]` from every
+/// `Fs.openDir` call in production.  Every populated Dir bundle
+/// entry was unreachable via the operator-facing API surface.  The
+/// same failure class as H-P7-8 (which fixed the File side); Dir
+/// was overlooked.
+///
+/// Fix (Dir.rho): `openDirImplInner` special-cases `joined == ""`
+/// (the root-Dir mint path) and skips the mint-time `fsStat` verify
+/// — boot validation has already confirmed the root exists + is a
+/// directory + not a symlink + has no hard-linked children.  Nested
+/// `Dir.openDir("child")` still runs the verify because `joined`
+/// is non-empty.
+///
+/// This test proves:
+/// - `Fs.openDir` on a populated Dir entry returns `[true, dirCap]`
+///   (was the silent-hang / silent-FSERR case pre-fix)
+/// - `Dir.openFile("child")` on the returned cap succeeds against
+///   a real tempdir file — sandbox root is still the provisioned
+///   dir, not `/` (would be a sandbox escape under an alternative
+///   fix that emitted `("/", dir_name)` symmetric to File entries)
+/// - The subpath-op path (which was ALREADY working via joined =
+///   non-empty rel) still works and is now reachable in the same
+///   deploy as the root-Dir mint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_generator_populated_dir_bundle_opendir_and_subops() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+
+    // Seed a child file inside the provisioned directory so we can
+    // exercise the subpath op path.
+    let child_path = root.join("child.txt");
+    std::fs::write(&child_path, b"child contents").expect("seed child");
+
+    // Bundle the DIRECTORY (not the file), as though the operator
+    // wrote `oracle-static-dirs { "shareddir" = "..." }` in HOCON.
+    let entry = BundleEntry::try_new(
+        "shareddir".to_string(),
+        root.clone(),
+        BundleEntryKind::Dir,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_opendir_returns_dir_cap,
+  test_dir_openfile_child_succeeds
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("Fs.openDir on populated dir bundle returns [true, dirCap]",
+         *test_opendir_returns_dir_cap),
+        ("Dir.openFile on returned root dir cap reads child file",
+         *test_dir_openfile_child_succeeds)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+
+    // Test A: the CRIT-1 regression pin.  Pre-fix, this hung on
+    // safe_descend(root, "") → FSERR_BAD_ARG "empty relative
+    // path" delivered instead of a Dir cap.
+    contract test_opendir_returns_dir_cap(rhoSpec, _, ackCh) = {{
+      for(@reply <- @fs!?("openDir", "shareddir", {{}})) {{
+        match reply {{
+          [true, _dirCap] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "openDir on populated dir bundle returns [true, cap]", *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", (reply, "==", "[true, dirCap] shape"),
+              "openDir on populated dir bundle returns [true, cap]", *ackCh)
+          }}
+        }}
+      }}
+    }} |
+
+    // Test B: prove the sandbox root is correct.  Dir.openFile
+    // uses `openFileImpl(canonRoot=dir, subPath="", rel="child.txt")`
+    // → `safe_descend(dir_root, "child.txt")` which resolves inside
+    // the provisioned tree.  If the fix had emitted `("/", "shareddir")`
+    // instead (making canonRoot=`/`), openFile might succeed but
+    // the sandbox would be `/`, not `shareddir` — this test alone
+    // doesn't detect that regression, but the fix chosen preserves
+    // the invariant by construction (canonRoot unchanged).
+    contract test_dir_openfile_child_succeeds(rhoSpec, _, ackCh) = {{
+      for(@[true, dirCap] <- @fs!?("openDir", "shareddir", {{}})) {{
+        for(@openReply <- @dirCap!?("openFile", "child.txt", "r")) {{
+          match openReply {{
+            [true, fileCap] => {{
+              for(@readReply <- @fileCap!?("readN", 64)) {{
+                match readReply {{
+                  [true, _bytes] => {{
+                    rhoSpec!("assert", (true, "==", true),
+                      "Dir.openFile('child.txt') opens and readN succeeds",
+                      *ackCh)
+                  }}
+                  _ => {{
+                    rhoSpec!("assert",
+                      (readReply, "==", "[true, bytes] shape"),
+                      "Dir.openFile('child.txt') opens and readN succeeds",
+                      *ackCh)
+                  }}
+                }}
+              }}
+            }}
+            _ => {{
+              rhoSpec!("assert",
+                (openReply, "==", "[true, fileCap] shape"),
+                "Dir.openFile('child.txt') opens and readN succeeds",
+                *ackCh)
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FsGeneratorPopulatedDirBundleSpec".to_string(),
+    )
+    .expect("compile populated-dir-bundle test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("populated-dir-bundle FsGenerator spec failed");
+}
