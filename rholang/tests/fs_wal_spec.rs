@@ -1243,6 +1243,7 @@ mod tests {
             dir: snap_dir.path().to_path_buf(),
             cadence: 1,
             retain: 4,
+            signer_sk: None,
         };
         runtime.set_fs_snapshot_writer(Some(writer.clone())).await;
 
@@ -1311,6 +1312,7 @@ mod tests {
             dir: snap_dir.path().to_path_buf(),
             cadence: 10, // block 3 is a miss
             retain: 4,
+            signer_sk: None,
         };
 
         let term = format!(
@@ -1369,6 +1371,7 @@ mod tests {
             dir: snap_dir.path().to_path_buf(),
             cadence: 1,
             retain: 3,
+            signer_sk: None,
         };
 
         // Craft 5 distinct WAL slices (different offsets → different

@@ -1472,6 +1472,7 @@ mod snapshot_writer_wiring_tests {
             dir: PathBuf::from("/tmp/does-not-need-to-exist-for-this-test"),
             cadence: 5,
             retain: 10,
+            signer_sk: None,
         };
         manager.set_fs_snapshot_writer(Some(writer.clone())).await;
         let runtime = manager.spawn_runtime().await;
@@ -1500,6 +1501,7 @@ mod snapshot_writer_wiring_tests {
             dir: PathBuf::from("/tmp"),
             cadence: 7,
             retain: 14,
+            signer_sk: None,
         };
         manager.set_fs_snapshot_writer(Some(writer)).await;
         // The already-spawned runtime observes the new value —
@@ -1524,6 +1526,7 @@ mod snapshot_writer_wiring_tests {
             dir: PathBuf::from("/tmp"),
             cadence: 3,
             retain: 6,
+            signer_sk: None,
         };
         manager.set_fs_snapshot_writer(Some(writer)).await;
         assert_eq!(
@@ -1549,6 +1552,7 @@ mod snapshot_writer_wiring_tests {
             dir: PathBuf::from("/tmp"),
             cadence: 100,
             retain: 200,
+            signer_sk: None,
         };
         manager.set_fs_snapshot_writer(Some(writer)).await;
         let replay_rt = manager.spawn_replay_runtime().await;

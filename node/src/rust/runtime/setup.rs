@@ -290,11 +290,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                  SnapshotWriter attachment to after genesis-load."
             );
         }
+        // H-4 fix (2026-08-06): decode the validator's identity
+        // private key from hex for manifest signing.  Observer
+        // nodes without an identity get `None` and produce
+        // unsigned manifests (with a boot warning).
+        let signer_sk: Option<Vec<u8>> = conf
+            .casper
+            .validator_private_key
+            .as_deref()
+            .and_then(|hex_str| hex::decode(hex_str).ok());
         let writer = build_snapshot_writer(
             &merged,
             conf.storage.consensus_fs_snapshot_cadence,
             conf.storage.consensus_fs_snapshot_dir.as_deref(),
             conf.storage.consensus_fs_snapshot_retain,
+            signer_sk,
         )
         .unwrap_or_else(|e| {
             panic!("snapshot-config validation failed at boot; refusing to start: {e}")

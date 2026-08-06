@@ -575,6 +575,25 @@ pub struct SnapshotWriter {
     /// explicit config-schema migration.  Until then, the
     /// heuristic ships with this ratification note.
     pub retain: usize,
+
+    /// H-4 fix (2026-08-06): optional secp256k1 secret key bytes
+    /// for signing manifest entries at write time.  `None` = no
+    /// signing (produces the pre-H-4 unsigned wire format for
+    /// backward compatibility, e.g., in tests that don't need
+    /// authenticity).  Populated from
+    /// `conf.casper.validator_private_key` at boot via
+    /// `snapshot_config::build_snapshot_writer`; observer nodes
+    /// without an identity key get `None` and log a warning.
+    ///
+    /// Pre-H-4 the manifest was written unsigned in the operator's
+    /// snapshot dir (mode 0o644); any local attacker with write
+    /// access could inject bogus `(block_number, root)` entries
+    /// and joining validators would fetch and replay against
+    /// attacker-chosen roots.  With this field set, every
+    /// manifest line carries a signature the join protocol can
+    /// verify against the writer's known pubkey before trusting
+    /// `root`.
+    pub signer_sk: Option<Vec<u8>>,
 }
 
 impl SnapshotWriter {
@@ -608,7 +627,14 @@ impl SnapshotWriter {
             // No `.wal` file is written on disk (empty payloads all
             // hash to the same content-address; one file per empty
             // slice would waste disk without adding replay value).
-            let _ = append_manifest_entry(&self.dir, ManifestEntry::empty(block_number));
+            // H-4 fix: sign the sentinel entry if a signer key is
+            // present so joining validators can verify authenticity.
+            let sentinel = ManifestEntry::empty(block_number);
+            let sentinel = match &self.signer_sk {
+                Some(sk) => sentinel.signed(sk),
+                None => sentinel,
+            };
+            let _ = append_manifest_entry(&self.dir, sentinel);
             return Ok(None);
         }
         let (_, root) = write_snapshot(&self.dir, entries)?;
@@ -632,10 +658,15 @@ impl SnapshotWriter {
         // effort: manifest append failures do not abort the write
         // path (the snapshot file is already durable; missing
         // manifest lines can be reconstructed by directory scan).
-        if let Err(e) = append_manifest_entry(
-            &self.dir,
-            ManifestEntry::data(block_number, root, entries.len()),
-        ) {
+        // H-4 fix: sign the manifest entry with the writer's identity
+        // key so joining validators can verify authenticity before
+        // trusting `root`.
+        let data_entry = ManifestEntry::data(block_number, root, entries.len());
+        let data_entry = match &self.signer_sk {
+            Some(sk) => data_entry.signed(sk),
+            None => data_entry,
+        };
+        if let Err(e) = append_manifest_entry(&self.dir, data_entry) {
             tracing::warn!(
                 target: "f1r3fly.fs_wal.snapshot.manifest",
                 block_number,
@@ -716,6 +747,25 @@ pub struct ManifestEntry {
     /// effort — a validator whose clock is skewed still produces
     /// a valid manifest, but comparisons across peers are noisy.
     pub ts_ms: i64,
+    /// H-4 fix (2026-08-06): optional secp256k1 signature over
+    /// `sign_bytes()` (Blake2b256 of the canonical serialization
+    /// of the other four fields).  Signed by the validator's
+    /// identity key at write time via `signed(...)`; joining
+    /// validators verify with `verify_with_pubkey(...)` before
+    /// trusting `root`.  Pre-H-4 the manifest was written
+    /// unsigned with mode 0o644 in the operator's snapshot dir;
+    /// any local attacker with write access could inject bogus
+    /// (block_number, root) entries and joining validators would
+    /// fetch and replay against attacker-chosen roots.  Post-H-4
+    /// a joining validator that trusts the writer's pubkey
+    /// rejects lines with missing or invalid `sig`.
+    ///
+    /// `None` = unsigned line (parsed for backward compat with
+    /// pre-H-4 manifests; join protocol MUST reject in production
+    /// unless an explicit "trust local disk" override is set).
+    /// `Some(sig)` = 64-byte secp256k1 sig; caller verifies with
+    /// the writer's public key.
+    pub sig: Option<Vec<u8>>,
 }
 
 impl ManifestEntry {
@@ -725,6 +775,7 @@ impl ManifestEntry {
             root: Some(root),
             entries: entries as u64,
             ts_ms: now_ms(),
+            sig: None,
         }
     }
 
@@ -734,21 +785,107 @@ impl ManifestEntry {
             root: None,
             entries: 0,
             ts_ms: now_ms(),
+            sig: None,
         }
+    }
+
+    /// H-4 fix (2026-08-06): canonical byte-encoding of the four
+    /// non-`sig` fields, hashed via Blake2b256 to produce the
+    /// message the signature covers.  Anything that changes the
+    /// canonicalization is a hard-fork of the manifest format
+    /// (bump `SNAPSHOT_FORMAT_VERSION` in the manifest header
+    /// when that happens; see slice 34's hard-fork catalog).
+    ///
+    /// Format: `block_number | root_present | root | entries | ts_ms`
+    /// (all big-endian, root omitted when absent).  Deterministic
+    /// across writer/verifier as long as they agree on this
+    /// module's version byte.
+    pub fn sign_bytes(&self) -> Vec<u8> {
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        let mut buf = Vec::with_capacity(1 + 8 + 1 + 32 + 8 + 8);
+        // Version byte tying the signature format to the on-disk
+        // snapshot format (single source of truth for a hard-fork
+        // touch surface).
+        buf.push(SNAPSHOT_FORMAT_VERSION);
+        buf.extend_from_slice(&self.block_number.to_be_bytes());
+        match &self.root {
+            Some(r) => {
+                buf.push(1);
+                buf.extend_from_slice(r);
+            }
+            None => buf.push(0),
+        }
+        buf.extend_from_slice(&self.entries.to_be_bytes());
+        buf.extend_from_slice(&self.ts_ms.to_be_bytes());
+        Blake2b256::hash(buf)
+    }
+
+    /// H-4 fix (2026-08-06): return a copy of `self` with `sig`
+    /// populated by signing `sign_bytes()` with the provided
+    /// secp256k1 secret key.  The caller is responsible for
+    /// invoking this before writing to the manifest; the
+    /// `append_manifest_entry_signed` helper wraps the two-step
+    /// (sign + append).
+    pub fn signed(mut self, sk_bytes: &[u8]) -> Self {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let msg = self.sign_bytes();
+        let sig = Secp256k1.sign(&msg, sk_bytes);
+        self.sig = Some(sig);
+        self
+    }
+
+    /// H-4 fix (2026-08-06): verify the entry's signature against
+    /// a public key.  Returns Err on missing sig, wrong-length
+    /// sig, or verification failure.  Joining-protocol layer
+    /// MUST call this on every manifest line before treating
+    /// `root` as authoritative.
+    pub fn verify_with_pubkey(&self, pk_bytes: &[u8]) -> Result<(), SnapshotError> {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let sig = self.sig.as_deref().ok_or_else(|| {
+            SnapshotError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest entry is unsigned",
+            ))
+        })?;
+        let msg = self.sign_bytes();
+        if !Secp256k1.verify(&msg, sig, pk_bytes) {
+            return Err(SnapshotError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest entry signature verification failed",
+            )));
+        }
+        Ok(())
     }
 
     /// Serialize to a single JSON line (no trailing newline).
     /// Fixed field order + minimal whitespace so peers parsing
     /// with a hand-rolled reader don't have to canonicalize.
+    ///
+    /// H-4 fix (2026-08-06): if `sig` is `Some`, appends a
+    /// trailing `,"sig":"<hex>"` field.  `None` omits the field
+    /// entirely so pre-H-4 manifests still round-trip through
+    /// `from_line`.
     pub fn to_line(&self) -> String {
         let root_field = match &self.root {
             Some(r) => format!("\"{}\"", hex_encode(r)),
             None => "null".to_string(),
         };
-        format!(
-            "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
-            self.block_number, root_field, self.entries, self.ts_ms,
-        )
+        match &self.sig {
+            Some(s) => format!(
+                "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{},\"sig\":\"{}\"}}",
+                self.block_number,
+                root_field,
+                self.entries,
+                self.ts_ms,
+                hex_encode(s),
+            ),
+            None => format!(
+                "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
+                self.block_number, root_field, self.entries, self.ts_ms,
+            ),
+        }
     }
 
     /// Parse a single manifest line.  Rejects any input that
@@ -768,6 +905,10 @@ impl ManifestEntry {
         let mut root: Option<Option<[u8; 32]>> = None;
         let mut entries: Option<u64> = None;
         let mut ts_ms: Option<i64> = None;
+        // H-4 fix: `sig` is optional in the wire format for backward
+        // compat with pre-H-4 unsigned manifests.  Absence -> None;
+        // presence -> parse hex to Vec<u8>.
+        let mut sig: Option<Vec<u8>> = None;
         for part in split_top_level_commas(inner) {
             let (key, value) = part
                 .split_once(':')
@@ -800,6 +941,22 @@ impl ManifestEntry {
                 "ts_ms" => {
                     ts_ms = Some(value.parse().map_err(|e| format!("ts_ms parse: {e}"))?);
                 }
+                "sig" => {
+                    let hex = value.trim_matches('"');
+                    // secp256k1 sigs are DER-ish, variable length (~70-72
+                    // bytes typical, up to ~72).  Accept any even-length hex
+                    // that decodes cleanly.
+                    if hex.len() % 2 != 0 {
+                        return Err(format!("sig hex length must be even; got {}", hex.len()));
+                    }
+                    let mut bytes = Vec::with_capacity(hex.len() / 2);
+                    for i in (0..hex.len()).step_by(2) {
+                        let hi = u8::from_str_radix(&hex[i..i + 2], 16)
+                            .map_err(|e| format!("sig hex byte {i}: {e}"))?;
+                        bytes.push(hi);
+                    }
+                    sig = Some(bytes);
+                }
                 other => {
                     return Err(format!("unknown manifest key `{other}`"));
                 }
@@ -810,6 +967,7 @@ impl ManifestEntry {
             root: root.ok_or("missing root")?,
             entries: entries.ok_or("missing entries")?,
             ts_ms: ts_ms.ok_or("missing ts_ms")?,
+            sig,
         })
     }
 }
@@ -1528,6 +1686,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 5,
             retain: 3,
+            signer_sk: None,
         };
         let entries = vec![mk_write_entry(b"a", "/x")];
         // Blocks 1..5 (not aligned to cadence=5 boundary; 5 is aligned)
@@ -1548,6 +1707,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 10,
             retain: 5,
+            signer_sk: None,
         };
         // Block 0 is % 10 == 0 → cadence hit.
         let entries = vec![mk_write_entry(b"genesis", "/genesis")];
@@ -1562,6 +1722,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1,
             retain: 3,
+            signer_sk: None,
         };
         // Cadence=1 means every block is a hit, but empty entries
         // don't produce a `.wal` file (empty payloads all hash to
@@ -1600,6 +1761,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 5,
             retain: 3,
+            signer_sk: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         // Negative block numbers indicate "no block yet" state and
@@ -1628,6 +1790,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1, // any cadence — negative < 0 skip triggers first
             retain: 3,
+            signer_sk: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         assert!(
@@ -1652,6 +1815,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1, // every block
             retain: 2,
+            signer_sk: None,
         };
         // Write snapshots for blocks 1..=5 with distinct content.
         for i in 1..=5u8 {
@@ -1825,6 +1989,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 5,
             retain: 100,
+            signer_sk: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         for bn in [5i64, 10, 15, 100, 1000] {
@@ -1852,6 +2017,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1_000_000,
             retain: 3,
+            signer_sk: None,
         };
         let entries = vec![mk_write_entry(b"x", "/x")];
         // A random-looking block number that's an exact multiple.
@@ -1875,6 +2041,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1,
             retain: 0,
+            signer_sk: None,
         };
         let entries_1 = vec![mk_write_entry(b"a", "/x")];
         let entries_2 = vec![mk_write_entry(b"b", "/y")];
@@ -1918,6 +2085,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 1,
             retain: usize::MAX,
+            signer_sk: None,
         };
         for i in 1..=5u8 {
             let entries = vec![mk_write_entry(&[i], "/x")];
@@ -2158,6 +2326,7 @@ mod tests {
             root: Some(root),
             entries: 42,
             ts_ms: 1_722_400_000_000,
+            sig: None,
         };
         let line = e.to_line();
         // Sanity: line must be single-line JSON (no interior newlines).
@@ -2179,6 +2348,117 @@ mod tests {
         assert_eq!(parsed, e);
         assert!(parsed.root.is_none());
         assert_eq!(parsed.entries, 0);
+    }
+
+    // -------------------- H-4 regression pins (2026-08-06) --------------------
+
+    /// Deterministic secp256k1 keypair for tests.  Not a real
+    /// validator key — just any 32-byte scalar that yields a valid
+    /// key pair.  Copied-pattern from `standard_deploys::FS_GENERATOR_PK`
+    /// (a checked-in test-shard-signing key with the same
+    /// "deterministic constant" role).
+    fn test_keypair() -> (Vec<u8>, Vec<u8>) {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        // Some deterministic 32-byte value.  0x11..0x30.
+        let sk: Vec<u8> = (0x11u8..0x11 + 32).collect();
+        let pk_bytes = Secp256k1
+            .to_public(&crypto::rust::private_key::PrivateKey::from_bytes(&sk))
+            .bytes;
+        (sk, pk_bytes.to_vec())
+    }
+
+    /// H-4 signing round-trip: an entry signed with sk verifies with
+    /// the matching pk; the sig field is populated after `signed()`.
+    #[test]
+    fn manifest_entry_signed_round_trips_and_verifies() {
+        let (sk, pk) = test_keypair();
+        let raw = ManifestEntry::data(100, [0x55u8; 32], 7);
+        let signed = raw.clone().signed(&sk);
+        assert!(signed.sig.is_some(), "signed() must populate the sig field");
+        // Verify with matching pk succeeds.
+        signed
+            .verify_with_pubkey(&pk)
+            .expect("valid sig must verify");
+        // Verify with a wrong pk fails.
+        let (_, wrong_pk) = test_keypair_wrong();
+        assert!(
+            signed.verify_with_pubkey(&wrong_pk).is_err(),
+            "wrong pubkey must reject the signature"
+        );
+        // Serialize + parse preserves the sig.
+        let line = signed.to_line();
+        assert!(
+            line.contains("\"sig\":\""),
+            "signed line must include sig field; got {line}"
+        );
+        let parsed = ManifestEntry::from_line(&line).expect("round-trip signed line");
+        assert_eq!(parsed.sig, signed.sig);
+        parsed.verify_with_pubkey(&pk).expect("post-parse verify");
+    }
+
+    /// H-4: mutation of any signed field invalidates the signature.
+    /// If an attacker rewrites the manifest to point at a bogus
+    /// root, the sig no longer matches.
+    #[test]
+    fn manifest_entry_signature_binds_to_root_field() {
+        let (sk, pk) = test_keypair();
+        let signed = ManifestEntry::data(50, [0x11u8; 32], 3).signed(&sk);
+        // Attacker mutates the root.
+        let mut tampered = signed.clone();
+        tampered.root = Some([0x99u8; 32]);
+        assert!(
+            tampered.verify_with_pubkey(&pk).is_err(),
+            "signature must reject a root-tampered entry"
+        );
+    }
+
+    /// H-4: an unsigned entry (pre-H-4 backward-compat wire format)
+    /// returns an error on verify — the joining protocol must
+    /// treat unsigned entries as untrusted.
+    #[test]
+    fn manifest_entry_unsigned_verify_returns_err() {
+        let (_, pk) = test_keypair();
+        let unsigned = ManifestEntry::data(1, [0u8; 32], 0);
+        assert!(
+            unsigned.verify_with_pubkey(&pk).is_err(),
+            "unsigned entries must not verify"
+        );
+    }
+
+    /// A second deterministic keypair for negative-verify tests.
+    fn test_keypair_wrong() -> (Vec<u8>, Vec<u8>) {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        let sk: Vec<u8> = (0x31u8..0x31 + 32).collect();
+        let pk_bytes = Secp256k1
+            .to_public(&crypto::rust::private_key::PrivateKey::from_bytes(&sk))
+            .bytes;
+        (sk, pk_bytes.to_vec())
+    }
+
+    /// End-to-end: SnapshotWriter with `signer_sk = Some(sk)` writes
+    /// a manifest line whose sig verifies with the matching pk.
+    #[test]
+    fn snapshot_writer_with_signer_produces_verifiable_manifest() {
+        let (sk, pk) = test_keypair();
+        let dir = tempfile::tempdir().unwrap();
+        let writer = SnapshotWriter {
+            dir: dir.path().to_path_buf(),
+            cadence: 1,
+            retain: 10,
+            signer_sk: Some(sk),
+        };
+        let entries = vec![mk_write_entry(b"payload", "/x")];
+        writer
+            .maybe_write(5, &entries)
+            .expect("write")
+            .expect("cadence hit yields root");
+        let manifest = read_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+        manifest[0]
+            .verify_with_pubkey(&pk)
+            .expect("SnapshotWriter-signed line must verify");
     }
 
     #[test]
@@ -2246,6 +2526,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 10,
             retain: 4,
+            signer_sk: None,
         };
         // Block 20: cadence hit (20 % 10 == 0) with zero entries.
         let res = writer.maybe_write(20, &[]).unwrap();
@@ -2268,6 +2549,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 5,
             retain: 4,
+            signer_sk: None,
         };
         let entries = vec![WalEntry {
             op: WalOp::Write,
@@ -2303,6 +2585,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
             cadence: 100,
             retain: 4,
+            signer_sk: None,
         };
         // Block 3 is a cadence miss (3 % 100 != 0).
         let res = writer.maybe_write(3, &[]).unwrap();

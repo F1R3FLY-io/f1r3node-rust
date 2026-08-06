@@ -155,6 +155,14 @@ pub fn build_snapshot_writer(
     cadence: Option<u64>,
     dir: Option<&Path>,
     retain_override: Option<usize>,
+    // H-4 fix (2026-08-06): validator identity secret key (raw
+    // secp256k1 bytes) for signing manifest entries.  Populated
+    // from `conf.casper.validator_private_key` at boot.  `None`
+    // for observer nodes without an identity — the resulting
+    // manifest is unsigned (pre-H-4 backward-compat behavior)
+    // and a boot-time warning is logged so operators know their
+    // manifests won't be verifiable by peers.
+    signer_sk: Option<Vec<u8>>,
 ) -> Result<Option<SnapshotWriter>, SnapshotConfigError> {
     let canonical = validate_snapshot_config(provisioning, cadence, dir)?;
     match canonical {
@@ -180,10 +188,21 @@ pub fn build_snapshot_writer(
                     .unwrap_or(usize::MAX)
                     .max(2),
             };
+            if signer_sk.is_none() {
+                tracing::warn!(
+                    target: "f1r3fly.fs_wal.snapshot",
+                    "SnapshotWriter constructed without a signer key (observer node \
+                     or missing validator_private_key); manifest entries will be \
+                     written UNSIGNED and joining validators will not be able to \
+                     verify authenticity.  H-4 fix requires a validator identity \
+                     to produce signed manifests."
+                );
+            }
             Ok(Some(SnapshotWriter {
                 dir: canonical_dir,
                 cadence,
                 retain,
+                signer_sk,
             }))
         }
     }
@@ -543,7 +562,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_returns_none_without_consensus_provisioning() {
-        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, None).unwrap();
+        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, None, None).unwrap();
         assert!(w.is_none());
     }
 
@@ -555,6 +574,7 @@ mod tests {
             Some(50),
             Some(dir.path()),
             None,
+            None,
         )
         .unwrap()
         .expect("consensus provisioning + valid config returns Some");
@@ -565,8 +585,9 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_propagates_validation_error() {
-        let err = build_snapshot_writer(&provisioning_with_consensus_file(), None, None, None)
-            .unwrap_err();
+        let err =
+            build_snapshot_writer(&provisioning_with_consensus_file(), None, None, None, None)
+                .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
     }
 
@@ -584,6 +605,7 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(u64::MAX),
             Some(dir.path()),
+            None,
             None,
         )
         .unwrap()
@@ -612,6 +634,7 @@ mod tests {
             Some(cadence),
             Some(dir.path()),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -630,6 +653,7 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(1),
             Some(dir.path()),
+            None,
             None,
         )
         .unwrap()
@@ -657,6 +681,7 @@ mod tests {
             Some(50),
             Some(dir.path()),
             Some(500),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -673,6 +698,7 @@ mod tests {
             &provisioning_with_consensus_file(),
             Some(50),
             Some(dir.path()),
+            None,
             None,
         )
         .unwrap()
@@ -695,6 +721,7 @@ mod tests {
                 Some(100),
                 Some(dir.path()),
                 Some(override_val),
+                None,
             )
             .unwrap()
             .unwrap();
@@ -710,7 +737,8 @@ mod tests {
         // No consensus provisioning → no writer regardless of retain
         // override.  Retain is a knob on an attached writer; it
         // can't force a writer to exist.
-        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, Some(500)).unwrap();
+        let w =
+            build_snapshot_writer(&empty_provisioning(), Some(100), None, Some(500), None).unwrap();
         assert!(
             w.is_none(),
             "retain override must not conjure a writer without provisioning"
