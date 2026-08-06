@@ -1109,7 +1109,10 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/stat",
             FixedChannels::fs_stat(),
-            3, // (rootCanon, rel, ack)
+            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
+            // `cmode` controls whether the record omits host-transient
+            // fields (mtime/ctime/atime/owner/group).
+            4,
             BodyRefs::FS_STAT,
             |sp, args| Box::pin(async move { sp.fs.fs_stat(args).await }),
         ),
@@ -1123,7 +1126,8 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/entries",
             FixedChannels::fs_entries(),
-            3, // (rootCanon, rel, ack)
+            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
+            4,
             BodyRefs::FS_ENTRIES,
             |sp, args| Box::pin(async move { sp.fs.fs_entries(args).await }),
         ),
@@ -1137,42 +1141,54 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/rename",
             FixedChannels::fs_rename(),
-            5, // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
+            // Slice 26 (H-26-F1): arity is 6 = (fromRootCanon, fromRel,
+            // toRootCanon, toRel, cmode, ack).
+            6,
             BodyRefs::FS_RENAME,
             |sp, args| Box::pin(async move { sp.fs.fs_rename(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/copyFile",
             FixedChannels::fs_copy_file(),
-            5, // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
+            // Slice 26 (H-26-F1): arity is 6 = (fromRootCanon, fromRel,
+            // toRootCanon, toRel, cmode, ack).
+            6,
             BodyRefs::FS_COPY_FILE,
             |sp, args| Box::pin(async move { sp.fs.fs_copy_file(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/removeFile",
             FixedChannels::fs_remove_file(),
-            3, // (rootCanon, rel, ack)
+            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
+            4,
             BodyRefs::FS_REMOVE_FILE,
             |sp, args| Box::pin(async move { sp.fs.fs_remove_file(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/removeDir",
             FixedChannels::fs_remove_dir(),
-            4, // (rootCanon, rel, recursive, ack)
+            // Slice 26 (H-26-F1): arity is 5 = (rootCanon, rel, recursive,
+            // cmode, ack).
+            5,
             BodyRefs::FS_REMOVE_DIR,
             |sp, args| Box::pin(async move { sp.fs.fs_remove_dir(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/chmod",
             FixedChannels::fs_chmod(),
-            4, // (rootCanon, rel, modeBits, ack)
+            // Slice 26 (H-26-F1): arity is 5 = (rootCanon, rel, modeBits,
+            // cmode, ack).
+            5,
             BodyRefs::FS_CHMOD,
             |sp, args| Box::pin(async move { sp.fs.fs_chmod(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/chown",
             FixedChannels::fs_chown(),
-            5, // (rootCanon, rel, owner, group, ack)
+            // Slice 26 (H-26-F1): arity is 6 = (rootCanon, rel, owner,
+            // group, cmode, ack).  `cmode` short-circuits chown on
+            // Consensus caps.
+            6,
             BodyRefs::FS_CHOWN,
             |sp, args| Box::pin(async move { sp.fs.fs_chown(args).await }),
         ),

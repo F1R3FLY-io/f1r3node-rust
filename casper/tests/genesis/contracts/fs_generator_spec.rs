@@ -120,34 +120,42 @@ in {{
         .expect("FsGenerator E2E spec tests failed");
 }
 
-/// H-P7-8 / H-25-COV-1 (Phase 7 whole-review, delivered
-/// 2026-08-05): populated-bundle end-to-end test.
+/// H-P7-8 / H-25-COV-1 / H-P7-8-E2E (Phase 7 whole-review,
+/// delivered 2026-08-05, extended 2026-08-06): populated-bundle
+/// end-to-end test.
 ///
-/// The primary fix that landed with this test is
-/// `format_bundle_for_rholang` now emitting `(parent_dir,
-/// filename)` for File entries instead of `(full_path, "")`.
-/// Pre-fix, `Fs.openFile` for any populated file entry cascaded
-/// to `safe_descend(root, rel="")` → `QuarantineError::Empty` →
-/// silent `[false, "FSERR_BAD_ARG", "empty relative path"]`.
-/// Post-fix the tuple has a real leaf and safe_descend walks it.
+/// Two fixes landed together:
 ///
-/// Test coverage scope (delivered):
+/// 1. `format_bundle_for_rholang` now emits `(parent_dir,
+///    filename)` for File entries instead of `(full_path, "")`
+///    (H-P7-8).  Pre-fix, `Fs.openFile` for any populated file
+///    entry cascaded to `safe_descend(root, rel="")` →
+///    `QuarantineError::Empty` → silent
+///    `[false, "FSERR_BAD_ARG", "empty relative path"]`.
+///
+/// 2. 7 native handler arity registrations in `fs_native_def`
+///    (rho_runtime.rs) were updated from pre-slice-26 arities to
+///    post-slice-26 (H-P7-8-E2E).  Slice 26 threaded `cmode`
+///    through the native call signatures for fs_stat, fs_entries,
+///    fs_rename, fs_copy_file, fs_remove_file, fs_remove_dir,
+///    fs_chmod, fs_chown but the register-arities were never
+///    bumped to match.  Any send with the CORRECT number of args
+///    silently didn't match the 3/4/5-arity persistent receive,
+///    leaving `fs_stat!(root, rel, cmode, ack)` (4 args) waiting
+///    forever against a 3-arg receive.  Only tests that used the
+///    URN filter's genesis-scope with mock syscalls (file_dir_check)
+///    or that used pre-slice-26 arg counts (fs_wal_spec's fs_write
+///    3-args, which happens to match the unchanged 3-arity)
+///    escaped detection.
+///
+/// Test coverage now:
 /// - **Fs.openFile early-return path** on a populated-bundle
-///   runtime (name not in bundle → FSERR_UNSUPPORTED).  Proves
-///   the RhoSpec harness runs with a populated bundle installed.
-///
-/// Test coverage scope (deferred as its own investigation):
-/// - **Fs.openFile populated-name path** (name in bundle → real
-///   openFileImpl chain → fs_stat + fs_open + File mint) hangs in
-///   the RhoSpec harness — even after the H-P7-8 fix.  The unit-
-///   level fix (bundle emitting `(parent, filename)` correctly)
-///   passes all `format_bundle_*` tests; and `file_dir_check.rs`
-///   already covers `openFileImpl` with mock syscalls end-to-end.
-///   The remaining gap is a genesis-integration issue orthogonal
-///   to H-P7-8 (likely test-harness / tokio runtime shape at the
-///   spawn_blocking boundary for fs_stat/fs_open).  Tracked as
-///   H-P7-8-E2E for a follow-up slice.
-#[tokio::test]
+///   runtime (name not in bundle → FSERR_UNSUPPORTED).
+/// - **Fs.openFile populated-name path** (name IS in bundle →
+///   real openFileImpl → fs_stat + fs_open + File mint chain
+///   against native syscalls in a real tempdir file).
+/// - **File.readBytes on the returned cap** through fs_read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_generator_populated_bundle_installs_and_dispatches() {
     // Boot-time on-disk setup: a real file the operator has
     // provisioned.  The tempdir survives until the test ends.
@@ -173,40 +181,40 @@ async fn fs_generator_populated_bundle_installs_and_dispatches() {
 
     let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
 
-    // Test source: look up the Fs cap, openFile("myfile", {"mode": "r"}),
-    // assert [true, fileCap].  Then File.readBytes(32) and assert
-    // [true, bytes] — proves the full chain from Fs.openFile through
-    // fs_stat + fs_open + fs_read lands on the tempdir file.
+    // Test source: look up the Fs cap, openFile("myfile", {}), assert
+    // [true, fileCap].  Then File.readBytes(64) and assert [true, bytes]
+    // — proves the full chain from Fs.openFile through fs_stat + fs_open
+    // + fs_read lands on the tempdir file.
     let test_source = format!(
         r#"
 new
   rl(`rho:registry:lookup`),
   RhoSpecCh,
   fsCh,
-  test_fs_early_return_on_populated_bundle
+  test_fs_early_return_on_populated_bundle,
+  test_openfile_populated_returns_file_cap,
+  test_readbytes_returns_file_contents
 in {{
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
   for(@(_, RhoSpec) <- RhoSpecCh) {{
     @RhoSpec!("testSuite",
       [
         ("Fs.openFile early-return works with populated bundle installed",
-         *test_fs_early_return_on_populated_bundle)
+         *test_fs_early_return_on_populated_bundle),
+        ("Fs.openFile on populated name returns [true, cap]",
+         *test_openfile_populated_returns_file_cap),
+        ("File.readN on returned cap returns file contents",
+         *test_readbytes_returns_file_contents)
       ])
   }} |
 
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
 
-    // openFile on a name NOT in the populated bundle
-    // (bundle contains "myfile" only) — Fs.openFile's early-return
-    // path emits [false, "FSERR_UNSUPPORTED", ...] without calling
-    // openFileImpl.  Pre-H-P7-8 fix the bundle installation itself
-    // was correct at the operator layer; this test proves the
-    // populated-bundle genesis path runs cleanly and the Fs cap is
-    // reachable + dispatches openFile correctly.  The populated-
-    // name path (which would exercise openFileImpl → real syscalls)
-    // hangs in the RhoSpec harness for reasons orthogonal to
-    // H-P7-8 (see docstring above); tracked as H-P7-8-E2E.
+    // Test 1 (early-return diagnostic): openFile on a name NOT in
+    // the bundle emits [false, FSERR_UNSUPPORTED, ...] without
+    // calling openFileImpl.  Proves the populated-bundle genesis
+    // path runs cleanly and the Fs cap dispatches openFile.
     contract test_fs_early_return_on_populated_bundle(rhoSpec, _, ackCh) = {{
       for(@reply <- @fs!?("openFile", "nonexistent-name", {{}})) {{
         match reply {{
@@ -217,6 +225,45 @@ in {{
           _ => {{
             rhoSpec!("assert", (reply, "==", "[false, FSERR_UNSUPPORTED, _]"),
               "Fs.openFile early-return under populated bundle", *ackCh)
+          }}
+        }}
+      }}
+    }} |
+
+    // Test 2: openFile on the provisioned name.  Exercises the
+    // full openFileImpl → fs_stat + fs_open + File mint chain
+    // against real native syscalls.  Requires the multi-thread
+    // runtime flavor so spawn_blocking hand-off doesn't deadlock.
+    contract test_openfile_populated_returns_file_cap(rhoSpec, _, ackCh) = {{
+      for(@reply <- @fs!?("openFile", "myfile", {{}})) {{
+        match reply {{
+          [true, _cap] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "openFile on populated name returns [true, cap]", *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", (reply, "==", "[true, cap] shape"),
+              "openFile on populated name returns [true, cap]", *ackCh)
+          }}
+        }}
+      }}
+    }} |
+
+    // Test 3: exercise File.readN on the returned cap.  Reads up
+    // to 64 bytes from the tempdir file's contents through the
+    // full Fs → File → fs_read syscall chain.
+    contract test_readbytes_returns_file_contents(rhoSpec, _, ackCh) = {{
+      for(@[true, fileCap] <- @fs!?("openFile", "myfile", {{}})) {{
+        for(@r <- @fileCap!?("readN", 64)) {{
+          match r {{
+            [true, _bytes] => {{
+              rhoSpec!("assert", (true, "==", true),
+                "readN returns [true, bytes]", *ackCh)
+            }}
+            _ => {{
+              rhoSpec!("assert", (r, "==", "[true, bytes] shape"),
+                "readN returns [true, bytes]", *ackCh)
+            }}
           }}
         }}
       }}
