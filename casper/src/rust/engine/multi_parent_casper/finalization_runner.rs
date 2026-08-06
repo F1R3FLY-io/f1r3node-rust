@@ -268,6 +268,99 @@ pub(crate) async fn compute_last_finalized_block(
                             event_publisher
                                 .publish(finalised_event(&block))
                                 .map_err(|e| KvStoreError::IoError(e.to_string()))?;
+
+                            // H-1 fix (2026-08-06) — slice 30c Phase B:
+                            // LFB-triggered snapshot write.  For each
+                            // newly-finalized block, look up its per-block
+                            // WAL slice in the shared cache (populated by
+                            // `play_deploys_for_state` on this validator
+                            // when the block was originally computed) and,
+                            // if the block hits a cadence boundary, call
+                            // `SnapshotWriter::maybe_write` with the
+                            // cached slice.  This closes the pre-H-1
+                            // divergence hazard where the snapshot fired
+                            // per-candidate-block: two sibling non-
+                            // finalized blocks at the same block_number
+                            // could both trigger writes with different
+                            // slice contents.  Post-fix, only finalized-
+                            // chain blocks produce snapshots.
+                            //
+                            // Cache miss handling: a snapshot may be
+                            // missed if this validator did not itself
+                            // compute the block (e.g., joining validator
+                            // that received the block from a peer without
+                            // re-executing).  Log at debug; downstream
+                            // join protocol will fill via peer catch-up.
+                            let writer_opt = runtime_manager
+                                .fs_snapshot_writer
+                                .read()
+                                .await
+                                .clone();
+                            if let Some(writer) = writer_opt {
+                                let post_state_hash =
+                                    block.body.state.post_state_hash.to_vec();
+                                let bn = block.body.state.block_number;
+                                let cache_entry = {
+                                    let mut slices = runtime_manager
+                                        .pending_wal_slices
+                                        .write()
+                                        .await;
+                                    slices.remove(&post_state_hash)
+                                };
+                                match cache_entry {
+                                    Some((_cached_bn, slice)) => {
+                                        let block_hash_pretty =
+                                            PrettyPrinter::build_string_bytes(
+                                                block_hash,
+                                            );
+                                        let snapshot_result =
+                                            tokio::task::spawn_blocking(
+                                                move || {
+                                                    writer.maybe_write(
+                                                        bn, &slice,
+                                                    )
+                                                },
+                                            )
+                                            .await;
+                                        match snapshot_result {
+                                            Ok(Ok(_)) => {}
+                                            Ok(Err(e)) => tracing::warn!(
+                                                target: "f1r3fly.casper.fs_wal",
+                                                block_number = bn,
+                                                block_hash = %block_hash_pretty,
+                                                error = %e,
+                                                "LFB-triggered snapshot write failed"
+                                            ),
+                                            Err(je) => tracing::warn!(
+                                                target: "f1r3fly.casper.fs_wal",
+                                                block_number = bn,
+                                                block_hash = %block_hash_pretty,
+                                                error = %je,
+                                                "LFB-triggered snapshot spawn_blocking failed"
+                                            ),
+                                        }
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            target: "f1r3fly.casper.fs_wal",
+                                            block_number = bn,
+                                            block_hash = %PrettyPrinter::build_string_bytes(block_hash),
+                                            "no cached WAL slice for finalized block \
+                                             (this validator did not compute it; \
+                                             peer catch-up will cover snapshot needs)"
+                                        );
+                                    }
+                                }
+                                // Evict stale entries whose block_number is
+                                // <= this finalized block's — they are
+                                // either now-finalized (already handled) or
+                                // orphaned (never will be).
+                                let mut slices = runtime_manager
+                                    .pending_wal_slices
+                                    .write()
+                                    .await;
+                                slices.retain(|_, (cached_bn, _)| *cached_bn > bn);
+                            }
                         }
 
                         // Guard will reset finalization_in_progress flag on drop

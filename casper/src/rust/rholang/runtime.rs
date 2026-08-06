@@ -449,30 +449,20 @@ impl RuntimeOps {
             // we don't stall the tokio worker or block a concurrent
             // `RuntimeManager::set_fs_snapshot_writer` awaiting the
             // write lock.
-            let writer_opt = self.runtime.fs_snapshot_writer.read().await.clone();
-            if let Some(writer) = writer_opt {
-                let block_number = self.runtime.block_data_ref.read().await.block_number;
-                let entries_for_snapshot = block_fs_wal.clone();
-                let snapshot_result = tokio::task::spawn_blocking(move || {
-                    writer.maybe_write(block_number, &entries_for_snapshot)
-                })
-                .await;
-                match snapshot_result {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => tracing::warn!(
-                        target: "f1r3fly.casper.fs_wal",
-                        block_number,
-                        error = %e,
-                        "snapshot write failed; consensus proceeds but joining validators may fall further behind"
-                    ),
-                    Err(join_err) => tracing::warn!(
-                        target: "f1r3fly.casper.fs_wal",
-                        block_number,
-                        error = %join_err,
-                        "snapshot spawn_blocking failed (task panicked or was cancelled)"
-                    ),
-                }
-            }
+            // H-1 fix (2026-08-06) — slice 30c Phase B: don't
+            // snapshot per-block; cache the slice keyed by
+            // post-state hash so the finalization runner can
+            // snapshot only on cadence-hit blocks that ACTUALLY
+            // finalize.  Pre-fix, `SnapshotWriter::maybe_write`
+            // fired here on every candidate block including
+            // non-finalized DAG tips — snapshot content forked
+            // silently across siblings, and orphaned blocks
+            // produced writes that were never referenced by the
+            // finalized chain.  Post-fix, snapshots reflect the
+            // finalized-chain history only.  The write itself
+            // happens in
+            // `finalization_runner::new_lfb_found_effect` after
+            // reading from `pending_wal_slices`.
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -494,6 +484,41 @@ impl RuntimeOps {
         }
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint", rss_kb);
+        }
+        // H-1 fix (2026-08-06) — slice 30c Phase B: cache the
+        // per-block WAL slice keyed by the post-state hash we just
+        // computed.  A finalized block carries this same
+        // `post_state_hash` in `block.body.state.post_state_hash`, so
+        // `finalization_runner::new_lfb_found_effect` can look up the
+        // slice by that key and snapshot on cadence hits.  Bounded
+        // cache: the finalization runner also evicts stale entries
+        // whose block_number is <= the new LFB (orphaned or already
+        // handled).  See `pending_wal_slices` docstring on
+        // `RuntimeManager` for the cache-size argument.
+        if !block_fs_wal.is_empty() {
+            let block_number = self.runtime.block_data_ref.read().await.block_number;
+            const MAX_PENDING_WAL_SLICES: usize = 1024;
+            let mut slices = self.runtime.pending_wal_slices.write().await;
+            if slices.len() >= MAX_PENDING_WAL_SLICES {
+                // Defensive: shouldn't hit under normal operation
+                // (finalization latency is small vs. slice-block
+                // production rate).  If we do, drop the oldest by
+                // block_number.  Log so operators can raise the cap
+                // if they legitimately have deep-fork scenarios.
+                if let Some(oldest_key) = slices
+                    .iter()
+                    .min_by_key(|(_, (bn, _))| *bn)
+                    .map(|(k, _)| k.clone())
+                {
+                    slices.remove(&oldest_key);
+                    tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        cap = MAX_PENDING_WAL_SLICES,
+                        "pending_wal_slices cache full; evicting oldest entry.  Deep-fork scenario or stalled finalizer?"
+                    );
+                }
+            }
+            slices.insert(final_root.to_vec(), (block_number, block_fs_wal));
         }
         Ok((final_root, res))
     }
@@ -1710,6 +1735,78 @@ mod tests {
     use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp};
 
     use super::*;
+
+    /// H-1 fix regression pin (2026-08-06) — slice 30c Phase B.
+    /// `play_deploys_for_state` MUST NOT call `SnapshotWriter::
+    /// maybe_write` directly (that was the pre-H-1 per-block trigger
+    /// that forked snapshot writes on sibling non-finalized DAG
+    /// tips).  Post-H-1, the slice is cached in
+    /// `pending_wal_slices` and the actual write happens in
+    /// `finalization_runner::new_lfb_found_effect` after the block
+    /// finalizes.
+    ///
+    /// Source-scan pin: a future refactor that re-introduces
+    /// `writer.maybe_write(...)` inside `play_deploys_for_state`'s
+    /// body would trip this test.  Cheap to run; catches the
+    /// class of regression that would silently reintroduce the
+    /// per-block trigger.
+    #[test]
+    fn play_deploys_for_state_does_not_call_maybe_write_directly() {
+        let src = include_str!("runtime.rs");
+        // Locate the `pub async fn play_deploys_for_state` body by
+        // string scan.  Look between the `pub async fn` header and
+        // the matching function-closing `Ok((final_root, res))`
+        // return (the terminal expression of this function — see
+        // line ~499 of this file).
+        let start_idx = src
+            .find("pub async fn play_deploys_for_state")
+            .expect("play_deploys_for_state must exist in this file");
+        let end_marker = "Ok((final_root, res))";
+        let body_end = src[start_idx..]
+            .find(end_marker)
+            .expect("terminal return must exist inside play_deploys_for_state");
+        let body = &src[start_idx..start_idx + body_end];
+        // Match call-syntax (`.maybe_write(`) rather than the bare
+        // symbol — the H-1 docstring in this function references
+        // "SnapshotWriter::maybe_write" as explanation, which is
+        // fine; the anti-pattern is the invocation itself.
+        assert!(
+            !body.contains(".maybe_write("),
+            "play_deploys_for_state must NOT call SnapshotWriter::maybe_write \
+             directly — H-1 fix moved the trigger to finalization_runner's \
+             new_lfb_found_effect so snapshots reflect only the finalized \
+             chain, not sibling non-finalized DAG tips.  If you need to \
+             re-add per-block snapshotting, first reason carefully about \
+             cross-fork snapshot content divergence."
+        );
+        // Positive: the fix inserts into `pending_wal_slices` at
+        // end of the function.  Verify that path is present.
+        assert!(
+            body.contains("pending_wal_slices"),
+            "play_deploys_for_state must cache the per-block WAL slice into \
+             pending_wal_slices for finalization_runner to pick up"
+        );
+    }
+
+    /// H-1 companion pin: `new_lfb_found_effect` in the finalization
+    /// runner MUST consume from `pending_wal_slices` and call
+    /// `maybe_write`.  If a refactor drops the LFB hook, snapshots
+    /// stop firing entirely rather than resurrecting the per-block
+    /// hazard.
+    #[test]
+    fn finalization_runner_new_lfb_found_effect_writes_snapshots() {
+        let src = include_str!("../engine/multi_parent_casper/finalization_runner.rs");
+        assert!(
+            src.contains("pending_wal_slices"),
+            "finalization_runner must consume pending_wal_slices \
+             (H-1 fix: LFB-triggered snapshot write)"
+        );
+        assert!(
+            src.contains("maybe_write"),
+            "finalization_runner must call SnapshotWriter::maybe_write \
+             on cache hits (H-1 fix)"
+        );
+    }
 
     fn mk_entry(tag: &str) -> WalEntry {
         WalEntry {

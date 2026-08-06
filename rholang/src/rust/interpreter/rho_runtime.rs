@@ -297,6 +297,26 @@ pub struct RhoRuntimeImpl {
     /// runtimes can read concurrently; only boot-time set is a
     /// writer.
     pub fs_snapshot_writer: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
+
+    /// H-1 fix (2026-08-06) — slice 30c Phase B: per-block WAL slice
+    /// cache, keyed by post-state hash (`Vec<u8>`).  Populated by
+    /// `casper::rholang::runtime::play_deploys_for_state` after
+    /// computing the per-block slice; consumed by the finalization
+    /// runner's LFB-found effect.  Pre-H-1 the snapshot was written
+    /// synchronously per candidate block (fork-prone); post-H-1 the
+    /// slice is cached under the block's post-state hash and only
+    /// snapshotted when the block actually finalizes and hits a
+    /// cadence boundary.
+    ///
+    /// Same sharing pattern as `fs_snapshot_writer`:
+    /// `RuntimeManager::spawn_runtime` calls
+    /// `share_pending_wal_slices` so every spawned runtime writes
+    /// into the manager's shared cache.
+    pub pending_wal_slices: Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<Vec<u8>, (i64, Vec<super::io::wal::WalEntry>)>,
+        >,
+    >,
 }
 
 impl RhoRuntimeImpl {
@@ -325,6 +345,14 @@ impl RhoRuntimeImpl {
             // (RuntimeManager path) so all sibling runtimes read the
             // same slot.
             fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
+            // H-1 (2026-08-06): per-runtime empty cache by default.
+            // `RuntimeManager::spawn_runtime` overwrites with a
+            // shared handle so every spawned runtime writes into
+            // the manager's cache for the finalization runner to
+            // consume.
+            pending_wal_slices: Arc::new(
+                tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            ),
         }
     }
 
@@ -350,6 +378,22 @@ impl RhoRuntimeImpl {
         shared: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
     ) {
         self.fs_snapshot_writer = shared;
+    }
+
+    /// H-1 (2026-08-06) — slice 30c Phase B: share the manager's
+    /// pending-WAL-slice cache so every spawned runtime writes its
+    /// per-block WAL slice into a single map keyed by post-state
+    /// hash.  The finalization runner reads from the same map when
+    /// the LFB advances.
+    pub fn share_pending_wal_slices(
+        &mut self,
+        shared: Arc<
+            tokio::sync::RwLock<
+                std::collections::HashMap<Vec<u8>, (i64, Vec<super::io::wal::WalEntry>)>,
+            >,
+        >,
+    ) {
+        self.pending_wal_slices = shared;
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }

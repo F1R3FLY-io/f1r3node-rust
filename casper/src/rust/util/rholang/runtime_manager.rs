@@ -93,6 +93,38 @@ pub struct RuntimeManager {
     /// engine that spawns runtimes).
     pub fs_snapshot_writer:
         Arc<tokio::sync::RwLock<Option<rholang::rust::interpreter::io::snapshot::SnapshotWriter>>>,
+
+    /// H-1 fix (2026-08-06) — slice 30c Phase B: per-block WAL slice
+    /// cache, keyed by the block's post-state hash.  Populated by
+    /// `play_deploys_for_state` after it computes the per-block WAL
+    /// slice; consumed by the finalization runner's `new_lfb_found_
+    /// effect` when a newly-finalized block hits a cadence boundary
+    /// so `SnapshotWriter::maybe_write` writes the slice for that
+    /// specific (finalized) block, not every candidate block at
+    /// `block_number % cadence == 0` (the pre-H-1 per-block trigger
+    /// forked snapshot writes on sibling non-finalized DAG tips).
+    ///
+    /// Value pair: `(block_number, slice)` — block_number is
+    /// pre-read from the runtime's block_data so the finalizer
+    /// doesn't need to re-derive it from the block.
+    ///
+    /// Cache is bounded by the natural rate at which the LFB
+    /// advances — entries are evicted at finalization time (both
+    /// the finalized block's own entry and any stale entries whose
+    /// block_number is <= the new LFB height, which represent
+    /// orphaned sibling forks).  A live shard producing at 1 block/
+    /// sec with 10s finalization latency holds ~10 entries.  In
+    /// deep-fork edge cases the cache can grow briefly; a
+    /// `MAX_PENDING_WAL_SLICES` guard prevents unbounded growth
+    /// (defensive; not expected to hit under normal operation).
+    pub pending_wal_slices: Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<
+                Vec<u8>,
+                (i64, Vec<rholang::rust::interpreter::io::wal::WalEntry>),
+            >,
+        >,
+    >,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -291,6 +323,12 @@ impl RuntimeManager {
         // immediately visible to every runtime — no cached-per-spawn
         // staleness.
         runtime.share_fs_snapshot_writer(self.fs_snapshot_writer.clone());
+        // H-1 fix (2026-08-06) — slice 30c Phase B: share the
+        // pending-WAL-slice cache so `play_deploys_for_state` on
+        // this runtime writes into the manager's map, and the
+        // finalization runner can read from the same map when the
+        // LFB advances.
+        runtime.share_pending_wal_slices(self.pending_wal_slices.clone());
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -323,6 +361,13 @@ impl RuntimeManager {
         // immediately visible to every runtime — no cached-per-spawn
         // staleness.
         runtime.share_fs_snapshot_writer(self.fs_snapshot_writer.clone());
+        // H-1 (2026-08-06): same rationale on replay side — keep the
+        // shared cache attached even though replay runtimes don't
+        // write to it in practice (leader-side play_deploys_for_state
+        // is the writer).  Preserves runtime-shape parity between
+        // leader and follower so any future symmetric use is
+        // straightforward.
+        runtime.share_pending_wal_slices(self.pending_wal_slices.clone());
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -1286,6 +1331,12 @@ impl RuntimeManager {
             // Slice 30b: default None; boot sets via
             // `set_fs_snapshot_writer`.
             fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
+            // H-1 fix (2026-08-06) — slice 30c Phase B: empty cache
+            // at boot.  Populated by `play_deploys_for_state`,
+            // consumed by finalization_runner's LFB-found effect.
+            pending_wal_slices: Arc::new(
+                tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            ),
         }
     }
 
