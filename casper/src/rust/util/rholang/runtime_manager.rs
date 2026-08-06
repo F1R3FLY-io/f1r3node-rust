@@ -125,6 +125,17 @@ pub struct RuntimeManager {
             >,
         >,
     >,
+
+    /// H-5 fix (2026-08-06): shared root-identity registry.
+    /// Populated once at node boot from operator-provisioned
+    /// root paths (`(dev, inode)` captured via
+    /// `path::capture_root_identity`); consumed on every
+    /// `safe_descend_verified` in the fs_* handlers to detect
+    /// post-boot rename-and-recreate of the root directory.
+    /// Attached to every spawned runtime's `FileHandleTable`
+    /// via `share_root_registry` (mirror of `fs_snapshot_writer`
+    /// pattern).
+    pub root_id_registry: rholang::rust::interpreter::io::path::RootIdentityRegistry,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -329,6 +340,12 @@ impl RuntimeManager {
         // finalization runner can read from the same map when the
         // LFB advances.
         runtime.share_pending_wal_slices(self.pending_wal_slices.clone());
+        // H-5 fix (2026-08-06): share the root-identity registry
+        // so every syscall handler on this runtime consults the
+        // same boot-populated (dev, inode) map.
+        runtime
+            .fs_handles
+            .share_root_registry(self.root_id_registry.clone());
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -368,6 +385,12 @@ impl RuntimeManager {
         // leader and follower so any future symmetric use is
         // straightforward.
         runtime.share_pending_wal_slices(self.pending_wal_slices.clone());
+        // H-5 fix (2026-08-06): share the root-identity registry
+        // so every syscall handler on this runtime consults the
+        // same boot-populated (dev, inode) map.
+        runtime
+            .fs_handles
+            .share_root_registry(self.root_id_registry.clone());
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -1337,8 +1360,27 @@ impl RuntimeManager {
             pending_wal_slices: Arc::new(
                 tokio::sync::RwLock::new(std::collections::HashMap::new()),
             ),
+            // H-5 (2026-08-06): empty registry at boot.  Boot
+            // pipeline calls `register_root_identity` for each
+            // provisioned root path before any deploy runs.
+            root_id_registry: rholang::rust::interpreter::io::path::RootIdentityRegistry::new(),
         }
     }
+
+    /// H-5 fix (2026-08-06): register a boot-captured root
+    /// `(dev, inode)` pair.  Called from `node::setup` for each
+    /// operator-provisioned canonical root path after
+    /// `merge_and_validate` succeeds.  Shared with all spawned
+    /// runtimes' `FileHandleTable`s via `share_root_registry`;
+    /// consumed on every `safe_descend_verified` by the fs_*
+    /// handlers.
+    pub fn register_root_identity(&self, canon_root: std::path::PathBuf, id: (u64, u64)) {
+        self.root_id_registry.register(canon_root, id);
+    }
+
+    /// H-5 diagnostic — number of registered root identities.
+    /// Used by boot to emit a one-line summary after populating.
+    pub fn root_identity_count(&self) -> usize { self.root_id_registry.len() }
 
     /// Slice 30b: boot hook — install (or clear) the shared
     /// snapshot writer.  Every subsequent `spawn_runtime` /

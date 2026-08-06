@@ -323,6 +323,80 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             );
         }
         runtime_manager.set_fs_snapshot_writer(writer).await;
+
+        // H-5 fix (2026-08-06): populate the root-identity registry
+        // with (dev, inode) captured from each provisioned root at
+        // boot.  Every subsequent syscall on a shared runtime asks
+        // `handles.root_registry.get(&root_pb)` and passes the answer
+        // to `safe_descend_verified`, which fstats the opened directory
+        // and rejects mismatches with `QuarantineError::RootIdentityChanged`.
+        //
+        // Shape mirrors `format_bundle_for_rholang` (fs_genesis.rs
+        // §356) so the roots handlers see at deploy time are exactly
+        // the roots we register at boot:
+        //   - FILE entries: root = parent(canon_path)
+        //   - DIR  entries: root = canon_path
+        //
+        // If a provisioned path is missing at boot we skip it with a
+        // warn — the same path will fail its first syscall with a
+        // real IO error, which is the correct behavior for a
+        // vanished root.  We do NOT panic here so an operator can
+        // still boot a node whose oracle-static entry is temporarily
+        // unavailable.
+        {
+            use rholang::rust::interpreter::io::path::capture_root_identity;
+            let register_file = |path: &std::path::Path| {
+                let parent = match path.parent() {
+                    Some(p) => p.to_path_buf(),
+                    None => {
+                        tracing::warn!(
+                            target: "f1r3fly.fs_wal.root_identity",
+                            path = ?path,
+                            "H-5: static-file entry has no parent directory; skipping identity capture"
+                        );
+                        return;
+                    }
+                };
+                match capture_root_identity(&parent) {
+                    Ok(id) => runtime_manager.register_root_identity(parent, id),
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.fs_wal.root_identity",
+                        path = ?parent,
+                        error = %e,
+                        "H-5: could not stat provisioned file's parent; first syscall on this root will fail with QuarantineError::RootIdentityChanged"
+                    ),
+                }
+            };
+            let register_dir = |path: &std::path::Path| {
+                let owned = path.to_path_buf();
+                match capture_root_identity(&owned) {
+                    Ok(id) => runtime_manager.register_root_identity(owned, id),
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.fs_wal.root_identity",
+                        path = ?owned,
+                        error = %e,
+                        "H-5: could not stat provisioned dir; first syscall on this root will fail with QuarantineError::RootIdentityChanged"
+                    ),
+                }
+            };
+            for entry in merged.oracle_static_files.values() {
+                register_file(&entry.path);
+            }
+            for entry in merged.consensus_static_files.values() {
+                register_file(&entry.path);
+            }
+            for entry in merged.oracle_static_dirs.values() {
+                register_dir(&entry.path);
+            }
+            for entry in merged.consensus_static_dirs.values() {
+                register_dir(&entry.path);
+            }
+            tracing::info!(
+                target: "f1r3fly.fs_wal.root_identity",
+                registered = runtime_manager.root_identity_count(),
+                "H-5: root-identity registry populated from static provisioning"
+            );
+        }
     }
 
     // Reporting runtime

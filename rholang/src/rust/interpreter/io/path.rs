@@ -32,6 +32,20 @@ pub enum QuarantineError {
     RootSelf,
     EscapesRoot,
     SymlinkComponent,
+    /// H-5 fix (2026-08-06): the root directory this operator
+    /// provisioned at boot has been replaced by a directory with
+    /// a different (dev, inode) pair — the classic
+    /// rename-and-recreate attack that H-P7-6's `O_NOFOLLOW`
+    /// explicitly does NOT close.  A boot-registered root
+    /// identity (`RootIdentityRegistry` populated in
+    /// `node/setup.rs::create_casper_infrastructure`) is
+    /// consulted at every `safe_descend`; mismatch surfaces this
+    /// error instead of silently descending into the attacker's
+    /// tree.  Operator diagnostic: the root path resolves but
+    /// its underlying inode no longer matches boot — check for
+    /// out-of-band `mv` / recreate / rebind on the provisioned
+    /// path.
+    RootIdentityChanged,
     IoError(String),
 }
 
@@ -55,6 +69,40 @@ impl SafeParent {
 /// against this dirfd (never via a rebuilt path string) or the
 /// TOCTOU-immunity is lost.
 pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineError> {
+    safe_descend_verified(root, rel, None)
+}
+
+/// H-5 fix (2026-08-06): variant of `safe_descend` that verifies the
+/// opened root's `(dev, inode)` pair against a boot-captured
+/// expected value.  Closes the rename-and-recreate attack that
+/// H-P7-6's `O_NOFOLLOW` explicitly does not: an attacker with
+/// write access to the root's parent (`$HOME/data`, for a node
+/// running as an unprivileged user) can `mv /legit /legit.bak &&
+/// mkdir /legit && populate` — the new `/legit` is a real
+/// directory with a different inode.  `O_NOFOLLOW` allows opening
+/// real dirs, so the pre-fix descent lands in the attacker's tree
+/// and every subsequent syscall reads/writes attacker files
+/// silently.
+///
+/// Post-fix: with an `expected_root_id: Some((dev, inode))` in
+/// hand (boot-captured via `capture_root_identity`), a mismatch
+/// after opening surfaces `QuarantineError::RootIdentityChanged`.
+/// Callers pass `None` (or invoke `safe_descend`) if identity
+/// verification is not applicable — e.g., internal helpers that
+/// operate on already-verified fds, or code paths that don't
+/// have a boot-registered root.
+///
+/// Explicitly deferred: the (dev, inode) pair captured at boot
+/// assumes the filesystem preserves it across reboots (true for
+/// standard local FSes: ext4/xfs/apfs/etc.).  On some networked
+/// or in-memory FSes inode numbers may not be stable across
+/// remounts — for those, operators should compose with the
+/// documented read-only bind-mount mitigation.
+pub fn safe_descend_verified(
+    root: &Path,
+    rel: &str,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<SafeParent, QuarantineError> {
     if rel.is_empty() {
         return Err(QuarantineError::Empty);
     }
@@ -110,8 +158,23 @@ pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineErro
     // today: operators should mount `consensus-static-*` /
     // `oracle-static-*` roots on filesystems the node user does
     // not have write access to (e.g., read-only bind mounts).
-    let mut cur = open_dir(root, true)?;
+    let cur = open_dir(root, true)?;
 
+    // H-5 fix (2026-08-06): after opening the root, verify its
+    // (dev, inode) matches the boot-captured expected pair.
+    // Detects rename-and-recreate: `mv /legit /legit.bak && mkdir
+    // /legit && populate` produces a new /legit with a DIFFERENT
+    // inode.  O_NOFOLLOW (H-P7-6) allows opening real dirs, so
+    // the descent would silently land in the attacker's tree
+    // without this check.
+    if let Some(expected) = expected_root_id {
+        let actual = fstat_dev_inode(cur.as_raw_fd())?;
+        if actual != expected {
+            return Err(QuarantineError::RootIdentityChanged);
+        }
+    }
+
+    let mut cur = cur;
     let leaf_name = comps.last().unwrap();
     for intermediate in &comps[..comps.len() - 1] {
         let name = to_c(intermediate)?;
@@ -120,6 +183,119 @@ pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineErro
     let leaf = to_c(leaf_name)?;
 
     Ok(SafeParent { dirfd: cur, leaf })
+}
+
+/// H-5 fix (2026-08-06): capture a directory's identity as a
+/// `(dev, inode)` pair via `stat(2)`.  Called at boot from
+/// `node::setup::create_casper_infrastructure` for each
+/// operator-provisioned root path; the resulting pair is stored
+/// in the shared `RootIdentityRegistry` and consumed on every
+/// `safe_descend_verified` call.
+///
+/// Returns `io::Error` on stat failure (e.g., permission denied
+/// on the parent, path vanished between boot-validate and
+/// registry-populate).  Caller decides whether to skip
+/// registration or fail boot on error.
+pub fn capture_root_identity(root: &Path) -> std::io::Result<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let md = std::fs::metadata(root)?;
+        Ok((md.dev(), md.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: no dev/ino equivalent; return (0, 0) sentinel
+        // and log-warn.  H-5's attack model presupposes POSIX
+        // rename-and-recreate; the Windows equivalent (moving a
+        // directory across filesystems) is a different threat
+        // surface.
+        tracing::warn!(
+            target: "f1r3fly.fs_wal.safe_descend",
+            "capture_root_identity: (dev, inode) unavailable on non-Unix; \
+             root identity verification is a no-op"
+        );
+        Ok((0, 0))
+    }
+}
+
+/// H-5 fix (2026-08-06): fstat a raw fd for its `(dev, inode)`
+/// pair.  Used by `safe_descend_verified` post-open to compare
+/// against the boot-captured expected value.  Independent of the
+/// `stat`-by-path helper (`capture_root_identity`) so we compare
+/// what we just OPENED, not a subsequent by-path lookup that
+/// could resolve to a different inode under an active attack.
+fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut st) < 0 {
+                return Err(QuarantineError::IoError(
+                    std::io::Error::last_os_error().to_string(),
+                ));
+            }
+            // st.st_dev / st.st_ino widths differ across platforms
+            // (u32 vs u64).  Widen uniformly to u64 for comparison.
+            #[allow(clippy::unnecessary_cast)]
+            Ok((st.st_dev as u64, st.st_ino as u64))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Ok((0, 0))
+    }
+}
+
+/// H-5 fix (2026-08-06): shared registry mapping each
+/// operator-provisioned root path to its boot-captured
+/// `(dev, inode)` identity.  Populated once at boot; consulted
+/// on every `safe_descend_verified` to detect
+/// rename-and-recreate attacks post-boot.
+///
+/// Thread-safe: reads are frequent (every syscall), writes
+/// happen once at boot.  `RwLock` gives us contention-free
+/// concurrent reads.
+///
+/// The map is keyed by the boot-canonicalized root path
+/// (`std::fs::canonicalize`'d).  Handlers look up by the
+/// `canonRoot` string they receive from the Fs.rho bundle,
+/// which is byte-identical to the boot-canonicalized path
+/// (see `format_bundle_for_rholang`).
+#[derive(Debug, Clone, Default)]
+pub struct RootIdentityRegistry {
+    inner: std::sync::Arc<
+        std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, (u64, u64)>>,
+    >,
+}
+
+impl RootIdentityRegistry {
+    pub fn new() -> Self { Self::default() }
+
+    /// Record a root's boot-time identity.  Idempotent — a repeat
+    /// register with the same value is a no-op; a repeat with a
+    /// different value overwrites (last-write-wins, which should
+    /// not happen in practice since boot populates once).
+    pub fn register(&self, root: std::path::PathBuf, id: (u64, u64)) {
+        let mut guard = self.inner.write().expect("root-identity registry poisoned");
+        guard.insert(root, id);
+    }
+
+    /// Look up a root's expected identity.  Returns `None` for
+    /// unregistered paths — callers pass `None` through to
+    /// `safe_descend_verified`, which then skips the check.
+    pub fn get(&self, root: &std::path::Path) -> Option<(u64, u64)> {
+        let guard = self.inner.read().expect("root-identity registry poisoned");
+        guard.get(root).copied()
+    }
+
+    /// Count of registered roots.  For diagnostics only.
+    pub fn len(&self) -> usize {
+        let guard = self.inner.read().expect("root-identity registry poisoned");
+        guard.len()
+    }
+
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
 }
 
 /// Descend to the leaf itself as a fresh `File` handle, using the caller-
@@ -339,6 +515,13 @@ pub fn quarantine_err_reply(e: &QuarantineError) -> (&'static str, String) {
         QuarantineError::SymlinkComponent => {
             (FSERR_QUARANTINE, "symlink in path components".into())
         }
+        QuarantineError::RootIdentityChanged => (
+            FSERR_QUARANTINE,
+            "provisioned root's (dev, inode) does not match boot-captured identity — \
+             possible rename-and-recreate attack (H-5); check for out-of-band mv/rebind \
+             on the provisioned path"
+                .into(),
+        ),
         QuarantineError::IoError(m) => (FSERR_IO, m.clone()),
     }
 }
@@ -502,6 +685,71 @@ mod tests {
             "attacker file must NOT be reachable via compromised root path; \
              got: {:?}",
             attacker_path.as_ref().err()
+        );
+    }
+
+    /// H-5 regression: `safe_descend_verified` must reject a
+    /// rename-and-recreate attack that `safe_descend`/H-P7-6 does
+    /// NOT cover.
+    ///
+    /// Scenario: attacker moves the boot-provisioned directory
+    /// aside (`mv /legit /legit.bak`) and creates a fresh empty
+    /// directory with the same name (`mkdir /legit`) — the new
+    /// directory is a real directory (not a symlink), so the
+    /// O_NOFOLLOW check in `safe_descend` passes.  Only its
+    /// `(dev, inode)` identity differs from what boot captured.
+    ///
+    /// With `expected_root_id = Some(boot_id)`,
+    /// `safe_descend_verified` fstats the freshly opened dir and
+    /// compares — the mismatch surfaces as
+    /// `QuarantineError::RootIdentityChanged`.
+    #[test]
+    fn safe_descend_verified_rejects_rename_and_recreate() {
+        let staging = TempDir::new().unwrap();
+        let root_path = staging.path().join("legit-root");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("legit.txt"), b"boot-content").unwrap();
+
+        // Boot: capture the identity.
+        let boot_id = capture_root_identity(&root_path).expect("boot-time stat ok");
+
+        // Sanity: verified descend works with the correct id
+        // against the original inode.
+        let pre = safe_descend_verified(&root_path, "legit.txt", Some(boot_id));
+        assert!(
+            pre.is_ok(),
+            "pre-attack verified descend should succeed; got {:?}",
+            pre.as_ref().err()
+        );
+
+        // Attack: rename the real directory aside, then create a
+        // fresh directory with the same name and populate with
+        // attacker-controlled content of the same name.
+        let sidelined = staging.path().join("legit-root.bak");
+        std::fs::rename(&root_path, &sidelined).unwrap();
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("legit.txt"), b"attacker-content").unwrap();
+
+        // Without verification the descend succeeds — the fresh
+        // dir is a real dir, so H-P7-6's O_NOFOLLOW happily
+        // opens it.  Pin that behavior so a regression can't
+        // silently make the verified variant unnecessary.
+        let unverified = safe_descend(&root_path, "legit.txt");
+        assert!(
+            unverified.is_ok(),
+            "unverified safe_descend intentionally passes rename-and-recreate — \
+             that's the H-5 gap.  Got: {:?}",
+            unverified.as_ref().err()
+        );
+
+        // WITH verification: the (dev, inode) mismatch is
+        // detected and the syscall is quarantined.
+        let verified = safe_descend_verified(&root_path, "legit.txt", Some(boot_id));
+        assert!(
+            matches!(&verified, Err(QuarantineError::RootIdentityChanged)),
+            "H-5: rename-and-recreate must be caught as RootIdentityChanged; \
+             got: {:?}",
+            verified.as_ref().err()
         );
     }
 }

@@ -41,7 +41,8 @@ use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
 use super::path::{
-    canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend, safe_open, SafeParent,
+    canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
+    SafeParent,
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
@@ -1199,8 +1200,9 @@ impl FsProcesses {
             (Some(root), Some(rel)) => {
                 let leaf_name = leaf_of(&rel);
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (code, msg) = quarantine_err_reply(&qe);
@@ -1244,8 +1246,9 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             // Not-found or symlink → exists is false.  A
@@ -1253,7 +1256,7 @@ impl FsProcesses {
                             // is a caller error, surface as bad arg.
                             use super::path::QuarantineError::*;
                             return match qe {
-                                EscapesRoot | SymlinkComponent => {
+                                EscapesRoot | SymlinkComponent | RootIdentityChanged => {
                                     let (c, m) = quarantine_err_reply(&qe);
                                     err(c, m)
                                 }
@@ -1315,8 +1318,9 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (code, msg) = quarantine_err_reply(&qe);
@@ -1433,21 +1437,25 @@ impl FsProcesses {
             (Some(from_root), Some(from_rel), Some(to_root), Some(to_rel)) => {
                 let from_root_pb = PathBuf::from(from_root);
                 let to_root_pb = PathBuf::from(to_root);
+                let from_expected_id = self.handles.root_registry.get(&from_root_pb);
+                let to_expected_id = self.handles.root_registry.get(&to_root_pb);
                 spawn_blocking(move || -> Par {
-                    let from_parent = match safe_descend(&from_root_pb, &from_rel) {
-                        Ok(p) => p,
-                        Err(qe) => {
-                            let (c, m) = quarantine_err_reply(&qe);
-                            return err(c, m);
-                        }
-                    };
-                    let to_parent = match safe_descend(&to_root_pb, &to_rel) {
-                        Ok(p) => p,
-                        Err(qe) => {
-                            let (c, m) = quarantine_err_reply(&qe);
-                            return err(c, m);
-                        }
-                    };
+                    let from_parent =
+                        match safe_descend_verified(&from_root_pb, &from_rel, from_expected_id) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                return err(c, m);
+                            }
+                        };
+                    let to_parent =
+                        match safe_descend_verified(&to_root_pb, &to_rel, to_expected_id) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                return err(c, m);
+                            }
+                        };
                     let rc = unsafe {
                         libc::renameat(
                             from_parent.as_raw_fd(),
@@ -1606,8 +1614,9 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (c, m) = quarantine_err_reply(&qe);
@@ -1680,8 +1689,9 @@ impl FsProcesses {
         ) {
             (Some(root), Some(rel), Some(recursive)) => {
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (c, m) = quarantine_err_reply(&qe);
@@ -1772,9 +1782,10 @@ impl FsProcesses {
         ) {
             (Some(root), Some(rel), Some(bits)) if (0..=0o7777).contains(&bits) => {
                 let root_pb = PathBuf::from(root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 let bits = bits as libc::mode_t;
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend(&root_pb, &rel) {
+                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (c, m) = quarantine_err_reply(&qe);
@@ -1869,7 +1880,8 @@ impl FsProcesses {
                     let owner_opt = RhoString::unapply(owner_par);
                     let group_opt = RhoString::unapply(group_par);
                     let root_pb = PathBuf::from(root);
-                    chown_impl(&root_pb, rel, owner_opt, group_opt).await
+                    let expected_root_id = self.handles.root_registry.get(&root_pb);
+                    chown_impl(&root_pb, rel, owner_opt, group_opt, expected_root_id).await
                 }
                 _ => err(
                     FSERR_BAD_ARG,
@@ -1909,8 +1921,9 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(&root);
+                let expected_root_id = self.handles.root_registry.get(&root_pb);
                 spawn_blocking(move || -> Par {
-                    match safe_descend(&root_pb, &rel) {
+                    match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(_) => {
                             // Return the caller-supplied joined path;
                             // safe_descend already verified it doesn't
@@ -2182,6 +2195,12 @@ async fn chown_impl(
     rel: String,
     owner: Option<String>,
     group: Option<String>,
+    // H-5 fix (2026-08-06): expected (dev, inode) for the root
+    // path — plumbed from the caller via
+    // `self.handles.root_registry.get(&root_pb)`.  `None` skips
+    // identity verification (used by test/fixture paths without
+    // a boot-populated registry).
+    expected_root_id: Option<(u64, u64)>,
 ) -> Par {
     use super::nss::{resolve_gid, resolve_uid};
 
@@ -2203,7 +2222,7 @@ async fn chown_impl(
     };
     let root_pb = root.to_path_buf();
     spawn_blocking(move || -> Par {
-        let parent = match safe_descend(&root_pb, &rel) {
+        let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
             Ok(p) => p,
             Err(qe) => {
                 let (c, m) = quarantine_err_reply(&qe);

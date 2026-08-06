@@ -83,6 +83,15 @@ pub struct FileHandleTable {
     /// (`fs_write`, `fs_write_at`, `fs_truncate`) after successful
     /// syscall completion, gated on the FileHandle's `cmode`.
     pub wal: Wal,
+    /// H-5 fix (2026-08-06): shared root-identity registry.
+    /// Populated once at boot from operator-provisioned root
+    /// paths; consulted on every `safe_descend_verified` in the
+    /// fs_* handlers to detect post-boot rename-and-recreate of
+    /// the root directory.  Attached to the handle table so all
+    /// handler closures reach it via `self.handles.root_registry`;
+    /// shared across runtimes via `RuntimeManager` so a single
+    /// boot-time population is visible everywhere.
+    pub root_registry: super::path::RootIdentityRegistry,
 }
 
 #[derive(Debug)]
@@ -99,7 +108,22 @@ impl FileHandleTable {
                 next_fd: AtomicU64::new(1),
             }),
             wal: Wal::new(),
+            // H-5: empty registry by default.  Boot pipeline
+            // populates via `share_root_registry`; tests that
+            // don't set up a registry get a no-op (safe_descend
+            // sees None → skips the identity check, preserving
+            // pre-H-5 behavior).
+            root_registry: super::path::RootIdentityRegistry::new(),
         }
+    }
+
+    /// H-5 fix (2026-08-06): replace the per-runtime empty
+    /// registry with a manager-shared one so all spawned
+    /// runtimes read from the same root-identity map.  Called
+    /// by `RuntimeManager::spawn_runtime` mirroring the
+    /// `fs_snapshot_writer` sharing pattern.
+    pub fn share_root_registry(&mut self, shared: super::path::RootIdentityRegistry) {
+        self.root_registry = shared;
     }
 
     /// Allocate a fresh fd and register the handle.
