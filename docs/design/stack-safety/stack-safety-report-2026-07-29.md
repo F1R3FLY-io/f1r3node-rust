@@ -36,7 +36,10 @@ recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer resi
 genuine production recursion cluster in `rholang-runtime/src/guard_par_substrate.rs`: formula
 construction, opaque-atom substitution, operand normalization, and bound-value substitution.
 `mettail-rust@44f899b8` applies the corresponding ordered formula and operand machines to the
-surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`.
+surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`. `mettail-rust@d9fbc777`
+then aliases the imported substrate-verdict free function in both modules, removing the two
+same-name call-resolution false positives; fresh file-scoped analysis reports zero direct and zero
+mutual recursion in each file.
 `mettail-rust@5cd89526` closes the direct name, quote, three-valued guard-disposition, and parallel-
 flattening traversals in `languages/src/rholang/receive.rs`; `mettail-rust@0aaac1c0` closes the
 heterogeneous collection-pattern matcher in the same file. Fresh file-scoped analysis reports zero
@@ -3205,9 +3208,13 @@ with eight test threads under `MemoryMax=4G` and `MemorySwapMax=0`.
 A fresh libcpg pass confirms that both formula clusters disappeared. Its apparent
 `ParGuardEncoding::static_verdict` self-call is a same-name resolution false positive: the method
 calls the imported `mettail_prattail::guard_formula::static_verdict` free function with two
-arguments. At this checkpoint, the genuine operand/int-form and bound-`Par` substitution SCCs
-remained open; SS-G13 and SS-G14 subsequently close them. SS-G12 does not change PathMap source,
-wire format, acceptance rules, ruled semantics, or token metering.
+arguments. `mettail-rust@d9fbc777` later aliases that imported function as
+`substrate_static_verdict`, so the source graph no longer has an ambiguous edge: fresh analysis
+reports zero direct and zero mutual recursion here. The focused lowered guard selection passes
+**30/30**, including all three recursive-oracle differentials and 20,000-level gates. At this
+checkpoint, the genuine operand/int-form and bound-`Par` substitution SCCs remained open; SS-G13 and
+SS-G14 subsequently close them. Neither SS-G12 nor the resolver disambiguation changes PathMap
+source, wire format, acceptance rules, ruled semantics, or token metering.
 
 #### 5.18.12 Lowered guard-operand closure [SS-G13]
 
@@ -3285,8 +3292,11 @@ cgroup high-water mark, and swapped zero bytes. This compiler measurement is not
 the guard machines; the already-built direct gate supplies their runtime measurement. Fresh
 source-derived analysis reports zero genuine direct or mutual recursion in the file. As in the
 lowered encoder, its sole residual is the imported `static_verdict` free function being mistaken
-for a same-named method self-call. SS-G15 changes no PathMap source, wire bytes, guard verdict,
-ruled semantics, or token metering.
+for a same-named method self-call. `mettail-rust@d9fbc777` aliases the imported function and removes
+that ambiguity; fresh analysis now reports zero direct and zero mutual recursion. The narrowed
+Rholang library check passes, and the surface guard selection passes **20/20**, including its
+recursive-oracle differential and 20,000-level gate. SS-G15 and the resolver disambiguation change
+no PathMap source, wire bytes, guard verdict, ruled semantics, or token metering.
 
 #### 5.18.15 Direct surface receive-traversal closure [SS-G16]
 
