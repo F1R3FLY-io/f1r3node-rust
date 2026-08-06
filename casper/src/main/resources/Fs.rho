@@ -140,9 +140,37 @@
 // The "r" always-allowed rule means a `"w"`-only provisioned entry
 // would still grant `"r"` reads — technically wider than spec §847's
 // strict "capped at provisioned" reading.  Matches the pre-existing
-// Dir.openFile behavior; deferred to a broader mode-taxonomy pass
-// that also removes the non-spec `"rw"` file mode (m-16-6) from
-// File.rho / Dir.openFile / Fs.openFile whitelists.
+// Dir.openFile behavior.
+//
+// ## m-16-6 fix (2026-08-06, M-6 rev-2)
+//
+// Pre-fix, the File openFile cap check was `provisioned == "rw"`.
+// But `CONFIG_FILE_MODES = {"r", "r+", "w", "w+", "a", "a+"}` —
+// no `"rw"` — so File entries could NEVER be provisioned as
+// `"rw"`, and every non-`"r"` file open through `Fs.openFile`
+// unconditionally returned `FSERR_UNSUPPORTED` in production.
+// The pre-existing tests only passed because they hand-craft a
+// fake bundle with a File entry provisioned as `"rw"` — a shape
+// no HOCON- or CLI-parsed bundle can produce.  A real deployment
+// with `oracle-static-files { "cfg" = { path = ..., mode = "r+" }}`
+// followed by `Fs.openFile("cfg", {"mode": "w"})` returned
+// `FSERR_UNSUPPORTED` with `"requested mode exceeds provisioned
+// attenuation"` — even though the operator granted write access.
+//
+// Post-fix cap check: `provisioned == "r"` rejects non-`"r"`
+// requests; any other provisioned mode (`r+`, `w`, `w+`, `a`,
+// `a+`, and the non-spec but still-accepted `rw`) allows the
+// request through.  Matches the File.rho write-capable-mode
+// pattern already used at every internal method gate
+// (writeChars, writeLines, chmod, chown, truncate, etc.).
+//
+// The requested-mode arm retains `"rw"` as an accepted request
+// even though it is not in the spec's File modes table — the
+// native mode parser (mode.rs::parse_open_mode) accepts `"rw"`
+// as an alias for POSIX `"r+"` (ReadWrite + require-exist).
+// The spec/impl drift on `"rw"` vs `"r+"` is tracked as a
+// separate cleanup; retaining `"rw"` as a valid request
+// preserves existing caller code and matches native semantics.
 //
 // ## Map pattern-match ordering assumption
 //
@@ -237,13 +265,31 @@ new Fs, fsBundleP,
                             match m {
                               "r" => openFileImpl!(
                                 canonRoot, "", rel, "r", cmode, *File, *return)
+                              // "rw" retained as a request alias — the
+                              // native mode parser (mode.rs::parse_open_mode)
+                              // treats it as ReadWrite + require-exist,
+                              // semantically equivalent to POSIX "r+".
+                              // Spec/impl drift on "rw" vs "r+" tracked
+                              // as a follow-up; leaving "rw" acceptable
+                              // preserves existing caller code.
                               "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                                // m-16-6 fix (2026-08-06, M-6 rev-2):
+                                // write-capable cap check.  Pre-fix
+                                // compared provisioned=="rw" which
+                                // never matches for File entries
+                                // (CONFIG_FILE_MODES has no "rw"), so
+                                // every non-"r" file open was silently
+                                // FSERR_UNSUPPORTED.  Post-fix mirrors
+                                // File.rho's write-capable-mode gate:
+                                // only "r" provisioned rejects; every
+                                // other file mode (r+, w, w+, a, a+, rw)
+                                // grants write.
                                 match provisioned {
-                                  "rw" => openFileImpl!(
-                                    canonRoot, "", rel, m, cmode, *File, *return)
-                                  _ => return!(
+                                  "r" => return!(
                                     [false, "FSERR_UNSUPPORTED",
                                      "requested mode exceeds provisioned attenuation"])
+                                  _ => openFileImpl!(
+                                    canonRoot, "", rel, m, cmode, *File, *return)
                                 }
                               }
                               _ => return!(

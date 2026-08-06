@@ -12255,6 +12255,90 @@ async fn fs_open_file_write_mode_w_plus_x_succeeds() {
     fs_open_file_write_mode_succeeds_helper("w+x").await;
 }
 
+// -- M-6 rev-2 / m-16-6 fix (2026-08-06): realistic provisioned
+// -- modes.  Pre-fix, Fs.openFile checked `provisioned == "rw"` for
+// -- File entries, but CONFIG_FILE_MODES = {r, r+, w, w+, a, a+} has
+// -- no "rw" — so a real HOCON-parsed File entry could NEVER satisfy
+// -- the cap.  Every non-"r" file open through Fs.openFile
+// -- unconditionally returned FSERR_UNSUPPORTED in production.  The
+// -- existing `fs_open_file_write_mode_*_succeeds` helpers only pass
+// -- because they hand-fake a bundle with provisioned="rw", a shape
+// -- no real config path can produce.
+//
+// -- The tests below use the REAL provisioned modes an operator can
+// -- actually configure ("r+", "w", "w+", "a", "a+") and confirm
+// -- non-"r" opens succeed on each one.  A regression that reverts
+// -- to `provisioned == "rw"` semantics fires here for every
+// -- provisioned-mode row.
+
+async fn fs_open_realistic_provisioned_helper(provisioned: &str, requested: &str) {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(&format!(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {{
+          "data.bin": ("/root", "data.bin", "{provisioned}", "file", "oracular")
+        }})) {{
+          for (@r <- @fs!?("openFile", "data.bin", {{"mode": "{requested}"}})) {{
+            @"out"!(r)
+          }}
+        }}
+        "#
+    ));
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "M-6 rev-2: openFile('{requested}') on provisioned=\"{provisioned}\" should succeed \
+         (write-capable cap check inverted).  Got code={code:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_realistic_provisioned_r_plus_allows_w() {
+    fs_open_realistic_provisioned_helper("r+", "w").await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_realistic_provisioned_w_allows_w() {
+    fs_open_realistic_provisioned_helper("w", "w").await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_realistic_provisioned_w_plus_allows_r_plus() {
+    fs_open_realistic_provisioned_helper("w+", "r+").await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_realistic_provisioned_a_allows_a() {
+    fs_open_realistic_provisioned_helper("a", "a").await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_realistic_provisioned_a_plus_allows_a_plus() {
+    fs_open_realistic_provisioned_helper("a+", "a+").await;
+}
+
+/// M-6 rev-2 negative pin: provisioned "r" MUST reject write
+/// requests.  The cap check inversion isn't a blanket permit —
+/// only non-"r" provisioned modes grant write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn m6_provisioned_r_rejects_write_request() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "data.bin": ("/root", "data.bin", "r", "file", "oracular")
+        })) {
+          for (@r <- @fs!?("openFile", "data.bin", {"mode": "w"})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "provisioned=\"r\" must reject write requests");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
 // -- M-16-7: malformed bundle entries.
 
 /// Bundle entry with wrong tuple arity (3-tuple) → FSERR_IO
