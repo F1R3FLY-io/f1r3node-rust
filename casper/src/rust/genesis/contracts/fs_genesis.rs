@@ -1090,12 +1090,17 @@ mod tests {
         // If this test fails with a diff you didn't intend, `git
         // diff casper/src/rust/genesis/contracts/fs_genesis.rs`
         // should surface the offending edit.
-        // Golden value pinned 2026-08-06.  Includes M-3
-        // (entriesStream + quarantine bindings in the composed
-        // new-clause).  Regenerate deliberately via
+        // Golden value pinned 2026-08-06.  Prior anchor line-up:
+        //   - Post-M-3 (entriesStream + quarantine bindings):
+        //     742b4ef484620d08fe02e601d13a807a9ae3b02eea26ab442ceabd884adb3000
+        //   - Post-M-6 (Fs.rho File-cap logic + docstring update
+        //     — Fs.rho is embedded into the composed source, so
+        //     any Fs.rho edit that isn't a comment-only tweak
+        //     flips this hash).  Current post-M-6 anchor below.
+        // Regenerate deliberately via
         // `cargo test -p casper --lib -- --nocapture \
         //   compose_fs_genesis_source_golden_hex`.
-        const EXPECTED: &str = "742b4ef484620d08fe02e601d13a807a9ae3b02eea26ab442ceabd884adb3000";
+        const EXPECTED: &str = "c7d8d81852c372a11b3eeeb43adff0cb1038840a1ba7686911174ca42452ba31";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

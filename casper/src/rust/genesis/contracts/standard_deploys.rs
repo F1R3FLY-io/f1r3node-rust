@@ -60,8 +60,28 @@ pub const TOKEN_METADATA_PK: &str =
 // built in `fs_genesis::compose_fs_genesis_source`; the signature
 // hex is derived deterministically from FS_GENERATOR_PK +
 // FS_GENERATOR_TIMESTAMP + FS_NONCE at deploy-construction time.
+//
+// L-1 fix (2026-08-06): the prior value was `0f190f19...` repeated
+// (a memorable "F19" pattern that an auditor could easily mistake
+// for a placeholder test key).  Replaced with a normal-looking hex
+// value derived deterministically from a memorable input string,
+// matching the style of the other system-deploy keys in this file.
+//
+// Derivation (reproducible offline):
+//   Blake2b-256("fs-genesis-signing-key")
+//   → 7d85dc0b95f8cff6a762f2ed4006f70b9da847d09f025bc324ccdac27920fa23
+//
+// Verify:
+//   python3 -c 'import hashlib; \
+//     print(hashlib.blake2b(b"fs-genesis-signing-key", digest_size=32).hexdigest())'
+//
+// This is a fixed system-deploy private key.  Every validator must
+// agree on it byte-for-byte (as with REGISTRY_PK, LIST_OPS_PK, etc.).
+// Any change here alters FS_GENERATOR_PUB_KEY (auto-derived below),
+// the FsGenesis registry URI, and the deploy signature — treat any
+// modification as a Genesis hard-fork.
 pub const FS_GENERATOR_PK: &str =
-    "0f190f190f190f190f190f190f190f190f190f190f190f190f190f190f190f19";
+    "7d85dc0b95f8cff6a762f2ed4006f70b9da847d09f025bc324ccdac27920fa23";
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
