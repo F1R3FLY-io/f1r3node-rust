@@ -518,8 +518,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fs_entries_consensus_mode_smoke_test() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.bin"), b"hello").unwrap();
-        std::fs::write(dir.path().join("b.bin"), b"world").unwrap();
+        // fs_entries needs to safe_descend from root into a
+        // non-empty rel (safe_descend rejects empty rel with
+        // QuarantineError::Empty).  Create a subdirectory and
+        // list that instead of listing tempdir root directly.
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.bin"), b"hello").unwrap();
+        std::fs::write(sub.join("b.bin"), b"world").unwrap();
 
         let runtime = create_runtime().await;
         // Direct native invocation with cmode="consensus".
@@ -530,7 +536,7 @@ mod tests {
         let term = format!(
             r#"
             new fsEntries(`rho:io:fs:native:1.0.0/entries`), ackCh in {{
-              fsEntries!("{root}", "", "consensus", *ackCh) |
+              fsEntries!("{root}", "sub", "consensus", *ackCh) |
               for (@reply <- ackCh) {{
                 // The reply must be `[true, list-of-records]`.
                 // We don't peek the map keys here (that would
@@ -559,13 +565,149 @@ mod tests {
                  InterpreterError — a compile / dispatch / cmode plumbing regression \
                  would fail HERE.",
             );
-        // fs_entries doesn't journal (read op with no read-hash
-        // integration yet), so the WAL stays empty.
+        // Post-M-5 (2026-08-06): fs_entries on a Consensus cap
+        // DOES journal (WalOp::Entries).  A successful call to
+        // fs_entries in cmode="consensus" must produce exactly
+        // one Entries entry in the WAL.  The stat_record unit
+        // test remains the primary omission proof; this pin
+        // additionally confirms the M-5 journaling wire-through.
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "M-15 + M-5: Consensus fs_entries call must produce exactly one WAL \
+             Entries entry (post-M-5 journaling); got {} entries",
+            snap.len()
+        );
+        assert_eq!(
+            snap[0].op,
+            rholang::rust::interpreter::io::wal::WalOp::Entries,
+            "M-15 + M-5: journaled op must be Entries (op tag 13)"
+        );
+        assert_eq!(
+            snap[0].outcome,
+            rholang::rust::interpreter::io::wal::WalOutcome::Success,
+            "M-15 + M-5: successful fs_entries must produce Success outcome"
+        );
+    }
+
+    /// M-5 pin: fs_stat on cmode="oracular" MUST NOT journal.
+    /// A regression that ignored cmode and always journaled
+    /// would fire here — that's a consensus-safety regression
+    /// (Oracular reads would appear in Consensus WAL and
+    /// diverge across validators with different local fs).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn m5_fs_stat_oracular_does_not_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"x").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "f.bin", "oracular", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate fs_stat oracular");
         assert!(
             runtime.fs_handles.wal.is_empty(),
-            "M-15 sanity: fs_entries does not journal — a non-empty WAL indicates \
-             a code path in the test unexpectedly emitted a WAL entry"
+            "M-5: fs_stat with cmode=\"oracular\" MUST NOT journal"
         );
+    }
+
+    /// M-5 pin: fs_stat on cmode="consensus" journals exactly
+    /// one Stat entry with Success outcome.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn m5_fs_stat_consensus_journals_stat_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"x").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "f.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate fs_stat consensus");
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "M-5: Consensus fs_stat must journal exactly one entry"
+        );
+        assert_eq!(snap[0].op, rholang::rust::interpreter::io::wal::WalOp::Stat);
+        assert_eq!(
+            snap[0].outcome,
+            rholang::rust::interpreter::io::wal::WalOutcome::Success
+        );
+        // Payload_ref is a Blake2b256 hash of the reply Par.
+        // Two runs against the same file MUST produce the same
+        // hash — the whole point of the journaling scheme.
+        assert!(matches!(
+            snap[0].payload_ref,
+            Some(rholang::rust::interpreter::io::wal::PayloadRef::Hash(_))
+        ));
+    }
+
+    /// M-5 pin: fs_stat on a non-existent path journals a
+    /// Failure entry with FSERR_CODE_NOT_FOUND — leader/follower
+    /// symmetric even for failed reads (H-6-style outcome
+    /// discriminator).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn m5_fs_stat_consensus_failure_journals_failure_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "does-not-exist.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate fs_stat consensus (missing)");
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        match snap[0].outcome {
+            rholang::rust::interpreter::io::wal::WalOutcome::Failure { code } => {
+                assert_eq!(
+                    code,
+                    rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND,
+                    "M-5: fs_stat on missing path must journal FSERR_CODE_NOT_FOUND"
+                );
+            }
+            other => panic!("M-5: expected Failure outcome, got {other:?}"),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -801,6 +943,96 @@ mod tests {
             .check_replay_data()
             .await
             .expect("follower replay data mismatch — tuplespace divergence, not just WAL");
+    }
+
+    /// M-5 pin (2026-08-06): the C-R1 leader/follower symmetry
+    /// invariant also holds for state-read journaling.
+    ///
+    /// Runs an fs_stat call on a Consensus cap on the leader,
+    /// captures its WAL, rigs a follower on the same store +
+    /// re-executes; the two WALs (each with a single Stat
+    /// entry) must be byte-identical.  A regression that made
+    /// the reply-hash non-deterministic (e.g., include mtime
+    /// somehow) or diverged on error-code mapping would fail
+    /// here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn m5_state_read_wal_is_byte_identical_on_leader_and_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("data.bin"),
+            b"leader-and-follower-shared-content",
+        )
+        .unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Two calls: one successful (Success outcome), one missing
+        // path (Failure outcome).  Together they cover both
+        // outcome branches of the M-5 hash derivation.
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), a1, a2 in {{
+              fsStat!("{root}", "data.bin", "consensus", *a1) |
+              for (@_ <- a1) {{
+                fsStat!("{root}", "does-not-exist.bin", "consensus", *a2) |
+                for (@_ <- a2) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[13; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate M-5");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_wal.len(),
+            2,
+            "leader must have journaled two Stat entries (one Success, one Failure)"
+        );
+
+        // Rig follower + replay.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate M-5");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "M-5: leader/follower WAL entry counts diverge for Stat journaling: \
+             leader={} follower={}",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "M-5: Stat WAL entry {i} differs between leader and follower \
+                 (byte-identity is the whole point of the read-hash journaling): \
+                 leader={l:?} follower={f:?}"
+            );
+        }
     }
 
     /// H1 gap fix: end-to-end WAL cap enforcement — a Rholang program

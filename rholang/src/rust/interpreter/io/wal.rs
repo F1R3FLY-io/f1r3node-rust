@@ -184,6 +184,24 @@ pub enum WalOp {
     /// offset = off; length = returned_bytes.len();
     /// payload_ref = Hash(...).  See Read.
     ReadAt,
+    /// M-5 fix (2026-08-06): `fs_stat(root, rel, cmode) -> record`
+    /// — journaled on Consensus caps only.  offset/length None;
+    /// payload_ref = Hash(stable_hash(reply_par)) — covers the
+    /// full stripped record the caller sees (slice-26 record-
+    /// builder omits mtime/ctime/atime/owner/group + setuid/
+    /// setgid/sticky bits in Consensus mode, so the hashed
+    /// bytes ARE the deterministic subset).  Outcome
+    /// distinguishes Success replies from Failure(code).
+    Stat,
+    /// M-5: `fs_entries(root, rel, cmode) -> [record, ...]` —
+    /// journaled on Consensus caps.  length = record count;
+    /// payload_ref = Hash(stable_hash of the reply Par).
+    Entries,
+    /// M-5: `fs_size(fd) -> u64` — journaled when the fd's
+    /// `FileHandle.cmode == Consensus`.  offset None;
+    /// length = Some(size); payload_ref = None (the u64 fits
+    /// in the length field so no separate hash needed).
+    Size,
 }
 
 /// Reference to write payload bytes.  The MVP uses `Hash` only; the
@@ -1113,5 +1131,69 @@ mod tests {
              validators emit FSERR_QUOTA_EXCEEDED on identical inputs — a \
              coordinated hard fork is required."
         );
+    }
+
+    // ---------------------------------------------------------------
+    // M-5 fix (2026-08-06) tests: Stat / Entries / Size op variants.
+    // ---------------------------------------------------------------
+
+    /// M-5 pin: the three new WalOp variants exist and can be
+    /// stored in a WalEntry via the standard append path.  A
+    /// regression that dropped a variant from the enum would
+    /// fail to compile HERE.
+    #[test]
+    fn m5_new_walop_variants_round_trip_through_wal() {
+        let wal = Wal::new();
+        for op in [WalOp::Stat, WalOp::Entries, WalOp::Size] {
+            wal.append(WalEntry {
+                op,
+                path: PathBuf::from("/tmp/m5"),
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: Some(PayloadRef::hash(b"reply-hash-fixture")),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            })
+            .unwrap();
+        }
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap[0].op, WalOp::Stat);
+        assert_eq!(snap[1].op, WalOp::Entries);
+        assert_eq!(snap[2].op, WalOp::Size);
+    }
+
+    /// M-5 pin: Failure outcome plumbs through for state-read
+    /// entries the same as for writes.  A regression that
+    /// hardcoded Success for read ops would fire here.
+    #[test]
+    fn m5_state_read_entries_carry_failure_outcome() {
+        let wal = Wal::new();
+        wal.append(WalEntry {
+            op: WalOp::Stat,
+            path: PathBuf::from("/tmp/vanished"),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Failure {
+                code: super::super::errors::FSERR_CODE_NOT_FOUND,
+            },
+        })
+        .unwrap();
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].op, WalOp::Stat);
+        match snap[0].outcome {
+            WalOutcome::Failure { code } => {
+                assert_eq!(code, super::super::errors::FSERR_CODE_NOT_FOUND);
+            }
+            other => panic!("expected Failure outcome, got {other:?}"),
+        }
     }
 }

@@ -177,7 +177,13 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   tag 1 + u32-be code) at the tail of every entry so
 ///   followers can distinguish a leader's successful syscall
 ///   from a syscall that returned an error (EIO/ENOSPC/EROFS).
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 2;
+/// - `3`: M-5 fix (2026-08-06) — added `Stat` (op tag 12),
+///   `Entries` (13), `Size` (14) WalOp variants.  State-read
+///   handlers on Consensus caps journal into the WAL so
+///   tuplespace divergence traceable to filesystem drift
+///   surfaces as "stat reply differed at path X" rather than
+///   as an opaque `check_replay_data` mismatch downstream.
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 3;
 
 /// M-1 fix (2026-08-06): manifest.jsonl line-format version.
 /// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
@@ -311,6 +317,12 @@ fn op_tag(op: WalOp) -> u8 {
         WalOp::CopyFile => 9,
         WalOp::Read => 10,
         WalOp::ReadAt => 11,
+        // M-5 fix (2026-08-06): state-read journaling on
+        // Consensus caps.  Tags 12-14 appended at the tail of
+        // the reserved range.  Version bumped 2 → 3.
+        WalOp::Stat => 12,
+        WalOp::Entries => 13,
+        WalOp::Size => 14,
     }
 }
 
@@ -1478,6 +1490,10 @@ mod tests {
         assert_eq!(op_tag(WalOp::CopyFile), 9);
         assert_eq!(op_tag(WalOp::Read), 10);
         assert_eq!(op_tag(WalOp::ReadAt), 11);
+        // M-5 fix (2026-08-06): state-read journaling ops.
+        assert_eq!(op_tag(WalOp::Stat), 12);
+        assert_eq!(op_tag(WalOp::Entries), 13);
+        assert_eq!(op_tag(WalOp::Size), 14);
     }
 
     // ------------------------------------------------------------------
@@ -1515,16 +1531,19 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Golden value re-pinned 2026-08-06 (H-6 fix: bumped
-        // `SNAPSHOT_FORMAT_VERSION` from 1 to 2, appended
-        // `outcome` tail to every entry).  Pre-H-6 value was
-        //   532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2
-        // Pre-slice-34 value was
-        //   06a8ce938471c2a9722aa3592209e04dbe9230b759af36a5088dea677f93b825
+        // Golden value re-pinned 2026-08-06 (M-5 fix: bumped
+        // `SNAPSHOT_FORMAT_VERSION` from 2 to 3, added Stat/
+        // Entries/Size op tags 12-14).  Only the version byte
+        // changed for THIS test's entry shape (Write op), so
+        // the hash differs solely because of the leading
+        // version-byte increment.  Prior anchors:
+        //   pre-M-5 (v=2): eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a
+        //   pre-H-6 (v=1): 532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2
+        //   pre-slice-34: 06a8ce938471c2a9722aa3592209e04dbe9230b759af36a5088dea677f93b825
         // Regenerate via
         //   cargo test -p rholang --lib -- compute_wal_root_golden_hex --nocapture
         // ONLY when intentionally hard-forking the encoding.
-        const EXPECTED: &str = "eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a";
+        const EXPECTED: &str = "9f2553c38cce8b72bbf6ad78c22f4b32f195b8bed781c952403f5404c25891c4";
         assert_eq!(
             hex, EXPECTED,
             "WAL root golden-hex mismatch — did you accidentally change the encoding? \
@@ -1554,6 +1573,9 @@ mod tests {
             (WalOp::CopyFile, 9),
             (WalOp::Read, 10),
             (WalOp::ReadAt, 11),
+            (WalOp::Stat, 12),
+            (WalOp::Entries, 13),
+            (WalOp::Size, 14),
         ] {
             let e = WalEntry {
                 op,

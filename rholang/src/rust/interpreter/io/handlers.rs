@@ -346,6 +346,72 @@ impl FsProcesses {
         }
     }
 
+    /// M-5 fix (2026-08-06): journal a state-read reply on a
+    /// Consensus cap.  Called AFTER the syscall completes (both
+    /// leader and follower paths — the follower extracts the
+    /// same reply from the cached `previous`, hashes it, and
+    /// journals identical bytes).
+    ///
+    /// - `op`: `WalOp::Stat` / `WalOp::Entries` / `WalOp::Size`.
+    /// - `path`: the canonical target (root + rel joined for
+    ///   path-based ops; canon_path from FileHandle for fd-based).
+    /// - `reply`: the just-produced reply Par.  Hashed via
+    ///   `stable_hash_provider::hash` for a canonical Blake2b256.
+    /// - Outcome derived from the reply: `[true, ...]` → Success,
+    ///   `[false, code, ...]` → Failure { code = fserr_to_code(code) }.
+    ///
+    /// A no-op if `cmode != Consensus`.  fs_stat / fs_entries
+    /// take cmode as an arg; fs_size looks up the FileHandle's
+    /// cmode via the fd.  fs_exists deliberately excluded —
+    /// its arity (3) has no cmode signal; a follow-up would
+    /// require an arity bump.
+    fn journal_state_read(
+        &self,
+        cmode: ConsensusMode,
+        op: WalOp,
+        path: std::path::PathBuf,
+        reply: &Par,
+        ack: &Par,
+        length: Option<u64>,
+    ) {
+        if cmode != ConsensusMode::Consensus {
+            return;
+        }
+        let reply_hash: [u8; 32] = {
+            let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(reply).bytes();
+            assert_eq!(
+                h.len(),
+                32,
+                "M-5: stable_hash must produce a 32-byte Blake2b256"
+            );
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&h);
+            buf
+        };
+        let outcome = if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+            WalOutcome::Failure {
+                code: fserr_to_code(&code_str),
+            }
+        } else {
+            WalOutcome::Success
+        };
+        let _ = self.handles.wal.append_with_ack(
+            WalEntry {
+                op,
+                path,
+                extra_path: None,
+                offset: None,
+                length,
+                payload_ref: Some(PayloadRef::Hash(reply_hash)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome,
+            },
+            ack_channel_hash(ack),
+        );
+    }
+
     // -------------------------------------------------------------------
     // open — (rootCanon, rel, mode) -> [true, fd] | [false, code, msg]
     // -------------------------------------------------------------------
@@ -1059,7 +1125,31 @@ impl FsProcesses {
         let [fd_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_size"));
         };
+        // M-5: look up FileHandle cmode + canon_path so both
+        // is_replay and leader paths can journal symmetrically.
+        // If the fd isn't valid at lookup time, the syscall
+        // will produce FSERR_CLOSED and journal-cmode is None
+        // (no journaling happens).
+        let (jmode, jpath): (Option<ConsensusMode>, Option<PathBuf>) =
+            match RhoNumber::unapply(fd_par) {
+                Some(fd) => {
+                    let meta = self
+                        .handles
+                        .with_mut(fd as u64, |h| (h.cmode, h.canon_path.clone()))
+                        .await;
+                    match meta {
+                        Some((c, p)) => (Some(c), Some(p)),
+                        None => (None, None),
+                    }
+                }
+                None => (None, None),
+            };
         if is_replay {
+            if let (Some(mode), Some(p)) = (jmode, jpath.clone()) {
+                if let Some(reply_par) = previous.first() {
+                    self.journal_state_read(mode, WalOp::Size, p, reply_par, ack, None);
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -1090,6 +1180,10 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected u64"),
         };
+        // M-5: leader journals from fresh reply.
+        if let (Some(mode), Some(p)) = (jmode, jpath) {
+            self.journal_state_read(mode, WalOp::Size, p, &reply, ack, None);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -1252,11 +1346,12 @@ impl FsProcesses {
         let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_stat"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // C-26-F1 review fix: fail-closed on unrecognized cmode.
+        // M-5 fix (2026-08-06): resolve cmode BEFORE the is_replay
+        // short-circuit so both leader + follower can journal
+        // symmetrically.  A bad cmode still short-circuits with
+        // FSERR_BAD_ARG the same way as before (that path
+        // doesn't journal — it's a parse error, not a filesystem
+        // observation).
         let mode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -1268,6 +1363,29 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        // Precompute journal path (used by both branches).
+        let journal_path: Option<PathBuf> =
+            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+                (Some(root), Some(rel)) => {
+                    let mut p = PathBuf::from(root);
+                    if !rel.is_empty() {
+                        p.push(&rel);
+                    }
+                    Some(p)
+                }
+                _ => None,
+            };
+        if is_replay {
+            // M-5: follower journals from cached `previous` so
+            // WAL is byte-identical with the leader.
+            if let Some(p) = journal_path.clone() {
+                if let Some(reply_par) = previous.first() {
+                    self.journal_state_read(mode, WalOp::Stat, p, reply_par, ack, None);
+                }
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let leaf_name = leaf_of(&rel);
@@ -1291,6 +1409,10 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
+        // M-5: leader journals from fresh syscall reply.
+        if let Some(p) = journal_path {
+            self.journal_state_read(mode, WalOp::Stat, p, &reply, ack, None);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
@@ -1371,11 +1493,8 @@ impl FsProcesses {
         let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_entries"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // C-26-F1 review fix: fail-closed on unrecognized cmode.
+        // M-5: resolve cmode before is_replay so both leader
+        // and follower journal symmetrically.
         let mode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -1387,6 +1506,26 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        let journal_path: Option<PathBuf> =
+            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+                (Some(root), Some(rel)) => {
+                    let mut p = PathBuf::from(root);
+                    if !rel.is_empty() {
+                        p.push(&rel);
+                    }
+                    Some(p)
+                }
+                _ => None,
+            };
+        if is_replay {
+            if let Some(p) = journal_path.clone() {
+                if let Some(reply_par) = previous.first() {
+                    self.journal_state_read(mode, WalOp::Entries, p, reply_par, ack, None);
+                }
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
@@ -1452,6 +1591,10 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
+        // M-5: leader journals from fresh reply.
+        if let Some(p) = journal_path {
+            self.journal_state_read(mode, WalOp::Entries, p, &reply, ack, None);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)
