@@ -252,13 +252,21 @@ in {{
     // Test 3: exercise File.readN on the returned cap.  Reads up
     // to 64 bytes from the tempdir file's contents through the
     // full Fs → File → fs_read syscall chain.
+    //
+    // M-13 fix (2026-08-06): assert the returned bytes ARE the
+    // exact contents of the seeded file (b"hello populated
+    // bundle" = 22 bytes = 44 hex chars).  Pre-fix, the test
+    // only asserted shape `[true, _bytes]`, so a regression
+    // returning `[true, empty_bytes]` or `[true, wrong_bytes]`
+    // would pass silently.
     contract test_readbytes_returns_file_contents(rhoSpec, _, ackCh) = {{
       for(@[true, fileCap] <- @fs!?("openFile", "myfile", {{}})) {{
         for(@r <- @fileCap!?("readN", 64)) {{
           match r {{
-            [true, _bytes] => {{
-              rhoSpec!("assert", (true, "==", true),
-                "readN returns [true, bytes]", *ackCh)
+            [true, bytes] => {{
+              rhoSpec!("assert",
+                (bytes, "==", "68656c6c6f20706f70756c617465642062756e646c65".hexToBytes()),
+                "readN returns exact seeded file contents", *ackCh)
             }}
             _ => {{
               rhoSpec!("assert", (r, "==", "[true, bytes] shape"),

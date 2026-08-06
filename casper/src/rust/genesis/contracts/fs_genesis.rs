@@ -483,6 +483,16 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "rename",
     "copyFile",
     "entries",
+    // M-3 fix (2026-08-06): entriesStream + quarantine had
+    // `fs_native_def` registrations in rho_runtime.rs but were
+    // NOT bound in the composed new-clause below.  A future
+    // slice referencing `fsEntriesStream!(...)` would silently
+    // bind to a fresh unforgeable and never fire.  Both are now
+    // in the suffix list; the bidirectional drift check
+    // `fs_native_urn_suffixes_matches_composed_source_bidirectionally`
+    // pins the correspondence in both directions.
+    "entriesStream",
+    "quarantine",
 ];
 
 /// Extract the body between the top-level `new ... in {` and the
@@ -761,6 +771,8 @@ new
   fsRename(`rho:io:fs:native:1.0.0/rename`),
   fsCopyFile(`rho:io:fs:native:1.0.0/copyFile`),
   fsEntries(`rho:io:fs:native:1.0.0/entries`),
+  fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`),
+  fsQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
   rs(`rho:registry:insertSigned:secp256k1`),
   uriOut
 in {{
@@ -916,6 +928,289 @@ mod tests {
             assert!(
                 src.contains(&expected),
                 "composed source missing URN binding: {expected}"
+            );
+        }
+    }
+
+    /// M-2 fix (2026-08-06): pin fs_native_def arities against
+    /// a golden URN → arity map.  A slice that bumps a handler's
+    /// arity but forgets to update the corresponding `fs_native_def`
+    /// call (or vice versa) creates a silent-hang class where the
+    /// dispatch pattern doesn't match and the reply channel is
+    /// never fired — H-P7-8-E2E was exactly this class of bug.
+    /// This test locks the 22 arities against a hardcoded table
+    /// derived from Slice 26's arity documentation in handlers.rs.
+    ///
+    /// A regression bumping (say) `fs_stat` from arity 4 to 5
+    /// without updating this table fails HERE — surfacing at
+    /// build time rather than as a mysterious deploy hang.
+    #[test]
+    fn fs_native_def_arities_match_golden_table() {
+        // Golden table: URN suffix → (arity, rationale).
+        // Rationale is documented in rho_runtime.rs at the
+        // fs_native_def call sites; keep this table in sync.
+        // Every arity change here IS a cross-source change and
+        // usually a hard fork of caller code.
+        let golden: &[(&str, usize)] = &[
+            ("open", 5),          // (root, rel, mode, cmode, ack)
+            ("close", 2),         // (fd, ack)
+            ("read", 3),          // (fd, n, ack)
+            ("readAt", 4),        // (fd, off, n, ack)
+            ("write", 3),         // (fd, bytes, ack)
+            ("writeAt", 4),       // (fd, off, bytes, ack)
+            ("seek", 4),          // (fd, whence, off, ack)
+            ("tell", 2),          // (fd, ack)
+            ("size", 2),          // (fd, ack)
+            ("flush", 2),         // (fd, ack)
+            ("stat", 4),          // (root, rel, cmode, ack) — Slice 26
+            ("exists", 3),        // (root, rel, ack)
+            ("truncate", 3),      // (fd, n, ack)
+            ("chmod", 5),         // (root, rel, mode, cmode, ack) — Slice 26
+            ("chown", 6),         // (root, rel, owner, group, cmode, ack) — Slice 26
+            ("removeFile", 4),    // (root, rel, cmode, ack) — Slice 26
+            ("removeDir", 5),     // (root, rel, recursive, cmode, ack) — Slice 26
+            ("rename", 6),        // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
+            ("copyFile", 6),      // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
+            ("entries", 4),       // (root, rel, cmode, ack) — Slice 26
+            ("entriesStream", 3), // (root, rel, ack)
+            ("quarantine", 3),    // (root, rel, ack)
+        ];
+
+        // Read rho_runtime.rs from the sibling rholang crate.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../rholang/src/rust/interpreter/rho_runtime.rs"
+        ))
+        .expect("read rho_runtime.rs to extract fs_native_def arities");
+
+        // Simple scanner: find each `fs_native_def(` opening,
+        // then within the parentheses find:
+        //   - the URN string literal after the prefix
+        //   - the first numeric literal following the URN — that's the arity
+        for (suffix, expected_arity) in golden {
+            let urn = format!("\"{FS_NATIVE_URN_PREFIX}{suffix}\"");
+            let anchor = src.find(&urn).unwrap_or_else(|| {
+                panic!(
+                    "M-2: rho_runtime.rs is missing fs_native_def registration \
+                     for `{FS_NATIVE_URN_PREFIX}{suffix}`; the M-3 bidirectional \
+                     drift check should have flagged this too"
+                )
+            });
+            // Scan forward line-by-line past the URN, skipping
+            // comments and the channel line, until a line whose
+            // trimmed body starts with an integer literal — that
+            // is the arity argument.
+            let window = &src[anchor..anchor + 800];
+            let mut actual: Option<usize> = None;
+            for line in window.lines() {
+                let trimmed = line.trim();
+                // Skip blanks, //-comments, block-comment lines,
+                // and the URN string itself.
+                if trimmed.is_empty()
+                    || trimmed.starts_with("//")
+                    || trimmed.starts_with("/*")
+                    || trimmed.starts_with('*')
+                    || trimmed.contains(&urn)
+                    || trimmed.starts_with("FixedChannels::")
+                {
+                    continue;
+                }
+                // First numeric-leading line after we've passed
+                // the channel is the arity.  Strip trailing `,`
+                // + comments.
+                let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    actual =
+                        Some(digits.parse().unwrap_or_else(|e| {
+                            panic!("M-2: arity for {suffix} did not parse: {e}")
+                        }));
+                    break;
+                }
+            }
+            let actual = actual.unwrap_or_else(|| {
+                panic!(
+                    "M-2: could not find an integer-literal arity line \
+                     within 800 bytes after the URN for {suffix}; the \
+                     `fs_native_def(URN, channel, arity, body_ref, closure)` \
+                     layout may have changed"
+                )
+            });
+            assert_eq!(
+                actual, *expected_arity,
+                "M-2: arity drift for `{FS_NATIVE_URN_PREFIX}{suffix}` — \
+                 handler destructures {expected_arity} args (per handlers.rs) \
+                 but fs_native_def registers arity {actual}.  If intentional, \
+                 update this golden table AND the destructure in handlers.rs \
+                 AND every caller.  A silent mismatch produces the H-P7-8-E2E \
+                 hang class."
+            );
+        }
+    }
+
+    /// M-12 fix (2026-08-06): golden-hex byte-anchor for
+    /// `compose_fs_genesis_source`.  The determinism tests
+    /// elsewhere in this module confirm the same-input →
+    /// same-output invariant within a single process; this
+    /// pin adds a cross-build anchor.
+    ///
+    /// A subtle lib_body edit that changes the composed source
+    /// (say, reorders `new` bindings or drops a fs-native
+    /// registration) would fork validators at block 0 because
+    /// the genesis deploy source hash would differ.  Pre-M-12,
+    /// no test caught this at CI time — only a divergent
+    /// genesis on live nodes would surface it.
+    ///
+    /// If this hash changes, either:
+    ///  (a) You deliberately hard-forked the fs_generator source
+    ///      — regenerate via
+    ///      `cargo test --package casper --test mod
+    ///      compose_fs_genesis_source_golden_hex -- --nocapture`
+    ///      and update the constant, treating the change as a
+    ///      Genesis hard fork; or
+    ///  (b) An unintended edit slipped through — fix it.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex() {
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        // Pin against a specific input: empty bundle, empty pk/sig,
+        // no cadence override.  These inputs don't depend on
+        // operator config or bundle contents, so the resulting
+        // hash reflects the composed source structure alone.
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Recompute with `--nocapture` after any intentional edit.
+        // Pre-M-3 baseline (before entriesStream+quarantine bindings)
+        // is intentionally NOT preserved — the fix landed with the
+        // test; this hash is the post-fix anchor.
+        //
+        // If this test fails with a diff you didn't intend, `git
+        // diff casper/src/rust/genesis/contracts/fs_genesis.rs`
+        // should surface the offending edit.
+        // Golden value pinned 2026-08-06.  Includes M-3
+        // (entriesStream + quarantine bindings in the composed
+        // new-clause).  Regenerate deliberately via
+        // `cargo test -p casper --lib -- --nocapture \
+        //   compose_fs_genesis_source_golden_hex`.
+        const EXPECTED: &str = "742b4ef484620d08fe02e601d13a807a9ae3b02eea26ab442ceabd884adb3000";
+        assert_eq!(
+            hex, EXPECTED,
+            "M-12: compose_fs_genesis_source() hash changed.  If intentional \
+             (a Genesis hard fork), rerun with --nocapture and update EXPECTED; \
+             else find and revert the source edit."
+        );
+        // Print the hash so `--nocapture` runs surface it for
+        // easy regeneration.
+        println!("compose_fs_genesis_source hash = {hex}");
+    }
+
+    /// M-4 fix (2026-08-06): cross-language drift pin for
+    /// consensus-mode string literals.  The Rust constants
+    /// `CMODE_ORACULAR_STR` / `CMODE_CONSENSUS_STR` in
+    /// `rholang/src/rust/interpreter/io/mod.rs` are pinned
+    /// Rust-to-Rust (via `resolve_cmode` unit tests), but the
+    /// 16 `.rho` sites in File.rho / Dir.rho / Fs.rho that
+    /// embed `"oracular"` / `"consensus"` were never checked
+    /// against them.  Renaming the Rust constant (say to
+    /// `"oracle"`) leaves the .rho matching the old string, and
+    /// every dispatch call silently falls into the REVOKED
+    /// (default-arm) branch.
+    ///
+    /// This test grep-counts the literals in the three shipped
+    /// .rho library files and asserts they exist.  A future
+    /// slice that renames either constant to something the .rho
+    /// files don't reference fails HERE.
+    #[test]
+    fn cmode_string_literals_pinned_across_rholang_and_rust() {
+        // Reach the Rust constants via the rholang crate.  Kept
+        // here (in casper) as a cross-crate anchor — a rename in
+        // rholang without matching .rho updates flips this.
+        let oracular: &str = rholang::rust::interpreter::io::CMODE_ORACULAR_STR;
+        let consensus: &str = rholang::rust::interpreter::io::CMODE_CONSENSUS_STR;
+        assert_eq!(
+            oracular, "oracular",
+            "CMODE_ORACULAR_STR is pinned at \"oracular\" — see below"
+        );
+        assert_eq!(
+            consensus, "consensus",
+            "CMODE_CONSENSUS_STR is pinned at \"consensus\" — see below"
+        );
+
+        // Now cross-check against every shipped .rho library.
+        let rho_files: &[&str] = &[
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/Fs.rho"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/File.rho"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/main/resources/Dir.rho"),
+        ];
+        let quoted_oracular = format!("\"{oracular}\"");
+        let quoted_consensus = format!("\"{consensus}\"");
+        let mut total_oracular = 0usize;
+        let mut total_consensus = 0usize;
+        for path in rho_files {
+            let src =
+                std::fs::read_to_string(path).unwrap_or_else(|e| panic!("M-4: read {path}: {e}"));
+            total_oracular += src.matches(&quoted_oracular).count();
+            total_consensus += src.matches(&quoted_consensus).count();
+        }
+        // Both literals appear somewhere in the shipped .rho
+        // libraries — a rename of either Rust constant leaves
+        // the .rho matching the OLD string and this fires.
+        assert!(
+            total_oracular > 0,
+            "M-4: `{quoted_oracular}` not found in shipped .rho library files.  \
+             Either the Rust CMODE_ORACULAR_STR was renamed without updating \
+             File.rho / Dir.rho / Fs.rho, or the .rho files removed all cmode \
+             match arms (unlikely).  Every affected dispatch silently falls \
+             into the REVOKED default arm."
+        );
+        assert!(
+            total_consensus > 0,
+            "M-4: `{quoted_consensus}` not found in shipped .rho library files.  \
+             Same drift class as the oracular pin above."
+        );
+    }
+
+    /// M-3 fix (2026-08-06): bidirectional drift check.  The
+    /// existing `..._covers_composed_source` test caught missing
+    /// bindings in one direction (constant → source).  The
+    /// opposite direction was uncovered: a `rho:io:fs:native:1.0.0/*`
+    /// URN bound in the composed source but NOT listed in
+    /// `FS_NATIVE_URN_SUFFIXES` would go undetected.  Pre-M-3,
+    /// `entriesStream` + `quarantine` had `fs_native_def`
+    /// registrations in rho_runtime.rs but no composed-source
+    /// binding — a `fsEntriesStream!(...)` reference from
+    /// (e.g.) `Dir.entries` would silently bind to a fresh
+    /// unforgeable and never fire.
+    ///
+    /// Post-M-3, both directions are pinned.  A future URN
+    /// added to either side without the other trips this test.
+    #[test]
+    fn composed_source_urns_covered_by_fs_native_urn_suffixes() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        // Find every `rho:io:fs:native:1.0.0/<suffix>` URN in
+        // the composed source and confirm the suffix is in the
+        // constant.  Regex-lite scan: split on the prefix and
+        // pull the suffix up to the next backtick.
+        let mut found: Vec<String> = Vec::new();
+        for chunk in src.split(FS_NATIVE_URN_PREFIX).skip(1) {
+            if let Some(end) = chunk.find('`') {
+                found.push(chunk[..end].to_string());
+            }
+        }
+        assert!(
+            !found.is_empty(),
+            "sanity: composed source should contain at least one fs-native URN"
+        );
+        for suffix in &found {
+            assert!(
+                FS_NATIVE_URN_SUFFIXES.contains(&suffix.as_str()),
+                "M-3: composed source binds `{FS_NATIVE_URN_PREFIX}{suffix}` but that \
+                 suffix is missing from FS_NATIVE_URN_SUFFIXES.  A caller using this \
+                 URN would silently bind to a fresh unforgeable and never fire.  Add \
+                 it to the constant (see fs_genesis.rs:FS_NATIVE_URN_SUFFIXES)."
             );
         }
     }

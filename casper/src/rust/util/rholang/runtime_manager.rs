@@ -1863,4 +1863,83 @@ mod h7_cross_runtime_wiring_tests {
             .await
             .expect("H-7: manager-spawned follower replay-data check must pass");
     }
+
+    /// M-11 fix (2026-08-06): two-runtime state-root equality.
+    /// Phase 7's bedrock claim — "same input → same state root
+    /// across validators" — had no pin at the test level.
+    ///
+    /// Runs the same fs-native deploy on two INDEPENDENT play
+    /// runtimes (each with its own FileHandleTable, each with
+    /// its own manager) and asserts their post-deploy state
+    /// roots are byte-identical.  This is a stricter pin than
+    /// the leader/follower rig-and-replay tests: those share
+    /// the same RSpace store; this one uses truly separate
+    /// stores + runtimes, mimicking two validators in the
+    /// wild processing the same deploy.
+    ///
+    /// A regression that made state-hash derivation depend on
+    /// non-deterministic input (wall-clock, TLB address, tokio
+    /// scheduler order) would fire here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_independent_runtimes_reach_the_same_state_root() {
+        use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), vec![0u8; 128]).unwrap();
+
+        // Two independent managers (distinct in-memory stores),
+        // each spawning its own play runtime.  These runtimes
+        // share no state — a validator on Node A vs Node B.
+        let manager_a = empty_manager().await;
+        let manager_b = empty_manager().await;
+        let mut runtime_a = manager_a.spawn_runtime().await;
+        let mut runtime_b = manager_b.spawn_runtime().await;
+        runtime_a.cost.set(Cost::unsafe_max());
+        runtime_b.cost.set(Cost::unsafe_max());
+        runtime_a.disable_fs_native_urn_filter();
+        runtime_b.disable_fs_native_urn_filter();
+
+        // Same deploy body + same rand seed → deterministic
+        // state-hash derivation MUST produce byte-identical
+        // roots on both sides.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                oc, w1
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "aa".hexToBytes(), *w1) |
+                for (@_ <- w1) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let rand = Blake2b512Random::create_from_bytes(&[42; 32]);
+
+        for (label, rt) in [("A", &mut runtime_a), ("B", &mut runtime_b)] {
+            rt.evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("M-11: runtime {label} evaluate failed: {e}"));
+        }
+
+        let root_a = runtime_a.create_checkpoint().await.root;
+        let root_b = runtime_b.create_checkpoint().await.root;
+
+        assert_eq!(
+            root_a, root_b,
+            "M-11: two independent runtimes processing the same fs-native deploy \
+             produced different state roots.  The Phase-7 bedrock claim (same \
+             input → same state root across validators) is broken — one of \
+             fs_open, fs_write, WAL routing, or the state-hash derivation is \
+             consuming non-deterministic input."
+        );
+    }
 }
