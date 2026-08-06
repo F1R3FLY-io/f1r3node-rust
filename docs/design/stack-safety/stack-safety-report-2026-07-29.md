@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@2a972436` (recursive-carrier lifecycle plus operational and lowered-guard closure; §5.18)
+**Companion decision head** `mettail-rust@fec84ffb` (recursive-carrier lifecycle plus operational and lowered-guard closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -29,8 +29,9 @@ executor. `mettail-rust@338d8263` additionally closes the Rholang type-inference
 receive-collection SCCs; the remaining non-term-family census and lifecycle-census mutation
 calibration remain live work (§5.18.6, §8.5). `mettail-rust@b76c5773` closes every production
 recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer residual is a deliberate
-`#[cfg(test)]` recursive oracle. `mettail-rust@2a972436` closes lowered guard-formula construction
-and opaque-atom substitution; operand evaluation and bound-value substitution remain live. No
+`#[cfg(test)]` recursive oracle. `mettail-rust@2a972436`, `580896f3`, and `fec84ffb` close every
+genuine production recursion cluster in `rholang-runtime/src/guard_par_substrate.rs`: formula
+construction, opaque-atom substitution, operand normalization, and bound-value substitution. No
 production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -111,7 +112,9 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
 | **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; wider call-SCC census remains open | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
 | **SS-G11** | `mettail-rust@b76c5773` | mettail | Rholang AST analysis and rewrite: `Proc`/`Name` machine-effect classification, innermost fold discovery, and fold replacement/rebuild | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.42 s / 59,172 KiB** | **yes for every production SCC in `rholang_ast.rs`**; wider call-SCC census remains open | [5.18.10](#51810-rholang-ast-analysis-and-fold-rewrite-closure-ss-g11) |
-| **SS-G12** | `mettail-rust@2a972436` | mettail | lowered guard formulas: `Par`/`Expr` connective encoding and opaque-atom formula substitution | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.27 s / 77,100 KiB** | **yes for the named formula SCCs**; operand and bound-value SCCs remain open | [5.18.11](#51811-lowered-guard-formula-closure-ss-g12) |
+| **SS-G12** | `mettail-rust@2a972436` | mettail | lowered guard formulas: `Par`/`Expr` connective encoding and opaque-atom formula substitution | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.27 s / 77,100 KiB** | **yes for the named formula SCCs**; historical operand and bound-value residuals close in SS-G13/SS-G14 | [5.18.11](#51811-lowered-guard-formula-closure-ss-g12) |
+| **SS-G13** | `mettail-rust@580896f3` | mettail | lowered guard operands: optional-`Par` dispatch, integer-form normalization, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.15 s / 113,112 KiB** | **yes for the operand SCC**; ordered variable interning and failure classes preserved | [5.18.12](#51812-lowered-guard-operand-closure-ss-g13) |
+| **SS-G14** | `mettail-rust@fec84ffb` | mettail | bound-`Par` substitution through evaluator-owned guard positions | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.20 s / 131,632 KiB** | **yes**; every genuine production SCC in `guard_par_substrate.rs` is closed | [5.18.13](#51813-lowered-guard-bound-substitution-closure-ss-g14) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3173,8 +3176,61 @@ with eight test threads under `MemoryMax=4G` and `MemorySwapMax=0`.
 A fresh libcpg pass confirms that both formula clusters disappeared. Its apparent
 `ParGuardEncoding::static_verdict` self-call is a same-name resolution false positive: the method
 calls the imported `mettail_prattail::guard_formula::static_verdict` free function with two
-arguments. The genuine operand/int-form and bound-`Par` substitution SCCs remain open. SS-G12 does
-not change PathMap source, wire format, acceptance rules, ruled semantics, or token metering.
+arguments. At this checkpoint, the genuine operand/int-form and bound-`Par` substitution SCCs
+remained open; SS-G13 and SS-G14 subsequently close them. SS-G12 does not change PathMap source,
+wire format, acceptance rules, ruled semantics, or token metering.
+
+#### 5.18.12 Lowered guard-operand closure [SS-G13]
+
+`mettail-rust@580896f3` replaces the five-function
+`opt_operand`/`operand`/`int_form`/`arithmetic`/`integer_division` SCC with one bottom-up machine.
+Its `Visit` jobs schedule the right operand before the left on the last-in/first-out work stack, so
+execution and `GuardVarMap` interning remain left-to-right. Typed builder jobs then reproduce the
+superseded equations for negation, additive arithmetic, multiplication by a constant, and integer
+division or remainder.
+
+The distinction among `Uncovered`, `NonLinear`, a scalar variable, a literal, a structural value,
+and an integer linear form is observable because it selects a different opaque-atom kind or
+substrate predicate. The bounded recursive oracle therefore compares the complete classified
+operand and variable map, including missing operands, coefficient overflow, division by zero,
+variable-by-variable multiplication, structural collections, and unsupported constructors. The
+20,000-level arithmetic gate runs on a **256 KiB** thread stack. Its already-built binary passes
+**2/2** in **0.15 seconds**, peaks at **113,112 KiB RSS**, and swaps zero bytes. The complete
+`rholang-runtime` library passes **145/145** in **1.13 seconds** of test-harness time, with
+**200,168 KiB** command RSS under `MemoryMax=4G`, `MemorySwapMax=0`, eight Cargo jobs, and eight
+test threads.
+
+Compiler and runtime envelopes are reported separately. The eight-job generated-code rebuild was
+cgroup-killed at the exact **1 GiB** and **4 GiB** limits with zero swap. The resumed **8 GiB**
+run completed in **126.98 seconds**, with **6,196,376 KiB** maximum process RSS,
+**7,541,415,936 bytes** peak aggregate cgroup memory, and zero swap. This measures generated-code
+compilation, not the operand machine's runtime footprint; the direct already-built gate above is
+the runtime measurement.
+
+#### 5.18.13 Lowered guard bound-substitution closure [SS-G14]
+
+`mettail-rust@fec84ffb` replaces the remaining
+`substitute_bound_pars`/`substitute_opt_par`/`substitute_expr` cycle with one typed reconstruction
+machine. Separate jobs visit required `Par` values, optional operands, and `Expr` nodes; builders
+reassemble binary, unary, `matches`, and multi-expression `Par` nodes from value stacks. The
+result preserves the concrete evaluator correspondence: it descends through logical, comparison,
+and arithmetic operands and the target of `matches`, but it retains match patterns, collection
+interiors, process-level slots, and unsupported-expression operands verbatim. A substituted
+tuple-space payload is cloned once and never re-entered, preventing variable capture. Field-wise
+`Par` reconstruction also retains the prior linear-work repair: it does not clone an expression
+subtree merely to discard it.
+
+The test-only recursive oracle covers every traversed constructor, optional operands,
+out-of-range and free variables, target-versus-pattern asymmetry, structural values, and a
+multi-expression `Par`. The **20,000**-level substitution gate runs on a **256 KiB** thread stack.
+The already-built binary passes **2/2** in **0.20 seconds**, peaks at **131,632 KiB RSS**, and swaps
+zero bytes. The complete library passes **147/147** in **0.87 seconds** of harness time and
+**1.15 seconds** wall time, peaking at **273,032 KiB** under the 4 GiB zero-swap envelope.
+
+A fresh source-derived pass reports zero genuine production mutual-recursion clusters in
+`guard_par_substrate.rs`. The remaining `static_verdict` edge is the imported-free-function
+same-name false positive described in §5.18.11. SS-G13 and SS-G14 change neither PathMap source nor
+wire bytes, guard acceptance semantics, ruled semantics, or token metering.
 
 ---
 
