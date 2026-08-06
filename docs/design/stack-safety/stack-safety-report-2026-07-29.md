@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@0aaac1c0` (recursive-carrier lifecycle plus operational, guard, and receive-traversal closure; §5.18)
+**Companion decision head** `mettail-rust@2e3ae94d` (recursive-carrier lifecycle plus operational, guard, receive-traversal, and parallel-hash closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -37,7 +37,10 @@ surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`.
 `mettail-rust@5cd89526` closes the direct name, quote, three-valued guard-disposition, and parallel-
 flattening traversals in `languages/src/rholang/receive.rs`; `mettail-rust@0aaac1c0` closes the
 heterogeneous collection-pattern matcher in the same file. Fresh file-scoped analysis reports zero
-production direct or mutual recursion there; the surface `runtime.rs` family remains live. No
+production direct or mutual recursion there. `mettail-rust@2e3ae94d` then makes `HashBag` hashing a
+constant-time read of incrementally maintained, byte-identical lanes, retains owned parallel bags
+across binary folds, and carries multiplicity in the flattening worklist rather than expanding it into
+repeated jobs. The surface `runtime.rs` send-sugar canonicalizer family remains live. No
 production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -124,6 +127,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G15** | `mettail-rust@44f899b8` | mettail | surface `Proc` guard formulas and operands: connectives, ordered variable/opaque allocation, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.03 s / 29,560 KiB** | **yes**; zero genuine production recursion in surface `guard_substrate.rs` | [5.18.14](#51814-surface-rholang-guard-closure-ss-g15) |
 | **SS-G16** | `mettail-rust@5cd89526` | mettail | direct surface receive traversals: parenthesized-name conversion, quote normalization, three-valued guard disposition, and nested parallel flattening | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.05 s / 30,960 KiB** | **yes for the named direct traversals**; collection-pattern matcher remains live | [5.18.15](#51815-direct-surface-receive-traversal-closure-ss-g16) |
 | **SS-G17** | `mettail-rust@0aaac1c0` | mettail | receive collection patterns: lists, ordinary maps, surface path-map set/map modes, read/write zippers, greedy sets, and backtracking bags | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** list/map/path-map levels and **4,096** bag elements on **256 KiB**; direct gate **0.25 s / 51,216 KiB** | **yes**; zero production recursion in `receive.rs` | [5.18.16](#51816-receive-collection-pattern-closure-ss-g17) |
+| **SS-G18** | `mettail-rust@2e3ae94d` | mettail | `HashBag` structural hash summaries, owned `PPar` merge, and multiplicity-compressed parallel flattening | completed-bag hash $`\Theta(n) \rightarrow \Theta(1)`$; left-fold merge $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** merges on **256 KiB** in **0.11 s / 39,096 KiB** | **yes** for the former merge recursion; hash stream and multiset unchanged | [5.18.17](#51817-parallel-hash-and-multiplicity-closure-ss-g18) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3067,7 +3071,8 @@ does not construct a positive/negative minterm partition.
 
 The direct collection lane and last-use moves are performance requirements, not cosmetic details. A
 rejected intermediate retained whole nested predicate and witness suffixes while expanding an
-epsilon-NFA edge, a tree payload, and a single map value. It remained stack-safe and peaked at only
+epsilon-nondeterministic finite automaton (NFA) edge, a tree payload, and a single map value. It
+remained stack-safe and peaked at only
 59,476 KiB, but the depth-20,000 gate was still CPU-bound when interrupted after **141.38 seconds**.
 Moving the final owner at those boundaries makes the same gate complete in **0.25 seconds** at
 **46,168 KiB maximum RSS**, a greater-than-$`565\times`$ observed reduction in elapsed time relative
@@ -3279,12 +3284,13 @@ right operand, retaining the former left-strict short circuit for conjunction, d
 material implication. Parallel flattening uses a reference worklist and inserts only leaf values
 into the destination bag.
 
-The parallel bag iterator's order is arbitrary but stable for one bag observation. The driver
-therefore appends each multiplicity-expanded group to the worklist and reverses only that new slice:
-last-in/first-out execution sees the same order as the superseded recursive loop. Binary parallel
-syntax pushes right before left, so it also executes left first. This is a syntax-tree bag traversal,
-not an EPathMap conversion: it neither projects nor reconstructs a target `PathMap<()>` or
-`PathMap<Par>`, and no PathMap source is changed.
+The parallel bag iterator's order is arbitrary but stable for one bag observation. The original
+SS-G16 driver appended each multiplicity-expanded group to the worklist and reversed only that new
+slice, so last-in/first-out execution saw the same order as the superseded recursive loop. SS-G18
+retains that ordering while replacing repeated jobs by one `(term, multiplicity)` job and one
+`insert_n` at the leaf. Binary parallel syntax pushes right before left, so it also executes left
+first. This is a syntax-tree bag traversal, not an EPathMap conversion: it neither projects nor
+reconstructs a target `PathMap<()>` or `PathMap<Par>`, and no PathMap source is changed.
 
 Bounded recursive equations live only under `languages/tests/support/`. The shallow differential
 corpus compares all four drivers, including decided, declining, and short-circuit guard rows and a
@@ -3344,6 +3350,81 @@ zipper focus equality, greedy set commitment, full bag backtracking, and child v
 changes no wire bytes, acceptance rule, ruled semantic, token-metering rule, target EPathMap
 representation, or PathMap implementation. The remaining child scope is the source
 `languages/src/rholang/runtime.rs` family.
+
+#### 5.18.17 Parallel hash and multiplicity closure [SS-G18]
+
+`mettail-rust@2e3ae94d` closes three coupled costs that were visible once the direct recursive
+flatteners were removed. First, `HashBag::hash` formerly recomputed four commutative lanes by hashing
+every distinct `(element, count)` pair on every call. A `Proc::PPar` hash therefore synchronously
+re-entered a child bag hash, even though the generated `Proc` hash driver itself was iterative.
+Second, `merge_pp_parallel` discarded an owned `PPar` bag and cloned every accumulated member into a
+fresh table on every binary left fold. Third, the flatten worklist represented multiplicity by
+repeating an identical pointer. These were not PathMap operations: `HashBag<Proc>` is the surface
+parallel-process multiset, whereas target EPathMap remains
+`Empty | Set(PathMap<()>) | Map(PathMap<Par>)`.
+
+The repaired bag maintains the same summary tuple after each mutation. For element $`e`$ and count
+$`c`$, let $`a(e,c)`$ and $`b(e,c)`$ be the two seeded and mixed `FxHasher` lanes used before this
+change. The stored tuple is exactly
+
+```math
+\left(\sum a,\ \sum b,\ \bigoplus \operatorname{rotl}(a,b\bmod 64),\
+\bigoplus \operatorname{rotl}(b,a\bmod 64)\right).
+```
+
+Insertion removes the old-count contribution when present and adds the new-count contribution;
+removal performs the inverse operation. Binding mutations that rebuild keys recompute the tuple
+once. `Hash::hash` still writes `total_count`, distinct count, and those same four lanes in the same
+order, but reads the lanes in constant time. A test-only legacy oracle independently executes the
+superseded whole-bag algorithm after empty, `insert`, `insert_n`, `remove`, and clone transitions and
+observes byte-identical final hashes. A counting-key test observes **zero element-hash calls** from
+two hashes of a completed bag.
+
+The production algorithms are the following. The prose and pseudocode deliberately state ownership
+and multiplicity because those are the two optimizations whose omission caused the slopes.
+
+```text
+MERGE-PARALLEL(left, right):
+    take an owned bag out of each PPar operand, when present
+    retain the larger bag and its allocation
+    insert each (element, count) from only the smaller bag with insert_n
+    if one operand is a leaf, insert only that leaf
+    return PPar(retained bag)
+
+FLATTEN(root, root_count):
+    work := [(root, root_count)]
+    while work is nonempty:
+        (node, multiplicity) := pop(work)
+        if node is PPar:
+            push each child once with multiplicity * child_count
+        else if node is binary parallel syntax:
+            push right, then left, with the same multiplicity
+        else:
+            destination.insert_n(clone(node), multiplicity)
+```
+
+Consequently a completed bag hash changes from $`\Theta(n)`$ element hashes to $`\Theta(1)`$ lane
+writes. A left fold of $`n`$ distinct parallel leaves changes from $`\Theta(n^2)`$ accumulated
+re-insertion to expected $`\Theta(n)`$ hash-table work. A compressed bag walk allocates one job per
+distinct structural child instead of one per occurrence; multiplicity remains exact through checked
+products and `insert_n`.
+
+The recursive merge oracle agrees on the bounded heterogeneous corpus. The restored deep gate runs
+**20,000 consecutive production merges**, plus 20,000-level name, guard, and parallel-infix
+traversals, on a **256 KiB** thread stack. The already-built focused binary passes **2/2** in **0.11
+seconds**, peaks at **39,096 KiB RSS**, and swaps zero bytes. The complete already-built `languages`
+library passes **66/66** in **0.26 seconds**, peaks at **93,440 KiB RSS**, and swaps zero bytes. The
+complete `runtime` verification passes **274 executable tests plus 18 doctests** (one additional
+doctest is ignored), takes **3.57 seconds**, peaks at **440,524 KiB RSS**, and swaps zero bytes.
+
+The root-change eight-job generated build and focused gate completed in **165.62 seconds** at
+**8,004,084 KiB maximum process RSS** inside an 8 GiB, zero-swap service. The final incremental
+multiplicity build completed in **102.31 seconds** at **5,440,660 KiB maximum process RSS** under the
+same cap. These are compiler envelopes, not runtime requirements. Fresh pgmcp analysis covers one of
+one selected file and skips and fails zero files in each case: `receive.rs` accepts 154 call edges
+and reports zero direct or mutual recursion; `runtime.rs` accepts 85 and reports only the still-live
+four-function send-sugar canonicalizer SCC. SS-G18 changes no hash value, multiset, traversal order,
+wire byte, ruled semantic, token charge, EPathMap representation, or PathMap implementation.
 
 ---
 
