@@ -1948,6 +1948,129 @@ mod tests {
         assert!(modes.contains(&("shared".into(), BundleConsensusMode::Consensus)));
     }
 
+    // H-21-COV-1 (Phase 7 whole-review, delivered 2026-08-06):
+    // full-pipeline coverage from a real HOCON string, through
+    // `merge_and_validate` (with actual filesystem validation
+    // against tempdir paths), through `project_bundle`.  Existing
+    // integration coverage (`hocon_parse_then_merge_then_validate_
+    // integration`) only exercises the merge-conflict error path;
+    // `project_bundle_*` bypasses HOCON parsing and validation
+    // entirely by building `FileIoProvisioning` from struct
+    // literals with non-existent `/etc/...` paths.  This test
+    // closes the gap: operator writes HOCON -> parse produces a
+    // real `FileIoProvisioning` -> merge_and_validate walks real
+    // files on disk without error -> project_bundle yields a
+    // Vec<BundleEntry> ready for `GenesisParameters.fs_bundle`
+    // with correct cmodes derived from the operator's bucket
+    // choice.
+    //
+    // Note: HOCON dir keys can't end in `/` (parser rejects), so
+    // dir-bucket entries use non-slash-terminated logical names
+    // here.  The Fs.rho bundle map treats keys as opaque strings
+    // so this doesn't affect deploy-side semantics.
+    #[test]
+    fn hocon_parse_through_project_bundle_full_pipeline_happy_path() {
+        let td = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(td.path()).unwrap();
+
+        // Seed one real file + one real dir per cmode-bucket.
+        let ora_file = root.join("oracle-cfg.json");
+        std::fs::write(&ora_file, b"{}").unwrap();
+        let ora_dir = root.join("oracle-data");
+        std::fs::create_dir(&ora_dir).unwrap();
+
+        let con_file = root.join("consensus-genesis.rho");
+        std::fs::write(&con_file, b"Nil").unwrap();
+        let con_dir = root.join("consensus-shard-state");
+        std::fs::create_dir(&con_dir).unwrap();
+
+        // Realistic HOCON block spanning all four buckets.
+        // Note: dir keys use spec §1245's trailing-slash convention
+        // where legal, but HOCON strips the trailing `/` on the
+        // parse side unless the key is quoted with the `/`
+        // preserved -- so we use unslashed names here to keep the
+        // assertion set matching what the parser produces.
+        let hocon_text = format!(
+            r#"
+            oracle-static-files {{
+              "app-config" = {{ path = "{ora_file}", mode = "r" }}
+            }}
+            oracle-static-dirs {{
+              "app-data" = {{ path = "{ora_dir}", mode = "rw" }}
+            }}
+            consensus-static-files {{
+              "genesis-src" = {{ path = "{con_file}", mode = "r" }}
+            }}
+            consensus-static-dirs {{
+              "shard-state" = {{ path = "{con_dir}", mode = "rw" }}
+            }}
+            "#,
+            ora_file = ora_file.display(),
+            ora_dir = ora_dir.display(),
+            con_file = con_file.display(),
+            con_dir = con_dir.display(),
+        );
+
+        // Stage 1: HOCON parse.  Any lexer / deserialize failure
+        // fails the test with a clear message.
+        let cfg: FileIoProvisioning = hocon::HoconLoader::new()
+            .load_str(&hocon_text)
+            .expect("HOCON load")
+            .resolve()
+            .expect("HOCON resolve to FileIoProvisioning");
+
+        // Pin the four-bucket parse before merge validates.
+        assert_eq!(cfg.oracle_static_files.len(), 1);
+        assert_eq!(cfg.oracle_static_dirs.len(), 1);
+        assert_eq!(cfg.consensus_static_files.len(), 1);
+        assert_eq!(cfg.consensus_static_dirs.len(), 1);
+
+        // Stage 2: merge + boot validation against real filesystem.
+        let merged = merge_and_validate(cfg, vec![], vec![], vec![], vec![])
+            .expect("merge_and_validate with real tempdir files must succeed");
+
+        // Stage 3: project into the shape genesis consumes.
+        let bundle = project_bundle(&merged);
+        assert_eq!(
+            bundle.len(),
+            4,
+            "expected one entry per bucket; got {bundle:?}"
+        );
+
+        // Bundle is sorted by (bucket-index, logical_name) then
+        // stably by cmode+canon_path (M-P7-4 tie-break).  Verify
+        // by logical_name lookup rather than positional to keep
+        // the assertion robust to sort-key drift.
+        let by_name: std::collections::HashMap<&str, &BundleEntry> = bundle
+            .iter()
+            .map(|e| (e.logical_name.as_str(), e))
+            .collect();
+
+        let ora_f = by_name["app-config"];
+        assert!(matches!(ora_f.kind, BundleEntryKind::File));
+        assert_eq!(ora_f.consensus_mode, BundleConsensusMode::Oracular);
+        assert_eq!(ora_f.canon_path, ora_file);
+        assert_eq!(ora_f.mode, "r");
+
+        let ora_d = by_name["app-data"];
+        assert!(matches!(ora_d.kind, BundleEntryKind::Dir));
+        assert_eq!(ora_d.consensus_mode, BundleConsensusMode::Oracular);
+        assert_eq!(ora_d.canon_path, ora_dir);
+        assert_eq!(ora_d.mode, "rw");
+
+        let con_f = by_name["genesis-src"];
+        assert!(matches!(con_f.kind, BundleEntryKind::File));
+        assert_eq!(con_f.consensus_mode, BundleConsensusMode::Consensus);
+        assert_eq!(con_f.canon_path, con_file);
+        assert_eq!(con_f.mode, "r");
+
+        let con_d = by_name["shard-state"];
+        assert!(matches!(con_d.kind, BundleEntryKind::Dir));
+        assert_eq!(con_d.consensus_mode, BundleConsensusMode::Consensus);
+        assert_eq!(con_d.canon_path, con_dir);
+        assert_eq!(con_d.mode, "rw");
+    }
+
     // NT-26-17 review fix: empty-bucket variant coverage.
     #[test]
     fn project_bundle_only_two_buckets_populated() {

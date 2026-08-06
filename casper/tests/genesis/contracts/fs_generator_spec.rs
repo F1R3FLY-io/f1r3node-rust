@@ -285,3 +285,147 @@ in {{
         .await
         .expect("populated-bundle FsGenerator spec failed");
 }
+
+/// H-26-COV-1 (Phase 7 whole-review, delivered 2026-08-06):
+/// consensus-cmode routing observable at the Rholang API surface.
+///
+/// The prior end-to-end test
+/// (`fs_generator_populated_bundle_installs_and_dispatches`) only
+/// exercised an `Oracular` cap: the tempdir file was declared under
+/// `oracle-static-files` -> `BundleConsensusMode::Oracular` ->
+/// `cmode="oracular"` at every layer.  Slice 26's consensus-mode
+/// routing (`resolve_cmode`, chown/chmod short-circuits, stat
+/// field-omission) was covered at unit level (15 `resolve_cmode`
+/// tests + 4 `stat_record` tests + 9 in-process Rholang integration
+/// tests in `file_dir_check.rs` using mock syscalls), but no test
+/// proved that the FULL pipeline — operator config's
+/// `consensus-static-files` bucket declaration -> project_bundle ->
+/// genesis composition -> user deploy -> File cap's cmode-P cell ->
+/// method dispatch — actually routes to the consensus branch.
+///
+/// This test closes the gap: build a Genesis whose `fs_bundle`
+/// includes a `BundleConsensusMode::Consensus` entry (as though the
+/// operator declared `consensus-static-files { ... }` in HOCON), open
+/// the cap from user Rholang, and observe that `File.chmod` returns
+/// the Consensus-branch error message rather than proceeding to the
+/// write-mode gate.
+///
+/// The chmod-on-consensus branch (Slice 29 H-29-3 review fix) is
+/// checked BEFORE the write-mode gate, so it fires even for an
+/// "r"-mode cap — proving the cmode plumbed all the way through
+/// (File.constructor's `@cmode` param -> `*cmodeP` cell -> chmod's
+/// `for (@cmode <<- ...)` peek) rather than defaulting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_generator_consensus_cmode_routes_through_native_dispatch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("consensus.dat");
+    std::fs::write(&file_path, b"consensus payload").expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    // The critical difference vs. H-P7-8-E2E: `Consensus` cmode.
+    // Everything else (kind=File, mode="r", real tempdir file) is
+    // identical so any behavior divergence is attributable to cmode
+    // routing alone.
+    let entry = BundleEntry::try_new(
+        "consensus-cap".to_string(),
+        canon.clone(),
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_openfile_consensus_returns_cap,
+  test_chmod_on_consensus_cap_short_circuits
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("Fs.openFile on consensus-cmode name returns [true, cap]",
+         *test_openfile_consensus_returns_cap),
+        ("File.chmod on consensus cap short-circuits with FSERR_UNSUPPORTED",
+         *test_chmod_on_consensus_cap_short_circuits)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+
+    // Test A: prove the openFile happy-path works even for a
+    // Consensus cap — same syscall chain as the Oracular test but
+    // through the consensus arm of resolve_cmode in fs_stat +
+    // fs_open native handlers.
+    contract test_openfile_consensus_returns_cap(rhoSpec, _, ackCh) = {{
+      for(@reply <- @fs!?("openFile", "consensus-cap", {{}})) {{
+        match reply {{
+          [true, _cap] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "openFile on consensus-cap returns [true, cap]", *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", (reply, "==", "[true, cap] shape"),
+              "openFile on consensus-cap returns [true, cap]", *ackCh)
+          }}
+        }}
+      }}
+    }} |
+
+    // Test B: the payoff — chmod on a Consensus cap must return
+    // FSERR_UNSUPPORTED via the Slice-29 H-29-3 short-circuit
+    // ("chmod not supported on consensus caps ...").  That message
+    // only fires if `*cmodeP` holds "consensus" at cmod-check time
+    // (File.rho line 462).  If cmode had defaulted to "oracular"
+    // anywhere in the chain (BundleEntry -> format_bundle ->
+    // openFileImpl -> File constructor -> cmodeP cell), we'd
+    // instead hit the write-mode gate ("chmod requires a
+    // write-capable mode") since our file is provisioned "r".
+    // Distinguishing the two error strings is what proves the
+    // consensus cmode plumbed end-to-end.
+    contract test_chmod_on_consensus_cap_short_circuits(rhoSpec, _, ackCh) = {{
+      for(@[true, fileCap] <- @fs!?("openFile", "consensus-cap", {{}})) {{
+        for(@r <- @fileCap!?("chmod", "rw-r--r--")) {{
+          match r {{
+            [false, "FSERR_UNSUPPORTED", msg] => {{
+              // Match on the specific consensus-branch message;
+              // both branches return FSERR_UNSUPPORTED but with
+              // distinct clues, so we pin the consensus one.
+              rhoSpec!("assert", (msg.slice(0, 12), "==", "chmod not su"),
+                "chmod on consensus cap short-circuits with the H-29-3 message", *ackCh)
+            }}
+            _ => {{
+              rhoSpec!("assert", (r, "==", "[false, FSERR_UNSUPPORTED, consensus-branch msg]"),
+                "chmod on consensus cap short-circuits with the H-29-3 message", *ackCh)
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FsGeneratorConsensusCmodeSpec".to_string(),
+    )
+    .expect("compile consensus-cmode test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("consensus-cmode FsGenerator spec failed");
+}
