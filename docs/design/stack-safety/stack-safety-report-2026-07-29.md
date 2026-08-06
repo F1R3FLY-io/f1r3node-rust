@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@44f899b8` (recursive-carrier lifecycle plus operational and guard closure; §5.18)
+**Companion decision head** `mettail-rust@5cd89526` (recursive-carrier lifecycle plus operational, guard, and direct receive-traversal closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -33,8 +33,10 @@ recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer resi
 genuine production recursion cluster in `rholang-runtime/src/guard_par_substrate.rs`: formula
 construction, opaque-atom substitution, operand normalization, and bound-value substitution.
 `mettail-rust@44f899b8` applies the corresponding ordered formula and operand machines to the
-surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`; the remaining surface
-receive and canonicalization families remain live. No production path uses `contains_par`,
+surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`.
+`mettail-rust@5cd89526` closes the direct name, quote, three-valued guard-disposition, and parallel-
+flattening traversals in `languages/src/rholang/receive.rs`; its heterogeneous collection-pattern
+matcher remains live. No production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -118,6 +120,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G13** | `mettail-rust@580896f3` | mettail | lowered guard operands: optional-`Par` dispatch, integer-form normalization, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.15 s / 113,112 KiB** | **yes for the operand SCC**; ordered variable interning and failure classes preserved | [5.18.12](#51812-lowered-guard-operand-closure-ss-g13) |
 | **SS-G14** | `mettail-rust@fec84ffb` | mettail | bound-`Par` substitution through evaluator-owned guard positions | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.20 s / 131,632 KiB** | **yes**; every genuine production SCC in `guard_par_substrate.rs` is closed | [5.18.13](#51813-lowered-guard-bound-substitution-closure-ss-g14) |
 | **SS-G15** | `mettail-rust@44f899b8` | mettail | surface `Proc` guard formulas and operands: connectives, ordered variable/opaque allocation, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.03 s / 29,560 KiB** | **yes**; zero genuine production recursion in surface `guard_substrate.rs` | [5.18.14](#51814-surface-rholang-guard-closure-ss-g15) |
+| **SS-G16** | `mettail-rust@5cd89526` | mettail | direct surface receive traversals: parenthesized-name conversion, quote normalization, three-valued guard disposition, and nested parallel flattening | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.05 s / 30,960 KiB** | **yes for the named direct traversals**; collection-pattern matcher remains live | [5.18.15](#51815-direct-surface-receive-traversal-closure-ss-g16) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3261,6 +3264,43 @@ source-derived analysis reports zero genuine direct or mutual recursion in the f
 lowered encoder, its sole residual is the imported `static_verdict` free function being mistaken
 for a same-named method self-call. SS-G15 changes no PathMap source, wire bytes, guard verdict,
 ruled semantics, or token metering.
+
+#### 5.18.15 Direct surface receive-traversal closure [SS-G16]
+
+`mettail-rust@5cd89526` removes four depth-proportional host traversals from
+`languages/src/rholang/receive.rs`. Parenthesized name-pattern conversion now unwraps grouping in a
+loop. Quote normalization counts that same spine, normalizes its leaf once, and rebuilds the exact
+number of `NParen` wrappers iteratively. The three-valued guard evaluator uses `Visit`, binary
+continuation, and negation jobs; a continuation observes the left result before it schedules the
+right operand, retaining the former left-strict short circuit for conjunction, disjunction, and
+material implication. Parallel flattening uses a reference worklist and inserts only leaf values
+into the destination bag.
+
+The parallel bag iterator's order is arbitrary but stable for one bag observation. The driver
+therefore appends each multiplicity-expanded group to the worklist and reverses only that new slice:
+last-in/first-out execution sees the same order as the superseded recursive loop. Binary parallel
+syntax pushes right before left, so it also executes left first. This is a syntax-tree bag traversal,
+not an EPathMap conversion: it neither projects nor reconstructs a target `PathMap<()>` or
+`PathMap<Par>`, and no PathMap source is changed.
+
+Bounded recursive equations live only under `languages/tests/support/`. The shallow differential
+corpus compares all four drivers, including decided, declining, and short-circuit guard rows and a
+mixed bag/infix parallel tree. The deep gate exercises **20,000** name parentheses, negations, and
+parallel-infix nodes on a **256 KiB** thread stack. The already-built focused binary passes **2/2**
+in **0.05 seconds**, peaks at **30,960 KiB RSS**, and swaps zero bytes. The complete already-built
+`languages` library passes **64/64** in **0.17 seconds**, peaks at **54,484 KiB RSS**, and swaps zero
+bytes, both inside 1 GiB scopes.
+
+Compilation is recorded separately: the eight-job generated-source build and focused gate completed
+in **118.13 seconds** at **6,566,532 KiB maximum process RSS** inside an 8 GiB, zero-swap service.
+That number is the compiler envelope and is not assigned to the runtime PDA. A fresh per-file pgmcp
+`analyze_code` request accepted `receive.rs` but exhausted the service's fixed 30-second response
+window, so SS-G16 does not claim file-wide SCC closure from an absent result. The collection-pattern
+matcher is independently known to remain recursive and is the next receive slice.
+
+SS-G16 preserves name grouping, normalized quote shape, guard verdicts and refusal order, bag
+multiplicity, and parallel leaf order. It changes no wire bytes, acceptance rule, ruled semantic,
+token-metering rule, target EPathMap representation, or PathMap implementation.
 
 ---
 
