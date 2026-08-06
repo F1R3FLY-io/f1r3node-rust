@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@e3f2812f` (recursive-carrier lifecycle plus operational decision closure; §5.18)
+**Companion decision head** `mettail-rust@338d8263` (recursive-carrier lifecycle plus operational and Rholang inference closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -25,8 +25,10 @@ production Rust files, derives **84** recursively owned types in **80** componen
 recursive derive or implicit-`Drop` exposures. That lifecycle result does **not** close the wider
 function-call strongly connected component (SCC) census. `mettail-rust@e0086c93` subsequently closes
 the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry with one heap-frame decision
-executor; the non-term-family census and lifecycle-census mutation calibration remain live work
-(§5.18.6, §8.5). No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+executor. `mettail-rust@338d8263` additionally closes the Rholang type-inference variable-use and
+receive-collection SCCs; the remaining non-term-family census and lifecycle-census mutation
+calibration remain live work (§5.18.6, §8.5). No production path uses `contains_par`,
+`RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -103,6 +105,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
 | **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; zero-state gate `ce60f76f` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **84 types / 80 components / 542 files / zero lifecycle exposures** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
 | **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
+| **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; wider call-SCC census remains open | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -2984,9 +2987,10 @@ This row closes the **named lifecycle and weighted-MSO operations**, not every p
 SS-G9 subsequently closes the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry that the
 lifecycle census cannot see. Two concrete obligations remain live:
 
-- The wider source-call census still has to close confirmed non-term-family SCCs in Rholang type
-  inference, LTL parsing and walkers, and the guard-substrate operand grammar, then re-derive the whole
-  workspace rather than treating this list as exhaustive.
+- The wider source-call census still has to close confirmed non-term-family SCCs in LTL parsing and
+  walkers and the guard-substrate operand grammar, then re-derive the whole workspace rather than
+  treating this list as exhaustive. Rholang type inference is closed by
+  [SS-G10](#5189-rholang-type-inference-closure-ss-g10).
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
 
@@ -3074,6 +3078,35 @@ remaining call-SCC and performance obligations are explicit: the non-term-family
 lifecycle mutation calibration remain open, while the list evaluator still needs a paired
 production-shaped comparison against the compiled symbolic finite-automaton lane before it can be
 called time-optimal.
+
+#### 5.18.9 Rholang type-inference closure [SS-G10]
+
+`mettail-rust@338d8263` replaces two input-shaped recursive regions in
+`languages/src/rholang/type_inference.rs` with explicit heap worklists. The first driver spans the
+mutually recursive `Proc`, `Name`, `InputBind`, and `ForRow` variable-use predicates in both name and
+process modes. The second collects receive-bound variables without recursively descending through
+receive patterns or continuations. Children are pushed in reverse source order, so the worklist
+observes the same left-to-right order as the former recursive descent.
+
+The receive continuation is represented by a range over the existing row slice. The machine pushes
+those rows directly instead of cloning a suffix into a temporary `PForUser`; this removes a
+quadratic suffix-materialization path while preserving the prior predicate and collection results.
+A recursive oracle exists only under `languages/tests/support/`. Eight shallow receive cases compare
+the exact ordered `(name, type)` output, while a depth-20,000 continuation completes on a **256 KiB**
+native thread stack. The already-built focused gate completes in **0.05 seconds** at
+**36,428 KiB maximum RSS** with zero swap.
+
+The same checkpoint repairs the generator boundary exposed by the earlier iterative `ActionArg`
+destructor. Consuming `BinderScope` and identifier accessors use `ManuallyDrop` plus `ptr::read`, so
+generated binder code can move the selected payload without illegally destructuring a type with a
+custom `Drop` implementation. The source generator owns this change; no generated artifact is
+edited. Focused `ActionArg` tests pass **3/3**, the complete `prattail` library passes
+**3,640/3,640**, and the macro binder/code-generation lifecycle tests pass. This is a source and
+lifecycle compatibility repair, not a wire-format, acceptance, ruled-semantic, or token-metering
+change.
+
+The wider non-term-family call-SCC census and lifecycle mutation calibration remain open. No claim in
+SS-G10 closes those obligations, and no PathMap source was changed.
 
 ---
 
