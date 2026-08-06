@@ -137,7 +137,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G20** | `mettail-rust@c875ab94` | mettail | AST grammar-shape `syn::Expr` walks, regex token rendering, and compact token-tree encode/decode | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; nested codec copy work $`\Theta(d^2) \rightarrow \Theta(d)`$; three **20,000**-depth gates on **256 KiB** | **yes**; zero production direct or mutual recursion in all three files | [5.18.19](#51819-ast-grammar-and-token-codec-closure-ss-g20) |
 | **SS-G21** | `mettail-rust@aebba39b` | mettail | REPL observation de-reflection: constructor/lambda/bag surface rendering, free-name collection, and Peano decoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; unary-spine string copying $`\Theta(d^2) \rightarrow \Theta(d)`$; bound lookup $`\Theta(d) \rightarrow O(1)`$; **20,000** levels on **256 KiB** | **yes**; renderer SCC and three direct functions absent from the fresh production call graph | [5.18.20](#51820-observation-surface-de-reflection-closure-ss-g21) |
 | **SS-G22** | `mettail-rust@0dc135a4` | mettail | PraTTaIL LTL precedence parser: implication, disjunction, conjunction, temporal operators, unary prefixes, and parenthesized primaries | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(t)`$ time and heap for $`t`$ tokens; four **20,000**-depth gates on **256 KiB** | **yes**; six-function parser SCC and three direct-recursion findings absent from the fresh production call graph | [5.18.21](#51821-ltl-precedence-parser-closure-ss-g22) |
-| **SS-G23** | `mettail-rust@6e0e414a` | mettail | reflected metadata rendering: mutually recursive `Pattern`/`PatternTerm` and `SyntaxExpr`/`PatternOp` families | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; direct output $`\Theta(n+b)`$ time and $`O(d+b)`$ heap for $`n`$ nodes and $`b`$ output bytes; three **20,000**-depth gates on **256 KiB** | **yes**; both renderer SCCs absent from the fresh production call graph | [5.18.22](#51822-reflected-metadata-renderer-closure-ss-g23) |
+| **SS-G23** | `mettail-rust@6e0e414a`, `2286ac57` | mettail | reflected metadata rendering: mutually recursive `Pattern`/`PatternTerm` and `SyntaxExpr`/`PatternOp` families plus recursive `TypeExpr` spelling | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; direct output $`\Theta(n+b)`$ time and $`O(d+b)`$ heap for $`n`$ nodes and $`b`$ output bytes; four **20,000**-depth gates on **256 KiB** | **yes**; zero direct or mutual recursion remains in `metadata.rs` | [5.18.22](#51822-reflected-metadata-renderer-closure-ss-g23) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3723,19 +3723,21 @@ fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, or enlarged-stack dependen
 
 #### 5.18.22 Reflected-metadata renderer closure [SS-G23]
 
-`mettail-rust@6e0e414a` replaces two mutually recursive metadata-rendering families in
+`mettail-rust@6e0e414a` and `2286ac57` replace the recursive metadata-rendering families in
 `macros/src/gen/runtime/metadata.rs` with explicit job machines. The first family rendered
 `SyntaxExpr` through `PatternOp`; the second rendered `Pattern` through `PatternTerm`, constructor
-syntax rules, grammar items, collection separators, and lambda-aware metavariable substitution.
-Both traversals were controlled by grammar or pattern depth and therefore placed unbounded source
+syntax rules, grammar items, collection separators, and lambda-aware metavariable substitution. The
+remaining direct traversal rendered nested `TypeExpr` values for reflected field metadata. All three
+paths were controlled by grammar, pattern, or type depth and therefore placed unbounded source
 nesting on the native call stack.
 
 Each replacement appends into one output `String`. Its last-in-first-out job stack stores borrowed
 nodes, punctuation, binding-power continuations, and the small amount of lambda state needed to
 resume a constructor-syntax rule. Child renderings are not materialized as intermediate strings.
 The former per-node vector of child binding powers is represented by the constant-size
-`ChildBpPolicy` enum, which computes a slot's inherited binding power on demand. In literate
-pseudocode, both machines have the same kernel:
+`ChildBpPolicy` enum, which computes a slot's inherited binding power on demand. `TypeExpr` uses the
+same direct-output architecture with a smaller `Visit`/`Text` job enum. In literate pseudocode, the
+machines have the same kernel:
 
 ```text
 RENDER(root):
@@ -3764,21 +3766,26 @@ The superseded equations live only in
 pattern and both sides of every bundled equation and rewrite, then checks bounded mixed nested
 patterns and operations. Independent deep gates render **20,000** precedence-bearing constructor
 applications, **20,000** mixed `Pattern`/`PatternTerm` wrappers, and **20,000** optional syntax
-operations on a **256 KiB** thread stack. The three differential/deep tests pass in **0.28 seconds**
-with **61,028 KiB** maximum resident set size (RSS), and the 14 established metadata tests pass in
-**0.42 seconds** with **132,160 KiB** maximum RSS; both ran in 512 MiB cgroups with swap disabled.
+operations and one **20,000**-level mixed `TypeExpr` chain on a **256 KiB** thread stack. The four
+differential/deep tests pass in **0.31 seconds** with **63,656 KiB** maximum resident set size (RSS),
+and the 14 established metadata tests pass in **0.42 seconds** with **128,976 KiB** maximum RSS; both
+ran in 512 MiB cgroups with swap disabled.
 
-Fresh pgmcp whole-project production analysis reports **109** direct and **9** mutual recursion
+Fresh pgmcp whole-project production analysis reports **107** direct and **9** mutual recursion
 findings, down from **110/11** before SS-G23. The removed mutual entries are the six-member
-pattern/grammar renderer component and the three-member syntax-operation component. The full macros
-test binary reaches **467 passing, 2 ignored**, but its repository-wide gate remains red on three
+pattern/grammar renderer component and the three-member syntax-operation component; the removed
+direct entries are `render_pattern`, `type_expr_to_string`, and the test-only
+`equal_modulo_transparent` comparator that the analyzer conservatively counted because it lived in a
+production file. That bounded comparator now lives under `macros/tests/support`, in accordance with
+its oracle role. No direct or mutual recursion finding remains in `metadata.rs`. The full macros test
+binary reaches **468 passing, 2 ignored**, but its repository-wide gate remains red on three
 pre-existing corpus/census assertions outside this renderer: the generatability ledger tuple, the
 fold-rule census floor, and a withholding fixture parse. Running serially reproduces the same three
 failures, while every renderer-specific and established metadata test remains green; this report does
 not misstate that wider baseline as a passing gate.
 
-SS-G23 is an exact-output compile-time traversal conversion. Its recursive oracle pins the complete
-rendered byte strings, so it changes no generated term, reduction, communication event (COMM)
+SS-G23 is an exact-output compile-time traversal conversion. Its recursive oracles pin the complete
+rendered byte strings, including every `TypeExpr` variant, so it changes no generated term, reduction, communication event (COMM)
 schedule, canonical byte, charge, EPathMap representation, or PathMap operation. It adds no
 production recursive fallback, traversal cap, `RUST_MIN_STACK`, `stacker`, or enlarged-stack
 dependency.
