@@ -330,8 +330,62 @@ pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
                 entry.canon_path
             )
         });
+        // Slice 30c H-P7-8 fix: split the (canonRoot, rel) tuple
+        // differently by kind so `Fs.openFile`'s downstream
+        // `safe_descend` has a leaf to walk.
+        //
+        // Pre-fix (all entries): emitted `(canon_path, "")`.  For
+        // FILE entries, that made `openFileImplInner` call
+        // `fs_stat(canon_path, "", ...)` → `safe_descend(root, "")`
+        // → `QuarantineError::Empty` → "empty relative path".
+        // Every consensus/oracle-static-file entry silently failed
+        // to open in production.
+        //
+        // Post-fix:
+        //   - FILE entries: emit `(parent_dir, filename)`.
+        //     `fs_stat(parent, filename, ...)` gives safe_descend a
+        //     real leaf; the syscall lands on the file.
+        //   - DIR  entries: keep `(canon_path, "")` — Dir caps root
+        //     ON the provisioned path, not inside it.  Nested
+        //     `Dir.openFile("child")` uses `openFileImpl(canonRoot=dir,
+        //     subPath="", rel="child", ...)` which is already correct.
+        //
+        // The operator-facing bundle shape is unchanged (still
+        // `{"logical": (root, rel, mode, kind, cmode)}`); only the
+        // interpretation of the (root, rel) split differs by kind.
+        let (root_str, rel_str) = match entry.kind {
+            BundleEntryKind::File => {
+                let parent = entry
+                    .canon_path
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: file entry `{}` has no parent \
+                         directory or non-UTF-8 parent; canon_path = {:?}.  \
+                         Slice 25 requires absolute paths so this indicates \
+                         upstream validator drift.",
+                            entry.logical_name, entry.canon_path
+                        )
+                    });
+                let filename = entry
+                    .canon_path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: file entry `{}` has no \
+                             file_name component or non-UTF-8 name; canon_path = {:?}",
+                            entry.logical_name, entry.canon_path
+                        )
+                    });
+                (parent.to_string(), filename.to_string())
+            }
+            BundleEntryKind::Dir => (path_str.to_string(), String::new()),
+        };
         let name = rholang_string_escape(&entry.logical_name);
-        let path = rholang_string_escape(path_str);
+        let root = rholang_string_escape(&root_str);
+        let rel = rholang_string_escape(&rel_str);
         let mode = rholang_string_escape(&entry.mode);
         let kind = match entry.kind {
             BundleEntryKind::File => "file",
@@ -339,14 +393,13 @@ pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
         };
         let cmode = entry.consensus_mode.as_str();
         // ("canonRoot", "rel", "provisioned", "kind", "cmode") —
-        // rel is empty at projection time.  Cap consumers derive
-        // relative subpaths from the caller's rel argument on
-        // openFile/openDir.  `cmode` (slice 26) is
+        // slice 30c H-P7-8: for File entries (parent, filename);
+        // for Dir entries (canon_path, "").  `cmode` (slice 26) is
         // "oracular"/"consensus" — routed by Fs.rho into the
         // File/Dir constructor and back into native chown/stat/
         // entries dispatch.
         out.push_str(&format!(
-            r#""{name}": ("{path}", "", "{mode}", "{kind}", "{cmode}")"#
+            r#""{name}": ("{root}", "{rel}", "{mode}", "{kind}", "{cmode}")"#
         ));
     }
     out.push('}');
@@ -844,9 +897,14 @@ mod tests {
             mode: "r".into(),
             consensus_mode: BundleConsensusMode::Oracular,
         }];
+        // Slice 30c H-P7-8: file entries now split canon_path into
+        // (parent_dir, filename).  So `/etc/cfg` becomes
+        // `("/etc", "cfg", ...)` instead of `("/etc/cfg", "", ...)`.
+        // This gives Fs.openFile's downstream safe_descend a real
+        // leaf to walk.
         assert_eq!(
             format_bundle_for_rholang(&b),
-            r#"{"cfg": ("/etc/cfg", "", "r", "file", "oracular")}"#
+            r#"{"cfg": ("/etc", "cfg", "r", "file", "oracular")}"#
         );
     }
 
@@ -900,10 +958,16 @@ mod tests {
 
     #[test]
     fn format_bundle_escapes_quote_and_backslash() {
+        // Slice 30c H-P7-8: use a Dir entry here so the canon_path
+        // (with its escapable chars) stays intact through the
+        // formatter — File entries now split into parent+filename
+        // which would put the escapable chars in whichever half
+        // contains them (parent or filename), obscuring the escape
+        // test's intent.  Dir keeps canon_path in the root slot.
         let b = [BundleEntry {
             logical_name: r#"has"quote"#.into(),
             canon_path: PathBuf::from(r"/back\slash"),
-            kind: BundleEntryKind::File,
+            kind: BundleEntryKind::Dir,
             mode: "r".into(),
             consensus_mode: BundleConsensusMode::Oracular,
         }];
@@ -926,11 +990,12 @@ mod tests {
             consensus_mode: BundleConsensusMode::Oracular,
         }];
         let src = compose_fs_genesis_source("00", "00", &b);
-        // The composed source's Fs!?(...) call should carry the
-        // formatted bundle, not `{}`.
+        // Slice 30c H-P7-8: File entries split into
+        // (parent_dir, filename), so `/etc/myapp/theme.json`
+        // becomes `("/etc/myapp", "theme.json", ...)`.
         assert!(
             src.contains(
-                r#"Fs!?(0, 1, 2, {"cfg/theme.json": ("/etc/myapp/theme.json", "", "r", "file", "oracular")})"#
+                r#"Fs!?(0, 1, 2, {"cfg/theme.json": ("/etc/myapp", "theme.json", "r", "file", "oracular")})"#
             ),
             "bundle not injected into Fs!? call:\n{src}"
         );
@@ -1231,12 +1296,14 @@ mod tests {
             },
         ];
         let out = format_bundle_for_rholang(&b);
+        // Slice 30c H-P7-8: Dir stays (canon_path, ""); File splits.
+        // Here `/o` has parent `/` and filename `o`.
         assert!(
             out.contains(r#""con": ("/c", "", "rw", "dir", "consensus")"#),
             "consensus tuple missing: {out}"
         );
         assert!(
-            out.contains(r#""orc": ("/o", "", "r", "file", "oracular")"#),
+            out.contains(r#""orc": ("/", "o", "r", "file", "oracular")"#),
             "oracular tuple missing: {out}"
         );
     }
@@ -1272,8 +1339,10 @@ mod tests {
         // appear in the composed source, in the correct 5th-position
         // syntactic slot.  A template regression that hard-coded
         // `"oracular"` would still compile — this test catches that.
+        // Slice 30c H-P7-8: File entries split into (parent, filename).
+        // Dirs stay (canon_path, "").
         assert!(
-            src.contains(r#"("/etc/orc", "", "rw", "file", "oracular")"#),
+            src.contains(r#"("/etc", "orc", "rw", "file", "oracular")"#),
             "oracular 5-tuple missing from composed source:\n{src}"
         );
         assert!(
