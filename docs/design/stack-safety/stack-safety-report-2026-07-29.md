@@ -23,9 +23,10 @@ recursion census finds **585** recursive components, **50** term-family componen
 has no unmeasured traversal. A separate lifecycle gate at `mettail-rust@ce60f76f` scans **542**
 production Rust files, derives **84** recursively owned types in **80** components, and reports zero
 recursive derive or implicit-`Drop` exposures. That lifecycle result does **not** close the wider
-function-call strongly connected component (SCC) census: operational `AnyAlgebra::{is_satisfiable,witness}` re-entry and the
-non-term-family census remain live
-work (§5.18.6, §8.5). No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+function-call strongly connected component (SCC) census. `mettail-rust@e0086c93` subsequently closes
+the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry with one heap-frame decision
+executor; the non-term-family census and lifecycle-census mutation calibration remain live work
+(§5.18.6, §8.5). No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -101,7 +102,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
 | **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; zero-state gate `ce60f76f` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **84 types / 80 components / 542 files / zero lifecycle exposures** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
-| **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f` | mettail | one cross-combinator `AnyAlgebra::evaluate` continuation; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **partial call-SCC closure** — `AnyAlgebra::{is_satisfiable,witness}` remain | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
+| **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -258,7 +259,7 @@ register rows (SS-C5…SS-C11, SS-Y6) and the stack-safety consequences.
   - [8.2 The derived `Drop` — the refuted direct route, and the route taken](#82-the-derived-drop--the-refuted-direct-route-and-the-route-taken)
   - [8.3 `<Par as Clone>::clone` — closed](#83-par-as-cloneclone--closed)
   - [8.4 The one heap measurement that remains unobtainable](#84-the-one-heap-measurement-that-remains-unobtainable)
-  - [8.5 The `mettail-rust` measured-slope registry — zero measured slopes, operational recursion still open](#85-the-mettail-rust-measured-slope-registry--zero-measured-slopes-operational-recursion-still-open)
+  - [8.5 The `mettail-rust` measured-slope registry — zero measured slopes, wider SCC census still open](#85-the-mettail-rust-measured-slope-registry--zero-measured-slopes-wider-scc-census-still-open)
 - [8.6 The issue-keyed residuals, at their final dispositions](#86-the-issue-keyed-residuals-at-their-final-dispositions)
   - [8.6.1 ★★ #162/#189 — the eleven generated drivers converted, and the root cause that unifies #154 with #162](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)
   - [8.6.2 The group-skip trap — why the read cap had to outlive the reader](#862-the-group-skip-trap--why-the-read-cap-had-to-outlive-the-reader)
@@ -2980,23 +2981,22 @@ $`2^{64}`$ masks after saturation.
 #### 5.18.6 What is still recursive
 
 This row closes the **named lifecycle and weighted-MSO operations**, not every production call SCC.
-Two concrete obligations remain live:
+SS-G9 subsequently closes the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry that the
+lifecycle census cannot see. Two concrete obligations remain live:
 
-- `AnyAlgebra::{is_satisfiable,witness}` enters generic product, sum, list, bag, tree, and
-  map algebras whose inner algebra can synchronously call `AnyAlgebra` again. The current lifecycle
-  census cannot see that operational recursion.
 - The wider source-call census still has to close confirmed non-term-family SCCs in Rholang type
   inference, LTL parsing and walkers, and the guard-substrate operand grammar, then re-derive the whole
   workspace rather than treating this list as exhaustive.
+- The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
+  demonstrates an exact RED result for its file and type.
 
 The `AnyAlgebra::evaluate` and KAT-equivalence obligations originally recorded here are closed by
 [SS-G9](#5188-post-census-operational-decision-closure-ss-g9); they remain in this living report as
 negative-result and equivalence evidence, not open work.
 
 Recursive functions retained under `tests/` are bounded reference oracles, not production
-fallbacks. The lifecycle gate itself also lacks a mutation calibration that injects a known-bad
-recursive derive; that anti-vacuity obligation remains open even though the current zero-state scan
-is nonempty.
+fallbacks. The mutation-calibration residual remains open even though the current zero-state scan is
+nonempty.
 
 #### 5.18.7 Anti-vacuity
 
@@ -3015,7 +3015,7 @@ coverage but not proof that every edge-classification branch is non-vacuous.
 
 #### 5.18.8 Post-census operational decision closure [SS-G9]
 
-Two subsequent checkpoints close two of §5.18.6's operational obligations without changing the
+Three subsequent checkpoints close the named §5.18.6 operational obligations without changing the
 source-derived lifecycle population. `mettail-rust@8b4644e8` replaces synchronous
 `AnyAlgebra::evaluate` re-entry with one typed continuation driver spanning the outer Boolean
 structure and product, sum, list/regular-expression, bag, map, and ranked-tree semantics. The list
@@ -3034,6 +3034,24 @@ witness does not allocate its complete truth table. The compatibility function n
 `check_equivalence_bounded` now preserves source compatibility but intentionally performs the exact
 decision; its numeric argument cannot alter the verdict.
 
+`mettail-rust@e0086c93` closes the remaining `AnyAlgebra::{is_satisfiable,witness}` call cycle with a
+single explicit heap-frame executor. A parent decision future yields an owned inner-algebra query to
+a `DecisionOracle`; the executor parks that parent on a `Vec`, pushes the requested child future, and
+delivers the completed value before polling the parent again. Product and sum predicates compile to
+consuming postorder plans. List and ranked-tree decisions use detached symbolic automata whose guards
+yield through the same oracle rather than owning or cloning an `AnyAlgebra`. Bag and map Boolean
+combinations retain the exact minterm/count solver, while a single count atom takes a direct path that
+does not construct a positive/negative minterm partition.
+
+The direct collection lane and last-use moves are performance requirements, not cosmetic details. A
+rejected intermediate retained whole nested predicate and witness suffixes while expanding an
+epsilon-NFA edge, a tree payload, and a single map value. It remained stack-safe and peaked at only
+59,476 KiB, but the depth-20,000 gate was still CPU-bound when interrupted after **141.38 seconds**.
+Moving the final owner at those boundaries makes the same gate complete in **0.25 seconds** at
+**46,168 KiB maximum RSS**, a greater-than-$`565\times`$ observed reduction in elapsed time relative
+to the interrupted lower bound. No depth ceiling, native-stack enlargement, `stacker`, or recursive
+fallback participates in either decision.
+
 **Equivalence and negative-result evidence.** A one-action / two-action pair reproduces the former
 one-step false equivalence and is now rejected. A test-only guarded-string interpreter exhaustively
 agrees with the exact checker for all **144 pairs** in a two-atom, two-action, star-free corpus; a
@@ -3046,10 +3064,16 @@ subject to **0.12 seconds and 59.8 MiB**. The KAT 20,000-depth gate completes in
 The complete `prattail` suite at `e3f2812f` passes **3,640 unit tests, every integration test, and 21
 doctests** under `MemoryMax=4G`, `MemorySwapMax=0`, and eight Cargo jobs. Its **3.8 GiB** cgroup peak
 is the parallel compile/link envelope, not traversal RSS; the focused oracle/runtime gate peaks at
-436.1 MiB and uses zero swap. The remaining call-SCC and performance obligations are explicit:
-`AnyAlgebra::{is_satisfiable,witness}` still synchronously enter generic inner algebras, and the new
-list evaluator still needs a paired production-shaped comparison against the compiled symbolic
-finite-automaton lane before it can be called time-optimal.
+436.1 MiB and uses zero swap. At `e0086c93`, the independent structural-decision differentials pass
+**5/5**, the `AnyAlgebra` stack/lifecycle target passes **7/7**, and the library suite again passes
+**3,640/3,640** tests under `MemoryMax=4G`, `MemorySwapMax=0`, and eight Cargo jobs. The differential
+families compare product/sum, regular-expression, bag/map, ranked-tree, and carrier-level Boolean
+projection decisions against the generic reference implementations; they require equal
+satisfiability and witness existence, then independently evaluate every returned witness. The
+remaining call-SCC and performance obligations are explicit: the non-term-family census and
+lifecycle mutation calibration remain open, while the list evaluator still needs a paired
+production-shaped comparison against the compiled symbolic finite-automaton lane before it can be
+called time-optimal.
 
 ---
 
@@ -3273,7 +3297,7 @@ sloped impl left for a caller to reach.
 churn** of the two early de-copying fixes (SS-A1, SS-D2), which a profile of the final
 implementation alone cannot reconstruct — the pre-conversion tree no longer exists.
 
-### 8.5 The `mettail-rust` measured-slope registry — zero measured slopes, operational recursion still open
+### 8.5 The `mettail-rust` measured-slope registry — zero measured slopes, wider SCC census still open
 
 At the report anchor, `render` measured **3,665 / 911** and `lower_formula` measured
 **4,094 / 978** B/level (debug / release), each with its own gate subject and named owner.
@@ -3338,11 +3362,11 @@ not a runtime requirement, a larger thread stack, or part of the stack-safety me
 
 **Scope correction (2026-08-06).** “Zero” in this subsection means zero live slopes among the
 registered and instrumented subjects above. It never implied that an ownership-lifecycle scan or a
-whole-workspace function-call SCC scan had no remaining work. SS-G8 now closes the source-derived
-lifecycle population at 84 recursive types in 80 components, but §5.18.6 records the remaining
-operational `AnyAlgebra::{is_satisfiable,witness}`, non-term-family SCC, and mutation-calibration
-obligations. Those items must be converted and gated before the broader recursion programme can be
-called complete.
+whole-workspace function-call SCC scan had no remaining work. SS-G8 closes the source-derived
+lifecycle population at 84 recursive types in 80 components, and SS-G9 closes the operational
+`AnyAlgebra::{is_satisfiable,witness}` cycle. Section 5.18.6 records the still-open non-term-family
+SCC census and mutation-calibration obligations. Those items must be converted and gated before the
+broader recursion programme can be called complete.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
