@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@5cd89526` (recursive-carrier lifecycle plus operational, guard, and direct receive-traversal closure; §5.18)
+**Companion decision head** `mettail-rust@0aaac1c0` (recursive-carrier lifecycle plus operational, guard, and receive-traversal closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -35,8 +35,10 @@ construction, opaque-atom substitution, operand normalization, and bound-value s
 `mettail-rust@44f899b8` applies the corresponding ordered formula and operand machines to the
 surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`.
 `mettail-rust@5cd89526` closes the direct name, quote, three-valued guard-disposition, and parallel-
-flattening traversals in `languages/src/rholang/receive.rs`; its heterogeneous collection-pattern
-matcher remains live. No production path uses `contains_par`,
+flattening traversals in `languages/src/rholang/receive.rs`; `mettail-rust@0aaac1c0` closes the
+heterogeneous collection-pattern matcher in the same file. Fresh file-scoped analysis reports zero
+production direct or mutual recursion there; the surface `runtime.rs` family remains live. No
+production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -121,6 +123,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G14** | `mettail-rust@fec84ffb` | mettail | bound-`Par` substitution through evaluator-owned guard positions | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.20 s / 131,632 KiB** | **yes**; every genuine production SCC in `guard_par_substrate.rs` is closed | [5.18.13](#51813-lowered-guard-bound-substitution-closure-ss-g14) |
 | **SS-G15** | `mettail-rust@44f899b8` | mettail | surface `Proc` guard formulas and operands: connectives, ordered variable/opaque allocation, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.03 s / 29,560 KiB** | **yes**; zero genuine production recursion in surface `guard_substrate.rs` | [5.18.14](#51814-surface-rholang-guard-closure-ss-g15) |
 | **SS-G16** | `mettail-rust@5cd89526` | mettail | direct surface receive traversals: parenthesized-name conversion, quote normalization, three-valued guard disposition, and nested parallel flattening | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.05 s / 30,960 KiB** | **yes for the named direct traversals**; collection-pattern matcher remains live | [5.18.15](#51815-direct-surface-receive-traversal-closure-ss-g16) |
+| **SS-G17** | `mettail-rust@0aaac1c0` | mettail | receive collection patterns: lists, ordinary maps, surface path-map set/map modes, read/write zippers, greedy sets, and backtracking bags | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** list/map/path-map levels and **4,096** bag elements on **256 KiB**; direct gate **0.25 s / 51,216 KiB** | **yes**; zero production recursion in `receive.rs` | [5.18.16](#51816-receive-collection-pattern-closure-ss-g17) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3301,6 +3304,46 @@ matcher is independently known to remain recursive and is the next receive slice
 SS-G16 preserves name grouping, normalized quote shape, guard verdicts and refusal order, bag
 multiplicity, and parallel leaf order. It changes no wire bytes, acceptance rule, ruled semantic,
 token-metering rule, target EPathMap representation, or PathMap implementation.
+
+#### 5.18.16 Receive collection-pattern closure [SS-G17]
+
+`mettail-rust@0aaac1c0` replaces the recursive `collect_pattern_bindings` family and the nested
+recursive bag backtracker with one typed job machine. Lists, ordinary maps, surface path maps,
+read/write zippers, greedy sets, and bags all yield child comparisons to the same `Match` job. Typed
+`Next` and `After` continuations retain sequential short circuit. Set-candidate frames retain the
+environment at the beginning of one greedy choice; bag frames additionally retain the chosen
+candidate bit and restore both pieces of state when a recursive tail would have returned false.
+Candidate order and the first successful environment are therefore the same as the superseded
+depth-first equations.
+
+The source `PathMapLit<Proc, Proc>` lane is deliberately direct. Its frame owns the existing
+`PathMapIter`; each pattern key calls `value.entry(key)` and only map-mode values yield recursive
+`Proc` work. The machine neither creates an entry vector nor converts this pre-lowering syntax
+carrier into the target node's EPathMap representation. Set and bag search tables contain borrowed
+`&Proc` references plus integer indices or `Cell<bool>` bits, replacing the old cloned
+`Vec<Proc>` candidates. Target `EPathMapRepr::{Empty, Set(PathMap<()>), Map(PathMap<Par>)}` and the
+PathMap crate remain unchanged.
+
+The test-only recursive reference under `languages/tests/support/` checks exact Boolean results and
+binding environments for nested lists and maps, surface path-map set/map mode agreement, read/write
+zipper focus, greedy set selection, successful and exhausted bag permutation search, and a
+heterogeneous list/map/path-map/bag composition. The small-stack gate traverses **20,000** list,
+ordinary-map, and surface-path-map levels and a **4,096**-element bag on a **256 KiB** thread. The
+already-built gate passes **2/2** in **0.25 seconds**, peaks at **51,216 KiB RSS**, and swaps zero
+bytes. The complete already-built `languages` library passes **66/66** in **0.25 seconds**, peaks at
+**78,304 KiB RSS**, and swaps zero bytes; both run inside 1 GiB scopes.
+
+The eight-job generated-source build completes in **153.79 seconds**, peaks at **7,092,076 KiB
+process RSS** and **7,181,299,712 bytes aggregate cgroup memory**, and swaps zero bytes inside an
+8 GiB service. This is the compiler envelope, not matcher runtime. Fresh file-scoped pgmcp analysis
+covers one of one selected production files, accepts 156 call edges, skips and fails zero files, and
+reports **zero direct recursion and zero mutual clusters** in `receive.rs`.
+
+SS-G17 preserves binding identity, repeated-variable equality, collection size and mode checks,
+zipper focus equality, greedy set commitment, full bag backtracking, and child visitation order. It
+changes no wire bytes, acceptance rule, ruled semantic, token-metering rule, target EPathMap
+representation, or PathMap implementation. The remaining child scope is the source
+`languages/src/rholang/runtime.rs` family.
 
 ---
 
