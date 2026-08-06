@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@fec84ffb` (recursive-carrier lifecycle plus operational and lowered-guard closure; §5.18)
+**Companion decision head** `mettail-rust@44f899b8` (recursive-carrier lifecycle plus operational and guard closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -31,8 +31,10 @@ calibration remain live work (§5.18.6, §8.5). `mettail-rust@b76c5773` closes e
 recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer residual is a deliberate
 `#[cfg(test)]` recursive oracle. `mettail-rust@2a972436`, `580896f3`, and `fec84ffb` close every
 genuine production recursion cluster in `rholang-runtime/src/guard_par_substrate.rs`: formula
-construction, opaque-atom substitution, operand normalization, and bound-value substitution. No
-production path uses `contains_par`,
+construction, opaque-atom substitution, operand normalization, and bound-value substitution.
+`mettail-rust@44f899b8` applies the corresponding ordered formula and operand machines to the
+surface `Proc` guard encoder in `languages/src/rholang/guard_substrate.rs`; the remaining surface
+receive and canonicalization families remain live. No production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -115,6 +117,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G12** | `mettail-rust@2a972436` | mettail | lowered guard formulas: `Par`/`Expr` connective encoding and opaque-atom formula substitution | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.27 s / 77,100 KiB** | **yes for the named formula SCCs**; historical operand and bound-value residuals close in SS-G13/SS-G14 | [5.18.11](#51811-lowered-guard-formula-closure-ss-g12) |
 | **SS-G13** | `mettail-rust@580896f3` | mettail | lowered guard operands: optional-`Par` dispatch, integer-form normalization, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.15 s / 113,112 KiB** | **yes for the operand SCC**; ordered variable interning and failure classes preserved | [5.18.12](#51812-lowered-guard-operand-closure-ss-g13) |
 | **SS-G14** | `mettail-rust@fec84ffb` | mettail | bound-`Par` substitution through evaluator-owned guard positions | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.20 s / 131,632 KiB** | **yes**; every genuine production SCC in `guard_par_substrate.rs` is closed | [5.18.13](#51813-lowered-guard-bound-substitution-closure-ss-g14) |
+| **SS-G15** | `mettail-rust@44f899b8` | mettail | surface `Proc` guard formulas and operands: connectives, ordered variable/opaque allocation, arithmetic, multiplication, division, and remainder | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.03 s / 29,560 KiB** | **yes**; zero genuine production recursion in surface `guard_substrate.rs` | [5.18.14](#51814-surface-rholang-guard-closure-ss-g15) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3231,6 +3234,33 @@ A fresh source-derived pass reports zero genuine production mutual-recursion clu
 `guard_par_substrate.rs`. The remaining `static_verdict` edge is the imported-free-function
 same-name false positive described in §5.18.11. SS-G13 and SS-G14 change neither PathMap source nor
 wire bytes, guard acceptance semantics, ruled semantics, or token metering.
+
+#### 5.18.14 Surface Rholang guard closure [SS-G15]
+
+`mettail-rust@44f899b8` applies the same continuation architecture to the surface `Proc` encoder in
+`languages/src/rholang/guard_substrate.rs`. One postorder driver constructs `and`, `or`, `not`, and
+`implies` formulas; another classifies scalar operands and reconstructs linear arithmetic,
+constant scaling, and checked integer division or remainder. Both schedule the right child before
+the left child on a last-in/first-out work stack, which executes the left subtree first and
+therefore preserves binder interning, opaque-atom identifiers, and delegated-fragment order.
+
+The bounded recursive references are kept outside production sources under
+`languages/tests/support/`. Their differential corpus compares formulas, variable maps, ordered
+opaque fragments, integer forms, scalar literals, structural and uncovered operands,
+coefficient overflow, non-linear multiplication, and checked division failures. The direct
+already-built binary passes **2/2**, traverses **20,000** connective and arithmetic levels on a
+**256 KiB** thread stack, completes in **0.03 seconds**, peaks at **29,560 KiB RSS**, and swaps zero
+bytes. The warm `languages` library passes **62/62** in **0.04 seconds** of harness time and
+**0.89 seconds** wall time, peaking at **160,808 KiB** under a 4 GiB zero-swap envelope.
+
+The generated `languages` crate has a distinct compile envelope: the eight-job rebuild completed
+in **224.45 seconds**, peaked at **7,011,592 KiB** process RSS and the exact **8 GiB** aggregate
+cgroup high-water mark, and swapped zero bytes. This compiler measurement is not attributed to
+the guard machines; the already-built direct gate supplies their runtime measurement. Fresh
+source-derived analysis reports zero genuine direct or mutual recursion in the file. As in the
+lowered encoder, its sole residual is the imported `static_verdict` free function being mistaken
+for a same-named method self-call. SS-G15 changes no PathMap source, wire bytes, guard verdict,
+ruled semantics, or token metering.
 
 ---
 
