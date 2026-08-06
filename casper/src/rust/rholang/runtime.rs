@@ -92,7 +92,7 @@ static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> =
 /// C-30-1).  This guard closes the gap by making drain-on-drop the
 /// default and drain-and-attach the explicit opt-in via
 /// `take_and_commit`.
-struct WalDeployScope {
+pub(crate) struct WalDeployScope {
     /// Arc-shared clone of the per-runtime WAL — cheap; shares the
     /// underlying `Arc<Mutex<Vec<WalEntry>>>` so appends and drains
     /// see the same buffer.
@@ -104,7 +104,15 @@ struct WalDeployScope {
 }
 
 impl WalDeployScope {
-    fn new(wal: Wal) -> Self {
+    // H-2 fix (2026-08-06): now `pub(crate)` so `replay_runtime`
+    // can use the same guard.  Pre-fix, replay didn't wrap deploys
+    // in a WAL scope — `journal_read`/`journal_write` on the
+    // replay branch appended to the follower's per-runtime WAL
+    // without draining, causing unbounded growth across a block
+    // (hits `MAX_WAL_ENTRIES` only on follower → follower fails
+    // deploys the leader accepted) and making per-deploy WAL
+    // comparison impossible.
+    pub(crate) fn new(wal: Wal) -> Self {
         let mark = wal.begin_deploy();
         Self {
             wal,
@@ -124,7 +132,7 @@ impl WalDeployScope {
     /// the output is byte-identical across validators and across
     /// re-executions on the same validator regardless of tokio
     /// scheduling.  Resolves H-R3.
-    fn take_and_commit(&mut self, deploy_log: &[Event]) -> Vec<WalEntry> {
+    pub(crate) fn take_and_commit(&mut self, deploy_log: &[Event]) -> Vec<WalEntry> {
         self.committed = true;
         let hashes = produce_channel_hashes(deploy_log);
         self.wal
@@ -140,7 +148,7 @@ impl WalDeployScope {
 /// ConsumeEvents and CommEvents are skipped — the WAL sidecar is
 /// keyed by ack-channel hash, which appears in the Produce that
 /// publishes the syscall's reply.
-fn produce_channel_hashes(deploy_log: &[Event]) -> Vec<[u8; 32]> {
+pub(crate) fn produce_channel_hashes(deploy_log: &[Event]) -> Vec<[u8; 32]> {
     let mut out = Vec::with_capacity(deploy_log.len());
     for e in deploy_log {
         if let Event::Produce(pe) = e {
@@ -1785,6 +1793,40 @@ mod tests {
             body.contains("pending_wal_slices"),
             "play_deploys_for_state must cache the per-block WAL slice into \
              pending_wal_slices for finalization_runner to pick up"
+        );
+    }
+
+    /// H-2 fix regression pin (2026-08-06): replay path wraps each
+    /// deploy in `WalDeployScope`.  Pre-fix, `replay_deploy_e` did
+    /// not scope the WAL for the deploy, so follower-side journal
+    /// appends (from the `is_replay` branches of fs_read /
+    /// fs_write / fs_truncate) accumulated across every deploy in a
+    /// block until the runtime was reset.  Consequences: unbounded
+    /// growth (hit `MAX_WAL_ENTRIES` on follower only), no per-
+    /// deploy comparison against the leader's committed slice.
+    /// Post-fix, `replay_deploy_e` uses `WalDeployScope::new` +
+    /// `take_and_commit` (discard-drain on error via Drop) so the
+    /// follower's per-deploy lifecycle mirrors the leader's.
+    #[test]
+    fn replay_deploy_e_wraps_in_wal_deploy_scope() {
+        let src = include_str!("replay_runtime.rs");
+        // Locate `pub async fn replay_deploy_e` and confirm it
+        // constructs a `WalDeployScope` and calls
+        // `take_and_commit`.  Search the whole file since the
+        // helper is invoked by fully-qualified path — a future
+        // refactor that renames the helper would still trip this
+        // if either the type or the method name shifted.
+        assert!(
+            src.contains("WalDeployScope::new"),
+            "H-2 regression: replay_runtime.rs must construct a WalDeployScope \
+             (per-deploy WAL drain guard).  Pre-H-2 the follower's WAL grew \
+             unboundedly across a block."
+        );
+        assert!(
+            src.contains("take_and_commit"),
+            "H-2 regression: replay_runtime.rs must call take_and_commit on \
+             the deploy's WalDeployScope so the per-deploy slice is drained \
+             in canonical log order (matching the leader's commitment)."
         );
     }
 

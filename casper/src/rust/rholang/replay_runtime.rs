@@ -231,6 +231,43 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(rig_start.elapsed().as_secs_f64());
 
+        // H-2 fix (2026-08-06): wrap the replay-branch deploy in
+        // `WalDeployScope` so `journal_read` / `journal_write` /
+        // `journal_truncate` appends on the follower drain per-
+        // deploy at end-of-scope.  Pre-fix, the replay-branch
+        // journal_* handlers fired (see
+        // `rholang/interpreter/io/handlers.rs::fs_read/fs_read_at/
+        // fs_write/fs_write_at/fs_truncate`'s `is_replay` branches)
+        // and appended to `follower.fs_handles.wal` without any
+        // scope wrapper.  Two consequences:
+        //   (a) unbounded WAL growth per block on the follower —
+        //       a high-fs-activity block could hit
+        //       `MAX_WAL_ENTRIES` on replay only, causing the
+        //       follower to fail deploys the leader accepted
+        //       (silent leader-vs-follower divergence);
+        //   (b) leader publishes per-deploy WAL commitments via
+        //       `take_and_commit`, but the follower had no
+        //       matching per-deploy drain, so per-deploy WAL
+        //       comparison was impossible.
+        // Post-fix, the follower's per-deploy WAL slice is
+        // available for downstream comparison against the
+        // leader's committed slice (comparison itself is
+        // scheduled for a follow-up slice; this fix closes the
+        // buffering / growth hazard now).
+        //
+        // The scope's Drop is a discard-drain — if the deploy
+        // errors out mid-flight, journaled entries do not
+        // pollute the next deploy's mark.  On success we call
+        // `take_and_commit` with the deploy's frozen event_log
+        // to get a canonically-ordered slice; the returned
+        // entries are dropped here (no downstream consumer yet)
+        // but the important side effect is that the scope
+        // released ITS entries from the shared per-runtime WAL,
+        // matching the leader-side lifecycle byte-for-byte.
+        let mut wal_scope = crate::rust::rholang::runtime::WalDeployScope::new(
+            self.runtime_ops.runtime.fs_handles.wal.clone(),
+        );
+
         let eval_successful = if with_cost_accounting {
             self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
@@ -243,10 +280,22 @@ impl ReplayRuntimeOps {
         let check_start = Instant::now();
         if let Err(e) = self.check_replay_data_with_fix(eval_successful).await {
             tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy check_replay_data FAILED -> {}", e);
+            // wal_scope's Drop is the discard-drain path — no
+            // committing on error keeps the follower's per-runtime
+            // WAL clean of this failed deploy's contributions.
             return Err(e.into());
         }
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
+
+        // H-2: commit-drain the WAL slice with the leader's frozen
+        // event_log so the follower processes byte-identical
+        // entry order (H-R3's log-order-derived drain applies to
+        // replay too).  Result is intentionally discarded — no
+        // downstream consumer on the replay side today; the
+        // side effect (releasing entries from the shared WAL) is
+        // the H-2 fix's purpose.
+        let _replay_slice = wal_scope.take_and_commit(&processed_deploy.deploy_log);
 
         // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)
         let checkpoint_mergeable_start = Instant::now();
