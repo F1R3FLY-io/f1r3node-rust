@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@338d8263` (recursive-carrier lifecycle plus operational and Rholang inference closure; §5.18)
+**Companion decision head** `mettail-rust@b76c5773` (recursive-carrier lifecycle plus operational and Rholang AST-analysis closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -27,7 +27,9 @@ function-call strongly connected component (SCC) census. `mettail-rust@e0086c93`
 the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry with one heap-frame decision
 executor. `mettail-rust@338d8263` additionally closes the Rholang type-inference variable-use and
 receive-collection SCCs; the remaining non-term-family census and lifecycle-census mutation
-calibration remain live work (§5.18.6, §8.5). No production path uses `contains_par`,
+calibration remain live work (§5.18.6, §8.5). `mettail-rust@b76c5773` closes every production
+recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer residual is a deliberate
+`#[cfg(test)]` recursive oracle. No production path uses `contains_par`,
 `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -106,6 +108,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; zero-state gate `ce60f76f` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **84 types / 80 components / 542 files / zero lifecycle exposures** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
 | **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
 | **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; wider call-SCC census remains open | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
+| **SS-G11** | `mettail-rust@b76c5773` | mettail | Rholang AST analysis and rewrite: `Proc`/`Name` machine-effect classification, innermost fold discovery, and fold replacement/rebuild | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.42 s / 59,172 KiB** | **yes for every production SCC in `rholang_ast.rs`**; wider call-SCC census remains open | [5.18.10](#51810-rholang-ast-analysis-and-fold-rewrite-closure-ss-g11) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3107,6 +3110,43 @@ change.
 
 The wider non-term-family call-SCC census and lifecycle mutation calibration remain open. No claim in
 SS-G10 closes those obligations, and no PathMap source was changed.
+
+#### 5.18.10 Rholang AST analysis and fold-rewrite closure [SS-G11]
+
+`mettail-rust@b76c5773` removes the remaining production call cycles from
+`rholang-runtime/src/rholang_ast.rs`. Machine-effect classification and innermost fold discovery use
+reference worklists whose surface-desugared nodes live in a function-local arena. A continuation
+therefore holds a stable reference without cloning an input subtree. Left-to-right visitation and
+innermost-before-enclosing fold order are explicit stack invariants.
+
+Fold substitution is a bottom-up pushdown automaton with typed `Proc` and `Name` value stacks. Each
+build continuation records both value-stack bases, so binary, parallel, list, quotation, and drop
+reconstruction consume exactly their declared arity. Once the first liftable fold is replaced,
+pending sibling visits retain the former short-circuit behavior by cloning their root carrier rather
+than traversing it. Surface sugar is allocated in the same arena and is rebuilt in its canonical
+desugared form, matching the superseded recursive implementation.
+
+**Rejected intermediate and repair.** The first bottom-up version routed `PParInfix` through the
+shared binary builder but omitted that constructor from the builder's reconstruction match. It set
+the `replaced` flag while returning the original parallel node, so fold lifting rediscovered the
+same fold indefinitely. Capped full-suite runs reached exact **4 GiB** and **8 GiB** cgroup limits
+with zero swap. A direct `PParInfix(BigintCastProc(PZero), PZero)` oracle witness now binds this
+constructor; after the missing arm was added, the previously unbounded 109-reading lowering
+differential completes in **0.45 seconds** and the complete library completes in **0.86 seconds**.
+
+The test-only recursive oracle compares all three production traversals over **109** parsed surface
+readings and asserts identical machine-effect verdicts, fold-search results, replacement flags, and
+alpha-stable semantic keys. The deep gate exercises effect discovery, fold discovery, fold rewrite,
+and teardown at depth **20,000** on a **256 KiB** thread. Its already-built binary completes in
+**0.42 seconds**, peaks at **59,172 KiB RSS**, and swaps zero bytes. The complete
+`rholang-runtime` library passes **141/141** with eight test threads under `MemoryMax=4G` and
+`MemorySwapMax=0`.
+
+A fresh libcpg `analyze_code` pass reports zero production direct or mutual recursion in the file.
+Its sole source-file residual is `alternative_collection_tests::collect_recursive`, explicitly
+compiled only under `#[cfg(test)]`; that bounded recursive oracle already compares the iterative
+production alternative collector. No PathMap source, wire format, acceptance rule, ruled semantic,
+or token-metering behavior changes in SS-G11.
 
 ---
 
