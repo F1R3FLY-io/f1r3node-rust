@@ -132,6 +132,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G18** | `mettail-rust@2e3ae94d` | mettail | `HashBag` structural hash summaries, owned `PPar` merge, and multiplicity-compressed parallel flattening | completed-bag hash $`\Theta(n) \rightarrow \Theta(1)`$; left-fold merge $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** merges on **256 KiB** in **0.11 s / 39,096 KiB** | **yes** for the former merge recursion; hash stream and multiset unchanged | [5.18.17](#51817-parallel-hash-and-multiplicity-closure-ss-g18) |
 | **SS-G19** | `mettail-rust@2fe2a2c4` | mettail | surface send-sugar canonicalization: `Proc`/`Name`, query desugaring, binders, collections, and parallel normalization | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** unary/list/parallel levels on **256 KiB**; direct gate **0.09 s / 51,660 KiB** | **yes**; zero production direct or mutual recursion in `runtime.rs` | [5.18.18](#51818-surface-send-canonicalizer-closure-ss-g19) |
 | **SS-G20** | `mettail-rust@c875ab94` | mettail | AST grammar-shape `syn::Expr` walks, regex token rendering, and compact token-tree encode/decode | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; nested codec copy work $`\Theta(d^2) \rightarrow \Theta(d)`$; three **20,000**-depth gates on **256 KiB** | **yes**; zero production direct or mutual recursion in all three files | [5.18.19](#51819-ast-grammar-and-token-codec-closure-ss-g20) |
+| **SS-G21** | `mettail-rust@aebba39b` | mettail | REPL observation de-reflection: constructor/lambda/bag surface rendering, free-name collection, and Peano decoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; unary-spine string copying $`\Theta(d^2) \rightarrow \Theta(d)`$; bound lookup $`\Theta(d) \rightarrow O(1)`$; **20,000** levels on **256 KiB** | **yes**; renderer SCC and three direct functions absent from the fresh production call graph | [5.18.20](#51820-observation-surface-de-reflection-closure-ss-g21) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3572,6 +3573,74 @@ bincode surface. SS-G20 changes no generated term for representable input, EPath
 PathMap operation, consensus byte, ruled semantic, or token charge. Its only failure-domain change is
 corrective: an unrepresentable leaf can no longer silently truncate its declared length, and malformed
 bytes have an explicit fallible result.
+
+---
+
+#### 5.18.20 Observation-surface de-reflection closure [SS-G21]
+
+`mettail-rust@aebba39b` closes the REPL's observation-surface recursion component. The superseded
+`render_value` and `render_constructor` called each other through constructor children; lambda bodies
+and bag elements re-entered the same pair. `peano_value` separately recursed through reflected
+successors, and `collect_free_names` recursed through every `RuntimeObservationValue` collection.
+All four paths were input-shaped: an observation supplied their depth, so none had a structural bound.
+
+The replacement is one pushdown automaton (PDA) whose `RenderJob` continuation distinguishes a node
+visit from lambda completion and from the next bag, context-production, or legacy-production slot.
+Each multi-child continuation schedules one child at a time. This is semantically important: it
+preserves the recursive equations' left-to-right failure and fresh-name allocation order rather than
+pre-validating a later slot. The rendering algorithm is:
+
+```text
+RENDER(root):
+    jobs := [Visit(root)]
+    values := []
+    arena := []
+    while jobs is nonempty:
+        if pop(jobs) is Visit(node):
+            validate the node's local shape
+            push its completion continuation
+            push only the next child visit
+        else if it is a continuation with another child:
+            consume the completed child, advance the slot, and schedule the next child
+        else:
+            append one flat Text or Concat node to arena and push its integer identifier
+    stream the sole result identifier into one exactly-sized String
+```
+
+The flat arena is a directed acyclic graph of `Text(Cow<str>)` and `Concat(Vec<RenderId>)` nodes.
+Every node caches its byte length. A unary constructor therefore adds constant metadata instead of
+copying the complete child string into every ancestor; one explicit final walk materializes the
+output. For $`n`$ observation/arena nodes, $`b`$ output bytes, and maximum pending frontier $`f`$, the
+renderer takes $`\Theta(n+b)`$ time, $`O(n+b+f)`$ heap space including the returned string, and
+$`O(1)`$ native stack. The former nested `String` reconstruction could copy $`\Theta(d^2)`$ bytes on
+a depth-$`d`$ unary spine. A reflected de Bruijn index now computes `binders.len() - depth - 1` with
+checked direct indexing, reducing a successful name lookup from $`\Theta(d)`$ to $`O(1)`$. Peano
+decoding is a cursor loop, and free-name collection is a reverse-push worklist that retains the old
+term/list/tuple/set/bag/map visit order.
+
+The superseded recursive equations live only in
+`repl/tests/support/observation_surface_recursive_oracle.rs`. The bounded differential covers valid
+lambda/application terms, free-name collisions, bags, dangling indices, malformed reflected leaves,
+missing children, unknown constructors, and error precedence. The REPL library passes **27/27** tests
+in **0.35 seconds**. Its deep witness renders and drops **20,000** nested lambdas whose leaf contains
+an independently **19,999**-deep reflected Peano index on a **256 KiB** thread stack. The final A-S5.6
+suite passes **6/6** alpha-aware Lambda/Ambient goldens in **5.57 seconds**, with **102,756 KiB** maximum
+process RSS and zero swaps inside a 512 MiB service.
+
+Compiler memory is a separate measurement. A cold invalidation of the generated language aggregate
+peaked at **5.9 GiB** while building the REPL library tests; the final warm golden link peaked at
+**2.5 GiB**. Neither is runtime traversal memory, and neither is presented as such. The source-derived
+term-family census reports **112** recursive components, **49** touching the term family, **11** mutual
+components, and **zero UNMEASURED** dispositions after deleting the stale renderer row. Fresh pgmcp
+production analysis reports **113** direct and **12** mutual clusters for the whole project, down from
+**116/13** immediately before this conversion: `render_value`, `peano_value`, `collect_free_names`, and
+the renderer SCC are absent.
+
+SS-G21 is a display-side, measured-neutral optimization. The bounded recursive oracle pins exact text
+and exact error results; the end-to-end goldens pin parse-back alpha-equivalence and free-name
+non-capture. It changes no generated term, reduction, COMM schedule, canonical byte, charge, EPathMap
+representation, or PathMap operation. It adds no recursion cap, stack enlargement, `stacker` path, or
+production recursive fallback.
 
 ---
 
