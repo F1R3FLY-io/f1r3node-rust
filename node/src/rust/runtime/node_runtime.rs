@@ -1309,8 +1309,37 @@ async fn await_http_server_task(
 ///
 /// # Returns
 /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
-pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
+pub async fn start(mut node_conf: NodeConf) -> eyre::Result<()> {
     info!("Starting RChain node runtime...");
+
+    // M-8 middle-option (2026-08-06): augment `network_id` with the
+    // consensus runtime fingerprint before ANY component reads it.
+    // Two nodes with mismatched `MAX_WAL_ENTRIES` (or any other
+    // consensus-observable runtime constant folded into the
+    // fingerprint) end up with different effective network_ids and
+    // are refused by the existing SslSessionServerInterceptor
+    // validate_network_id path.
+    //
+    // Zero on-wire schema change — the fingerprint travels as an
+    // opaque `#cf<hex>` suffix inside the existing network_id String.
+    // Idempotent, so re-calling this transformation elsewhere is safe.
+    let raw_server_nid = node_conf.protocol_server.network_id.clone();
+    let raw_client_nid = node_conf.protocol_client.network_id.clone();
+    node_conf.protocol_server.network_id =
+        rholang::rust::interpreter::io::consensus_fingerprint::augment_network_id(&raw_server_nid);
+    node_conf.protocol_client.network_id =
+        rholang::rust::interpreter::io::consensus_fingerprint::augment_network_id(&raw_client_nid);
+    info!(
+        "M-8: augmented network_id with consensus fingerprint — \
+         protocol_server: '{}' → '{}'; protocol_client: '{}' → '{}'.  \
+         Peers running with different consensus-observable runtime \
+         constants (e.g. MAX_WAL_ENTRIES) will fail to peer with a \
+         'wrong network id' error at the TLS interceptor.",
+        raw_server_nid,
+        node_conf.protocol_server.network_id,
+        raw_client_nid,
+        node_conf.protocol_client.network_id
+    );
 
     // Create node identifier from certificate
     let id = node_environment::create(&node_conf).await?;
