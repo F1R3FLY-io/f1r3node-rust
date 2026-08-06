@@ -314,6 +314,35 @@ impl RuntimeManager {
         }
     }
 
+    /// H-7 note (2026-08-06): `fs_handles` (the `FileHandleTable`
+    /// carrying WAL + open-fd map + next_fd counter) is
+    /// INTENTIONALLY per-runtime.  Leader (play) and follower
+    /// (replay) each get their own — a leader-follower pair
+    /// operates on distinct backing RSpaces at potentially
+    /// different block heights and MUST NOT share fd state.
+    ///
+    /// Cross-runtime WAL byte-identity is preserved through a
+    /// different mechanism: `fs_open`'s `is_replay = true` branch
+    /// extracts the leader's fd from the cached `previous` reply
+    /// and calls `insert_at(fd, shadow_handle)` on the follower's
+    /// own table (C-R1 slice-29 review fix in handle_table.rs).
+    /// Subsequent mutating handlers on both sides look up
+    /// `(cmode, canon_path)` via `with_mut(fd)` — identical
+    /// lookups, identical WAL entries, byte-identical roots.
+    ///
+    /// What IS shared here (manager → all spawned runtimes):
+    ///   - `fs_snapshot_writer` (Arc<RwLock<Option<...>>>) —
+    ///     boot config; slice-30b.
+    ///   - `pending_wal_slices` cache — LFB-triggered snapshot
+    ///     writer input; H-1 slice-30c Phase B.
+    ///   - `root_id_registry` — boot-captured (dev, inode) pairs
+    ///     for rename-and-recreate detection; H-5.
+    ///
+    /// A regression that started sharing `fs_handles` here would
+    /// silently corrupt cross-runtime fd allocation and violate
+    /// the C-R1 shadow-handle invariant.  Pinned by
+    /// `spawn_runtime_and_spawn_replay_yield_distinct_fs_handles`
+    /// in the wiring tests below.
     pub async fn spawn_runtime(&self) -> RhoRuntimeImpl {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
@@ -1599,5 +1628,239 @@ mod snapshot_writer_wiring_tests {
         manager.set_fs_snapshot_writer(Some(writer)).await;
         let replay_rt = manager.spawn_replay_runtime().await;
         assert!(replay_rt.fs_snapshot_writer.read().await.is_some());
+    }
+}
+
+/// H-7 fix (2026-08-06) regression tests: `RuntimeManager` spawn
+/// wiring around `fs_handles`.
+///
+/// `fs_handles` (the `FileHandleTable`) is INTENTIONALLY per-
+/// runtime — leader and follower operate on distinct backing
+/// RSpaces and must not share fd state.  Cross-runtime WAL
+/// byte-identity is preserved via the C-R1 shadow-handle path
+/// (fs_open's is_replay branch calls `insert_at(leader_fd, ...)`
+/// on the follower's own table using the leader's fd extracted
+/// from `previous`).
+///
+/// What IS shared by the manager: `fs_snapshot_writer`,
+/// `pending_wal_slices` (H-1), `root_id_registry` (H-5).  These
+/// three tests pin the sharing/non-sharing contract at the
+/// spawn boundary so a regression can't silently regress it.
+#[cfg(test)]
+mod h7_cross_runtime_wiring_tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use rholang::rust::interpreter::accounting::costs::Cost;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    async fn empty_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm).await.unwrap();
+        RuntimeManager::create_with_store(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+    }
+
+    /// H-7 core invariant: leader and follower spawned from the
+    /// same manager get DISTINCT `fs_handles`.  If a future
+    /// refactor accidentally shared them (e.g., a well-meaning
+    /// "share_fs_handles" mirroring the writer/registry pattern),
+    /// this test fires.  Sharing would corrupt fd allocation and
+    /// violate the C-R1 shadow-handle design.
+    #[tokio::test]
+    async fn spawn_runtime_and_spawn_replay_yield_distinct_fs_handles() {
+        let manager = empty_manager().await;
+        let leader = manager.spawn_runtime().await;
+        let follower = manager.spawn_replay_runtime().await;
+        // The FileHandleTable is `Clone` (Arc-wrapped Inner), so
+        // two runtimes that erroneously "shared" it would have
+        // the same Arc backing.  Insert a fake handle into one
+        // and confirm the other doesn't see it.
+        //
+        // Use the WAL as a fast proxy: it's part of the same
+        // handle table struct and would follow the same sharing
+        // pattern if someone mistakenly shared the whole table.
+        leader
+            .fs_handles
+            .wal
+            .append(rholang::rust::interpreter::io::wal::WalEntry {
+                op: rholang::rust::interpreter::io::wal::WalOp::Write,
+                path: PathBuf::from("/leader-only"),
+                extra_path: None,
+                offset: None,
+                length: Some(0),
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: rholang::rust::interpreter::io::wal::WalOutcome::Success,
+            })
+            .unwrap();
+        assert_eq!(
+            leader.fs_handles.wal.len(),
+            1,
+            "leader WAL received the append"
+        );
+        assert_eq!(
+            follower.fs_handles.wal.len(),
+            0,
+            "H-7: follower's fs_handles.wal MUST NOT observe the leader's append — \
+             regression would indicate `spawn_replay_runtime` accidentally shared \
+             fs_handles with the leader, corrupting fd allocation and violating \
+             the C-R1 shadow-handle design"
+        );
+    }
+
+    /// H-5 wiring sanity through the RuntimeManager pair: the
+    /// root-identity registry set on the manager is visible to
+    /// BOTH the leader's and the follower's `fs_handles`.
+    /// Positive counterpart to the H-7 negative pin above — the
+    /// registry IS shared even though the enclosing table is
+    /// per-runtime.
+    #[tokio::test]
+    async fn root_registry_is_shared_across_spawn_runtime_and_spawn_replay() {
+        let manager = empty_manager().await;
+        // Register a root identity BEFORE any spawn.
+        let root = PathBuf::from("/tmp/h7-shared-root-fixture");
+        manager.register_root_identity(root.clone(), (42, 137));
+        let leader = manager.spawn_runtime().await;
+        let follower = manager.spawn_replay_runtime().await;
+        assert_eq!(
+            leader.fs_handles.root_registry.get(&root),
+            Some((42, 137)),
+            "leader must see the manager's boot-registered identity"
+        );
+        assert_eq!(
+            follower.fs_handles.root_registry.get(&root),
+            Some((42, 137)),
+            "H-5/H-7: follower must see the same identity — the registry is \
+             manager-shared even though the FileHandleTable is per-runtime"
+        );
+        // Register AFTER both spawns — propagates to both via
+        // the shared Arc.
+        let late = PathBuf::from("/tmp/h7-late-root");
+        manager.register_root_identity(late.clone(), (7, 11));
+        assert_eq!(leader.fs_handles.root_registry.get(&late), Some((7, 11)));
+        assert_eq!(follower.fs_handles.root_registry.get(&late), Some((7, 11)));
+    }
+
+    /// H-7 full E2E: leader + follower spawned from the SAME
+    /// manager, run the same Consensus-cap Rholang term with
+    /// leader → checkpoint → follower rig → replay, and assert
+    /// their WALs are byte-identical.  Complements
+    /// `wal_is_byte_identical_on_leader_and_follower` in
+    /// fs_wal_spec.rs (which uses raw `create_rho_runtime` /
+    /// `create_replay_rho_runtime` — this one goes through the
+    /// full RuntimeManager wiring so any regression that broke
+    /// spawn_runtime's fs_handles setup surfaces here).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn spawned_leader_and_follower_produce_byte_identical_wal() {
+        use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), vec![0u8; 128]).unwrap();
+
+        let manager = empty_manager().await;
+        let mut leader = manager.spawn_runtime().await;
+        let mut follower = manager.spawn_replay_runtime().await;
+        leader.cost.set(Cost::unsafe_max());
+        follower.cost.set(Cost::unsafe_max());
+        leader.disable_fs_native_urn_filter();
+        follower.disable_fs_native_urn_filter();
+
+        // Consensus cap → Write + WriteAt + Truncate: exercises
+        // all three fd-based WAL sites.  Same shape as
+        // fs_wal_spec::wal_is_byte_identical_on_leader_and_follower
+        // but here the runtimes come from RuntimeManager, which
+        // is the production wiring path.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                oc, w1, w2, w3
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "aa".hexToBytes(), *w1) |
+                for (@_ <- w1) {{
+                  fsWriteAt!(fd, 5, "bbcc".hexToBytes(), *w2) |
+                  for (@_ <- w2) {{
+                    fsTruncate!(fd, 32, *w3) |
+                    for (@_ <- w3) {{ Nil }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let rand = Blake2b512Random::create_from_bytes(&[7; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand.clone(),
+            )
+            .await
+            .expect("leader evaluate");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            !leader_wal.is_empty(),
+            "leader must have journaled Consensus mutations"
+        );
+
+        // Rig follower with leader's log + reset to leader's
+        // state, then re-execute the same term with is_replay=true
+        // driven by the RSpaceWithReplay pairing.
+        let checkpoint = leader.create_checkpoint().await;
+        let root = checkpoint.root;
+        let log = checkpoint.log;
+        follower.reset(&root).await.expect("follower reset");
+        follower.rig(log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand,
+            )
+            .await
+            .expect("follower evaluate");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "H-7: manager-spawned leader/follower WAL lengths differ \
+             ({} vs {}) — indicates a regression in the RuntimeManager \
+             spawn wiring (fs_handles shared where it shouldn't be, or \
+             a shared substrate that should be per-runtime got shared \
+             incorrectly)",
+            leader_wal.len(),
+            follower_wal.len(),
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "H-7: manager-spawned WAL entry {i} differs: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("H-7: manager-spawned follower replay-data check must pass");
     }
 }
