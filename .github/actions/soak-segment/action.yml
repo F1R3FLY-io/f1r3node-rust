@@ -44,6 +44,15 @@ inputs:
   kind:
     required: true
     description: weekend | daily — selects the published series.
+  retry_attempt:
+    required: true
+    description: Restart counter from the gate; >0 marks a restarted run.
+  window_seconds:
+    required: true
+    description: >-
+      The series' nominal window span (79200 daily / 216000 weekend), as
+      opposed to this run's duration budget, which for a restarted run is
+      only the window's remainder.
   node_repo_dir:
     required: true
     description: Checkout of the node under test.
@@ -60,8 +69,72 @@ inputs:
 runs:
   using: composite
   steps:
+    # Turns an operator signal into something the soak loop can see.
+    #
+    # The channel is this instance's own OCI freeform tags, read with
+    # instance-principal auth and the OCID from IMDSv2 -- the same mechanism
+    # the soak already uses to exempt itself from the reaper, so it grants no
+    # new credential and trusts nothing new. .github/workflows/soak-signal.yml
+    # is the sender.
+    #
+    # Backgrounded because the soak is a single long-running `run:`: there is
+    # no other point at which this job could notice anything. It writes a file
+    # rather than signalling the process, because the loop must choose the
+    # moment -- stopping mid-iteration leaves a partial result the aggregator
+    # would count as real.
+    #
+    # Entirely optional. If IMDS or OCI is unreachable it warns and exits, and
+    # the segment behaves exactly as before: a soak must never fail because a
+    # convenience channel is unavailable.
+    - name: Start signal poller (${{ inputs.label }})
+      shell: bash -e {0}
+      env:
+        SIGNAL_FILE: /tmp/merge-recovery-soak/signal
+        SUPPRESS_LABEL_WARNING: "True"
+      run: |
+        mkdir -p /tmp/merge-recovery-soak
+        # A signal left over from the previous segment would fire the instant
+        # this one starts.
+        rm -f "$SIGNAL_FILE"
+        iid="$(curl -sS --max-time 10 -H 'Authorization: Bearer Oracle' \
+          http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || iid=""
+        case "$iid" in
+          ocid1.instance.*) ;;
+          *)
+            echo "::warning::signal poller: could not read this instance OCID from IMDS; on-demand checkpoint/finalize is unavailable for this segment"
+            exit 0
+            ;;
+        esac
+        # Only a signal newer than this segment counts. Without the floor, a
+        # tag from an earlier segment ends every later one the moment it opens.
+        started="$(date +%s)"
+        printf '%s' "$iid" > /tmp/merge-recovery-soak/.signal-iid
+        printf '%s' "$started" > /tmp/merge-recovery-soak/.signal-since
+        nohup bash -c '
+          iid="$(cat /tmp/merge-recovery-soak/.signal-iid)"
+          since="$(cat /tmp/merge-recovery-soak/.signal-since)"
+          while :; do
+            sleep 30
+            raw="$(oci --auth instance_principal compute instance get \
+              --instance-id "$iid" \
+              --query "data.\"freeform-tags\".\"soak-signal\"" --raw-output 2>/dev/null || true)"
+            case "$raw" in ""|null) continue ;; esac
+            action="${raw%%:*}"; at="${raw##*:}"
+            case "$at" in ""|*[!0-9]*) continue ;; esac
+            [ "$at" -le "$since" ] && continue
+            case "$action" in
+              checkpoint|finalize)
+                printf "%s" "$action" > /tmp/merge-recovery-soak/signal
+                exit 0
+                ;;
+            esac
+          done
+        ' >/dev/null 2>&1 &
+        echo "signal poller watching soak-signal on $iid; signals after ${started} count"
+
     - name: Soak (${{ inputs.label }})
       env:
+        SOAK_SIGNAL_FILE: /tmp/merge-recovery-soak/signal
         F1R3FLY_NODE_IMAGE: ${{ inputs.node_image }}
         F1R3FLY_NODE_BINARY: /tmp/rnode
         F1R3FLY_NODE_DEFAULTS_CONF: ${{ inputs.node_repo_dir }}/node/src/main/resources/defaults.conf
@@ -80,8 +153,25 @@ runs:
     # Everything below is checkpoint-only. The final segment publishes through
     # the normal perf_report job, which computes a real verdict and appends to
     # the history series.
+    #
+    # always(), because these steps exist for the runs that do NOT finish. A
+    # composite action aborts on the first failed step, so without it a segment
+    # that dies takes its own checkpoint down with it -- and the checkpoint is
+    # the only artifact a partial night can produce. That is how Soak Checkpoint
+    # Publish reached 2026-07-31 with zero runs in its entire history while
+    # three consecutive nights failed mid-segment. The salvage path was wired to
+    # the success path, where it is redundant: a segment that completes cleanly
+    # is one whose run goes on to publish a real verdict anyway.
+    #
+    # Note what this does NOT fix. When the RUNNER is lost rather than the step
+    # failing, no further step executes at all -- there is no machine left to
+    # run them on -- and always() cannot help. That was the actual failure mode
+    # on 30606130771, 30607922155 and 30611992344. This change matters for the
+    # segment that fails while its runner is still alive; the dead-runner case
+    # needs the soak to stop dying, not a better guard.
     - name: Aggregate checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      id: aggregate
+      if: always() && inputs.deadline_epoch != ''
       env:
         SOAK_DIR: /tmp/merge-recovery-soak
         OUT_DIR: /tmp/merge-recovery-soak/checkpoint
@@ -90,16 +180,44 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_ATTEMPT: ${{ github.run_attempt }}
         DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+        WINDOW_SECONDS: ${{ inputs.window_seconds }}
+        # Environment, not interpolation -- same rule the publish step below
+        # states explicitly: `${{ }}` inside `run:` is substituted before bash
+        # sees it, so the value is parsed as shell rather than quoted as data.
+        LABEL: ${{ inputs.label }}
       shell: bash -euo pipefail {0}
       run: |
         # in_progress suppresses the verdict: a partial run has fewer
         # iterations, a lower peak RSS and a throughput figure over a shorter
         # window than the baseline it would be compared against, so a verdict
         # here would measure the clock rather than the code.
-        ci-control/scripts/bench/aggregate-perf-report.sh
+        #
+        # Reachable now via always() with the soak step failed, so "the soak
+        # produced nothing at all" is a real case rather than an impossible
+        # one. That is not an error worth reporting -- a segment that died
+        # before writing a single result has nothing to checkpoint, and saying
+        # so once is more useful than failing a second time on top of the
+        # failure that caused it. Report readiness and let the caller decide.
+        if [ ! -d "$SOAK_DIR" ] || [ -z "$(ls -A "$SOAK_DIR" 2>/dev/null)" ]; then
+          echo "no soak output at $SOAK_DIR; nothing to checkpoint"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if ! ci-control/scripts/bench/aggregate-perf-report.sh; then
+          echo "::warning::checkpoint aggregation failed for ${LABEL}; the segment result stands on its own"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "ready=true" >> "$GITHUB_OUTPUT"
 
+    # Gated on the aggregate having actually produced something, which keeps
+    # if-no-files-found: error meaningful. Dropping it to warn would have been
+    # the easy way to survive always(), at the cost of silencing a genuinely
+    # empty checkpoint on the success path -- the same trade that made the
+    # console-history typo invisible for as long as it was.
     - name: Upload checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
@@ -108,7 +226,7 @@ runs:
         if-no-files-found: error
 
     - name: Publish checkpoint (${{ inputs.label }})
-      if: inputs.deadline_epoch != ''
+      if: always() && inputs.deadline_epoch != '' && steps.aggregate.outputs.ready == 'true'
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
         # Passed as environment, never interpolated into the script body:
@@ -116,18 +234,48 @@ runs:
         # containing shell metacharacters would execute rather than be quoted.
         ARTIFACT: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
         KIND: ${{ inputs.kind }}
+        REPO: ${{ github.repository }}
+        REF: ${{ github.event.repository.default_branch }}
       shell: bash -euo pipefail {0}
       run: |
         # Fail-soft, deliberately. A checkpoint is a convenience; the run's real
         # result is published at the end regardless. Losing a mid-run update
         # must never take down a soak that is otherwise healthy, so a failure
         # here is a warning and the next segment starts anyway.
-        if gh workflow run soak-checkpoint-publish.yml \
-             --field run_id="${GITHUB_RUN_ID}" \
-             --field run_attempt="${GITHUB_RUN_ATTEMPT}" \
-             --field artifact="${ARTIFACT}" \
-             --field kind="${KIND}"; then
-          echo "checkpoint publish dispatched for ${ARTIFACT}"
-        else
-          echo "::warning::could not dispatch the checkpoint publish for ${ARTIFACT}; the soak continues and its final result still publishes normally"
+        dispatch_checkpoint() {
+          local payload response http_status api_message
+          [ -n "${GH_TOKEN:-}" ] || return 1
+          payload="$(jq -cn \
+            --arg ref "$REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg artifact "$ARTIFACT" \
+            --arg kind "$KIND" \
+            '{ref:$ref,inputs:{run_id:$run_id,run_attempt:$run_attempt,artifact:$artifact,kind:$kind}}')" || return 1
+          response="$(mktemp)" || return 1
+          http_status=000
+          if ! http_status="$(curl --silent --show-error \
+            --output "$response" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --data "$payload" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/soak-checkpoint-publish.yml/dispatches")"; then
+            http_status=000
+          fi
+          if [ "$http_status" = 204 ]; then
+            rm -f "$response"
+            echo "checkpoint publish dispatched for ${ARTIFACT}"
+            return 0
+          fi
+          api_message="$(jq -r '.message? // empty | strings | gsub("[\\r\\n]"; " ")' "$response" 2>/dev/null || true)"
+          rm -f "$response"
+          echo "::warning::checkpoint publish dispatch failed with HTTP ${http_status}; the soak continues and its final result still publishes normally"
+          [ -z "$api_message" ] || echo "::notice::GitHub API response: ${api_message}"
+        }
+        if ! dispatch_checkpoint; then
+          echo "::warning::checkpoint publish setup failed; the soak continues and its final result still publishes normally"
         fi

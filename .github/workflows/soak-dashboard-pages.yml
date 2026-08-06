@@ -7,6 +7,36 @@ on:
       - .github/dashboard/**
       - .github/workflows/soak-dashboard-pages.yml
   workflow_dispatch:
+    inputs:
+      remove_run_id:
+        description: Run ID to remove from one dashboard history
+        required: false
+        default: ""
+        type: string
+      restore_run_id:
+        description: Run ID whose final report becomes latest after removal
+        required: false
+        default: ""
+        type: string
+      restore_run_attempt:
+        description: Restore run attempt
+        required: false
+        default: "1"
+        type: string
+      restore_duration_seconds:
+        description: Restore run artifact duration component
+        required: false
+        default: ""
+        type: string
+      restore_series:
+        description: Series to repair
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - daily
+          - weekend
 
 permissions:
   contents: read
@@ -17,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write
@@ -36,6 +67,12 @@ jobs:
         shell: bash -euo pipefail {0}
         env:
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          GH_TOKEN: ${{ github.token }}
+          REMOVE_RUN_ID: ${{ inputs.remove_run_id }}
+          RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
+          RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
+          RESTORE_DURATION_SECONDS: ${{ inputs.restore_duration_seconds }}
+          RESTORE_SERIES: ${{ inputs.restore_series }}
         run: |
           # Bootstrap/refresh deploy: publish the dashboard shell while
           # preserving any data already published by the weekend soak's
@@ -53,9 +90,19 @@ jobs:
           # outcome (outage, timeout, rate limit, 5xx) is transient, and
           # treating it as "no data" would republish an empty dashboard
           # over real soak history — so abort instead.
+          # THIRD carry-forward list. The other two are in
+          # merge-recovery-soak.yml and soak-checkpoint-publish.yml, and all
+          # three must name every published file: whichever publisher runs last
+          # defines the site, so a file missing from one list is deleted the
+          # next time that publisher fires. This job is triggered by any
+          # .github/dashboard/** push, so a dashboard edit alone is enough to
+          # drop anything omitted here. Add new data files to all three.
           for f in history.json latest-summary.json latest-verdict.json latest-report.md \
                    history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-                   latest-report-daily.md; do
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -74,7 +121,10 @@ jobs:
           # body that happens to be valid JSON would pass here and be rejected
           # there, which is how the two drift apart.
           for f in latest-summary.json latest-verdict.json \
-                   latest-summary-daily.json latest-verdict-daily.json; do
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
               echo "::error::published ${f} is not a JSON object; refusing to republish it"
@@ -105,6 +155,55 @@ jobs:
                 exit 1
               }
             done
+          done
+          if [ -n "$REMOVE_RUN_ID" ]; then
+            case "$REMOVE_RUN_ID/$RESTORE_RUN_ID/$RESTORE_RUN_ATTEMPT/$RESTORE_DURATION_SECONDS" in
+              *[!0-9/]*|*//*|/*|*/) echo "::error::dashboard repair inputs must be non-empty integers"; exit 1 ;;
+            esac
+            case "$RESTORE_SERIES" in
+              daily|weekend) ;;
+              *) echo "::error::restore_series must be daily or weekend"; exit 1 ;;
+            esac
+            artifact="merge-recovery-soak-${RESTORE_DURATION_SECONDS}s-${RESTORE_RUN_ID}-${RESTORE_RUN_ATTEMPT}"
+            gh run download "$RESTORE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir restore
+            SITE_DIR=site/data \
+            RESTORE_REPORT_DIR=restore/report \
+            REMOVE_RUN_ID="$REMOVE_RUN_ID" \
+            RESTORE_RUN_ID="$RESTORE_RUN_ID" \
+            RESTORE_RUN_ATTEMPT="$RESTORE_RUN_ATTEMPT" \
+            RESTORE_SERIES="$RESTORE_SERIES" \
+              bash scripts/bench/restore-soak-dashboard-run.sh
+          fi
+          # Seed a grey "no data" badge for any series that has not published
+          # one, exactly as the reports below are seeded.
+          #
+          # README.md renders four shields.io endpoint badges from these files
+          # and documents "any badge grey | ... no data published for that
+          # series yet". That state did not exist: shields renders a missing
+          # endpoint as "resource not found", so the four badges at the top of
+          # the README have read as errors since badge generation was added in
+          # db530ec5 (2026-07-29) — no soak has completed since, so no
+          # badge-*.json was ever produced, and the publisher's copy is
+          # existence-guarded so it skipped silently. The documented graceful
+          # degradation was never implemented.
+          #
+          # These are placeholders, not fallbacks: the soak publisher overwrites
+          # them the moment a run produces real ones, and the carry-forward loop
+          # above then preserves the real values. Message and colour are copied
+          # from the aggregator's own no-data branches so the badge does not
+          # change shape when data arrives.
+          for spec in badge-soak.json:'soak · master' \
+                      badge-soak-daily.json:'soak · dev' \
+                      badge-stability.json:stability \
+                      badge-stability-daily.json:stability \
+                      badge-perf.json:perf \
+                      badge-perf-daily.json:perf; do
+            f="${spec%%:*}"
+            [ -e "site/data/${f}" ] && continue
+            jq -cn --arg label "${spec#*:}" \
+              '{schemaVersion: 1, label: $label, message: "no data", color: "lightgrey"}' \
+              > "site/data/${f}"
+            echo "seeded placeholder ${f}"
           done
           test -s site/data/latest-report.md \
             || echo 'No soak report yet — the first successful weekend soak publishes one.' \

@@ -1,0 +1,173 @@
+name: Soak Signal
+
+# Asks a RUNNING soak to publish now.
+#
+# A soak publishes only at a segment boundary, and those boundaries are fixed
+# Pacific instants (07:30 / 13:00). A run that starts off that grid can go
+# hours with nothing on the dashboard, and a 60h weekend run is dark for its
+# first twelve. This makes a boundary reachable on demand.
+#
+# The signal is a freeform tag on the soak's own VM. The soak reads it with
+# instance-principal auth using the OCID it takes from IMDSv2 -- the same
+# mechanism it already uses to exempt itself from the reaper -- so nothing new
+# is trusted and no new credential is granted.
+#
+# Two limits worth knowing before relying on this:
+#
+#   1. It only affects a run that is ALREADY EXECUTING, and only one whose
+#      checkout contains the poller. A soak runs the script it checked out at
+#      launch, so this cannot help a run that started before this merged.
+#
+#   2. `checkpoint` needs a segment boundary to publish from. The final segment
+#      has none -- the soak refuses the request there rather than ending the
+#      run and publishing nothing. A run with no scheduled checkpoints is all
+#      final segment, so use `finalize` for those.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: >-
+          checkpoint = publish now and keep running (needs a non-final segment).
+          finalize = stop and publish a full verdict + history entry.
+        required: true
+        type: choice
+        options:
+          - checkpoint
+          - finalize
+      run_id:
+        description: >-
+          Soak run to signal. Empty = the newest soak with a RUNNING tagged VM,
+          which is almost always what you want.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Same compartment literal as ci-runner-reaper.yml and merge-recovery-soak.yml.
+  # check-workflow-invariants.sh asserts every literal names the same one.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_VERSION: "3.89.1"
+
+jobs:
+  signal:
+    name: Signal running soak
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 10
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION"
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/key.pem
+          CFG
+
+      - name: Tag the soak VM
+        shell: bash -e {0}
+        env:
+          # Environment, never interpolated into the script body: `${{ }}` is
+          # substituted before bash sees it, so a value with shell
+          # metacharacters would execute rather than be quoted.
+          ACTION: ${{ inputs.action }}
+          WANT_RUN: ${{ inputs.run_id }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          case "$ACTION" in
+            checkpoint|finalize) ;;
+            *) echo "::error::unrecognised action: $ACTION"; exit 1 ;;
+          esac
+          case "$WANT_RUN" in
+            ''|*[0-9]*) ;;
+          esac
+          if [ -n "$WANT_RUN" ] && ! [[ "$WANT_RUN" =~ ^[0-9]+$ ]]; then
+            echo "::error::run_id must be numeric"; exit 1
+          fi
+          # List and filter separated: piping the CLI into jq under 2>/dev/null
+          # makes a credentials fault, an outage and "no soak is running" the
+          # same empty answer -- and this one ends with "nothing to signal".
+          if ! listing="$(oci compute instance list \
+               --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json 2>&1)"; then
+            printf '%s\n' "$listing" | tail -20
+            echo "::error::could not list instances; cannot tell a missing soak from an unreadable compartment"
+            exit 1
+          fi
+          # Newest RUNNING soak-tagged VM, optionally pinned to one run. The
+          # github-run-key tag is "<run_id>-<attempt>", so match the prefix.
+          if ! iid="$(printf '%s' "$listing" | jq -r --arg want "$WANT_RUN" '
+               [ .data[]
+                 | select(."lifecycle-state" == "RUNNING")
+                 | select(."freeform-tags".purpose == "soak")
+                 | select($want == "" or ((."freeform-tags"["github-run-key"] // "") | startswith($want + "-")))
+               ]
+               | sort_by(."time-created") | last | .id // empty' 2>&1)"; then
+            printf '%s\n' "$iid" | tail -10
+            echo "::error::could not parse the instance listing"
+            exit 1
+          fi
+          if [ -z "$iid" ]; then
+            echo "::error::no RUNNING soak-tagged instance${WANT_RUN:+ for run $WANT_RUN}; nothing to signal"
+            exit 1
+          fi
+          name="$(printf '%s' "$listing" | jq -r --arg i "$iid" '.data[]|select(.id==$i)|."display-name"')"
+          echo "signalling $ACTION to $name"
+          # Read-modify-write. --freeform-tags REPLACES the whole map, so a
+          # blind write erases purpose/series/soak-deadline-epoch and hands the
+          # reaper a VM with no exemption -- it would be terminated at the 2h
+          # age bound mid-soak. Same care as the soak's own self-tag step.
+          if ! existing="$(oci compute instance get --instance-id "$iid" \
+               --query 'data."freeform-tags"' --raw-output 2>&1)"; then
+            printf '%s\n' "$existing" | tail -10
+            echo "::error::could not read current tags; refusing to write a tag map built from a failed read"
+            exit 1
+          fi
+          case "$existing" in ''|null) existing='{}' ;; esac
+          if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+            echo "::error::current tags did not parse as a JSON object; refusing to overwrite them"
+            exit 1
+          fi
+          merged="$(jq -cn --argjson cur "$existing" --arg v "${ACTION}:$(date +%s)" \
+            '$cur + {"soak-signal": $v}')"
+          oci compute instance update --instance-id "$iid" --force \
+            --freeform-tags "$merged" >/dev/null
+          echo "tagged soak-signal=${ACTION}; picked up within ~30s, acted on at the next iteration boundary"
+          if [ "$ACTION" = "finalize" ]; then
+            echo "::warning::finalize ends the run early -- remaining segments exit immediately and the run publishes a full verdict"
+          fi
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          if [ -d ~/.oci ]; then
+            find ~/.oci -type f -exec shred -u {} + 2>/dev/null || rm -rf ~/.oci
+            rm -rf ~/.oci
+          fi

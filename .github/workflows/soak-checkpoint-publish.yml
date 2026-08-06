@@ -95,15 +95,25 @@ jobs:
           # The soak run is still in progress. Artifacts are readable as soon as
           # they finish uploading, but the dispatch can outrun that, so retry a
           # few times before giving up.
+          #
+          # --repo is load-bearing: this step's working directory is not a git
+          # checkout (the checkout lands in ci-control/), and without it every
+          # gh invocation dies on "failed to determine base repo" before ever
+          # reaching the API — which run 30716000285 then reported as five
+          # rounds of "artifact not ready" against an artifact that existed.
+          # The real error is echoed per attempt so a recurrence names itself.
           for attempt in 1 2 3 4 5; do
-            if gh run download "$RUN_ID" --name "$ARTIFACT" --dir checkpoint; then
+            if download_err="$(gh run download "$RUN_ID" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --name "$ARTIFACT" --dir checkpoint 2>&1)"; then
               break
             fi
+            printf 'attempt %s failed: %s\n' "$attempt" "$download_err"
             if [ "$attempt" = "5" ]; then
               echo "::error::artifact ${ARTIFACT} not readable on run ${RUN_ID} after 5 attempts"
               exit 1
             fi
-            echo "attempt ${attempt}: artifact not ready, retrying"
+            echo "attempt ${attempt}: retrying"
             sleep 15
           done
           test -s checkpoint/weekly-summary.json || {
@@ -145,7 +155,10 @@ jobs:
           cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           for f in history.json latest-summary.json latest-verdict.json latest-report.md \
                    history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-                   latest-report-daily.md; do
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -163,7 +176,10 @@ jobs:
               echo "::error::published ${f} is not a JSON array; refusing to replace it"; exit 1; }
           done
           for f in latest-summary.json latest-verdict.json \
-                   latest-summary-daily.json latest-verdict-daily.json; do
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
             [ -e "site/data/${f}" ] || continue
             jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
               echo "::error::published ${f} is not a JSON object; refusing to republish it"; exit 1; }
@@ -219,6 +235,15 @@ jobs:
           cp checkpoint/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
           cp checkpoint/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
           cp checkpoint/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
+          # Badge is cosmetic, so it is deliberately absent from the
+          # "history exists but latest-* is missing" abort above: a README badge
+          # must never be able to block publishing the dashboard itself. An
+          # older soak whose aggregator predates badge.json simply leaves the
+          # previously published badge in place.
+          for b in badge:badge-soak badge-stability:badge-stability badge-perf:badge-perf; do
+            src="checkpoint/${b%%:*}.json"
+            [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
+          done
           echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload Pages artifact

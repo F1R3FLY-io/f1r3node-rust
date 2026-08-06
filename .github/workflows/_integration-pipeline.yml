@@ -44,7 +44,7 @@ env:
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: 06f2020cc6c14c035c5bb08bffebc0ecad0294d9
+  SYSTEM_INTEGRATION_REF: 66de4f95141cbef9c1308d58fbb872b66cf75197
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -104,6 +104,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -254,16 +269,23 @@ jobs:
             --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
-      # TEMPORARY DIAGNOSTIC — remove before merging this PR.
+      # Records WHICH credential store actually supplied this run, because the
+      # answer is not observable any other way and got this pipeline wrong twice
+      # on 2026-07-29. An empty secret and a malformed one produce the identical
+      # OCI CLI error ("tenancy | malformed | this must be an OCID"), so a failure
+      # here is ambiguous between "the environment is misconfigured" and "the
+      # values never arrived" — a distinction that took three CI runs to settle
+      # without this step.
       #
-      # Determines which store actually supplies these credentials. Prints only a
-      # byte length and a truncated SHA-256 per value: GitHub masks secret values
-      # in logs but not digests, so this distinguishes "empty" (delivery failed)
-      # from "present but unexpected" (a different store won) without disclosing
-      # anything. Compare the digests against the values stored in the
-      # oci-credentials environment. Runs before the config step so it still
-      # reports when that step fails.
-      - name: Diagnose credential delivery (temporary)
+      # Discloses nothing. Only a byte length and a truncated SHA-256 are printed;
+      # GitHub masks secret values in logs but not digests, which is exactly the
+      # property that makes this useful: `len=0` means delivery failed, and a
+      # digest mismatch against the value stored in the oci-credentials
+      # environment means a different store won.
+      #
+      # Deliberately ahead of the config step below, so it still reports when that
+      # step is the thing that fails.
+      - name: Report credential delivery
         shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
@@ -422,6 +444,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
         uses: actions/checkout@v4
@@ -519,6 +556,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -532,55 +584,39 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # 40400-40455 sit inside the kernel ephemeral range (32768-60999); a
-        # transient outbound connection can grab one as its source port and
-        # fail the bind with "address already in use". Reserving them excludes
-        # them from ephemeral allocation. Reservation only stops NEW
-        # allocations — a socket that grabbed a port in the range before this
-        # step ran (runner provisioning, artifact download) still holds it
-        # (observed: run 29629049175, validator2 bind on 40420 failing with
-        # the reservation already in place). Wait for the range to drain
-        # (TIME_WAIT <= 60s) before starting anything that binds.
-        run: |
-          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
-          for i in $(seq 1 18); do
-            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
-            [ "$busy" -eq 0 ] && exit 0
-            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: sockets still holding node ports after 90s:"
-          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start standalone node
         shell: bash -ex {0}
-        run: docker compose -f docker/standalone.yml up -d
+        run: docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
 
       - name: Wait for Running state
         shell: bash -ex {0}
         run: |
           for i in $(seq 1 60); do
-            if docker compose -f docker/standalone.yml logs 2>&1 | grep -q "Making a transition to Running state"; then
+            if docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs 2>&1 | grep -q "Making a transition to Running state"; then
               echo "Node reached Running state"
               break
             fi
             echo "  [${i}] Waiting for Running state..."
             sleep 5
           done
-          docker compose -f docker/standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
 
       - name: Verify HTTP API
         shell: bash -ex {0}
-        run: curl -sf http://localhost:40403/api/status
+        run: curl -sf http://localhost:14403/api/status
 
       - name: Wait for 10 finalized blocks
         shell: bash -ex {0}
         run: |
           for i in $(seq 1 60); do
-            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] LFB: #$LFB"
             if [ "$LFB" -ge 10 ] 2>/dev/null; then
               echo "Reached LFB #$LFB"
@@ -611,7 +647,7 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash {0}
-        run: docker compose -f docker/standalone.yml down -v
+        run: docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml down -v
 
   # Smoke test: full docker-compose shard (bootstrap + validators + observer).
   smoke_docker_shard:
@@ -628,6 +664,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
         uses: actions/download-artifact@v4
@@ -641,27 +692,16 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # Same ephemeral-port hazard as the standalone smoke; observed as
-        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069,
-        # and again in run 29629049175 with the reservation alone in place —
-        # a pre-existing socket survives the sysctl, so also drain the range).
-        run: |
-          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
-          for i in $(seq 1 18); do
-            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
-            [ "$busy" -eq 0 ] && exit 0
-            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: sockets still holding node ports after 90s:"
-          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start shard
         shell: bash -ex {0}
-        run: docker compose -f docker/shard.yml up -d
+        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
 
       - name: Wait for bootstrap Running state
         shell: bash -ex {0}
@@ -680,7 +720,7 @@ jobs:
         shell: bash -ex {0}
         run: |
           for i in $(seq 1 60); do
-            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] LFB: #$LFB"
             if [ "$LFB" -ge 10 ] 2>/dev/null; then
               echo "Reached LFB #$LFB"
@@ -711,7 +751,7 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash {0}
-        run: docker compose -f docker/shard.yml down -v
+        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml down -v
 
   # Smoke test: extract binary from docker image, run locally without docker.
   smoke_local_standalone:
@@ -728,6 +768,21 @@ jobs:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
           persist-credentials: false
+          # Fork PRs reach this pipeline through ci-fork-pr.yml's
+          # pull_request_target, and recent actions/checkout releases refuse to
+          # check out fork code from that trigger without this opt-in. Nothing
+          # changed here — the pin is the moving `@v4` tag, so the fork lane
+          # broke upstream and every fork PR has died at Clone Repository since.
+          #
+          # The opt-in is sound only because its premises are machine-enforced,
+          # not merely conventional. check-workflow-invariants.sh asserts that
+          # this job gates on await_approval (fork code is fetched only after a
+          # maintainer reviews the diff), that credentials are confined to
+          # launch_ephemeral_runners (which never checks out the code under
+          # test), and that `persist-credentials: false` is set right here. The
+          # workflow file itself executes from the base branch, so fork code
+          # cannot alter what runs. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
 
       - name: Install just
         shell: bash -ex {0}
@@ -764,30 +819,30 @@ jobs:
         shell: bash -ex {0}
         run: just setup-standalone
 
-      - name: Reserve node host ports
+      - name: Check node host ports
         shell: bash -e {0}
-        # Same ephemeral-port hazard as the docker smokes: the node binary
-        # binds 40400-40405 directly on the host. Reservation + drain, same
-        # rationale as the docker smoke steps above.
-        run: |
-          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
-          for i in $(seq 1 18); do
-            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
-            [ "$busy" -eq 0 ] && exit 0
-            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
-            sleep 5
-          done
-          echo "FAIL: sockets still holding node ports after 90s:"
-          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
-          exit 1
+        # Extracted to .github/scripts/check-node-ports.sh: this ran
+        # verbatim in all three smoke jobs, so a fix had to be applied
+        # three times or the copies silently diverged.
+        run: .github/scripts/check-node-ports.sh 14400 14455
 
       - name: Start standalone node
         shell: bash -ex {0}
         run: |
+          # Same reason as docker/ci-ports.*.yml: the defaults (40400-40405) sit
+          # inside the ephemeral range the Actions agent draws from. This job
+          # binds on the host directly, so the ports move via CLI flags rather
+          # than a compose mapping.
           ./target/release/node run -s \
             --config-file=run-local/conf/standalone.conf \
             --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
             --host=localhost \
+            --protocol-port=14400 \
+            --api-port-grpc-external=14401 \
+            --api-port-grpc-internal=14402 \
+            --api-port-http=14403 \
+            --discovery-port=14404 \
+            --api-port-admin-http=14405 \
             --no-upnp \
             > /tmp/node-stdout.log 2>&1 &
           echo $! > /tmp/node.pid
@@ -808,13 +863,13 @@ jobs:
 
       - name: Verify HTTP API
         shell: bash -ex {0}
-        run: curl -sf http://localhost:40403/api/status
+        run: curl -sf http://localhost:14403/api/status
 
       - name: Wait for 10 finalized blocks
         shell: bash -ex {0}
         run: |
           for i in $(seq 1 60); do
-            LFB=$(curl -sf http://localhost:40403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] LFB: #$LFB"
             if [ "$LFB" -ge 10 ] 2>/dev/null; then
               echo "Reached LFB #$LFB"

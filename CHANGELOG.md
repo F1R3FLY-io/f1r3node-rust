@@ -4,6 +4,161 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.45] - 2026-08-02
+
+### Bug Fixes
+
+- enforce scheduled branch routing
+- harden canary recovery and dashboard repair
+- harden host guardian per PR #190 review
+- fail closed on host protection; repair checkpoint, bench, and dashboard paths
+
+### Miscellaneous
+
+- align remaining SYSTEM_INTEGRATION_REF pin sites to 66de4f95
+- pin soak harness to system-integration 66de4f95 (breach marker contract)
+
+### Style
+
+- format soak validation scripts
+
+
+## [0.4.44] - 2026-08-01
+
+### Bug Fixes
+
+- address soak checkpoint review
+- restore soak checkpoint publishing
+
+
+## [0.4.43] - 2026-08-01
+
+### Miscellaneous
+
+- log effective host protection limits
+
+
+## [0.4.42] - 2026-08-01
+
+### Documentation
+
+- normalize ToDos.md to the epic/task standard
+
+
+## [0.4.41] - 2026-08-01
+
+### Bug Fixes
+
+- move smoke-test host ports out of the ephemeral range
+
+### Documentation
+
+- close the runner-loss incident — root cause and disposition
+- correct host port check guidance
+
+### Refactoring
+
+- extract the node host port check to a shared script
+
+
+## [0.4.39] - 2026-08-01
+
+### Bug Fixes
+
+- avoid blocking cold start on mergeable snapshots
+
+### Documentation
+
+- explain mergeable replay backstop
+
+
+## [0.4.38] - 2026-08-01
+
+### Features
+
+- let an operator ask a running soak to publish
+
+
+## [0.4.36] - 2026-07-31
+
+### Bug Fixes
+
+- seed grey badges so the README stops showing 'resource not found'
+
+
+## [0.4.35] - 2026-07-31
+
+### Bug Fixes
+
+- stop two more error-suppressions from reading as normal results
+- key the post-mortem by run attempt; stop excusing capture failures
+- register the runner exclusively; make the pin bind
+- abandon the poached runner instead of terminating it
+- reclaim the runner when the registration race is lost
+- fail fast when the exclusive label lands after a poach
+- let a failed segment still publish its checkpoint
+- stop the post-mortem lookup from reading failure as absence
+- give the soak an exclusive runner, and fix the console-history call
+- locate the post-mortem instance by tag, not job output
+
+
+## [0.4.34] - 2026-07-31
+
+### Bug Fixes
+
+- repair the reaper syntax error and gate the whole class
+- pin system-integration past the idle-watchdog fix
+- make the memory guards fire before the kernel OOM killer
+- tag the runner the job actually runs on, not the one we launched
+- restore the fork PR lane broken by actions/checkout's new guard
+
+### CI
+
+- capture OCI console history when the soak runner dies mid-run
+
+
+## [0.4.33] - 2026-07-30
+
+### Bug Fixes
+
+- require both workflows to pin the OCID; never write tags on a failed read
+- close the non-finite deadline hole in the reaper's exemption
+- retry the reaper tag through OCI's provisioning conflict
+
+### Documentation
+
+- cross-reference the pinned compartment OCID; record TASK-010-8
+
+
+## [0.4.32] - 2026-07-30
+
+### Bug Fixes
+
+- merge reaper tags instead of replacing; bound the restart window client-side
+- close the restart-mode holes found in review; record follow-ups
+- never auto-restart a cancelled soak
+- size RSS ceiling to host, exempt live soak runners from the reaper
+- drop mid-loop errexit so a failed iteration cannot kill the segment
+
+### Documentation
+
+- record the system-integration agent's reply and the ceiling-default analysis
+- document restart mode, the RSS ceiling and the reaper exemption
+- document stability and performance badges
+
+### Features
+
+- add operator script to restart a soak within its window
+- stamp restarted runs with covered span vs nominal window
+- restart a failed soak within its original scheduling window
+- publish stability and performance badges
+- show soaked commit and version, make badges reflect real state
+
+### Style
+
+- stack the soak charts 4 -> 2 -> 1 for narrow viewports
+
+
 ## [0.4.31] - 2026-07-30
 
 ### Bug Fixes
