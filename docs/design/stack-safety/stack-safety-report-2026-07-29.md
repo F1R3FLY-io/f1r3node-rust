@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@2fe2a2c4` (recursive-carrier lifecycle plus operational, guard, receive-traversal, parallel-hash, and send-canonicalization closure; §5.18)
+**Companion decision head** `mettail-rust@c875ab94` (recursive-carrier lifecycle plus operational, Rholang, AST/grammar, and token-codec closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -42,7 +42,9 @@ constant-time read of incrementally maintained, byte-identical lanes, retains ow
 across binary folds, and carries multiplicity in the flattening worklist rather than expanding it into
 repeated jobs. `mettail-rust@2fe2a2c4` closes the surface `runtime.rs` send-sugar canonicalizer SCC
 with one heterogeneous post-order machine; fresh file-scoped analysis reports zero production direct
-or mutual recursion there. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+or mutual recursion there. `mettail-rust@c875ab94` then removes the AST grammar-shape and token-tree
+recursion, replaces nested token-codec scratch copies with one backpatched buffer, and makes malformed
+decode and format-length failures explicit. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -129,6 +131,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G17** | `mettail-rust@0aaac1c0` | mettail | receive collection patterns: lists, ordinary maps, surface path-map set/map modes, read/write zippers, greedy sets, and backtracking bags | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** list/map/path-map levels and **4,096** bag elements on **256 KiB**; direct gate **0.25 s / 51,216 KiB** | **yes**; zero production recursion in `receive.rs` | [5.18.16](#51816-receive-collection-pattern-closure-ss-g17) |
 | **SS-G18** | `mettail-rust@2e3ae94d` | mettail | `HashBag` structural hash summaries, owned `PPar` merge, and multiplicity-compressed parallel flattening | completed-bag hash $`\Theta(n) \rightarrow \Theta(1)`$; left-fold merge $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** merges on **256 KiB** in **0.11 s / 39,096 KiB** | **yes** for the former merge recursion; hash stream and multiset unchanged | [5.18.17](#51817-parallel-hash-and-multiplicity-closure-ss-g18) |
 | **SS-G19** | `mettail-rust@2fe2a2c4` | mettail | surface send-sugar canonicalization: `Proc`/`Name`, query desugaring, binders, collections, and parallel normalization | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** unary/list/parallel levels on **256 KiB**; direct gate **0.09 s / 51,660 KiB** | **yes**; zero production direct or mutual recursion in `runtime.rs` | [5.18.18](#51818-surface-send-canonicalizer-closure-ss-g19) |
+| **SS-G20** | `mettail-rust@c875ab94` | mettail | AST grammar-shape `syn::Expr` walks, regex token rendering, and compact token-tree encode/decode | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; nested codec copy work $`\Theta(d^2) \rightarrow \Theta(d)`$; three **20,000**-depth gates on **256 KiB** | **yes**; zero production direct or mutual recursion in all three files | [5.18.19](#51819-ast-grammar-and-token-codec-closure-ss-g20) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3503,6 +3506,72 @@ edges, skips and fails zero files, and reports **zero direct recursion and zero 
 `runtime.rs`. SS-G19 changes no canonical process under alpha-equivalence, parallel multiplicity,
 child evaluation order, wire byte, acceptance rule, ruled semantic, token charge, EPathMap
 representation, or PathMap implementation.
+
+#### 5.18.19 AST grammar and token-codec closure [SS-G20]
+
+`mettail-rust@c875ab94` closes ten input-shaped recursive traversals in the `ast` crate. Seven
+`syn::Expr` classifiers in `grammar_shapes.rs` inspect fold aliases and send-channel wrappers. Six
+are unary spines and now advance a borrowed cursor in a loop. The branching purity classifier uses a
+borrowed worklist; it reverses only each constructor's newly appended argument slice, so rejection
+remains left-to-right and short-circuits on the same first inadmissible node as the recursive
+`Iterator::all` equation. `language/parse.rs` renders nested regex token groups with explicit
+`Visit`/`Close` jobs. No production walker retains a recursive fallback.
+
+The compact `proc_macro2::TokenStream` codec receives a structural improvement as well as a stack
+conversion. Its former group encoder recursively allocated a child scratch buffer, copied that
+buffer into its parent scratch buffer, and repeated the copy at every nesting level. A depth-$`d`$
+unary group spine therefore copied $`\Theta(d^2)`$ bytes. The replacement writes every token once to
+one output buffer, leaves a four-byte group-length slot, and backpatches that slot from a
+`FinishGroup` continuation after the children have been emitted:
+
+```text
+ENCODE(stream):
+    output := []
+    jobs := reverse(stream).map(Visit)
+    while jobs is nonempty:
+        if pop(jobs) is Visit(Group(delimiter, children)):
+            write delimiter tag and reserve u32 length
+            push FinishGroup(length_slot, child_start)
+            push children in reverse source order
+        else if it is FinishGroup(length_slot, child_start):
+            backpatch output.length - child_start at length_slot
+        else:
+            write the leaf's tag, length where applicable, and bytes
+```
+
+Decoding uses a stack of frames `(end_offset, delimiter, completed_children)`. A group frame may
+finish only at its declared end offset; a child length that crosses that boundary is rejected before
+any slice access. `try_decode` reports malformed tags, spacing, punctuation, UTF-8, identifier and
+literal spellings, truncated fields, arithmetic overflow, and parent-boundary violations with a byte
+offset. `try_encode` reports the format's inherent `u16` leaf and `u32` group bounds instead of the
+old unchecked `as` truncation. Compatibility `encode`/`decode` wrappers retain the established API,
+but well-engineered callers can use the fallible surfaces without an unwind.
+
+For $`n`$ token nodes and $`b`$ encoded bytes, encoding and decoding are $`\Theta(n+b)`$ time and
+$`O(n+b)`$ output plus explicit frontier storage; both consume $`O(1)`$ native stack. The grammar
+unary walkers are $`\Theta(d)`$ time and $`O(1)`$ auxiliary space. The branching classifier is
+$`\Theta(n)`$ time and $`O(f)`$ heap frontier for maximum pending width $`f`$.
+
+Three test-only recursive references under `ast/tests/support/` reproduce the superseded expression,
+token-render, and codec equations on bounded corpora. Codec encoding bytes agree exactly, recursive
+and iterative decoders reconstruct the same token stream, malformed parent lengths are refused, and
+an oversized literal is reported rather than length-truncated. Independent production gates traverse
+**20,000** nested expression wrappers, token groups, and encoded/decoded groups on **256 KiB** thread
+stacks.
+
+The already-built `ast` library passes **207/207** in **0.28 seconds**, peaks at **144,944 KiB RSS**,
+and swaps zero bytes inside a 1 GiB service. The complete package run passes those 207 library tests
+plus **29/29** integration tests across **12** executables (**236/236 total**) in **24.77 seconds**;
+its maximum process RSS is **371,448 KiB**, its eight-job cgroup peak is **1.3 GiB**, and it swaps zero
+bytes inside a 4 GiB service. Fresh pgmcp analysis accepts 80, 278, and 44 source-level call edges in
+`grammar_shapes.rs`, `language/parse.rs`, and `token_codec.rs`, respectively, and reports **zero direct
+recursion and zero mutual clusters** in every file.
+
+The compact token codec is a proc-macro registry/cache format, not the target node's protobuf or
+bincode surface. SS-G20 changes no generated term for representable input, EPathMap representation,
+PathMap operation, consensus byte, ruled semantic, or token charge. Its only failure-domain change is
+corrective: an unrepresentable leaf can no longer silently truncate its declared length, and malformed
+bytes have an explicit fallible result.
 
 ---
 
