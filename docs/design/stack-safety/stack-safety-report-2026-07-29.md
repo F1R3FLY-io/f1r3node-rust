@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@39e4b024` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@da638fe3` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
@@ -56,7 +56,10 @@ and substitution components now use explicit work/value machines. Fresh file-sco
 zero production direct or mutual recursion in `dovetail_report.rs`. `mettail-rust@39e4b024` then
 closes the mutually recursive Dovetail set-automaton state/application evaluator with one explicit
 cache-preserving machine. Fresh whole-project analysis reports **100 direct findings and 6 mutual
-clusters**, with no residual in `dovetail/src/set_automaton.rs`. No production path uses
+clusters**, with no residual in `dovetail/src/set_automaton.rs`. `mettail-rust@da638fe3` then
+qualifies explicit `std::mem::drop` calls in the already-iterative lifecycle implementations,
+removing 14 false direct findings and one false mutual cluster; the current census is **86 direct
+findings and 5 mutual clusters**. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -3031,10 +3034,12 @@ This row closes the **named lifecycle and weighted-MSO operations**, not every p
 SS-G9 subsequently closes the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry that the
 lifecycle census cannot see. Two concrete obligations remain live:
 
-- The wider source-call census still has to close confirmed non-term-family SCCs in LTL parsing and
-  walkers and the guard-substrate operand grammar, then re-derive the whole workspace rather than
-  treating this list as exhaustive. Rholang type inference is closed by
-  [SS-G10](#5189-rholang-type-inference-closure-ss-g10).
+- The wider source-call census remains live. The LTL parser, guard substrate, Rholang inference,
+  Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
+  `mettail-rust@da638fe3` additionally resolves the lifecycle analyzer's name collision between an
+  enclosing `Drop::drop` method and unqualified `std::mem::drop` calls. Fresh whole-project analysis
+  reports **86 direct findings and 5 mutual clusters**; every remaining entry must be converted or
+  demonstrated to be non-production/source-resolution evidence before workspace closure.
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
 
@@ -4250,6 +4255,13 @@ oracle is test-only, and fresh whole-project analysis falls from seven to six mu
 a residual in `dovetail/src/set_automaton.rs`. The remaining direct findings and SCCs stay live until
 each is either converted or shown to be a source-graph ambiguity or non-production oracle and moved
 out of production source scope.
+
+`mettail-rust@da638fe3` then resolves one such source-graph ambiguity across 12 already-converted
+lifecycle files: their explicit field releases now spell `std::mem::drop`, so they cannot bind to the
+enclosing method named `drop`. Existing recursive-oracle and 20,000-level lifecycle gates pass,
+including optional SMT and the persistent `ReductionTrace`; fresh analysis falls from **100/6** to
+**86/5** direct/mutual findings with no residual in the changed files. This changes no executed
+callee and is not allocated a new fix-register row.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
