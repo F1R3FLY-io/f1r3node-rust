@@ -7,9 +7,9 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@0dc135a4` (recursive-carrier lifecycle plus operational,
-Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, and linear-temporal-logic
-(LTL) parser closure;
+**Companion decision head** `mettail-rust@39e4b024` (recursive-carrier lifecycle plus operational,
+Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
+(LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
@@ -53,7 +53,10 @@ recursion, replaces nested token-codec scratch copies with one backpatched buffe
 decode and format-length failures explicit. `mettail-rust@0e508621` closes the Dovetail metapattern
 analysis and lowering family: five direct traversals plus the mutually recursive pattern/term lowering
 and substitution components now use explicit work/value machines. Fresh file-scoped analysis reports
-zero production direct or mutual recursion in `dovetail_report.rs`. No production path uses
+zero production direct or mutual recursion in `dovetail_report.rs`. `mettail-rust@39e4b024` then
+closes the mutually recursive Dovetail set-automaton state/application evaluator with one explicit
+cache-preserving machine. Fresh whole-project analysis reports **100 direct findings and 6 mutual
+clusters**, with no residual in `dovetail/src/set_automaton.rs`. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -146,6 +149,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G22** | `mettail-rust@0dc135a4` | mettail | PraTTaIL LTL precedence parser: implication, disjunction, conjunction, temporal operators, unary prefixes, and parenthesized primaries | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(t)`$ time and heap for $`t`$ tokens; four **20,000**-depth gates on **256 KiB** | **yes**; six-function parser SCC and three direct-recursion findings absent from the fresh production call graph | [5.18.21](#51821-ltl-precedence-parser-closure-ss-g22) |
 | **SS-G23** | `mettail-rust@6e0e414a`, `2286ac57` | mettail | reflected metadata rendering: mutually recursive `Pattern`/`PatternTerm` and `SyntaxExpr`/`PatternOp` families plus recursive `TypeExpr` spelling | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; direct output $`\Theta(n+b)`$ time and $`O(d+b)`$ heap for $`n`$ nodes and $`b`$ output bytes; four **20,000**-depth gates on **256 KiB** | **yes**; zero direct or mutual recursion remains in `metadata.rs` | [5.18.22](#51822-reflected-metadata-renderer-closure-ss-g23) |
 | **SS-G24** | `mettail-rust@0e508621` | mettail | Dovetail metapattern analysis and lowering: binder discovery/collapse, collection and substitution detection, constructor collection, ordinary application lowering, and associative-commutative (AC) bag lowering | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(n+b)`$ time and $`O(n+b)`$ output-plus-machine heap; **20,000** levels on **256 KiB**; direct gate **0.70 s / 117,260 KiB** | **yes**; zero direct or mutual recursion remains in `dovetail_report.rs` | [5.18.23](#51823-dovetail-metapattern-analysis-and-lowering-closure-ss-g24) |
+| **SS-G25** | `mettail-rust@39e4b024` | mettail | Dovetail positional set-automaton evaluation: mutually recursive compiled-state and application evaluation | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; exact match/cache/statistics semantics; **20,000** levels on **256 KiB**; direct gate **0.16 s / 33,528 KiB** | **yes**; no direct or mutual recursion remains in `set_automaton.rs` | [5.18.24](#51824-dovetail-set-automaton-evaluator-closure-ss-g25) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3877,6 +3881,72 @@ COMM schedule, charge, EPathMap representation, PathMap operation, protobuf byte
 consensus hash. It adds no production recursive fallback, `RUST_MIN_STACK`, `stacker`, or artificial
 depth limit.
 
+#### 5.18.24 Dovetail set-automaton evaluator closure [SS-G25]
+
+**Defect and scope.** The positional set automaton compiled patterns into a shared directed acyclic
+graph (DAG), but evaluated that DAG through the mutually recursive
+`SetAutomaton::eval_state` / `SetAutomaton::eval_app_state` pair. Pattern depth therefore consumed
+$`\Theta(d)`$ native stack even though compiled states, e-classes, and memoized substitution arrays
+already lived on the heap. The conversion changes only this evaluation mechanism; compilation,
+root-key dispatch, state interning, substitution merging, e-graph canonicalization, and
+associative-commutative matching remain unchanged.
+
+**Architecture and algorithm.** `mettail-rust@39e4b024` replaces the two-function cycle with one
+three-job pushdown automaton. `Evaluate` performs the canonical-class cache lookup or evaluates a
+variable state; `ContinueApp` selects the next matching e-node and schedules its next child;
+`MergeArg` resumes after that child and performs the historical left-to-right Cartesian merge. An
+application frame retains only its state/class identity, node and argument cursors, partial
+substitutions, and completed output. Completed state results retain the same `Rc<[Subst]>` cache
+representation.
+
+```text
+EVALUATE(root_state, root_class):
+    jobs := [Evaluate(root_state, root_class)]
+    values := []
+    while jobs is nonempty:
+        if pop(jobs) is Evaluate(state, class):
+            canonicalize class
+            if cache contains (state, class): push the cached value
+            else if state is a variable: cache and push its singleton substitution
+            else: push ContinueApp(a fresh frame for this state and class)
+        else if the job is ContinueApp(frame):
+            select the next matching node, or cache and return frame.output
+            push MergeArg(frame), then Evaluate(the next child)
+        else if the job is MergeArg(frame):
+            merge the completed child value into frame.partial in historical order
+            resume ContinueApp(frame)
+    return the sole root value
+```
+
+For a pattern state of depth $`d`$, $`O(1)`$ native stack replaces the former $`\Theta(d)`$ call
+stack. The explicit job stack is $`O(d)`$ heap. The substitution cross-products, result storage,
+cache key count, and asymptotic time are unchanged: the conversion neither materializes patterns as
+lists nor changes the set automaton's shared-state DAG.
+
+**Equivalence and anti-vacuity.** The former recursive equations now exist only in
+`dovetail/tests/support/set_automaton_eval_recursive_oracle.rs`. A bounded differential compares the
+complete `SetAutomatonRun` value, so it pins match order, root identifiers, substitutions, cache hits,
+cache misses, root scans, and candidate counts—not merely set equality. Its corpus includes variable
+roots, nullary applications, shared states, nonlinear variables, merged e-classes, and multiple
+e-nodes in one class. The pre-existing property differential additionally compares positional
+matches against a structurally independent recursive pattern matcher.
+
+The deep witness compiles and evaluates one unique-root pattern over a **20,000**-node unary spine on
+a **256 KiB** thread. It returns exactly one match and exactly 20,002 state evaluations. The focused
+set-automaton selection passes **21/21**, including the pre-existing compile oracle and property
+differential; the complete Dovetail library gate passes **115/115**. The isolated already-built deep
+test completes in **0.16 seconds** at **33,528 KiB** maximum RSS inside a 512 MiB cgroup with swap
+disabled. These are runtime figures; no compiler RSS is inferred from them. Clippy succeeds with no
+finding in either changed file (its 21 warnings are pre-existing `mutable_key_type` findings in
+unchanged `rules.rs`).
+
+Fresh pgmcp whole-project production analysis reports **100 direct findings and 6 mutual clusters**,
+down from 7 mutual clusters immediately before this conversion, and reports no direct or mutual
+finding in `dovetail/src/set_automaton.rs`. SS-G25 preserves exact operational results and
+observability and therefore changes no term, reduction, COMM schedule, charge, EPathMap
+representation, PathMap operation, protobuf byte, bincode byte, or consensus hash. It introduces no
+recursive fallback, `RUST_MIN_STACK`, `stacker`, or traversal-depth limit.
+
 ---
 
 ## 6. Discussion
@@ -4174,6 +4244,12 @@ SS-G24 subsequently closes the complete production recursion family in
 `macros/src/gen/runtime/dovetail_report.rs`; file-scoped pgmcp analysis reports zero direct and zero
 mutual findings there. This advances, but does not silently redefine, the wider whole-workspace
 closure obligation stated above.
+
+SS-G25 subsequently closes the Dovetail positional set-automaton evaluator SCC. Its exact recursive
+oracle is test-only, and fresh whole-project analysis falls from seven to six mutual clusters without
+a residual in `dovetail/src/set_automaton.rs`. The remaining direct findings and SCCs stay live until
+each is either converted or shown to be a source-graph ambiguity or non-production oracle and moved
+out of production source scope.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
