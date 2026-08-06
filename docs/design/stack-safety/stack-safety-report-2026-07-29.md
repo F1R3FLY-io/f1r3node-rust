@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@2e3ae94d` (recursive-carrier lifecycle plus operational, guard, receive-traversal, and parallel-hash closure; §5.18)
+**Companion decision head** `mettail-rust@2fe2a2c4` (recursive-carrier lifecycle plus operational, guard, receive-traversal, parallel-hash, and send-canonicalization closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -40,9 +40,9 @@ heterogeneous collection-pattern matcher in the same file. Fresh file-scoped ana
 production direct or mutual recursion there. `mettail-rust@2e3ae94d` then makes `HashBag` hashing a
 constant-time read of incrementally maintained, byte-identical lanes, retains owned parallel bags
 across binary folds, and carries multiplicity in the flattening worklist rather than expanding it into
-repeated jobs. The surface `runtime.rs` send-sugar canonicalizer family remains live. No
-production path uses `contains_par`,
-`RUST_MIN_STACK`, `stacker`, or a
+repeated jobs. `mettail-rust@2fe2a2c4` closes the surface `runtime.rs` send-sugar canonicalizer SCC
+with one heterogeneous post-order machine; fresh file-scoped analysis reports zero production direct
+or mutual recursion there. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -128,6 +128,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G16** | `mettail-rust@5cd89526` | mettail | direct surface receive traversals: parenthesized-name conversion, quote normalization, three-valued guard disposition, and nested parallel flattening | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.05 s / 30,960 KiB** | **yes for the named direct traversals**; collection-pattern matcher remains live | [5.18.15](#51815-direct-surface-receive-traversal-closure-ss-g16) |
 | **SS-G17** | `mettail-rust@0aaac1c0` | mettail | receive collection patterns: lists, ordinary maps, surface path-map set/map modes, read/write zippers, greedy sets, and backtracking bags | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** list/map/path-map levels and **4,096** bag elements on **256 KiB**; direct gate **0.25 s / 51,216 KiB** | **yes**; zero production recursion in `receive.rs` | [5.18.16](#51816-receive-collection-pattern-closure-ss-g17) |
 | **SS-G18** | `mettail-rust@2e3ae94d` | mettail | `HashBag` structural hash summaries, owned `PPar` merge, and multiplicity-compressed parallel flattening | completed-bag hash $`\Theta(n) \rightarrow \Theta(1)`$; left-fold merge $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** merges on **256 KiB** in **0.11 s / 39,096 KiB** | **yes** for the former merge recursion; hash stream and multiset unchanged | [5.18.17](#51817-parallel-hash-and-multiplicity-closure-ss-g18) |
+| **SS-G19** | `mettail-rust@2fe2a2c4` | mettail | surface send-sugar canonicalization: `Proc`/`Name`, query desugaring, binders, collections, and parallel normalization | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** unary/list/parallel levels on **256 KiB**; direct gate **0.09 s / 51,660 KiB** | **yes**; zero production direct or mutual recursion in `runtime.rs` | [5.18.18](#51818-surface-send-canonicalizer-closure-ss-g19) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3348,8 +3349,8 @@ reports **zero direct recursion and zero mutual clusters** in `receive.rs`.
 SS-G17 preserves binding identity, repeated-variable equality, collection size and mode checks,
 zipper focus equality, greedy set commitment, full bag backtracking, and child visitation order. It
 changes no wire bytes, acceptance rule, ruled semantic, token-metering rule, target EPathMap
-representation, or PathMap implementation. The remaining child scope is the source
-`languages/src/rholang/runtime.rs` family.
+representation, or PathMap implementation. The source `languages/src/rholang/runtime.rs` child
+scope closes in SS-G19.
 
 #### 5.18.17 Parallel hash and multiplicity closure [SS-G18]
 
@@ -3425,6 +3426,83 @@ one selected file and skips and fails zero files in each case: `receive.rs` acce
 and reports zero direct or mutual recursion; `runtime.rs` accepts 85 and reports only the still-live
 four-function send-sugar canonicalizer SCC. SS-G18 changes no hash value, multiset, traversal order,
 wire byte, ruled semantic, token charge, EPathMap representation, or PathMap implementation.
+
+#### 5.18.18 Surface send-canonicalizer closure [SS-G19]
+
+`mettail-rust@2fe2a2c4` replaces the four-function `Proc`/`Name` send-sugar canonicalizer SCC in
+`languages/src/rholang/runtime.rs` with one heterogeneous post-order pushdown automaton (PDA). A
+*job* is an explicit continuation: `VisitProc`, `FinishProc`, `VisitName`, `FinishNameQuote`,
+`FinishNew`, `FinishQueryFor`, or `FinishParallel`. The job stack records what the native return
+stack formerly remembered, while separate `Proc` and `Name` value stacks hold completed children.
+Every scheduled visit produces exactly one value of its category; every finish job removes exactly
+the arity it scheduled and produces one parent. This is the machine's balance invariant.
+
+```text
+CANONICALIZE(root):
+    jobs := [VisitProc(root)]
+    proc_values := []
+    name_values := []
+    while jobs is nonempty:
+        job := pop(jobs)
+        if job is Visit(node):
+            push the node's Finish continuation
+            push child visits in reverse recursive-call order
+        else if job is Finish(template):
+            take exactly the scheduled child results
+            rebuild the template's canonical form
+            push the single rebuilt result
+    return the sole process result
+```
+
+The reversal is semantically relevant. Channel visits precede payload visits, receive bodies precede
+their guards, map keys precede values, method receivers precede arguments, and binary operands remain
+left-to-right. Query-shaped `PForUser` first canonicalizes its body, materializes the existing
+`desugar_for_rows` result in a driver-owned typed arena, then schedules that result through the same
+machine. Canonicalized quoted names use a second driver-owned typed arena, so borrowed jobs remain
+valid without unsafe lifetime extension or repeated subtree clones; both arenas and every temporary
+are released with one driver invocation.
+
+`PNew` does not need the old freshen/open/close traversal. Canonicalization neither substitutes a
+variable nor changes binder depth, so it visits the scope's already-closed body, retains the unchanged
+closed pattern, and reconstructs those parts directly. The bounded recursive oracle deliberately
+keeps the superseded `unbind` $`\rightarrow`$ recurse $`\rightarrow`$ `Scope::new` equation and
+compares with alpha-aware `BoundTerm::term_eq`; agreement therefore checks this optimization rather
+than sharing it.
+
+Parallel syntax is handled as one region. An iterative collector records one `(leaf,
+multiplicity)` pair per distinct structural leaf, checked multiplication composes nested bag counts,
+and `FinishParallel` consumes each normalized representative once through `insert_n`. It neither
+expands multiplicity into repeated jobs nor rebuilds an accumulated bag for every binary node. This
+is `HashBag<Proc>` work, not an EPathMap projection: target representation remains exactly
+`Empty | Set(PathMap<()>) | Map(PathMap<Par>)`, and no PathMap source changes.
+
+For a syntax graph containing $`n`$ visited constructor occurrences and maximum pending frontier
+$`f`$, the machine performs $`\Theta(n)`$ jobs, uses $`O(n)`$ result/arena storage in the worst case
+and $`O(f)`$ pending jobs, and consumes $`O(1)`$ native stack. Pgmcp's syntactic complexity heuristic
+labels the worklist-plus-child-loop shape quadratic because it counts lexical loop nesting; that is
+not an asymptotic witness. Each child edge is pushed once and popped once, so the aggregate inner-loop
+work is linear in the traversed edges.
+
+The test-only recursive oracle covers all send-sugar arities, persistent and non-persistent sends,
+quoted and process channels, every scheduled unary and binary operator family, methods, process
+application, drop, list/set/bag/map literals, counted and binary parallel composition, `PNew`, guarded
+receive rows, and query-row desugaring. Every corpus item agrees under alpha-aware equality and is
+idempotent. The deep gate traverses **20,000** unary nodes, **20,000** nested list literals, and a
+**20,000**-edge left-associated parallel spine on a **256 KiB** thread stack without
+`RUST_MIN_STACK`, `stacker`, or a depth limit.
+
+The already-built focused binary passes **2/2** in **0.09 seconds**, peaks at **51,660 KiB RSS**, and
+swaps zero bytes inside a 1 GiB service. The complete already-built `languages` library passes
+**68/68** in **0.26 seconds**, peaks at **119,340 KiB RSS**, and swaps zero bytes under the same cap.
+The eight-job focused Cargo build and test completes in **163.58 seconds**, peaks at **7,006,148 KiB
+maximum process RSS** inside an 8 GiB zero-swap service, and then executes the two tests in **0.09
+seconds**. The build number is a compiler envelope, not a runtime requirement.
+
+Fresh pgmcp analysis covers one of one selected production files, accepts **55** source-level call
+edges, skips and fails zero files, and reports **zero direct recursion and zero mutual clusters** in
+`runtime.rs`. SS-G19 changes no canonical process under alpha-equivalence, parallel multiplicity,
+child evaluation order, wire byte, acceptance rule, ruled semantic, token charge, EPathMap
+representation, or PathMap implementation.
 
 ---
 
