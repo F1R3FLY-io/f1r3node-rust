@@ -1,0 +1,5 @@
+subject	repository_head	command	jobs	memory_max	swap_max	result	wall_seconds	process_max_rss_kib	cgroup_memory_peak	swap_peak	depth	thread_stack_bytes	evidence
+prattail incremental compile	ce60f76f	cargo check -p prattail --jobs 8	8	4G	0	success	0.14	75712	55M	0B	na	na	post-rewrite absolute measurement; no before/after causal claim
+prattail clean isolated compile	ce60f76f	CARGO_TARGET_DIR=<fresh-temporary-directory> cargo check -p prattail --jobs 8	8	4G	0	success	18.32	963228	1.1G	0B	na	na	post-rewrite absolute measurement; systemd cgroup peak is rounded as reported
+recursive lifecycle census	ce60f76f	cargo test -p ast --test recursive_lifecycle_census --jobs 8 -- --nocapture	8	4G	0	success	8.96	na	116.2M	0B	na	na	84 recursive types; 80 ownership components; 542 production Rust files; zero lifecycle exposures
+AnyAlgebra and weighted-MSO focused gates	ce60f76f	cargo test -p prattail --test any_algebra_stack_safety --test weighted_mso_stack_safety --jobs 8	8	4G	0	success	0.11	na	79.4M	0B	20000	262144	11 passed; recursive-oracle differentials included; zero failures

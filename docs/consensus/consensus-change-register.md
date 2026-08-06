@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-04 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-06 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -89,7 +89,7 @@ CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface 
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
-derivation. **47 further changes were examined and retired** with typed reasons — 35 bug fixes, 4
+derivation. **48 further changes were examined and retired** with typed reasons — 36 bug fixes, 4
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -134,7 +134,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 20 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 47 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 48 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -590,8 +590,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **18 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **12 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 47 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 20 + 47 = 67 historical identifiers, none reused.
+resolved under the token model (§3.3). The 48 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 20 + 48 = 68 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3016,7 +3016,7 @@ above is the maintenance mechanism.
 ## 8. Conclusions
 
 1. The register holds **20** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **47** examined
+   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **48** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3151,7 +3151,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 47 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 48 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3177,7 +3177,7 @@ material now lives.
 | `CBR-020` | `9a5521a2`, `2bcfaf87`, `000b95d7` | The cold-store read path becomes fallible and heap-bounded | `EQUIVALENCE_PROVEN` | language identity: 1.88 M malformed inputs agree with the derived oracle (stack-safety report §5.3.3) |
 | `CBR-021` | `b961d7c4` | A malformed consume refuses instead of killing the process | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-022` | `a09f1de2`, `3b265eb7` | Deploy admission owns its discard — a 43,565-byte deploy stops aborting the node | `EQUIVALENCE_PROVEN` | three-leg byte-neutrality; stack-safety report §5.5.3(a) |
-| `CBR-023` | prior set; extended by `mettail-rust@b0aa4e09` | The $`\Theta(\mathrm{depth})`$ conversion programme — living commit set | `EQUIVALENCE_PROVEN` | oracle-gated conversion programme; SS-G7 adds executable oracles and an admission-free Rocq SCC-machine theorem; stack-safety report §5 and its fix register |
+| `CBR-023` | prior set; extended by `mettail-rust@b0aa4e09` and the lifecycle conversion set bookended by `c03e9e04` / `ce60f76f` | The $`\Theta(\mathrm{depth})`$ conversion programme — living commit set | `EQUIVALENCE_PROVEN` | oracle-gated conversion programme; SS-G7 adds executable oracles and an admission-free Rocq SCC-machine theorem; SS-G8 adds recursive-carrier lifecycle oracles, 20,000-level small-stack gates, and the source-derived zero-state census. Stack-safety report §5 and its fix register |
 | `CBR-026` | `2087c043` | `E(S)` — the enabled-rendezvous query and firing a named selection | `DORMANT` | additive trait API with zero consensus-path callers, established mechanically; re-enters the register if wired |
 | `CBR-028` | *not repaired* | OPEN, UNREPAIRED — write-unbounded / read-bounded on a consensus wire | `CLOSED_BY_CBR-044` | the write-unbounded/read-bounded prost asymmetry is mooted by CBR-044's generated decode PDAs (depth-4,096 round trip, no recursion budget); closure recorded in the PathMap report §8 |
 | `CBR-029` | `d8e95fb0` | The pretty printer renders a receive's `where` guard | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -3206,6 +3206,7 @@ material now lives.
 | `CBR-L12` | `f5b2e820` | A pathmap's `EMap` pair order stops being a function of the process's hash seed | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L13` | `ef49d8c2` | `Bytes` lowers to `GByteArray` (field 25), not `GString` (field 3) | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L16` | `mettail-rust@afcc9e8f`, `717efdc5`, `51d84ae3` | Fixed-point identity, remainder, scale refusal, zero, multiplication, and ordered comparison converge on upstream | `BUG_FIX_RULED_NONCONSENSUS` | full six-axis account in [the retired evidence retained with CBR-L14](#retired-evidence-for-cbr-l16); upstream's six refusal sites re-derived at `f1r3node-rust-mettail@419f03fa` |
+| `CBR-L17` | `mettail-rust@ce60f76f` | Weighted MSO (monadic second-order logic) enumeration no longer inherits a `u64` word-length ceiling | `BUG_FIX_RULED_NONCONSENSUS` | arbitrary-length bit-vector odometer; 64/65-position boundary gate, bounded recursive-evaluator differential, and 20,000-depth / 256 KiB stack evidence in stack-safety report §5.18 |
 
 ### B.2 The original commit-level exemptions
 
@@ -3268,6 +3269,7 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; the later measured-neutral CBR-050 brings the living appendix to 47. The re-scope also removed
+to B.1; the later CBR-050 measured-neutral optimization and CBR-L17 ruled bug fix bring the living
+appendix to 48. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

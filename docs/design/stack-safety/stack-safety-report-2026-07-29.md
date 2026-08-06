@@ -4,9 +4,10 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-04
+**Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
+**Companion lifecycle head** `mettail-rust@ce60f76f` (source-derived recursive-carrier census closure; §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
 `SS-Y6` register rows below point there.
@@ -19,7 +20,12 @@ live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C
 converted width subjects and zero production tripwire subjects**. The strengthened hand-written
 recursion census finds **585** recursive components, **50** term-family components across **29** files,
 **20** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
-has no unmeasured traversal. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+has no unmeasured traversal. A separate lifecycle gate at `mettail-rust@ce60f76f` scans **542**
+production Rust files, derives **84** recursively owned types in **80** components, and reports zero
+recursive derive or implicit-`Drop` exposures. That lifecycle result does **not** close the wider
+function-call strongly connected component (SCC) census: operational `AnyAlgebra` re-entry and the
+non-term-family census remain live
+work (§5.18.6, §8.5). No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -51,7 +57,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
+Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are allocated while defects are open**, they are never "class change: yes", and a row is discharged only by a commit that repairs it — never by deletion. Repaired rows remain in the register with their repair SHA and status, preserving the defect history. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -94,6 +100,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-Y1** | introduced `fab6de24`; repaired `6248f156` | mettail | The optional-collection generator defect inside SS-G4: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ★ **repaired**; the generated carrier is classified once and `--all-targets` is no longer blocked | [8.6.1a](#86-the-issue-keyed-residuals-at-their-final-dispositions) |
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
+| **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; zero-state gate `ce60f76f` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **84 types / 80 components / 542 files / zero lifecycle exposures** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -250,7 +257,7 @@ register rows (SS-C5…SS-C11, SS-Y6) and the stack-safety consequences.
   - [8.2 The derived `Drop` — the refuted direct route, and the route taken](#82-the-derived-drop--the-refuted-direct-route-and-the-route-taken)
   - [8.3 `<Par as Clone>::clone` — closed](#83-par-as-cloneclone--closed)
   - [8.4 The one heap measurement that remains unobtainable](#84-the-one-heap-measurement-that-remains-unobtainable)
-  - [8.5 The `mettail-rust` residue — zero live sloped subjects](#85-the-mettail-rust-residue--zero-live-sloped-subjects)
+  - [8.5 The `mettail-rust` measured-slope registry — zero measured slopes, operational recursion still open](#85-the-mettail-rust-measured-slope-registry--zero-measured-slopes-operational-recursion-still-open)
 - [8.6 The issue-keyed residuals, at their final dispositions](#86-the-issue-keyed-residuals-at-their-final-dispositions)
   - [8.6.1 ★★ #162/#189 — the eleven generated drivers converted, and the root cause that unifies #154 with #162](#861--162189--the-eleven-generated-drivers-converted-and-the-root-cause-that-unifies-154-with-162)
   - [8.6.2 The group-skip trap — why the read cap had to outlive the reader](#862-the-group-skip-trap--why-the-read-cap-had-to-outlive-the-reader)
@@ -2825,8 +2832,8 @@ and finalized SHA-256 digests are retained in
 | control | 32.280954 ms | 32.276612 ms | 0.044444 ms | 32.188405–32.436245 ms |
 | native `PathMap<Par>` treatment | **18.730472 ms** | **18.712728 ms** | 0.053772 ms | 18.673604–18.931242 ms |
 
-The mean difference is **−13.550482 ms (−41.98 %)**, 95 % confidence interval
-**[−13.569871, −13.531093] ms**, one-sided $`p=9.8799\times10^{-210}`$, Cohen's
+The mean difference is $`-13.550482\,\mathrm{ms}\;(-41.98\,\%)`$, with 95 % confidence interval
+$`[-13.569871,-13.531093]\,\mathrm{ms}`$, one-sided $`p=9.8799\times10^{-210}`$, Cohen's
 $`d=-274.697`$. Both samples reject normality, so the prescribed non-parametric robustness result is
 material: Mann–Whitney $`p=0`$, Cliff's $`\delta=-1`$; every treatment sample is below every control
 sample. Treatment phase means are 9.121150 ms for publication/discovery and 9.609322 ms for native
@@ -2847,6 +2854,161 @@ and 51 total iterations minus three warmups yielded only 48 measured samples. Pg
 that negative procedural result. `mettail-rust@9dccb346` makes the experiment ID mandatory, records the
 post-warmup count, and refuses a configuration with no measured samples; experiment 171 decided only
 the corrected 54-total/51-measured capture.
+
+---
+
+### 5.18 Recursive-carrier lifecycle and weighted-logic closure [SS-G8]
+
+#### 5.18.1 The defect
+
+**DERIVED** at `mettail-rust@ce60f76f`: an ordinary source-call graph cannot see a compiler-generated
+recursive `Clone`, `Debug`, equality, ordering, hashing, serialization, or implicit destructor. A
+recursively owned carrier can therefore pass a function-recursion census while a deep input still
+consumes native stack through its trait lifecycle. The production ownership graph spans wrappers such
+as `Box`, `Vec`, product, sum, list, bag, tree, and map; shared pointers are operation-sensitive
+because `Arc::clone` and `Rc::clone` do not traverse their referent while last-owner destruction
+does.
+
+The final lifecycle-exposed PraTTaIL families were `LogicT`, SMT constraints, `GuardFormula`, the mutually
+recursive `AnyDomain` / `AnyPred` / `AnyAlgebra` carriers, and `WeightedMsoFormula`.
+User-reachable shapes include a 20,000-wrapper alternating `Any*` value and a 20,000-node weighted
+MSO formula. The former implementations also recursively classified,
+collected free variables from, evaluated, and compiled weighted-MSO formulae. Second-order Boolean
+quantification used a `u64` subset mask, adding a machine-word boundary unrelated to the language's
+semantics.
+
+#### 5.18.2 The architecture of the repair, and why this shape
+
+Each converted recursive ownership or call SCC now has a typed heap-backed PDA whose work variants carry only
+the continuation state needed by that family. The three `Any*` carriers share one cross-wrapper
+lifecycle machine so an alternating product / sum / list / bag / tree / map chain cannot re-enter the
+host stack at a wrapper boundary. Weighted MSO uses a postorder `FormulaSummary` pass, a
+lexical-scope machine with exact shadow restoration, a continuation evaluator, a postorder compiler,
+and a variable-length `Vec<bool>` subset odometer.
+
+The invariant is: every unfinished parent contributes exactly one continuation; every continuation
+consumes the exact number and type of completed child results it declares; a destructive traversal
+detaches the owned child before queuing it. Lexical binders additionally save the former binding and
+restore that exact value when their continuation completes. These invariants preserve visitation
+order, short-circuit points, observable trait output, and variable shadowing while making native-stack
+consumption independent of input depth.
+
+Four alternatives were rejected:
+
+1. Enlarging `RUST_MIN_STACK`, adding `stacker`, or imposing a depth ceiling leaves the
+   $`\Theta(d)`$ mechanism and changes only the failure point.
+2. Giving each wrapper an independent iterative loop still permits synchronous re-entry when its
+   generic inner algebra is another `AnyAlgebra`; the lifecycle machine must cross those wrapper
+   boundaries.
+3. Replacing every recursive edge with `Arc` would change ownership, identity, and allocation
+   behavior. Shared representation is used only where those semantics are already intended.
+4. One type-erased workspace-wide driver would erase useful static payload types and centralize
+   unrelated semantics. Sharing is kept within a structural family, while specialized work variants
+   retain zero-cost dispatch.
+
+#### 5.18.3 How the fix was made
+
+The campaign set beginning at `c03e9e04` converted recursive carriers throughout `ast`, `macros`,
+`runtime`, code generation, simulation, test support, and PraTTaIL. The final sequence
+`5206d186`, `c5f68fac`, `59157371`, `f6b3463b`, and `ce60f76f` closed the remaining logic
+families and committed the source-derived zero-state gate.
+
+The transformation is summarized by this literate algorithm; both fragments are **ELIDED
+pseudocode**, not copied Rust:
+
+**Algorithm 4 (LIFECYCLE-DRIVE).** *Replace a host-recursive lifecycle walk with the equivalent typed
+heap continuation while preserving child order and combining arity.*
+
+```pseudocode
+BEFORE — a host call or generated derive descends through each owned child
+Lifecycle(node):
+    for child in recursive_children(node):
+        Lifecycle(child)
+    combine(node)
+
+AFTER — a typed continuation records the same pending combination on the heap
+Drive(root):
+    work := [Visit(root)]
+    values := []
+    while work is not empty:
+        step := pop(work)
+        if step is Visit(node):
+            push its continuation, then its children in reverse visit order
+        else:
+            pop exactly the declared child results and combine them
+    return the one remaining value
+```
+
+For weighted second-order quantification, the finite subset state is an arbitrary-length bit vector.
+Increment clears the low true prefix and sets the first false bit; failure to find such a bit is the
+only exhaustion condition. It therefore encodes the same subset order as the former mask without a
+machine-word ceiling.
+
+#### 5.18.4 Results
+
+Fresh results at `mettail-rust@ce60f76f` are recorded in
+[`measurements/mettail-recursive-lifecycle-closure-2026-08-06.tsv`](measurements/mettail-recursive-lifecycle-closure-2026-08-06.tsv).
+Every command ran under `MemoryMax=4G`, `MemorySwapMax=0`, and eight Cargo jobs.
+
+| metric | before | after | provenance |
+|---|---:|---:|---|
+| native B/level, release | **NOT MEASURED** — the former code was retained only as a shallow oracle | **NOT MEASURED** — this gate measures survival under a fixed small stack, not byte slope | ledger row `AnyAlgebra and weighted-MSO focused gates` |
+| native B/level, debug | **NOT MEASURED** — same reason | **NOT MEASURED** — same reason | same ledger row |
+| named traversal depth on a 256 KiB thread stack | **NOT MEASURED** — no deep recursive binary was retained | **20,000** | 11/11 focused tests; recursive-oracle differentials included |
+| recursive lifecycle exposures | not a stable historical count | **0** across **84 recursive types / 80 ownership components / 542 production Rust files** | fresh census: 1/1, 8.96 s, 116.2 MiB cgroup peak, zero swap |
+| wall clock, runtime traversal | **NOT MEASURED** — no paired runtime benchmark was designed for this heterogeneous set | **NOT MEASURED** — depth survival and equivalence are the acceptance axes | n/a |
+| heap peak / allocation blocks | **NOT MEASURED** — these are not serializer/deserializer subjects | **NOT MEASURED** — worklist asymptotics are derived, not heap-profiled here | n/a |
+
+Compile-time memory is a separate axis. A clean isolated `cargo check -p prattail --jobs 8`
+completed in 18.32 s at **963,228 KiB maximum process RSS** and a rounded **1.1 GiB aggregate cgroup
+peak**; the fully incremental check completed in 0.14 s at **75,712 KiB maximum process RSS** and
+**55 MiB aggregate peak**. Both used zero swap. These are absolute post-rewrite observations. No
+comparable pre-rewrite build was made, so they do **not** establish that recursive-to-iterative source
+changes lower compiler RSS.
+
+#### 5.18.5 What it cost
+
+The native continuation moved from $`\Theta(d)`$ stack frames to an explicit heap worklist whose
+live space is $`O(d)`$ for a chain and $`O(d+w)`$ when a traversal retains a frontier of width
+$`w`$. Typed work variants and manual lifecycle traits add source and compiler intermediate
+representation; the clean-build observation above is therefore a baseline, not an optimization
+claim. In return, the weighted-MSO summary removes repeated nested classification passes, and the
+subset odometer removes both the `u64` ceiling and the undefined cost of attempting nearly
+$`2^{64}`$ masks after saturation.
+
+#### 5.18.6 What is still recursive
+
+This row closes the **named lifecycle and weighted-MSO operations**, not every production call SCC.
+Three concrete obligations remain live:
+
+- `AnyAlgebra::{is_satisfiable,witness,evaluate}` enters generic product, sum, list, bag, tree, and
+  map algebras whose inner algebra can synchronously call `AnyAlgebra` again. The current lifecycle
+  census cannot see that operational recursion.
+- The KAT default equivalence path still treats exhaustion of a 100-step work budget as equivalence;
+  it needs an exact, terminating, heap-backed decision procedure rather than a larger budget.
+- The wider source-call census still has to close confirmed non-term-family SCCs in Rholang type
+  inference, LTL parsing and walkers, and the guard-substrate operand grammar, then re-derive the whole
+  workspace rather than treating this list as exhaustive.
+
+Recursive functions retained under `tests/` are bounded reference oracles, not production
+fallbacks. The lifecycle gate itself also lacks a mutation calibration that injects a known-bad
+recursive derive; that anti-vacuity obligation remains open even though the current zero-state scan
+is nonempty.
+
+#### 5.18.7 Anti-vacuity
+
+The current census rejects an empty source scan, rejects a workspace with no recursively owned
+component, verifies every private enclosing-owner disposition against a real explicit `Drop`
+implementation, and reports the derived population before asserting zero violations. The fresh
+control line is:
+
+```text
+recursive lifecycle census: 84 recursive type(s) in 80 component(s), 542 source file(s)
+```
+
+**NOT MEASURED — mutation control:** a temporary recursive derive has not yet been injected and shown
+to fail with its exact file and type. Until that RED is captured, the result is evidence of current
+coverage but not proof that every edge-classification branch is non-vacuous.
 
 ---
 
@@ -3070,7 +3232,7 @@ sloped impl left for a caller to reach.
 churn** of the two early de-copying fixes (SS-A1, SS-D2), which a profile of the final
 implementation alone cannot reconstruct — the pre-conversion tree no longer exists.
 
-### 8.5 The `mettail-rust` residue — zero live sloped subjects
+### 8.5 The `mettail-rust` measured-slope registry — zero measured slopes, operational recursion still open
 
 At the report anchor, `render` measured **3,665 / 911** and `lower_formula` measured
 **4,094 / 978** B/level (debug / release), each with its own gate subject and named owner.
@@ -3132,6 +3294,14 @@ maximum RSS of **5,847,016 KiB**, with zero swap, inside a 10 GiB high / 12 GiB 
 envelope. A 4 GiB attempt became reclaim-bound and was stopped rather than allowed to thrash.
 The 5.58 GiB compile peak is the current optimization baseline for generated-code volume; it is
 not a runtime requirement, a larger thread stack, or part of the stack-safety mechanism.
+
+**Scope correction (2026-08-06).** “Zero” in this subsection means zero live slopes among the
+registered and instrumented subjects above. It never implied that an ownership-lifecycle scan or a
+whole-workspace function-call SCC scan had no remaining work. SS-G8 now closes the source-derived
+lifecycle population at 84 recursive types in 80 components, but §5.18.6 records the remaining
+operational `AnyAlgebra`, exact KAT-equivalence, non-term-family SCC, and mutation-calibration
+obligations. Those items must be converted and gated before the broader recursion programme can be
+called complete.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
@@ -3226,7 +3396,7 @@ $`\Rightarrow`$ The driver is an accumulator over a flat worklist, is `OrderAgno
 
 Presented in Knuth's literate style: the prose *is* the specification, and each fragment is named and refined.
 
-**Algorithm 4 (CONVERT-TRAVERSAL).** *Turning a derived recursive traversal into a work-stack driver, with the driver's shape DERIVED from the algebra of its combining operation rather than chosen by taste.*
+**Algorithm 5 (CONVERT-TRAVERSAL).** *Turning a derived recursive traversal into a work-stack driver, with the driver's shape DERIVED from the algebra of its combining operation rather than chosen by taste.*
 
 ```pseudocode
 ⟨Convert one derived traversal to a work-stack driver⟩ ≡
@@ -3657,7 +3827,7 @@ DOCLINT_DOI=on /home/dylon/Workspace/f1r3fly.io/mettail-rust/docs/languages/vali
   /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-04) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-06) passes **16 of 17** mechanised checks with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.
