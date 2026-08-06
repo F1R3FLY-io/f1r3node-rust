@@ -47,7 +47,11 @@ repeated jobs. `mettail-rust@2fe2a2c4` closes the surface `runtime.rs` send-suga
 with one heterogeneous post-order machine; fresh file-scoped analysis reports zero production direct
 or mutual recursion there. `mettail-rust@c875ab94` then removes the AST grammar-shape and token-tree
 recursion, replaces nested token-codec scratch copies with one backpatched buffer, and makes malformed
-decode and format-length failures explicit. No production path uses `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
+decode and format-length failures explicit. `mettail-rust@0e508621` closes the Dovetail metapattern
+analysis and lowering family: five direct traversals plus the mutually recursive pattern/term lowering
+and substitution components now use explicit work/value machines. Fresh file-scoped analysis reports
+zero production direct or mutual recursion in `dovetail_report.rs`. No production path uses
+`contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
@@ -138,6 +142,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G21** | `mettail-rust@aebba39b` | mettail | REPL observation de-reflection: constructor/lambda/bag surface rendering, free-name collection, and Peano decoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; unary-spine string copying $`\Theta(d^2) \rightarrow \Theta(d)`$; bound lookup $`\Theta(d) \rightarrow O(1)`$; **20,000** levels on **256 KiB** | **yes**; renderer SCC and three direct functions absent from the fresh production call graph | [5.18.20](#51820-observation-surface-de-reflection-closure-ss-g21) |
 | **SS-G22** | `mettail-rust@0dc135a4` | mettail | PraTTaIL LTL precedence parser: implication, disjunction, conjunction, temporal operators, unary prefixes, and parenthesized primaries | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(t)`$ time and heap for $`t`$ tokens; four **20,000**-depth gates on **256 KiB** | **yes**; six-function parser SCC and three direct-recursion findings absent from the fresh production call graph | [5.18.21](#51821-ltl-precedence-parser-closure-ss-g22) |
 | **SS-G23** | `mettail-rust@6e0e414a`, `2286ac57` | mettail | reflected metadata rendering: mutually recursive `Pattern`/`PatternTerm` and `SyntaxExpr`/`PatternOp` families plus recursive `TypeExpr` spelling | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; direct output $`\Theta(n+b)`$ time and $`O(d+b)`$ heap for $`n`$ nodes and $`b`$ output bytes; four **20,000**-depth gates on **256 KiB** | **yes**; zero direct or mutual recursion remains in `metadata.rs` | [5.18.22](#51822-reflected-metadata-renderer-closure-ss-g23) |
+| **SS-G24** | `mettail-rust@0e508621` | mettail | Dovetail metapattern analysis and lowering: binder discovery/collapse, collection and substitution detection, constructor collection, ordinary application lowering, and associative-commutative (AC) bag lowering | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(n+b)`$ time and $`O(n+b)`$ output-plus-machine heap; **20,000** levels on **256 KiB**; direct gate **0.70 s / 117,260 KiB** | **yes**; zero direct or mutual recursion remains in `dovetail_report.rs` | [5.18.23](#51823-dovetail-metapattern-analysis-and-lowering-closure-ss-g24) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -3792,6 +3797,78 @@ dependency.
 
 ---
 
+#### 5.18.23 Dovetail metapattern analysis and lowering closure [SS-G24]
+
+`mettail-rust@0e508621` converts the depth-controlled `AstPattern` / `PatternTerm` traversals in
+`macros/src/gen/runtime/dovetail_report.rs`. The direct family consists of binder-scope discovery,
+collection detection, application-constructor collection, substitution detection, and binder-scope
+collapse. The mutually recursive family lowered ordinary constructor applications and AC
+collection arguments to Dovetail rule tokens. Its helper in `dovetail_report/ac.rs` formerly called
+back into the parent lowering function for every fixed bag element, so converting only the parent
+would have left the same strongly connected component (SCC) intact.
+
+The read-only analyses use reverse-pushed borrowed-node worklists, preserving the recursive
+left-to-right visit and first-match order. Binder collapse uses a post-order `Visit` / `FinishApply`
+machine with a value stack. Token lowering uses `Visit`, `FinishApp`, and `FinishAc` jobs: it resolves
+the parent operator before visiting children, schedules fixed AC elements through the same machine,
+and joins their token streams only when the parent continuation resumes. The AC helper is now a
+non-recursive validator/preparer; it returns the operator, borrowed fixed-element slice, and exact
+remainder token stream. No `Vec<Par>`-like projection, collection flattening, traversal cap, or
+recursive callback remains.
+
+The production kernels are summarized by the following literate pseudocode:
+
+```text
+LOWER(root):
+    jobs := [Visit(root)]
+    values := []
+    while jobs is nonempty:
+        job := pop(jobs)
+        if job is Visit(application):
+            resolve its operator before any child
+            push the corresponding finish continuation
+            push children in reverse source order
+        else if job is Visit(leaf):
+            append its exact token value or return its exact refusal
+        else if job is Finish(parent):
+            remove the parent's completed children from values
+            append the exact application or AC token value
+    return the sole root value
+```
+
+For $`n`$ visited nodes, $`b`$ emitted token bytes, and maximum pending frontier $`f`$, the read-only
+machines take $`\Theta(n)`$ time and $`O(f)`$ heap; rebuilding takes $`\Theta(n)`$ time and $`O(n)`$
+output space; token lowering takes $`\Theta(n+b)`$ time and $`O(n+b)`$ output-plus-machine heap. All
+use $`O(1)`$ native stack. The heap bounds include the result being constructed rather than calling
+an unavoidable result an accidental traversal slope.
+
+The former recursive equations live only in
+`macros/tests/support/dovetail_report_recursive_oracle.rs`. The differential visits both sides of
+every bundled equation and rewrite and checks: both string-op and typed-op token streams; exact
+refusals; collection and substitution predicates; constructor sets; binder search; and binder
+collapse. A bounded 64-level application chain provides a structurally independent bridge between
+the corpus and the deep witness. The production machines then lower, analyze, rebuild, and drop a
+**20,000**-level constructor chain, plus find a substitution at the bottom of a second 20,000-level
+chain, on a **256 KiB** thread stack.
+
+The three oracle/deep tests pass in **0.70 seconds** with **117,260 KiB** maximum RSS inside a
+512 MiB cgroup with swap disabled. Fresh pgmcp file-scoped production analysis accepts 157 source-
+corroborated call edges and reports **zero direct and zero mutual recursion** in
+`dovetail_report.rs`. The established Dovetail-report selection passes **34/36**; its only failures
+are the pre-existing fold-census floor and withholding fixture parse also reported by SS-G23. The
+complete clippy invocation succeeds with no new finding in the three changed files. Compiler memory
+is separate evidence: a recompiling focused Cargo invocation peaked at **1,887,620 KiB** with zero
+swap, whereas the already-built traversal binary produced the 117,260 KiB runtime value above.
+
+The oracle pins the exact historical token trees, including AC trailing commas, typed/string
+operator representation, left-to-right error order, and diagnostic text. Therefore SS-G24 changes
+neither generated rule meaning nor generated bytes and consequently changes no term, reduction,
+COMM schedule, charge, EPathMap representation, PathMap operation, protobuf byte, bincode byte, or
+consensus hash. It adds no production recursive fallback, `RUST_MIN_STACK`, `stacker`, or artificial
+depth limit.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -4082,6 +4159,11 @@ lifecycle population at 84 recursive types in 80 components, and SS-G9 closes th
 `AnyAlgebra::{is_satisfiable,witness}` cycle. Section 5.18.6 records the still-open non-term-family
 SCC census and mutation-calibration obligations. Those items must be converted and gated before the
 broader recursion programme can be called complete.
+
+SS-G24 subsequently closes the complete production recursion family in
+`macros/src/gen/runtime/dovetail_report.rs`; file-scoped pgmcp analysis reports zero direct and zero
+mutual findings there. This advances, but does not silently redefine, the wider whole-workspace
+closure obligation stated above.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
