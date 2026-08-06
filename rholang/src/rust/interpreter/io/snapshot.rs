@@ -108,12 +108,20 @@
 //    `None = 0`.  Pinned by
 //    `deploy_ref_encoding_is_big_endian_and_field_order_is_stable`.
 // 7. **Field order inside `encode_entry`** — op, path, extra_path,
-//    offset, length, payload_ref, mode_bits, owner, group.  A
-//    reorder that keeps all field-encoders unchanged still forks
+//    offset, length, payload_ref, mode_bits, owner, group, outcome.
+//    A reorder that keeps all field-encoders unchanged still forks
 //    the network because the concatenation order differs.
 // 8. **Path encoding** — `PathBuf::as_os_str().as_encoded_bytes()`.
 //    Unix-only; see `# Platform scope` above.  A Windows port MUST
 //    bump the version and switch to logical bucket keys.
+// 9. **Outcome encoding** (H-6, version 2) — `WalOutcome` at the
+//    tail of `encode_entry`.  `Success = 0` (single byte tag);
+//    `Failure = 1` followed by u32-be `code` (from `fserr_to_code`,
+//    itself a stable enumeration in `errors.rs`).  Reordering
+//    outcome tags, adding a new variant without extending
+//    `fserr_to_code`, or changing the u32-be layout of `code` is
+//    a hard fork of the WAL root.  Pinned by
+//    `encode_entry_outcome_layout_is_stable`.
 //
 // # Platform scope (H-30-3 review note)
 //
@@ -136,12 +144,21 @@ use std::path::{Path, PathBuf};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 
-use super::wal::{PayloadRef, WalEntry, WalOp};
+use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 
 /// Slice 34 (MED-1): version byte at the front of every encoded
 /// WAL slice.  Bumping this is a hard fork of the WAL root; see
 /// `# Hard-fork surface catalog` in the module docstring.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+///
+/// # Version history
+/// - `1`: initial slice-34 layout — op, path, extra_path,
+///   offset, length, payload_ref, mode_bits, owner, group.
+/// - `2`: H-6 fix (2026-08-06) — appended `outcome`
+///   (`WalOutcome::Success` = tag 0, `WalOutcome::Failure` =
+///   tag 1 + u32-be code) at the tail of every entry so
+///   followers can distinguish a leader's successful syscall
+///   from a syscall that returned an error (EIO/ENOSPC/EROFS).
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 
 /// Result of encoding + hashing a WAL slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +233,20 @@ fn encode_entry(e: &WalEntry, buf: &mut Vec<u8>) {
     encode_opt_u32(e.mode_bits, buf);
     encode_opt_str(e.owner.as_deref(), buf);
     encode_opt_str(e.group.as_deref(), buf);
+    // H-6 fix (2026-08-06): outcome tail — version 2.
+    encode_outcome(e.outcome, buf);
+}
+
+fn encode_outcome(o: WalOutcome, buf: &mut Vec<u8>) {
+    // Tag 0 = Success (no payload); tag 1 = Failure + u32-be code.
+    // Renumbering here is a hard fork (catalog item #9).
+    match o {
+        WalOutcome::Success => buf.push(0),
+        WalOutcome::Failure { code } => {
+            buf.push(1);
+            buf.extend_from_slice(&code.to_be_bytes());
+        }
+    }
 }
 
 fn op_tag(op: WalOp) -> u8 {
@@ -1223,6 +1254,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }
     }
 
@@ -1300,6 +1332,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }];
         let (path, root) = write_snapshot(dir.path(), &entries).unwrap();
         assert!(path.exists(), "snapshot file must be created");
@@ -1385,6 +1418,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }];
         let root = compute_wal_root(&entries);
         let hex = root.iter().fold(String::with_capacity(64), |mut acc, b| {
@@ -1392,14 +1426,16 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Golden value re-pinned 2026-08-05 (slice 34, MED-1: added
-        // `SNAPSHOT_FORMAT_VERSION = 1` byte at the front of every
-        // encoded slice).  Pre-slice-34 value was
+        // Golden value re-pinned 2026-08-06 (H-6 fix: bumped
+        // `SNAPSHOT_FORMAT_VERSION` from 1 to 2, appended
+        // `outcome` tail to every entry).  Pre-H-6 value was
+        //   532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2
+        // Pre-slice-34 value was
         //   06a8ce938471c2a9722aa3592209e04dbe9230b759af36a5088dea677f93b825
         // Regenerate via
         //   cargo test -p rholang --lib -- compute_wal_root_golden_hex --nocapture
         // ONLY when intentionally hard-forking the encoding.
-        const EXPECTED: &str = "532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2";
+        const EXPECTED: &str = "eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a";
         assert_eq!(
             hex, EXPECTED,
             "WAL root golden-hex mismatch — did you accidentally change the encoding? \
@@ -1440,6 +1476,7 @@ mod tests {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                outcome: WalOutcome::Success,
             };
             let bytes = encode_wal_slice(&[e]);
             // Slice 34: byte 0 = version, bytes 1..5 = count(1) BE,
@@ -1476,6 +1513,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         let mut e2 = e1.clone();
         if let Some(PayloadRef::DeployRef {
@@ -1548,6 +1586,7 @@ mod tests {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                outcome: WalOutcome::Success,
             };
             let root = compute_wal_root(&[e]);
             assert!(
@@ -1575,6 +1614,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         let base_root = compute_wal_root(&[base.clone()]);
 
@@ -1613,6 +1653,92 @@ mod tests {
             compute_wal_root(&[e]),
             base_root,
             "Some(empty string) must be distinguishable from None"
+        );
+
+        // H-6 fix (2026-08-06): outcome Success vs Failure must
+        // diff.  This is the whole point of the outcome field —
+        // a leader's failed syscall MUST NOT hash the same as a
+        // successful one, else the H-6 attack surface is silently
+        // reopened by a maintainer who patches a wire format
+        // without noticing.
+        let mut e = base.clone();
+        e.outcome = WalOutcome::Failure {
+            code: super::super::errors::FSERR_CODE_IO,
+        };
+        assert_ne!(
+            compute_wal_root(&[e]),
+            base_root,
+            "outcome Success vs Failure must diff — H-6 hard-fork surface"
+        );
+
+        // Two distinct Failure codes must also diff.  Guards
+        // against a maintainer accidentally dropping the u32-be
+        // code encoding.
+        let mut e_a = base.clone();
+        e_a.outcome = WalOutcome::Failure {
+            code: super::super::errors::FSERR_CODE_IO,
+        };
+        let mut e_b = base.clone();
+        e_b.outcome = WalOutcome::Failure {
+            code: super::super::errors::FSERR_CODE_PERM,
+        };
+        assert_ne!(
+            compute_wal_root(&[e_a]),
+            compute_wal_root(&[e_b]),
+            "distinct Failure codes must diff"
+        );
+    }
+
+    /// H-6 fix (2026-08-06): pin the on-wire layout of the
+    /// outcome tail — item #9 of the hard-fork surface catalog.
+    ///
+    /// Success = single tag byte 0.
+    /// Failure = tag byte 1 + u32-be `code`.
+    /// A refactor that changes the tag numbering, the code width,
+    /// or the tail position (e.g., inserting outcome BEFORE group
+    /// instead of after) forks the WAL root.  Pin the byte
+    /// positions so a regression fails HERE rather than diverging
+    /// consensus in production.
+    #[test]
+    fn encode_entry_outcome_layout_is_stable() {
+        let base = |outcome: WalOutcome| WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/x"),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome,
+        };
+        let bytes_success = encode_wal_slice(&[base(WalOutcome::Success)]);
+        let bytes_failure = encode_wal_slice(&[base(WalOutcome::Failure { code: 0x0203_0405 })]);
+        // Success has exactly one more byte (the outcome tag = 0)
+        // than the Failure encoding is minus its 4-byte code.
+        assert_eq!(
+            bytes_failure.len(),
+            bytes_success.len() + 4,
+            "Failure adds a u32 code after the tag; Success is tag-only"
+        );
+        // Last byte of Success is the outcome tag 0.
+        assert_eq!(
+            *bytes_success.last().unwrap(),
+            0,
+            "Success outcome tag must be 0"
+        );
+        // Failure ends with tag=1 followed by big-endian u32 of code.
+        let n = bytes_failure.len();
+        assert_eq!(
+            bytes_failure[n - 5],
+            1,
+            "Failure outcome tag must be 1 (position -5 = tag, -4..0 = u32-be code)"
+        );
+        assert_eq!(
+            &bytes_failure[n - 4..],
+            &0x0203_0405u32.to_be_bytes(),
+            "Failure code must be u32-big-endian at the tail"
         );
     }
 
@@ -2148,6 +2274,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         let e_ref = WalEntry {
             op: WalOp::Write,
@@ -2163,6 +2290,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         assert_ne!(
             compute_wal_root(&[e_hash]),
@@ -2196,6 +2324,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         let bytes = encode_wal_slice(&[e]);
         assert_eq!(bytes.first().copied(), Some(SNAPSHOT_FORMAT_VERSION));
@@ -2217,6 +2346,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }];
         let (_, root) = write_snapshot(dir.path(), &entries).unwrap();
         let bytes = read_snapshot_bytes(dir.path(), &root).expect("v1 round-trip");
@@ -2302,6 +2432,7 @@ mod tests {
             ("6.", "`PayloadRef` variant tags"),
             ("7.", "Field order inside `encode_entry`"),
             ("8.", "Path encoding"),
+            ("9.", "Outcome encoding"),
         ];
         for (num, keyword) in items {
             let needle = format!("// {num} **{keyword}");
@@ -2561,6 +2692,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }];
         let root = writer.maybe_write(5, &entries).unwrap().unwrap();
         let manifest = read_manifest(dir.path()).unwrap();

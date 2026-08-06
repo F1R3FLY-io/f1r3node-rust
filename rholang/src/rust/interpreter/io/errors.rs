@@ -28,3 +28,47 @@ pub fn io_err_code(e: &io::Error) -> &'static str {
         _ => FSERR_IO,
     }
 }
+
+/// H-6 fix (2026-08-06): stable numeric encoding of FSERR_* codes
+/// for `WalOutcome::Failure { code }`.  The WAL wire format
+/// (snapshot.rs) uses u32 for compactness + endian-safety; this
+/// mapping is a hard-fork surface (item #9 in the catalog) —
+/// DO NOT reorder or renumber existing codes.  New codes append
+/// at the end.
+///
+/// `0` is reserved as "unknown" so an in-code error slipping
+/// through the mapping still round-trips deterministically
+/// rather than silently mis-classifying.
+pub const FSERR_CODE_UNKNOWN: u32 = 0;
+pub const FSERR_CODE_BAD_ARG: u32 = 1;
+pub const FSERR_CODE_IO: u32 = 2;
+pub const FSERR_CODE_NOT_FOUND: u32 = 3;
+pub const FSERR_CODE_ALREADY_EXISTS: u32 = 4;
+pub const FSERR_CODE_PERM: u32 = 5;
+pub const FSERR_CODE_UNSUPPORTED: u32 = 6;
+pub const FSERR_CODE_QUARANTINE: u32 = 7;
+pub const FSERR_CODE_CLOSED: u32 = 8;
+pub const FSERR_CODE_BUSY: u32 = 9;
+pub const FSERR_CODE_QUOTA_EXCEEDED: u32 = 10;
+pub const FSERR_CODE_CROSS_DEVICE: u32 = 11;
+
+/// Map a spec-canonical FSERR string to its stable u32 code for
+/// on-wire encoding in the WAL.  Unknown / non-canonical inputs
+/// return `FSERR_CODE_UNKNOWN` (never panics — a hostile or
+/// out-of-band error string still round-trips deterministically).
+pub fn fserr_to_code(s: &str) -> u32 {
+    match s {
+        FSERR_BAD_ARG => FSERR_CODE_BAD_ARG,
+        FSERR_IO => FSERR_CODE_IO,
+        FSERR_NOT_FOUND => FSERR_CODE_NOT_FOUND,
+        FSERR_ALREADY_EXISTS => FSERR_CODE_ALREADY_EXISTS,
+        FSERR_PERM => FSERR_CODE_PERM,
+        FSERR_UNSUPPORTED => FSERR_CODE_UNSUPPORTED,
+        FSERR_QUARANTINE => FSERR_CODE_QUARANTINE,
+        FSERR_CLOSED => FSERR_CODE_CLOSED,
+        FSERR_BUSY => FSERR_CODE_BUSY,
+        FSERR_QUOTA_EXCEEDED => FSERR_CODE_QUOTA_EXCEEDED,
+        FSERR_CROSS_DEVICE => FSERR_CODE_CROSS_DEVICE,
+        _ => FSERR_CODE_UNKNOWN,
+    }
+}

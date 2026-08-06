@@ -96,6 +96,36 @@ pub struct WalEntry {
     /// replaying node.
     pub owner: Option<String>,
     pub group: Option<String>,
+    /// H-6 fix (2026-08-06): whether the underlying syscall
+    /// SUCCEEDED or FAILED on the leader.  Reserve-pattern
+    /// callers (`journal_write` / `journal_truncate`) append
+    /// with `Success` optimistically before the syscall runs; a
+    /// post-syscall finalize (`finalize_failure_journal`) updates
+    /// the entry to `Failure { code }` when the reply carries an
+    /// error.  Replayers reading a `Failure` entry MUST NOT
+    /// apply it to reconstructed state — the leader never wrote
+    /// anything to disk.  Without this field the WAL commits
+    /// "requested payload was written" for syscalls that
+    /// actually returned EIO/ENOSPC/EROFS, forcing followers to
+    /// diverge from the leader's on-disk state.
+    pub outcome: WalOutcome,
+}
+
+/// H-6 fix (2026-08-06): outcome of the syscall the WAL entry
+/// represents.  Encoded at the tail of `encode_entry` (item #9 of
+/// the hard-fork surface catalog).  Bumping the layout or the
+/// numeric tags is a hard fork of the WAL root — coordinate via
+/// `SNAPSHOT_FORMAT_VERSION`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WalOutcome {
+    /// The syscall completed successfully.  Reserve-pattern
+    /// placeholders default to this — the leader will finalize
+    /// to `Failure` if the syscall reply carries an error.
+    Success,
+    /// The syscall failed with the given upstream FSERR_* code.
+    /// Followers MUST NOT apply the entry's mutation to
+    /// reconstructed state.
+    Failure { code: u32 },
 }
 
 /// Enumeration of consensus-observable filesystem operations
@@ -381,6 +411,38 @@ impl Wal {
         false
     }
 
+    /// H-6 fix (2026-08-06): update ONLY the `outcome` field of
+    /// the entry matching `ack_hash`.  Used by
+    /// `finalize_failure_journal` on the leader (and its follower
+    /// mirror) to flip a placeholder from `Success` to
+    /// `Failure { code }` when the syscall reply carries an
+    /// error.  All other fields (op, path, offset, length,
+    /// payload_ref, ...) are preserved so consumers can see WHAT
+    /// the caller asked for and WHY replay should skip it.
+    ///
+    /// Returns `true` if a match was found and updated.
+    /// Search starts from the tail — the placeholder was appended
+    /// moments ago in the same handler.
+    pub fn update_outcome_by_ack_hash(&self, ack_hash: [u8; 32], outcome: WalOutcome) -> bool {
+        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
+        let ack_guard = self
+            .ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned");
+        debug_assert_eq!(
+            entries_guard.len(),
+            ack_guard.len(),
+            "Wal invariant: entries and ack_hashes must be index-aligned"
+        );
+        for i in (0..ack_guard.len()).rev() {
+            if ack_guard[i] == ack_hash {
+                entries_guard[i].outcome = outcome;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Slice 30c H-R3 fix (option B PoC): drain entries appended
     /// after `mark` in DETERMINISTIC log order.
     ///
@@ -481,6 +543,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }
     }
 
@@ -511,6 +574,7 @@ mod tests {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                outcome: WalOutcome::Success,
             })
             .unwrap();
         assert_eq!(
@@ -784,6 +848,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         };
         assert!(wal.update_last_entry_by_ack_hash(ack, updated.clone()));
         let snap = wal.snapshot();
@@ -819,5 +884,68 @@ mod tests {
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].payload_ref, Some(PayloadRef::hash(b"first")));
         assert_eq!(snap[1], updated);
+    }
+
+    // ---------------------------------------------------------------
+    // H-6 fix (2026-08-06) tests: `WalOutcome` + failure finalize.
+    // ---------------------------------------------------------------
+
+    /// Optimistic-placeholder pattern: a fresh entry defaults to
+    /// `Success`; `update_outcome_by_ack_hash` flips it to
+    /// `Failure { code }` while leaving every other field intact.
+    #[test]
+    fn update_outcome_by_ack_hash_flips_success_to_failure() {
+        let wal = Wal::new();
+        let ack = [0xDDu8; 32];
+        wal.append_with_ack(mk_write_entry(b"tried to write"), ack)
+            .unwrap();
+        let snap_pre = wal.snapshot();
+        assert_eq!(snap_pre[0].outcome, WalOutcome::Success);
+
+        let flipped = wal.update_outcome_by_ack_hash(ack, WalOutcome::Failure { code: 2 });
+        assert!(flipped);
+
+        let snap_post = wal.snapshot();
+        assert_eq!(snap_post[0].outcome, WalOutcome::Failure { code: 2 });
+        // Payload / length / op preserved — a Failure entry is
+        // still self-describing about WHAT was attempted.
+        assert_eq!(snap_post[0].payload_ref, snap_pre[0].payload_ref);
+        assert_eq!(snap_post[0].length, snap_pre[0].length);
+        assert_eq!(snap_post[0].op, snap_pre[0].op);
+    }
+
+    /// A miss (no matching ack) is a no-op — necessary for the
+    /// leader path where finalize_failure_journal is called
+    /// unconditionally in the error branch, even for non-Consensus
+    /// caps that never appended a placeholder.
+    #[test]
+    fn update_outcome_by_ack_hash_returns_false_when_no_match() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"x"), [0x11u8; 32])
+            .unwrap();
+        let hit = wal.update_outcome_by_ack_hash([0x22u8; 32], WalOutcome::Failure { code: 3 });
+        assert!(!hit);
+        // Original entry unchanged.
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].outcome, WalOutcome::Success);
+    }
+
+    /// Two Success entries + only the middle one flips — surrounding
+    /// entries stay Success.  Guards against accidentally flipping
+    /// ALL matches instead of just the ack-matched one.
+    #[test]
+    fn update_outcome_by_ack_hash_only_touches_matched_entry() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"a"), [0x0Au8; 32])
+            .unwrap();
+        wal.append_with_ack(mk_write_entry(b"b"), [0x0Bu8; 32])
+            .unwrap();
+        wal.append_with_ack(mk_write_entry(b"c"), [0x0Cu8; 32])
+            .unwrap();
+        assert!(wal.update_outcome_by_ack_hash([0x0Bu8; 32], WalOutcome::Failure { code: 5 }));
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].outcome, WalOutcome::Success);
+        assert_eq!(snap[1].outcome, WalOutcome::Failure { code: 5 });
+        assert_eq!(snap[2].outcome, WalOutcome::Success);
     }
 }

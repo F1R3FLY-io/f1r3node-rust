@@ -46,7 +46,7 @@ use super::path::{
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
-use super::wal::{PayloadRef, WalEntry, WalOp};
+use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 use super::{ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 
 /// Slice 30c H-R3 integration: compute the ack channel's Blake2b256
@@ -156,6 +156,11 @@ impl FsProcesses {
                             mode_bits: None,
                             owner: None,
                             group: None,
+                            // H-6 fix (2026-08-06): optimistic
+                            // Success placeholder; the leader's
+                            // finalize_failure_journal below
+                            // updates to Failure on syscall error.
+                            outcome: WalOutcome::Success,
                         },
                         ack_channel_hash(ack),
                     )
@@ -216,6 +221,11 @@ impl FsProcesses {
                             mode_bits: None,
                             owner: None,
                             group: None,
+                            // Reads are journaled AFTER a successful
+                            // syscall (see docstring above); the
+                            // outcome is always Success.  Failed
+                            // reads short-circuit before this call.
+                            outcome: WalOutcome::Success,
                         },
                         ack_channel_hash(ack),
                     )
@@ -277,12 +287,42 @@ impl FsProcesses {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                // Partial write: the syscall SUCCEEDED (returned
+                // n > 0), just wrote fewer bytes than requested.
+                // Outcome stays Success — the leader wrote SOME
+                // bytes and replay must apply the same n.
+                outcome: WalOutcome::Success,
             };
             let _ = self
                 .handles
                 .wal
                 .update_last_entry_by_ack_hash(ack_channel_hash(ack), updated);
         }
+    }
+
+    /// H-6 fix (2026-08-06): flip a reserved WAL entry's outcome
+    /// to `Failure { code }` when the leader's syscall reply
+    /// carries an error.  Symmetric across leader (`code` from
+    /// the error reply the syscall just returned) and follower
+    /// (`code` extracted from the cached `previous` reply).
+    ///
+    /// All other fields (op, path, offset, length, payload_ref)
+    /// are preserved so replay consumers can see WHAT the leader
+    /// asked for and WHY they should skip it.
+    ///
+    /// Followers reading a `Failure` entry MUST NOT apply the
+    /// mutation to reconstructed state — the leader never wrote
+    /// anything, so the follower's reconstructed state stays
+    /// consistent by also not writing.
+    ///
+    /// No-op if no entry matches `ack_hash` (e.g., the syscall
+    /// was on a non-Consensus cap, so `journal_write` /
+    /// `journal_truncate` returned early with no reservation).
+    fn finalize_failure_journal(&self, code: u32, ack: &Par) {
+        let _ = self
+            .handles
+            .wal
+            .update_outcome_by_ack_hash(ack_channel_hash(ack), WalOutcome::Failure { code });
     }
 
     async fn journal_truncate(&self, fd: u64, n: u64, ack: &Par) -> Result<bool, ()> {
@@ -305,6 +345,10 @@ impl FsProcesses {
                         mode_bits: None,
                         owner: None,
                         group: None,
+                        // H-6: optimistic placeholder; the
+                        // leader's finalize_failure_journal
+                        // updates to Failure on syscall error.
+                        outcome: WalOutcome::Success,
                     },
                     ack_channel_hash(ack),
                 )
@@ -720,6 +764,13 @@ impl FsProcesses {
                     self.finalize_write_journal(*fd, bytes, n, None, ack).await;
                 }
             }
+            // H-6 fix (2026-08-06): if the leader's cached reply
+            // was an error, follower flips the placeholder to
+            // Failure { code }.  Symmetric with the leader-path
+            // finalize below: same code → same WAL entry.
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -743,6 +794,16 @@ impl FsProcesses {
                 );
                 self.finalize_write_journal(*fd, bytes, n, None, ack).await;
             }
+        }
+        // H-6 fix (2026-08-06): if the syscall returned an error
+        // reply, flip the WAL placeholder to Failure { code }.
+        // Followers reading a Failure entry MUST NOT apply the
+        // write to reconstructed state — the leader never wrote
+        // anything to disk.  Without this the follower would
+        // apply a Write against the failed leader's state and
+        // diverge.
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
         }
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -806,6 +867,11 @@ impl FsProcesses {
                         .await;
                 }
             }
+            // H-6 fix (2026-08-06): follower failure-finalize
+            // mirror of the leader path below.
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -829,6 +895,13 @@ impl FsProcesses {
                 self.finalize_write_journal(*fd, bytes, n, Some(*off), ack)
                     .await;
             }
+        }
+        // H-6 fix (2026-08-06): flip placeholder to Failure on
+        // syscall error (EIO/ENOSPC/EROFS/etc.) so followers
+        // don't replay a write the leader never actually
+        // committed.
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
         }
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -1067,9 +1140,18 @@ impl FsProcesses {
             }
         }
         if is_replay {
+            // H-6 fix (2026-08-06): follower failure-finalize
+            // mirror of the leader path below.
+            if let Some(code_str) = extract_err_code(&previous) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
+        // H-6 refactor: compute the reply without any early-return
+        // so failure-finalize gets a single call site below.  The
+        // FSERR_CLOSED "unknown fd" branch that previously returned
+        // eagerly now folds into `reply` naturally.
         let reply = match parsed {
             Some((fd, n)) => {
                 if n > super::MAX_TRUNCATE_BYTES {
@@ -1078,31 +1160,34 @@ impl FsProcesses {
                         format!("truncate {n} exceeds MAX_TRUNCATE_BYTES"),
                     )
                 } else {
-                    let raw_fd = match self.handles.raw_fd(fd).await {
-                        Some(r) => r,
-                        None => {
-                            let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
-                            produce(&out, ack).await?;
-                            return Ok(out);
+                    match self.handles.raw_fd(fd).await {
+                        Some(raw_fd) => {
+                            let r = spawn_blocking(move || unsafe {
+                                if libc::ftruncate(raw_fd, n as i64) < 0 {
+                                    Err(std::io::Error::last_os_error())
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                            .await;
+                            match r {
+                                Err(je) => err(FSERR_IO, je.to_string()),
+                                Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
+                                Ok(Ok(())) => ok_bare(),
+                            }
                         }
-                    };
-                    let r = spawn_blocking(move || unsafe {
-                        if libc::ftruncate(raw_fd, n as i64) < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(())
-                        }
-                    })
-                    .await;
-                    match r {
-                        Err(je) => err(FSERR_IO, je.to_string()),
-                        Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                        Ok(Ok(())) => ok_bare(),
+                        None => err(FSERR_CLOSED, format!("unknown fd {fd}")),
                     }
                 }
             }
             None => err(FSERR_BAD_ARG, "expected (u64, u64)"),
         };
+        // H-6 fix (2026-08-06): flip placeholder to Failure on
+        // syscall error so followers don't replay a truncate the
+        // leader never actually committed.
+        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
+            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        }
         let out = vec![reply];
         produce(&out, ack).await?;
         Ok(out)

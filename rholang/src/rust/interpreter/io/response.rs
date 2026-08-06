@@ -81,6 +81,29 @@ pub fn extract_ok_u64(previous: &[Par]) -> Option<u64> {
     }
 }
 
+/// H-6 fix (2026-08-06): extract the string FSERR code from an
+/// error reply of shape `[false, "FSERR_...", "msg"]`.  Returns
+/// `None` if the reply is not an error (head is `true`), the
+/// shape doesn't match, or the code slot is missing / non-string.
+/// Both leader (fresh syscall reply) and follower (cached
+/// `previous` reply) use this to derive an identical failure
+/// code for `finalize_failure_journal`, keeping WAL entries
+/// byte-identical across the leader/follower split.
+pub fn extract_err_code(reply: &[Par]) -> Option<String> {
+    let head = reply.first()?;
+    let expr = head.exprs.first()?;
+    let list = match expr.expr_instance.as_ref()? {
+        ExprInstance::EListBody(l) => l,
+        _ => return None,
+    };
+    let ok_par = list.ps.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(false) {
+        return None;
+    }
+    let code_par = list.ps.get(1)?;
+    RhoString::unapply(code_par)
+}
+
 /// Slice 32 (PB-M-14 read-hash) counterpart to `extract_ok_u64`:
 /// extract the bytes payload from a cached `[true, ByteArray]`
 /// reply.  Used by `fs_read` / `fs_read_at`'s `is_replay = true`

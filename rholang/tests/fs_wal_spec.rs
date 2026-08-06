@@ -378,6 +378,89 @@ mod tests {
         assert!(runtime.fs_handles.wal.is_empty());
     }
 
+    /// H-6 fix regression pin (2026-08-06) — a Consensus-cap
+    /// write to an fd opened READ-ONLY produces a WAL entry with
+    /// `outcome = Failure { code = FSERR_CODE_IO }`, NOT a
+    /// missing entry and NOT a `Success` entry.
+    ///
+    /// The pre-syscall placeholder pattern (C-29-F1 fix) means
+    /// every Consensus write appends a WAL entry BEFORE the
+    /// syscall runs.  H-6's threat model: the syscall fails
+    /// (EIO/ENOSPC/EROFS or here EBADF from writing to an
+    /// O_RDONLY fd) — followers must not replay a Write against
+    /// their own filesystem based on a leader event that never
+    /// actually happened.  The `outcome = Failure` mark tells
+    /// them to skip the mutation.
+    ///
+    /// Bypasses the File.rho mode-cap by binding the
+    /// `rho:io:fs:native:1.0.0/*` URNs directly (this test file's
+    /// established pattern; see the top-level module doc).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn failed_consensus_write_appends_wal_entry_marked_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        std::fs::write(&path, b"existing").unwrap();
+
+        let runtime = create_runtime().await;
+        assert!(runtime.fs_handles.wal.is_empty());
+
+        // Open the file O_RDONLY (mode = "r") with cmode="consensus".
+        // Attempt a write on the resulting fd — libc::write returns
+        // -1 with EBADF (write on read-only fd), so the syscall
+        // fails while the pre-syscall WAL placeholder is already
+        // in place.  H-6 requires that placeholder to be flipped
+        // to Failure via finalize_failure_journal.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                o, w
+            in {{
+              fsOpen!("{root}", "f.bin", "r", "consensus", *o) |
+              for (@[true, fd] <- o) {{
+                fsWrite!(fd, "aa".hexToBytes(), *w) |
+                for (@_ <- w) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "Consensus write on r-only fd MUST leave a WAL entry \
+             (pre-syscall placeholder pattern) — got {} entries",
+            snap.len()
+        );
+        // Outcome must be Failure — this is the H-6 assertion.
+        // Any Failure code satisfies the invariant; the specific
+        // code (EBADF → FSERR_IO via io_err_code's default arm)
+        // is a platform detail we don't want to over-pin.
+        match snap[0].outcome {
+            rholang::rust::interpreter::io::wal::WalOutcome::Failure { code: _ } => {}
+            other => panic!(
+                "H-6: failed syscall must mark WAL entry as Failure; got {:?}",
+                other
+            ),
+        }
+        // Op / path / length preserved so replayers can see
+        // WHAT the leader tried to do and diagnostics survive.
+        // "aa".hexToBytes() decodes to a single byte 0xAA.
+        assert_eq!(snap[0].op, WalOp::Write);
+        assert_eq!(snap[0].length, Some(1));
+    }
+
     /// A bad cmode arg to fs_open must reject the open AND not
     /// populate any FileHandle — subsequent writes fail with
     /// FSERR_CLOSED (unknown fd) and no WAL entry is produced.
@@ -652,7 +735,9 @@ mod tests {
     async fn wal_cap_returns_fserr_quota_exceeded_from_rholang() {
         use std::path::PathBuf;
 
-        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, MAX_WAL_ENTRIES};
+        use rholang::rust::interpreter::io::wal::{
+            PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES,
+        };
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"").unwrap();
@@ -674,6 +759,7 @@ mod tests {
                     mode_bits: None,
                     owner: None,
                     group: None,
+                    outcome: WalOutcome::Success,
                 })
                 .unwrap();
         }
@@ -1364,7 +1450,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn wal_snapshot_retention_bound_holds_across_writes() {
         use rholang::rust::interpreter::io::snapshot::SnapshotWriter;
-        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp};
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 
         let snap_dir = tempfile::tempdir().unwrap();
         let writer = SnapshotWriter {
@@ -1387,6 +1473,7 @@ mod tests {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                outcome: WalOutcome::Success,
             }];
             // Retention pruning uses mtime; sleep past APFS's 1s
             // granularity between writes so pruning has a stable

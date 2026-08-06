@@ -1740,7 +1740,7 @@ impl RuntimeOps {
 
 #[cfg(test)]
 mod tests {
-    use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp};
+    use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 
     use super::*;
 
@@ -1861,6 +1861,7 @@ mod tests {
             mode_bits: None,
             owner: None,
             group: None,
+            outcome: WalOutcome::Success,
         }
     }
 
@@ -1930,6 +1931,7 @@ mod tests {
                 mode_bits: None,
                 owner: None,
                 group: None,
+                outcome: WalOutcome::Success,
             })
             .unwrap();
             // Simulate a `?`-propagated error: return without commit.
