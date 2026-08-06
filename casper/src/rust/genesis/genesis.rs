@@ -123,6 +123,11 @@ impl Genesis {
         native_token_symbol: &str,
         native_token_decimals: u32,
         fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        // CRIT-2 (2026-08-06): plumbed to the fs_generator deploy so
+        // cadence becomes part of the composed deploy term.  Leader
+        // and validator with different HOCON cadence produce
+        // different fs_generator deploys → validate_candidate rejects.
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -169,7 +174,8 @@ impl Genesis {
             native_token_decimals,
             shard_id,
         );
-        let fs_generator = standard_deploys::fs_generator(shard_id, fs_bundle);
+        let fs_generator =
+            standard_deploys::fs_generator(shard_id, fs_bundle, consensus_fs_snapshot_cadence);
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
 
         let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
@@ -200,6 +206,9 @@ impl Genesis {
         native_token_symbol: &str,
         native_token_decimals: u32,
         fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        // CRIT-2 (2026-08-06): forwarded to fs_generator.  See
+        // `default_blessed_terms_with_timestamp` for rationale.
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -213,6 +222,7 @@ impl Genesis {
             native_token_symbol,
             native_token_decimals,
             fs_bundle,
+            consensus_fs_snapshot_cadence,
         )
     }
 
@@ -229,6 +239,7 @@ impl Genesis {
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
             &genesis.fs_bundle,
+            genesis.consensus_fs_snapshot_cadence,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager

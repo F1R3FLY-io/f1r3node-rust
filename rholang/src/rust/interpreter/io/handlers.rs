@@ -492,11 +492,15 @@ impl FsProcesses {
             return Ok(previous);
         }
         let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) if fd >= 0 => {
+            Some(fd) => {
+                // Slice 28 (post-2026-08-06 CRIT-2 fix): fds are
+                // hash-derived u64 bit-patterns; the sign bit
+                // carries information, so we reinterpret the GInt
+                // via `fd as u64` rather than gating on `fd >= 0`.
                 self.handles.remove(fd as u64).await;
                 ok_bare()
             }
-            _ => err(FSERR_BAD_ARG, "expected non-negative fd"),
+            _ => err(FSERR_BAD_ARG, "expected GInt fd"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -536,15 +540,16 @@ impl FsProcesses {
             if let (Some(fd), Some(bytes)) =
                 (RhoNumber::unapply(fd_par), extract_ok_bytes(&previous))
             {
-                if fd >= 0 {
-                    let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
-                }
+                // fd is a u64 bit-pattern via GInt; reinterpret
+                // unsigned.  n is a legitimate length so no
+                // sign-guard removal there.
+                let _ = self.journal_read(fd as u64, &bytes, None, ack).await;
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
         let reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
-            (Some(fd), Some(n)) if fd >= 0 && n >= 0 => {
+            (Some(fd), Some(n)) if n >= 0 => {
                 let r = self.read_impl(fd as u64, n as u64, None).await;
                 // Journal on success.  extract_ok_bytes returns None
                 // for error replies, so this is a clean guard.
@@ -553,7 +558,7 @@ impl FsProcesses {
                 }
                 r
             }
-            _ => err(FSERR_BAD_ARG, "expected (u64, u64)"),
+            _ => err(FSERR_BAD_ARG, "expected (fd:GInt, n:GInt>=0)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -584,7 +589,7 @@ impl FsProcesses {
                 RhoNumber::unapply(off_par),
                 extract_ok_bytes(&previous),
             ) {
-                if fd >= 0 && off >= 0 {
+                if off >= 0 {
                     let _ = self
                         .journal_read(fd as u64, &bytes, Some(off as u64), ack)
                         .await;
@@ -598,7 +603,7 @@ impl FsProcesses {
             RhoNumber::unapply(off_par),
             RhoNumber::unapply(n_par),
         ) {
-            (Some(fd), Some(off), Some(n)) if fd >= 0 && off >= 0 && n >= 0 => {
+            (Some(fd), Some(off), Some(n)) if off >= 0 && n >= 0 => {
                 let r = self.read_impl(fd as u64, n as u64, Some(off as u64)).await;
                 if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
                     let _ = self
@@ -607,7 +612,7 @@ impl FsProcesses {
                 }
                 r
             }
-            _ => err(FSERR_BAD_ARG, "expected (u64, u64, u64)"),
+            _ => err(FSERR_BAD_ARG, "expected (fd:GInt, off:GInt>=0, n:GInt>=0)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -671,7 +676,7 @@ impl FsProcesses {
         };
         // Parse args deterministically for both leader and follower.
         let parsed = match (RhoNumber::unapply(fd_par), RhoByteArray::unapply(bytes_par)) {
-            (Some(fd), Some(bytes)) if fd >= 0 => Some((fd as u64, bytes)),
+            (Some(fd), Some(bytes)) => Some((fd as u64, bytes)),
             _ => None,
         };
         // M-R3 review fix (round 2): enforce MAX_WRITE_BYTES BEFORE
@@ -763,9 +768,7 @@ impl FsProcesses {
             RhoNumber::unapply(off_par),
             RhoByteArray::unapply(bytes_par),
         ) {
-            (Some(fd), Some(off), Some(bytes)) if fd >= 0 && off >= 0 => {
-                Some((fd as u64, off as u64, bytes))
-            }
+            (Some(fd), Some(off), Some(bytes)) if off >= 0 => Some((fd as u64, off as u64, bytes)),
             _ => None,
         };
         // M-R3 review fix (round 2): MAX_WRITE_BYTES check BEFORE
@@ -892,7 +895,7 @@ impl FsProcesses {
             RhoNumber::unapply(off_par),
             RhoString::unapply(whence_par),
         ) {
-            (Some(fd), Some(off), Some(w)) if fd >= 0 => {
+            (Some(fd), Some(off), Some(w)) => {
                 let whence_code = match w.as_str() {
                     "set" if off >= 0 => Some(libc::SEEK_SET),
                     "cur" => Some(libc::SEEK_CUR),
@@ -949,7 +952,7 @@ impl FsProcesses {
             return Ok(previous);
         }
         let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) if fd >= 0 => {
+            Some(fd) => {
                 let raw_fd = match self.handles.raw_fd(fd as u64).await {
                     Some(r) => r,
                     None => {
@@ -1000,7 +1003,7 @@ impl FsProcesses {
             return Ok(previous);
         }
         let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) if fd >= 0 => {
+            Some(fd) => {
                 let raw_fd = match self.handles.raw_fd(fd as u64).await {
                     Some(r) => r,
                     None => {
@@ -1047,7 +1050,7 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_truncate"));
         };
         let parsed = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
-            (Some(fd), Some(n)) if fd >= 0 && n >= 0 => Some((fd as u64, n as u64)),
+            (Some(fd), Some(n)) if n >= 0 => Some((fd as u64, n as u64)),
             _ => None,
         };
         // C-29-F1 review fix: journal to WAL on both leader and
@@ -1124,7 +1127,7 @@ impl FsProcesses {
             return Ok(previous);
         }
         let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) if fd >= 0 => {
+            Some(fd) => {
                 let raw_fd = match self.handles.raw_fd(fd as u64).await {
                     Some(r) => r,
                     None => {

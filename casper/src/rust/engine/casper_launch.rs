@@ -86,6 +86,22 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// `project_bundle`; if it isn't set, defaults to empty (safe
     /// pre-slice-25 behavior).
     fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+
+    /// CRIT-2 fix (2026-08-06): shard-wide consensus filesystem
+    /// snapshot cadence, plumbed from the operator's HOCON
+    /// `storage.consensus-fs-snapshot-cadence`.  Threaded into both
+    /// the proposer's `Genesis.consensus_fs_snapshot_cadence` (via
+    /// `ApproveBlockProtocolFactory::create`) and the validator's
+    /// `BlockApproverProtocol.consensus_fs_snapshot_cadence` (via
+    /// `BlockApproverProtocol::new`).  Cadence is embedded as a
+    /// literal in the composed fs_generator source
+    /// (`fs_genesis.rs::compose_fs_genesis_source`), so any
+    /// cadence mismatch between the proposer's HOCON and any
+    /// validator's HOCON causes the reconstructed deploy term to
+    /// diverge and `validate_candidate` rejects the candidate —
+    /// closing the "shared Genesis hash but silently divergent
+    /// snapshot cadence" CRIT-2 gap.
+    consensus_fs_snapshot_cadence: Option<u64>,
 }
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
@@ -151,6 +167,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+        // CRIT-2 (2026-08-06): plumbed from setup.rs's
+        // `conf.storage.consensus_fs_snapshot_cadence`.  Threaded
+        // into both the proposer (`ApproveBlockProtocolFactory::create`)
+        // and validator (`BlockApproverProtocol::new`) genesis paths
+        // so cadence appears in the fs_generator deploy term and
+        // cadence disagreement fails `validate_candidate` loudly.
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
@@ -230,6 +253,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             disable_state_exporter,
             heartbeat_signal_ref,
             fs_bundle,
+            consensus_fs_snapshot_cadence,
         }
     }
 
@@ -549,6 +573,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
             self.fs_bundle.clone(),
+            // CRIT-2 (2026-08-06): propagate cadence to BAP so
+            // validator-side `validate_candidate` reconstructs an
+            // fs_generator deploy term that matches the proposer's
+            // (or rejects loudly on mismatch).
+            self.consensus_fs_snapshot_cadence,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
@@ -648,6 +677,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
             self.fs_bundle.clone(),
+            // CRIT-2 (2026-08-06): plumb cadence to the proposer's
+            // Genesis composition so it lands in the fs_generator
+            // deploy term.
+            self.consensus_fs_snapshot_cadence,
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

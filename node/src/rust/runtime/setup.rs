@@ -597,6 +597,24 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 });
                 crate::rust::configuration::provisioning_merge::project_bundle(&merged)
             },
+            // CRIT-2 fix (2026-08-06): plumb HOCON cadence into
+            // CasperLaunch → both proposer's Genesis composition
+            // and validator's `BlockApproverProtocol`.  Cadence is
+            // now embedded as a literal in the fs_generator deploy
+            // term, so any HOCON-vs-shard cadence disagreement
+            // fails `validate_candidate`'s byte-for-byte deploy
+            // diff — closing the "shared Genesis hash but silently
+            // divergent snapshot cadence" gap.  The setup.rs
+            // SnapshotWriter attach below (line ~284) still reads
+            // the same HOCON key; on a bootstrap validator the two
+            // are trivially consistent (single source of truth),
+            // and on a joining validator a mismatch is caught at
+            // BAP validation before the SnapshotWriter is ever
+            // used.
+            #[allow(deprecated)]
+            {
+                conf.storage.consensus_fs_snapshot_cadence
+            },
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");

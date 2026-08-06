@@ -674,7 +674,12 @@ fn is_ident_char(b: u8) -> bool { matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..
 /// `pk_hex` and `sig_hex` MUST be lowercase ASCII hex strings; the
 /// debug-asserts below prevent a future refactor from passing
 /// untrusted bytes through the `format!` boundary.
-pub fn compose_fs_genesis_source(pk_hex: &str, sig_hex: &str, bundle: &[BundleEntry]) -> String {
+pub fn compose_fs_genesis_source(
+    pk_hex: &str,
+    sig_hex: &str,
+    bundle: &[BundleEntry],
+    consensus_fs_snapshot_cadence: Option<u64>,
+) -> String {
     // H-25-2 slice-25 review fix: promoted from debug_assert! to
     // assert! so release builds also reject non-hex input.  Genesis
     // runs once at boot; the constant-time hex check is negligible.
@@ -687,6 +692,27 @@ pub fn compose_fs_genesis_source(pk_hex: &str, sig_hex: &str, bundle: &[BundleEn
         "sig_hex must be ASCII hex"
     );
     let bundle_rho = format_bundle_for_rholang(bundle);
+    // CRIT-2 fix (2026-08-06): embed cadence as a Rholang literal
+    // in the FsGenesis deploy term so it is consensus-observable via
+    // the deploy hash.  Pre-fix, `Genesis.consensus_fs_snapshot_cadence`
+    // was hashed into the Genesis struct but the value never flowed
+    // into an on-wire artifact — `BlockApproverProtocol::validate_
+    // candidate` does a byte-for-byte deploy-term comparison, and since
+    // cadence didn't affect any deploy term, a leader with cadence=100
+    // and a validator with cadence=50 both passed validation while
+    // silently writing snapshots at different block heights (the
+    // FIPS review CRIT-2 finding).  Post-fix, cadence is a literal
+    // in the composed source; deploy-term diff fires on mismatch.
+    //
+    // `None` → literal `Nil` (no cadence).  `Some(n)` → literal
+    // integer.  Bound to a private name and immediately consumed
+    // so the commitment leaves no live message on any user-reachable
+    // channel — the sole purpose is to make cadence appear in the
+    // deploy term's serialized bytes.
+    let cadence_literal = match consensus_fs_snapshot_cadence {
+        None => "Nil".to_string(),
+        Some(n) => n.to_string(),
+    };
 
     let file_body = lib_body(embedded_rho::FILE);
     let dir_body = lib_body(embedded_rho::DIR);
@@ -752,6 +778,19 @@ in {{
   |
   {fs_body}
   |
+  // CRIT-2 fix (2026-08-06): snapshot-cadence commitment.  Binds
+  // cadence to a fresh unforgeable name and immediately consumes
+  // it (peek + drop) so the term serializes deterministically as
+  // a function of cadence but leaves no user-reachable state.  The
+  // sole purpose is byte-diff detection at
+  // `BlockApproverProtocol::validate_candidate` — a leader with
+  // cadence=100 and a validator with cadence=50 now produce
+  // different fs_generator deploy terms, so validation fails loudly
+  // instead of silently proceeding with divergent snapshot behavior.
+  new snapshotCadenceCommitmentP in {{
+    snapshotCadenceCommitmentP!({cadence_literal}) |
+    for (_ <- snapshotCadenceCommitmentP) {{ Nil }}
+  }} |
   // Slice 25: mint one shared Fs instance (stdio fds 0/1/2, static
   // bundle populated from operator config+CLI merge) and publish
   // it at the registry URI derived from FS_GENERATOR_PK.  Per-
@@ -871,7 +910,7 @@ mod tests {
         // the composed source.  This is a drift assertion: if someone
         // adds a suffix to the constant without updating the format!
         // template, this test fails.
-        let src = compose_fs_genesis_source("00", "00", &[]);
+        let src = compose_fs_genesis_source("00", "00", &[], None);
         for suffix in FS_NATIVE_URN_SUFFIXES {
             let expected = format!("`{FS_NATIVE_URN_PREFIX}{suffix}`");
             assert!(
@@ -989,7 +1028,7 @@ mod tests {
             mode: "r".into(),
             consensus_mode: BundleConsensusMode::Oracular,
         }];
-        let src = compose_fs_genesis_source("00", "00", &b);
+        let src = compose_fs_genesis_source("00", "00", &b, None);
         // Slice 30c H-P7-8: File entries split into
         // (parent_dir, filename), so `/etc/myapp/theme.json`
         // becomes `("/etc/myapp", "theme.json", ...)`.
@@ -1003,7 +1042,7 @@ mod tests {
 
     #[test]
     fn compose_fs_genesis_source_empty_bundle_still_uses_empty_map() {
-        let src = compose_fs_genesis_source("00", "00", &[]);
+        let src = compose_fs_genesis_source("00", "00", &[], None);
         assert!(src.contains("Fs!?(0, 1, 2, {})"));
     }
 
@@ -1067,13 +1106,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "pk_hex must be ASCII hex")]
     fn compose_fs_genesis_source_panics_on_non_hex_pk() {
-        let _ = compose_fs_genesis_source("zz", "00", &[]);
+        let _ = compose_fs_genesis_source("zz", "00", &[], None);
     }
 
     #[test]
     #[should_panic(expected = "sig_hex must be ASCII hex")]
     fn compose_fs_genesis_source_panics_on_non_hex_sig() {
-        let _ = compose_fs_genesis_source("00", "zz", &[]);
+        let _ = compose_fs_genesis_source("00", "zz", &[], None);
     }
 
     // H-25-3: `BundleEntry::try_new` is the defense-in-depth
@@ -1222,7 +1261,7 @@ mod tests {
         // here — we just want the parser to accept the source.
         let pk_hex = "00".repeat(33);
         let sig_hex = "00".repeat(64);
-        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None);
         let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisBundle".into());
         assert!(
             r.is_ok(),
@@ -1247,7 +1286,7 @@ mod tests {
         }];
         let pk_hex = "00".repeat(33);
         let sig_hex = "00".repeat(64);
-        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None);
         let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisEscape".into());
         assert!(
             r.is_ok(),
@@ -1334,7 +1373,7 @@ mod tests {
         ];
         let pk_hex = "00".repeat(33);
         let sig_hex = "00".repeat(64);
-        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None);
         // MT-26-18 review fix: assert both cmode strings actually
         // appear in the composed source, in the correct 5th-position
         // syntactic slot.  A template regression that hard-coded
@@ -1364,6 +1403,51 @@ mod tests {
     // fork).  format_bundle_for_rholang sorts by logical_name; this
     // pins the invariant so a future refactor that dropped either
     // sort would trip a test rather than fork the network.
+    // CRIT-2 fix regression pin (2026-08-06): differing cadence
+    // values must produce differing composed source, so the
+    // deploy-term diff at `BlockApproverProtocol::validate_candidate`
+    // catches leader/validator disagreement.  Pre-fix, cadence was
+    // hashed into the `Genesis` STRUCT but not embedded in any
+    // deploy term, so two validators with the same Genesis hash
+    // (both cadence=None because bootstrap never plumbed) could
+    // still write snapshots at different block heights (both using
+    // their own local HOCON).  Post-fix, cadence is a Rholang
+    // literal in the composed source.
+    #[test]
+    fn compose_fs_genesis_source_differs_when_cadence_differs() {
+        let pk_hex = "00".repeat(33);
+        let sig_hex = "00".repeat(64);
+        let none_src = compose_fs_genesis_source(&pk_hex, &sig_hex, &[], None);
+        let some1_src = compose_fs_genesis_source(&pk_hex, &sig_hex, &[], Some(100));
+        let some2_src = compose_fs_genesis_source(&pk_hex, &sig_hex, &[], Some(200));
+        assert_ne!(
+            none_src, some1_src,
+            "None-vs-Some cadence must produce differing composed source; \
+             otherwise CRIT-2 divergence is undetectable at deploy-diff time"
+        );
+        assert_ne!(
+            some1_src, some2_src,
+            "differing Some cadence values must produce differing composed source"
+        );
+        // Positive: sanity-check that the literal actually appears
+        // in the composed source.  If a future refactor drops the
+        // commitment binding, the assertion above would still pass
+        // (since composition uses format! and other trivia differ),
+        // but this substring check would trip.
+        assert!(
+            some1_src.contains("snapshotCadenceCommitmentP!(100)"),
+            "expected `snapshotCadenceCommitmentP!(100)` in composed source; not found"
+        );
+        assert!(
+            some2_src.contains("snapshotCadenceCommitmentP!(200)"),
+            "expected `snapshotCadenceCommitmentP!(200)` in composed source; not found"
+        );
+        assert!(
+            none_src.contains("snapshotCadenceCommitmentP!(Nil)"),
+            "expected `snapshotCadenceCommitmentP!(Nil)` in composed source; not found"
+        );
+    }
+
     #[test]
     fn compose_fs_genesis_source_is_deterministic_across_runs() {
         let b = [
@@ -1384,10 +1468,10 @@ mod tests {
         ];
         let pk_hex = "00".repeat(33);
         let sig_hex = "00".repeat(64);
-        let baseline = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let baseline = compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None);
         for _ in 0..20 {
             assert_eq!(
-                compose_fs_genesis_source(&pk_hex, &sig_hex, &b),
+                compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None),
                 baseline,
                 "compose_fs_genesis_source must be deterministic"
             );
@@ -1411,7 +1495,7 @@ mod tests {
         }];
         let pk_hex = "00".repeat(33);
         let sig_hex = "00".repeat(64);
-        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b);
+        let src = compose_fs_genesis_source(&pk_hex, &sig_hex, &b, None);
         let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisConsensusOnly".into());
         assert!(
             r.is_ok(),

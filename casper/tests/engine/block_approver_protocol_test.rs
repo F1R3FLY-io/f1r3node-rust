@@ -79,6 +79,10 @@ impl TestContext {
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
             Vec::new(),
+            // CRIT-2 (2026-08-06): test defaults to no cadence
+            // commitment; separate spec tests for divergence detection
+            // live in fs_genesis_spec.rs.
+            None,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -208,6 +212,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         &[],
+        None,
     )
     .await;
 
@@ -244,6 +249,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         &[],
+        None,
     )
     .await;
 
@@ -280,6 +286,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         &[],
+        None,
     )
     .await;
 
@@ -320,6 +327,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         &[],
+        None,
     )
     .await;
 

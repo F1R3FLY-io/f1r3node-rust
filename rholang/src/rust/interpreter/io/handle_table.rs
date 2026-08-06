@@ -258,7 +258,14 @@ impl FileHandleTable {
         buf[..n].copy_from_slice(&hash[..n]);
         let hi = u64::from_be_bytes(buf);
         // Mask off the low headroom bits so a full runtime lifetime
-        // cannot overflow into the next watermark's range.
+        // cannot overflow into the next watermark's range.  The
+        // watermark is unsigned throughout — it is a bit-pattern
+        // derived from an unsigned hash and its full 64 bits carry
+        // meaning.  Fd values traverse the Rholang boundary via
+        // GInt, but native handlers reinterpret the received GInt
+        // bit-pattern as u64 (see `handlers.rs` — `fd as u64` after
+        // the length-arg sign guard, which applies only to
+        // legitimately-signed inputs like read/write lengths).
         let watermark = hi & !((1u64 << FD_ENTROPY_HEADROOM_BITS) - 1);
         self.seed_next_fd_watermark(watermark);
     }

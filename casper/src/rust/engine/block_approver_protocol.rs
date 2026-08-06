@@ -52,6 +52,16 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     /// rejected.  Empty vec preserves pre-slice-25 behavior.
     pub fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
 
+    /// CRIT-2 fix (2026-08-06): shard-wide consensus filesystem
+    /// snapshot cadence.  MUST equal the proposer's HOCON
+    /// `storage.consensus-fs-snapshot-cadence` value at genesis
+    /// composition time — a mismatch causes the composed fs_generator
+    /// deploy to serialize differently on this validator vs. the
+    /// proposer, and `validate_candidate`'s byte-for-byte deploy
+    /// diff fails.  `None` = no consensus snapshotting on this shard
+    /// (default).
+    pub consensus_fs_snapshot_cadence: Option<u64>,
+
     // Infrastructure
     transport: Arc<T>,
     conf: Arc<RPConf>,
@@ -77,6 +87,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_symbol: String,
         native_token_decimals: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+        consensus_fs_snapshot_cadence: Option<u64>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -116,6 +127,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_symbol,
             native_token_decimals,
             fs_bundle,
+            consensus_fs_snapshot_cadence,
             transport,
             conf,
         })
@@ -172,6 +184,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_symbol: &str,
         native_token_decimals: u32,
         fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        // CRIT-2 (2026-08-06): the validator's local HOCON cadence
+        // flows into the composed fs_generator deploy term.  If the
+        // leader's cadence differs from ours, the reconstructed
+        // deploy's serialized term won't match `block.body.deploys`
+        // and validation fails at the deploy-diff site below — the
+        // consensus check that closes the "shared Genesis hash but
+        // silently divergent snapshot cadence" CRIT-2 gap.
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -251,6 +271,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_symbol,
                 native_token_decimals,
                 fs_bundle,
+                consensus_fs_snapshot_cadence,
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -348,6 +369,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_symbol,
             self.native_token_decimals,
             &self.fs_bundle,
+            self.consensus_fs_snapshot_cadence,
         )
         .await
     }

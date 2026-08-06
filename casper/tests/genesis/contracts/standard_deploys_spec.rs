@@ -48,15 +48,17 @@ fn versioned_registry_embedded_source_compiles() {
 /// Stdin.rho / Stdout.rho / Fs.rho — or in the composition template
 /// itself — fails here.
 #[test]
-fn fs_generator_embedded_source_compiles() { let _ = standard_deploys::fs_generator("root", &[]); }
+fn fs_generator_embedded_source_compiles() {
+    let _ = standard_deploys::fs_generator("root", &[], None);
+}
 
 /// The signature computation is deterministic (function of PK, timestamp,
 /// NONCE only).  Calling twice must return identical hex — otherwise
 /// validators would compute different genesis blocks.
 #[test]
 fn fs_generator_signature_is_deterministic() {
-    let d1 = standard_deploys::fs_generator("root", &[]);
-    let d2 = standard_deploys::fs_generator("root", &[]);
+    let d1 = standard_deploys::fs_generator("root", &[], None);
+    let d2 = standard_deploys::fs_generator("root", &[], None);
     assert_eq!(
         d1.data.term, d2.data.term,
         "FsGenesis source (including embedded signature) must be identical across calls"
@@ -118,7 +120,7 @@ fn fs_generator_signature_verifies_against_pubkey() {
 /// parse; these substring checks catch that.
 #[test]
 fn fs_generator_composed_source_contains_expected_shape() {
-    let d = standard_deploys::fs_generator("root", &[]);
+    let d = standard_deploys::fs_generator("root", &[], None);
     let term = &d.data.term;
     // Footer: mint fs and publish.
     assert!(
@@ -219,7 +221,7 @@ fn fs_generator_appears_in_deploy_sequence_after_registry() {
     };
     let vaults = vec![];
     let deploys =
-        Genesis::default_blessed_terms(&pos, &vaults, 0, "root", "F1R3fly", "F1R", 8, &[]);
+        Genesis::default_blessed_terms(&pos, &vaults, 0, "root", "F1R3fly", "F1R", 8, &[], None);
     // The FsGenesis deploy is the only one whose term binds
     // `rho:io:fs:native:1.0.0/open`.
     let fs_pos = deploys

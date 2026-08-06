@@ -137,6 +137,16 @@ impl ApproveBlockProtocolFactory {
         native_token_symbol: String,
         native_token_decimals: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+        // CRIT-2 (2026-08-06): plumbed from casper_launch which
+        // reads it from the operator's HOCON
+        // `storage.consensus-fs-snapshot-cadence`.  Committed to
+        // `Genesis.consensus_fs_snapshot_cadence` and thus part of
+        // the fs_generator deploy term (see
+        // `fs_genesis.rs::compose_fs_genesis_source` cadence
+        // commitment).  A joining validator with mismatched HOCON
+        // reconstructs a different deploy term and fails
+        // `BlockApproverProtocol::validate_candidate`.
+        consensus_fs_snapshot_cadence: Option<u64>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -201,13 +211,11 @@ impl ApproveBlockProtocolFactory {
             // project_bundle.  Empty vec preserves pre-slice-25
             // behavior when no operator config is set.
             fs_bundle,
-            // Slice 30c (LFB-cadence): shard-wide snapshot cadence
-            // agreed at genesis.  `None` here preserves current
-            // behavior (no consensus filesystem snapshotting).  A
-            // future slice will plumb this through from a genesis-
-            // ceremony CLI arg or shard-config file so ALL validators
-            // observe the same value at genesis composition time.
-            consensus_fs_snapshot_cadence: None,
+            // CRIT-2 fix (2026-08-06): plumbed from caller (ultimately
+            // the operator's HOCON `storage.consensus-fs-snapshot-cadence`).
+            // Committed to the fs_generator deploy term so validator-side
+            // reconstruction catches leader/validator cadence disagreement.
+            consensus_fs_snapshot_cadence,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;

@@ -444,6 +444,8 @@ impl TestFixture {
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
             Vec::new(),
+            // CRIT-2 (2026-08-06): setup default = None cadence.
+            None,
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )
