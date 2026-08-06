@@ -736,8 +736,17 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 ```
 
 ```json
-{"cost": 204, "blockNumber": 3, "blockHash": "2ee3df7f..."}
+{"cost": 204, "blockNumber": 3, "blockHash": "2ee3df7f...", "deployerIdentity": "provided"}
 ```
+
+**Response fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cost` | number | Estimated phlogiston (gas) cost |
+| `blockNumber` | number | Block number the estimate ran against |
+| `blockHash` | string | Block hash the estimate ran against |
+| `deployerIdentity` | string | Which identity produced the estimate: `"provided"` (the caller-supplied `deployer` key was used) or `"ephemeral"` (no `deployer` was passed, so the term ran under a process-wide random key). `"ephemeral"` may significantly underestimate the real deploy cost for identity-dependent terms |
 
 | Status | Condition |
 |--------|-----------|

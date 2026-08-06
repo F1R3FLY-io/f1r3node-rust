@@ -867,6 +867,12 @@ impl WebApi for WebApiImpl {
             })
             .transpose()?;
 
+        let deployer_identity = if deployer_pk.is_some() {
+            DeployerIdentity::Provided
+        } else {
+            DeployerIdentity::Ephemeral
+        };
+
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
             term,
@@ -881,6 +887,7 @@ impl WebApi for WebApiImpl {
             cost,
             block_number,
             block_hash: resolved_hash,
+            deployer_identity,
         })
     }
 
@@ -1431,6 +1438,18 @@ pub struct EpochResponse {
     pub block_hash: String,
 }
 
+/// Which identity produced a cost estimate.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeployerIdentity {
+    /// The estimate was produced under the caller-supplied deployer public key.
+    Provided,
+    /// The estimate was produced under an ephemeral, process-wide random key.
+    /// This may significantly underestimate the real deploy cost for
+    /// identity-dependent terms.
+    Ephemeral,
+}
+
 /// Cost estimation response
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EstimateCostResponse {
@@ -1439,6 +1458,8 @@ pub struct EstimateCostResponse {
     pub block_number: i64,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
+    #[serde(rename = "deployerIdentity")]
+    pub deployer_identity: DeployerIdentity,
 }
 
 /// Epoch rewards response
