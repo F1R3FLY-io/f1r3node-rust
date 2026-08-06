@@ -180,12 +180,20 @@ pub enum FileIoConfigError {
     /// keyed-by-logical-name namespace; two buckets emitting the
     /// same key would produce a Rholang map where second-write
     /// wins, silently discarding one entry.  Reject at boot.
-    LogicalNameConflictAcrossOracleConsensus {
+    ///
+    /// H-3 fix (2026-08-06): the pre-fix variant
+    /// (`LogicalNameConflictAcrossOracleConsensus`) only detected
+    /// oracle × consensus name collisions.  Same-side, cross-bucket
+    /// collisions (e.g., `oracle-static-files{"shared": ...}` +
+    /// `oracle-static-dirs{"shared": ...}`) silently passed
+    /// validation and then panicked in
+    /// `format_bundle_for_rholang` at genesis composition —
+    /// network-wide DoS.  This variant now covers ANY pair of
+    /// buckets in the flat entry set; `members` lists every
+    /// (bucket, path) pair for the colliding name.
+    LogicalNameConflictAcrossBuckets {
         logical_name: String,
-        oracle_bucket: &'static str,
-        oracle_path: PathBuf,
-        consensus_bucket: &'static str,
-        consensus_path: PathBuf,
+        members: Vec<(&'static str, PathBuf)>,
     },
 
     /// Total provisioning-entry count exceeds
@@ -374,19 +382,24 @@ impl std::fmt::Display for FileIoConfigError {
                 field,
                 detail,
             } => write!(f, "[{bucket}] `{logical_name}` {field}: {detail}"),
-            Self::LogicalNameConflictAcrossOracleConsensus {
+            Self::LogicalNameConflictAcrossBuckets {
                 logical_name,
-                oracle_bucket,
-                oracle_path,
-                consensus_bucket,
-                consensus_path,
-            } => write!(
-                f,
-                "logical name `{logical_name}` appears in both [{oracle_bucket}] \
-                 -> {oracle_path:?} and [{consensus_bucket}] -> {consensus_path:?}; \
-                 Fs.rho's bMap has a single namespace and second-write silently \
-                 discards one entry"
-            ),
+                members,
+            } => {
+                let member_str: Vec<String> = members
+                    .iter()
+                    .map(|(b, p)| format!("[{b}] -> {p:?}"))
+                    .collect();
+                write!(
+                    f,
+                    "logical name `{logical_name}` appears in multiple buckets: {}; \
+                     Fs.rho's bMap is a single-namespace map keyed by logical name, so \
+                     a duplicate key would produce a Rholang map where second-write \
+                     silently discards one entry (and pre-H-3 panicked in \
+                     format_bundle_for_rholang at genesis composition)",
+                    member_str.join(", ")
+                )
+            }
             Self::SizeLimitExceeded { message } => write!(f, "{message}"),
             Self::WalkLimitExceeded {
                 bucket,
@@ -707,7 +720,7 @@ pub(crate) fn sort_key(err: &FileIoConfigError) -> (u8, String, String, String) 
             logical_name.clone(),
             field.to_string(),
         ),
-        FileIoConfigError::LogicalNameConflictAcrossOracleConsensus { logical_name, .. } => {
+        FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, .. } => {
             (17, empty.clone(), logical_name.clone(), empty)
         }
     }
@@ -719,40 +732,59 @@ pub(crate) fn sort_key(err: &FileIoConfigError) -> (u8, String, String, String) 
 /// entries carry the same logical name across the oracle/consensus
 /// divide, the emitted Rholang map has a duplicate key and
 /// second-write silently wins, discarding one entry.  Reject at
-/// boot rather than allow silent data loss.  Same-bucket duplicates
-/// are impossible (HashMap keys are unique per bucket).
+/// boot rather than allow silent data loss.
+///
+/// H-3 fix (2026-08-06): pre-fix, this check tracked oracle and
+/// consensus names in *separate* HashMap-per-side buffers.  On the
+/// SAME side, two entries with the same `logical_name` in
+/// different buckets (e.g., `oracle-static-files{"shared":...}`
+/// and `oracle-static-dirs{"shared":...}`) silently overwrote in
+/// the HashMap — only one entry survived boot validation.  The
+/// other entry then re-appeared during `project_bundle`'s flat
+/// walk of all four buckets, so the projected `Vec<BundleEntry>`
+/// contained BOTH.  `format_bundle_for_rholang` sorts by
+/// `logical_name` and asserts adjacent entries have distinct
+/// names — the assert-panic fires deterministically on EVERY
+/// validator, causing a network-wide genesis DoS on any shard
+/// whose operators accidentally cross-bucket-shadowed a name.
+///
+/// Post-fix: the check uses a single `HashMap<logical_name,
+/// Vec<&FlatEntry>>` keyed by name across ALL four buckets.  Any
+/// name appearing in `> 1` entry emits `LogicalNameConflictAcross
+/// Buckets` regardless of which bucket pair collided.  Boot fails
+/// LOUDLY at the validator's local config-check step with a
+/// clear operator-facing message, instead of failing with a
+/// panic at genesis-composition time on every peer.
 fn check_cross_source_logical_name_conflict(
     entries: &[FlatEntry<'_>],
     errors: &mut Vec<FileIoConfigError>,
 ) {
     use std::collections::HashMap;
-    let mut oracle_names: HashMap<&str, &FlatEntry<'_>> = HashMap::new();
-    let mut consensus_names: HashMap<&str, &FlatEntry<'_>> = HashMap::new();
+    let mut by_name: HashMap<&str, Vec<&FlatEntry<'_>>> = HashMap::new();
     for e in entries {
-        if e.is_consensus {
-            consensus_names.insert(e.logical_name, e);
-        } else {
-            oracle_names.insert(e.logical_name, e);
-        }
+        by_name.entry(e.logical_name).or_default().push(e);
     }
-    // Deterministic emit: sort by name.
-    let mut names: Vec<&&str> = oracle_names
-        .keys()
-        .filter(|n| consensus_names.contains_key(*n))
+    // Deterministic emit: sort by name; within a collision, sort
+    // members by bucket for stable operator-facing output.
+    let mut names: Vec<&&str> = by_name
+        .iter()
+        .filter(|(_, vs)| vs.len() > 1)
+        .map(|(n, _)| n)
         .collect();
     names.sort();
-    for n in names {
-        let o = oracle_names[*n];
-        let c = consensus_names[*n];
-        errors.push(
-            FileIoConfigError::LogicalNameConflictAcrossOracleConsensus {
-                logical_name: (*n).to_string(),
-                oracle_bucket: o.bucket,
-                oracle_path: o.path.to_path_buf(),
-                consensus_bucket: c.bucket,
-                consensus_path: c.path.to_path_buf(),
-            },
-        );
+    for name in names {
+        let mut vs = by_name[*name].clone();
+        vs.sort_by_key(|e| e.bucket);
+        // Emit one error per collision (the entire member list is
+        // included in the emitted variant so a single operator
+        // report describes the full ambiguity).
+        errors.push(FileIoConfigError::LogicalNameConflictAcrossBuckets {
+            logical_name: (*name).to_string(),
+            members: vs
+                .iter()
+                .map(|e| (e.bucket, e.path.to_path_buf()))
+                .collect(),
+        });
     }
 }
 
@@ -1717,6 +1749,127 @@ mod tests {
                 FileIoConfigError::BucketOverlapSamePath { path, .. } if path == &root
             )),
             "expected BucketOverlapSamePath for dir/dir; got {errs:?}"
+        );
+    }
+
+    // -------------------- H-3 regression pins (2026-08-06) --------------------
+    //
+    // Same-side, cross-bucket name collision.  Pre-H-3, the check
+    // used `HashMap<name, entry>` on each side, so
+    // oracle-static-files{"shared":...} + oracle-static-dirs{"shared":...}
+    // silently overwrote in the HashMap and validation passed.
+    // `project_bundle` then included BOTH (flat walk of all 4 buckets),
+    // and `format_bundle_for_rholang` panicked on the adjacent
+    // duplicate — deterministic on every validator, network-wide
+    // genesis DoS.  Post-H-3 each such collision emits
+    // `LogicalNameConflictAcrossBuckets` at boot.
+
+    #[test]
+    fn same_name_across_oracle_file_and_oracle_dir_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let file_path = root.join("data.bin");
+        make_file(&file_path);
+        let dir_path = root.join("dir");
+        fs::create_dir_all(&dir_path).unwrap();
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "shared", file_path);
+        add_oracle_dir(&mut cfg, "shared", dir_path);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, members }
+                    if logical_name == "shared" && members.len() == 2
+            )),
+            "H-3 regression: same name in oracle-file and oracle-dir must emit \
+             LogicalNameConflictAcrossBuckets; got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn same_name_across_consensus_file_and_consensus_dir_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let file_path = root.join("data.bin");
+        make_file(&file_path);
+        let dir_path = root.join("dir");
+        fs::create_dir_all(&dir_path).unwrap();
+        let mut cfg = empty_cfg();
+        add_consensus_file(&mut cfg, "shared", file_path);
+        add_consensus_dir(&mut cfg, "shared", dir_path);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, .. }
+                    if logical_name == "shared"
+            )),
+            "H-3 regression: same name in consensus-file and consensus-dir must \
+             emit LogicalNameConflictAcrossBuckets; got {errs:?}"
+        );
+    }
+
+    /// The pre-H-3 covered case (oracle-file × consensus-file with
+    /// same name) MUST still emit under the widened check.
+    #[test]
+    fn same_name_across_oracle_file_and_consensus_file_still_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let oracle_path = root.join("oracle.bin");
+        let consensus_path = root.join("consensus.bin");
+        make_file(&oracle_path);
+        make_file(&consensus_path);
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "shared", oracle_path);
+        add_consensus_file(&mut cfg, "shared", consensus_path);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                FileIoConfigError::LogicalNameConflictAcrossBuckets { logical_name, .. }
+                    if logical_name == "shared"
+            )),
+            "pre-H-3 oracle × consensus name collision must still be caught; got {errs:?}"
+        );
+    }
+
+    /// Triple-bucket collision (same name in three different buckets)
+    /// must emit ONE error whose `members` lists all three entries.
+    #[test]
+    fn same_name_across_three_buckets_emits_single_error_with_all_members() {
+        let td = TempDir::new().unwrap();
+        let root = td_root(&td);
+        let f1 = root.join("f1");
+        let f2 = root.join("f2");
+        let d = root.join("d");
+        make_file(&f1);
+        make_file(&f2);
+        fs::create_dir_all(&d).unwrap();
+        let mut cfg = empty_cfg();
+        add_oracle_file(&mut cfg, "shared", f1);
+        add_consensus_file(&mut cfg, "shared", f2);
+        add_oracle_dir(&mut cfg, "shared", d);
+        let errs = validate_provisioning_boot(&cfg).unwrap_err();
+        let conflict_errs: Vec<_> = errs
+            .iter()
+            .filter_map(|e| match e {
+                FileIoConfigError::LogicalNameConflictAcrossBuckets {
+                    logical_name,
+                    members,
+                } if logical_name == "shared" => Some(members),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            conflict_errs.len(),
+            1,
+            "three-bucket collision must produce exactly one error"
+        );
+        assert_eq!(
+            conflict_errs[0].len(),
+            3,
+            "the single error must list all three colliding members"
         );
     }
 
