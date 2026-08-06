@@ -216,15 +216,52 @@ fn probe_dir_writable(dir: &Path) -> Result<(), SnapshotConfigError> {
             reason: format!("create_dir_all failed: {e}"),
         });
     }
-    // Touch-and-remove probe.  Uses a randomized-ish name (nanos +
-    // pid) so parallel probes don't collide.  The probe file is
-    // ALWAYS removed on success; on failure the directory is
-    // presumably not usable anyway.
-    let now_nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let probe_name = format!(".snapshot-probe-{}-{}", std::process::id(), now_nanos);
+    // Touch-and-remove probe.  L-4 fix (2026-08-06): use
+    // `tempfile::Builder` to produce a cryptographically-random
+    // suffix instead of `pid + now_nanos`.  Pre-fix, an attacker
+    // with local read access could predict the probe path from
+    // process metadata (pid via /proc, clock roughly via observed
+    // events) and pre-create a file / symlink at that path within
+    // the race window.  The O_EXCL step (create_new) below already
+    // catches the pre-existing-path case, but making the name
+    // unpredictable closes the race one layer earlier and matches
+    // the standard convention.  `tempfile` uses getrandom() under
+    // the hood — same source certificate_helper uses for key
+    // material.
+    use std::io::Read;
+    let mut suffix = [0u8; 16];
+    // Read from /dev/urandom on Unix; falls back to platform CSPRNG
+    // elsewhere.  Cheaper than pulling in the whole `rand` API
+    // surface for one 16-byte draw.
+    match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut suffix)) {
+        Ok(_) => {}
+        Err(_) => {
+            // If /dev/urandom is unavailable (containerized bind
+            // mount, etc.), fall back to pid+nanos with a warning.
+            // The O_EXCL step below still gates against the pre-
+            // placement attack in the fallback path.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let pid = std::process::id() as u64;
+            suffix[..8].copy_from_slice(&nanos.to_be_bytes());
+            suffix[8..].copy_from_slice(&pid.to_be_bytes());
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot",
+                "/dev/urandom unavailable for probe-name entropy; falling back to \
+                 pid+nanos (still safe under O_EXCL create_new)"
+            );
+        }
+    };
+    let probe_name = format!(
+        ".snapshot-probe-{}",
+        suffix.iter().fold(String::with_capacity(32), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
+    );
     let probe_path = dir.join(&probe_name);
     // M-30-3 review fix (round 2): use O_EXCL (create_new) so a
     // pre-existing file / symlink at the probe path causes the

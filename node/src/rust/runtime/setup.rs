@@ -270,6 +270,17 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use crate::rust::configuration::provisioning_merge::merge_and_validate;
         use crate::rust::configuration::snapshot_config::build_snapshot_writer;
 
+        // L-9 note (2026-08-06): this is one of two boot-time
+        // `merge_and_validate` calls (the other is in the
+        // genesis-bundle projection ~350 lines below).  Same
+        // input, same output — technically wasted work but
+        // measured in microseconds, and deduplication would
+        // require `Clone` derivation on `FileIoConfigError`
+        // (or Arc-wrapping the Result to survive the panic-on-
+        // error dispatch on the genesis side).  L-9 finding
+        // explicitly rated as "not a correctness issue"; kept
+        // separate to preserve the different error-handling
+        // policies (soft-fail here, panic there).
         let merged = merge_and_validate(
             conf.storage.file_io_provisioning.clone(),
             Vec::new(),
@@ -657,6 +668,12 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // yield a genesis block that no validator could accept,
             // so failing loud at boot is the correct outcome.
             {
+                // L-9 note: second of two boot-time
+                // `merge_and_validate` calls (see the SnapshotWriter
+                // setup ~350 lines above).  Kept separate because the
+                // error-handling policies differ — soft-fail there,
+                // hard panic here (invalid provisioning would yield
+                // a genesis block no validator could accept).
                 let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
                     conf.storage.file_io_provisioning.clone(),
                     // CLI-side entries land in slice 26 wire-up

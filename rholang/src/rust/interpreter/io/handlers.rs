@@ -534,7 +534,7 @@ impl FsProcesses {
         })
         .await;
         let file = match opened {
-            Err(join_err) => return err(FSERR_IO, join_err.to_string()),
+            Err(_join_err) => return err(FSERR_IO, "spawn_blocking task failed"),
             Ok(Err(qe)) => {
                 let (code, msg) = quarantine_err_reply(&qe);
                 return err(code, msg);
@@ -753,7 +753,7 @@ impl FsProcesses {
         })
         .await;
         match result {
-            Err(join_err) => err(FSERR_IO, join_err.to_string()),
+            Err(_join_err) => err(FSERR_IO, "spawn_blocking task failed"),
             Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
             Ok(Ok(bytes)) => ok_bytes(bytes),
         }
@@ -992,7 +992,7 @@ impl FsProcesses {
         })
         .await;
         match result {
-            Err(join_err) => err(FSERR_IO, join_err.to_string()),
+            Err(_join_err) => err(FSERR_IO, "spawn_blocking task failed"),
             Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
             Ok(Ok(n)) => ok_u64(n),
         }
@@ -1044,7 +1044,7 @@ impl FsProcesses {
                             })
                             .await;
                             match r {
-                                Err(je) => err(FSERR_IO, je.to_string()),
+                                Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                                 Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
                                 Ok(Ok(pos)) => ok_u64(pos),
                             }
@@ -1098,7 +1098,7 @@ impl FsProcesses {
                 })
                 .await;
                 match r {
-                    Err(je) => err(FSERR_IO, je.to_string()),
+                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                     Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
                     Ok(Ok(pos)) => ok_u64(pos),
                 }
@@ -1173,7 +1173,7 @@ impl FsProcesses {
                 })
                 .await;
                 match r {
-                    Err(je) => err(FSERR_IO, je.to_string()),
+                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                     Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
                     Ok(Ok(n)) => ok_u64(n),
                 }
@@ -1252,7 +1252,7 @@ impl FsProcesses {
                             })
                             .await;
                             match r {
-                                Err(je) => err(FSERR_IO, je.to_string()),
+                                Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                                 Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
                                 Ok(Ok(())) => ok_bare(),
                             }
@@ -1312,7 +1312,7 @@ impl FsProcesses {
                 })
                 .await;
                 match r {
-                    Err(je) => err(FSERR_IO, je.to_string()),
+                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
                     Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
                     Ok(Ok(())) => ok_bare(),
                 }
@@ -1405,7 +1405,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
@@ -1466,7 +1466,7 @@ impl FsProcesses {
                     ok_bool(ok)
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -1551,9 +1551,14 @@ impl FsProcesses {
                         let e = std::io::Error::last_os_error();
                         return err(io_err_code(&e), io_msg_scrub(&e));
                     }
-                    // Dup for the readdir stream so we can also use
-                    // dir_fd for openat per entry.
-                    let read_fd = unsafe { libc::dup(dir_fd) };
+                    // L-3 fix (2026-08-06): use F_DUPFD_CLOEXEC so the
+                    // duplicated fd carries FD_CLOEXEC atomically.  Plain
+                    // libc::dup would produce a fd WITHOUT CLOEXEC; a
+                    // concurrent exec (from any thread) would leak the
+                    // dir fd into the child process.  F_DUPFD_CLOEXEC
+                    // closes the race by setting CLOEXEC in the same
+                    // syscall.
+                    let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
                     if read_fd < 0 {
                         let e = std::io::Error::last_os_error();
                         unsafe { libc::close(dir_fd) };
@@ -1587,7 +1592,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -1692,7 +1697,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
@@ -1778,7 +1783,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
@@ -1847,7 +1852,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
@@ -1936,7 +1941,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
         };
@@ -2036,7 +2041,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(
                 FSERR_BAD_ARG,
@@ -2153,7 +2158,7 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -2345,8 +2350,9 @@ fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> st
             return Err(std::io::Error::last_os_error());
         }
         // Dup dir_fd so we can readdir on one copy and use the other for
-        // unlinkat.
-        let dup_fd = libc::dup(dir_fd);
+        // unlinkat.  L-3 fix (2026-08-06): F_DUPFD_CLOEXEC — see the
+        // fs_entries site for rationale.
+        let dup_fd = libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0);
         if dup_fd < 0 {
             let e = std::io::Error::last_os_error();
             libc::close(dir_fd);
@@ -2461,7 +2467,7 @@ async fn chown_impl(
         }
     })
     .await
-    .unwrap_or_else(|je| err(FSERR_IO, je.to_string()))
+    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
 }
 
 /// Silence unused-import warning on AccessMode (used in Phase 5 by the

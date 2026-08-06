@@ -436,7 +436,15 @@ fn map_open_err(e: std::io::Error) -> QuarantineError {
 /// to a Rholang caller.  We keep the OS-level classification (which is
 /// what a caller needs to distinguish `NotFound` from `PermissionDenied`)
 /// and drop the free-form message.
-pub fn io_msg_scrub(e: &std::io::Error) -> String { format!("{:?}", e.kind()) }
+///
+/// L-2 fix (2026-08-06): use `{}` (Display) instead of `{:?}` (Debug).
+/// Debug on `std::io::ErrorKind` today produces `NotFound`,
+/// `PermissionDenied`, etc.  — safe.  But a future stdlib variant like
+/// `Uncategorized(String)` (unstable but landing) would Debug-format the
+/// inner String, potentially exfiltrating a host path back to Rholang.
+/// Display is guaranteed to be a stable human-readable classification
+/// with no internal-field spillage.
+pub fn io_msg_scrub(e: &std::io::Error) -> String { format!("{}", e.kind()) }
 
 /// M-R2 review fix (slice 29 round 2): lexically normalize
 /// `PathBuf::from(root).join(rel)` so equivalent rel forms produce

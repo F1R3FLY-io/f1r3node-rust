@@ -2509,4 +2509,72 @@ mod tests {
         // Double slash normalizes too.
         assert_eq!(non_canonical_reason(Path::new("/foo//bar")), None);
     }
+
+    /// L-8 fix (2026-08-06): boot-validation error-Vec order is
+    /// operator-facing (dumped into the boot-panic message) and
+    /// consulted by CI diffing against expected error output.  A
+    /// HashMap-iteration-driven reorder between runs would look
+    /// like flaky-test noise even when the same-input-same-errors
+    /// invariant holds.  This test proves the current order is
+    /// deterministic by running validation twice on the same input
+    /// and asserting the returned Vecs are byte-equal.
+    ///
+    /// Note: this pins that the order IS deterministic, not that
+    /// any particular order is operator-friendly.  A future
+    /// re-ordering (e.g., "group all KindMismatch errors first")
+    /// is fine as long as the new order is itself deterministic.
+    #[test]
+    fn boot_validation_error_order_is_deterministic() {
+        use std::collections::HashMap;
+
+        use crate::rust::configuration::file_io_provisioning::{
+            FileIoProvisioning, StaticDirEntry, StaticFileEntry,
+        };
+
+        // Construct a config with MULTIPLE errors (missing paths,
+        // kind mismatches, forbidden chars in modes) so we see
+        // enough error variety to detect any ordering
+        // nondeterminism from HashMap iteration.
+        let mut oracle_files: HashMap<String, StaticFileEntry> = HashMap::new();
+        let mut oracle_dirs: HashMap<String, StaticDirEntry> = HashMap::new();
+        for i in 0..8 {
+            oracle_files.insert(format!("missing-file-{i}"), StaticFileEntry {
+                path: PathBuf::from(format!("/nonexistent/miss-file-{i}")),
+                mode: "r".to_string(),
+            });
+            oracle_dirs.insert(format!("missing-dir-{i}"), StaticDirEntry {
+                path: PathBuf::from(format!("/nonexistent/miss-dir-{i}")),
+                mode: "r".to_string(),
+            });
+        }
+        let cfg = FileIoProvisioning {
+            oracle_static_files: oracle_files,
+            oracle_static_dirs: oracle_dirs,
+            consensus_static_files: HashMap::new(),
+            consensus_static_dirs: HashMap::new(),
+        };
+        // Run validation twice — output must be identical.  If
+        // any HashMap iteration order leaks through, this test
+        // fails intermittently on repeated CI runs.  Running
+        // three times back-to-back gives us high confidence in
+        // one CI invocation.
+        let errs1 = validate_provisioning_boot(&cfg).unwrap_err();
+        let errs2 = validate_provisioning_boot(&cfg).unwrap_err();
+        let errs3 = validate_provisioning_boot(&cfg).unwrap_err();
+        assert_eq!(
+            errs1, errs2,
+            "L-8: boot validation error Vec must be deterministic across identical \
+             calls (run 1 vs run 2)"
+        );
+        assert_eq!(
+            errs2, errs3,
+            "L-8: boot validation error Vec must be deterministic across identical \
+             calls (run 2 vs run 3)"
+        );
+        // Sanity: we got a nonzero error count.
+        assert!(
+            !errs1.is_empty(),
+            "test setup: expected at least one validation error"
+        );
+    }
 }

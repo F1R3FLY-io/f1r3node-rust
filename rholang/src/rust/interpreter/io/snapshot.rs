@@ -1474,6 +1474,35 @@ mod tests {
         assert!(p1.exists());
     }
 
+    /// L-7 fix (2026-08-06): pin the empty-slice write path.  A
+    /// snapshot of an empty WAL slice produces a file that contains
+    /// only the SNAPSHOT_FORMAT_VERSION byte + 4 zero bytes (u32-be
+    /// entry count).  Round-trip through `read_snapshot_bytes` must
+    /// succeed and yield an empty WalEntry Vec.  Pre-fix no test
+    /// covered this — a regression that panicked or errored on the
+    /// zero-entries path would slip through until an operator hit
+    /// a cadence boundary with no consensus mutations.
+    #[test]
+    fn write_snapshot_of_empty_slice_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, root) = write_snapshot(dir.path(), &[]).unwrap();
+        assert!(path.exists(), "empty-slice write must produce a file");
+        // Exactly 5 bytes: version + u32-be count(0).
+        let contents = std::fs::read(&path).unwrap();
+        assert_eq!(
+            contents.len(),
+            5,
+            "empty-slice on-disk file is version byte + u32-be zero count"
+        );
+        assert_eq!(contents[0], SNAPSHOT_FORMAT_VERSION);
+        assert_eq!(&contents[1..], &[0u8, 0, 0, 0]);
+        // Root is the Blake2b256 of those 5 bytes (deterministic).
+        assert_eq!(root, hash_of(&contents));
+        // Read back cleanly via the dir + root API.
+        let read_back = read_snapshot_bytes(dir.path(), &root).unwrap();
+        assert_eq!(read_back, contents);
+    }
+
     #[test]
     fn op_tags_are_stable() {
         // Any renumbering here is a hard-fork of the WAL root — pin
