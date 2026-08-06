@@ -122,6 +122,13 @@
 //    `fserr_to_code`, or changing the u32-be layout of `code` is
 //    a hard fork of the WAL root.  Pinned by
 //    `encode_entry_outcome_layout_is_stable`.
+// 11. **WAL entry cap** (M-8, 2026-08-06) — `MAX_WAL_ENTRIES`
+//    in `wal.rs`.  Consensus-observable because callers see
+//    `FSERR_QUOTA_EXCEEDED` on the overflow write; a divergent
+//    cap would produce different reply distributions on
+//    identical inputs.  Pinned by
+//    `max_wal_entries_pinned_at_65536`.  A change here is a
+//    hard fork of the tuplespace-level reply behavior.
 // 10. **Manifest wire format** (M-1, 2026-08-06) —
 //    `MANIFEST_FORMAT_VERSION` at `v` in every JSON line;
 //    field order `v, block_number, root, entries, ts_ms, [sig]`;
@@ -2516,6 +2523,7 @@ mod tests {
             ("8.", "Path encoding"),
             ("9.", "Outcome encoding"),
             ("10.", "Manifest wire format"),
+            ("11.", "WAL entry cap"),
         ];
         for (num, keyword) in items {
             let needle = format!("// {num} **{keyword}");

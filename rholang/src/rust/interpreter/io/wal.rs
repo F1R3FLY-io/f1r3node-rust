@@ -52,7 +52,27 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 /// to 65_536 as a rough analog to `MAX_OPEN_FDS = 1024` scaled up
 /// for the higher-throughput write-op vs. long-lived-handle
 /// distinction; final calibration is a Cost FIP concern.
+///
+/// M-8 fix (2026-08-06): CONSENSUS-OBSERVABLE.  Every validator
+/// on the network MUST agree on this value — a divergent cap
+/// would produce different `FSERR_QUOTA_EXCEEDED` reply
+/// distributions on identical inputs and fork consensus at the
+/// tuplespace level.  Item #11 of the hard-fork surface catalog
+/// (see `snapshot.rs`).  Any change here must be coordinated as
+/// a network hard fork.  Pinned by `max_wal_entries_pinned_at_65536`.
 pub const MAX_WAL_ENTRIES: usize = 65_536;
+
+// M-8 fix: compile-time floor check.  Ensures the cap is above
+// any realistic single-deploy legitimate use so this triggers
+// only on adversarial workloads (per-deploy WAL entries are
+// bounded by contract cost, which caps at ~10k in practice).
+// If a future cost calibration lowers this, the const_assert
+// forces the maintainer to think about consensus impact.
+const _: () = assert!(
+    MAX_WAL_ENTRIES >= 1024,
+    "M-8: MAX_WAL_ENTRIES below 1024 would surface FSERR_QUOTA_EXCEEDED \
+     on legitimate workloads — a divergent lower cap would fork consensus"
+);
 
 /// Opaque marker returned by `Wal::begin_deploy` and consumed by
 /// `Wal::take_deploy_entries`.  Records the WAL length at the deploy
@@ -397,7 +417,14 @@ impl Wal {
             .ack_hashes
             .lock()
             .expect("Wal ack_hashes mutex poisoned");
-        debug_assert_eq!(
+        // M-10 fix (2026-08-06): fail-hard in release, not just
+        // debug.  Alignment between entries and ack_hashes is a
+        // consensus-critical invariant — a mismatch under
+        // release load would silently misroute the log-order
+        // drain and produce different WAL roots across
+        // validators.  A panic here is loud, single-source, and
+        // caught by any CI that runs the mutating handlers.
+        assert_eq!(
             entries_guard.len(),
             ack_guard.len(),
             "Wal invariant: entries and ack_hashes must be index-aligned"
@@ -405,6 +432,51 @@ impl Wal {
         for i in (0..ack_guard.len()).rev() {
             if ack_guard[i] == ack_hash {
                 entries_guard[i] = new_entry;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// M-7 fix (2026-08-06): update the `length` and
+    /// `payload_ref` of the entry matching `ack_hash`, in place,
+    /// preserving every other field (`op`, `path`, `offset`,
+    /// `outcome`, ...).  Used by `finalize_write_journal` on
+    /// partial writes.
+    ///
+    /// Pre-M-7 the caller had to re-look-up `(cmode, canon_path)`
+    /// from the FileHandleTable via `with_mut(fd, ...)` between
+    /// journal_write and finalize.  If the fd was closed in that
+    /// window (which the linear-cell mutex on File.rho makes
+    /// exceedingly narrow but not impossible), the lookup would
+    /// return None and the placeholder would silently stay full-
+    /// length instead of being truncated to actual bytes —
+    /// leader/follower divergence on the partial-write path.
+    /// Keying by `ack_hash` (a fresh unforgeable, unique per
+    /// syscall) means the finalize path never re-reads mutable
+    /// FileHandle state; the placeholder was appended moments
+    /// ago in the same handler and cannot be aliased away.
+    ///
+    /// Returns `true` if a match was found and updated.
+    pub fn update_partial_write_by_ack_hash(
+        &self,
+        ack_hash: [u8; 32],
+        actual_bytes: &[u8],
+    ) -> bool {
+        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
+        let ack_guard = self
+            .ack_hashes
+            .lock()
+            .expect("Wal ack_hashes mutex poisoned");
+        assert_eq!(
+            entries_guard.len(),
+            ack_guard.len(),
+            "Wal invariant: entries and ack_hashes must be index-aligned"
+        );
+        for i in (0..ack_guard.len()).rev() {
+            if ack_guard[i] == ack_hash {
+                entries_guard[i].length = Some(actual_bytes.len() as u64);
+                entries_guard[i].payload_ref = Some(PayloadRef::hash(actual_bytes));
                 return true;
             }
         }
@@ -429,7 +501,14 @@ impl Wal {
             .ack_hashes
             .lock()
             .expect("Wal ack_hashes mutex poisoned");
-        debug_assert_eq!(
+        // M-10 fix (2026-08-06): fail-hard in release, not just
+        // debug.  Alignment between entries and ack_hashes is a
+        // consensus-critical invariant — a mismatch under
+        // release load would silently misroute the log-order
+        // drain and produce different WAL roots across
+        // validators.  A panic here is loud, single-source, and
+        // caught by any CI that runs the mutating handlers.
+        assert_eq!(
             entries_guard.len(),
             ack_guard.len(),
             "Wal invariant: entries and ack_hashes must be index-aligned"
@@ -479,7 +558,8 @@ impl Wal {
         }
         let drained_entries: Vec<WalEntry> = entries_guard.split_off(mark.len);
         let drained_acks: Vec<[u8; 32]> = ack_guard.split_off(mark.len);
-        debug_assert_eq!(
+        // M-10: fail-hard on post-drain alignment mismatch too.
+        assert_eq!(
             drained_entries.len(),
             drained_acks.len(),
             "Wal invariant: entries and ack_hashes must be index-aligned"
@@ -947,5 +1027,91 @@ mod tests {
         assert_eq!(snap[0].outcome, WalOutcome::Success);
         assert_eq!(snap[1].outcome, WalOutcome::Failure { code: 5 });
         assert_eq!(snap[2].outcome, WalOutcome::Success);
+    }
+
+    // ---------------------------------------------------------------
+    // M-7 fix (2026-08-06) — partial-write finalize keyed on ack_hash,
+    // preserving op / path / offset / outcome from the placeholder.
+    // ---------------------------------------------------------------
+
+    /// M-7 pin: `update_partial_write_by_ack_hash` mutates only
+    /// `length` and `payload_ref`; every other field is preserved
+    /// bit-for-bit from the placeholder.  Guards against a
+    /// regression that reintroduces the fd-relookup path (which
+    /// would silently no-op on a closed fd).
+    #[test]
+    fn update_partial_write_by_ack_hash_preserves_other_fields() {
+        let wal = Wal::new();
+        let ack = [0xEEu8; 32];
+        // Placeholder: WriteAt with a specific op / path / offset
+        // and a Failure outcome (worst-case: outcome is
+        // non-default so any accidental reset is visible).
+        let placeholder = WalEntry {
+            op: WalOp::WriteAt,
+            path: PathBuf::from("/preserved/path"),
+            extra_path: Some(PathBuf::from("/preserved/extra")),
+            offset: Some(0xDEAD_BEEF),
+            length: Some(999),
+            payload_ref: Some(PayloadRef::hash(b"placeholder full-length payload")),
+            mode_bits: Some(0o644),
+            owner: Some("alice".to_string()),
+            group: Some("wheel".to_string()),
+            outcome: WalOutcome::Failure { code: 42 },
+        };
+        wal.append_with_ack(placeholder.clone(), ack).unwrap();
+        let updated = wal.update_partial_write_by_ack_hash(ack, b"short");
+        assert!(updated, "must find and update the placeholder");
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        let e = &snap[0];
+        // Changed:
+        assert_eq!(e.length, Some(5), "length reflects actual bytes");
+        assert_eq!(
+            e.payload_ref,
+            Some(PayloadRef::hash(b"short")),
+            "payload_ref reflects actual bytes"
+        );
+        // Preserved:
+        assert_eq!(e.op, placeholder.op);
+        assert_eq!(e.path, placeholder.path);
+        assert_eq!(e.extra_path, placeholder.extra_path);
+        assert_eq!(e.offset, placeholder.offset);
+        assert_eq!(e.mode_bits, placeholder.mode_bits);
+        assert_eq!(e.owner, placeholder.owner);
+        assert_eq!(e.group, placeholder.group);
+        assert_eq!(e.outcome, placeholder.outcome);
+    }
+
+    /// M-7 pin: no-match ack returns false without touching the WAL.
+    #[test]
+    fn update_partial_write_by_ack_hash_no_match_is_noop() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_write_entry(b"x"), [0x11u8; 32])
+            .unwrap();
+        let hit = wal.update_partial_write_by_ack_hash([0x22u8; 32], b"y");
+        assert!(!hit);
+        // Original entry unchanged.
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].payload_ref, Some(PayloadRef::hash(b"x")));
+    }
+
+    // ---------------------------------------------------------------
+    // M-8 fix (2026-08-06) — MAX_WAL_ENTRIES is consensus-observable;
+    // pin the value + document the hard-fork surface.
+    // ---------------------------------------------------------------
+
+    /// M-8 pin: the cap is 65536.  A regression changing this
+    /// value is a network hard fork (item #11 of the catalog);
+    /// pinned here so a `MAX_WAL_ENTRIES = 128` edit surfaces
+    /// in CI rather than fork consensus on a live network.
+    #[test]
+    fn max_wal_entries_pinned_at_65536() {
+        assert_eq!(
+            MAX_WAL_ENTRIES, 65_536,
+            "M-8: MAX_WAL_ENTRIES is consensus-observable (item #11 of the \
+             hard-fork surface catalog).  Changing the cap alters when \
+             validators emit FSERR_QUOTA_EXCEEDED on identical inputs — a \
+             coordinated hard fork is required."
+        );
     }
 }

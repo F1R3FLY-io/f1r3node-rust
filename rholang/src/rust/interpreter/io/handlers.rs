@@ -57,10 +57,23 @@ use super::{ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 /// can match them.
 fn ack_channel_hash(ack: &Par) -> [u8; 32] {
     let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(ack).bytes();
+    // M-9 fix (2026-08-06): fail-hard in release, not just debug.
+    // Pre-fix used `debug_assert_eq!` + `.min(32)` which would
+    // silently zero-pad in release if a future Blake2b256
+    // provider swap produced shorter output — hash collisions on
+    // the placeholder sentinel `[0u8; 32]` would misroute
+    // log-order drain.  Panicking loudly at the mismatch site
+    // surfaces the misconfiguration at first call rather than
+    // as a downstream consensus divergence.
+    assert_eq!(
+        h.len(),
+        32,
+        "Blake2b256 must produce 32-byte digest; got {} — the WAL ack sidecar \
+         hard-depends on a fixed 32-byte hash width",
+        h.len()
+    );
     let mut out = [0u8; 32];
-    debug_assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
-    let n = h.len().min(32);
-    out[..n].copy_from_slice(&h[..n]);
+    out.copy_from_slice(&h);
     out
 }
 
@@ -246,58 +259,34 @@ impl FsProcesses {
     /// Semantics:
     /// - Locates the entry with matching ack_hash (the placeholder
     ///   appended by `journal_write` pre-syscall).
-    /// - Replaces it in-place with `bytes[..n]` hash + n as length.
+    /// - Updates only `length` and `payload_ref` — preserves
+    ///   `op`, `path`, `offset`, `outcome` from the placeholder.
     /// - On leader: `n` comes from the syscall reply.
     /// - On follower: `n` comes from the cached `previous` reply.
     /// Both sides derive the same `n` from `bytes` (same args, same
     /// deterministic reply) and produce a byte-identical final entry.
     ///
+    /// M-7 fix (2026-08-06): removed the fd-relookup path that
+    /// silently no-op'd if the fd was closed between
+    /// `journal_write` and this call.  The placeholder is keyed
+    /// by `ack_hash` (a fresh unforgeable, unique per syscall)
+    /// which cannot be aliased away — the placeholder was just
+    /// appended in the same handler.  The WAL method
+    /// (`update_partial_write_by_ack_hash`) is a no-op if no
+    /// entry matches, which is the correct behavior for
+    /// non-Consensus caps (they never appended a placeholder).
+    ///
     /// Full-length writes (n == requested) don't call this — the
     /// pre-syscall placeholder already has the correct content.
-    /// Failed writes (error reply) similarly skip (nothing on disk
-    /// to reconcile).
-    async fn finalize_write_journal(
-        &self,
-        fd: u64,
-        requested_bytes: &[u8],
-        actual_n: u64,
-        offset: Option<u64>,
-        ack: &Par,
-    ) {
-        // Only Consensus caps have a placeholder to finalize.
-        let cmode_and_path = self
+    /// Failed writes (error reply) go through
+    /// `finalize_failure_journal` instead (H-6).
+    fn finalize_write_journal(&self, requested_bytes: &[u8], actual_n: u64, ack: &Par) {
+        let n = (actual_n as usize).min(requested_bytes.len());
+        let actual_slice = &requested_bytes[..n];
+        let _ = self
             .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
-            .await;
-        if let Some((ConsensusMode::Consensus, canon_path)) = cmode_and_path {
-            let n = (actual_n as usize).min(requested_bytes.len());
-            let actual_slice = &requested_bytes[..n];
-            let op = if offset.is_some() {
-                WalOp::WriteAt
-            } else {
-                WalOp::Write
-            };
-            let updated = WalEntry {
-                op,
-                path: canon_path,
-                extra_path: None,
-                offset,
-                length: Some(actual_n),
-                payload_ref: Some(PayloadRef::hash(actual_slice)),
-                mode_bits: None,
-                owner: None,
-                group: None,
-                // Partial write: the syscall SUCCEEDED (returned
-                // n > 0), just wrote fewer bytes than requested.
-                // Outcome stays Success — the leader wrote SOME
-                // bytes and replay must apply the same n.
-                outcome: WalOutcome::Success,
-            };
-            let _ = self
-                .handles
-                .wal
-                .update_last_entry_by_ack_hash(ack_channel_hash(ack), updated);
-        }
+            .wal
+            .update_partial_write_by_ack_hash(ack_channel_hash(ack), actual_slice);
     }
 
     /// H-6 fix (2026-08-06): flip a reserved WAL entry's outcome
@@ -759,9 +748,9 @@ impl FsProcesses {
             // the actual bytes on partial writes.  Full-length
             // writes leave the pre-syscall placeholder in place
             // (already correct).
-            if let (Some((fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
+            if let (Some((_fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
                 if n < bytes.len() as u64 {
-                    self.finalize_write_journal(*fd, bytes, n, None, ack).await;
+                    self.finalize_write_journal(bytes, n, ack);
                 }
             }
             // H-6 fix (2026-08-06): if the leader's cached reply
@@ -792,7 +781,7 @@ impl FsProcesses {
                     actual = n,
                     "partial write on Consensus cap; finalizing WAL entry with actual bytes"
                 );
-                self.finalize_write_journal(*fd, bytes, n, None, ack).await;
+                self.finalize_write_journal(bytes, n, ack);
             }
         }
         // H-6 fix (2026-08-06): if the syscall returned an error
@@ -861,10 +850,9 @@ impl FsProcesses {
         }
         if is_replay {
             // Slice 30c M-29-3: follower finalize on partial write.
-            if let (Some((fd, off, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
+            if let (Some((_fd, _off, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
                 if n < bytes.len() as u64 {
-                    self.finalize_write_journal(*fd, bytes, n, Some(*off), ack)
-                        .await;
+                    self.finalize_write_journal(bytes, n, ack);
                 }
             }
             // H-6 fix (2026-08-06): follower failure-finalize
@@ -892,8 +880,7 @@ impl FsProcesses {
                     actual = n,
                     "partial write_at on Consensus cap; finalizing WAL entry"
                 );
-                self.finalize_write_journal(*fd, bytes, n, Some(*off), ack)
-                    .await;
+                self.finalize_write_journal(bytes, n, ack);
             }
         }
         // H-6 fix (2026-08-06): flip placeholder to Failure on
