@@ -122,6 +122,18 @@
 //    `fserr_to_code`, or changing the u32-be layout of `code` is
 //    a hard fork of the WAL root.  Pinned by
 //    `encode_entry_outcome_layout_is_stable`.
+// 10. **Manifest wire format** (M-1, 2026-08-06) —
+//    `MANIFEST_FORMAT_VERSION` at `v` in every JSON line;
+//    field order `v, block_number, root, entries, ts_ms, [sig]`;
+//    `root` as 64-char lowercase hex or `null`; `sig` as
+//    variable-length lowercase hex; `sign_bytes` layout
+//    `MANIFEST_FORMAT_VERSION | block_number | root_present | root |
+//    entries | ts_ms` (all big-endian).  This is INDEPENDENT of
+//    catalog items 1-9 (which cover the .wal snapshot bytes);
+//    manifest schema evolves on its own version cadence.  Pinned
+//    by `manifest_line_format_is_pinned_at_v1` +
+//    `manifest_sign_bytes_layout_is_pinned` +
+//    `from_line_rejects_unknown_manifest_version`.
 //
 // # Platform scope (H-30-3 review note)
 //
@@ -159,6 +171,33 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   followers can distinguish a leader's successful syscall
 ///   from a syscall that returned an error (EIO/ENOSPC/EROFS).
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 2;
+
+/// M-1 fix (2026-08-06): manifest.jsonl line-format version.
+/// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
+/// independent wire surfaces: the .wal file bytes and the
+/// manifest text lines evolve on separate cadences.  A WAL
+/// encoding change (added field, new op tag) does NOT
+/// invalidate existing manifest signatures; a manifest schema
+/// change (added key, renamed field) does NOT invalidate
+/// existing .wal snapshots.
+///
+/// # Wire-format contract (see spec §Join-protocol manifest)
+///
+/// - The version is embedded as `"v":<n>` in the JSON line so
+///   readers can multi-decode across versions cleanly.
+/// - Bumping this value is a hard fork of the manifest protocol.
+///   All producers and consumers on the network MUST upgrade
+///   before the change activates.
+/// - Item #10 of the hard-fork surface catalog.  Golden-hex pin
+///   in `manifest_line_format_is_pinned_at_v1`.
+///
+/// # Version history
+///
+/// - `1`: initial slice-30c Phase C layout + H-4 sig field +
+///   M-1 `"v"` version tag.  Fields: `v`, `block_number`,
+///   `root` (hex string or null), `entries`, `ts_ms`, `sig`
+///   (optional hex string).
+pub const MANIFEST_FORMAT_VERSION: u8 = 1;
 
 /// Result of encoding + hashing a WAL slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,20 +863,24 @@ impl ManifestEntry {
     /// non-`sig` fields, hashed via Blake2b256 to produce the
     /// message the signature covers.  Anything that changes the
     /// canonicalization is a hard-fork of the manifest format
-    /// (bump `SNAPSHOT_FORMAT_VERSION` in the manifest header
-    /// when that happens; see slice 34's hard-fork catalog).
+    /// (bump `MANIFEST_FORMAT_VERSION`; see hard-fork catalog
+    /// item #10).
     ///
-    /// Format: `block_number | root_present | root | entries | ts_ms`
-    /// (all big-endian, root omitted when absent).  Deterministic
-    /// across writer/verifier as long as they agree on this
-    /// module's version byte.
+    /// M-1 fix (2026-08-06): version byte is `MANIFEST_FORMAT_VERSION`
+    /// (was `SNAPSHOT_FORMAT_VERSION` pre-fix — that conflated
+    /// two distinct wire surfaces; bumping WAL encoding would
+    /// have invalidated existing manifest sigs unnecessarily).
+    ///
+    /// Format: `MANIFEST_FORMAT_VERSION | block_number | root_present |
+    /// root | entries | ts_ms` (all big-endian, root omitted when
+    /// absent).  Deterministic across writer/verifier as long as
+    /// they agree on this module's version byte.
     pub fn sign_bytes(&self) -> Vec<u8> {
         use crypto::rust::hash::blake2b256::Blake2b256;
         let mut buf = Vec::with_capacity(1 + 8 + 1 + 32 + 8 + 8);
-        // Version byte tying the signature format to the on-disk
-        // snapshot format (single source of truth for a hard-fork
-        // touch surface).
-        buf.push(SNAPSHOT_FORMAT_VERSION);
+        // Version byte tying the signature format to the manifest
+        // wire format (independent from the .wal snapshot format).
+        buf.push(MANIFEST_FORMAT_VERSION);
         buf.extend_from_slice(&self.block_number.to_be_bytes());
         match &self.root {
             Some(r) => {
@@ -896,8 +939,14 @@ impl ManifestEntry {
     ///
     /// H-4 fix (2026-08-06): if `sig` is `Some`, appends a
     /// trailing `,"sig":"<hex>"` field.  `None` omits the field
-    /// entirely so pre-H-4 manifests still round-trip through
-    /// `from_line`.
+    /// entirely.
+    ///
+    /// M-1 fix (2026-08-06): `"v":<MANIFEST_FORMAT_VERSION>` is
+    /// the first key of every emitted line.  Consumers rejecting
+    /// an unknown `v` surface `SnapshotError::UnsupportedManifestVersion`
+    /// cleanly rather than silently mis-decoding a future schema.
+    /// Field order: `v`, `block_number`, `root`, `entries`,
+    /// `ts_ms`, [`sig`].  Item #10 of the hard-fork surface catalog.
     pub fn to_line(&self) -> String {
         let root_field = match &self.root {
             Some(r) => format!("\"{}\"", hex_encode(r)),
@@ -905,7 +954,8 @@ impl ManifestEntry {
         };
         match &self.sig {
             Some(s) => format!(
-                "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{},\"sig\":\"{}\"}}",
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{},\"sig\":\"{}\"}}",
+                MANIFEST_FORMAT_VERSION,
                 self.block_number,
                 root_field,
                 self.entries,
@@ -913,8 +963,12 @@ impl ManifestEntry {
                 hex_encode(s),
             ),
             None => format!(
-                "{{\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
-                self.block_number, root_field, self.entries, self.ts_ms,
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
+                MANIFEST_FORMAT_VERSION,
+                self.block_number,
+                root_field,
+                self.entries,
+                self.ts_ms,
             ),
         }
     }
@@ -932,6 +986,7 @@ impl ManifestEntry {
             .strip_prefix('{')
             .and_then(|s| s.strip_suffix('}'))
             .ok_or_else(|| format!("manifest line missing braces: {line:?}"))?;
+        let mut version: Option<u8> = None;
         let mut block_number: Option<i64> = None;
         let mut root: Option<Option<[u8; 32]>> = None;
         let mut entries: Option<u64> = None;
@@ -947,6 +1002,22 @@ impl ManifestEntry {
             let key = key.trim().trim_matches('"');
             let value = value.trim();
             match key {
+                // M-1 fix (2026-08-06): explicit version field.
+                // Absence means pre-M-1 unversioned line; treat
+                // as version 1 for backward compat but require a
+                // present `v` to equal `MANIFEST_FORMAT_VERSION`
+                // (unknown values → UnsupportedManifestVersion).
+                "v" => {
+                    let v: u8 = value.parse().map_err(|e| format!("v parse: {e}"))?;
+                    if v != MANIFEST_FORMAT_VERSION {
+                        return Err(format!(
+                            "unsupported manifest version {v} (this validator understands \
+                             version {MANIFEST_FORMAT_VERSION}); a coordinated upgrade may \
+                             be needed"
+                        ));
+                    }
+                    version = Some(v);
+                }
                 "block_number" => {
                     block_number = Some(
                         value
@@ -993,6 +1064,17 @@ impl ManifestEntry {
                 }
             }
         }
+        // M-1 fix (2026-08-06): `v` is mandatory.  A missing `v`
+        // is either a pre-M-1 unversioned line or a corrupted
+        // one; both are treated as untrusted and rejected so a
+        // silent decode of "someone's future schema as v1" can
+        // never happen.
+        let _ = version.ok_or_else(|| {
+            format!(
+                "missing `v` field (mandatory since M-1 fix 2026-08-06); \
+                 expected v = {MANIFEST_FORMAT_VERSION}"
+            )
+        })?;
         Ok(Self {
             block_number: block_number.ok_or("missing block_number")?,
             root: root.ok_or("missing root")?,
@@ -2433,6 +2515,7 @@ mod tests {
             ("7.", "Field order inside `encode_entry`"),
             ("8.", "Path encoding"),
             ("9.", "Outcome encoding"),
+            ("10.", "Manifest wire format"),
         ];
         for (num, keyword) in items {
             let needle = format!("// {num} **{keyword}");
@@ -2743,9 +2826,119 @@ mod tests {
 
     #[test]
     fn manifest_entry_from_line_rejects_missing_field() {
-        // Missing ts_ms.
-        let bogus = "{\"block_number\":1,\"root\":null,\"entries\":0}";
+        // Missing ts_ms.  Include `v` so the earlier version-check
+        // arm doesn't short-circuit before we reach the ts_ms check.
+        let bogus = "{\"v\":1,\"block_number\":1,\"root\":null,\"entries\":0}";
         let err = ManifestEntry::from_line(bogus).unwrap_err();
         assert!(err.contains("missing ts_ms"), "got {err}");
+    }
+
+    // ------------------------------------------------------------------
+    // M-1 fix (2026-08-06) manifest wire-format pins.  Item #10 of the
+    // hard-fork surface catalog.
+    // ------------------------------------------------------------------
+
+    /// M-1 pin: the current-version manifest line is byte-exact.
+    /// A regression that reorders fields, changes quoting, or
+    /// omits the `v` prefix flips this literal.
+    #[test]
+    fn manifest_line_format_is_pinned_at_v1() {
+        let e = ManifestEntry {
+            block_number: 42,
+            root: Some([0xABu8; 32]),
+            entries: 7,
+            ts_ms: 1_722_400_000_000,
+            sig: None,
+        };
+        let line = e.to_line();
+        let expected = "{\"v\":1,\"block_number\":42,\"root\":\"\
+            abababababababababababababababababababababababababababababababab\",\
+            \"entries\":7,\"ts_ms\":1722400000000}";
+        assert_eq!(
+            line, expected,
+            "M-1: manifest line format is a hard-fork surface (catalog #10); \
+             a regression here means bumping MANIFEST_FORMAT_VERSION and \
+             coordinating a network upgrade"
+        );
+    }
+
+    /// M-1 pin: `sign_bytes` layout is byte-exact.  Signature
+    /// verification only works cross-node if writers + verifiers
+    /// agree on this canonicalization.
+    #[test]
+    fn manifest_sign_bytes_layout_is_pinned() {
+        // Data entry: version | i64-be block_number | 1 |
+        // 32-byte root | u64-be entries | i64-be ts_ms.
+        let e = ManifestEntry {
+            block_number: 0x0102_0304_0506_0708_i64,
+            root: Some([0xCDu8; 32]),
+            entries: 0x0000_0000_0000_0009_u64,
+            ts_ms: 0x000A_0B0C_0D0E_0F10_i64,
+            sig: None,
+        };
+        // The blake2b hash output is fixed (32 bytes), so pin the
+        // pre-hash bytes assembled by sign_bytes.  Reproduce by
+        // manually laying out the specified format.
+        let mut expected_prehash = Vec::new();
+        expected_prehash.push(MANIFEST_FORMAT_VERSION);
+        expected_prehash.extend_from_slice(&e.block_number.to_be_bytes());
+        expected_prehash.push(1); // root present
+        expected_prehash.extend_from_slice(&[0xCDu8; 32]);
+        expected_prehash.extend_from_slice(&e.entries.to_be_bytes());
+        expected_prehash.extend_from_slice(&e.ts_ms.to_be_bytes());
+        let expected_hash: Vec<u8> =
+            crypto::rust::hash::blake2b256::Blake2b256::hash(expected_prehash);
+        assert_eq!(
+            e.sign_bytes(),
+            expected_hash,
+            "M-1: sign_bytes canonicalization is a hard-fork surface; changing \
+             field order, endianness, or the version byte breaks cross-node sig \
+             verification"
+        );
+
+        // Empty sentinel: root absent → tag byte 0, no root bytes.
+        let empty = ManifestEntry {
+            block_number: 5,
+            root: None,
+            entries: 0,
+            ts_ms: 12345,
+            sig: None,
+        };
+        let mut expected_prehash_empty = Vec::new();
+        expected_prehash_empty.push(MANIFEST_FORMAT_VERSION);
+        expected_prehash_empty.extend_from_slice(&empty.block_number.to_be_bytes());
+        expected_prehash_empty.push(0); // root absent
+        expected_prehash_empty.extend_from_slice(&empty.entries.to_be_bytes());
+        expected_prehash_empty.extend_from_slice(&empty.ts_ms.to_be_bytes());
+        let expected_hash_empty: Vec<u8> =
+            crypto::rust::hash::blake2b256::Blake2b256::hash(expected_prehash_empty);
+        assert_eq!(empty.sign_bytes(), expected_hash_empty);
+    }
+
+    /// M-1 pin: an unknown `v` value gets rejected explicitly.
+    /// Protects against silent mis-decoding of a future v2 line
+    /// by a v1-only validator.
+    #[test]
+    fn from_line_rejects_unknown_manifest_version() {
+        let future = "{\"v\":99,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":1}";
+        let err = ManifestEntry::from_line(future).unwrap_err();
+        assert!(
+            err.contains("unsupported manifest version 99"),
+            "must reject unknown version explicitly; got {err}"
+        );
+    }
+
+    /// M-1 pin: a pre-M-1 line (no `v` field) gets rejected.
+    /// A validator upgraded past the M-1 fix MUST NOT silently
+    /// decode a pre-fix manifest as if it were v1 — that would
+    /// mask an operator's stale directory.
+    #[test]
+    fn from_line_rejects_missing_manifest_version() {
+        let pre_m1 = "{\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":1}";
+        let err = ManifestEntry::from_line(pre_m1).unwrap_err();
+        assert!(
+            err.contains("missing `v`"),
+            "must reject unversioned line explicitly; got {err}"
+        );
     }
 }
