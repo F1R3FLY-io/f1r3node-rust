@@ -111,10 +111,6 @@ enum Disposition {
     OracleTwin(&'static str),
     /// Measured by a `stack_depth_gate.rs` subject. The cycle exists and its cost is known.
     Measured(&'static str),
-    /// ⚠ A live Θ(depth) exposure with no subject. **This variant is the backlog**, and every
-    /// row carrying it is an admission.
-    #[allow(dead_code)]
-    Unmeasured(&'static str),
     /// The cycle is over a bounded structure rather than the term's own depth — a fixed-arity
     /// walk, a config tree, a transport handshake.
     NotATermDepthCycle(&'static str),
@@ -163,10 +159,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "rholang/src/rust/interpreter/pretty_printer.rs",
         Disposition::Measured("gate subject `pretty`"),
     ),
-    (
-        "rholang/tests/support/pretty_printer_oracle.rs",
-        Disposition::OracleTwin("the pre-conversion printer, held for the differential"),
-    ),
     // ── normalizer ─────────────────────────────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
@@ -190,10 +182,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
             "★ participates in a CROSS-FILE cycle with normalize.rs and normalize_drive.rs — \
              the shape a per-file scan structurally cannot see",
         ),
-    ),
-    (
-        "rholang/src/rust/interpreter/compiler/utils.rs",
-        Disposition::NotATermDepthCycle("compiler helpers over a fixed-arity structure"),
     ),
     // ── substitution ───────────────────────────────────────────────────────────────
     (
@@ -275,10 +263,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::NotATermDepthCycle("test harness"),
     ),
     (
-        "casper/src/rust/api/block_api.rs",
-        Disposition::NotATermDepthCycle("API surface over block messages"),
-    ),
-    (
         "node/src/rust/api/rho_expr_pda.rs",
         Disposition::Measured(
             "the production conversion, Clone, Serialize, Debug, and Drop implementations are \
@@ -300,10 +284,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     (
         "comm/src/rust/transport/grpc_transport.rs",
         Disposition::NotATermDepthCycle("transport, not a term traversal"),
-    ),
-    (
-        "rholang/src/lib.rs",
-        Disposition::NotATermDepthCycle("FFI surface"),
     ),
     (
         "rholang/src/rust/interpreter/system_processes.rs",
@@ -343,13 +323,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         "casper/src/rust/util/comm/fair_round_robin_dispatcher.rs",
         Disposition::NotATermDepthCycle(
             "dispatcher over a peer queue, bounded by the queue rather than by any term",
-        ),
-    ),
-    (
-        "casper/src/rust/util/rholang/system_deploy.rs",
-        Disposition::NotATermDepthCycle(
-            "`rand` splits a Blake2b generator; the chain is bounded by the number of deploys, \
-             and the `Par` it mentions is carried rather than walked",
         ),
     ),
     (
@@ -771,46 +744,43 @@ fn every_handwritten_term_recursion_has_a_disposition() {
          and nothing says what is known about it. That is the state `#121` was in: mutually \
          recursive, unbounded, in no audit and no tripwire, found only when an unrelated probe \
          overflowed.\n\n\
-         Add a row to `RECURSION_DISPOSITIONS` saying which it is:\n\
-         \x20 · `Measured(subject)`          — a `stack_depth_gate.rs` subject drives it;\n\
-         \x20 · `OracleTwin(why)`            — a deliberate reference implementation;\n\
-         \x20 · `NotATermDepthCycle(why)`    — the cycle is over a bounded structure;\n\
-         \x20 · `Unmeasured(why)`            — ⚠ a live Θ(depth) exposure with no subject.\n\n\
-         ★ `Unmeasured` is a legitimate answer and an honest one. A DISPOSITION IS A VALUE, NOT \
-         AN ABSENCE — what is refused is saying nothing.",
+         Add a row to `RECURSION_DISPOSITIONS`: `Measured(subject)`, \
+         `OracleTwin(why)`, or `NotATermDepthCycle(why)`. A live unmeasured term-depth \
+         cycle is intentionally unrepresentable: convert it to a PDA/iterative traversal \
+         before updating this exact current-state table.",
         undispositioned.len(),
         undispositioned.join("\n  ")
     );
 
-    let unmeasured: Vec<&str> = RECURSION_DISPOSITIONS
-        .iter()
-        .filter(|(_, d)| matches!(d, Disposition::Unmeasured(_)))
-        .map(|(f, _)| *f)
-        .collect();
+    assert_eq!(
+        declared.len(),
+        RECURSION_DISPOSITIONS.len(),
+        "DUPLICATE RECURSION DISPOSITION: the declared table has {} row(s) but only {} unique \
+         file name(s). A duplicate makes one disposition shadow another instead of describing \
+         one exact derived file set.",
+        RECURSION_DISPOSITIONS.len(),
+        declared.len(),
+    );
+    let active: BTreeSet<&str> = with_recursion.keys().map(String::as_str).collect();
+    let stale: Vec<&str> = declared.difference(&active).copied().collect();
+    assert!(
+        stale.is_empty(),
+        "STALE HAND-WRITTEN RECURSION DISPOSITIONS remain for {} file(s):\n  {}\n\n\
+         The file set is derived in both directions. Remove rows whose term-family SCC was \
+         converted or disappeared; historical conversion evidence belongs in the living \
+         stack-safety report, not in a current-state disposition table.",
+        stale.len(),
+        stale.join("\n  "),
+    );
+
     println!(
         "  hand-written recursion census: {} recursive component(s), {} over the term family \
-         ({} mutual), across {} file(s); {} still UNMEASURED",
+         ({} mutual), across {} exactly dispositioned file(s)",
         c.recursive.len(),
         c.term_family.len(),
         mutual,
         with_recursion.len(),
-        unmeasured.len()
     );
-    for f in &unmeasured {
-        let mut components: Vec<Vec<&str>> = c
-            .term_family
-            .iter()
-            .filter(|component| component.iter().any(|(fi, _, _)| c.rel[*fi] == *f))
-            .map(|component| {
-                let mut names: Vec<&str> =
-                    component.iter().map(|(_, name, _)| name.as_str()).collect();
-                names.sort_unstable();
-                names
-            })
-            .collect();
-        components.sort_unstable();
-        println!("    UNMEASURED: {f}: {components:?}");
-    }
 }
 
 /// ⭑★★ **The conversion witness: the census must stop finding #121, while its
