@@ -39,8 +39,13 @@ jobs:
     timeout-minutes: 5
     if: >-
       !startsWith(github.event.head_commit.message, 'chore(release)')
+    permissions:
+      checks: write
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - name: Require latest weekend soak verdict to be pass
+      - name: Read latest weekend soak verdict
+        id: gate
         shell: bash -euo pipefail {0}
         env:
           OVERRIDE: ${{ contains(github.event.head_commit.message, '[soak-override]') }}
@@ -48,25 +53,96 @@ jobs:
           # Releases must not promote past a regressing weekend soak
           # (EPOCH-010 TASK-010-3). Maintainer override: include
           # [soak-override] in the release commit message.
+          #
+          # A regress HOLDS the release (the release job skips on
+          # proceed=false) without failing this job: soak state belongs to
+          # the README badges and the dashboard, not to the commit's build
+          # status, which must reflect build/test checks only. The hold is
+          # surfaced on the commit as a neutral `release-held` check run
+          # (next step) instead of a red X.
           if [ "$OVERRIDE" = "true" ]; then
             echo "::warning::Soak gate overridden via [soak-override] in commit message"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          verdict_json="$(curl -fsS --max-time 30 \
+          # Randomized heredoc delimiter: the summary embeds strings from
+          # the fetched JSON, so a static delimiter would let a crafted
+          # line terminate the block early and inject further outputs.
+          delim="HELD_EOF_${RANDOM}${RANDOM}_$$"
+          hold() {
+            {
+              echo "held_summary<<$delim"
+              cat
+              echo ""
+              echo "The release job was skipped; the build itself is unaffected. Fix the regression or include \`[soak-override]\` in the release commit message. Soak state and history: https://f1r3fly-io.github.io/f1r3node-rust/"
+              echo "$delim"
+            } >> "$GITHUB_OUTPUT"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          }
+          body="$RUNNER_TEMP/latest-verdict.json"
+          http_code="$(curl -sS --max-time 30 --retry 3 --retry-delay 5 \
+            -o "$body" -w '%{http_code}' \
             "https://f1r3fly-io.github.io/f1r3node-rust/data/latest-verdict.json" \
-            2>/dev/null || true)"
-          if [ -z "$verdict_json" ]; then
+            2>/dev/null)" || http_code=000
+          if [ "$http_code" = "404" ]; then
             echo "::warning::No published soak verdict yet (dashboard bootstrap); allowing release"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          verdict="$(printf '%s' "$verdict_json" | jq -r '.verdict // "unknown"')"
-          date="$(printf '%s' "$verdict_json" | jq -r '.run.date // "unknown"')"
+          if [ "$http_code" != "200" ]; then
+            # Fail closed on an unverifiable verdict (network error, 5xx):
+            # holding a release on a transient fetch failure is recoverable;
+            # releasing past an unseen regress is not. Only a true 404
+            # (pre-bootstrap dashboard) allows the release through.
+            echo "::warning::Could not fetch soak verdict (HTTP $http_code) — release held rather than promoting past an unverifiable verdict. Re-run the workflow to retry."
+            hold <<EOF
+          Could not fetch the weekend soak verdict (HTTP $http_code); the release is held rather than promoted past an unverifiable verdict. Re-run the workflow to retry.
+          EOF
+            exit 0
+          fi
+          verdict_json="$(cat "$body")"
+          verdict="$(printf '%s' "$verdict_json" | jq -r '.verdict // "unknown"' 2>/dev/null || echo unknown)"
+          date="$(printf '%s' "$verdict_json" | jq -r '.run.date // "unknown"' 2>/dev/null || echo unknown)"
           echo "Latest weekend soak verdict: $verdict ($date)"
           if [ "$verdict" != "pass" ]; then
-            printf '%s' "$verdict_json" | jq -r '.failures[] | "FAIL: " + .'
-            echo "::error::Latest weekend soak regressed — release blocked. Fix the regression or use [soak-override] in the release commit message."
-            exit 1
+            printf '%s' "$verdict_json" | jq -r '.failures[]? | "FAIL: " + .' 2>/dev/null || true
+            echo "::warning::Latest weekend soak verdict is '$verdict' ($date) — release held. Fix the regression or use [soak-override] in the release commit message."
+            {
+              echo "Latest weekend soak verdict: \`$verdict\` ($date)."
+              echo ""
+              printf '%s' "$verdict_json" | jq -r '.failures[]? | "- " + .' 2>/dev/null || true
+            } | hold
+            exit 0
           fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish neutral release-held check
+        if: steps.gate.outputs.proceed == 'false'
+        uses: actions/github-script@v7
+        env:
+          HELD_SUMMARY: ${{ steps.gate.outputs.held_summary }}
+        with:
+          script: |
+            // Publication is best-effort: a failed check-run API call must
+            // not fail this job, or the gate re-creates the red commit
+            // status the hold mechanism exists to avoid. The held state is
+            // still visible in the job log and the ::warning annotation.
+            try {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'release-held',
+                head_sha: context.sha,
+                status: 'completed',
+                conclusion: 'neutral',
+                output: {
+                  title: 'Release held by the weekend soak verdict gate',
+                  summary: process.env.HELD_SUMMARY,
+                },
+              });
+            } catch (error) {
+              core.warning(`Could not publish the release-held check run: ${error.message}`);
+            }
 
   release:
     name: Bump Version & Tag
@@ -75,7 +151,8 @@ jobs:
     environment: release-credentials
     timeout-minutes: 10
     if: >-
-      !startsWith(github.event.head_commit.message, 'chore(release)')
+      !startsWith(github.event.head_commit.message, 'chore(release)') &&
+      needs.soak_gate.outputs.proceed == 'true'
     permissions:
       contents: write
     steps:

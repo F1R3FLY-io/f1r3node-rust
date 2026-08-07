@@ -40,6 +40,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
+    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
@@ -111,6 +112,7 @@ impl RuntimeManager {
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
+    const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
     const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
 
@@ -223,7 +225,18 @@ impl RuntimeManager {
 
     fn max_replay_cache_entries() -> usize { Self::MAX_REPLAY_CACHE_ENTRIES }
 
+    fn max_replay_cache_bytes() -> usize { Self::MAX_REPLAY_CACHE_BYTES }
+
     fn max_replay_cache_event_log_entries() -> usize { Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES }
+
+    fn record_replay_cache_metrics(cache: &InMemoryReplayCache) -> (usize, usize) {
+        let stats = cache.stats();
+        metrics::gauge!(REPLAY_CACHE_ENTRIES_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(stats.0 as f64);
+        metrics::gauge!(REPLAY_CACHE_RETAINED_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(stats.1 as f64);
+        stats
+    }
 
     fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
 
@@ -366,11 +379,10 @@ impl RuntimeManager {
                     replay_payload_hash,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                cache.put(key, entry);
-                tracing::debug!(
-                    "[CACHE] Stored replay cache entry for sender seq={}",
-                    seq_num
-                );
+                let replay_cached = cache.put(key, entry);
+                let (cache_entries, cache_retained_bytes) =
+                    Self::record_replay_cache_metrics(cache);
+                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
             } else if !all_logs.is_empty() {
                 tracing::debug!(
                     "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
@@ -477,11 +489,10 @@ impl RuntimeManager {
                     replay_payload_hash,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                cache.put(key, entry);
-                tracing::debug!(
-                    "[CACHE] Stored replay cache entry for sender seq={}",
-                    seq_num
-                );
+                let replay_cached = cache.put(key, entry);
+                let (cache_entries, cache_retained_bytes) =
+                    Self::record_replay_cache_metrics(cache);
+                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
             } else if !all_logs.is_empty() {
                 tracing::debug!(
                     "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
@@ -1251,8 +1262,12 @@ impl RuntimeManager {
             bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             parents_post_state_cache: Arc::new(DashMap::new()),
             parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            replay_cache: (replay_cache_size > 0)
-                .then(|| Arc::new(InMemoryReplayCache::new(replay_cache_size))),
+            replay_cache: (replay_cache_size > 0).then(|| {
+                Arc::new(InMemoryReplayCache::with_limits(
+                    replay_cache_size,
+                    Self::max_replay_cache_bytes(),
+                ))
+            }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
             external_services,

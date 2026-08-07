@@ -57,6 +57,32 @@ SOAK_DIR="$TMP/passing" OUT_DIR="$TMP/passing-report" RUN_ID=2 RUN_ATTEMPT=1 \
 jq -e '.verdict == "pass" and .bootstrap == true and .failures == []' \
 	"$TMP/passing-report/verdict.json" >/dev/null
 
+mkdir -p "$TMP/segments/bench-segment-00001/bench" "$TMP/segments-report"
+cp "$TMP/passing/summary.json" "$TMP/segments/summary.json"
+cat >"$TMP/segments/bench-segment-00001/metrics.json" <<'JSON'
+{
+  "segment_index": 1,
+  "offset_seconds": 60,
+  "ok": true,
+  "latency": {"p50_ms": 10, "p95_ms": 20},
+  "observed_throughput": 2,
+  "finalization_rate": 1,
+  "rss_peak_mb": 100
+}
+JSON
+cat >"$TMP/segments/bench-segment-00001/bench/metrics.json" <<'JSON'
+{"segment_index": null, "offset_seconds": null, "ok": true}
+JSON
+SOAK_DIR="$TMP/segments" OUT_DIR="$TMP/segments-report" RUN_ID=4 RUN_ATTEMPT=1 \
+	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
+	"$ROOT/scripts/bench/aggregate-perf-report.sh"
+jq -e '
+  .active.segments_total == 1
+  and .active.segments_ok == 1
+  and (.active.segments | length) == 1
+  and .active.segments[0].offset_seconds == 60
+' "$TMP/segments-report/weekly-summary.json" >/dev/null
+
 mkdir -p "$TMP/breach" "$TMP/breach-report"
 cp "$TMP/passing/summary.json" "$TMP/breach/summary.json"
 printf '%s\n' 'host_protection_breach: injected guardian marker' \
