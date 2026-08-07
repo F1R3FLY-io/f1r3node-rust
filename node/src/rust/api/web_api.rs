@@ -126,6 +126,7 @@ pub trait WebApi {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse>;
 
     /// Get current epoch rewards from PoS contract
@@ -618,6 +619,7 @@ impl WebApi for WebApiImpl {
             block_hash,
             use_pre_state_hash,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -711,6 +713,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -753,6 +756,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -783,6 +787,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -852,8 +857,21 @@ impl WebApi for WebApiImpl {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
+
+        let deployer_pk = deployer
+            .map(|hex_str| {
+                validate_and_decode_pubkey(&hex_str).map(|bytes| PublicKey::from_bytes(&bytes))
+            })
+            .transpose()?;
+
+        let deployer_identity = if deployer_pk.is_some() {
+            DeployerIdentity::Provided
+        } else {
+            DeployerIdentity::Ephemeral
+        };
 
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
@@ -861,6 +879,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            deployer_pk,
         )
         .await?;
 
@@ -868,6 +887,7 @@ impl WebApi for WebApiImpl {
             cost,
             block_number,
             block_hash: resolved_hash,
+            deployer_identity,
         })
     }
 
@@ -888,6 +908,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -925,6 +946,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -1171,6 +1193,18 @@ pub struct SimpleExploreDeployRequest {
     pub term: String,
 }
 
+/// Request body for POST /api/estimate-cost.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EstimateCostRequest {
+    pub term: String,
+    /// Hex-encoded 65-byte uncompressed secp256k1 public key (`04`-prefixed).
+    /// For identity-dependent terms such as vault transfers, pass the deployer
+    /// public key; without it the term executes under an ephemeral identity and
+    /// the returned cost can be significantly lower than the real deploy cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployer: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DataAtNameRequest {
     /// For simplicity only one Unforgeable name is allowed
@@ -1404,6 +1438,18 @@ pub struct EpochResponse {
     pub block_hash: String,
 }
 
+/// Which identity produced a cost estimate.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeployerIdentity {
+    /// The estimate was produced under the caller-supplied deployer public key.
+    Provided,
+    /// The estimate was produced under an ephemeral, process-wide random key.
+    /// This may significantly underestimate the real deploy cost for
+    /// identity-dependent terms.
+    Ephemeral,
+}
+
 /// Cost estimation response
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EstimateCostResponse {
@@ -1412,6 +1458,8 @@ pub struct EstimateCostResponse {
     pub block_number: i64,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
+    #[serde(rename = "deployerIdentity")]
+    pub deployer_identity: DeployerIdentity,
 }
 
 /// Epoch rewards response
