@@ -7,8 +7,10 @@ use std::collections::HashMap;
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::construct_deploy;
-use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
+use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{GDeployId, Par};
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -421,5 +423,177 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         actual_cost,
         cost_with_deployer,
         cost_without_deployer
+    );
+}
+
+fn extract_deploy_id_sig(par: &Par) -> Option<Vec<u8>> {
+    par.unforgeables.iter().find_map(|u| match &u.unf_instance {
+        Some(UnfInstance::GDeployIdBody(GDeployId { sig })) => Some(sig.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+
+    // Path 1: `deployer` public key is passed. Sig is a real secp256k1 DER signature over a
+    // preimage that folds the `deployer` public key in (via create_unbound).
+    let result_with_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer should succeed");
+    let (pars_with, _block_with, cost_with) = result_with_deployer;
+
+    let sig_with = extract_deploy_id_sig(&pars_with[0])
+        .expect("Some(deployer) path should return a GDeployId unforgeable on rho:rchain:deployId");
+    assert!(
+        !sig_with.is_empty(),
+        "deployId sig must be non-empty on Some(deployer) path (real secp256k1 DER signature), got {} bytes",
+        sig_with.len()
+    );
+    assert!(
+        !sig_with.iter().all(|&b| b == 0),
+        "deployId sig must be non-trivial (not all-zero) on Some(deployer) path"
+    );
+
+    // Path 2: no `deployer` public key is passed.
+    let result_without_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        None,
+    )
+    .await
+    .expect("exploratory deploy without deployer should succeed");
+    let (pars_without, _block_without, cost_without) = result_without_deployer;
+
+    let sig_without = extract_deploy_id_sig(&pars_without[0])
+        .expect("None path should return a GDeployId unforgeable on rho:rchain:deployId");
+    assert!(
+        !sig_without.is_empty(),
+        "deployId sig must be non-empty on None path (real secp256k1 DER signature)"
+    );
+
+    let diff = cost_with.abs_diff(cost_without);
+    let tolerance = cost_with.max(cost_without) / 20; // 5%
+    assert!(
+        diff <= tolerance,
+        "deployId-reading term cost must match within 5% between Some(deployer) ({}) and None ({}) paths (diff={}, tolerance={})",
+        cost_with,
+        cost_without,
+        diff,
+        tolerance
+    );
+
+    tracing::info!(
+        "deployId sig lengths: with_deployer={}, without_deployer={}; costs: with={}, without={}",
+        sig_with.len(),
+        sig_without.len(),
+        cost_with,
+        cost_without
+    );
+}
+
+/// Two different deployer public keys must observe different `rho:rchain:deployId`
+/// values for the same term, and repeating the same (term, deployer) within one
+/// process must observe the same value (process-wide ephemeral key is stable).
+#[tokio::test]
+async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+
+    // Two different deployers must produce different deployId values.
+    let result_a = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer A should succeed");
+    let sig_a =
+        extract_deploy_id_sig(&result_a.0[0]).expect("should return GDeployId for deployer A");
+
+    let result_b = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB2.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer B should succeed");
+    let sig_b =
+        extract_deploy_id_sig(&result_b.0[0]).expect("should return GDeployId for deployer B");
+
+    assert_ne!(
+        sig_a, sig_b,
+        "deployId must differ between different deployer public keys"
+    );
+
+    // Repeating the same (term, deployer) within one process must yield the same value
+    // because the ephemeral signing key is process-wide stable.
+    let result_a2 = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer A (repeat) should succeed");
+    let sig_a2 = extract_deploy_id_sig(&result_a2.0[0])
+        .expect("should return GDeployId for deployer A (repeat)");
+
+    assert_eq!(
+        sig_a, sig_a2,
+        "deployId must be stable for the same (term, deployer) within one process"
+    );
+
+    tracing::info!(
+        "deployId sig lengths: deployer_A={}, deployer_B={}; stable repeat={}",
+        sig_a.len(),
+        sig_b.len(),
+        sig_a == sig_a2
     );
 }

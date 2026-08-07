@@ -69,6 +69,9 @@ use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 
 /// Process-wide ephemeral identity to sign exploratory deploys.
+/// The key pair is generated randomly once per node process, so values derived
+/// from it — including the signature, and therefore `rho:rchain:deployId` — are
+/// stable within a process but not across restarts or between nodes.
 static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new();
 
 fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
@@ -846,7 +849,7 @@ impl RuntimeOps {
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
             let deploy = Signed::create_unbound(
                 data,
-                deployer.unwrap_or_else(|| ephemeral_pk),
+                deployer.unwrap_or(ephemeral_pk),
                 ephemeral_sk,
                 Box::new(Secp256k1),
             )?;

@@ -45,30 +45,29 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
     /// Construct a `Signed` whose signature is deliberately *not* bound to `pk`.
     ///
     /// Unlike [`Signed::create`], which derives `pk` from the signing key, this
-    /// signs with one key while carrying another party's public key,
-    /// not by accident.
+    /// Signs `data` with `signing_sk` while carrying a caller-supplied `pk`.
     ///
-    /// This exists for exploratory (read-only) deploys, where the caller supplies
-    /// at most a public key, so no signature by `pk` can exist. The signature is
-    /// still not omitted: it is observable from Rholang through
-    /// `rho:system:deployId` and its legacy alias `rho:rchain:deployId`, so an
-    /// empty value would make an estimate diverge from the deploy it estimates.
-    /// Signing with a placeholder key reproduces the shape a real deploy's
-    /// signature has, and folding `pk` into the serialized_data keeps distinct
-    /// deployers on distinct deployIds.
+    /// Standard verification will fail.
     ///
-    /// Single-purpose: nothing here authenticates anything. Do not reach for this
-    /// on any path where a signature is checked.
+    /// Used for exploratory (read-only) deploys where only a public key is
+    /// available. The signature is kept — not omitted — because Rholang exposes
+    /// it via `rho:system:deployId` / `rho:rchain:deployId`, and an empty value
+    /// would cause cost estimates to diverge from real deploys. Folding `pk`
+    /// into the preimage ensures distinct deployers get distinct deployIds.
+    ///
+    /// **Do not use on any path where signature verification matters.**
+    ///
+    /// Returns `Result` for API parity with [`Signed::create`]; this path cannot fail.
     pub fn create_unbound(
         data: A,
         pk: PublicKey,
-        exploratory_placeholder_sk: PrivateKey,
+        signing_sk: PrivateKey,
         sig_algorithm: Box<dyn SignaturesAlg>,
     ) -> Result<Self, String> {
-        let mut serialized_data = data.to_message().encode_to_vec();
-        serialized_data.extend_from_slice(&pk.bytes);
-        let hash = Signed::<A>::signature_hash(&sig_algorithm.name(), serialized_data);
-        let sig = sig_algorithm.sign(&hash, &exploratory_placeholder_sk.bytes);
+        let mut preimage = data.to_message().encode_to_vec();
+        preimage.extend_from_slice(&pk.bytes);
+        let hash = Signed::<A>::signature_hash(&sig_algorithm.name(), preimage);
+        let sig = sig_algorithm.sign(&hash, &signing_sk.bytes);
 
         Ok(Self {
             data,
