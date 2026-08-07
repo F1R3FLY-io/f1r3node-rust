@@ -19,7 +19,29 @@ use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
 use rholang::rust::interpreter::accounting::Sig;
 
-use super::test_support::{any_sig, any_sig_bounded, channel_eq, fixed_atoms};
+use super::test_support::{
+    any_sig, any_sig_bounded, channel_eq, fixed_atoms, recursive_channel_oracle,
+};
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn iterative_channel_reflection_matches_recursive_oracle(sig in any_sig_bounded(5, 64)) {
+        prop_assert_eq!(
+            rholang::rust::interpreter::accounting::SignatureChannel::from_sig(&sig),
+            recursive_channel_oracle(&sig),
+        );
+    }
+
+    #[test]
+    fn iterative_sig_protobuf_round_trip_preserves_every_variant(sig in any_sig_bounded(5, 64)) {
+        let protobuf = sig.to_proto();
+        let decoded = Sig::from_proto(&protobuf)
+            .map_err(proptest::test_runner::TestCaseError::fail)?;
+        prop_assert_eq!(decoded, sig);
+    }
+}
 
 // ---------------------------------------------------------------------
 // Multiplicative laws (Tensor ⊗)

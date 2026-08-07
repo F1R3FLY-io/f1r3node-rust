@@ -75,7 +75,7 @@ use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::{new_freevar_par, new_gint_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::{RuntimeBudget, SignedProcess};
+use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChannel, SignedProcess};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
@@ -83,6 +83,46 @@ use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
+
+#[test]
+fn signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand() {
+    const DEPTH: usize = 20_000;
+    const SMALL_STACK: usize = 128 * 1024;
+
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .name("signature-algebra-depth-gate".to_string())
+        .spawn(|| {
+            use std::hash::{Hash, Hasher};
+
+            let mut sig = Sig::Ground(vec![1, 2, 3, 4]);
+            for _ in 0..DEPTH {
+                sig = Sig::And(Box::new(sig), Box::new(Sig::Unit));
+            }
+
+            assert!(sig.is_funding_former());
+            assert_eq!(sig.signer_channels().len(), DEPTH + 1);
+            let _channel = SignatureChannel::from_sig(&sig);
+
+            let cloned = sig.clone();
+            assert_eq!(cloned, sig);
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            sig.hash(&mut hasher);
+            let _hash = hasher.finish();
+
+            let debug = format!("{sig:?}");
+            assert!(debug.starts_with("And("));
+            assert!(debug.contains("Ground([1, 2, 3, 4])"));
+
+            let protobuf = sig.to_proto();
+            let decoded = Sig::from_proto(&protobuf).expect("deep Sig protobuf decode");
+            assert_eq!(decoded, sig);
+        })
+        .expect("failed to spawn the signature-algebra depth gate")
+        .join()
+        .expect("a Sig operation exhausted the 128 KiB native stack");
+}
 
 // ---------------------------------------------------------------------------
 // term construction — ITERATIVE, so the builder itself is never the constraint

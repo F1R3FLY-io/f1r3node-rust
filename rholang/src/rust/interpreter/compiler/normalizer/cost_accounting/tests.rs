@@ -168,15 +168,20 @@ fn to_native_compound_is_the_and_fold_of_its_atoms() {
     let a = Sig::Ground(b"a".to_vec());
     let b = Sig::Ground(b"b".to_vec());
     let compound = Sig::compound(vec![a, b]);
-    match compound.to_native() {
+    let native = compound.to_native();
+    match &native {
         NativeSig::And(left, right) => {
-            let atoms = [*left, *right];
+            let atoms = [left.as_ref(), right.as_ref()];
             assert!(
-                atoms.contains(&NativeSig::Ground(b"a".to_vec())),
+                atoms
+                    .iter()
+                    .any(|atom| *atom == &NativeSig::Ground(b"a".to_vec())),
                 "And-fold retains atom a"
             );
             assert!(
-                atoms.contains(&NativeSig::Ground(b"b".to_vec())),
+                atoms
+                    .iter()
+                    .any(|atom| *atom == &NativeSig::Ground(b"b".to_vec())),
                 "And-fold retains atom b"
             );
         }

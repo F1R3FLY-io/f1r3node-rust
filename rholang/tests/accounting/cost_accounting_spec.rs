@@ -1290,13 +1290,13 @@ fn set_deploy_signatures_folds_into_left_associated_sig_and() {
     let sig = budget.signature();
     // Expected shape: Sig::And(Sig::And(Sig::Quote(h_a), Sig::Quote(h_b)), Sig::Quote(h_c))
     // — every per-signer hash is a `#P`-style process-hash, hence a Quote atom.
-    match sig {
+    match &sig {
         Sig::And(outer_left, outer_right) => {
-            assert!(matches!(*outer_right, Sig::Quote(_)));
-            match *outer_left {
+            assert!(matches!(&**outer_right, Sig::Quote(_)));
+            match &**outer_left {
                 Sig::And(inner_left, inner_right) => {
-                    assert!(matches!(*inner_left, Sig::Quote(_)));
-                    assert!(matches!(*inner_right, Sig::Quote(_)));
+                    assert!(matches!(&**inner_left, Sig::Quote(_)));
+                    assert!(matches!(&**inner_right, Sig::Quote(_)));
                 }
                 other => panic!(
                     "inner Sig::And expected, got {:?} — folding must be left-associated",
@@ -1691,6 +1691,42 @@ fn sig_proto_round_trip_every_connective() {
 }
 
 #[test]
+fn sig_debug_preserves_derived_compact_and_alternate_layouts() {
+    let sig = Sig::And(
+        Box::new(Sig::Ground(vec![1, 2])),
+        Box::new(Sig::Threshold {
+            threshold: 1,
+            members: vec![Sig::Bang(Box::new(Sig::Unit))],
+        }),
+    );
+    assert_eq!(
+        format!("{sig:?}"),
+        "And(Ground([1, 2]), Threshold { threshold: 1, members: [Bang(Unit)] })"
+    );
+    assert_eq!(
+        format!("{sig:#?}"),
+        concat!(
+            "And(\n",
+            "    Ground(\n",
+            "        [\n",
+            "            1,\n",
+            "            2,\n",
+            "        ],\n",
+            "    ),\n",
+            "    Threshold {\n",
+            "        threshold: 1,\n",
+            "        members: [\n",
+            "            Bang(\n",
+            "                Unit,\n",
+            "            ),\n",
+            "        ],\n",
+            "    },\n",
+            ")",
+        )
+    );
+}
+
+#[test]
 fn sig_proto_round_trip_unit() {
     let proto = Sig::Unit.to_proto();
     let decoded = Sig::from_proto(&proto).expect("Unit round-trip");
@@ -1799,9 +1835,9 @@ fn sig_proto_round_trip_threshold_preserves_member_order() {
     let proto = original.to_proto();
     let decoded = Sig::from_proto(&proto).expect("Threshold round-trip");
     assert_eq!(decoded, original);
-    match decoded {
+    match &decoded {
         Sig::Threshold { threshold, members } => {
-            assert_eq!(threshold, 3);
+            assert_eq!(*threshold, 3);
             assert_eq!(members.len(), 4);
         }
         _ => panic!("expected Threshold after round-trip"),

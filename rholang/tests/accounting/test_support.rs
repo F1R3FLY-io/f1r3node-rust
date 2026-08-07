@@ -14,6 +14,10 @@
 
 #![allow(dead_code)] // many helpers are used by sibling test files
 
+use models::rhoapi::Par;
+use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+use models::rust::rholang::sorter::sortable::Sortable;
 use proptest::prelude::*;
 use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
 
@@ -22,6 +26,34 @@ use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
 /// match after `ParSortMatcher::sort_match` canonicalization.
 pub fn channel_eq(a: &Sig, b: &Sig) -> bool {
     SignatureChannel::from_sig(a) == SignatureChannel::from_sig(b)
+}
+
+pub fn recursive_channel_oracle(sig: &Sig) -> SignatureChannel {
+    fn combine(left: Par, right: Par) -> Par {
+        ParSortMatcher::sort_match(&concatenate_pars(left, right)).term
+    }
+
+    match sig {
+        Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => SignatureChannel::from_sig(sig),
+        Sig::And(left, right)
+        | Sig::Plus(left, right)
+        | Sig::With(left, right)
+        | Sig::Lolly(left, right) => SignatureChannel {
+            par: combine(
+                recursive_channel_oracle(left).par,
+                recursive_channel_oracle(right).par,
+            ),
+        },
+        Sig::Threshold { members, .. } => {
+            let combined = members.iter().fold(Par::default(), |combined, member| {
+                concatenate_pars(combined, recursive_channel_oracle(member).par)
+            });
+            SignatureChannel {
+                par: ParSortMatcher::sort_match(&combined).term,
+            }
+        }
+        Sig::Bang(inner) | Sig::WhyNot(inner) => recursive_channel_oracle(inner),
+    }
 }
 
 /// Bounded-depth `Sig` strategy. Every `Sig` variant is reachable. Atom

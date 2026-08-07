@@ -1457,7 +1457,6 @@ impl Drop for UnmeteredBudgetScope {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Sig {
     /// `1` — multiplicative unit. Identity for `And` / `Tensor`: σ ⊗ 1 ≡ σ.
     Unit,
@@ -1523,6 +1522,420 @@ pub enum Sig {
     /// on-chain in the `rho:system:capabilities` registry contract per
     /// Phase 3 §3.5 design.
     Lolly(Box<Sig>, Box<Sig>),
+}
+
+#[derive(Clone, Copy)]
+enum SigBinary {
+    And,
+    Plus,
+    With,
+    Lolly,
+}
+
+#[derive(Clone, Copy)]
+enum SigUnary {
+    Bang,
+    WhyNot,
+}
+
+enum SigFoldTask<'a> {
+    Visit(&'a Sig),
+    Binary(SigBinary),
+    Unary(SigUnary),
+    Threshold { threshold: u32, members: usize },
+}
+
+fn fold_sig<T>(
+    root: &Sig,
+    mut leaf: impl FnMut(&Sig) -> T,
+    mut binary: impl FnMut(SigBinary, T, T) -> T,
+    mut unary: impl FnMut(SigUnary, T) -> T,
+    mut threshold: impl FnMut(u32, Vec<T>) -> T,
+) -> T {
+    let mut tasks = vec![SigFoldTask::Visit(root)];
+    let mut values = Vec::new();
+    while let Some(task) = tasks.pop() {
+        match task {
+            SigFoldTask::Visit(sig) => match sig {
+                Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => values.push(leaf(sig)),
+                Sig::And(left, right) => {
+                    tasks.push(SigFoldTask::Binary(SigBinary::And));
+                    tasks.push(SigFoldTask::Visit(right));
+                    tasks.push(SigFoldTask::Visit(left));
+                }
+                Sig::Threshold { threshold, members } => {
+                    tasks.push(SigFoldTask::Threshold {
+                        threshold: *threshold,
+                        members: members.len(),
+                    });
+                    tasks.extend(members.iter().rev().map(SigFoldTask::Visit));
+                }
+                Sig::Plus(left, right) => {
+                    tasks.push(SigFoldTask::Binary(SigBinary::Plus));
+                    tasks.push(SigFoldTask::Visit(right));
+                    tasks.push(SigFoldTask::Visit(left));
+                }
+                Sig::With(left, right) => {
+                    tasks.push(SigFoldTask::Binary(SigBinary::With));
+                    tasks.push(SigFoldTask::Visit(right));
+                    tasks.push(SigFoldTask::Visit(left));
+                }
+                Sig::Bang(inner) => {
+                    tasks.push(SigFoldTask::Unary(SigUnary::Bang));
+                    tasks.push(SigFoldTask::Visit(inner));
+                }
+                Sig::WhyNot(inner) => {
+                    tasks.push(SigFoldTask::Unary(SigUnary::WhyNot));
+                    tasks.push(SigFoldTask::Visit(inner));
+                }
+                Sig::Lolly(from, to) => {
+                    tasks.push(SigFoldTask::Binary(SigBinary::Lolly));
+                    tasks.push(SigFoldTask::Visit(to));
+                    tasks.push(SigFoldTask::Visit(from));
+                }
+            },
+            SigFoldTask::Binary(kind) => {
+                let right = values.pop().expect("Sig fold missing right operand");
+                let left = values.pop().expect("Sig fold missing left operand");
+                values.push(binary(kind, left, right));
+            }
+            SigFoldTask::Unary(kind) => {
+                let inner = values.pop().expect("Sig fold missing unary operand");
+                values.push(unary(kind, inner));
+            }
+            SigFoldTask::Threshold {
+                threshold: required,
+                members,
+            } => {
+                let members = values.split_off(values.len() - members);
+                values.push(threshold(required, members));
+            }
+        }
+    }
+    debug_assert_eq!(values.len(), 1);
+    values.pop().expect("Sig fold produced no root value")
+}
+
+impl Clone for Sig {
+    fn clone(&self) -> Self {
+        fold_sig(
+            self,
+            |sig| match sig {
+                Sig::Unit => Sig::Unit,
+                Sig::Ground(bytes) => Sig::Ground(bytes.clone()),
+                Sig::Quote(bytes) => Sig::Quote(bytes.clone()),
+                _ => unreachable!("Sig fold leaf received a compound"),
+            },
+            |kind, left, right| match kind {
+                SigBinary::And => Sig::And(Box::new(left), Box::new(right)),
+                SigBinary::Plus => Sig::Plus(Box::new(left), Box::new(right)),
+                SigBinary::With => Sig::With(Box::new(left), Box::new(right)),
+                SigBinary::Lolly => Sig::Lolly(Box::new(left), Box::new(right)),
+            },
+            |kind, inner| match kind {
+                SigUnary::Bang => Sig::Bang(Box::new(inner)),
+                SigUnary::WhyNot => Sig::WhyNot(Box::new(inner)),
+            },
+            |threshold, members| Sig::Threshold { threshold, members },
+        )
+    }
+}
+
+fn detach_sig_children(sig: &mut Sig, work: &mut Vec<Sig>) {
+    match sig {
+        Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => {}
+        Sig::And(left, right)
+        | Sig::Plus(left, right)
+        | Sig::With(left, right)
+        | Sig::Lolly(left, right) => {
+            let left = std::mem::replace(left, Box::new(Sig::Unit));
+            let right = std::mem::replace(right, Box::new(Sig::Unit));
+            work.push(*left);
+            work.push(*right);
+        }
+        Sig::Threshold { members, .. } => work.append(members),
+        Sig::Bang(inner) | Sig::WhyNot(inner) => {
+            let inner = std::mem::replace(inner, Box::new(Sig::Unit));
+            work.push(*inner);
+        }
+    }
+}
+
+impl Drop for Sig {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        detach_sig_children(self, &mut work);
+        while let Some(mut sig) = work.pop() {
+            detach_sig_children(&mut sig, &mut work);
+        }
+    }
+}
+
+impl PartialEq for Sig {
+    fn eq(&self, other: &Self) -> bool {
+        let mut work = vec![(self, other)];
+        while let Some((left, right)) = work.pop() {
+            match (left, right) {
+                (Sig::Unit, Sig::Unit) => {}
+                (Sig::Ground(left), Sig::Ground(right)) | (Sig::Quote(left), Sig::Quote(right)) => {
+                    if left != right {
+                        return false;
+                    }
+                }
+                (Sig::And(ll, lr), Sig::And(rl, rr))
+                | (Sig::Plus(ll, lr), Sig::Plus(rl, rr))
+                | (Sig::With(ll, lr), Sig::With(rl, rr))
+                | (Sig::Lolly(ll, lr), Sig::Lolly(rl, rr)) => {
+                    work.push((lr, rr));
+                    work.push((ll, rl));
+                }
+                (
+                    Sig::Threshold {
+                        threshold: left_threshold,
+                        members: left_members,
+                    },
+                    Sig::Threshold {
+                        threshold: right_threshold,
+                        members: right_members,
+                    },
+                ) => {
+                    if left_threshold != right_threshold
+                        || left_members.len() != right_members.len()
+                    {
+                        return false;
+                    }
+                    work.extend(left_members.iter().zip(right_members).rev());
+                }
+                (Sig::Bang(left), Sig::Bang(right)) | (Sig::WhyNot(left), Sig::WhyNot(right)) => {
+                    work.push((left, right))
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for Sig {}
+
+impl std::hash::Hash for Sig {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let mut work = vec![self];
+        while let Some(sig) = work.pop() {
+            std::hash::Hash::hash(&std::mem::discriminant(sig), state);
+            match sig {
+                Sig::Unit => {}
+                Sig::Ground(bytes) | Sig::Quote(bytes) => {
+                    std::hash::Hash::hash(bytes, state);
+                }
+                Sig::And(left, right)
+                | Sig::Plus(left, right)
+                | Sig::With(left, right)
+                | Sig::Lolly(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
+                Sig::Threshold { threshold, members } => {
+                    std::hash::Hash::hash(threshold, state);
+                    std::hash::Hasher::write_usize(state, members.len());
+                    work.extend(members.iter().rev());
+                }
+                Sig::Bang(inner) | Sig::WhyNot(inner) => work.push(inner),
+            }
+        }
+    }
+}
+
+fn fmt_sig_pretty(sig: &Sig, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    enum Task<'a> {
+        Visit(&'a Sig, usize),
+        Members(&'a [Sig], usize),
+        Bytes(&'a [u8], usize),
+        Text(&'static str),
+        Indent(usize),
+        Number(u32),
+        Byte(u8),
+    }
+
+    let mut tasks = vec![Task::Visit(sig, 0)];
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Text(text) => formatter.write_str(text)?,
+            Task::Indent(depth) => {
+                for _ in 0..depth {
+                    formatter.write_str("    ")?;
+                }
+            }
+            Task::Number(number) => std::fmt::Debug::fmt(&number, formatter)?,
+            Task::Byte(byte) => std::fmt::Debug::fmt(&byte, formatter)?,
+            Task::Bytes(bytes, depth) => {
+                if bytes.is_empty() {
+                    formatter.write_str("[]")?;
+                } else {
+                    formatter.write_str("[\n")?;
+                    tasks.push(Task::Text("]"));
+                    tasks.push(Task::Indent(depth));
+                    for byte in bytes.iter().rev() {
+                        tasks.push(Task::Text(",\n"));
+                        tasks.push(Task::Byte(*byte));
+                        tasks.push(Task::Indent(depth + 1));
+                    }
+                }
+            }
+            Task::Members(members, depth) => {
+                if members.is_empty() {
+                    formatter.write_str("[]")?;
+                } else {
+                    formatter.write_str("[\n")?;
+                    tasks.push(Task::Text("]"));
+                    tasks.push(Task::Indent(depth));
+                    for member in members.iter().rev() {
+                        tasks.push(Task::Text(",\n"));
+                        tasks.push(Task::Visit(member, depth + 1));
+                        tasks.push(Task::Indent(depth + 1));
+                    }
+                }
+            }
+            Task::Visit(sig, depth) => match sig {
+                Sig::Unit => formatter.write_str("Unit")?,
+                Sig::Ground(bytes) | Sig::Quote(bytes) => {
+                    formatter.write_str(if matches!(sig, Sig::Ground(_)) {
+                        "Ground(\n"
+                    } else {
+                        "Quote(\n"
+                    })?;
+                    tasks.push(Task::Text(")"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Bytes(bytes, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                Sig::And(left, right)
+                | Sig::Plus(left, right)
+                | Sig::With(left, right)
+                | Sig::Lolly(left, right) => {
+                    let name = match sig {
+                        Sig::And(_, _) => "And(\n",
+                        Sig::Plus(_, _) => "Plus(\n",
+                        Sig::With(_, _) => "With(\n",
+                        Sig::Lolly(_, _) => "Lolly(\n",
+                        _ => unreachable!(),
+                    };
+                    formatter.write_str(name)?;
+                    tasks.push(Task::Text(")"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(right, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(left, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                Sig::Threshold { threshold, members } => {
+                    formatter.write_str("Threshold {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Members(members, depth + 1));
+                    tasks.push(Task::Text("members: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Number(*threshold));
+                    tasks.push(Task::Text("threshold: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                Sig::Bang(inner) | Sig::WhyNot(inner) => {
+                    formatter.write_str(if matches!(sig, Sig::Bang(_)) {
+                        "Bang(\n"
+                    } else {
+                        "WhyNot(\n"
+                    })?;
+                    tasks.push(Task::Text(")"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(inner, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for Sig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if formatter.alternate() {
+            return fmt_sig_pretty(self, formatter);
+        }
+        enum Task<'a> {
+            Visit(&'a Sig),
+            Text(&'static str),
+            Bytes(&'a Vec<u8>),
+            Number(u32),
+        }
+
+        let mut tasks = vec![Task::Visit(self)];
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Text(text) => formatter.write_str(text)?,
+                Task::Bytes(bytes) => std::fmt::Debug::fmt(bytes, formatter)?,
+                Task::Number(number) => std::fmt::Debug::fmt(&number, formatter)?,
+                Task::Visit(sig) => match sig {
+                    Sig::Unit => formatter.write_str("Unit")?,
+                    Sig::Ground(bytes) => {
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Bytes(bytes));
+                        tasks.push(Task::Text("Ground("));
+                    }
+                    Sig::Quote(bytes) => {
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Bytes(bytes));
+                        tasks.push(Task::Text("Quote("));
+                    }
+                    Sig::And(left, right)
+                    | Sig::Plus(left, right)
+                    | Sig::With(left, right)
+                    | Sig::Lolly(left, right) => {
+                        let name = match sig {
+                            Sig::And(_, _) => "And(",
+                            Sig::Plus(_, _) => "Plus(",
+                            Sig::With(_, _) => "With(",
+                            Sig::Lolly(_, _) => "Lolly(",
+                            _ => unreachable!(),
+                        };
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Visit(right));
+                        tasks.push(Task::Text(", "));
+                        tasks.push(Task::Visit(left));
+                        tasks.push(Task::Text(name));
+                    }
+                    Sig::Threshold { threshold, members } => {
+                        tasks.push(Task::Text("] }"));
+                        for (index, member) in members.iter().enumerate().rev() {
+                            tasks.push(Task::Visit(member));
+                            if index != 0 {
+                                tasks.push(Task::Text(", "));
+                            }
+                        }
+                        tasks.push(Task::Text(", members: ["));
+                        tasks.push(Task::Number(*threshold));
+                        tasks.push(Task::Text("Threshold { threshold: "));
+                    }
+                    Sig::Bang(inner) | Sig::WhyNot(inner) => {
+                        let name = if matches!(sig, Sig::Bang(_)) {
+                            "Bang("
+                        } else {
+                            "WhyNot("
+                        };
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Visit(inner));
+                        tasks.push(Task::Text(name));
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Derive the envelope `Sig` of a SINGLE-signer deploy from its raw wire
@@ -1691,160 +2104,215 @@ impl Sig {
             sig_compound, AtomKind, SigAtom, SigBang, SigCompound, SigLolly, SigPair, SigPlus,
             SigThreshold,
         };
-        let connective = match self {
-            Sig::Unit => sig_compound::Connective::Atom(SigAtom {
-                pk: Default::default(),
-                sig: Default::default(),
-                sig_algorithm: String::new(),
-                atom_kind: AtomKind::Ground as i32,
-            }),
-            Sig::Ground(bytes) => sig_compound::Connective::Atom(SigAtom {
-                pk: bytes.clone().into(),
-                sig: Default::default(),
-                sig_algorithm: String::new(),
-                atom_kind: AtomKind::Ground as i32,
-            }),
-            Sig::Quote(bytes) => sig_compound::Connective::Atom(SigAtom {
-                pk: bytes.clone().into(),
-                sig: Default::default(),
-                sig_algorithm: String::new(),
-                atom_kind: AtomKind::Quote as i32,
-            }),
-            Sig::And(left, right) => sig_compound::Connective::Tensor(Box::new(SigPair {
-                left: Some(Box::new(left.to_proto())),
-                right: Some(Box::new(right.to_proto())),
-            })),
-            Sig::Threshold { threshold, members } => {
-                sig_compound::Connective::Threshold(SigThreshold {
-                    threshold: *threshold as i32,
-                    members: members.iter().map(|m| m.to_proto()).collect(),
-                })
-            }
-            Sig::Plus(left, right) => sig_compound::Connective::Plus(Box::new(SigPlus {
-                left: Some(Box::new(left.to_proto())),
-                right: Some(Box::new(right.to_proto())),
-                chosen_branch: 0,
-            })),
-            Sig::With(left, right) => sig_compound::Connective::With(Box::new(SigPair {
-                left: Some(Box::new(left.to_proto())),
-                right: Some(Box::new(right.to_proto())),
-            })),
-            Sig::Bang(inner) => sig_compound::Connective::Bang(Box::new(SigBang {
-                inner: Some(Box::new(inner.to_proto())),
-                uses_bound: 0,
-                capability_handle: Default::default(),
-            })),
-            Sig::WhyNot(inner) => sig_compound::Connective::Whynot(Box::new(inner.to_proto())),
-            Sig::Lolly(from, to) => sig_compound::Connective::Lolly(Box::new(SigLolly {
-                from: Some(Box::new(from.to_proto())),
-                to: Some(Box::new(to.to_proto())),
-                capability_handle: Default::default(),
-            })),
-        };
-        SigCompound {
-            connective: Some(connective),
-        }
+        fold_sig(
+            self,
+            |sig| {
+                let (pk, atom_kind) = match sig {
+                    Sig::Unit => (Default::default(), AtomKind::Ground),
+                    Sig::Ground(bytes) => (bytes.clone().into(), AtomKind::Ground),
+                    Sig::Quote(bytes) => (bytes.clone().into(), AtomKind::Quote),
+                    _ => unreachable!("Sig fold leaf received a compound"),
+                };
+                SigCompound {
+                    connective: Some(sig_compound::Connective::Atom(SigAtom {
+                        pk,
+                        sig: Default::default(),
+                        sig_algorithm: String::new(),
+                        atom_kind: atom_kind as i32,
+                    })),
+                }
+            },
+            |kind, left, right| {
+                let connective = match kind {
+                    SigBinary::And => sig_compound::Connective::Tensor(Box::new(SigPair {
+                        left: Some(Box::new(left)),
+                        right: Some(Box::new(right)),
+                    })),
+                    SigBinary::Plus => sig_compound::Connective::Plus(Box::new(SigPlus {
+                        left: Some(Box::new(left)),
+                        right: Some(Box::new(right)),
+                        chosen_branch: 0,
+                    })),
+                    SigBinary::With => sig_compound::Connective::With(Box::new(SigPair {
+                        left: Some(Box::new(left)),
+                        right: Some(Box::new(right)),
+                    })),
+                    SigBinary::Lolly => sig_compound::Connective::Lolly(Box::new(SigLolly {
+                        from: Some(Box::new(left)),
+                        to: Some(Box::new(right)),
+                        capability_handle: Default::default(),
+                    })),
+                };
+                SigCompound {
+                    connective: Some(connective),
+                }
+            },
+            |kind, inner| {
+                let connective = match kind {
+                    SigUnary::Bang => sig_compound::Connective::Bang(Box::new(SigBang {
+                        inner: Some(Box::new(inner)),
+                        uses_bound: 0,
+                        capability_handle: Default::default(),
+                    })),
+                    SigUnary::WhyNot => sig_compound::Connective::Whynot(Box::new(inner)),
+                };
+                SigCompound {
+                    connective: Some(connective),
+                }
+            },
+            |threshold, members| SigCompound {
+                connective: Some(sig_compound::Connective::Threshold(SigThreshold {
+                    threshold: threshold as i32,
+                    members,
+                })),
+            },
+        )
     }
 
     /// Deserialize a `SigCompound` wire-format proto into the runtime `Sig`
     /// algebra. The reverse of `Sig::to_proto`.
     pub fn from_proto(proto: &models::casper::SigCompound) -> Result<Sig, String> {
         use models::casper::sig_compound;
-        let connective = proto
-            .connective
-            .as_ref()
-            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
-        match connective {
-            sig_compound::Connective::Atom(atom) => {
-                use models::casper::AtomKind;
-                if atom.pk.is_empty() {
-                    Ok(Sig::Unit)
-                } else {
-                    // proto3 default `GROUND = 0` ⇒ a legacy atom decoded
-                    // without an `atom_kind` field is a ground atom. Only an
-                    // explicit `QUOTE` tag produces `Sig::Quote`; any unknown
-                    // tag falls back to `Ground` (the conservative default).
-                    match AtomKind::try_from(atom.atom_kind) {
-                        Ok(AtomKind::Quote) => Ok(Sig::Quote(atom.pk.to_vec())),
-                        Ok(AtomKind::Ground) | Err(_) => Ok(Sig::Ground(atom.pk.to_vec())),
+        enum Task<'a> {
+            Visit(&'a models::casper::SigCompound),
+            VisitRight {
+                kind: SigBinary,
+                right: Option<&'a models::casper::SigCompound>,
+                missing: &'static str,
+            },
+            Binary(SigBinary),
+            Unary(SigUnary),
+            Threshold {
+                threshold: u32,
+                members: usize,
+            },
+        }
+
+        let mut tasks = vec![Task::Visit(proto)];
+        let mut values = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Visit(compound) => {
+                    let connective = compound
+                        .connective
+                        .as_ref()
+                        .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+                    match connective {
+                        sig_compound::Connective::Atom(atom) => {
+                            use models::casper::AtomKind;
+                            let sig = if atom.pk.is_empty() {
+                                Sig::Unit
+                            } else {
+                                match AtomKind::try_from(atom.atom_kind) {
+                                    Ok(AtomKind::Quote) => Sig::Quote(atom.pk.to_vec()),
+                                    Ok(AtomKind::Ground) | Err(_) => Sig::Ground(atom.pk.to_vec()),
+                                }
+                            };
+                            values.push(sig);
+                        }
+                        sig_compound::Connective::Tensor(pair) => {
+                            let left = pair
+                                .left
+                                .as_deref()
+                                .ok_or_else(|| "tensor.left missing".to_string())?;
+                            tasks.push(Task::VisitRight {
+                                kind: SigBinary::And,
+                                right: pair.right.as_deref(),
+                                missing: "tensor.right missing",
+                            });
+                            tasks.push(Task::Visit(left));
+                        }
+                        sig_compound::Connective::Plus(plus) => {
+                            let left = plus
+                                .left
+                                .as_deref()
+                                .ok_or_else(|| "plus.left missing".to_string())?;
+                            tasks.push(Task::VisitRight {
+                                kind: SigBinary::Plus,
+                                right: plus.right.as_deref(),
+                                missing: "plus.right missing",
+                            });
+                            tasks.push(Task::Visit(left));
+                        }
+                        sig_compound::Connective::With(pair) => {
+                            let left = pair
+                                .left
+                                .as_deref()
+                                .ok_or_else(|| "with.left missing".to_string())?;
+                            tasks.push(Task::VisitRight {
+                                kind: SigBinary::With,
+                                right: pair.right.as_deref(),
+                                missing: "with.right missing",
+                            });
+                            tasks.push(Task::Visit(left));
+                        }
+                        sig_compound::Connective::Bang(bang) => {
+                            let inner = bang
+                                .inner
+                                .as_deref()
+                                .ok_or_else(|| "bang.inner missing".to_string())?;
+                            tasks.push(Task::Unary(SigUnary::Bang));
+                            tasks.push(Task::Visit(inner));
+                        }
+                        sig_compound::Connective::Whynot(inner) => {
+                            tasks.push(Task::Unary(SigUnary::WhyNot));
+                            tasks.push(Task::Visit(inner));
+                        }
+                        sig_compound::Connective::Lolly(lolly) => {
+                            let from = lolly
+                                .from
+                                .as_deref()
+                                .ok_or_else(|| "lolly.from missing".to_string())?;
+                            tasks.push(Task::VisitRight {
+                                kind: SigBinary::Lolly,
+                                right: lolly.to.as_deref(),
+                                missing: "lolly.to missing",
+                            });
+                            tasks.push(Task::Visit(from));
+                        }
+                        sig_compound::Connective::Threshold(threshold) => {
+                            tasks.push(Task::Threshold {
+                                threshold: threshold.threshold as u32,
+                                members: threshold.members.len(),
+                            });
+                            tasks.extend(threshold.members.iter().rev().map(Task::Visit));
+                        }
                     }
                 }
-            }
-            sig_compound::Connective::Tensor(pair) => {
-                let left = Sig::from_proto(
-                    pair.left
-                        .as_ref()
-                        .ok_or_else(|| "tensor.left missing".to_string())?,
-                )?;
-                let right = Sig::from_proto(
-                    pair.right
-                        .as_ref()
-                        .ok_or_else(|| "tensor.right missing".to_string())?,
-                )?;
-                Ok(Sig::And(Box::new(left), Box::new(right)))
-            }
-            sig_compound::Connective::Plus(plus) => {
-                let left = Sig::from_proto(
-                    plus.left
-                        .as_ref()
-                        .ok_or_else(|| "plus.left missing".to_string())?,
-                )?;
-                let right = Sig::from_proto(
-                    plus.right
-                        .as_ref()
-                        .ok_or_else(|| "plus.right missing".to_string())?,
-                )?;
-                Ok(Sig::Plus(Box::new(left), Box::new(right)))
-            }
-            sig_compound::Connective::With(pair) => {
-                let left = Sig::from_proto(
-                    pair.left
-                        .as_ref()
-                        .ok_or_else(|| "with.left missing".to_string())?,
-                )?;
-                let right = Sig::from_proto(
-                    pair.right
-                        .as_ref()
-                        .ok_or_else(|| "with.right missing".to_string())?,
-                )?;
-                Ok(Sig::With(Box::new(left), Box::new(right)))
-            }
-            sig_compound::Connective::Bang(bang) => {
-                let inner = Sig::from_proto(
-                    bang.inner
-                        .as_ref()
-                        .ok_or_else(|| "bang.inner missing".to_string())?,
-                )?;
-                Ok(Sig::Bang(Box::new(inner)))
-            }
-            sig_compound::Connective::Whynot(inner_proto) => {
-                let inner = Sig::from_proto(inner_proto)?;
-                Ok(Sig::WhyNot(Box::new(inner)))
-            }
-            sig_compound::Connective::Lolly(lolly) => {
-                let from = Sig::from_proto(
-                    lolly
-                        .from
-                        .as_ref()
-                        .ok_or_else(|| "lolly.from missing".to_string())?,
-                )?;
-                let to = Sig::from_proto(
-                    lolly
-                        .to
-                        .as_ref()
-                        .ok_or_else(|| "lolly.to missing".to_string())?,
-                )?;
-                Ok(Sig::Lolly(Box::new(from), Box::new(to)))
-            }
-            sig_compound::Connective::Threshold(thresh) => {
-                let members: Result<Vec<Sig>, String> =
-                    thresh.members.iter().map(Sig::from_proto).collect();
-                Ok(Sig::Threshold {
-                    threshold: thresh.threshold as u32,
-                    members: members?,
-                })
+                Task::VisitRight {
+                    kind,
+                    right,
+                    missing,
+                } => {
+                    let right = right.ok_or_else(|| missing.to_string())?;
+                    tasks.push(Task::Binary(kind));
+                    tasks.push(Task::Visit(right));
+                }
+                Task::Binary(kind) => {
+                    let right = values.pop().expect("Sig decode missing right operand");
+                    let left = values.pop().expect("Sig decode missing left operand");
+                    values.push(match kind {
+                        SigBinary::And => Sig::And(Box::new(left), Box::new(right)),
+                        SigBinary::Plus => Sig::Plus(Box::new(left), Box::new(right)),
+                        SigBinary::With => Sig::With(Box::new(left), Box::new(right)),
+                        SigBinary::Lolly => Sig::Lolly(Box::new(left), Box::new(right)),
+                    });
+                }
+                Task::Unary(kind) => {
+                    let inner = values.pop().expect("Sig decode missing unary operand");
+                    values.push(match kind {
+                        SigUnary::Bang => Sig::Bang(Box::new(inner)),
+                        SigUnary::WhyNot => Sig::WhyNot(Box::new(inner)),
+                    });
+                }
+                Task::Threshold { threshold, members } => {
+                    let members = values.split_off(values.len() - members);
+                    values.push(Sig::Threshold { threshold, members });
+                }
             }
         }
+        debug_assert_eq!(values.len(), 1);
+        Ok(values.pop().expect("Sig decode produced no root value"))
     }
 
     /// Canonical, collision-resistant, shape-agnostic per-signature lane key.
@@ -1913,16 +2381,23 @@ impl Sig {
     /// `debug_assert!` it as a precondition — so a value/capability connective can
     /// never key a funding supply pool `Σ⟦s⟧`.
     pub fn is_funding_former(&self) -> bool {
-        match self {
-            Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => true,
-            Sig::And(left, right) => left.is_funding_former() && right.is_funding_former(),
-            Sig::Threshold { .. }
-            | Sig::Plus(_, _)
-            | Sig::With(_, _)
-            | Sig::Bang(_)
-            | Sig::WhyNot(_)
-            | Sig::Lolly(_, _) => false,
+        let mut work = vec![self];
+        while let Some(sig) = work.pop() {
+            match sig {
+                Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => {}
+                Sig::And(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
+                Sig::Threshold { .. }
+                | Sig::Plus(_, _)
+                | Sig::With(_, _)
+                | Sig::Bang(_)
+                | Sig::WhyNot(_)
+                | Sig::Lolly(_, _) => return false,
+            }
         }
+        true
     }
 
     /// The funding SIGNER CHANNELS this envelope `Sig` decomposes into — each a
@@ -1948,14 +2423,18 @@ impl Sig {
     ///
     /// [`is_funding_former`]: Sig::is_funding_former
     pub fn signer_channels(&self) -> Vec<(Par, [u8; 32])> {
-        match self {
-            Sig::And(left, right) => {
-                let mut channels = left.signer_channels();
-                channels.extend(right.signer_channels());
-                channels
+        let mut channels = Vec::new();
+        let mut work = vec![self];
+        while let Some(sig) = work.pop() {
+            match sig {
+                Sig::And(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
+                atom => channels.push((SignatureChannel::from_sig(atom).par, atom.lane_hash())),
             }
-            atom => vec![(SignatureChannel::from_sig(atom).par, atom.lane_hash())],
         }
+        channels
     }
 }
 
@@ -1984,10 +2463,17 @@ impl Token {
     }
 
     pub fn remaining_units(&self) -> u64 {
-        match self {
-            Token::Unit => 0,
-            Token::Count { remaining, .. } => *remaining,
-            Token::Gate { rest, .. } => 1u64.saturating_add(rest.remaining_units()),
+        let mut gates = 0_u64;
+        let mut token = self;
+        loop {
+            match token {
+                Token::Unit => return gates,
+                Token::Count { remaining, .. } => return gates.saturating_add(*remaining),
+                Token::Gate { rest, .. } => {
+                    gates = gates.saturating_add(1);
+                    token = rest;
+                }
+            }
         }
     }
 
@@ -2013,13 +2499,18 @@ impl SignedProcess {
     }
 
     pub fn source_process(&self) -> Option<&Par> {
-        match self {
-            SignedProcess::Signed { process, .. } => Some(process),
-            SignedProcess::Token(_) => None,
-            SignedProcess::Par(left, right) => {
-                left.source_process().or_else(|| right.source_process())
+        let mut work = vec![self];
+        while let Some(node) = work.pop() {
+            match node {
+                SignedProcess::Signed { process, .. } => return Some(process),
+                SignedProcess::Token(_) => {}
+                SignedProcess::Par(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
             }
         }
+        None
     }
 
     /// [`source_process`], **by move** — the same `Par`, handed over instead of
@@ -2111,11 +2602,18 @@ impl SignedProcess {
     }
 
     pub fn token(&self) -> Option<&Token> {
-        match self {
-            SignedProcess::Signed { .. } => None,
-            SignedProcess::Token(token) => Some(token),
-            SignedProcess::Par(left, right) => left.token().or_else(|| right.token()),
+        let mut work = vec![self];
+        while let Some(node) = work.pop() {
+            match node {
+                SignedProcess::Signed { .. } => {}
+                SignedProcess::Token(token) => return Some(token),
+                SignedProcess::Par(left, right) => {
+                    work.push(right);
+                    work.push(left);
+                }
+            }
         }
+        None
     }
 }
 
@@ -2150,107 +2648,34 @@ impl SignatureChannel {
     /// (incorrectly) make those non-funding capability callers panic. See the
     /// red-team M3 deviation note in the F-A design doc.
     pub fn from_sig(sig: &Sig) -> Self {
-        match sig {
-            Sig::Unit => SignatureChannel {
-                par: Par::default(),
-            },
-            // DR-1: the ground/quote axis does NOT affect the channel
-            // derivation — both `Σ⟦g⟧` and `Σ⟦#P⟧` reflect to a quoted name,
-            // and at the substrate the channel is the `GPrivate` keyed by the
-            // content-hash of the atom bytes. Equal bytes ⇒ equal channel,
-            // regardless of axis. Both arms are therefore byte-identical; the
-            // distinction lives only in the wire `AtomKind` and the
-            // source-level translation (`H_g` vs `H(𝒫⟦P⟧)`).
-            Sig::Ground(bytes) | Sig::Quote(bytes) => SignatureChannel {
-                par: Par::default().with_unforgeables(vec![GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                        id: Blake2b256::hash(bytes.clone()),
-                    })),
-                }]),
-            },
-            Sig::And(left, right) => {
-                let left_channel = Self::from_sig(left).par;
-                let right_channel = Self::from_sig(right).par;
-                let combined = concatenate_pars(left_channel, right_channel);
-                SignatureChannel {
-                    par: ParSortMatcher::sort_match(&combined).term,
+        let mut combined = Par::default();
+        let mut work = vec![sig];
+        while let Some(sig) = work.pop() {
+            match sig {
+                Sig::Unit => {}
+                Sig::Ground(bytes) | Sig::Quote(bytes) => {
+                    let atom = Par::default().with_unforgeables(vec![GUnforgeable {
+                        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                            id: Blake2b256::hash(bytes.clone()),
+                        })),
+                    }]);
+                    combined = concatenate_pars(combined, atom);
                 }
-            }
-            Sig::Threshold {
-                threshold: _,
-                members,
-            } => {
-                // Quorum reflection: concatenate ALL member channels under
-                // ParSortMatcher::sort_match. The k-of-N quorum semantic is
-                // enforced by the verifier layer (`Cosigned::from_signed_data`
-                // for threshold envelopes — Phase 2 will extend that) which
-                // accepts the deploy when at least `threshold` of `members`
-                // signatures verify. The reflected channel is permutation-
-                // invariant in `members` thanks to ParSortMatcher::sort_match,
-                // matching the Sig::And case.
-                let mut combined = Par::default();
-                for member in members {
-                    let member_channel = Self::from_sig(member).par;
-                    combined = concatenate_pars(combined, member_channel);
+                Sig::And(left, right)
+                | Sig::Plus(left, right)
+                | Sig::With(left, right)
+                | Sig::Lolly(left, right) => {
+                    work.push(right);
+                    work.push(left);
                 }
-                SignatureChannel {
-                    par: ParSortMatcher::sort_match(&combined).term,
+                Sig::Threshold { members, .. } => {
+                    work.extend(members.iter().rev());
                 }
+                Sig::Bang(inner) | Sig::WhyNot(inner) => work.push(inner),
             }
-            Sig::Plus(left, right) => {
-                // Additive disjunction: signer's choice. The wire envelope
-                // carries an explicit branch witness; at the substrate level
-                // the reflected channel is the canonical-sorted union of
-                // both branch channels (verifier reads the witness from the
-                // envelope to know which branch's signature to validate).
-                let left_channel = Self::from_sig(left).par;
-                let right_channel = Self::from_sig(right).par;
-                let combined = concatenate_pars(left_channel, right_channel);
-                SignatureChannel {
-                    par: ParSortMatcher::sort_match(&combined).term,
-                }
-            }
-            Sig::With(left, right) => {
-                // Additive conjunction (LL "with"): verifier's choice. Both
-                // branches' channels are exposed; verifier picks at
-                // evaluation time which branch's fuel flows. Reflection is
-                // identical-shape to Plus at the substrate (channel
-                // composition), with the distinction enforced by the
-                // verifier's branch-selection logic.
-                let left_channel = Self::from_sig(left).par;
-                let right_channel = Self::from_sig(right).par;
-                let combined = concatenate_pars(left_channel, right_channel);
-                SignatureChannel {
-                    par: ParSortMatcher::sort_match(&combined).term,
-                }
-            }
-            Sig::Bang(inner) => {
-                // Exponential bang `!σ`: replicable. The reflected channel
-                // is the inner signature's channel; the replication semantic
-                // is enforced by the registry contract layer (capability
-                // store yields fresh fuel on each invocation). Phase 3 §3.5
-                // capability registry implements the replication state.
-                Self::from_sig(inner)
-            }
-            Sig::WhyNot(inner) => {
-                // Exponential why-not `?σ`: optional. Reflected channel is
-                // the inner signature's channel; the verifier accepts the
-                // deploy whether or not this channel actually carries fuel.
-                Self::from_sig(inner)
-            }
-            Sig::Lolly(from, to) => {
-                // Linear implication `σ_from ⊸ σ_to`: capability. The
-                // reflected channel is the union of `from` and `to`
-                // channels (substrate composition); the capability-store
-                // transformer (rho:system:capabilities) operationally
-                // consumes σ_from to produce σ_to at invocation time.
-                let from_channel = Self::from_sig(from).par;
-                let to_channel = Self::from_sig(to).par;
-                let combined = concatenate_pars(from_channel, to_channel);
-                SignatureChannel {
-                    par: ParSortMatcher::sort_match(&combined).term,
-                }
-            }
+        }
+        SignatureChannel {
+            par: ParSortMatcher::sort_match(&combined).term,
         }
     }
 }

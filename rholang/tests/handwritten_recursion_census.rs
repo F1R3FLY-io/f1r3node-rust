@@ -244,10 +244,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ),
     // ── metering ───────────────────────────────────────────────────────────────────
     (
-        "rholang/src/rust/interpreter/accounting/mod.rs",
-        Disposition::Measured("gate subject `subst_and_charge`"),
-    ),
-    (
         "rholang/src/rust/interpreter/accounting/delta_sigma.rs",
         Disposition::NotATermDepthCycle("cost arithmetic over a fixed structure"),
     ),
