@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@f2b544c4` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@ea39023b` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -100,11 +100,14 @@ caused by overloaded `From`/`from_iter`/`Scope` names and a shadowed comparator 
 inspection proves that none was a recursive runtime call. `mettail-rust@dd024d94` then replaces
 the capture-layout declaration, lookup, and nested-pattern recursion with ordered worklists while
 preserving exact field-slot identity and first-match order. `mettail-rust@f2b544c4` factors the
-common term-parameter leaf machine and applies it to native-evaluator dependency and PDA-field
-classification. The source-confirmed production ledger is therefore **52 direct findings and
+common term-parameter leaf machine and applies it to native-evaluator dependency and
+pushdown-automaton (PDA) field
+classification. `mettail-rust@ea39023b` then reuses the term-parameter PDA across display, binder,
+parser, substitution, and simulation consumers and centralizes their common terminal-base type
+walk. The source-confirmed production ledger is therefore **43 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 52/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the twenty-six removed or disambiguated, source-confirmed edges, not presented as a successful new
+project analysis timed out; this 43/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the thirty-five removed or disambiguated, source-confirmed edges, not presented as a successful new
 analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
@@ -210,6 +213,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G33** | `mettail-rust@af2d984d` | mettail | naive Knotted-Topoi reference-backend automaton, location, and arity walks | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared mutable-location zipper retains one path buffer; **20,000** levels on **256 KiB** | **yes for all four named traversals**; exact ordered values and first refusal preserved by recursive oracles | [5.18.34](#51834-naive-reference-backend-walk-closure-ss-g33) |
 | **SS-G34** | `mettail-rust@dd024d94`, refined `f2b544c4` | mettail | macro capture-layout declaration flattening, name lookup, and nested optional-pattern walk | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared term-parameter leaf PDA plus specialized syntax PDA; **20,000** levels on **256 KiB**; focused gate **0.05 s / 27,764 KiB** | **yes for all three named traversals**; exact slot identity, order, optionality, and first match preserved by recursive oracles | [5.18.36](#51836-macro-capture-layout-recursion-closure-ss-g34) |
 | **SS-G35** | `mettail-rust@f2b544c4` | mettail | native-evaluator dependency collection and PDA-field classification over nested term parameters | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; one shared borrowed leaf iterator; **20,000** levels on **256 KiB**; focused gate **0.01 s / 28,692 KiB** | **yes for both named traversals**; exact dependency order, field classification, and refusal preserved by recursive oracle | [5.18.37](#51837-native-evaluator-term-parameter-recursion-closure-ss-g35) |
+| **SS-G36** | `mettail-rust@ea39023b` | mettail | display, binder, parser, substitution, and simulation term-parameter/type-schema walks | nine host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared borrowed leaf/type PDAs; **20,000** levels on **256 KiB**; focused gates **0.01 s / 26,484 KiB** and **0.02 s / 23,236 KiB** | **yes for all nine components**; recursive equations preserve leaf pointer/order/optionality and terminal-base identity | [5.18.38](#51838-shared-macro-schema-walk-closure-ss-g36) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4508,6 +4512,53 @@ field frames, so their ordering is potentially generation-visible; the exact rec
 differential discharges that boundary. No generated token, process, protobuf byte, hash, COMM,
 charge, EPathMap mode, or PathMap operation changes. Retired CBR-023 is extended without creating
 an active may-change-consensus entry.
+
+#### 5.18.38 Shared macro schema-walk closure [SS-G36]
+
+`mettail-rust@ea39023b` applies the SS-G35 `TermParamLeaves` machine to five further recursive
+consumers: display-context flattening, WPDA binder classification, PraTTaIL parameter lookup,
+substitution `FieldInfo` expansion, and simulation parameter-category lookup. The simulation
+type-category helper separately becomes a direct loop over only its historically admitted
+`Base`/`Arrow` codomain/`MultiBinder`/`Collection` element path; refined and map types still return
+`None` rather than being widened accidentally.
+
+The same checkpoint introduces `type_expr_walk::terminal_base` for the three consumers whose
+equation follows every payload-bearing type arm: substitution, display, and the PraTTaIL bridge.
+It returns the original terminal `Ident` by reference; callers clone or stringify it exactly where
+they did before. Arrow domains and map keys remain deliberately unvisited. Thus one shared loop
+replaces three recursive copies without changing ownership or selecting a different type branch.
+
+**Architecture and complexity.** Both drivers are borrowed preorder machines. `TermParamLeaves`
+uses an explicit reversed-child work vector and carries the sticky optionality bit, with
+$`\Theta(n)`$ time, $`O(d+w)`$ pending heap, and $`O(1)`$ native stack in nesting depth. A
+`TypeExpr` has exactly one selected continuation at each step, so `terminal_base` needs only one
+borrowed cursor: $`\Theta(d)`$ time, $`O(1)`$ auxiliary space, and $`O(1)`$ native stack. No
+flattened grammar copy, callback layer, depth ceiling, enlarged stack, or stack-switching crate is
+introduced.
+
+**Equivalence and anti-vacuity.** The recursive specifications live only in
+`macros/tests/support/term_param_walk_recursive_oracle.rs` and
+`type_expr_walk_recursive_oracle.rs`. The first covers every `TermParam` discriminant and compares
+the exact borrowed leaf identity, declaration order, and optionality. The second nests all six
+`TypeExpr` discriminants and compares exact terminal-identifier identity; ignored arrow-domain and
+map-key sentinels make a wrong branch observable. Each production driver has an independent
+20,000-level / 256 KiB gate that excludes its recursive oracle. The complete macro binary also
+executes the corpus-wide binder field-order and parser-generation cells, so an iterator that
+preserved a shallow fixture but moved generated field order would fail outside the utility tests.
+
+**MEASURED (f), 2026-08-06.** The term-parameter differential and deep gate passed in **0.01 s**
+at **26,484 KiB peak RSS**; the terminal-base pair passed in **0.02 s** at **23,236 KiB peak RSS**.
+Both ran inside 512 MiB zero-swap scopes. The source census fell from **68** to **59** recursive
+components and from **30** to **21** term-family components, retaining **5** mutual components
+across **10** files and zero unmeasured dispositions; its two tests passed in **11.06 s**. The
+complete already-built macro unit binary recorded **479 passed, 3 failed, 2 ignored** in **2.77 s**
+under a 1 GiB zero-swap scope. The three failures remain the same campaign-tracked stale
+fixture/corpus assertions and are not suppressed.
+
+Because the iterator equations preserve exact borrowed identity and order and the consumer bodies
+are unchanged, generated fields, parser specifications, evaluator frames, processes, protobuf
+bytes, hashes, COMMs, charges, EPathMap modes, and PathMap operations do not move. Retired CBR-023
+is extended; no active may-change-consensus entry is created.
 
 ---
 

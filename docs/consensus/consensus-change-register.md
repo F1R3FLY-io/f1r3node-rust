@@ -3256,6 +3256,17 @@ EPathMap mode, or PathMap operation moves. The checkpoint stays in CBR-023's
 `EQUIVALENCE_PROVEN` set and creates no active may-change-consensus entry; stack-safety report
 §5.18.37 records the capped 20,000-level evidence and refreshed census.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G36).** `mettail-rust@ea39023b` reuses the
+borrowed term-parameter leaf PDA across display, binder, parser, substitution, and simulation
+generation and replaces three identical terminal-base type recursions with one cursor loop.
+Test-only recursive equations preserve exact leaf pointer identity, declaration order,
+optionality, selected type branch, and terminal-identifier identity; sentinel domain/key branches
+make a wrong choice observable. Consumer bodies remain unchanged, so generated fields, parser
+specifications, processes, protobuf bytes, hashes, COMMs, charges, EPathMap modes, and PathMap
+operations are unchanged. The checkpoint extends CBR-023's `EQUIVALENCE_PROVEN` set without an
+active may-change-consensus entry; stack-safety report §5.18.38 records the capped measurements and
+59/21/5 source census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
