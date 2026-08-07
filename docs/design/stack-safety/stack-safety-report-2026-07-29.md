@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@ae3256d6` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@09460a20` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
@@ -67,7 +67,13 @@ to set-type Top lowering and empty-automaton complementation; the current census
 findings and 3 mutual clusters**. `mettail-rust@ae3256d6` then disambiguates the already-iterative
 KAT expression-nullability helper and its star-arm residual binding. This removes one false direct
 finding and one false mutual cluster without changing a derivative, residual order, or decision;
-the current census is **85 direct findings and 2 mutual clusters**. No production path uses
+the current census is **85 direct findings and 2 mutual clusters**. `mettail-rust@8f5a434a` then
+specializes the generated parser's SEP, projection, and infix isolation selectors, removes a
+five-member dispatch cycle, and returns each derived shape without repeating its grammar scan. The
+current census is **85 direct findings and 1 mutual cluster**; that remaining cluster is the
+deliberately recursive positive control in the stack-depth test probe. `mettail-rust@09460a20`
+refreshes the corresponding stale empty-EPathMap parser golden to the distinct unresolved `Empty`
+mode and changes no production source. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -3046,11 +3052,13 @@ lifecycle census cannot see. Two concrete obligations remain live:
   Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
   `mettail-rust@da638fe3` additionally resolves the lifecycle analyzer's name collision between an
   enclosing `Drop::drop` method and unqualified `std::mem::drop` calls. Fresh whole-project analysis
-  reports **85 direct findings and 2 mutual clusters** after `mettail-rust@d1ce352b` removes the
+  reports **85 direct findings and 1 mutual cluster** after `mettail-rust@d1ce352b` removes the
   regex quantifier's semantically bounded helper cycle and `mettail-rust@2c2cbb95` factors the
   corresponding set-type universal-automaton constructor. `mettail-rust@ae3256d6` further removes
-  KAT analyzer-name collisions around two already-iterative helpers; every remaining entry must be
-  converted or demonstrated to be non-production/source-resolution evidence before workspace closure.
+  KAT analyzer-name collisions around two already-iterative helpers and `mettail-rust@8f5a434a`
+  specializes the generated-parser isolation selectors. The remaining mutual cluster is the
+  deliberate recursion-classifier control in `stack_depth_probe`; every remaining direct entry must
+  be converted or demonstrated to be non-production/source-resolution evidence before workspace closure.
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
 
@@ -3971,6 +3979,50 @@ finding in `dovetail/src/set_automaton.rs`. SS-G25 preserves exact operational r
 observability and therefore changes no term, reduction, COMM schedule, charge, EPathMap
 representation, PathMap operation, protobuf byte, bincode byte, or consensus hash. It introduces no
 recursive fallback, `RUST_MIN_STACK`, `stacker`, or traversal-depth limit.
+
+#### 5.18.25 Generated-parser isolation-selector decycling and empty-mode calibration
+
+**Finding.** Fresh source-call analysis reported a five-member component in
+`macros/src/gen/runtime/wpda_codegen/facade.rs`: projection eligibility derived a projection shape;
+projection derivation asked whether SEP isolation owned the category; the SEP selector routed its
+statically known family through the generic `IsoFamily` dispatcher; and the dispatcher's other arms
+reached projection and infix eligibility. The dynamically selected SEP arm could re-enter none of
+those functions, so this was not a depth-proportional runtime path. It was nevertheless unnecessary
+cyclic architecture, and each public selector derived its accepted shape a second time after using
+the first derivation only as a Boolean predicate.
+
+**Specialized single-pass architecture.** `mettail-rust@8f5a434a` deletes the generic dispatcher.
+The SEP selector now derives one `SepCombineShape`, validates its element-category reachability, and
+returns that same value. Projection derivation receives the already computed `OperandReach`, caches
+its category-wide SEP-ownership result, and shares one prefix-cohort predicate with the public
+projection selector. The infix selector likewise retains its first derived shape while its operand
+predicate consults the specialized projection and SEP tests. Thus each public selector constructs
+its own result shape once, and projection's former per-rule SEP query becomes one lazy category-wide
+query.
+
+The equivalence argument is extensional. All derivation and reachability functions are pure. In the
+old selector, a shape `s` was returned exactly when a first call produced `Some(s)`, its Boolean
+eligibility predicate held, and an identical second call reproduced `s`. The new selector retains
+the first `s` and applies the identical predicate. Reusing one immutable transitive closure and one
+category-wide SEP Boolean cannot change the result because neither depends on a rule-loop cursor.
+Consequently generated token streams, parser readings, representative order, and error behavior are
+unchanged while redundant grammar scans are removed.
+
+**Executable evidence and the empty-mode control.** The focused WPDA-codegen selection passes
+**188/188**. Projection-isolation soundness passes **11/11**, and token-boundary conformance passes
+**10/10**, under zero-swap cgroups with eight Cargo jobs. The complete macros library reached
+**471 passed / 3 failed / 2 ignored**; all three failures are pre-existing corpus/generatability
+calibration failures outside the changed file. Clippy succeeds with no finding on a changed line.
+Fresh file-scoped analysis reports zero direct and zero mutual recursion in `facade.rs`; the
+whole-project production census is **85 direct findings and 1 mutual cluster**.
+
+The first soundness run also exposed an obsolete test value: the representative-election pin still
+spelled `{| |}` as the retired `PathMapLit(HashMapLit({}))` projection. `mettail-rust@09460a20`
+updates that exact golden and two nearby measurement notes to `PathmapLit(Empty)`, the distinct
+unresolved mode used until insertion selects `PathMap<()>` set membership or `PathMap<Par>` map
+membership. This is test/documentation calibration only; it changes no EPathMap constructor,
+PathMap source, trie operation, term, reduction, COMM schedule, charge, protobuf byte, bincode byte,
+or consensus hash.
 
 ---
 
