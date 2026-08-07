@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-06 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-07 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -84,15 +84,17 @@ their recursive counterparts definitely are not. Each qualifying change is class
 independent axes: computed value, verdict, serialized bytes (per lane), post-state hash, accepted
 programs, and metering under the token cost model.
 
-**Result: 20 entries** — 14 on the F1r3node node, 6 on MeTTaIL's Rholang; **19 landed, 1 in
+**Result: 21 entries** — 14 on the F1r3node node, 7 on MeTTaIL's Rholang; **20 landed, 1 in
 flight**. The core is the EPathMap data-model lineage (CBR-011/012/013 — the trie ruling's stages —
 and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on which six of the seven
 axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
-the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15). **The metering axis was re-derived
+the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15) and binder-shift fusion
+(L16). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
-**no kept entry moves it**, and the register's one historical `UNVERIFIED` cell resolved in the same
-derivation. **49 further changes were examined and retired** with typed reasons — 37 bug fixes, 4
+**CBR-L16 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **49 further changes
+were examined and retired** with typed reasons — 37 bug fixes, 4
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -134,7 +136,7 @@ with typed reasons so the account stays checkable.
    the metering axis defined under the current token cost model.
 2. An explicit account of the **two wire formats** a `Par` crosses (§2.5), including the field-order
    asymmetry that produced a measured, round-trip-invisible defect class.
-3. A **derived** register (§3, §4): 20 entries, each with all six axes answered, a stated blast
+3. A **derived** register (§3, §4): 21 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
 4. The **negative results**: 49 retired entries with typed reasons (Appendix B.1) and 21 commit-level
@@ -588,13 +590,14 @@ is a *future* fork, not a present one).
 | [CBR-L11](#cbr-l11) | L | The `UInt32` acceptor is narrowed to canonical spellings (the cluster's deliberate acceptance decision; its round-trip bug fixes are retired) | `4aa64cb6` | · | ○ | ○ | ○ | ○ | ● | · | REGRESSIVE | **W** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 | [CBR-L15](#cbr-l15) | L | One generic method-call constructor replaces 47 grammar-owned method names; reducer dispatch becomes the only method semantics | `438e3a3d` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
+| [CBR-L16](#cbr-l16) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and COMM metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
-**Totals — 20 entries**: **14 on Surface N, 6 on Surface L**; **19 landed, 1 in flight**
-(**CBR-L08**); zero open hazards. By evidence grade: **18 WITNESSED**, 1 MECHANISM-ONLY
-(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **12 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
+**Totals — 21 entries**: **14 on Surface N, 7 on Surface L**; **20 landed, 1 in flight**
+(**CBR-L08**); zero open hazards. By evidence grade: **19 WITNESSED**, 1 MECHANISM-ONLY
+(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **13 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
 resolved under the token model (§3.3). The 49 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 20 + 49 = 69 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 21 + 49 = 70 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -2800,27 +2803,140 @@ the complete runtime library passed 137/137, including every generated-driver ve
 oracle corpus and continuation-coverage gate. All runs used one build job, no swap, a 7 GiB memory
 high-water control, and a 9 GiB hard limit.
 
+### CBR-L16
+
+**Binder-depth shift chains fuse into one fixed-size native-PDA call. The reflected result and
+refusal domain are equivalent, while emitted program bytes, the installed carrier body, and
+committed-COMM metering move.**
+
+| | |
+|---|---|
+| Commit(s) | `c95d9e73` (`mettail-rust`) |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `mettail-rust/rholang-codegen/src/native_shift.rs`, `rho_net_drive.rs`, `system_process_band.rs`, `mettail-rust/rholang-runtime/src/shift_contract.rs`, and `mettail-rust/formal/rocq/rho_bridge/theories/DeBruijnSubstTRS.v` |
+
+#### (a) The issue
+
+A reduct template may refer to a captured value beneath $`k`$ newly introduced binders. The
+generated carrier must add $`k`$ to every de Bruijn index free at the corresponding cutoff before
+placing that value beneath the binders. The previous stack-safe builder spelled this as $`k`$
+nested `new/for/^shift` frames. That spelling made two properties depth-proportional:
+
+1. the compiled `Par` repeated progressively longer `locally_free` bit vectors, accumulating
+   $`\Theta(k^2)`$ metadata; and
+2. execution performed a cascade of shift COMMs and repeated whole-value shift passes.
+
+**MEASURED** at depth 20,000, the old construction fit a 256 KiB native stack but reached
+**1,395,560 KiB peak RSS** and **2.04 s**. Stack safety had therefore exposed, rather than solved,
+the carrier's space and metering defect.
+
+The repair emits one send on the fingerprint-scoped native-shift channel. Its fixed application
+binary interface (ABI) is `[amount:u128-le, reflected-value, out]`. A registered system process traverses the reflected value
+once with explicit task and value stacks, increments the cutoff under each lambda, preserves exact
+constructor arities and declared HashBag soups, and returns the composed shift result. The channel
+id is `[0xF3, 0] ++ fingerprint`; its deterministic checked `body_ref` occupies reserved band 4.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — `oshift_by 0 k value` equals the old $`k`$-fold `oshift 0` result; the complete reflected `Par` is compared by the differential and the equation is kernel-checked in Rocq. |
+| 2 · verdict | **NO** — the definition is fingerprint- and language-spec scoped; hereditary ground values, admitted object arities, declared HashBag soups, unsupported terms, and malformed values retain the old success/stall partition. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — the persistent carrier body contains one `GPrivate([0xF3,0] ++ fingerprint)` send and a fixed-width amount instead of nested `new/for/^shift` processes. Serializing that `Par` on Lane B therefore changes. |
+| 3 · bytes (Lane P, prost) | **MOVES** — the same generated carrier `Par` changes on Lane P; the measured replacement call itself is 85 protobuf bytes at every tested binder depth. No protobuf schema changes. |
+| 4 · post-state hash | **MOVES** — the installed persistent carrier continuation contains the changed body. Although a completed shift returns the same value and system-process definitions are outside ordinary hot-store changes, the generated carrier continuation is state and its serialized body participates in its identity. |
+| 5 · accepted programs | **NO** — no source syntax changes, and the native definition reconstructs the generated receiver's exact language-specific subject domain. |
+| 6 · metering | **MOVES** — under D3, committed COMM count is the consensus cost. A depth-$`k`$ generated shift cascade becomes one cost-accounted system-process dispatch COMM. |
+
+**The disagreement.** Two MeTTaIL revisions compile the same binder-bearing rule to different
+carrier processes. If both are treated as the same protocol version, they install different
+persistent continuations and charge different committed-COMM totals when that arm fires, even
+though both return the same reflected contractum. This is a future Surface-L fork exposure, not a
+present-chain fork: MeTTaIL has not produced consensus blocks.
+
+**Blast radius.** Generated nested structural associative-commutative rules whose reduct templates
+place captured slots below one or more binders. Binder-free carriers remain byte-identical because
+they do not emit a shift call. Affected deployments must coordinate the generated-program version,
+native-shift system-process band, and metering expectation together.
+
+**Could live chain state have been produced under the old behaviour?** **NO.** Surface L has not
+produced live consensus state. If that ruling changes, scan installed continuation bodies for the
+old nested reflected `^shift` channel or the new `GPrivate` prefix `0xF3 0x00`, and replay every
+matching firing while comparing committed COMM count and resulting continuation roots.
+
+#### (c) Why the change was necessary or correct
+
+The old representation was asymptotically unsuitable even after its constructor became
+stack-safe. A depth scalar is the sufficient statistic for a composition of identical de Bruijn
+shifts; retaining $`k`$ syntax frames encoded the derivation history rather than the operation.
+Replacing the chain with the already-generated `^shiftk` rewrite family was rejected because it
+retains a recursive rewrite cascade and repeated whole-value work. Flattening reflected terms was
+rejected because constructor arity, language fingerprint, HashBag soup structure, and first-refusal
+behavior are observable parts of the receiver contract.
+
+The one-pass equation adds $`k`$ exactly to a bound index $`n`$ when $`n`$ is not below the current
+cutoff, increments that cutoff beneath a lambda, and maps the same operation over admitted children.
+Rocq theorem `oshift_by_is_oshiftk` proves this result equal to the recursive composition for every
+object and amount. Runtime rebuilding uses one explicit continuation per live ancestor and unions
+`locally_free` buffers in place. It does not change EPathMap mode, EPM1 bytes, `PathMap<()>`,
+`PathMap<Par>`, or any PathMap zipper, algebra, or lattice operation.
+
+**Authority.** Owner authorization: *“Implement the plan.”* and the subsequent requirement to fix
+the quadratic construction at its root while preserving the hash/value — 2026-08-07. The standing
+integration requirement forbids traversal caps, enlarged stacks, `stacker`, and recursive-codec
+workarounds.
+
+**★ Sibling enumeration, ON THE SHIFT-EXECUTION AXIS.** **Count: 3 relevant implementations.** The
+generated single-shift receiver remains the executable shallow building block; generated
+`^shiftk` remains part of the substitution rewrite theory; the new native shift-by-$`k`$ definition
+is used only by binder-template carrier fusion. The bounded recursive Rust equation is test-only
+and is not a fourth production implementation.
+
+**★ If the entry claims something needed no change, name the GUARD.** Value neutrality is guarded
+by the 256-case recursive differential, live RSpace shift-by-20,000 test, live Ambient two-binder
+witness, and Rocq fusion theorem. Verdict neutrality is guarded by explicit unknown-constructor,
+wrong-arity, foreign-fingerprint, foreign-HashBag, unsupported-reserved, binder-only-`Nil`, and
+hereditary-ground cases. Binder-free generated code retains its existing byte-identity assertion.
+
+#### Evidence
+
+**MEASURED** — the replacement carrier is **85 protobuf bytes**, **17 allocations**, and **4,164
+allocated bytes** at depths 1, 10, 100, 1,000, 10,000, and 20,000. The direct regression process
+peaked at **15,380 KiB RSS** with zero swap. A 20,000-lambda shift, generated protobuf encode, and
+drop complete on a 256 KiB worker stack. The live RSpace contract and Ambient binder witness pass.
+The complete `rholang-codegen` package passed **368** unit tests plus every integration and
+documentation target; the full rho-bridge Rocq build passed.
+
+**DERIVED** — generated carrier size and construction allocation are $`\Theta(1)`$ in binder
+depth; a shift of reflected size $`n`$ is $`\Theta(n)`$ time with $`O(d+w)`$ explicit live state for
+depth $`d`$ and deferred width $`w`$, instead of $`\Theta(kn)`$ repeated traversal. The new channel
+and `body_ref` band are disjoint from the three existing MeTTaIL bands and from F1r3node's reserved
+system-process ranges; pairwise registration collision checks remain mandatory.
+
 ---
 
 ## 5. Risk analysis
 
 ### 5.1 Aggregate axis exposure
 
-Projected from the 20 rows of §4.1 (each column counts `●` cells):
+Projected from the 21 rows of §4.1 (each column counts `●` cells):
 
-| Axis | entries that move it | share of the 20 |
+| Axis | entries that move it | share of the 21 |
 |---|---:|---:|
-| computed value (V) | **8** | 40 % |
-| verdict (T) | **13** | 65 % |
-| bytes, Lane B (B) | **11** | 55 % |
-| bytes, Lane P (P) | **9** | 45 % |
-| post-state hash (H) | **13** | 65 % |
-| accepted programs (A) | **10** | 50 % |
-| metering (M) | **0** | 0 % |
+| computed value (V) | **8** | 38 % |
+| verdict (T) | **13** | 62 % |
+| bytes, Lane B (B) | **12** | 57 % |
+| bytes, Lane P (P) | **10** | 48 % |
+| post-state hash (H) | **14** | 67 % |
+| accepted programs (A) | **10** | 48 % |
+| metering (M) | **1** | 5 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
-entry's M cell carries its one-line derivation against the token model (§2.2), and a future entry
-that genuinely moves the committed COMM count or the funding surface re-opens the row.
+entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L16 is the first
+kept entry that moves the committed COMM count: its result is equivalent, but a depth-proportional
+shift cascade becomes one system-process dispatch.
 
 ### 5.2 The highest-risk entries
 
@@ -2833,14 +2949,18 @@ that genuinely moves the committed COMM count or the funding surface re-opens th
    CBR-027 also carries the register's sharpest chain-history question (§5.4).
 3. **CBR-L08** — the one in-flight entry, and REGRESSIVE: source that parses today will be refused.
    It ships only inside the same coordinated bump.
+4. **CBR-L16** — the only kept entry that moves token metering: the native PDA is semantically
+   equivalent, but its single committed COMM and changed persistent carrier body require coordinated
+   code-generation/runtime activation.
 
 ### 5.3 Direction profile
 
-Projected from §4.1: **12 CORRECTIVE** (the data-model lineage, schema additions, and the
+Projected from §4.1: **13 CORRECTIVE** (the data-model lineage, schema additions, the
 single-registry method repair, corrective in
-the sense that the representation now matches the ruling, while remaining deliberate transitions),
+the sense that the representation now matches the ruling, and the shift-fusion repair, while all
+remain deliberate transitions),
 **4 PERMISSIVE** (CBR-024, CBR-025, CBR-037, CBR-L07), **4 REGRESSIVE** (CBR-002, CBR-027, CBR-L08,
-CBR-L11). Total 20.
+CBR-L11). Total 21.
 
 ### 5.4 The chain-history questions
 
@@ -2857,7 +2977,7 @@ are retained because the ruling, not the evidence, is what discharges them.
 
 ### 5.5 The conjunction risk
 
-No activation-height machinery exists: `Validate::version` is exact equality, so the 20 entries ship
+No activation-height machinery exists: `Validate::version` is exact equality, so the 21 entries ship
 as one coordinated protocol-version bump. The reviewer's object of study is therefore the
 **conjunction**: if entry $`i`$ carries residual risk $`r_i`$, the bump carries
 $`1 - \prod_i (1 - r_i)`$, and the CBR-027/CBR-030 pair is the register's concrete demonstration
@@ -3018,8 +3138,8 @@ above is the maintenance mechanism.
 
 ## 8. Conclusions
 
-1. The register holds **20** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **6** on MeTTaIL's Rholang; **19 landed, 1 in flight**. **49** examined
+1. The register holds **21** may-change-consensus entries derived from the campaign record: **14**
+   on the F1r3node node, **7** on MeTTaIL's Rholang; **20 landed, 1 in flight**. **49** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3032,10 +3152,11 @@ above is the maintenance mechanism.
    report.
 4. **Four entries are REGRESSIVE** (§5.3) and are named plainly; one of them (CBR-L08, in flight)
    refuses source that parses today.
-5. **The metering axis moves in no kept entry.** Under the token model, consensus cost is the
-   committed COMM count; every historical per-op "charge site" claim in this register was a
-   diagnostic-weight claim, and the one `UNVERIFIED` cell dissolved with the same derivation.
-6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 20 ship as
+5. **The metering axis moves in exactly one kept entry, CBR-L16.** Under the token model, consensus
+   cost is the committed COMM count; fusing the binder-shift cascade changes that count even though
+   Rocq and executable differentials preserve the result. Historical per-op "charge site" claims
+   remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the same derivation.
+6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 21 ship as
    one coordinated bump, and the CBR-027/CBR-030 pair is the in-register proof that entries
    interact.
 

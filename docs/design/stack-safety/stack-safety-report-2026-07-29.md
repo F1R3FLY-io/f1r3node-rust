@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-07
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@659c36e5` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@c95d9e73` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -110,6 +110,9 @@ linear-output token emitter. `mettail-rust@675a47a9` then shares raw token-tree 
 template emission, and replaces repeated projection-FIRST reconstruction with one boolean closure
 and indexed category frames. `mettail-rust@659c36e5` next replaces behavioral-predicate reference,
 quantified-premise, and stratification Tarjan recursion with explicit work, cursor, and graph frames.
+`mettail-rust@c95d9e73` subsequently replaces each depth-indexed generated shift chain with one
+fixed-size system-process call and applies the composed shift in one iterative traversal, discharging
+the quadratic retained-metadata defect SS-Y7 without changing the reflected result.
 The source-confirmed production ledger is therefore **27 direct findings and zero mutual
 clusters**. The replacement pgmcp semantic refresh did not publish a complete generation; this
 27/0 figure is **DERIVED** from the last complete 78/0 snapshot and the fifty-one removed or
@@ -212,7 +215,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G27** | `mettail-rust@c958355c` | mettail | correlated zip/map matching plus nested integer and floating-point casts | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; speculative payload clones deleted; **20,000** groups/wrappers on **256 KiB**; direct gates **0.03 s / 8,520 KiB** and **0.02 s / 8,148 KiB** | **yes**; zero production direct recursion remains under `runtime/` | [5.18.28](#51828-generic-matching-and-numeric-cast-closure-ss-g27) |
 | **SS-G28** | `mettail-rust@99f54158` | mettail | Delta-one matching over left/right candidate families | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; active-right membership $`\Theta(d)`$ scan $`\rightarrow O(1)`$ expected lookup; **20,000** levels on **256 KiB**; direct gate **0.02 s / 15,436 KiB** | **yes**; exact ordered branch-and-bound oracle | [5.18.29](#51829-delta-one-matching-closure-ss-g28) |
 | **SS-G29** | `mettail-rust@d3e675d3` | mettail | nested schedule collection, AC-template metadata collection, and fragment-pattern encoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; first-seen scans $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** levels on **256 KiB** (schedule **4,096**, whose output paths grow with depth) | **yes**; preorder, depth, and exact encoded bytes preserved | [5.18.30](#51830-rho-network-schedule-template-and-fragment-closure-ss-g29) |
-| **SS-G30** | `mettail-rust@250f0929` | mettail | generated shift-chain and AC-template reconstruction PDAs; shared parallel-`Par` construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; cloning parallel fold $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/components on **256 KiB**; wide fold **0.24 s / 57,372 KiB** | **partial resource closure** — exact bytes/hash preserved except the ruled `__t` bug fix; shift metadata slope remains SS-Y7 | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
+| **SS-G30** | `mettail-rust@250f0929` | mettail | generated shift-chain and AC-template reconstruction PDAs; shared parallel-`Par` construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; cloning parallel fold $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/components on **256 KiB**; wide fold **0.24 s / 57,372 KiB** | **partial resource closure** — exact bytes/hash preserved except the ruled `__t` bug fix; its shift-metadata slope was subsequently repaired by SS-G41 | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G31** | `mettail-rust@ba6e0367` | mettail | reflected host `oshift` and bound nested-AC template reflection; wide AC soup construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; wide soup cloning $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/elements on **256 KiB**; focused gates **0.83 s / 94,260 KiB** and **0.80 s / 102,088 KiB** | **yes for both named traversals**; recursive protobuf-byte oracles and existing generated-program goldens preserve bytes/hash | [5.18.32](#51832-reflected-host-shift-and-bound-ac-template-closure-ss-g31) |
 | **SS-G32** | `mettail-rust@d3ff8dcb` | mettail | closed-ground collection validation and deadlock-graph Tarjan DFS | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$ time and uses indexed $`O(V)`$ state; **20,000** values/vertices on **256 KiB**; focused gates **0.37 s / 93,564 KiB** and **0.32 s / 94,104 KiB** | **yes for both named traversals**; recursive oracles preserve exact Boolean verdicts and ordered SCC vectors | [5.18.33](#51833-closed-ground-validation-and-deadlock-scc-closure-ss-g32) |
 | **SS-G33** | `mettail-rust@af2d984d` | mettail | naive Knotted-Topoi reference-backend automaton, location, and arity walks | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared mutable-location zipper retains one path buffer; **20,000** levels on **256 KiB** | **yes for all four named traversals**; exact ordered values and first refusal preserved by recursive oracles | [5.18.34](#51834-naive-reference-backend-walk-closure-ss-g33) |
@@ -223,7 +226,8 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G38** | `mettail-rust@675a47a9` | mettail | raw token counters, AC template emission, and projection `Ident`-FIRST classification | five host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared token leaves and indexed category PDA; **20,000** levels on **256 KiB**; oracle matrix **0.71 s / 209,632 KiB** | **yes for all five components**; recursive equations and complete FIRST sets preserve tokens, template spelling/order, and category verdicts | [5.18.40](#51840-token-template-and-projection-first-closure-ss-g38) |
 | **SS-G39** | `mettail-rust@659c36e5` | mettail | stratification predicate references, quantified-premise spine, and ordered Tarjan SCC discovery | three host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$; **20,000** levels/vertices on **256 KiB**; focused matrix **0.14 s / 40,392 KiB** | **yes for all three components**; recursive equations preserve polarity, edge order, SCC order, and SCC member order exactly | [5.18.41](#51841-stratification-predicate-premise-and-scc-closure-ss-g39) |
 | **SS-G40** | `mettail-rust@4770cc0e`, optimized by `2f65391f` | mettail | shared-prefix factoring-trie construction and deterministic wide-node partitioning | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; expected-amortized $`\Theta(p)`$ prefix grouping; **20,000** levels on **256 KiB**; focused matrix **0.07 s / 35,608 KiB** | **yes**; bounded recursive equations preserve the exact forest, branch/accept/refusal order, and 1,024-way first-occurrence order | [5.18.42](#51842-shared-prefix-factoring-trie-closure-ss-g40) |
-| **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
+| **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L16 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
+| **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -4788,6 +4792,140 @@ The forest, generated parser program, diagnostics, and refusal order are therefo
 host control flow and the asymptotic wide-node partition cost move. No process, protobuf byte,
 hash, COMM, charge, EPathMap mode, PathMap topology, or PathMap operation changes. Retired CBR-023
 is extended; no active may-change-consensus entry is created.
+
+#### 5.18.43 One-pass native shift fusion and constant-size carrier closure [SS-G41, SS-Y7]
+
+##### 5.18.43.1 The defect
+
+`mettail-rust@250f0929` made construction of a binder-depth-$`k`$ shift chain native-stack safe, but
+the constructed value remained $`k`$ nested `new/for/^shift` frames. Each enclosing protobuf `Par`
+stored a `locally_free` bit vector long enough to address its deepest descendant. The accumulated
+metadata was therefore $`\Theta(k^2)`$ even though the builder itself no longer recursed.
+**MEASURED (q)** at task 5101's pre-repair baseline: depth **20,000** completed on a **256 KiB**
+worker stack but the construction process reached **1,395,560 KiB peak RSS** and **2.04 s**. This
+was a heap/time defect, not a residual native-stack overflow; SS-Y7 recorded that distinction while
+it was open.
+
+##### 5.18.43.2 The architecture of the repair, and why this shape
+
+`mettail-rust@c95d9e73` fuses the composition algebraically. The generated carrier emits one send
+with the fixed application binary interface (ABI) `[amount:u128-le, reflected-value, out]`;
+`amount` always occupies 16 bytes. A
+fingerprint-scoped system-process definition applies the same composed de Bruijn shift in one
+explicit task/value-stack traversal. Bound leaves add `amount` exactly when their index is at or
+above the current cutoff; a lambda increments that cutoff; ordinary reflected constructors retain
+their declared arity; and declared HashBag soups traverse their send payloads without flattening the
+soup. The driver rebuilds bottom-up and unions each child's `locally_free` bits into the destination
+buffer in place.
+
+Keeping the nested chain was rejected because stack safety alone does not bound its retained bytes.
+Routing through the existing generated `^shiftk` receiver was rejected because that receiver
+realizes the recursive rewrite cascade and repeated whole-value shifts rather than one traversal and
+one dispatch. Flattening the reflected value to a generic list was rejected because it would erase
+constructor arity, HashBag carrier shape, and the generated receiver's refusal domain. The native
+definition instead carries a `NativeShiftSpec` derived from the language fingerprint, exact object
+constructor arities, and declared HashBag operations. Unknown constructors, wrong arities, foreign
+fingerprints, unsupported bags, and a `Nil` outside a bag-bearing language fail closed exactly where
+the old receiver had no completing arm.
+
+**Algorithm 21 (Fused reflected shift).** *Make the shift composition a scalar and the recursive
+return address an explicit assemble operation.*
+
+```pseudocode
+⟨Shift one reflected value by amount at cutoff⟩ ≡
+    tasks ← [VISIT(root, cutoff)]
+    values ← []
+    while tasks is not empty:
+        task ← pop(tasks)
+        if task is VISIT(value, c):
+            if value is hereditary ground: push(values, value)
+            else if value is bound index n: push(values, bound(n if n < c else n + amount))
+            else if value is lambda(body):
+                push(tasks, ASSEMBLE_LAMBDA)
+                push(tasks, VISIT(body, c + 1))
+            else if value is an admitted constructor or HashBag soup:
+                push(tasks, ASSEMBLE(value's exact shape))
+                push children in reverse source order as VISIT(child, c)
+            else: refuse
+        else:
+            pop the exact child count from values
+            rebuild the original shape and union child locally-free bits in place
+            push(values, rebuilt)
+    return the sole value
+```
+
+The task stack and value stack remain synchronized by the child count stored in each assemble task.
+Reverse pushing preserves source order; HashBag semantics remain order-independent because the
+original send carrier and send order are rebuilt, not projected through another collection.
+
+##### 5.18.43.3 How the fix was made
+
+The common `native_shift_call_par` constructor is used by production emission and the allocation
+regression, preventing the test from profiling a cheaper surrogate. `NATIVE_SHIFT_BAND` allocates
+band id 4 and channel tag `0xF3`; the channel contains the language fingerprint verbatim, while the
+deterministic `body_ref` uses the existing checked band allocator. Macro expansion records the exact
+language `NativeShiftSpec`; the invocation compiler brackets and drains that pending registry into
+runtime `Definition`s. Direct test seams receive an explicit definition and therefore cannot succeed
+because unrelated thread-local state happened to be present.
+
+At runtime, the definition decodes the fixed-width amount, invokes `shift_reflected_par_by`, and
+returns the rebuilt value on `out`. Production and tests use the target worktree's generated
+stack-safe protobuf, `Clone`, and `Drop` implementations for every `Par`; no recursive prost path,
+stack switch, `RUST_MIN_STACK`, `stacker`, or traversal cap is introduced.
+
+##### 5.18.43.4 Results
+
+| metric | before | after | provenance |
+|---|---:|---:|---|
+| generated carrier size at depths 1/10/100/1,000/10,000/20,000 | $`\Theta(k^2)`$ accumulated metadata | **85 protobuf bytes** at every point | **MEASURED (f)**, `native_shift_construction_profile` |
+| construction allocation at the same ladder | depth-growing; exact allocator count not retained | **17 allocations / 4,164 allocated bytes** at every point | **MEASURED (f)**, counting allocator in the same production constructor |
+| native stack per binder level | **0** after SS-G30 | **0** | **MEASURED (f)**, depth 20,000 on a 256 KiB worker stack |
+| process peak RSS at depth 20,000 | **1,395,560 KiB** | **15,380 KiB** | **MEASURED (q/f)**, old task baseline versus the direct regression process in a 1 GiB zero-swap scope |
+| one depth-20,000 carrier construction | **2.04 s** | **11,772 ns** | **MEASURED (q/f)**, one diagnostic observation at each revision; not a throughput estimate |
+| asymptotic shift work for reflected size $`n`$ | $`\Theta(kn)`$ | $`\Theta(n)`$ | **DERIVED**, repeated shift equation versus one visit per reflected node/send |
+| serializer/deserializer heap peak and blocks | n/a — the repaired subject is a generator/runtime shift, not a codec | n/a | subject classification |
+
+The depth gate shifts a 20,000-lambda value by seven, inspects the resulting leaf, protobuf-encodes
+the deep result, and drops it on the same 256 KiB thread. The live RSpace contract shifts by 20,000;
+the live Ambient witness crosses two template binders. The complete `rholang-codegen` package passed
+**368** unit tests plus every integration and documentation target in an 8 GiB zero-swap scope. The
+Rocq rho bridge kernel-checks `oshift_by_is_oshiftk`; its first full post-edit build reached about
+**405.1 MiB RSS** with zero swap.
+
+##### 5.18.43.5 What it cost
+
+The runtime now installs one additional fingerprint-scoped system-process definition per language
+that generates binder-shifted carriers. The carrier's stored size and construction allocation are
+$`\Theta(1)`$ in binder depth. The native traversal uses $`O(d+w)`$ explicit live state for reflected
+depth $`d`$ and deferred sibling width $`w`$, produces one $`\Theta(n)`$ shifted value, and consumes
+$`O(1)`$ native stack. It neither snapshots nor flattens the complete reflected tree.
+
+This repair is intentionally not trace-neutral. It replaces the old generated process bytes and
+depth-proportional shift COMM cascade with one fingerprint-scoped send and one cost-accounted
+dispatch COMM. The final reflected value and success/refusal domain are equivalent; program bytes,
+the persistent carrier body, and committed-COMM metering move. CBR-L16 records those integration
+axes rather than hiding them inside a performance claim. No EPathMap mode, EPM1 byte, PathMap
+topology, zipper, lattice, or algebra operation changes.
+
+##### 5.18.43.6 What is still recursive
+
+No production function introduced by this repair recursively traverses the reflected value. The
+recursive shift implementation is retained only under `rholang-codegen/tests/support` as a bounded
+oracle. Rocq's structural `oshift`, `oshiftk`, and `oshift_by` functions are specifications evaluated
+by the proof kernel, not runtime Rust traversals. The target worktree's generated serializers and
+lifecycle implementations remain the already-registered explicit PDAs.
+
+##### 5.18.43.7 Anti-vacuity
+
+The differential uses 256 generated shallow cases and compares the complete reflected `Par` against
+the retired recursive equation. Separate controls require refusal for an unknown constructor, a
+known constructor at the wrong arity, a foreign-language fingerprint, an undeclared HashBag
+operation, an unsupported reserved term, and `Nil` in a binder-only language; hereditary ground
+values must still pass before constructor dispatch. The live RSpace test fails unless the new
+definition actually consumes the fixed channel and returns the shifted value. The Ambient witness
+fails unless the generated carrier registers that definition and applies both binder levels. These
+controls prevent a no-op, an over-permissive generic traversal, or a test-only registry shortcut
+from satisfying the closure claim.
 
 ---
 
