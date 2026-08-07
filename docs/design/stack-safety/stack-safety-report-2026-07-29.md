@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@250f0929` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@ba6e0367` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -88,10 +88,12 @@ findings and zero mutual clusters**, with no direct residual anywhere under `run
 indexed active-right set. `mettail-rust@d3e675d3` closes nested schedule collection, both
 associative-commutative-template collectors, and fragment-pattern encoding; `mettail-rust@250f0929`
 closes the remaining shift-chain and template-rebuild recursion and removes cloning from the shared
-parallel-`Par` fold. The source-confirmed production ledger is therefore **71 direct findings and
+parallel-`Par` fold. `mettail-rust@ba6e0367` then closes reflected host shift and bound nested-AC
+template reflection with two bottom-up machines, and reuses the move-based fold for wide AC soups.
+The source-confirmed production ledger is therefore **69 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 71/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the seven removed, source-confirmed self-calls, not presented as a successful new analyzer run.
+project analysis timed out; this 69/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the nine removed, source-confirmed self-calls, not presented as a successful new analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -191,6 +193,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G28** | `mettail-rust@99f54158` | mettail | Delta-one matching over left/right candidate families | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; active-right membership $`\Theta(d)`$ scan $`\rightarrow O(1)`$ expected lookup; **20,000** levels on **256 KiB**; direct gate **0.02 s / 15,436 KiB** | **yes**; exact ordered branch-and-bound oracle | [5.18.29](#51829-delta-one-matching-closure-ss-g28) |
 | **SS-G29** | `mettail-rust@d3e675d3` | mettail | nested schedule collection, AC-template metadata collection, and fragment-pattern encoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; first-seen scans $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** levels on **256 KiB** (schedule **4,096**, whose output paths grow with depth) | **yes**; preorder, depth, and exact encoded bytes preserved | [5.18.30](#51830-rho-network-schedule-template-and-fragment-closure-ss-g29) |
 | **SS-G30** | `mettail-rust@250f0929` | mettail | generated shift-chain and AC-template reconstruction PDAs; shared parallel-`Par` construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; cloning parallel fold $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/components on **256 KiB**; wide fold **0.24 s / 57,372 KiB** | **partial resource closure** — exact bytes/hash preserved except the ruled `__t` bug fix; shift metadata slope remains SS-Y7 | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
+| **SS-G31** | `mettail-rust@ba6e0367` | mettail | reflected host `oshift` and bound nested-AC template reflection; wide AC soup construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; wide soup cloning $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/elements on **256 KiB**; focused gates **0.83 s / 94,260 KiB** and **0.80 s / 102,088 KiB** | **yes for both named traversals**; recursive protobuf-byte oracles and existing generated-program goldens preserve bytes/hash | [5.18.32](#51832-reflected-host-shift-and-bound-ac-template-closure-ss-g31) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4208,6 +4211,64 @@ internal COMMs, and accounting is COMM-based. Closure requires a subquadratic em
 ladder while preserving shift results and either preserving COMM/charge behavior or explicitly
 proving and registering the coordinated change. No depth cap, enlarged stack, `stacker`, or PathMap
 change is permitted.
+
+#### 5.18.32 Reflected host shift and bound AC-template closure [SS-G31]
+
+`mettail-rust@ba6e0367` replaces the last two recursive reflected-`Par` builders visible in the
+Rho-network code-generation path. `host_oshift` now precomputes its fingerprint-derived dispatch
+tokens once, then drives `Visit` and `Assemble` records over an explicit work stack. The machine
+retains the original dispatch order: hereditary-ground identity, bound-index shift, lambda descent
+at cutoff $`c + 1`$, and generic same-cutoff descent. `reflect_ac_template_bound_par` uses the same
+post-order architecture with separate positional-node and bag completions; variable and remainder
+leaves still resolve to the same reverse de Bruijn slots.
+
+**Algorithm 18 (REFLECTED-BOTTOM-UP).** *The common continuation skeleton; each caller supplies its
+leaf policy and its node/bag assembly equation.*
+
+```pseudocode
+⟨Rebuild a recursively represented value without native recursion⟩ ≡
+    work ← [Visit(root, initial_context)]
+    values ← []
+    while work is not empty:
+        instruction ← pop(work)
+        case instruction of
+            Visit(leaf, context):
+                push(values, apply_leaf_policy(leaf, context))
+            Visit(node(children), context):
+                push(work, Assemble(node, count(children), context))
+                push each child in reverse order as Visit(child, child_context(context, node))
+            Assemble(node, arity, context):
+                children ← split_last(values, arity)
+                push(values, rebuild(node, children, context))
+    require count(values) = 1
+    return pop(values)
+```
+
+The AC bag completion no longer left-folds `Par::append(&self, rhs)`, which cloned the accumulated
+soup on every element. It calls the shared owned-`Par` composition primitive extracted from SS-G30:
+field vectors move once in protobuf field order, and `locally_free` uses the same element-wise OR as
+f1r3node, including hash-visible trailing clear bytes. This makes the width path amortized
+$`\Theta(n)`$ while retaining the exact legacy protobuf image.
+
+**Equivalence evidence.** Test-only recursive oracles live under `rholang-codegen/tests/support`,
+separate from production sources. The host-shift differential covers ground short-circuiting,
+generic branching, lambda cutoff changes, bound-index renaming, and scalar passthrough. The bound
+AC-template differential covers positional nodes, nested bag sends, multiple reverse de Bruijn
+slots, and remainder splicing. Both compare `prost::Message::encode_to_vec()` results, not merely
+semantic projections. The pre-existing move-based-append byte/hash oracle and both A-S5.5/A-S5.6
+generated-program goldens also pass unchanged. Consequently no computed value, protobuf byte, hash,
+COMM, charge, acceptance verdict, EPathMap mode, or PathMap operation moves; the consensus register
+extends retired CBR-023 rather than adding a may-change-consensus entry.
+
+**MEASURED (f), 2026-08-06.** With `MemorySwapMax=0`, eight Cargo jobs, and a 4 GiB systemd scope,
+the 20,000-lambda host-shift gate completed on a 256 KiB native stack in **0.83 s** at **94,260 KiB
+peak RSS**. The combined 20,000-level bound-template and 20,000-element bag gate completed in **0.80
+s** at **102,088 KiB peak RSS**, also on 256 KiB. The complete crate suite passed **361/361** library
+tests plus every integration and documentation test under an 8 GiB zero-swap scope; `/usr/bin/time -v`
+reported **5.72 s** elapsed and **1,530,196 KiB peak RSS** for the concurrent suite. These are
+end-to-end test-command measurements, not isolated instruction-count benchmarks. SS-Y7 remains
+independent and open: this checkpoint does not change the generated direct $`k`$-shift network whose
+repeated `locally_free` prefixes cause that separate heap slope.
 
 ---
 
