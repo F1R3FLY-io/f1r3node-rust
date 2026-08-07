@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@675a47a9` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@659c36e5` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -108,11 +108,12 @@ walk. `mettail-rust@9e613bea` next closes the parser pattern/token walks, both r
 emitters, and the binder-scope schema consumers with shared parameter/type machines and a
 linear-output token emitter. `mettail-rust@675a47a9` then shares raw token-tree traversal, frames AC
 template emission, and replaces repeated projection-FIRST reconstruction with one boolean closure
-and indexed category frames. The source-confirmed production ledger is therefore **30 direct findings and
-zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 30/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the forty-eight removed or disambiguated, source-confirmed edges, not presented as a successful new
-analyzer run.
+and indexed category frames. `mettail-rust@659c36e5` next replaces behavioral-predicate reference,
+quantified-premise, and stratification Tarjan recursion with explicit work, cursor, and graph frames.
+The source-confirmed production ledger is therefore **27 direct findings and zero mutual
+clusters**. The replacement pgmcp semantic refresh did not publish a complete generation; this
+27/0 figure is **DERIVED** from the last complete 78/0 snapshot and the fifty-one removed or
+disambiguated, source-confirmed edges, not presented as a successful new analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -220,6 +221,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G36** | `mettail-rust@ea39023b` | mettail | display, binder, parser, substitution, and simulation term-parameter/type-schema walks | nine host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared borrowed leaf/type PDAs; **20,000** levels on **256 KiB**; focused gates **0.01 s / 26,484 KiB** and **0.02 s / 23,236 KiB** | **yes for all nine components**; recursive equations preserve leaf pointer/order/optionality and terminal-base identity | [5.18.38](#51838-shared-macro-schema-walk-closure-ss-g36) |
 | **SS-G37** | `mettail-rust@9e613bea` | mettail | parser pattern/token walks, type-token emission, and binder-scope schema analysis | eight host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; linear-output token PDA; **20,000** levels on **256 KiB**; oracle matrix **0.70 s / 133,972 KiB** | **yes for all eight components**; recursive equations preserve item order/nesting, exact type-token spelling, base-category order, and constructor-label set | [5.18.39](#51839-macro-parser-and-type-emission-closure-ss-g37) |
 | **SS-G38** | `mettail-rust@675a47a9` | mettail | raw token counters, AC template emission, and projection `Ident`-FIRST classification | five host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared token leaves and indexed category PDA; **20,000** levels on **256 KiB**; oracle matrix **0.71 s / 209,632 KiB** | **yes for all five components**; recursive equations and complete FIRST sets preserve tokens, template spelling/order, and category verdicts | [5.18.40](#51840-token-template-and-projection-first-closure-ss-g38) |
+| **SS-G39** | `mettail-rust@659c36e5` | mettail | stratification predicate references, quantified-premise spine, and ordered Tarjan SCC discovery | three host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$; **20,000** levels/vertices on **256 KiB**; focused matrix **0.14 s / 40,392 KiB** | **yes for all three components**; recursive equations preserve polarity, edge order, SCC order, and SCC member order exactly | [5.18.41](#51841-stratification-predicate-premise-and-scc-closure-ss-g39) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4655,6 +4657,46 @@ dispositions; its two tests passed in **11.20 s**.
 The generated token/filter/template surfaces therefore remain equivalent without moving parser
 specifications, generated processes, protobuf bytes, hashes, COMMs, charges, EPathMap modes, or
 PathMap operations. Retired CBR-023 is extended; no active may-change-consensus entry is created.
+
+#### 5.18.41 Stratification predicate, premise, and SCC closure [SS-G39]
+
+`mettail-rust@659c36e5` closes the three recursive components in macro-time stratification. The
+behavioral-predicate scanner carries `(predicate, polarity)` jobs and schedules right operands before
+left operands on its last-in-first-out worklist, reproducing the former depth-first left-to-right
+reference order. Implication flips only the antecedent polarity. Universal `Premise::ForAll`
+wrappers form a unary spine and therefore use a cursor rather than an allocated frame. Tarjan
+discovery stores each vertex, parent, and next-edge ordinal in an explicit frame; a component is
+closed before its child's lowlink is returned to the parent, which is the recursive algorithm's
+observable return order.
+
+**Architecture and complexity.** For predicate size $`n`$, depth $`d`$, pending width $`w`$, and
+emitted reference count $`r`$, reference collection remains $`\Theta(n+r)`$ time and uses
+$`O(d+w+r)`$ heap with $`O(1)`$ native stack. A quantified-premise spine of depth $`d`$ is
+$`\Theta(d)`$ time, $`O(1)`$ auxiliary space, and $`O(1)`$ native stack. For $`V`$ vertices and
+$`E`$ edges, Tarjan remains $`\Theta(V+E)`$ time and $`O(V+E)`$ total graph/driver state while its
+native-stack cost becomes $`O(1)`$. No machine has a depth ceiling, stack switch, enlarged stack,
+flattened term projection, or alternate graph representation.
+
+**Equivalence and anti-vacuity.** The bounded recursive specifications live only in
+`macros/tests/support/stratification_recursive_oracle.rs`. Differentials compare exact ordered
+`(relation, polarity)` vectors, exact dependency adjacency order and node sets, and exact ordered
+SCC vectors including member pop order. Independent tests exclude those oracles while driving
+20,001 predicate wrappers, 20,000 quantified-premise wrappers, and a 20,000-vertex dependency chain
+on 256 KiB worker stacks. The existing stratification corpus continues to cover positive and
+negative self-edges, double negation, implication polarity, two-node cycles, and acyclic graphs.
+
+**MEASURED (f), 2026-08-06.** The focused matrix passed **6/6** in **0.14 s** at **40,392 KiB
+peak RSS** inside a 512 MiB zero-swap scope. The complete macro binary recorded **498 passed, 3
+failed, 2 ignored** in **2.82 s** at **381,400 KiB peak RSS** inside a 1 GiB zero-swap scope; the
+failures are the same three campaign-tracked stale fixture/corpus assertions. The executable source
+census fell from **46** to **43** recursive components and from **13** to **11** term-family
+components, retaining **5** mutual components across **5** files and zero unmeasured dispositions;
+its two tests passed in **11.42 s** at **158,068 KiB peak RSS** inside a 2 GiB zero-swap scope.
+
+The stratification graph, diagnostics, and generated program are therefore unchanged. In
+particular, no process, protobuf byte, hash, COMM, charge, EPathMap mode, PathMap topology, or
+PathMap operation moves. Retired CBR-023 is extended; no active may-change-consensus entry is
+created.
 
 ---
 

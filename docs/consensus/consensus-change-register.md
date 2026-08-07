@@ -3288,6 +3288,16 @@ unchanged. The checkpoint extends CBR-023's `EQUIVALENCE_PROVEN` set without an 
 may-change-consensus entry; stack-safety report §5.18.40 records the capped measurements and
 46/13/5 source census.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G39).** `mettail-rust@659c36e5` replaces the
+behavioral-predicate reference walk, universal-premise spine walk, and stratification Tarjan search
+with explicit work, cursor, and graph frames. Bounded recursive equations preserve exact reference
+order and polarity, dependency-edge order, SCC order, and SCC member pop order. Independent
+20,000-level and 20,000-vertex gates run on 256 KiB worker stacks without their recursive oracles.
+The stratification graph and diagnostics are unchanged, so generated processes, protobuf bytes,
+hashes, COMMs, charges, EPathMap modes, and PathMap operations are unchanged. The checkpoint extends
+CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; stack-safety report
+§5.18.41 records the capped measurements and 43/11/5 source census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
