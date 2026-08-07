@@ -3246,6 +3246,16 @@ CBR-023's `EQUIVALENCE_PROVEN` set and creates no active may-change-consensus en
 measurements and the three unrelated pre-existing macro-suite failures are recorded without
 suppression in stack-safety report §5.18.36.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G35).** `mettail-rust@f2b544c4` introduces one
+shared borrowed term-parameter leaf PDA and applies it to native-evaluator dependency collection
+and PDA-field classification, while SS-G34's declaration and lookup consumers adopt the same
+machine. Bounded recursive differentials preserve the complete dependency vector, field kinds,
+names, base types, optionality, and first unsupported-shape refusal. Machine partitioning and frame
+generation therefore remain token-identical; no process, protobuf byte, hash, COMM, charge,
+EPathMap mode, or PathMap operation moves. The checkpoint stays in CBR-023's
+`EQUIVALENCE_PROVEN` set and creates no active may-change-consensus entry; stack-safety report
+§5.18.37 records the capped 20,000-level evidence and refreshed census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

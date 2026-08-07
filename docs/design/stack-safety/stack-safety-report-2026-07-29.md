@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@dd024d94` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@f2b544c4` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -99,11 +99,12 @@ arity admission. `mettail-rust@67f73e3d` next disambiguates six conservative sou
 caused by overloaded `From`/`from_iter`/`Scope` names and a shadowed comparator binding; source
 inspection proves that none was a recursive runtime call. `mettail-rust@dd024d94` then replaces
 the capture-layout declaration, lookup, and nested-pattern recursion with ordered worklists while
-preserving exact field-slot identity and first-match order. The source-confirmed production ledger is
-therefore **54 direct findings and
+preserving exact field-slot identity and first-match order. `mettail-rust@f2b544c4` factors the
+common term-parameter leaf machine and applies it to native-evaluator dependency and PDA-field
+classification. The source-confirmed production ledger is therefore **52 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 54/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the twenty-four removed or disambiguated, source-confirmed edges, not presented as a successful new
+project analysis timed out; this 52/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the twenty-six removed or disambiguated, source-confirmed edges, not presented as a successful new
 analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
@@ -207,7 +208,8 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G31** | `mettail-rust@ba6e0367` | mettail | reflected host `oshift` and bound nested-AC template reflection; wide AC soup construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; wide soup cloning $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/elements on **256 KiB**; focused gates **0.83 s / 94,260 KiB** and **0.80 s / 102,088 KiB** | **yes for both named traversals**; recursive protobuf-byte oracles and existing generated-program goldens preserve bytes/hash | [5.18.32](#51832-reflected-host-shift-and-bound-ac-template-closure-ss-g31) |
 | **SS-G32** | `mettail-rust@d3ff8dcb` | mettail | closed-ground collection validation and deadlock-graph Tarjan DFS | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$ time and uses indexed $`O(V)`$ state; **20,000** values/vertices on **256 KiB**; focused gates **0.37 s / 93,564 KiB** and **0.32 s / 94,104 KiB** | **yes for both named traversals**; recursive oracles preserve exact Boolean verdicts and ordered SCC vectors | [5.18.33](#51833-closed-ground-validation-and-deadlock-scc-closure-ss-g32) |
 | **SS-G33** | `mettail-rust@af2d984d` | mettail | naive Knotted-Topoi reference-backend automaton, location, and arity walks | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared mutable-location zipper retains one path buffer; **20,000** levels on **256 KiB** | **yes for all four named traversals**; exact ordered values and first refusal preserved by recursive oracles | [5.18.34](#51834-naive-reference-backend-walk-closure-ss-g33) |
-| **SS-G34** | `mettail-rust@dd024d94` | mettail | macro capture-layout declaration flattening, name lookup, and nested optional-pattern walk | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; focused gate **0.05 s / 27,764 KiB** | **yes for all three named traversals**; exact slot identity, order, optionality, and first match preserved by recursive oracles | [5.18.36](#51836-macro-capture-layout-recursion-closure-ss-g34) |
+| **SS-G34** | `mettail-rust@dd024d94`, refined `f2b544c4` | mettail | macro capture-layout declaration flattening, name lookup, and nested optional-pattern walk | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared term-parameter leaf PDA plus specialized syntax PDA; **20,000** levels on **256 KiB**; focused gate **0.05 s / 27,764 KiB** | **yes for all three named traversals**; exact slot identity, order, optionality, and first match preserved by recursive oracles | [5.18.36](#51836-macro-capture-layout-recursion-closure-ss-g34) |
+| **SS-G35** | `mettail-rust@f2b544c4` | mettail | native-evaluator dependency collection and PDA-field classification over nested term parameters | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; one shared borrowed leaf iterator; **20,000** levels on **256 KiB**; focused gate **0.01 s / 28,692 KiB** | **yes for both named traversals**; exact dependency order, field classification, and refusal preserved by recursive oracle | [5.18.37](#51837-native-evaluator-term-parameter-recursion-closure-ss-g35) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4440,6 +4442,11 @@ ancestor path. Its auxiliary heap is $`O(d+w)`$ in pending depth and sibling wid
 stack use is $`O(1)`$ in grammar nesting depth. No traversal-depth ceiling, enlarged stack, or
 stack-switching dependency is introduced.
 
+Commit `f2b544c4` subsequently moves the declaration-flattening and lookup worklist into the shared
+`gen::term_param_walk::TermParamLeaves` iterator used by SS-G35. The specialized syntax-pattern
+machine remains in `capture.rs`; the equations, order, work-item payload, and SS-G34 measurements
+are unchanged. This is shared architecture rather than a second traversal.
+
 **Equivalence evidence.** The retired equations live only in
 `macros/tests/support/capture_recursive_oracle.rs`. The shallow differential compares every emitted
 slot's name, optionality, source discriminant, and—where the source is a declared parameter—the
@@ -4462,6 +4469,45 @@ record rather than that workspace build.
 No generated process, protobuf byte, hash, COMM, charge, EPathMap mode, or PathMap operation moves:
 the recursive oracle observes exact identity and order, not merely cardinality. Retired CBR-023 is
 extended; no active may-change-consensus entry is created.
+
+#### 5.18.37 Native-evaluator term-parameter recursion closure [SS-G35]
+
+`mettail-rust@f2b544c4` removes the two recursive optional-group walks in
+`macros/src/gen/native/eval.rs`. `collect_native_dependencies` now consumes the shared
+`TermParamLeaves` iterator and emits native-category indices in declaration preorder.
+`classify_term_params_for_pda` consumes the same stream, retaining the sticky optionality bit for
+simple base-typed fields, treating guard bodies as opaque constructor positions, and returning
+`None` at the first abstraction, multi-abstraction, or non-base simple type exactly as before.
+
+The shared iterator stores only borrowed `(TermParam, is_optional)` work items, pushes nested group
+children in reverse declaration order, and omits the structural `Optional` node from the yielded
+stream. Four production consumers now share this equation: SS-G34's declaration layout and lookup,
+plus SS-G35's dependency collection and field classification. This avoids four subtly divergent
+flatteners without imposing a generic callback or cloning grammar nodes. Time is $`\Theta(n)`$ in
+visited term parameters, pending heap is $`O(d+w)`$ in nesting depth and sibling width, and native
+stack use is $`O(1)`$ in depth.
+
+**Equivalence evidence.** `macros/tests/support/native_eval_recursive_oracle.rs` retains the two
+retired recursive equations for bounded tests only. The differential compares the complete ordered
+dependency vector, every classified field's kind, name, base type, and optionality, and the
+unsupported-shape refusal. The deep gate drives both production consumers through 20,000 nested
+optional groups on a 256 KiB stack; it does not invoke the oracle. SS-G34's recursive differentials
+and deep gate were rerun against the shared iterator and remain green.
+
+**MEASURED (f), 2026-08-06.** The two SS-G35 tests passed in **0.01 s** at **28,692 KiB peak RSS**
+inside a 512 MiB zero-swap scope; both SS-G34 tests independently passed in **0.03 s** under the
+same cap. The source census fell from **70** to **68** recursive components and from **32** to
+**30** term-family components, retaining **5** mutual components across **14** files and zero
+unmeasured dispositions; its two tests passed in **11.53 s**. The complete already-built macro
+unit binary recorded **475 passed, 3 failed, 2 ignored** in **3.21 s** under a 1 GiB zero-swap
+scope. Those three failures are the same pgmcp-tracked stale fixture/corpus assertions recorded in
+SS-G34, not new results.
+
+The dependency vector and classifier determine generated evaluator machine partitioning and
+field frames, so their ordering is potentially generation-visible; the exact recursive
+differential discharges that boundary. No generated token, process, protobuf byte, hash, COMM,
+charge, EPathMap mode, or PathMap operation changes. Retired CBR-023 is extended without creating
+an active may-change-consensus entry.
 
 ---
 
