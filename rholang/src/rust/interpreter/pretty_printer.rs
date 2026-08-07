@@ -753,17 +753,16 @@ impl PrettyPrinter {
     pub(super) fn increment(&self, id: String) -> String {
         fn inc_char(char_id: char) -> char { ((char_id as u8 + 1 - b'a') % 26 + b'a') as char }
 
-        let new_id = inc_char(id.chars().last().unwrap());
-
-        if new_id == 'a' {
-            if id.len() > 1 {
-                self.increment(id[..id.len() - 1].to_string()) + new_id.to_string().as_str()
-            } else {
-                "aa".to_string()
+        let mut chars: Vec<char> = id.chars().collect();
+        for index in (0..chars.len()).rev() {
+            chars[index] = inc_char(chars[index]);
+            if chars[index] != 'a' {
+                return chars.into_iter().collect();
             }
-        } else {
-            id[..id.len() - 1].to_string() + new_id.to_string().as_str()
         }
+        assert!(!chars.is_empty());
+        chars.insert(0, 'a');
+        chars.into_iter().collect()
     }
 
     pub(super) fn rotate(&self, id: String) -> String {
@@ -6144,6 +6143,25 @@ mod tests {
     use crate::rust::interpreter::errors::InterpreterError;
     use crate::rust::interpreter::pretty_printer::PrettyPrinter;
     use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
+
+    #[test]
+    fn identifier_increment_is_stack_safe_for_a_twenty_thousand_character_carry() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let printer = PrettyPrinter::new();
+                assert_eq!(printer.increment("a".into()), "b");
+                assert_eq!(printer.increment("z".into()), "aa");
+                assert_eq!(printer.increment("az".into()), "ba");
+                assert_eq!(printer.increment("zz".into()), "aaa");
+                let incremented = printer.increment("z".repeat(20_000));
+                assert_eq!(incremented.len(), 20_001);
+                assert!(incremented.bytes().all(|byte| byte == b'a'));
+            })
+            .expect("spawn identifier increment stack gate")
+            .join()
+            .expect("identifier increment overflowed or panicked");
+    }
 
     /// ★ THE REPLACEMENT PIN for a fixed defect.
     ///

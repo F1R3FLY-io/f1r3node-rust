@@ -910,47 +910,52 @@ fn collect<'a>(
     out: &mut Vec<Message<'a>>,
     entries: &mut BTreeMap<String, MapEntry>,
 ) {
-    if is_map_entry(msg) {
-        let name = msg.name.clone().unwrap_or_default();
-        let key = msg
-            .field
-            .iter()
-            .find(|f| f.number == Some(1))
-            .and_then(|f| f.r#type)
-            .and_then(|t| Type::try_from(t).ok())
-            .unwrap_or_else(|| {
-                panic!("schema: map entry `{name}` has no resolvable key field at tag 1")
+    let mut pending = vec![(msg, parents.to_vec())];
+    while let Some((current, parents)) = pending.pop() {
+        if is_map_entry(current) {
+            let name = current.name.clone().unwrap_or_default();
+            let key = current
+                .field
+                .iter()
+                .find(|f| f.number == Some(1))
+                .and_then(|f| f.r#type)
+                .and_then(|t| Type::try_from(t).ok())
+                .unwrap_or_else(|| {
+                    panic!("schema: map entry `{name}` has no resolvable key field at tag 1")
+                });
+            let value = current
+                .field
+                .iter()
+                .find(|f| f.number == Some(2))
+                .unwrap_or_else(|| {
+                    panic!("schema: map entry `{name}` has no value field at tag 2")
+                });
+            let value_ty = value
+                .r#type
+                .and_then(|t| Type::try_from(t).ok())
+                .unwrap_or_else(|| panic!("schema: map entry `{name}`'s value has no type"));
+            assert_eq!(
+                value_ty,
+                Type::Message,
+                "schema: map entry `{name}` has a {value_ty:?} value. Both drivers descend \
+                 into a map's VALUES; a scalar-valued map needs a deliberate widening, not a \
+                 silent reinterpretation."
+            );
+            entries.insert(name, MapEntry {
+                key,
+                value_leaf: type_leaf(value.type_name.as_deref().unwrap_or("")).to_string(),
             });
-        let value = msg
-            .field
-            .iter()
-            .find(|f| f.number == Some(2))
-            .unwrap_or_else(|| panic!("schema: map entry `{name}` has no value field at tag 2"));
-        let value_ty = value
-            .r#type
-            .and_then(|t| Type::try_from(t).ok())
-            .unwrap_or_else(|| panic!("schema: map entry `{name}`'s value has no type"));
-        assert_eq!(
-            value_ty,
-            Type::Message,
-            "schema: map entry `{name}` has a {value_ty:?} value. Both drivers descend \
-             into a map's VALUES; a scalar-valued map needs a deliberate widening, not a \
-             silent reinterpretation."
-        );
-        entries.insert(name, MapEntry {
-            key,
-            value_leaf: type_leaf(value.type_name.as_deref().unwrap_or("")).to_string(),
+            continue;
+        }
+        out.push(Message {
+            desc: current,
+            parents: parents.clone(),
         });
-        return;
-    }
-    out.push(Message {
-        desc: msg,
-        parents: parents.to_vec(),
-    });
-    let mut chain = parents.to_vec();
-    chain.push(msg.name.clone().unwrap_or_default());
-    for nested in &msg.nested_type {
-        collect(nested, &chain, out, entries);
+        let mut chain = parents;
+        chain.push(current.name.clone().unwrap_or_default());
+        for nested in current.nested_type.iter().rev() {
+            pending.push((nested, chain.clone()));
+        }
     }
 }
 

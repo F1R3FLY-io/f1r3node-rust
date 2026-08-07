@@ -372,19 +372,18 @@ fn collect_decompositions(
 }
 
 fn collect_component_channels(envelope: &Sig, component_channels: &mut BTreeMap<SigKey, Par>) {
-    if let Sig::And(left, right) = envelope {
-        let left_key = left.key();
-        let right_key = right.key();
-        component_channels
-            .entry(left_key)
-            .or_insert_with(|| supply::supply_channel(left));
-        component_channels
-            .entry(right_key)
-            .or_insert_with(|| supply::supply_channel(right));
-        // Recurse so a left-associated n≥3 fold yields one decomposition per
-        // internal `And` node.
-        collect_component_channels(left, component_channels);
-        collect_component_channels(right, component_channels);
+    let mut pending = vec![envelope];
+    while let Some(current) = pending.pop() {
+        if let Sig::And(left, right) = current {
+            component_channels
+                .entry(left.key())
+                .or_insert_with(|| supply::supply_channel(left));
+            component_channels
+                .entry(right.key())
+                .or_insert_with(|| supply::supply_channel(right));
+            pending.push(right);
+            pending.push(left);
+        }
     }
 }
 

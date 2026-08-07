@@ -77,14 +77,23 @@ impl RhoTrieTraverser {
         length: usize,
         mut acc: Vec<i32>,
     ) -> Vec<i32> {
-        if n == length {
-            acc
-        } else {
-            let nth = Self::nth_of_par(binary_array, n);
-            acc.push(nth % 16); // Lower nybble
-            acc.push(nth / 16); // Upper nybble
-            Self::byte_array_to_nybble_list(binary_array, n + 1, length, acc)
+        let bytes = binary_array
+            .exprs
+            .first()
+            .and_then(|expr| expr.expr_instance.as_ref())
+            .and_then(|instance| match instance {
+                ExprInstance::GByteArray(bytes) => Some(bytes),
+                _ => None,
+            })
+            .filter(|bytes| n <= length && length <= bytes.len())
+            .unwrap_or_else(|| panic!("Par {:?} is not valid for nth_of_par method", binary_array));
+        acc.reserve((length - n) * 2);
+        for &byte in &bytes[n..length] {
+            let byte = byte as i32;
+            acc.push(byte % 16);
+            acc.push(byte / 16);
         }
+        acc
     }
 
     /// Extract the nth byte from a Par containing a byte array

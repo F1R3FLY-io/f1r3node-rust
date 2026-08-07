@@ -14,6 +14,27 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 const _SHARD_ID: &str = "root-shard";
 
+#[test]
+fn byte_array_to_nybbles_fits_a_small_stack_at_depth_twenty_thousand() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let byte_array = models::par_from_default! {
+                exprs: vec![models::rhoapi::Expr {
+                    expr_instance: Some(ExprInstance::GByteArray(vec![0xab; 20_000])),
+                }],
+                ..Default::default()
+            };
+            let nybbles =
+                RhoTrieTraverser::byte_array_to_nybble_list(&byte_array, 0, 20_000, Vec::new());
+            assert_eq!(nybbles.len(), 40_000);
+            assert!(nybbles.chunks_exact(2).all(|pair| pair == [11, 10]));
+        })
+        .expect("spawn nybble stack gate")
+        .join()
+        .expect("nybble conversion overflowed or panicked");
+}
+
 /// 1:1 port of RhoTrieTraverserTest.scala - "traverse the TreeHashMap" should "work"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn traverse_the_tree_hash_map_should_work() {

@@ -23,28 +23,27 @@ use shared::rust::ByteString;
 
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
-    estimate: BlockMessage,
+    mut estimate: BlockMessage,
     mut acc: Vec<BlockMessage>,
-    depth: i32,
+    mut depth: i32,
 ) -> Result<Vec<BlockMessage>, KvStoreError> {
-    let parents_hashes = parent_hashes(&estimate);
-    let maybe_main_parent_hash = parents_hashes.first();
-    match maybe_main_parent_hash {
-        Some(main_parent_hash) => {
-            let updated_estimate = block_store.get_unsafe(main_parent_hash);
-            let depth_delta = block_number(&updated_estimate) - block_number(&estimate);
-            let new_depth = depth + depth_delta as i32;
-            if new_depth <= 0 {
+    loop {
+        match parent_hashes(&estimate).first() {
+            Some(main_parent_hash) => {
+                let updated_estimate = block_store.get_unsafe(main_parent_hash);
+                let depth_delta = block_number(&updated_estimate) - block_number(&estimate);
+                let new_depth = depth + depth_delta as i32;
                 acc.push(estimate);
-                Ok(acc)
-            } else {
-                acc.push(estimate);
-                get_main_chain_until_depth(block_store, updated_estimate, acc, new_depth)
+                if new_depth <= 0 {
+                    return Ok(acc);
+                }
+                depth = new_depth;
+                estimate = updated_estimate;
             }
-        }
-        None => {
-            acc.push(estimate);
-            Ok(acc)
+            None => {
+                acc.push(estimate);
+                return Ok(acc);
+            }
         }
     }
 }
