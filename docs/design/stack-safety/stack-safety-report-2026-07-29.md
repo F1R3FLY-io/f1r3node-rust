@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@09460a20` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@626d1d3b` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
@@ -73,7 +73,10 @@ five-member dispatch cycle, and returns each derived shape without repeating its
 current census is **85 direct findings and 1 mutual cluster**; that remaining cluster is the
 deliberately recursive positive control in the stack-depth test probe. `mettail-rust@09460a20`
 refreshes the corresponding stale empty-EPathMap parser golden to the distinct unresolved `Empty`
-mode and changes no production source. No production path uses
+mode and changes no production source. `mettail-rust@626d1d3b` relocates both main-thread probe
+programs from `src/bin` to `tests/support` while retaining their explicit Cargo binary targets. The
+deliberate recursive control remains live, but fresh production analysis now reports **85 direct
+findings and zero mutual clusters**. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -3052,13 +3055,14 @@ lifecycle census cannot see. Two concrete obligations remain live:
   Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
   `mettail-rust@da638fe3` additionally resolves the lifecycle analyzer's name collision between an
   enclosing `Drop::drop` method and unqualified `std::mem::drop` calls. Fresh whole-project analysis
-  reports **85 direct findings and 1 mutual cluster** after `mettail-rust@d1ce352b` removes the
+  reports **85 direct findings and zero mutual clusters** after `mettail-rust@d1ce352b` removes the
   regex quantifier's semantically bounded helper cycle and `mettail-rust@2c2cbb95` factors the
   corresponding set-type universal-automaton constructor. `mettail-rust@ae3256d6` further removes
   KAT analyzer-name collisions around two already-iterative helpers and `mettail-rust@8f5a434a`
-  specializes the generated-parser isolation selectors. The remaining mutual cluster is the
-  deliberate recursion-classifier control in `stack_depth_probe`; every remaining direct entry must
-  be converted or demonstrated to be non-production/source-resolution evidence before workspace closure.
+  specializes the generated-parser isolation selectors. `mettail-rust@626d1d3b` moves the deliberate
+  recursion-classifier control under `tests/support`, so it continues to calibrate the measurement
+  without entering the production source graph. Every remaining direct entry must be converted or
+  demonstrated to be non-production/source-resolution evidence before workspace closure.
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
 
@@ -4023,6 +4027,27 @@ unresolved mode used until insertion selects `PathMap<()>` set membership or `Pa
 membership. This is test/documentation calibration only; it changes no EPathMap constructor,
 PathMap source, trie operation, term, reduction, COMM schedule, charge, protobuf byte, bincode byte,
 or consensus hash.
+
+#### 5.18.26 Test-probe ownership and the zero-mutual production census
+
+The sole mutual cluster remaining after §5.18.25 was the gate's deliberate positive control,
+`recursion_control_depth` / `recursion_control_depth_list`. It must remain host-recursive: the
+classifier declares that subject `Sloped`, and the gate would become vacuous if its last known slope
+were converted. The defect was ownership, not traversal. Although the helper exists only to support
+`tests/stack_depth_gate.rs`, its main-thread requirement had placed the Cargo binary source under
+`rholang-runtime/src/bin`, where production analysis correctly included it.
+
+`mettail-rust@626d1d3b` moves `stack_depth_probe.rs` and the companion
+`observation_depth_probe.rs` to `rholang-runtime/tests/support`. Their explicit `[[bin]]` declarations
+now point there, so Cargo still provides `CARGO_BIN_EXE_stack_depth_probe` and
+`CARGO_BIN_EXE_observation_depth_probe`; each child still runs its subject directly on the process
+main thread under the parent's `RLIMIT_STACK`. The recursive control equations are byte-for-byte
+unchanged. The classifier test passes **1/1**, and the observation-value depth gate passes **1/1**.
+
+Fresh pgmcp whole-project production analysis reports **85 direct findings and zero mutual
+clusters**. This source-layout correction changes no production artifact or behavior and therefore
+changes no term, reduction, COMM schedule, charge, EPathMap mode, PathMap operation, protobuf byte,
+bincode byte, or consensus hash.
 
 ---
 
