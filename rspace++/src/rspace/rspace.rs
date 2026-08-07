@@ -266,8 +266,10 @@ where
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
 
             let lock_start = Instant::now();
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| striped_locks::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
             tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");

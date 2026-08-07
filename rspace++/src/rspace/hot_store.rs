@@ -153,9 +153,7 @@ where
     // O(NUM_SHARDS): clone each shard's current persistent map. This is the
     // whole point of the sharded design -- see the type-level doc comment.
     fn snapshot_shards(&self) -> Box<[imbl::HashMap<K, V>; NUM_SHARDS]> {
-        Box::new(std::array::from_fn(|i| {
-            self.shards[i].read().expect("shard read lock").clone()
-        }))
+        Box::new(std::array::from_fn(|i| self.shards[i].read().expect("shard read lock").clone()))
     }
 
     // O(NUM_SHARDS): atomically (per-shard) replace this map's contents with
@@ -237,8 +235,10 @@ where
     P: Clone,
     K: Clone,
 {
-    pub continuations: Box<[imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS]>,
-    pub installed_continuations: Box<[imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS]>,
+    pub continuations:
+        Box<[imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS]>,
+    pub installed_continuations:
+        Box<[imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS]>,
     pub data: Box<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>,
     pub joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
     pub installed_joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,

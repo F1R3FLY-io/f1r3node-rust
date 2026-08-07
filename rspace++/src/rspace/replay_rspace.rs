@@ -244,8 +244,10 @@ where
             panic!("RUST ERROR: channels.length must equal patterns.length");
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| striped_locks::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
 
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);
