@@ -4479,6 +4479,16 @@ generator-gap measurement tuple), not capture-walker results. The initial depend
 and was safely terminated by its 3 GiB cgroup; the already-built focused gate is the RSS figure of
 record rather than that workspace build.
 
+**Fold-corpus follow-up (2026-08-07).** `mettail-rust@26df15c6` closes the second of those three
+independent failures without changing the corpus or lowering behavior. The former numeric floor
+counted only executable folds and was therefore invalid for a corpus that explicitly records
+declinations. The replacement independently derives the source-ordered declaration names and
+proves exact equality with the collector's disposition names; it separately proves that emitted
+folds correspond one-for-one with `Delivered` dispositions. The complete bundled corpus measures
+**151 declared = 151 disposition records (149 Delivered/emitted + 2 Declined)**, and the focused
+test passes under the 6 GiB, zero-swap scope. This is a test-oracle correction only: no generated
+term, protobuf byte, hash, COMM, charge, stack traversal, EPathMap mode, or PathMap operation moves.
+
 No generated process, protobuf byte, hash, COMM, charge, EPathMap mode, or PathMap operation moves:
 the recursive oracle observes exact identity and order, not merely cardinality. Retired CBR-023 is
 extended; no active may-change-consensus entry is created.
