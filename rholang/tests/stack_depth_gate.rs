@@ -77,7 +77,9 @@ use models::rust::utils::{new_freevar_par, new_gint_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::delta_sigma::{demand, demand_by_sig, sig_key};
 use rholang::rust::interpreter::accounting::resource_logic::ResourceSignature;
-use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChannel, SignedProcess};
+use rholang::rust::interpreter::accounting::{
+    RuntimeBudget, Sig, SignatureChannel, SignedProcess, Token,
+};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
@@ -178,6 +180,52 @@ fn accounting_demand_and_decomposition_are_stack_safe() {
         .expect("failed to spawn the accounting demand depth gate")
         .join()
         .expect("accounting demand or decomposition exhausted the 128 KiB native stack");
+}
+
+#[test]
+fn token_and_signed_process_lifecycles_are_stack_safe() {
+    const DEPTH: usize = 20_000;
+    const SMALL_STACK: usize = 128 * 1024;
+
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .name("accounting-wrapper-lifecycle-depth-gate".to_string())
+        .spawn(|| {
+            let mut token = Token::Count {
+                sig: Sig::Ground(vec![1]),
+                remaining: 7,
+            };
+            for _ in 0..DEPTH {
+                token = Token::Gate {
+                    sig: Sig::Unit,
+                    rest: Box::new(token),
+                };
+            }
+            assert_eq!(token.remaining_units(), DEPTH as u64 + 7);
+            let token_clone = token.clone();
+            assert_eq!(token_clone, token);
+            assert!(format!("{token:?}").starts_with("Gate {"));
+
+            let mut process = SignedProcess::Signed {
+                process: Par::default(),
+                sig: Sig::Unit,
+            };
+            for _ in 0..DEPTH {
+                process = SignedProcess::Par(
+                    Box::new(process),
+                    Box::new(SignedProcess::Token(Token::Unit)),
+                );
+            }
+            assert!(process.source_process().is_some());
+            assert!(process.token().is_some());
+            let process_clone = process.clone();
+            assert_eq!(process_clone, process);
+            assert!(format!("{process:?}").starts_with("Par("));
+            assert!(process_clone.into_source_process().is_some());
+        })
+        .expect("failed to spawn the accounting wrapper lifecycle gate")
+        .join()
+        .expect("Token or SignedProcess lifecycle exhausted the 128 KiB native stack");
 }
 
 // ---------------------------------------------------------------------------

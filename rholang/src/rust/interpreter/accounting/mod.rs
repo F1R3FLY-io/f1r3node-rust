@@ -1746,7 +1746,11 @@ impl std::hash::Hash for Sig {
     }
 }
 
-fn fmt_sig_pretty(sig: &Sig, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn fmt_sig_pretty(
+    sig: &Sig,
+    formatter: &mut std::fmt::Formatter<'_>,
+    initial_depth: usize,
+) -> std::fmt::Result {
     enum Task<'a> {
         Visit(&'a Sig, usize),
         Members(&'a [Sig], usize),
@@ -1757,7 +1761,7 @@ fn fmt_sig_pretty(sig: &Sig, formatter: &mut std::fmt::Formatter<'_>) -> std::fm
         Byte(u8),
     }
 
-    let mut tasks = vec![Task::Visit(sig, 0)];
+    let mut tasks = vec![Task::Visit(sig, initial_depth)];
     while let Some(task) = tasks.pop() {
         match task {
             Task::Text(text) => formatter.write_str(text)?,
@@ -1865,7 +1869,7 @@ fn fmt_sig_pretty(sig: &Sig, formatter: &mut std::fmt::Formatter<'_>) -> std::fm
 impl std::fmt::Debug for Sig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if formatter.alternate() {
-            return fmt_sig_pretty(self, formatter);
+            return fmt_sig_pretty(self, formatter, 0);
         }
         enum Task<'a> {
             Visit(&'a Sig),
@@ -2438,11 +2442,196 @@ impl Sig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
     Unit,
     Count { sig: Sig, remaining: u64 },
     Gate { sig: Sig, rest: Box<Token> },
+}
+
+impl Clone for Token {
+    fn clone(&self) -> Self {
+        let mut gates = Vec::new();
+        let mut token = self;
+        let mut cloned = loop {
+            match token {
+                Token::Unit => break Token::Unit,
+                Token::Count { sig, remaining } => {
+                    break Token::Count {
+                        sig: sig.clone(),
+                        remaining: *remaining,
+                    };
+                }
+                Token::Gate { sig, rest } => {
+                    gates.push(sig.clone());
+                    token = rest;
+                }
+            }
+        };
+        while let Some(sig) = gates.pop() {
+            cloned = Token::Gate {
+                sig,
+                rest: Box::new(cloned),
+            };
+        }
+        cloned
+    }
+}
+
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        let mut left = self;
+        let mut right = other;
+        loop {
+            match (left, right) {
+                (Token::Unit, Token::Unit) => return true,
+                (
+                    Token::Count {
+                        sig: left_sig,
+                        remaining: left_remaining,
+                    },
+                    Token::Count {
+                        sig: right_sig,
+                        remaining: right_remaining,
+                    },
+                ) => return left_remaining == right_remaining && left_sig == right_sig,
+                (
+                    Token::Gate {
+                        sig: left_sig,
+                        rest: left_rest,
+                    },
+                    Token::Gate {
+                        sig: right_sig,
+                        rest: right_rest,
+                    },
+                ) if left_sig == right_sig => {
+                    left = left_rest;
+                    right = right_rest;
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+impl Eq for Token {}
+
+fn detach_token_rest(token: &mut Token) -> Option<Token> {
+    match token {
+        Token::Gate { rest, .. } => {
+            let rest = std::mem::replace(rest, Box::new(Token::Unit));
+            Some(*rest)
+        }
+        Token::Unit | Token::Count { .. } => None,
+    }
+}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        let mut rest = detach_token_rest(self);
+        while let Some(mut token) = rest {
+            rest = detach_token_rest(&mut token);
+        }
+    }
+}
+
+fn fmt_token_pretty(
+    token: &Token,
+    formatter: &mut std::fmt::Formatter<'_>,
+    initial_depth: usize,
+) -> std::fmt::Result {
+    enum Task<'a> {
+        Visit(&'a Token, usize),
+        Sig(&'a Sig, usize),
+        Text(&'static str),
+        Indent(usize),
+        Number(u64),
+    }
+
+    let mut tasks = vec![Task::Visit(token, initial_depth)];
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Text(text) => formatter.write_str(text)?,
+            Task::Indent(depth) => {
+                for _ in 0..depth {
+                    formatter.write_str("    ")?;
+                }
+            }
+            Task::Number(number) => std::fmt::Debug::fmt(&number, formatter)?,
+            Task::Sig(sig, depth) => fmt_sig_pretty(sig, formatter, depth)?,
+            Task::Visit(token, depth) => match token {
+                Token::Unit => formatter.write_str("Unit")?,
+                Token::Count { sig, remaining } => {
+                    formatter.write_str("Count {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Number(*remaining));
+                    tasks.push(Task::Text("remaining: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Sig(sig, depth + 1));
+                    tasks.push(Task::Text("sig: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                Token::Gate { sig, rest } => {
+                    formatter.write_str("Gate {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(rest, depth + 1));
+                    tasks.push(Task::Text("rest: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Sig(sig, depth + 1));
+                    tasks.push(Task::Text("sig: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if formatter.alternate() {
+            return fmt_token_pretty(self, formatter, 0);
+        }
+
+        enum Task<'a> {
+            Visit(&'a Token),
+            Sig(&'a Sig),
+            Text(&'static str),
+            Number(u64),
+        }
+
+        let mut tasks = vec![Task::Visit(self)];
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Text(text) => formatter.write_str(text)?,
+                Task::Number(number) => std::fmt::Debug::fmt(&number, formatter)?,
+                Task::Sig(sig) => std::fmt::Debug::fmt(sig, formatter)?,
+                Task::Visit(token) => match token {
+                    Token::Unit => formatter.write_str("Unit")?,
+                    Token::Count { sig, remaining } => {
+                        tasks.push(Task::Text(" }"));
+                        tasks.push(Task::Number(*remaining));
+                        tasks.push(Task::Text(", remaining: "));
+                        tasks.push(Task::Sig(sig));
+                        tasks.push(Task::Text("Count { sig: "));
+                    }
+                    Token::Gate { sig, rest } => {
+                        tasks.push(Task::Text(" }"));
+                        tasks.push(Task::Visit(rest));
+                        tasks.push(Task::Text(", rest: "));
+                        tasks.push(Task::Sig(sig));
+                        tasks.push(Task::Text("Gate { sig: "));
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Token {
@@ -2480,11 +2669,244 @@ impl Token {
     fn remaining_units_i64(&self) -> i64 { token_units_to_i64(self.remaining_units()) }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignedProcess {
     Signed { process: Par, sig: Sig },
     Token(Token),
     Par(Box<SignedProcess>, Box<SignedProcess>),
+}
+
+impl Clone for SignedProcess {
+    fn clone(&self) -> Self {
+        enum Task<'a> {
+            Visit(&'a SignedProcess),
+            Pair,
+        }
+
+        let mut tasks = vec![Task::Visit(self)];
+        let mut values = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Visit(node) => match node {
+                    SignedProcess::Signed { process, sig } => {
+                        values.push(SignedProcess::Signed {
+                            process: process.clone(),
+                            sig: sig.clone(),
+                        });
+                    }
+                    SignedProcess::Token(token) => {
+                        values.push(SignedProcess::Token(token.clone()));
+                    }
+                    SignedProcess::Par(left, right) => {
+                        tasks.push(Task::Pair);
+                        tasks.push(Task::Visit(right));
+                        tasks.push(Task::Visit(left));
+                    }
+                },
+                Task::Pair => {
+                    let right = values
+                        .pop()
+                        .expect("SignedProcess clone missing right operand");
+                    let left = values
+                        .pop()
+                        .expect("SignedProcess clone missing left operand");
+                    values.push(SignedProcess::Par(Box::new(left), Box::new(right)));
+                }
+            }
+        }
+        debug_assert_eq!(values.len(), 1);
+        values
+            .pop()
+            .expect("SignedProcess clone produced no root value")
+    }
+}
+
+impl PartialEq for SignedProcess {
+    fn eq(&self, other: &Self) -> bool {
+        let mut work = vec![(self, other)];
+        while let Some((left, right)) = work.pop() {
+            match (left, right) {
+                (
+                    SignedProcess::Signed {
+                        process: left_process,
+                        sig: left_sig,
+                    },
+                    SignedProcess::Signed {
+                        process: right_process,
+                        sig: right_sig,
+                    },
+                ) => {
+                    if left_process != right_process || left_sig != right_sig {
+                        return false;
+                    }
+                }
+                (SignedProcess::Token(left), SignedProcess::Token(right)) => {
+                    if left != right {
+                        return false;
+                    }
+                }
+                (SignedProcess::Par(ll, lr), SignedProcess::Par(rl, rr)) => {
+                    work.push((lr, rr));
+                    work.push((ll, rl));
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for SignedProcess {}
+
+fn detach_signed_process_children(node: &mut SignedProcess, work: &mut Vec<SignedProcess>) {
+    if let SignedProcess::Par(left, right) = node {
+        let left = std::mem::replace(left, Box::new(SignedProcess::Token(Token::Unit)));
+        let right = std::mem::replace(right, Box::new(SignedProcess::Token(Token::Unit)));
+        work.push(*left);
+        work.push(*right);
+    }
+}
+
+impl Drop for SignedProcess {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        detach_signed_process_children(self, &mut work);
+        while let Some(mut node) = work.pop() {
+            detach_signed_process_children(&mut node, &mut work);
+        }
+    }
+}
+
+fn fmt_embedded_pretty_debug(
+    value: &impl std::fmt::Debug,
+    formatter: &mut std::fmt::Formatter<'_>,
+    depth: usize,
+) -> std::fmt::Result {
+    let rendered = format!("{value:#?}");
+    for (index, line) in rendered.split('\n').enumerate() {
+        if index != 0 {
+            formatter.write_str("\n")?;
+            for _ in 0..depth {
+                formatter.write_str("    ")?;
+            }
+        }
+        formatter.write_str(line)?;
+    }
+    Ok(())
+}
+
+fn fmt_signed_process_pretty(
+    process: &SignedProcess,
+    formatter: &mut std::fmt::Formatter<'_>,
+    initial_depth: usize,
+) -> std::fmt::Result {
+    enum Task<'a> {
+        Visit(&'a SignedProcess, usize),
+        Process(&'a Par, usize),
+        Sig(&'a Sig, usize),
+        Token(&'a Token, usize),
+        Text(&'static str),
+        Indent(usize),
+    }
+
+    let mut tasks = vec![Task::Visit(process, initial_depth)];
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Text(text) => formatter.write_str(text)?,
+            Task::Indent(depth) => {
+                for _ in 0..depth {
+                    formatter.write_str("    ")?;
+                }
+            }
+            Task::Process(process, depth) => {
+                fmt_embedded_pretty_debug(process, formatter, depth)?;
+            }
+            Task::Sig(sig, depth) => fmt_sig_pretty(sig, formatter, depth)?,
+            Task::Token(token, depth) => fmt_token_pretty(token, formatter, depth)?,
+            Task::Visit(process, depth) => match process {
+                SignedProcess::Signed { process, sig } => {
+                    formatter.write_str("Signed {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Sig(sig, depth + 1));
+                    tasks.push(Task::Text("sig: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Process(process, depth + 1));
+                    tasks.push(Task::Text("process: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                SignedProcess::Token(token) => {
+                    formatter.write_str("Token(\n")?;
+                    tasks.push(Task::Text(")"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Token(token, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                SignedProcess::Par(left, right) => {
+                    formatter.write_str("Par(\n")?;
+                    tasks.push(Task::Text(")"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(right, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(left, depth + 1));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for SignedProcess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if formatter.alternate() {
+            return fmt_signed_process_pretty(self, formatter, 0);
+        }
+
+        enum Task<'a> {
+            Visit(&'a SignedProcess),
+            Process(&'a Par),
+            Sig(&'a Sig),
+            Token(&'a Token),
+            Text(&'static str),
+        }
+
+        let mut tasks = vec![Task::Visit(self)];
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::Text(text) => formatter.write_str(text)?,
+                Task::Process(process) => std::fmt::Debug::fmt(process, formatter)?,
+                Task::Sig(sig) => std::fmt::Debug::fmt(sig, formatter)?,
+                Task::Token(token) => std::fmt::Debug::fmt(token, formatter)?,
+                Task::Visit(process) => match process {
+                    SignedProcess::Signed { process, sig } => {
+                        tasks.push(Task::Text(" }"));
+                        tasks.push(Task::Sig(sig));
+                        tasks.push(Task::Text(", sig: "));
+                        tasks.push(Task::Process(process));
+                        tasks.push(Task::Text("Signed { process: "));
+                    }
+                    SignedProcess::Token(token) => {
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Token(token));
+                        tasks.push(Task::Text("Token("));
+                    }
+                    SignedProcess::Par(left, right) => {
+                        tasks.push(Task::Text(")"));
+                        tasks.push(Task::Visit(right));
+                        tasks.push(Task::Text(", "));
+                        tasks.push(Task::Visit(left));
+                        tasks.push(Task::Text("Par("));
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SignedProcess {
@@ -2580,18 +3002,24 @@ impl SignedProcess {
         // these; they are torn down iteratively rather than recursively.
         let mut discarded: Vec<Par> = Vec::new();
         let mut work: Vec<SignedProcess> = vec![self];
-        while let Some(node) = work.pop() {
-            match node {
-                SignedProcess::Signed { process, .. } => match found {
-                    None => found = Some(process),
-                    Some(_) => discarded.push(process),
-                },
+        while let Some(mut node) = work.pop() {
+            match &mut node {
+                SignedProcess::Signed { process, .. } => {
+                    let process = std::mem::take(process);
+                    match found {
+                        None => found = Some(process),
+                        Some(_) => discarded.push(process),
+                    }
+                }
                 // Carries no `Par`; dropping it here neither traverses a term nor
                 // changes what `source_process` would have returned.
                 SignedProcess::Token(_) => {}
                 SignedProcess::Par(left, right) => {
                     // ⚠ RIGHT first, so `pop` takes LEFT first. This is what makes
                     // the worklist agree with `source_process`'s `.or_else` bias.
+                    let left = std::mem::replace(left, Box::new(SignedProcess::Token(Token::Unit)));
+                    let right =
+                        std::mem::replace(right, Box::new(SignedProcess::Token(Token::Unit)));
                     work.push(*right);
                     work.push(*left);
                 }

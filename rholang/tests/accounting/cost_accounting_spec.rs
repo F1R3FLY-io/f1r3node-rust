@@ -1727,6 +1727,57 @@ fn sig_debug_preserves_derived_compact_and_alternate_layouts() {
 }
 
 #[test]
+fn token_and_signed_process_debug_preserve_derived_layouts() {
+    let token = Token::Gate {
+        sig: Sig::Unit,
+        rest: Box::new(Token::Count {
+            sig: Sig::Ground(vec![1]),
+            remaining: 2,
+        }),
+    };
+    assert_eq!(
+        format!("{token:?}"),
+        "Gate { sig: Unit, rest: Count { sig: Ground([1]), remaining: 2 } }"
+    );
+    assert_eq!(
+        format!("{token:#?}"),
+        concat!(
+            "Gate {\n",
+            "    sig: Unit,\n",
+            "    rest: Count {\n",
+            "        sig: Ground(\n",
+            "            [\n",
+            "                1,\n",
+            "            ],\n",
+            "        ),\n",
+            "        remaining: 2,\n",
+            "    },\n",
+            "}",
+        )
+    );
+
+    let signed = SignedProcess::Token(Token::Count {
+        sig: Sig::Unit,
+        remaining: 2,
+    });
+    assert_eq!(
+        format!("{signed:?}"),
+        "Token(Count { sig: Unit, remaining: 2 })"
+    );
+    assert_eq!(
+        format!("{signed:#?}"),
+        concat!(
+            "Token(\n",
+            "    Count {\n",
+            "        sig: Unit,\n",
+            "        remaining: 2,\n",
+            "    },\n",
+            ")",
+        )
+    );
+}
+
+#[test]
 fn sig_proto_round_trip_unit() {
     let proto = Sig::Unit.to_proto();
     let decoded = Sig::from_proto(&proto).expect("Unit round-trip");

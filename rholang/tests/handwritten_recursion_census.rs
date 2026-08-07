@@ -243,6 +243,19 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subject `eval_with_nots`"),
     ),
     // ── metering ───────────────────────────────────────────────────────────────────
+    (
+        "rholang/src/rust/interpreter/accounting/mod.rs",
+        Disposition::NotATermDepthCycle(
+            "conservative same-name collisions across the explicit-worklist Sig, Token, and \
+             SignedProcess lifecycle implementations: their Clone bodies call the distinct \
+             stack-safe Clone implementations of child types, and their Debug bodies call \
+             distinct formatting helpers plus qualified std::fmt::Debug::fmt for scalar or \
+             generated stack-safe children. No helper calls upward in the ownership graph. \
+             `signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand` and \
+             `token_and_signed_process_lifecycles_are_stack_safe` drive Clone, equality, \
+             compact Debug, and Drop at depth 20,000 on a 128 KiB stack",
+        ),
+    ),
     // ── test and API surfaces ──────────────────────────────────────────────────────
     (
         "models/src/rust/test_utils/test_utils.rs",
