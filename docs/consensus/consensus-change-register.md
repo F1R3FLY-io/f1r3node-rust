@@ -3236,6 +3236,16 @@ source census establish that only analyzer resolution changed; values, public AP
 comparison order, protobuf bytes, hashes, COMMs, charges, EPathMap modes, and PathMap operations do
 not. No active register entry is created; stack-safety report §5.18.35 records the classification.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G34).** `mettail-rust@dd024d94` converts the
+macro capture-layout declaration, lookup, and nested optional-pattern walks to explicit ordered
+worklists. Test-only recursive differentials preserve every field slot's source-node identity,
+name, optionality, and order, together with first-match lookup behavior; the 20,000-level low-stack
+gate establishes the class change. Generated terms, protobuf bytes, hashes, COMMs, charges,
+EPathMap modes, and PathMap operations are unchanged. The checkpoint therefore remains in
+CBR-023's `EQUIVALENCE_PROVEN` set and creates no active may-change-consensus entry; the capped
+measurements and the three unrelated pre-existing macro-suite failures are recorded without
+suppression in stack-safety report §5.18.36.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

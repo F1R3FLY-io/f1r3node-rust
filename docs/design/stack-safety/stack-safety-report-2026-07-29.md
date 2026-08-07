@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@67f73e3d` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@dd024d94` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -66,7 +66,8 @@ the exact nondeterministic-finite-automaton (NFA) topology; the current census i
 findings and 4 mutual clusters**. `mettail-rust@2c2cbb95` applies the same bounded-cycle factoring
 to set-type Top lowering and empty-automaton complementation; the current census is **86 direct
 findings and 3 mutual clusters**. `mettail-rust@ae3256d6` then disambiguates the already-iterative
-KAT expression-nullability helper and its star-arm residual binding. This removes one false direct
+Kleene algebra with tests (KAT) expression-nullability helper and its star-arm residual binding.
+This removes one false direct
 finding and one false mutual cluster without changing a derivative, residual order, or decision;
 the current census is **85 direct findings and 2 mutual clusters**. `mettail-rust@8f5a434a` then
 specializes the generated parser's SEP, projection, and infix isolation selectors, removes a
@@ -96,11 +97,13 @@ Tarjan depth-first search (DFS), preserving validation verdicts and deterministi
 naive reference backend: automaton-tag collection, both ground-term site locators, and constructor-
 arity admission. `mettail-rust@67f73e3d` next disambiguates six conservative source-graph cycles
 caused by overloaded `From`/`from_iter`/`Scope` names and a shadowed comparator binding; source
-inspection proves that none was a recursive runtime call. The source-confirmed production ledger is
-therefore **57 direct findings and
+inspection proves that none was a recursive runtime call. `mettail-rust@dd024d94` then replaces
+the capture-layout declaration, lookup, and nested-pattern recursion with ordered worklists while
+preserving exact field-slot identity and first-match order. The source-confirmed production ledger is
+therefore **54 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 57/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the twenty-one removed or disambiguated, source-confirmed edges, not presented as a successful new
+project analysis timed out; this 54/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the twenty-four removed or disambiguated, source-confirmed edges, not presented as a successful new
 analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
@@ -135,7 +138,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
+Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), WPDA (weighted pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are allocated while defects are open**, they are never "class change: yes", and a row is discharged only by a commit that repairs it — never by deletion. Repaired rows remain in the register with their repair SHA and status, preserving the defect history. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -204,6 +207,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G31** | `mettail-rust@ba6e0367` | mettail | reflected host `oshift` and bound nested-AC template reflection; wide AC soup construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; wide soup cloning $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/elements on **256 KiB**; focused gates **0.83 s / 94,260 KiB** and **0.80 s / 102,088 KiB** | **yes for both named traversals**; recursive protobuf-byte oracles and existing generated-program goldens preserve bytes/hash | [5.18.32](#51832-reflected-host-shift-and-bound-ac-template-closure-ss-g31) |
 | **SS-G32** | `mettail-rust@d3ff8dcb` | mettail | closed-ground collection validation and deadlock-graph Tarjan DFS | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$ time and uses indexed $`O(V)`$ state; **20,000** values/vertices on **256 KiB**; focused gates **0.37 s / 93,564 KiB** and **0.32 s / 94,104 KiB** | **yes for both named traversals**; recursive oracles preserve exact Boolean verdicts and ordered SCC vectors | [5.18.33](#51833-closed-ground-validation-and-deadlock-scc-closure-ss-g32) |
 | **SS-G33** | `mettail-rust@af2d984d` | mettail | naive Knotted-Topoi reference-backend automaton, location, and arity walks | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; shared mutable-location zipper retains one path buffer; **20,000** levels on **256 KiB** | **yes for all four named traversals**; exact ordered values and first refusal preserved by recursive oracles | [5.18.34](#51834-naive-reference-backend-walk-closure-ss-g33) |
+| **SS-G34** | `mettail-rust@dd024d94` | mettail | macro capture-layout declaration flattening, name lookup, and nested optional-pattern walk | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; focused gate **0.05 s / 27,764 KiB** | **yes for all three named traversals**; exact slot identity, order, optionality, and first match preserved by recursive oracles | [5.18.36](#51836-macro-capture-layout-recursion-closure-ss-g34) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4298,7 +4302,7 @@ active Tarjan stack. The algorithm therefore remains $`\Theta(V+E)`$ time, where
 denote vertices and edges, and uses $`O(V+E)`$ auxiliary storage including the sorted adjacency
 view. No graph-depth limit is introduced.
 
-**Algorithm 19 (ITERATIVE-TARJAN).** *Make the recursive return address explicit while preserving
+**Algorithm 19 (Iterative Tarjan).** *Make the recursive return address explicit while preserving
 the original sorted traversal.*
 
 ```pseudocode
@@ -4355,7 +4359,7 @@ behavior. The single-root and multi-root ground-term site locators reuse the sha
 buffer plus one small frame per active ancestor rather than retaining a separate, progressively
 longer `String` for every pending sibling.
 
-**Algorithm 20 (REFERENCE-PREORDER).** *The common ordered traversal; the location-aware
+**Algorithm 20 (Reference preorder).** *The common ordered traversal; the location-aware
 specialization additionally records the buffer length in each frame and truncates on return.*
 
 ```pseudocode
@@ -4418,6 +4422,46 @@ from **79** to **73** recursive components, from **36** to **35** term-family co
 **6** to **5** mutual components across **16** files; its two gates passed in **11.43 s** at **163,832
 KiB peak RSS** under a 2 GiB, zero-swap scope. The six removed components were therefore all
 source-resolver artifacts named above, not latent stack traversals.
+
+#### 5.18.36 Macro capture-layout recursion closure [SS-G34]
+
+`mettail-rust@dd024d94` converts three compile-time walks in `macros/src/gen/capture.rs` from
+host recursion to explicit ordered worklists. Declaration flattening carries only a borrowed
+`TermParam` and the inherited optionality bit. Name lookup uses the same state but returns on the
+first matching `Simple` or `GuardBody`, exactly where the recursive implementation returned.
+Pattern walking carries a borrowed `SyntaxExpr` and the pattern optionality bit; entering an
+`Opt` group pushes its children in reverse source order so last-in, first-out execution retains
+the original left-to-right field order.
+
+The work items borrow the grammar nodes and output `FieldSlot` values that still point directly at
+the original `TermParam`; no term, syntax expression, or field list is cloned or projected. Nested
+optionality is a Boolean property after the first `Optional`/`Opt`, so the PDA need not retain an
+ancestor path. Its auxiliary heap is $`O(d+w)`$ in pending depth and sibling width, while native
+stack use is $`O(1)`$ in grammar nesting depth. No traversal-depth ceiling, enlarged stack, or
+stack-switching dependency is introduced.
+
+**Equivalence evidence.** The retired equations live only in
+`macros/tests/support/capture_recursive_oracle.rs`. The shallow differential compares every emitted
+slot's name, optionality, source discriminant, and—where the source is a declared parameter—the
+exact borrowed node identity. It independently compares lookup success, first-match identity, and
+optionality. The pattern corpus includes literals, named parameters, nested optional groups, token
+captures, and guest-body captures. The deep gate executes only the production machines, so a
+recursive oracle cannot make the low-stack result vacuous.
+
+**MEASURED (f), 2026-08-06.** Both focused tests completed at 20,000 nested levels on a **256 KiB**
+thread stack in **0.05 s** at **27,764 KiB peak RSS**, inside a 512 MiB zero-swap systemd scope.
+The source census fell from **73** to **70** recursive components and from **35** to **32**
+term-family components, retaining **5** mutual components across **15** files; its two tests passed
+in **11.49 s**. The complete macro-crate command compiled under a 6 GiB zero-swap scope and recorded
+**473 passed, 3 failed, 2 ignored**: the three failures are independently reproducible stale
+fixture/corpus assertions (one invalid language fixture, one 149-versus-150 fold floor, and one
+generator-gap measurement tuple), not capture-walker results. The initial dependency build reached
+and was safely terminated by its 3 GiB cgroup; the already-built focused gate is the RSS figure of
+record rather than that workspace build.
+
+No generated process, protobuf byte, hash, COMM, charge, EPathMap mode, or PathMap operation moves:
+the recursive oracle observes exact identity and order, not merely cardinality. Retired CBR-023 is
+extended; no active may-change-consensus entry is created.
 
 ---
 
