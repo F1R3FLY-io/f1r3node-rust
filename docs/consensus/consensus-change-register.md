@@ -3277,6 +3277,17 @@ COMMs, charges, EPathMap modes, and PathMap operations are unchanged. The checkp
 CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; stack-safety report
 §5.18.39 records the capped measurements and 51/14/5 source census.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G38).** `mettail-rust@675a47a9` replaces five
+macro-time token, AC-template, and projection-FIRST recursions with shared token leaves, postorder
+value frames, and an indexed category PDA. Recursive equations preserve token spelling/order,
+template child order and spelling, and the optimistic pure-cycle cut. Every bundled category's
+boolean FIRST result also equals its complete existing FIRST set, while the indexed closure removes
+repeated transitive reconstruction on projection chains. Parser specifications, generated
+processes, protobuf bytes, hashes, COMMs, charges, EPathMap modes, and PathMap operations are
+unchanged. The checkpoint extends CBR-023's `EQUIVALENCE_PROVEN` set without an active
+may-change-consensus entry; stack-safety report §5.18.40 records the capped measurements and
+46/13/5 source census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
