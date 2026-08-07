@@ -22,6 +22,7 @@ use crate::rust::report_store::ReportStore;
 use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
 use crate::rust::safety_oracle::CliqueOracleImpl;
+use crate::rust::util::proto_util;
 
 /// Domain-specific errors for BlockReportAPI operations
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +97,16 @@ impl BlockReportAPI {
             .trace(block)
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
+
+        let expected_post_state = proto_util::post_state_hash(block);
+        if report_result.post_state_hash.as_slice() != expected_post_state.as_ref() {
+            return Err(BlockReportError::ReplayFailed(format!(
+                "computed post-state {} does not match recorded post-state {} for block {}",
+                hex::encode(&report_result.post_state_hash),
+                hex::encode(&expected_post_state),
+                hex::encode(&block.block_hash)
+            )));
+        }
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
