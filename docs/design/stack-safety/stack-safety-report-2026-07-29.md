@@ -4,7 +4,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-06
+**Report date** 2026-07-29, revised through 2026-08-07
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
 **Companion decision head** `mettail-rust@659c36e5` (recursive-carrier lifecycle plus operational,
@@ -4488,6 +4488,38 @@ folds correspond one-for-one with `Delivered` dispositions. The complete bundled
 **151 declared = 151 disposition records (149 Delivered/emitted + 2 Declined)**, and the focused
 test passes under the 6 GiB, zero-swap scope. This is a test-oracle correction only: no generated
 term, protobuf byte, hash, COMM, charge, stack traversal, EPathMap mode, or PathMap operation moves.
+
+**Generator-matrix follow-up (2026-08-07).** `mettail-rust@40e1b586` closes the third original
+failure by re-deriving the intersection instead of changing the expected tuple blindly. Commit
+`438e3a3d` replaced 47 named Rholang method constructors with the grammar-derived
+`Rholang::Proc::MethodCall` rule. That new collection-bearing rule is intentionally refused by the
+unit generator as `CollectionElementSetup` and by the random and exhaustive generators as
+`Class2CollectionArity`; the generators and classifier did not change. The derived matrix is
+**(14, 36, 32, 10, 0, 4)**, its focused test passes, and
+`the_intersection_matrix_is_computed_not_written_down` passes in the complete macro-library run.
+The control-flow, serialization, hash, COMM, charge, EPathMap, and PathMap semantics are unchanged.
+
+**Withholding/proof follow-up (2026-08-07).** `mettail-rust@98901e33` supplies the cited Rocq
+development and executable withholding fixture; `mettail-rust@203a45ee` closes the remaining
+fixture and documentation defects. The refusal witness now uses the genuine builtin grammar slot
+`Integer`, which is already an opaque leaf, while a paired control proves that a native-backed
+language category (`![i64] as Int`) remains a child term/e-class and is severable. All **6/6**
+focused withholding cases pass. The Dovetail Rocq suite is current under a 4 GiB zero-swap cap
+(**17.7 MiB peak RSS**), and the critical zero-admission gate passes under a 2 GiB zero-swap cap
+(**11 MiB peak RSS**). The former congruence page, which described the retired Ascent generator and
+linked deleted sources, now documents the live Dovetail classifier, typed carrier, reconstruction
+inverse, Theorem W1, and named-refusal semantics; documentation validation passes **16/17**, with
+only network DOI resolution deliberately not attempted.
+
+**Macro-wide closure and newly separated gate (2026-08-07).** After all three original failures
+were repaired, the complete macro **library** corpus passed **506/506 executed tests**, with **2**
+intentional ignores, inside a 6 GiB zero-swap scope. The package command still exits nonzero in the
+separate `expansion_panic_gate` integration target: **8 passed, 3 failed, 1 ignored**. Those three
+failures are a refusal-census table drift, a stale disposition explanation, and prattail refusal
+ratchets covering committed source outside the three follow-up changes; they are not fold,
+generator-matrix, withholding, recursive-oracle, or low-stack failures. Peak RSS was not measured
+for this package rerun; only the 6 GiB hard limit and zero-swap policy were enforced. This distinction
+supersedes the historical “473/475/502 passed, 3 failed” snapshots above without rewriting them.
 
 No generated process, protobuf byte, hash, COMM, charge, EPathMap mode, or PathMap operation moves:
 the recursive oracle observes exact identity and order, not merely cardinality. Retired CBR-023 is
