@@ -222,6 +222,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G37** | `mettail-rust@9e613bea` | mettail | parser pattern/token walks, type-token emission, and binder-scope schema analysis | eight host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; linear-output token PDA; **20,000** levels on **256 KiB**; oracle matrix **0.70 s / 133,972 KiB** | **yes for all eight components**; recursive equations preserve item order/nesting, exact type-token spelling, base-category order, and constructor-label set | [5.18.39](#51839-macro-parser-and-type-emission-closure-ss-g37) |
 | **SS-G38** | `mettail-rust@675a47a9` | mettail | raw token counters, AC template emission, and projection `Ident`-FIRST classification | five host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared token leaves and indexed category PDA; **20,000** levels on **256 KiB**; oracle matrix **0.71 s / 209,632 KiB** | **yes for all five components**; recursive equations and complete FIRST sets preserve tokens, template spelling/order, and category verdicts | [5.18.40](#51840-token-template-and-projection-first-closure-ss-g38) |
 | **SS-G39** | `mettail-rust@659c36e5` | mettail | stratification predicate references, quantified-premise spine, and ordered Tarjan SCC discovery | three host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$; **20,000** levels/vertices on **256 KiB**; focused matrix **0.14 s / 40,392 KiB** | **yes for all three components**; recursive equations preserve polarity, edge order, SCC order, and SCC member order exactly | [5.18.41](#51841-stratification-predicate-premise-and-scc-closure-ss-g39) |
+| **SS-G40** | `mettail-rust@4770cc0e`, optimized by `2f65391f` | mettail | shared-prefix factoring-trie construction and deterministic wide-node partitioning | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; expected-amortized $`\Theta(p)`$ prefix grouping; **20,000** levels on **256 KiB**; focused matrix **0.07 s / 35,608 KiB** | **yes**; bounded recursive equations preserve the exact forest, branch/accept/refusal order, and 1,024-way first-occurrence order | [5.18.42](#51842-shared-prefix-factoring-trie-closure-ss-g40) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4698,6 +4699,54 @@ particular, no process, protobuf byte, hash, COMM, charge, EPathMap mode, PathMa
 PathMap operation moves. Retired CBR-023 is extended; no active may-change-consensus entry is
 created.
 
+#### 5.18.42 Shared-prefix factoring-trie closure [SS-G40]
+
+`mettail-rust@4770cc0e`, optimized by `mettail-rust@2f65391f`, removes the recursive
+`build_tree` descent from macro-time WPDA shared-prefix factoring. A *factoring trie* is the
+declaration-order-preserving prefix tree whose edges are emitted-action shapes and whose leaves
+commit to the original grammar members. It is not an `EPathMap` and does not alter PathMap; the
+shared word *trie* describes the data-structure family, not a representation conversion.
+
+The replacement is a two-operation pushdown automaton. `Enter` consumes one trie node, finalizes
+an earliest-unique leaf, or partitions the remaining members by their next `SpineItem`.
+`Assemble` is the explicit return continuation: after every child forest has been produced, it
+moves those forests into the parent's `Interior` node and appends proper-prefix accepts in the
+same order as the recursive equation. Child `Enter` operations are pushed in reverse insertion
+order so the last-in-first-out work stack observes the original first-occurrence order. The
+parallel value stack stores forests rather than replaying or cloning completed subtries.
+
+The initial conversion retained the old linear search through already-seen edge labels.
+`2f65391f` removes that width-quadratic step with an insertion-ordered `IndexMap`. Hash lookup
+selects the partition in expected amortized constant time, while insertion order—not hash-table
+bucket order—continues to determine emitted branch order. Let $`p`$ be the total number of member
+prefix positions inspected, $`d`$ the longest shared prefix, and $`o`$ the output-tree size.
+Grouping is expected-amortized $`\Theta(p)`$, assembly is $`\Theta(o)`$, explicit driver state is
+$`O(d+w)`$ for the live depth and completed sibling width $`w`$, and native-stack use is $`O(1)`$.
+There is no traversal-depth ceiling, stack switch, enlarged stack, recursive fallback, or cloned
+forest projection.
+
+**Equivalence and anti-vacuity.** The bounded recursive specification lives only in
+`macros/tests/support/factoring_tree_recursive_oracle.rs`. The differential compares the exact
+debug-structural forest, ordered interior-accept vector, and ordered refusal vector. Its fixtures
+exercise proper-prefix acceptance under both stances, twins, malformed mixfix coordinates, and
+1,024 distinct branches whose first-occurrence order must survive ordered hashing. An independent
+test constructs two 20,001-item members sharing 20,000 edge labels and completes on a 256 KiB
+worker stack; the bounded oracle is deliberately not called on that depth.
+
+**MEASURED (f), 2026-08-07.** The optimized focused matrix passed **4/4** in **0.07 s** at
+**35,608 KiB peak RSS** inside a 512 MiB zero-swap scope. The complete macro binary recorded
+**502 passed, 3 failed, 2 ignored** in **2.71 s** at **382,320 KiB peak RSS** inside a 1 GiB
+zero-swap scope. The three failures are the unchanged campaign-tracked withholding parse,
+fold-corpus floor, and generator-ledger measurement assertions. The executable source census fell
+from **43** to **42** recursive components, retaining **11** term-family components, **5** mutual
+components, **5** files, and zero unmeasured dispositions; its two tests passed in **10.63 s** at
+**163,876 KiB peak RSS** inside a 512 MiB zero-swap scope.
+
+The forest, generated parser program, diagnostics, and refusal order are therefore unchanged; only
+host control flow and the asymptotic wide-node partition cost move. No process, protobuf byte,
+hash, COMM, charge, EPathMap mode, PathMap topology, or PathMap operation changes. Retired CBR-023
+is extended; no active may-change-consensus entry is created.
+
 ---
 
 ## 6. Discussion
@@ -5552,7 +5601,7 @@ DOCLINT_DOI=on /home/dylon/Workspace/f1r3fly.io/mettail-rust/docs/languages/vali
   /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-06) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-07) passes **16 of 17** mechanised checks with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

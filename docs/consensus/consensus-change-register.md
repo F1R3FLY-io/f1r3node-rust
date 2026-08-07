@@ -3298,6 +3298,19 @@ hashes, COMMs, charges, EPathMap modes, and PathMap operations are unchanged. Th
 CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; stack-safety report
 §5.18.41 records the capped measurements and 43/11/5 source census.
 
+**CBR-023 living-set continuation (2026-08-07, SS-G40).** `mettail-rust@4770cc0e` replaces
+recursive shared-prefix factoring-trie construction with explicit `Enter` and `Assemble` frames;
+`mettail-rust@2f65391f` replaces its inherited width-quadratic edge-partition scan with an
+insertion-ordered `IndexMap`. Bounded recursive equations preserve the exact forest, ordered
+interior accepts, ordered refusals, and declaration-derived branch order, including a 1,024-way
+wide-node differential. An independent 20,000-edge shared-prefix gate completes on a 256 KiB
+worker stack without invoking the recursive oracle. Insertion order, rather than hash-bucket order,
+remains the emitted-order authority, so the optimization changes neither the generated parser
+program nor its diagnostics. No process, protobuf byte, hash, COMM, charge, EPathMap mode, PathMap
+topology, or PathMap operation changes. The checkpoints extend CBR-023's `EQUIVALENCE_PROVEN` set
+without an active may-change-consensus entry; stack-safety report §5.18.42 records the capped
+measurements and 42/11/5 source census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
