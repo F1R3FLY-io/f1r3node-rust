@@ -3267,6 +3267,16 @@ operations are unchanged. The checkpoint extends CBR-023's `EQUIVALENCE_PROVEN` 
 active may-change-consensus entry; stack-safety report §5.18.38 records the capped measurements and
 59/21/5 source census.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G37).** `mettail-rust@9e613bea` replaces eight
+macro-time parser, type-emission, and binder-scope schema recursions with explicit work and output
+frames. Independent recursive equations preserve exact syntax-item nesting and order, rendered
+Rust type-token spelling, borrowed base-category identity and preorder, and constructor-label set.
+The type emitter additionally appends output linearly instead of re-interpolating growing nested
+streams. Parser specifications, enum field types, generated processes, protobuf bytes, hashes,
+COMMs, charges, EPathMap modes, and PathMap operations are unchanged. The checkpoint extends
+CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; stack-safety report
+§5.18.39 records the capped measurements and 51/14/5 source census.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
