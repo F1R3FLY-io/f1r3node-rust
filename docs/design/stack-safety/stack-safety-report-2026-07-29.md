@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@af2d984d` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@67f73e3d` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -94,10 +94,14 @@ template reflection with two bottom-up machines, and reuses the move-based fold 
 Tarjan depth-first search (DFS), preserving validation verdicts and deterministic component order.
 `mettail-rust@af2d984d` then closes the four remaining recursive walks in the feature-quarantined
 naive reference backend: automaton-tag collection, both ground-term site locators, and constructor-
-arity admission. The source-confirmed production ledger is therefore **63 direct findings and
+arity admission. `mettail-rust@67f73e3d` next disambiguates six conservative source-graph cycles
+caused by overloaded `From`/`from_iter`/`Scope` names and a shadowed comparator binding; source
+inspection proves that none was a recursive runtime call. The source-confirmed production ledger is
+therefore **57 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 63/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the fifteen removed, source-confirmed self-calls, not presented as a successful new analyzer run.
+project analysis timed out; this 57/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the twenty-one removed or disambiguated, source-confirmed edges, not presented as a successful new
+analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -4387,6 +4391,33 @@ rerun source census fell from **83** to **79** total recursive components and fr
 term-family components, with the `rho_net_naive_kt.rs` file absent; its two tests passed in **11.01
 s** at **163,472 KiB peak RSS** under a 2 GiB zero-swap scope. The production ledger remains a
 separate derived quantity because the pgmcp project refresh still has not completed successfully.
+
+#### 5.18.35 Overloaded-name call-graph resolution checkpoint
+
+`mettail-rust@67f73e3d` removes six conservative source-graph cycles without replacing a runtime
+traversal. The findings were name-resolution aliases:
+
+1. the owned and borrowed `From::from` implementations of `CanonicalBigInt` and
+   `CanonicalBigRat` shared one analyzer owner name;
+2. `HashBag::from_iter` and `FromIterator::from_iter` shared one analyzer owner name;
+3. the MeTTaIL `Scope` wrapper and `moniker::Scope` shared `new` and `term_eq`; and
+4. the already-iterative observation comparator shadowed typed root parameters named `left` and
+   `right`, causing primitive `.cmp` calls on pattern bindings to resolve to
+   `RuntimeObservationValue::cmp`.
+
+The repair gives the three construction families uniquely named private primitives, aliases the
+foreign scope as `MonikerScope`, and names the comparator roots `left_root` and `right_root`.
+Control flow, allocation, values, cache keys, comparison order, and public APIs are unchanged. This
+is analyzer precision work rather than a stack-class change, so it receives no `SS-G` row and no
+depth claim.
+
+**MEASURED (f), 2026-08-06.** The complete `runtime` package passed **261/261** library tests, every
+integration test, and **18/18 active** documentation tests (**1 ignored**) in **2.14 s** at **254,956
+KiB peak RSS** under a 4 GiB, zero-swap scope with eight Cargo jobs. The source census then fell
+from **79** to **73** recursive components, from **36** to **35** term-family components, and from
+**6** to **5** mutual components across **16** files; its two gates passed in **11.43 s** at **163,832
+KiB peak RSS** under a 2 GiB, zero-swap scope. The six removed components were therefore all
+source-resolver artifacts named above, not latent stack traversals.
 
 ---
 

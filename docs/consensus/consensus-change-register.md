@@ -3229,6 +3229,13 @@ conversion changes no generated process, protobuf byte, hash, COMM, charge, EPat
 PathMap operation. It therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without an active
 may-change-consensus entry; stack-safety report §5.18.34 records the capped measurements.
 
+**CBR-023 living-set continuation (2026-08-06, analyzer resolution).**
+`mettail-rust@67f73e3d` assigns unique source names to behavior-identical numeric, bag, foreign-scope,
+and observation-comparator calls, removing six conservative call-graph cycles. The runtime suite and
+source census establish that only analyzer resolution changed; values, public APIs, allocations,
+comparison order, protobuf bytes, hashes, COMMs, charges, EPathMap modes, and PathMap operations do
+not. No active register entry is created; stack-safety report §5.18.35 records the classification.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
