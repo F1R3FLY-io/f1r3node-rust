@@ -34,6 +34,7 @@ use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
+use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
@@ -60,7 +61,7 @@ pub struct RSpace<C, P, A, K> {
     produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
-    // 256 pre-allocated mutexes, channel hash % 256 → stripe index.
+    // See striped_locks.rs for the stripe count and hashing/lock scheme.
     // No DashMap entry() → no parking_lot shard contention per produce/consume.
     phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
@@ -77,60 +78,28 @@ where
         self.store.read().expect("store read lock").clone()
     }
 
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        stripes: &[Arc<tokio::sync::Mutex<()>>],
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        // Map channel hashes to stripe indices, sort to prevent deadlocks,
-        // dedup so two channels in the same stripe are only locked once.
-        let mut indices: Vec<usize> = keys.iter().map(|k| (*k as usize) % stripes.len()).collect();
-        indices.sort();
-        indices.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
-        for idx in indices {
-            let guard = stripes[idx].clone().lock_owned().await;
-            held.push(HeldLock { _guard: guard });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
+        striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
+        let channel_hash = striped_locks::channel_hash(channel);
+        let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
 
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
             .get_joins(channel)
             .into_iter()
             .flatten()
-            .map(|ch| Self::channel_hash(&ch))
+            .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
     }
 
     fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
-        Arc::new(
-            (0..256)
-                .map(|_| Arc::new(tokio::sync::Mutex::new(())))
-                .collect(),
-        )
+        striped_locks::new_striped_locks()
     }
 
     pub fn get_history_repository(
@@ -141,14 +110,6 @@ where
             .expect("history read lock")
             .clone()
     }
-}
-
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
@@ -306,7 +267,7 @@ where
 
             let lock_start = Instant::now();
             let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+                channels.iter().map(|ch| striped_locks::channel_hash(ch)).collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
             tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
@@ -342,7 +303,7 @@ where
         let lock_start = Instant::now();
         let _lock_guard = self.produce_lock(&channel).await;
         let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
+        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = striped_locks::channel_hash(&channel), "lock acquired");
         metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(lock_start.elapsed().as_nanos() as u64);
 

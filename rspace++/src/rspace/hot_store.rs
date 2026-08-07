@@ -52,10 +52,9 @@ const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 // Number of independent shards backing each of the five HotStore state maps
 // (data, continuations, installed_continuations, joins, installed_joins).
 // Matches the 256-way striped-lock scheme already used for phase_a_locks /
-// phase_b_locks in rspace.rs / replay_rspace.rs (PR #72 fix #4) -- same
-// tradeoff: coarser than per-key, but contention stays negligible in
-// practice while keeping the shard count (and therefore snapshot cost)
-// bounded and small.
+// phase_b_locks in rspace.rs / replay_rspace.rs (PR #72) -- same tradeoff:
+// coarser than per-key, but contention stays negligible in practice while
+// keeping the shard count (and therefore snapshot cost) bounded and small.
 const NUM_SHARDS: usize = 256;
 
 fn shard_of<K: Hash>(k: &K) -> usize {
@@ -67,52 +66,41 @@ fn shard_of<K: Hash>(k: &K) -> usize {
 
 // Sharded persistent map backing InMemHotStore's five state fields.
 //
-// Investigation: f1r3node-rust#43 (see issue-43 branch / asi-chain-testbed
-// issues/01-rholang-execution-scales-backwards-with-cpu.md, Update
-// 2026-07-21c). `create_soft_checkpoint()` -- called unconditionally before
-// every user deploy, purely to have a rollback point on failure -- used to
-// call `HotStore::snapshot()`, which deep-cloned every entry in all five
-// DashMaps into plain HashMaps: O(total store size), not O(deploy work).
-// Confirmed empirically (rspace++/tests/concurrent_rspace_test.rs,
-// `soft_checkpoint_cost_scales_with_accumulated_store_size_not_deploy_size`):
-// 100x more pre-existing store state cost ~31x more time per snapshot call,
-// with zero additional deploy work -- exactly the mechanism behind EVAL ms
-// growing with block size on real replay.
+// Investigation: f1r3node-rust#43. `create_soft_checkpoint()` -- called
+// unconditionally before every user deploy, purely to have a rollback point
+// on failure -- used to call `HotStore::snapshot()`, which deep-cloned every
+// entry in all five DashMaps into plain HashMaps: O(total store size), not
+// O(deploy work). Confirmed empirically (see
+// `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` in
+// rspace++/tests/concurrent_rspace_test.rs): more pre-existing store state
+// cost proportionally more time per snapshot call, with zero additional
+// deploy work -- exactly the mechanism behind EVAL ms growing with block
+// size on real replay.
 //
 // Fix: back each state map with NUM_SHARDS independent `imbl::HashMap`
 // (persistent, structural-sharing) slots instead of a `DashMap`. Mutation
 // (produce/consume) goes through one shard's write lock and does an
-// insert/remove against that shard's persistent map -- O(log n) instead of
-// DashMap's amortized O(1), but bounded and small, and never blocks other
-// shards. `snapshot()` reads each shard's *current* persistent-map value
-// directly -- an O(1) refcount-bump clone per shard -- so total snapshot
-// cost is O(NUM_SHARDS), independent of how many entries the store holds.
-// This is the same asymmetric trade PR #72 already made elsewhere in this
-// file (e.g. fix #3: O(n) history-cache bounds scan -> O(1) atomic
-// counters): a small, bounded cost on the hot mutation path in exchange for
-// eliminating an unbounded cost on a path that runs once per deploy.
+// in-place (copy-on-write) insert/remove against that shard's persistent
+// map, so it only pays a deep-clone when the shard is actually shared with
+// a live snapshot. `snapshot()` reads each shard's *current* persistent-map
+// value directly -- an O(1) refcount-bump clone per shard -- so total
+// snapshot cost is O(NUM_SHARDS), independent of how many entries the store
+// holds. This is the same asymmetric trade PR #72 already made elsewhere in
+// this file (O(n) history-cache bounds scan -> O(1) atomic counters): a
+// small, bounded cost on the hot mutation path in exchange for eliminating
+// an unbounded cost on a path that runs once per deploy.
 struct ShardedMap<K, V> {
-    shards: Vec<std::sync::RwLock<imbl::HashMap<K, V>>>,
+    shards: Box<[std::sync::RwLock<imbl::HashMap<K, V>>; NUM_SHARDS]>,
 }
 
-#[allow(dead_code)]
 impl<K, V> ShardedMap<K, V>
 where
     K: Clone + Hash + Eq,
     V: Clone,
 {
-    fn new() -> Self {
+    fn from_shards(shards: Box<[imbl::HashMap<K, V>; NUM_SHARDS]>) -> Self {
         Self {
-            shards: (0..NUM_SHARDS)
-                .map(|_| std::sync::RwLock::new(imbl::HashMap::new()))
-                .collect(),
-        }
-    }
-
-    fn from_shards(shards: Vec<imbl::HashMap<K, V>>) -> Self {
-        debug_assert_eq!(shards.len(), NUM_SHARDS);
-        Self {
-            shards: shards.into_iter().map(std::sync::RwLock::new).collect(),
+            shards: Box::new((*shards).map(std::sync::RwLock::new)),
         }
     }
 
@@ -139,13 +127,6 @@ where
             .insert(k, v)
     }
 
-    fn remove(&self, k: &K) -> Option<V> {
-        self.shards[shard_of(k)]
-            .write()
-            .expect("shard write lock")
-            .remove(k)
-    }
-
     // Runs a read-modify-write closure against the shard holding `k`. Covers
     // the DashMap::entry() Occupied/Vacant pattern used throughout the
     // original produce/consume methods -- one shard-scoped write lock, one
@@ -164,25 +145,23 @@ where
     }
 
     fn clear(&self) {
-        for s in &self.shards {
+        for s in self.shards.iter() {
             *s.write().expect("shard write lock") = imbl::HashMap::new();
         }
     }
 
     // O(NUM_SHARDS): clone each shard's current persistent map. This is the
     // whole point of the sharded design -- see the type-level doc comment.
-    fn snapshot_shards(&self) -> Vec<imbl::HashMap<K, V>> {
-        self.shards
-            .iter()
-            .map(|s| s.read().expect("shard read lock").clone())
-            .collect()
+    fn snapshot_shards(&self) -> Box<[imbl::HashMap<K, V>; NUM_SHARDS]> {
+        Box::new(std::array::from_fn(|i| {
+            self.shards[i].read().expect("shard read lock").clone()
+        }))
     }
 
     // O(NUM_SHARDS): atomically (per-shard) replace this map's contents with
     // a previously captured sharded snapshot.
-    fn restore_shards(&self, shards: Vec<imbl::HashMap<K, V>>) {
-        debug_assert_eq!(shards.len(), NUM_SHARDS);
-        for (slot, new_map) in self.shards.iter().zip(shards) {
+    fn restore_shards(&self, shards: Box<[imbl::HashMap<K, V>; NUM_SHARDS]>) {
+        for (slot, new_map) in self.shards.iter().zip(*shards) {
             *slot.write().expect("shard write lock") = new_map;
         }
     }
@@ -246,7 +225,7 @@ pub fn new_hashmap<K: std::cmp::Eq + std::hash::Hash, V>() -> HashMap<K, V> { Ha
 // for the full rationale.
 //
 // `continuations` keeps values `Arc`-wrapped (matching the live store's
-// representation, see PR #72 fix #5) so building a snapshot never
+// representation, see PR #72) so building a snapshot never
 // deep-clones a continuation body; callers that need an owned
 // `WaitingContinuation` (e.g. `to_map()`, FFI/RPC-facing code) deref-clone
 // at the point of use instead of paying that cost on every checkpoint.
@@ -258,11 +237,11 @@ where
     P: Clone,
     K: Clone,
 {
-    pub continuations: Vec<imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>>,
-    pub installed_continuations: Vec<imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>>,
-    pub data: Vec<imbl::HashMap<C, Vec<Datum<A>>>>,
-    pub joins: Vec<imbl::HashMap<C, Vec<Vec<C>>>>,
-    pub installed_joins: Vec<imbl::HashMap<C, Vec<Vec<C>>>>,
+    pub continuations: Box<[imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS]>,
+    pub installed_continuations: Box<[imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS]>,
+    pub data: Box<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>,
+    pub joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
+    pub installed_joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
 }
 
 impl<C, P, A, K> Default for HotStoreState<C, P, A, K>
@@ -274,11 +253,11 @@ where
 {
     fn default() -> Self {
         HotStoreState {
-            continuations: (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect(),
-            installed_continuations: (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect(),
-            data: (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect(),
-            joins: (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect(),
-            installed_joins: (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect(),
+            continuations: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            installed_continuations: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            data: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            joins: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            installed_joins: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
         }
     }
 }
@@ -302,14 +281,14 @@ where
     ) -> Self {
         fn shard_flat<K: Clone + Hash + Eq, V: Clone>(
             flat: HashMap<K, V>,
-        ) -> Vec<imbl::HashMap<K, V>> {
-            let mut shards: Vec<imbl::HashMap<K, V>> =
-                (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect();
+        ) -> Box<[imbl::HashMap<K, V>; NUM_SHARDS]> {
+            let mut shards: [imbl::HashMap<K, V>; NUM_SHARDS] =
+                std::array::from_fn(|_| imbl::HashMap::new());
             for (k, v) in flat {
                 let idx = shard_of(&k);
                 shards[idx].insert(k, v);
             }
-            shards
+            Box::new(shards)
         }
 
         HotStoreState {
@@ -540,8 +519,8 @@ where
         let channels_vec = channels.to_vec();
         let mut inserted = false;
         self.continuations.with_entry(&channels_vec, |map| {
-            match map.get(&channels_vec).cloned() {
-                Some(mut existing) => {
+            match map.get_mut(&channels_vec) {
+                Some(existing) => {
                     let existing_count = existing.len() as u64;
                     metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(existing_count);
@@ -554,7 +533,6 @@ where
                     if !dup {
                         existing.insert(0, Arc::new(wc));
                         inserted = true;
-                        map.insert(channels_vec.clone(), existing);
                     } else {
                         metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
                             .increment(1);
@@ -610,8 +588,8 @@ where
         }
 
         self.continuations
-            .with_entry(&channels_vec, |map| match map.get(&channels_vec).cloned() {
-                Some(mut existing) => {
+            .with_entry(&channels_vec, |map| match map.get_mut(&channels_vec) {
+                Some(existing) => {
                     let len = existing.len();
                     let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
                     if out_of_bounds {
@@ -619,7 +597,6 @@ where
                         None
                     } else {
                         existing.remove(removed_index as usize);
-                        map.insert(channels_vec.clone(), existing);
                         Some(())
                     }
                 }
@@ -631,15 +608,15 @@ where
                         .collect();
                     let len = from_history.len();
                     let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
-                    if out_of_bounds {
+                    let result = if out_of_bounds {
                         warn!(index, "Index out of bounds when removing continuation");
-                        map.insert(channels_vec.clone(), from_history);
                         None
                     } else {
                         from_history.remove(removed_index as usize);
-                        map.insert(channels_vec.clone(), from_history);
                         Some(())
-                    }
+                    };
+                    map.insert(channels_vec.clone(), from_history);
+                    result
                 }
             })
     }
@@ -664,10 +641,9 @@ where
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_DATUM_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        self.data.with_entry(channel, |map| match map.get(channel).cloned() {
-            Some(mut existing) => {
+        self.data.with_entry(channel, |map| match map.get_mut(channel) {
+            Some(existing) => {
                 existing.insert(0, d);
-                map.insert(channel.clone(), existing);
             }
             None => {
                 metrics::counter!(HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -683,8 +659,8 @@ where
 
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
         self.data
-            .with_entry(channel, |map| match map.get(channel).cloned() {
-                Some(mut existing) => {
+            .with_entry(channel, |map| match map.get_mut(channel) {
+                Some(existing) => {
                     let out_of_bounds = index < 0 || index as usize >= existing.len();
                     if out_of_bounds {
                         Err(RSpaceError::BugFoundError(format!(
@@ -694,25 +670,24 @@ where
                         )))
                     } else {
                         existing.remove(index as usize);
-                        map.insert(channel.clone(), existing);
                         Ok(())
                     }
                 }
                 None => {
                     let mut from_history = self.get_data_from_history_store(channel);
                     let out_of_bounds = index < 0 || index as usize >= from_history.len();
-                    if out_of_bounds {
+                    let result = if out_of_bounds {
                         let len = from_history.len();
-                        map.insert(channel.clone(), from_history);
                         Err(RSpaceError::BugFoundError(format!(
                             "Index {} out of bounds when removing datum (len={})",
                             index, len
                         )))
                     } else {
                         from_history.remove(index as usize);
-                        map.insert(channel.clone(), from_history);
                         Ok(())
-                    }
+                    };
+                    map.insert(channel.clone(), from_history);
+                    result
                 }
             })
     }
@@ -753,11 +728,10 @@ where
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_JOIN_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        self.joins.with_entry(channel, |map| match map.get(channel).cloned() {
-            Some(mut existing) => {
+        self.joins.with_entry(channel, |map| match map.get_mut(channel) {
+            Some(existing) => {
                 if !existing.iter().any(|j| j.as_slice() == join) {
                     existing.insert(0, join.to_vec());
-                    map.insert(channel.clone(), existing);
                 }
             }
             None => {
@@ -777,11 +751,10 @@ where
 
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()> {
         self.installed_joins
-            .with_entry(channel, |map| match map.get(channel).cloned() {
-                Some(mut existing) => {
+            .with_entry(channel, |map| match map.get_mut(channel) {
+                Some(existing) => {
                     if !existing.iter().any(|j| j.as_slice() == join) {
                         existing.insert(0, join.to_vec());
-                        map.insert(channel.clone(), existing);
                     }
                 }
                 None => {
@@ -812,14 +785,13 @@ where
             Some(())
         } else {
             self.joins
-                .with_entry(channel, |map| match map.get(channel).cloned() {
-                    Some(mut existing) => {
+                .with_entry(channel, |map| match map.get_mut(channel) {
+                    Some(existing) => {
                         if let Some(idx) = existing.iter().position(|x| x.as_slice() == join) {
                             existing.remove(idx);
                         } else {
                             warn!("Join not found when removing join");
                         }
-                        map.insert(channel.clone(), existing);
                         Some(())
                     }
                     None => {
@@ -1235,5 +1207,48 @@ impl HotStoreInstances {
         K: Default + Clone + Debug + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `HotStoreState`'s hand-written `Default` is load-bearing: a derived
+    // impl would yield empty `Vec`s (pre-Box<[..; NUM_SHARDS]>) or fail to
+    // compile, and any impl that doesn't produce exactly NUM_SHARDS shards
+    // panics on first lookup (`shard_of` can index out of bounds). Pin the
+    // invariant so a future change can't silently drop it.
+    #[test]
+    fn default_hot_store_state_has_num_shards_shards() {
+        let state = HotStoreState::<String, String, String, String>::default();
+        assert_eq!(state.continuations.len(), NUM_SHARDS);
+        assert_eq!(state.installed_continuations.len(), NUM_SHARDS);
+        assert_eq!(state.data.len(), NUM_SHARDS);
+        assert_eq!(state.joins.len(), NUM_SHARDS);
+        assert_eq!(state.installed_joins.len(), NUM_SHARDS);
+    }
+
+    // Guards the snapshot-cost invariant `ShardedMap` exists for: an
+    // unmutated shard's persistent map is returned by reference-counted
+    // clone, not rebuilt, so back-to-back snapshots with no writes in
+    // between share the same underlying tree per shard.
+    #[test]
+    fn snapshot_shards_share_structure_when_unchanged() {
+        let map: ShardedMap<String, String> =
+            ShardedMap::from_shards(Box::new(std::array::from_fn(|_| imbl::HashMap::new())));
+        for i in 0..1000 {
+            map.insert(format!("key_{i}"), format!("value_{i}"));
+        }
+
+        let snap1 = map.snapshot_shards();
+        let snap2 = map.snapshot_shards();
+
+        for i in 0..NUM_SHARDS {
+            assert!(
+                snap1[i].ptr_eq(&snap2[i]),
+                "shard {i} was rebuilt instead of refcount-cloned between two unmutated snapshots"
+            );
+        }
     }
 }
