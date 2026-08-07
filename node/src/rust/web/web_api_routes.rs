@@ -425,20 +425,20 @@ pub async fn epoch_handler(
 }
 
 use crate::rust::api::web_api::{
-    BondStatusResponse as BondStatusResp, EpochRewardsResponse, EstimateCostResponse,
-    SimpleExploreDeployRequest, ValidatorStatusResponse,
+    BondStatusResponse as BondStatusResp, EpochRewardsResponse, EstimateCostRequest,
+    EstimateCostResponse, ValidatorStatusResponse,
 };
 
 #[utoipa::path(
     post,
     path = "/api/estimate-cost",
-    request_body = SimpleExploreDeployRequest,
+    request_body = EstimateCostRequest,
     params(
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
         (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
-        (status = 400, description = "Malformed request body, invalid Rholang term, or invalid block hash (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed request body, invalid Rholang term, invalid deployer key, or invalid block hash (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
@@ -448,12 +448,14 @@ use crate::rust::api::web_api::{
 pub async fn estimate_cost_handler(
     State(app_state): State<AppState>,
     AppQuery(query): AppQuery<BlockHashQuery>,
-    AppJson(request): AppJson<SimpleExploreDeployRequest>,
+    AppJson(request): AppJson<EstimateCostRequest>,
 ) -> Response {
     let web_api = app_state.web_api.clone();
-    match offload(
-        move || async move { web_api.estimate_cost(request.term, query.block_hash).await },
-    )
+    match offload(move || async move {
+        web_api
+            .estimate_cost(request.term, query.block_hash, request.deployer)
+            .await
+    })
     .await
     {
         Ok(response) => Json(response).into_response(),
@@ -684,6 +686,7 @@ mod tests {
         async fn estimate_cost(
             &self,
             _: String,
+            _: Option<String>,
             _: Option<String>,
         ) -> eyre::Result<crate::rust::api::web_api::EstimateCostResponse> {
             unimplemented!()

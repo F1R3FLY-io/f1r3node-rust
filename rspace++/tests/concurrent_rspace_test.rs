@@ -149,3 +149,92 @@ async fn event_log_insert_complexity_is_not_quadratic() {
          log_produce, log_consume, log_comm.",
     );
 }
+
+// Regression guard for f1r3node-rust#43 / issue-43.
+//
+// Originally found the bug: real replay data (mntd EVAL ms / PAR x columns)
+// showed a single deploy's evaluate() cost growing with the number of
+// *other* deploys already replayed in the same block (57ms at cap=1 ->
+// 372ms at cap=100 per deploy, identical per-deploy work). PR #72's own
+// fixes and the COMM_CON/COMM_PRO histograms (sub-ms even at cap=100) ruled
+// out rspace++ commit/lock work as the cause. Root cause:
+// `create_soft_checkpoint()`, which `replay_runtime.rs::run_user_deploy` calls
+// unconditionally at the start of *every* user deploy (for failure rollback)
+// and which measured EVAL time includes, called `HotStore::snapshot()`, which
+// used to full-clone all five DashMaps into plain HashMaps -- O(total store
+// size), not O(1) or O(per-deploy work). See git history for pre-fix
+// baseline measurements.
+//
+// Fix: HotStore's five state maps are now backed by NUM_SHARDS (256)
+// independent `imbl::HashMap` shards (`hot_store.rs`, `ShardedMap`).
+// `snapshot()` clones each shard's current persistent-map value directly
+// (an O(1) refcount bump per shard) instead of rebuilding a flat map by
+// visiting every entry -- O(NUM_SHARDS), not O(store size). This test now
+// guards the fix: time growth from a 100x larger store should stay small
+// and bounded, not track the store-size growth.
+//
+// Methodology note: the first `create_soft_checkpoint()` call against a
+// freshly built store pays one-off heap first-touch cost unrelated to
+// store size (measured: ~50us vs. a steady-state ~18us, regardless of
+// prefill size). Each `avg_checkpoint_us` run below discards that first
+// sample before averaging so the measured ratio reflects snapshot cost,
+// not allocator warm-up -- without the discard this test's ratio isn't a
+// reliable signal and can fail on correct code at block-realistic sizes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn soft_checkpoint_cost_does_not_scale_with_accumulated_store_size() {
+    const SMALL_PREFILL: usize = 100;
+    const LARGE_PREFILL: usize = 10_000;
+    const SAMPLES: usize = 50;
+
+    async fn avg_checkpoint_us(prefill: usize, samples: usize) -> f64 {
+        let space = make_rspace().await;
+        // Simulate `prefill` earlier deploys' worth of accumulated HotStore
+        // state -- distinct channels, one produce each, matching how
+        // TransferTerm deploys each touch their own vault/registry channels.
+        for i in 0..prefill {
+            space
+                .produce(format!("prefill_ch_{i}"), "datum".to_string(), false)
+                .await
+                .unwrap();
+        }
+
+        // Discard the first call -- pays one-off heap first-touch cost, not
+        // snapshot cost (see methodology note above).
+        let _ = space.create_soft_checkpoint().await;
+
+        // Time create_soft_checkpoint() in isolation -- this is exactly what
+        // run_user_deploy() pays once per deploy, before evaluate() even
+        // starts, purely for failure-rollback support.
+        let t0 = Instant::now();
+        for _ in 0..samples {
+            let _ = space.create_soft_checkpoint().await;
+        }
+        t0.elapsed().as_micros() as f64 / samples as f64
+    }
+
+    let small_us = avg_checkpoint_us(SMALL_PREFILL, SAMPLES).await;
+    let large_us = avg_checkpoint_us(LARGE_PREFILL, SAMPLES).await;
+    let ratio = large_us / small_us.max(1e-9);
+    let store_size_ratio = LARGE_PREFILL as f64 / SMALL_PREFILL as f64;
+
+    eprintln!(
+        "soft_checkpoint_cost: store_size={SMALL_PREFILL} -> {small_us:.1}us/call   \
+         store_size={LARGE_PREFILL} -> {large_us:.1}us/call   time_ratio={ratio:.1}x   \
+         store_size_ratio={store_size_ratio:.1}x"
+    );
+
+    // Post-fix (sharded persistent maps), with warm-up discarded: driven by
+    // shard-lock/allocation overhead, not store size. O(store-size) (the
+    // pre-fix behavior) would put this near store_size_ratio (100x); a
+    // regression back to that pattern should fail this bound well before
+    // reaching it. Some margin above the steady-state ratio is kept for
+    // CI timing variance.
+    const MAX_RATIO: f64 = 8.0;
+    assert!(
+        ratio < MAX_RATIO,
+        "create_soft_checkpoint() scaled with accumulated store size ({ratio:.1}x for a \
+         {store_size_ratio:.1}x larger store, expected <{MAX_RATIO:.0}x) -- regression back to an \
+         O(store-size) HotStore::snapshot(), the issue-43 root cause. See ShardedMap in \
+         hot_store.rs.",
+    );
+}
