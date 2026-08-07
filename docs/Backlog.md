@@ -104,6 +104,41 @@ related_epic: EPIC-009
 
 ---
 
+### Documentation
+
+#### BACKLOG-DOC-001: Unify slashing notation glossary into docs/Glossary.md
+
+```yaml
+---
+backlog_id: BACKLOG-DOC-001
+title: "Fold docs/theory/slashing/design/02-glossary-and-notation.md into docs/Glossary.md"
+category: documentation
+priority: p3
+added_at: 2026-08-05
+related_epic: EPIC-011
+requested_by: human-jeff (2026-08-05, during /review-codebase --glossary-only)
+---
+```
+
+**Description:** `docs/Glossary.md` (created 2026-08-05, 12 canonical terms in
+the load-bearing Preferred-usage format) and
+`docs/theory/slashing/design/02-glossary-and-notation.md` (acronyms, symbol
+tables, LTS labels, InvalidBlock taxonomy, theorem-naming conventions) should
+become one document at `docs/Glossary.md`. Until then, `docs/Glossary.md`
+links to `02` as authoritative for mathematical notation, and `02` remains
+the citation target of the design-doc series.
+
+**Probable approach:** Migrate `02`'s tables into `docs/Glossary.md` sections
+(keeping GFM anchor compatibility), turn `02` into a redirect stub, and update
+the design-doc series' internal cross-references (`§02` citations appear
+throughout `03`–`15`; the maintenance rule requires every anchor to keep
+resolving).
+
+**When Unblocked:** After the current EPIC-011 tasks complete (maintainer's
+explicit sequencing: "when complete with tasks").
+
+---
+
 ### Dependencies & Blockers
 
 #### BACKLOG-DB-001: system-integration Branch Reference
