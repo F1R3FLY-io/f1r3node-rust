@@ -7,9 +7,10 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@626d1d3b` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@c958355c` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
-(LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
+(LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
+correlated-matching, and numeric-cast closure;
 §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
@@ -76,7 +77,13 @@ refreshes the corresponding stale empty-EPathMap parser golden to the distinct u
 mode and changes no production source. `mettail-rust@626d1d3b` relocates both main-thread probe
 programs from `src/bin` to `tests/support` while retaining their explicit Cargo binary targets. The
 deliberate recursive control remains live, but fresh production analysis now reports **85 direct
-findings and zero mutual clusters**. No production path uses
+findings and zero mutual clusters**. `mettail-rust@211df16c` next closes the runtime observation
+binder scan, mobility scan, and bag flattening traversals, while replacing the mobility scan's
+multiplicity-expanded temporary vector with a lazy occurrence iterator; the census becomes **82
+direct findings and zero mutual clusters**. `mettail-rust@c958355c` then replaces generic correlated
+matching recursion with explicit ordered backtracking and the three nested numeric-cast recursions
+with one shared width-continuation architecture. Fresh production analysis reports **78 direct
+findings and zero mutual clusters**, with no direct residual anywhere under `runtime/`. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -170,6 +177,8 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G23** | `mettail-rust@6e0e414a`, `2286ac57` | mettail | reflected metadata rendering: mutually recursive `Pattern`/`PatternTerm` and `SyntaxExpr`/`PatternOp` families plus recursive `TypeExpr` spelling | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; direct output $`\Theta(n+b)`$ time and $`O(d+b)`$ heap for $`n`$ nodes and $`b`$ output bytes; four **20,000**-depth gates on **256 KiB** | **yes**; zero direct or mutual recursion remains in `metadata.rs` | [5.18.22](#51822-reflected-metadata-renderer-closure-ss-g23) |
 | **SS-G24** | `mettail-rust@0e508621` | mettail | Dovetail metapattern analysis and lowering: binder discovery/collapse, collection and substitution detection, constructor collection, ordinary application lowering, and associative-commutative (AC) bag lowering | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; $`\Theta(n+b)`$ time and $`O(n+b)`$ output-plus-machine heap; **20,000** levels on **256 KiB**; direct gate **0.70 s / 117,260 KiB** | **yes**; zero direct or mutual recursion remains in `dovetail_report.rs` | [5.18.23](#51823-dovetail-metapattern-analysis-and-lowering-closure-ss-g24) |
 | **SS-G25** | `mettail-rust@39e4b024` | mettail | Dovetail positional set-automaton evaluation: mutually recursive compiled-state and application evaluation | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; exact match/cache/statistics semantics; **20,000** levels on **256 KiB**; direct gate **0.16 s / 33,528 KiB** | **yes**; no direct or mutual recursion remains in `set_automaton.rs` | [5.18.24](#51824-dovetail-set-automaton-evaluator-closure-ss-g25) |
+| **SS-G26** | `mettail-rust@211df16c` | mettail | decoded-observation binder and guarded-mobility scans plus multiplicity-preserving bag flattening | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; multiplicity snapshot $`\Theta(m) \rightarrow O(1)`$ auxiliary space for $`m`$ logical occurrences; **20,000** levels on **256 KiB**; direct gate **0.03 s / 24,364 KiB** | **yes**; all three direct findings are absent | [5.18.27](#51827-runtime-observation-scan-and-flatten-closure-ss-g26) |
+| **SS-G27** | `mettail-rust@c958355c` | mettail | correlated zip/map matching plus nested integer and floating-point casts | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; speculative payload clones deleted; **20,000** groups/wrappers on **256 KiB**; direct gates **0.03 s / 8,520 KiB** and **0.02 s / 8,148 KiB** | **yes**; zero production direct recursion remains under `runtime/` | [5.18.28](#51828-generic-matching-and-numeric-cast-closure-ss-g27) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-E1** | `5a744c66`, `ad468163`, `08e876fd`, `6a264e05` | f1r3node | ★ **Phase 3b's PREREQUISITE instrument** — the identical-total-order argument, the sorter golden's first depth-$`\geq 2`$ rows, and the re-entry ladder probe. ⚠ **No traversal was converted**, so this is deliberately not a class change | ⌀ — an instrument, not a traversal | **no** — by construction | [5.6.7](#567-ss-e1--3bs-prerequisite-instrument-and-the-two-checks-that-were-blind) |
@@ -4048,6 +4057,75 @@ Fresh pgmcp whole-project production analysis reports **85 direct findings and z
 clusters**. This source-layout correction changes no production artifact or behavior and therefore
 changes no term, reduction, COMM schedule, charge, EPathMap mode, PathMap operation, protobuf byte,
 bincode byte, or consensus hash.
+
+#### 5.18.27 Runtime observation scan and flatten closure [SS-G26]
+
+**Scope and architecture.** `mettail-rust@211df16c` replaces three depth-controlled traversals in
+`rholang-runtime/src/run.rs`. The binder-redex and guarded associative-commutative mobility scans now
+use explicit last-in/first-out reference worklists. Children are pushed in reverse source order, and
+map values are pushed before their keys, so execution retains the former left-to-right depth-first
+short circuit. The flattening function uses `Visit`, `Bag`, and `Term` continuations plus an owned
+value stack. Each continuation schedules one child at a time and records its value-stack base, so a
+wide node does not first duplicate every child into a pending-job vector.
+
+The guarded scan formerly built a `Vec<&RuntimeObservationValue>` containing one pointer per logical
+bag occurrence. It now exposes a cloneable lazy iterator over the compressed `(value, count)` entries.
+Occurrence indices, rather than entry indices, still determine sibling inequality. Consequently two
+occurrences of one compressed entry remain distinct siblings, a zero-count entry remains absent, and
+Open/In/Out guards observe the same terms. If $`m`$ is the expanded multiplicity and $`d`$ is structural
+depth, this removes $`\Theta(m)`$ snapshot space while the explicit traversal uses $`O(d)`$ heap and
+$`O(1)`$ native stack. Output materialization remains unavoidable for flattening and is unchanged in
+meaning: nested bag counts are expanded into ordered unit-count entries exactly as before.
+
+**Equivalence and measurement.** The superseded recursive equations live only in
+`rholang-runtime/tests/support/observation_scan_recursive_oracle.rs`. The bounded corpus compares
+exact binder and guarded verdicts plus complete flattened values across terms, lists, tuples, sets,
+maps, bags, multiplicities, and zero-count controls. A second test drives all three production paths
+through **20,000** nested terms on a **256 KiB** thread stack. The already-built two-test binary passes
+**2/2** in **0.03 seconds**, peaks at **24,364 KiB RSS** inside `MemoryMax=1G`, and swaps zero bytes.
+The focused crate check also passes under `MemoryMax=10G`, `MemorySwapMax=0`, and eight Cargo jobs.
+Fresh production analysis removes all three direct findings and reports **82 direct / 0 mutual**
+project-wide at this checkpoint.
+
+`RuntimeObservationValue` already has explicit iterative `Clone`, `Drop`, equality, ordering, hashing,
+formatting, and encoding implementations, so the new value stack does not hide lifecycle recursion.
+Exact value and verdict equivalence means SS-G26 changes no reduction, COMM schedule, charge, EPathMap
+mode, PathMap operation, protobuf byte, bincode byte, or consensus hash. It adds no recursive fallback,
+depth ceiling, `RUST_MIN_STACK`, or `stacker` dependency.
+
+#### 5.18.28 Generic matching and numeric-cast closure [SS-G27]
+
+**Correlated matching.** `mettail-rust@c958355c` replaces `enumerate_rec` with an explicit
+depth-first backtracker. `next_candidate[group]` is the program counter that a recursive return
+address formerly carried; `chosen` and `used` retain the active assignment. Candidate order, group
+order, duplicate branches, distinct-context-index rejection, result order, and the empty-input
+singleton result are unchanged. Speculative choices now borrow payloads and clone them only when an
+assignment completes, deleting the former clone-on-edge followed by clone-on-result pattern.
+
+**Nested casts.** The same checkpoint replaces the direct recursion in `numeric_int_bin_i32`,
+`numeric_int_bin_i64`, and `numeric_float_bin`. Each driver peels a nested cast in a loop, records its
+enclosing width, evaluates the innermost numeric/string/rational leaf with the existing typed pipeline,
+and then applies the saved widths in reverse. The shared `apply_enclosing_widths` continuation therefore
+preserves the observable inner-before-outer narrowing order; for example, a 16-bit inner integer cast
+followed by an 8-bit outer cast is not collapsed into one width. String parsing, rational evaluation,
+invalid-width refusal, nonnumeric deferral, and canonical floating-point conversion still call the
+same pipeline functions in the same semantic order.
+
+**Equivalence and measurement.** Recursive references exist only in `runtime/tests/support`. Matching
+differentials compare the complete ordered result vector and each used-index set over empty groups,
+overlap, duplicate candidates, and blocked branches. Numeric differentials cover integer and string
+leaves, nested positive and negative narrowing, invalid widths, nonnumeric values, binary32/binary64
+rounding, and multiple wrappers. Independent **20,000**-level tests run on **256 KiB** stacks. The
+already-built matching binary passes **2/2** in **0.03 seconds** at **8,520 KiB RSS**; the numeric binary
+passes **2/2** in **0.02 seconds** at **8,148 KiB RSS**; both use 1 GiB zero-swap scopes. The complete
+runtime crate passes **261** unit tests plus every integration and documentation test under a 6 GiB,
+zero-swap, eight-job envelope. Clippy completes with only pre-existing warnings.
+
+Fresh pgmcp production analysis reports **78 direct findings and zero mutual clusters** and no direct
+recursion under `runtime/`. Exact ordered-output and scalar-output equivalence means SS-G27 changes no
+term, reduction, COMM schedule, charge, EPathMap representation, PathMap operation, protobuf byte,
+bincode byte, or consensus hash. It adds no recursive fallback, depth ceiling, `RUST_MIN_STACK`, or
+`stacker` dependency.
 
 ---
 
