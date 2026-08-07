@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@ba6e0367` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@d3ff8dcb` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
@@ -90,10 +90,12 @@ associative-commutative-template collectors, and fragment-pattern encoding; `met
 closes the remaining shift-chain and template-rebuild recursion and removes cloning from the shared
 parallel-`Par` fold. `mettail-rust@ba6e0367` then closes reflected host shift and bound nested-AC
 template reflection with two bottom-up machines, and reuses the move-based fold for wide AC soups.
-The source-confirmed production ledger is therefore **69 direct findings and
+`mettail-rust@d3ff8dcb` next closes closed-ground-value validation and the deadlock analyzer's
+Tarjan depth-first search (DFS), preserving validation verdicts and deterministic component order.
+The source-confirmed production ledger is therefore **67 direct findings and
 zero mutual clusters**. The replacement pgmcp semantic refresh was queued but its service-side
-project analysis timed out; this 69/0 figure is **DERIVED** from the last complete 78/0 snapshot and
-the nine removed, source-confirmed self-calls, not presented as a successful new analyzer run.
+project analysis timed out; this 67/0 figure is **DERIVED** from the last complete 78/0 snapshot and
+the eleven removed, source-confirmed self-calls, not presented as a successful new analyzer run.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -194,6 +196,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G29** | `mettail-rust@d3e675d3` | mettail | nested schedule collection, AC-template metadata collection, and fragment-pattern encoding | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; first-seen scans $`\Theta(n^2) \rightarrow \Theta(n)`$ expected; **20,000** levels on **256 KiB** (schedule **4,096**, whose output paths grow with depth) | **yes**; preorder, depth, and exact encoded bytes preserved | [5.18.30](#51830-rho-network-schedule-template-and-fragment-closure-ss-g29) |
 | **SS-G30** | `mettail-rust@250f0929` | mettail | generated shift-chain and AC-template reconstruction PDAs; shared parallel-`Par` construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; cloning parallel fold $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/components on **256 KiB**; wide fold **0.24 s / 57,372 KiB** | **partial resource closure** — exact bytes/hash preserved except the ruled `__t` bug fix; shift metadata slope remains SS-Y7 | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G31** | `mettail-rust@ba6e0367` | mettail | reflected host `oshift` and bound nested-AC template reflection; wide AC soup construction | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; wide soup cloning $`\Theta(n^2) \rightarrow \Theta(n)`$ amortized; **20,000** levels/elements on **256 KiB**; focused gates **0.83 s / 94,260 KiB** and **0.80 s / 102,088 KiB** | **yes for both named traversals**; recursive protobuf-byte oracles and existing generated-program goldens preserve bytes/hash | [5.18.32](#51832-reflected-host-shift-and-bound-ac-template-closure-ss-g31) |
+| **SS-G32** | `mettail-rust@d3ff8dcb` | mettail | closed-ground collection validation and deadlock-graph Tarjan DFS | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$ time and uses indexed $`O(V)`$ state; **20,000** values/vertices on **256 KiB**; focused gates **0.37 s / 93,564 KiB** and **0.32 s / 94,104 KiB** | **yes for both named traversals**; recursive oracles preserve exact Boolean verdicts and ordered SCC vectors | [5.18.33](#51833-closed-ground-validation-and-deadlock-scc-closure-ss-g32) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; pgmcp task 5101 open | mettail | the stack-safe generated $`k`$-shift continuation repeats growing byte-per-index `locally_free` prefixes | **20,000** levels fit 256 KiB native stack but peak at **1,395,560 KiB RSS / 2.04 s**; emitted metadata is $`\Theta(k^2)`$ | ⛔ **open heap defect**; no cap or `^shiftk` COMM-increasing substitution accepted | [5.18.31](#51831-rho-network-shift-and-template-rebuild-closure-ss-g30) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4269,6 +4272,70 @@ reported **5.72 s** elapsed and **1,530,196 KiB peak RSS** for the concurrent su
 end-to-end test-command measurements, not isolated instruction-count benchmarks. SS-Y7 remains
 independent and open: this checkpoint does not change the generated direct $`k`$-shift network whose
 repeated `locally_free` prefixes cause that separate heap slope.
+
+#### 5.18.33 Closed-ground validation and deadlock SCC closure [SS-G32]
+
+`mettail-rust@d3ff8dcb` removes two more source-depth-controlled self calls. First,
+`is_closed_ground_value` replaces recursive collection predicates with one borrowed-`Par` work
+stack. Children are pushed in reverse so the last-in, first-out (LIFO) machine retains the old
+left-to-right visit order; map values are pushed before their keys so keys are still validated first.
+The accepted language is unchanged: scalar ground expressions and populated unforgeables remain
+leaves, collection remainders and connective metadata remain refusals, and a map entry still requires
+both a key and a value.
+
+Second, the deadlock analyzer's Tarjan DFS stores each suspended call as `(vertex,
+next_successor_index)`. Each `BTreeSet` adjacency row is materialized once as a sorted vector, so the
+machine retains deterministic successor and SCC-emission order without repeatedly selecting the
+$`i`$th tree element. An indexed Boolean vector replaces logarithmic `BTreeSet` membership for the
+active Tarjan stack. The algorithm therefore remains $`\Theta(V+E)`$ time, where $`V`$ and $`E`$
+denote vertices and edges, and uses $`O(V+E)`$ auxiliary storage including the sorted adjacency
+view. No graph-depth limit is introduced.
+
+**Algorithm 19 (ITERATIVE-TARJAN).** *Make the recursive return address explicit while preserving
+the original sorted traversal.*
+
+```pseudocode
+⟨Enumerate strongly connected components without native recursion⟩ ≡
+    adjacency ← sorted_vector_view(edges)
+    for root in vertex_order:
+        if root is unindexed:
+            ENTER(root)
+            frames ← [(root, 0)]
+            while frames is not empty:
+                (vertex, cursor) ← top(frames)
+                if cursor < count(adjacency[vertex]):
+                    successor ← adjacency[vertex][cursor]
+                    advance top(frames).cursor
+                    if successor is unindexed:
+                        ENTER(successor)
+                        push(frames, (successor, 0))
+                    else if successor is on the Tarjan stack:
+                        lowlink[vertex] ← min(lowlink[vertex], index[successor])
+                else:
+                    pop(frames)
+                    propagate lowlink[vertex] to the suspended parent, if any
+                    if lowlink[vertex] = index[vertex]:
+                        emit the Tarjan-stack suffix ending at vertex
+```
+
+**Equivalence evidence.** Both retired implementations remain as shallow, test-only recursive
+oracles under `rholang-codegen/tests/support`, separate from production source. The validator
+differential covers every scalar leaf class through the production match, nested list/tuple/set/map
+values, empty collections, invalid metadata, remainders, missing map values, and the empty `Par`.
+The graph differential compares the entire ordered vector of ordered component sets over acyclic,
+self-loop, multi-cycle, and cross-edge examples; it therefore proves more than equality of the SCC
+partition. The conversions do not change protobuf bytes, hashes, generated code, EPathMap mode,
+PathMap operations, COMM traces, or charge. Retired CBR-023 is extended; no active
+may-change-consensus entry is created.
+
+**MEASURED (f), 2026-08-06.** Each depth gate ran on a **256 KiB** native thread stack inside a 2
+GiB, zero-swap systemd scope. A 20,000-level nested list validated in **0.37 s** at **93,564 KiB peak
+RSS**. A 20,000-vertex single-cycle graph completed Tarjan analysis in **0.32 s** at **94,104 KiB
+peak RSS**. The complete `rholang-codegen` package passed **365/365** library tests plus every
+integration and documentation test under an 8 GiB, zero-swap scope with eight Cargo jobs;
+`/usr/bin/time -v` reported **5.92 s** elapsed and **1,500,668 KiB peak RSS**. These figures measure
+whole test commands and include process/toolchain overhead; they are resource gates, not
+microbenchmarks.
 
 ---
 

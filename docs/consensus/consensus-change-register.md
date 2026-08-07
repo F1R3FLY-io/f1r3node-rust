@@ -3213,6 +3213,14 @@ material now lives.
 | `CBR-L18` | `mettail-rust@e3f2812f` | KAT equivalence stops treating exhaustion of a 100-pair work budget as proof | `BUG_FIX_RULED_NONCONSENSUS` | exact canonical Antimirov partial-derivative subsets; the former one-step false-positive reproducer is rejected; 144-pair independent guarded-string differential, 80-atom no-word-ceiling gate, 20,000-depth / 256 KiB stack gate, and the rejected non-canonical attempt are recorded in stack-safety report §5.18.8 |
 | `CBR-L19` | `mettail-rust@250f0929` | A sigma slot literally named `__t` remains the carrier value when a generated reduct shifts it through two or more template binders | `BUG_FIX_RULED_NONCONSENSUS` | the former recursive builder resolved `value_name` only after pushing its private `__t`, so the implementation detail shadowed a legal source identifier and shifted the fresh return channel instead of the matched value. The PDA captures the caller's de Bruijn index before introducing private frames. A targeted two-shift byte witness pins the correct binding; ordinary-name recursive-byte differentials, 20,000-level / 256 KiB gates, and the complete 359/359 codegen suite pass. The rest of `250f0929` is byte/hash neutral under CBR-023; stack-safety report §5.18.31 |
 
+**CBR-023 living-set continuation (2026-08-06).** `mettail-rust@d3ff8dcb` adds SS-G32 to the
+retired conversion programme. Test-only recursive differentials preserve every closed-ground
+validation verdict and the complete deterministic vector of Tarjan SCCs, including component
+emission order. The production changes affect neither generated terms nor protobuf bytes, hashes,
+COMM traces, charges, EPathMap modes, or PathMap operations. The checkpoint is therefore covered by
+CBR-023's `EQUIVALENCE_PROVEN` classification and creates no active may-change-consensus entry;
+measurements and the machines' exact equations are recorded in the stack-safety report §5.18.33.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
