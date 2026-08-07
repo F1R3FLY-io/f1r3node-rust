@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use crypto::rust::public_key::PublicKey;
@@ -195,6 +195,16 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 }
 
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Observer is busy processing another exploratory query; retry later")]
+pub struct ExploratoryDeployBusyError;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Exploratory query exceeded the {timeout_ms} ms execution deadline")]
+pub struct ExploratoryDeployTimeoutError {
+    pub timeout_ms: u128,
+}
 
 #[derive(Debug)]
 pub enum LatestBlockMessageError {
@@ -1653,61 +1663,21 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
+                let _permit = runtime_manager
+                    .acquire_exploratory_deploy_permit()
+                    .await
+                    .ok_or_else(|| eyre::Report::new(ExploratoryDeployBusyError))?;
 
-                // When no block specified, compute merged state from all DAG tips
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let snapshot = casper.get_snapshot().await?;
-                    let lfb = casper.last_finalized_block().await?;
-                    let parents = &snapshot.parents;
-
-                    tracing::warn!(
-                        "exploratoryDeploy: parents.size={}, LFB=#{} {}",
-                        parents.len(),
-                        lfb.body.state.block_number,
-                        PrettyPrinter::build_string_bytes(&lfb.block_hash)
-                    );
-
-                    let merged_state = if parents.len() <= 1 {
-                        // Single parent or no parents: use LFB post-state directly
-                        let lfb_state = proto_util::post_state_hash(&lfb);
-                        tracing::warn!(
-                            "exploratoryDeploy: Using LFB post-state={} (single parent)",
-                            PrettyPrinter::build_string_bytes(&lfb_state)
-                        );
-                        lfb_state
-                    } else {
-                        // Multiple parents: compute merged state using DAG merger
-                        // For exploratory deploy (read-only queries), always disable
-                        // late block filtering to see the full merged state
-                        tracing::warn!(
-                            "exploratoryDeploy: Computing merged state from {} parents",
-                            parents.len()
-                        );
-                        let latest_messages: std::collections::BTreeMap<_, _> = snapshot
-                            .justifications
-                            .iter()
-                            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                            .collect();
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
-                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
-                                casper.block_store(),
-                                parents.clone(),
-                                &snapshot,
-                                &runtime_manager,
-                                &latest_messages,
-                                Some(true), // disable_late_block_filtering = true for exploratory deploy
-                                None,       // exploratory deploy: no buffer populate needed
-                            )
-                            .await?;
-                        merged_state_hash
-                    };
-
-                    tracing::warn!(
-                        "exploratoryDeploy: Final state={}",
-                        PrettyPrinter::build_string_bytes(&merged_state)
-                    );
-
-                    (merged_state, Some(lfb))
+                    let dag = casper.block_dag().await?;
+                    let lfb_hash = dag.last_finalized_block();
+                    let lfb = casper.block_store().get(&lfb_hash)?.ok_or_else(|| {
+                        eyre::eyre!(
+                            "Failure to find last finalized block with hash: {}",
+                            PrettyPrinter::build_string_no_limit(&lfb_hash)
+                        )
+                    })?;
+                    (proto_util::post_state_hash(&lfb), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
                     let hash_str = block_hash.as_ref().unwrap();
@@ -1739,9 +1709,50 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let (res, cost) = runtime_manager
-                            .play_exploratory_deploy(term, &state_hash)
-                            .await?;
+                        let started = Instant::now();
+                        metrics::gauge!(
+                            "exploratory_deploy.active",
+                            "source" => "casper"
+                        )
+                        .increment(1.0);
+                        let timeout = runtime_manager.exploratory_deploy_execution_timeout_value();
+                        let result = tokio::time::timeout(
+                            timeout,
+                            runtime_manager.play_exploratory_deploy(term, &state_hash),
+                        )
+                        .await;
+                        metrics::gauge!(
+                            "exploratory_deploy.active",
+                            "source" => "casper"
+                        )
+                        .decrement(1.0);
+                        metrics::histogram!(
+                            "exploratory_deploy.duration",
+                            "source" => "casper"
+                        )
+                        .record(started.elapsed().as_secs_f64());
+                        RuntimeManager::trim_allocator();
+
+                        let (res, cost) = match result {
+                            Ok(result) => {
+                                metrics::counter!(
+                                    "exploratory_deploy.completed",
+                                    "source" => "casper"
+                                )
+                                .increment(1);
+                                result?
+                            }
+                            Err(_) => {
+                                metrics::counter!(
+                                    "exploratory_deploy.timed_out",
+                                    "source" => "casper"
+                                )
+                                .increment(1);
+                                return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                    timeout_ms: timeout.as_millis(),
+                                }));
+                            }
+                        };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
