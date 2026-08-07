@@ -3446,6 +3446,20 @@ process, protobuf or bincode byte, post-state hash, COMM, charge, EPathMap mode,
 PathMap operation moves. The checkpoint therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without
 an active may-change-consensus entry; stack-safety report §5.18.44 records the focused measurements.
 
+**CBR-023 living-set continuation (2026-08-07, lifecycle evidence closure).**
+`mettail-rust@cb94a1cb` and `a58d0925` harden the source-derived recursive-lifecycle census without
+changing production code. The gate now models ownership edges per trait across `Arc`, `Rc`,
+references, and `ManuallyDrop`; resolves exact crate/module/import/re-export identities; validates
+enclosing-owner destructor dispositions by ownership reachability; and includes positive and negative
+mutation controls. `mettail-rust@e831c2ab` adds an admission-free Rocq theorem proving the explicit
+work-stack traversal equal to the mutually recursive tree/forest equation for arbitrary
+continuations and proving one entry and exit per node. The composed executable gate passes 13/13 at
+163,844 KiB maximum RSS with zero swap, including 20,000-level / 256 KiB witnesses. These checkpoints
+alter only tests, proof sources, and their inventory documentation: no generated process, protobuf or
+bincode byte, post-state hash, COMM, charge, EPathMap mode, EPM1 snapshot, or PathMap operation moves.
+They strengthen CBR-023's `EQUIVALENCE_PROVEN` evidence and create no active may-change-consensus
+entry; stack-safety report §5.18 records the architecture and capped measurements.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

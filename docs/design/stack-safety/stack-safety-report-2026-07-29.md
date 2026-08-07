@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-07
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@c95d9e73` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@e831c2ab` (recursive-carrier lifecycle verification plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, nested optional/binder-list weighted
@@ -25,14 +25,18 @@ live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C
 converted width subjects and zero production tripwire subjects**. The strengthened hand-written
 recursion census finds **585** recursive components, **50** term-family components across **29** files,
 **20** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
-has no unmeasured traversal. A separate lifecycle gate at `mettail-rust@ce60f76f` scans **542**
-production Rust files, derives **84** recursively owned types in **80** components, and reports zero
-recursive derive or implicit-`Drop` exposures. That lifecycle result does **not** close the wider
+has no unmeasured traversal. The hardened lifecycle gate at `mettail-rust@a58d0925` scans **549**
+production Rust files, indexes **2,279** type definitions, derives a trait-specific maximum of **84**
+recursively owned types in **80** components, and reports zero recursive derive or implicit-`Drop`
+exposures. It resolves crate/module/import/re-export identity, models `Arc`, `Rc`, references, and
+`ManuallyDrop` per operation, checks enclosing-owner dispositions exactly, and includes a failing
+recursive-derive mutation. `mettail-rust@e831c2ab` adds the admission-free continuation theorem and
+exact once-per-node lifecycle-visit laws. That lifecycle result does **not** close the wider
 function-call strongly connected component (SCC) census. `mettail-rust@e0086c93` subsequently closes
 the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry with one heap-frame decision
 executor. `mettail-rust@338d8263` additionally closes the Rholang type-inference variable-use and
-receive-collection SCCs; the remaining non-term-family census and lifecycle-census mutation
-calibration remain live work (§5.18.6, §8.5). `mettail-rust@b76c5773` closes every production
+receive-collection SCCs; the remaining non-term-family census remains live work (§5.18.6, §8.5).
+`mettail-rust@b76c5773` closes every production
 recursion cluster in `rholang-runtime/src/rholang_ast.rs`; its one analyzer residual is a deliberate
 `#[cfg(test)]` recursive oracle. `mettail-rust@2a972436`, `580896f3`, and `fec84ffb` close every
 genuine production recursion cluster in `rholang-runtime/src/guard_par_substrate.rs`: formula
@@ -197,7 +201,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-Y1** | introduced `fab6de24`; repaired `6248f156` | mettail | The optional-collection generator defect inside SS-G4: `Option::len` on `Option<Vec<Proc>>` (**E0624**) and `&Vec<Proc>` cast as `*const Proc` (**E0606**) | — | ★ **repaired**; the generated carrier is classified once and `--all-targets` is no longer blocked | [8.6.1a](#86-the-issue-keyed-residuals-at-their-final-dispositions) |
 | **SS-G5** | `ed44c429` | mettail | ★ **the TWELFTH generated driver, `try_eval`** — `CrossKind::OptionalSameCat` replaces a same-category optional child's host recursion with a presence flag; a `compile_error!` refuses the capture-rule shape that would reintroduce it | `ast_try_eval` / `ast_try_eval_cast` **0**, both profiles | **yes** | [5.6.5](#565--the-twelfth-generated-driver-and-the-seven-numerals-beside-it-ed44c429) |
 | **SS-G7** | `b0aa4e09` | mettail | native-evaluator category cycles $`\rightarrow`$ one heterogeneous `Visit`/Reduce PDA per dependency SCC; capture terms and auto projections use the same classifier, and the recursive fallback is deleted | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** alternating edges on a **256 KiB** thread stack | **yes** | [5.6.11](#5611-ss-g7--native-evaluator-cycles-become-one-pda-per-dependency-scc-b0aa4e09) |
-| **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; zero-state gate `ce60f76f` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **84 types / 80 components / 542 files / zero lifecycle exposures** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
+| **SS-G8** | campaign set bookended by `c03e9e04` and `ce60f76f`; hardened gate `a58d0925`; proof `e831c2ab` | mettail | recursively owned production carriers and the final PraTTaIL logic families: lifecycle traits, folds, analysis, Boolean evaluation, compilation, and second-order subset traversal | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack for the named operations; **20,000** levels on **256 KiB**; **2,279 definitions / 84 types / 80 components / 549 files / zero lifecycle exposures**; composed gate **23.73 s / 163,844 KiB RSS / zero swap** | **yes** for the named operations; wider call-SCC closure remains open | [5.18](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8) |
 | **SS-G9** | `mettail-rust@8b4644e8`, `e3f2812f`, `e0086c93` | mettail | one cross-combinator `AnyAlgebra` continuation family for evaluation, satisfiability, and witness construction; exact KAT partial-derivative subset decision; arbitrary-width Boolean witness search | **20,000** alternating wrappers / KAT nodes on **256 KiB**; final `AnyAlgebra` decision gate **0.25 s / 46,168 KiB**; old KAT budget false-positive deleted; pipeline case **0.12 s / 59.8 MiB** | **yes for the named decision SCC**; wider call-SCC census remains open | [5.18.8](#5188-post-census-operational-decision-closure-ss-g9) |
 | **SS-G10** | `mettail-rust@338d8263` | mettail | Rholang type inference: mutually recursive `Proc` / `Name` / `InputBind` / `ForRow` variable-use predicates and receive-variable collection | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** continuation levels on **256 KiB**; direct gate **0.05 s / 36,428 KiB** | **yes for the named inference SCCs**; wider call-SCC census remains open | [5.18.9](#5189-rholang-type-inference-closure-ss-g10) |
 | **SS-G11** | `mettail-rust@b76c5773` | mettail | Rholang AST analysis and rewrite: `Proc`/`Name` machine-effect classification, innermost fold discovery, and fold replacement/rebuild | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; **20,000** levels on **256 KiB**; direct gate **0.42 s / 59,172 KiB** | **yes for every production SCC in `rholang_ast.rs`**; wider call-SCC census remains open | [5.18.10](#51810-rholang-ast-analysis-and-fold-rewrite-closure-ss-g11) |
@@ -2993,7 +2997,8 @@ the corrected 54-total/51-measured capture.
 
 #### 5.18.1 The defect
 
-**DERIVED** at `mettail-rust@ce60f76f`: an ordinary source-call graph cannot see a compiler-generated
+**DERIVED** at `mettail-rust@ce60f76f`, with exact identity and mutation calibration hardened at
+`mettail-rust@a58d0925`: an ordinary source-call graph cannot see a compiler-generated
 recursive `Clone`, `Debug`, equality, ordering, hashing, serialization, or implicit destructor. A
 recursively owned carrier can therefore pass a function-recursion census while a deep input still
 consumes native stack through its trait lifecycle. The production ownership graph spans wrappers such
@@ -3098,6 +3103,16 @@ peak**; the fully incremental check completed in 0.14 s at **75,712 KiB maximum 
 comparable pre-rewrite build was made, so they do **not** establish that recursive-to-iterative source
 changes lower compiler RSS.
 
+**MEASURED (f), 2026-08-07, hardened evidence refresh.** The composed `ast` gate ran
+`recursive_lifecycle_census`, `handwritten_recursion_census`, `language_ast_lifecycle`, and
+`refinement_lifecycle` under `MemoryMax=4G` and `MemorySwapMax=0`: **13/13** tests passed in
+**23.73 seconds**, with **163,844 KiB maximum RSS** and zero swaps. The lifecycle census itself
+scanned **2,279** definitions in **549** production files and found zero exposed recursive derives or
+implicit destructors. The concrete suites independently exercise 20,000-level language,
+refinement, and domain values on 256 KiB native stacks. The companion Rocq trampoline project at
+`mettail-rust@e831c2ab` passed its capped gate; the new proof compiled directly below a 768 MiB hard
+limit, while the complete already-built project gate measured **18.6 MiB** peak and zero swap.
+
 #### 5.18.5 What it cost
 
 The native continuation moved from $`\Theta(d)`$ stack frames to an explicit heap worklist whose
@@ -3112,7 +3127,7 @@ $`2^{64}`$ masks after saturation.
 
 This row closes the **named lifecycle and weighted-MSO operations**, not every production call SCC.
 SS-G9 subsequently closes the operational `AnyAlgebra::{is_satisfiable,witness}` re-entry that the
-lifecycle census cannot see. Two concrete obligations remain live:
+lifecycle census cannot see. One concrete obligation remains live:
 
 - The wider source-call census remains live. The LTL parser, guard substrate, Rholang inference,
   Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
@@ -3126,31 +3141,47 @@ lifecycle census cannot see. Two concrete obligations remain live:
   recursion-classifier control under `tests/support`, so it continues to calibrate the measurement
   without entering the production source graph. Every remaining direct entry must be converted or
   demonstrated to be non-production/source-resolution evidence before workspace closure.
-- The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
-  demonstrates an exact RED result for its file and type.
 
 The `AnyAlgebra::evaluate` and KAT-equivalence obligations originally recorded here are closed by
 [SS-G9](#5188-post-census-operational-decision-closure-ss-g9); they remain in this living report as
 negative-result and equivalence evidence, not open work.
 
 Recursive functions retained under `tests/` are bounded reference oracles, not production
-fallbacks. The mutation-calibration residual remains open even though the current zero-state scan is
-nonempty.
+fallbacks. The lifecycle mutation-calibration and generic formal-equivalence residuals are closed by
+`mettail-rust@a58d0925` and `mettail-rust@e831c2ab`, respectively.
 
 #### 5.18.7 Anti-vacuity
 
-The current census rejects an empty source scan, rejects a workspace with no recursively owned
-component, verifies every private enclosing-owner disposition against a real explicit `Drop`
-implementation, and reports the derived population before asserting zero violations. The fresh
-control line is:
+The current census rejects an empty workspace scan, indexes exact crate/module/type identities,
+resolves explicit imports and glob re-exports with an iterative worklist, and rejects an unresolved
+foreign qualified path rather than falling back to a same-named local type. Trait-specific wrapper
+controls verify that shared-pointer clone does not traverse its payload, last-owner destruction does,
+`ManuallyDrop` suppresses only destruction, and references suppress owned clone, destruction, and
+deserialization while retaining observational edges. Every private enclosing-owner disposition must
+name one exact helper and owner, the helper must be in a recursive destructor component, the owner
+must have an exact explicit `Drop` implementation, and an ownership path must connect them.
+
+The mutation control injects `#[derive(Clone)] struct Recursive(Box<Recursive>)` and requires the
+exact recursive-Clone diagnostic. Its paired negative control replaces `Box` with `Arc` and requires
+that payload clone not be classified as recursive; both pass. Every derive-operation graph is also
+required to contain at least one recursive component, so a globally empty edge classifier fails even
+when the production exposure count is zero. An iterative Tarjan control handles a 20,000-vertex cycle
+on a 256 KiB stack, and a property differential compares recursive and explicit-PDA enter/exit traces
+over generated arbitrary-arity trees. The fresh production control line is:
 
 ```text
-recursive lifecycle census: 84 recursive type(s) in 80 component(s), 542 source file(s)
+recursive lifecycle census: 2279 definitions, 549 source files; Clone=78/76, Debug=84/80,
+PartialEq=84/80, PartialOrd=84/80, Ord=84/80, Hash=84/80, Serialize=84/80,
+Deserialize=84/80, Message=84/80, Encode=84/80, Decode=84/80, BorrowDecode=84/80;
+Display candidates=26; enclosing owners=3
 ```
 
-**NOT MEASURED — mutation control:** a temporary recursive derive has not yet been injected and shown
-to fail with its exact file and type. Until that RED is captured, the result is evidence of current
-coverage but not proof that every edge-classification branch is non-vacuous.
+The zero-admission Rocq theorem models mutually recursive tree/forest ownership and proves the
+explicit work-stack trace equal to the recursive trace for arbitrary pending work and prior output.
+A generic observer corollary covers order-sensitive lifecycle folds; separate count theorems prove
+exactly one entry and one exit per owned node, the property required by iterative destruction. No
+depth bound, ambient-stack enlargement, stack-switching dependency, or production recursive fallback
+appears in this evidence chain.
 
 #### 5.18.8 Post-census operational decision closure [SS-G9]
 
