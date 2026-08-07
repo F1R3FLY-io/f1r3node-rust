@@ -20,6 +20,10 @@
 set -uo pipefail
 
 MARKER="${1:?marker file (iteration .started) is required}"
+# Colon-separated list of log roots (a single path remains valid): docker
+# sessions write under log-archive/ while subprocess sessions write under
+# data/, and the caller passes both. Roots that do not exist are skipped;
+# all-missing yields {} like every other degraded input.
 LOG_ROOT="${2:?log root directory is required}"
 REGISTRY="${3:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/soak-metrics.json}"
 
@@ -28,15 +32,43 @@ emit_empty() { printf '{}\n'; exit 0; }
 command -v jq >/dev/null 2>&1 || emit_empty
 [ -r "$REGISTRY" ] || emit_empty
 [ -e "$MARKER" ] || emit_empty
-[ -d "$LOG_ROOT" ] || emit_empty
+IFS=':' read -r -a LOG_ROOT_CANDIDATES <<<"$LOG_ROOT"
+LOG_ROOTS=()
+for root in "${LOG_ROOT_CANDIDATES[@]}"; do
+  [ -n "$root" ] && [ -d "$root" ] && LOG_ROOTS+=("$root")
+done
+[ "${#LOG_ROOTS[@]}" -gt 0 ] || emit_empty
 
 keys="$(jq -r '.metrics[]?.key // empty' "$REGISTRY" 2>/dev/null)" || emit_empty
 [ -n "$keys" ] || emit_empty
 
+# Drop content-duplicate files (first occurrence wins): the same log can
+# appear under more than one root when teardown archives a copy, and the
+# per-metric sample counts would double. Fail-soft — an unhashable file
+# passes through.
+dedup_files_by_content() {
+  local f digest
+  declare -A seen_digests=()
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if command -v md5sum >/dev/null 2>&1; then
+      digest="$(md5sum "$f" 2>/dev/null | awk '{print $1}')"
+    else
+      digest="$(md5 -q "$f" 2>/dev/null)"
+    fi
+    if [ -n "$digest" ]; then
+      [ -n "${seen_digests[$digest]:-}" ] && continue
+      seen_digests[$digest]=1
+    fi
+    printf '%s\n' "$f"
+  done
+}
+
 # One pass over the logs; keep only metric lines so the per-key greps below
 # scan a small buffer rather than the full log set again.
-lines="$(find "$LOG_ROOT" -type f \( -name '*.log' -o -name '*.txt' \) \
+lines="$(find "${LOG_ROOTS[@]}" -type f \( -name '*.log' -o -name '*.txt' \) \
   -newer "$MARKER" 2>/dev/null \
+  | dedup_files_by_content \
   | xargs -r grep -h -o 'SOAK_METRIC [^"]*' 2>/dev/null)" || true
 [ -n "${lines:-}" ] || emit_empty
 
