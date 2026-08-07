@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@2c2cbb95` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@ae3256d6` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
@@ -64,7 +64,10 @@ primitive Thompson constructors, removing a semantically one-reentry helper cycl
 the exact nondeterministic-finite-automaton (NFA) topology; the current census is **86 direct
 findings and 4 mutual clusters**. `mettail-rust@2c2cbb95` applies the same bounded-cycle factoring
 to set-type Top lowering and empty-automaton complementation; the current census is **86 direct
-findings and 3 mutual clusters**. No production path uses
+findings and 3 mutual clusters**. `mettail-rust@ae3256d6` then disambiguates the already-iterative
+KAT expression-nullability helper and its star-arm residual binding. This removes one false direct
+finding and one false mutual cluster without changing a derivative, residual order, or decision;
+the current census is **85 direct findings and 2 mutual clusters**. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -3043,10 +3046,11 @@ lifecycle census cannot see. Two concrete obligations remain live:
   Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
   `mettail-rust@da638fe3` additionally resolves the lifecycle analyzer's name collision between an
   enclosing `Drop::drop` method and unqualified `std::mem::drop` calls. Fresh whole-project analysis
-  reports **86 direct findings and 3 mutual clusters** after `mettail-rust@d1ce352b` removes the
+  reports **85 direct findings and 2 mutual clusters** after `mettail-rust@d1ce352b` removes the
   regex quantifier's semantically bounded helper cycle and `mettail-rust@2c2cbb95` factors the
-  corresponding set-type universal-automaton constructor; every remaining entry must be converted or
-  demonstrated to be non-production/source-resolution evidence before workspace closure.
+  corresponding set-type universal-automaton constructor. `mettail-rust@ae3256d6` further removes
+  KAT analyzer-name collisions around two already-iterative helpers; every remaining entry must be
+  converted or demonstrated to be non-production/source-resolution evidence before workspace closure.
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
 
@@ -3093,6 +3097,15 @@ odometer. `KatBooleanAlgebra` uses a separate iterative three-valued branch sear
 witness does not allocate its complete truth table. The compatibility function named
 `check_equivalence_bounded` now preserves source compatibility but intentionally performs the exact
 decision; its numeric argument cannot alter the verdict.
+
+`mettail-rust@ae3256d6` makes this already-iterative implementation unambiguous to the source-call
+analyzer: the free expression-nullability machine no longer shares the `ExprInterner::nullable`
+method's name, and the star arm no longer names a residual vector `derivative`. The reported call at
+the latter site had been a local value followed by `.into_iter()`, not a function invocation. The
+focused guarded-string differential passes **2/2**, the lifecycle/derivative stack target passes
+**3/3** including both 20,000-level / 256 KiB subjects, and fresh file-scoped analysis reports zero
+direct and zero mutual recursion in `prattail/src/kat.rs`. This checkpoint changes neither KAT
+semantics nor asymptotic complexity; it records and removes conservative source-resolution noise.
 
 `mettail-rust@e0086c93` closes the remaining `AnyAlgebra::{is_satisfiable,witness}` call cycle with a
 single explicit heap-frame executor. A parent decision future yields an owned inner-algebra query to
