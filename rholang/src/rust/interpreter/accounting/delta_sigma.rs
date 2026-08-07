@@ -228,105 +228,85 @@ pub fn demand(desugared: &Par, deploy_sig: &Sig) -> DemandEntry {
 /// channel `Par`) must NOT trigger the `unknown` over-approximation: it is a name
 /// reference, not a process dequotation. Only an `EVar(bound_var|free_var)`
 /// appearing as a top-level PROCESS member is a `*x` drop.
-fn demand_par(par: &Par) -> DemandEntry {
-    let mut acc = DemandEntry::ZERO;
+enum DemandWalkEvent<'a> {
+    Comm(Option<&'a Par>),
+    Unknown,
+}
 
-    // Sends: `Δ_s(send x U) = Δ_s(U)` — but the runtime sends `U` as a message
-    // value (it does not reduce it), so the only token-consuming reduction is the
-    // send itself (`eval_send` → one SourceStep). The channel and data are name /
-    // value positions: NOT recursed (they contribute zero COMMs).
-    for _send in &par.sends {
-        acc = acc.plus_one();
-    }
+enum DemandWalkTask<'a> {
+    Visit(&'a Par),
+    Comm(Option<&'a Par>),
+    ScanUnknown(&'a Par),
+}
 
-    // Receives: `Δ_s(for y x T) = Δ_s(T)`, plus one token for the receive
-    // reduction (`eval_receive` → one SourceStep). The bind sources and patterns
-    // are name positions (NOT recursed); the continuation `body` IS a process
-    // position (it fires once the COMM commits — the multi-step transaction the
-    // funding proof exists to fully fund), so it is recursed.
-    for receive in &par.receives {
-        let mut node = DemandEntry::ZERO.plus_one();
-        if let Some(body) = &receive.body {
-            node = node.combine(demand_par(body));
-        }
-        acc = acc.combine(node);
-    }
-
-    // New: name allocation. D3 (DR-9, OD-3): the runtime meters `eval_new` as a
-    // DIAGNOSTIC `Reduction`, NOT a `Comm` — so it contributes ZERO to the
-    // per-COMM consensus demand. We still RECURSE into the scoped body (a
-    // process position whose COMMs fire), but the `new` node itself no longer
-    // counts. This is the §7.4 "9 → 8" re-pin: the `new` no longer adds a token.
-    for new in &par.news {
-        if let Some(body) = &new.p {
-            acc = acc.combine(demand_par(body));
-        }
-    }
-
-    // Match: D3 (DR-9, OD-3): the runtime meters `eval_match` as a DIAGNOSTIC
-    // `Reduction`, NOT a `Comm` — ZERO toward the per-COMM consensus demand.
-    // The scrutinee `target` is a value position (NOT recursed); each case's
-    // continuation `source` IS a process position (the matched branch fires its
-    // COMMs): recurse without counting the match node.
-    for mat in &par.matches {
-        for case in &mat.cases {
-            if let Some(source) = &case.source {
-                acc = acc.combine(demand_par(source));
-            }
-        }
-    }
-
-    // If: first-class conditional. D3 (DR-9, OD-3): the runtime meters `eval_if`
-    // as a DIAGNOSTIC `Reduction`, NOT a `Comm` — ZERO toward the per-COMM
-    // consensus demand. The `condition` is a value position (NOT recursed); both
-    // branches ARE process positions: recurse without counting the if node.
-    for conditional in &par.conditionals {
-        if let Some(if_true) = &conditional.if_true {
-            acc = acc.combine(demand_par(if_true));
-        }
-        if let Some(if_false) = &conditional.if_false {
-            acc = acc.combine(demand_par(if_false));
-        }
-    }
-
-    // Bundles wrap a body in a read/write capability annotation; the bundle
-    // itself is not a COMM (no SourceStep), but its body IS a process position
-    // whose COMMs fire once unbundled. Recurse without contributing a node.
-    for bundle in &par.bundles {
-        if let Some(body) = &bundle.body {
-            acc = acc.combine(demand_par(body));
-        }
-    }
-
-    // Expressions in PROCESS position. Most are pure values (no COMM). The one
-    // process-relevant case is an `EVarBody` that is an un-inlined `*name`
-    // dequotation (`Δ_s(*x) = Δ_s^resolve(x)`): the normalizer inlines `*@P`
-    // (a quoted process) directly, so any surviving `EVar(bound_var|free_var)`
-    // here is a name whose bound process is not statically known — the Thm 20
-    // over-approximation trigger (`unknown = true`). A wildcard is inert.
-    // (`EMethodBody` is charged as a `Primitive`, not a `SourceStep`, and its
-    // receiver/arguments are value positions, so it contributes nothing here.)
-    for expr in &par.exprs {
-        if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
-            if let Some(var) = &evar.v {
-                match &var.var_instance {
-                    Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
-                        acc = acc.combine(DemandEntry {
-                            known_lower_bound: 0,
-                            unknown: true,
-                        });
+fn walk_demand_events<'a>(root: &'a Par, mut visit: impl FnMut(DemandWalkEvent<'a>)) {
+    let mut tasks = vec![DemandWalkTask::Visit(root)];
+    while let Some(task) = tasks.pop() {
+        match task {
+            DemandWalkTask::Comm(channel) => visit(DemandWalkEvent::Comm(channel)),
+            DemandWalkTask::ScanUnknown(par) => {
+                for expr in &par.exprs {
+                    if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+                        if let Some(var) = &evar.v {
+                            if matches!(
+                                &var.var_instance,
+                                Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_))
+                            ) {
+                                visit(DemandWalkEvent::Unknown);
+                            }
+                        }
                     }
-                    _ => {}
+                }
+            }
+            DemandWalkTask::Visit(par) => {
+                tasks.push(DemandWalkTask::ScanUnknown(par));
+
+                for bundle in par.bundles.iter().rev() {
+                    if let Some(body) = &bundle.body {
+                        tasks.push(DemandWalkTask::Visit(body));
+                    }
+                }
+                for conditional in par.conditionals.iter().rev() {
+                    if let Some(if_false) = &conditional.if_false {
+                        tasks.push(DemandWalkTask::Visit(if_false));
+                    }
+                    if let Some(if_true) = &conditional.if_true {
+                        tasks.push(DemandWalkTask::Visit(if_true));
+                    }
+                }
+                for mat in par.matches.iter().rev() {
+                    for case in mat.cases.iter().rev() {
+                        if let Some(source) = &case.source {
+                            tasks.push(DemandWalkTask::Visit(source));
+                        }
+                    }
+                }
+                for new in par.news.iter().rev() {
+                    if let Some(body) = &new.p {
+                        tasks.push(DemandWalkTask::Visit(body));
+                    }
+                }
+                for receive in par.receives.iter().rev() {
+                    if let Some(body) = &receive.body {
+                        tasks.push(DemandWalkTask::Visit(body));
+                    }
+                    let channel = receive.binds.first().and_then(|bind| bind.source.as_ref());
+                    tasks.push(DemandWalkTask::Comm(channel));
+                }
+                for send in par.sends.iter().rev() {
+                    tasks.push(DemandWalkTask::Comm(send.chan.as_ref()));
                 }
             }
         }
     }
+}
 
-    // `connectives` and `unforgeables` carry no token-consuming COMMs:
-    // connectives are logical pattern combinators (meaningful only inside
-    // patterns, which are name positions), and a `GPrivate` unforgeable is an
-    // opaque name with no sub-process. Both are intentionally not recursed.
-
+fn demand_par(par: &Par) -> DemandEntry {
+    let mut acc = DemandEntry::ZERO;
+    walk_demand_events(par, |event| match event {
+        DemandWalkEvent::Comm(_) => acc = acc.plus_one(),
+        DemandWalkEvent::Unknown => acc.unknown = true,
+    });
     acc
 }
 
@@ -370,75 +350,16 @@ fn demand_by_sig_into(
     region_sig: &dyn Fn(&Par) -> Option<SigKey>,
     acc: &mut BTreeMap<SigKey, DemandEntry>,
 ) {
-    // Sends: one COMM each, attributed by the send CHANNEL's lane. The channel is a
-    // name position — inspected for attribution, NOT recursed for COMMs.
-    for send in &par.sends {
-        let lane = send
-            .chan
-            .as_ref()
-            .and_then(|channel| region_sig(channel))
-            .unwrap_or(envelope_key);
-        bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
-    }
-    // Receives: one COMM each, attributed by the (first) bind SOURCE's lane; the
-    // continuation `body` IS a process position (recursed). Per-clause attribution
-    // of a multi-bind signed join is Phase 4; a plain join is one envelope COMM.
-    for receive in &par.receives {
-        let lane = receive
-            .binds
-            .first()
-            .and_then(|bind| bind.source.as_ref())
-            .and_then(|source| region_sig(source))
-            .unwrap_or(envelope_key);
-        bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
-        if let Some(body) = &receive.body {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
+    walk_demand_events(par, |event| match event {
+        DemandWalkEvent::Comm(channel) => {
+            let lane = channel.and_then(region_sig).unwrap_or(envelope_key);
+            bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
         }
-    }
-    // new / match / if / bundle: process positions recursed, no COMM node (D3).
-    for new in &par.news {
-        if let Some(body) = &new.p {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
-        }
-    }
-    for mat in &par.matches {
-        for case in &mat.cases {
-            if let Some(source) = &case.source {
-                demand_by_sig_into(source, envelope_key, region_sig, acc);
-            }
-        }
-    }
-    for conditional in &par.conditionals {
-        if let Some(if_true) = &conditional.if_true {
-            demand_by_sig_into(if_true, envelope_key, region_sig, acc);
-        }
-        if let Some(if_false) = &conditional.if_false {
-            demand_by_sig_into(if_false, envelope_key, region_sig, acc);
-        }
-    }
-    for bundle in &par.bundles {
-        if let Some(body) = &bundle.body {
-            demand_by_sig_into(body, envelope_key, region_sig, acc);
-        }
-    }
-    // Un-inlined `*x` dequotation in process position ⇒ the Thm 20 over-
-    // approximation (`unknown`), attributed to the envelope lane (it is not on a
-    // signer channel).
-    for expr in &par.exprs {
-        if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
-            if let Some(var) = &evar.v {
-                match &var.var_instance {
-                    Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
-                        bump_lane(acc, envelope_key, DemandEntry {
-                            known_lower_bound: 0,
-                            unknown: true,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+        DemandWalkEvent::Unknown => bump_lane(acc, envelope_key, DemandEntry {
+            known_lower_bound: 0,
+            unknown: true,
+        }),
+    });
 }
 
 /// §7.4 desugaring boundary for the funding analysis. The §7.4 semantic count

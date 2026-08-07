@@ -243,10 +243,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured("gate subject `eval_with_nots`"),
     ),
     // ── metering ───────────────────────────────────────────────────────────────────
-    (
-        "rholang/src/rust/interpreter/accounting/delta_sigma.rs",
-        Disposition::NotATermDepthCycle("cost arithmetic over a fixed structure"),
-    ),
     // ── test and API surfaces ──────────────────────────────────────────────────────
     (
         "models/src/rust/test_utils/test_utils.rs",

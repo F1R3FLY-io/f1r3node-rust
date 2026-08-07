@@ -68,13 +68,15 @@
 use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, EPathMap, Expr, New, Par, Receive, ReceiveBind};
+use models::rhoapi::{EList, EPathMap, Expr, New, Par, Receive, ReceiveBind, Send};
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::{new_freevar_par, new_gint_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::delta_sigma::{demand, demand_by_sig, sig_key};
+use rholang::rust::interpreter::accounting::resource_logic::ResourceSignature;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChannel, SignedProcess};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
@@ -122,6 +124,60 @@ fn signature_algebra_operations_are_stack_safe_at_depth_twenty_thousand() {
         .expect("failed to spawn the signature-algebra depth gate")
         .join()
         .expect("a Sig operation exhausted the 128 KiB native stack");
+}
+
+#[test]
+fn accounting_demand_and_decomposition_are_stack_safe() {
+    const PAR_DEPTH: usize = 20_000;
+    const SIG_DEPTH: usize = 2_048;
+    const SMALL_STACK: usize = 128 * 1024;
+
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .name("accounting-demand-depth-gate".to_string())
+        .spawn(|| {
+            let mut par = Par::default();
+            par.sends.push(Send {
+                chan: Some(Par::default()),
+                data: Vec::new(),
+                persistent: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+            });
+            for _ in 0..PAR_DEPTH {
+                par = models::par_from_default! {
+                    news: vec![New {
+                        bind_count: 1,
+                        p: Some(par),
+                        uri: Vec::new(),
+                        injections: BTreeMap::new(),
+                        locally_free: Vec::new(),
+                    }],
+                    ..Default::default()
+                };
+            }
+
+            let envelope = Sig::Ground(vec![9, 8, 7, 6]);
+            let demand_entry = demand(&par, &envelope);
+            assert_eq!(demand_entry.known_lower_bound, 1);
+            assert!(!demand_entry.unknown);
+
+            let envelope_key = sig_key(&envelope);
+            let lanes = demand_by_sig(&par, envelope_key, &|_| None);
+            assert_eq!(lanes.len(), 1);
+            assert_eq!(lanes[&envelope_key], demand_entry);
+
+            let mut compound = Sig::Unit;
+            for _ in 0..SIG_DEPTH {
+                compound = Sig::And(Box::new(compound), Box::new(Sig::Unit));
+            }
+            let mut decompositions = Vec::new();
+            compound.split_join_decompositions(&mut decompositions);
+            assert_eq!(decompositions.len(), SIG_DEPTH);
+        })
+        .expect("failed to spawn the accounting demand depth gate")
+        .join()
+        .expect("accounting demand or decomposition exhausted the 128 KiB native stack");
 }
 
 // ---------------------------------------------------------------------------

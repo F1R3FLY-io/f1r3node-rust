@@ -87,14 +87,17 @@ impl ResourceSignature for Sig {
     fn key(&self) -> Self::Key { self.lane_hash() }
 
     fn split_join_decompositions(&self, out: &mut Vec<ResourceDecomposition<Self::Key>>) {
-        if let Sig::And(left, right) = self {
-            out.push(ResourceDecomposition {
-                compound: self.key(),
-                left: left.key(),
-                right: right.key(),
-            });
-            left.split_join_decompositions(out);
-            right.split_join_decompositions(out);
+        let mut work = vec![self];
+        while let Some(sig) = work.pop() {
+            if let Sig::And(left, right) = sig {
+                out.push(ResourceDecomposition {
+                    compound: sig.key(),
+                    left: left.key(),
+                    right: right.key(),
+                });
+                work.push(right);
+                work.push(left);
+            }
         }
     }
 }
