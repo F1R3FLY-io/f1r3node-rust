@@ -4,6 +4,8 @@
 //! This is required for multi-parent mode where immediate deletion during finalization
 //! can cause data races.
 
+use std::collections::HashSet;
+
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
@@ -26,12 +28,16 @@ pub async fn collect_garbage(
 ) -> Result<usize, KvStoreError> {
     let mut deleted_count = 0;
 
-    // Get all finalized blocks by traversing from genesis
-    // Note: This could be optimized by tracking pending GC blocks
     let finalized_blocks = get_finalized_blocks(dag)?;
+    let common_strict_ancestors = common_strict_main_chain_ancestors(dag);
 
     for block_hash in finalized_blocks {
-        if is_safe_to_delete(dag, &block_hash, casper_shard_conf)? {
+        if is_safe_to_delete(
+            dag,
+            &block_hash,
+            casper_shard_conf,
+            common_strict_ancestors.as_ref(),
+        )? {
             // Get block to access its state hash
             if let Some(block) = block_store.get(&block_hash)? {
                 let deleted = runtime_manager
@@ -71,6 +77,7 @@ fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     casper_shard_conf: &CasperShardConf,
+    common_strict_ancestors: Option<&HashSet<BlockHash>>,
 ) -> Result<bool, KvStoreError> {
     // 1. Check if block is finalized
     if !dag.is_finalized(block_hash) {
@@ -98,48 +105,89 @@ fn is_safe_to_delete(
         return Ok(false);
     }
 
-    let latest_message_hashes = dag.latest_message_hashes();
-
-    // For each validator's latest message, check if it's a descendant of any child (via main chain)
-    for (_, latest_msg_hash) in latest_message_hashes.iter() {
-        if latest_msg_hash == block_hash {
-            // Validator's latest is still this block
-            return Ok(false);
-        }
-
-        // Check if latest message is descendant of any child (via main chain)
-        let mut found_in_child_chain = false;
-        for child_hash_ref in children.iter() {
-            if dag.is_in_main_chain(child_hash_ref, latest_msg_hash)? {
-                found_in_child_chain = true;
-                break;
-            }
-        }
-
-        if !found_in_child_chain {
-            return Ok(false);
-        }
+    if common_strict_ancestors.is_some_and(|ancestors| !ancestors.contains(block_hash)) {
+        return Ok(false);
     }
 
     Ok(true)
 }
 
-/// Get all finalized blocks from the DAG.
-/// Note: This is a simple implementation that could be optimized.
-fn get_finalized_blocks(dag: &KeyValueDagRepresentation) -> Result<Vec<BlockHash>, KvStoreError> {
-    // Get all blocks via topo_sort and filter for finalized ones
-    let all_blocks = dag.topo_sort(0, None)?;
+fn common_strict_main_chain_ancestors(
+    dag: &KeyValueDagRepresentation,
+) -> Option<HashSet<BlockHash>> {
+    common_strict_ancestors(
+        dag.latest_message_hashes().values().cloned(),
+        |block_hash| dag.main_parent(block_hash),
+    )
+}
 
-    let finalized: Vec<BlockHash> = all_blocks
+fn common_strict_ancestors(
+    latest_messages: impl IntoIterator<Item = BlockHash>,
+    main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
+) -> Option<HashSet<BlockHash>> {
+    latest_messages
         .into_iter()
-        .flatten()
-        .filter(|hash| dag.is_finalized(hash))
-        .collect();
+        .map(|latest_message| {
+            let mut ancestors = HashSet::new();
+            let mut current = latest_message;
+            while let Some(parent) = main_parent(&current) {
+                if !ancestors.insert(parent.clone()) {
+                    break;
+                }
+                current = parent;
+            }
+            ancestors
+        })
+        .reduce(|common, ancestors| common.intersection(&ancestors).cloned().collect())
+}
 
-    Ok(finalized)
+fn get_finalized_blocks(dag: &KeyValueDagRepresentation) -> Result<Vec<BlockHash>, KvStoreError> {
+    Ok(dag.finalized_blocks_set.iter().cloned().collect())
 }
 
 #[cfg(test)]
 mod tests {
-    // Tests would go here
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn hash(value: &'static [u8]) -> BlockHash { BlockHash::from_static(value) }
+
+    #[test]
+    fn intersects_strict_main_chain_ancestors() {
+        let genesis = hash(b"genesis");
+        let common = hash(b"common");
+        let left = hash(b"left");
+        let right = hash(b"right");
+        let parents = HashMap::from([
+            (common.clone(), genesis.clone()),
+            (left.clone(), common.clone()),
+            (right.clone(), common.clone()),
+        ]);
+
+        let ancestors =
+            common_strict_ancestors([left, right], |block_hash| parents.get(block_hash).cloned());
+
+        assert_eq!(ancestors, Some(HashSet::from([common, genesis])));
+    }
+
+    #[test]
+    fn excludes_latest_messages_from_strict_ancestors() {
+        let genesis = hash(b"genesis");
+        let latest = hash(b"latest");
+        let parents = HashMap::from([(latest.clone(), genesis.clone())]);
+
+        let ancestors =
+            common_strict_ancestors([latest], |block_hash| parents.get(block_hash).cloned());
+
+        assert_eq!(ancestors, Some(HashSet::from([genesis])));
+    }
+
+    #[test]
+    fn returns_none_without_latest_messages() {
+        let latest_messages: [BlockHash; 0] = [];
+        let ancestors = common_strict_ancestors(latest_messages, |_| None);
+
+        assert_eq!(ancestors, None);
+    }
 }
