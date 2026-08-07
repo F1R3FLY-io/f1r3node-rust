@@ -90,9 +90,9 @@ and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on whi
 axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15) and binder-shift fusion
-(L16). **The metering axis was re-derived
+(L20). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
-**CBR-L16 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
+**CBR-L20 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
 register's one historical `UNVERIFIED` cell resolved in the same derivation. **49 further changes
 were examined and retired** with typed reasons — 37 bug fixes, 4
 measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
@@ -590,7 +590,7 @@ is a *future* fork, not a present one).
 | [CBR-L11](#cbr-l11) | L | The `UInt32` acceptor is narrowed to canonical spellings (the cluster's deliberate acceptance decision; its round-trip bug fixes are retired) | `4aa64cb6` | · | ○ | ○ | ○ | ○ | ● | · | REGRESSIVE | **W** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 | [CBR-L15](#cbr-l15) | L | One generic method-call constructor replaces 47 grammar-owned method names; reducer dispatch becomes the only method semantics | `438e3a3d` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-L16](#cbr-l16) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and COMM metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-L20](#cbr-l20) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and COMM metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
 **Totals — 21 entries**: **14 on Surface N, 7 on Surface L**; **20 landed, 1 in flight**
 (**CBR-L08**); zero open hazards. By evidence grade: **19 WITNESSED**, 1 MECHANISM-ONLY
@@ -2803,7 +2803,7 @@ the complete runtime library passed 137/137, including every generated-driver ve
 oracle corpus and continuation-coverage gate. All runs used one build job, no swap, a 7 GiB memory
 high-water control, and a 9 GiB hard limit.
 
-### CBR-L16
+### CBR-L20
 
 **Binder-depth shift chains fuse into one fixed-size native-PDA call. The reflected result and
 refusal domain are equivalent, while emitted program bytes, the installed carrier body, and
@@ -2934,7 +2934,7 @@ Projected from the 21 rows of §4.1 (each column counts `●` cells):
 | metering (M) | **1** | 5 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
-entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L16 is the first
+entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L20 is the first
 kept entry that moves the committed COMM count: its result is equivalent, but a depth-proportional
 shift cascade becomes one system-process dispatch.
 
@@ -2949,7 +2949,7 @@ shift cascade becomes one system-process dispatch.
    CBR-027 also carries the register's sharpest chain-history question (§5.4).
 3. **CBR-L08** — the one in-flight entry, and REGRESSIVE: source that parses today will be refused.
    It ships only inside the same coordinated bump.
-4. **CBR-L16** — the only kept entry that moves token metering: the native PDA is semantically
+4. **CBR-L20** — the only kept entry that moves token metering: the native PDA is semantically
    equivalent, but its single committed COMM and changed persistent carrier body require coordinated
    code-generation/runtime activation.
 
@@ -3152,7 +3152,7 @@ above is the maintenance mechanism.
    report.
 4. **Four entries are REGRESSIVE** (§5.3) and are named plainly; one of them (CBR-L08, in flight)
    refuses source that parses today.
-5. **The metering axis moves in exactly one kept entry, CBR-L16.** Under the token model, consensus
+5. **The metering axis moves in exactly one kept entry, CBR-L20.** Under the token model, consensus
    cost is the committed COMM count; fusing the binder-shift cascade changes that count even though
    Rocq and executable differentials preserve the result. Historical per-op "charge site" claims
    remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the same derivation.
@@ -3431,6 +3431,20 @@ program nor its diagnostics. No process, protobuf byte, hash, COMM, charge, EPat
 topology, or PathMap operation changes. The checkpoints extend CBR-023's `EQUIVALENCE_PROVEN` set
 without an active may-change-consensus entry; stack-safety report §5.18.42 records the capped
 measurements and 42/11/5 source census.
+
+**CBR-023 living-set continuation (2026-08-07, SS-G42).** `mettail-rust@98dc72ad` removes the
+generated weighted pushdown automaton's artificial one-level OptionalGroup/BinderList restriction.
+It indexes arbitrary nested binder-position forests with an explicit worklist, carries the exact
+typed caller continuation in the graph-structured stack, and encodes dense marker identities without
+growing `StackSymbolV2` beyond 14 bytes. A bounded recursive oracle preserves ordered traversal sites
+and resume coordinates for every mixed nesting mask through depth 8 and a branching forest; separate
+20,000-level / 256 KiB gates cover generation, nested action extraction, clone, and drop. Admission-
+free Rocq laws establish marker round trip and injectivity, marker-kind disjointness, exact parent-
+frame restoration, and last-child loop resumption. Existing production grammars do not exercise the
+new nesting shapes, so their generated programs and accepted source remain unchanged. No reflected
+process, protobuf or bincode byte, post-state hash, COMM, charge, EPathMap mode, EPM1 snapshot, or
+PathMap operation moves. The checkpoint therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without
+an active may-change-consensus entry; stack-safety report §5.18.44 records the focused measurements.
 
 ### B.2 The original commit-level exemptions
 

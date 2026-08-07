@@ -10,7 +10,8 @@
 **Companion decision head** `mettail-rust@c95d9e73` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
-correlated-matching, numeric-cast, Delta-one matching, and Rho-network code-generation closure;
+correlated-matching, numeric-cast, Delta-one matching, nested optional/binder-list weighted
+pushdown-automaton (WPDA) generation, and Rho-network code-generation closure;
 §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
@@ -110,6 +111,9 @@ linear-output token emitter. `mettail-rust@675a47a9` then shares raw token-tree 
 template emission, and replaces repeated projection-FIRST reconstruction with one boolean closure
 and indexed category frames. `mettail-rust@659c36e5` next replaces behavioral-predicate reference,
 quantified-premise, and stratification Tarjan recursion with explicit work, cursor, and graph frames.
+`mettail-rust@98dc72ad` removes the generated WPDA's artificial one-level OptionalGroup and
+BinderList restriction: typed heap-backed continuation frames and dense markers now carry arbitrary
+nesting, while test-only recursive equations and Rocq laws preserve frame identity and resume order.
 `mettail-rust@c95d9e73` subsequently replaces each depth-indexed generated shift chain with one
 fixed-size system-process call and applies the composed shift in one iterative traversal, discharging
 the quadratic retained-metadata defect SS-Y7 without changing the reflected result.
@@ -226,7 +230,8 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G38** | `mettail-rust@675a47a9` | mettail | raw token counters, AC template emission, and projection `Ident`-FIRST classification | five host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; shared token leaves and indexed category PDA; **20,000** levels on **256 KiB**; oracle matrix **0.71 s / 209,632 KiB** | **yes for all five components**; recursive equations and complete FIRST sets preserve tokens, template spelling/order, and category verdicts | [5.18.40](#51840-token-template-and-projection-first-closure-ss-g38) |
 | **SS-G39** | `mettail-rust@659c36e5` | mettail | stratification predicate references, quantified-premise spine, and ordered Tarjan SCC discovery | three host-recursive components $`\Theta(d) \rightarrow O(1)`$ native stack; Tarjan remains $`\Theta(V+E)`$; **20,000** levels/vertices on **256 KiB**; focused matrix **0.14 s / 40,392 KiB** | **yes for all three components**; recursive equations preserve polarity, edge order, SCC order, and SCC member order exactly | [5.18.41](#51841-stratification-predicate-premise-and-scc-closure-ss-g39) |
 | **SS-G40** | `mettail-rust@4770cc0e`, optimized by `2f65391f` | mettail | shared-prefix factoring-trie construction and deterministic wide-node partitioning | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; expected-amortized $`\Theta(p)`$ prefix grouping; **20,000** levels on **256 KiB**; focused matrix **0.07 s / 35,608 KiB** | **yes**; bounded recursive equations preserve the exact forest, branch/accept/refusal order, and 1,024-way first-occurrence order | [5.18.42](#51842-shared-prefix-factoring-trie-closure-ss-g40) |
-| **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L16 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
+| **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L20 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
+| **SS-G42** | `mettail-rust@98dc72ad` | mettail | arbitrarily nested generated OptionalGroup/BinderList WPDA traversal, action extraction, and model lifecycle | artificial nesting limit and recursive generator-model walk $`\rightarrow O(1)`$ native stack with $`O(d)`$ typed heap frames; **20,000** alternating levels on **256 KiB**; focused matrix **53/53**, **0.62 s / 178,064 KiB** | **yes**; bounded recursive forest oracle, exact generated-marker/action assertions, dense-marker round trips, lifecycle gates, and admission-free Rocq continuation laws | [5.18.44](#51844-nested-optional-and-binder-list-wpda-closure-ss-g42) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -4903,7 +4908,7 @@ $`O(1)`$ native stack. It neither snapshots nor flattens the complete reflected 
 This repair is intentionally not trace-neutral. It replaces the old generated process bytes and
 depth-proportional shift COMM cascade with one fingerprint-scoped send and one cost-accounted
 dispatch COMM. The final reflected value and success/refusal domain are equivalent; program bytes,
-the persistent carrier body, and committed-COMM metering move. CBR-L16 records those integration
+the persistent carrier body, and committed-COMM metering move. CBR-L20 records those integration
 axes rather than hiding them inside a performance claim. No EPathMap mode, EPM1 byte, PathMap
 topology, zipper, lattice, or algebra operation changes.
 
@@ -4926,6 +4931,142 @@ definition actually consumes the fixed channel and returns the shifted value. Th
 fails unless the generated carrier registers that definition and applies both binder levels. These
 controls prevent a no-op, an over-permissive generic traversal, or a test-only registry shortcut
 from satisfying the closure claim.
+
+#### 5.18.44 Nested optional and binder-list WPDA closure [SS-G42]
+
+##### 5.18.44.1 The defect
+
+The generated binder WPDA was iterative only for the grammar shapes it admitted. In
+`emit_optional_group_body`, a nested `BinderPosition::OptionalGroup` or `BinderListLoop` had no
+emitted transition arm. In `emit_binder_action_entry`, a nested `ActionArgKind::Optional` was
+replaced by a unit placeholder rather than extracting the nested semantic value. Consequently an
+otherwise finite language definition acquired an artificial one-level nesting limit: adding an
+optional group inside an optional group, or a binder-list loop inside either kind of frame, could
+classify but could not be generated and resumed faithfully. Recursive walks over the same nested
+generator models also left construction, cloning, and destruction exposed to source-controlled
+schema depth.
+
+##### 5.18.44.2 The architecture of the repair, and why this shape
+
+`mettail-rust@98dc72ad` treats each nested grammar construct as a typed continuation in the
+generated pushdown machine. `TraversalResume` distinguishes a containing rule, optional group, and
+binder-list frame; entering a nested frame stores that caller continuation in the graph-structured
+stack (GSS), and finishing the child restores it exactly. The current runtime state is therefore
+frame-local. A generated `TraversalMarkerTable` assigns a dense 32-bit identifier to each
+`(result category, rule, frame, sub-position)` coordinate. The identifier is packed into the two
+existing 16-bit index lanes of `StackSymbolV2`, so the runtime symbol remains at most **14 bytes**.
+
+The generator first flattens the finite `BinderPosition` forest with an explicit worklist. This
+precomputation gives nested optional and binder-list emitters the same frame indices and resume
+coordinates. Runtime transitions retain source order, emit optional TAKE before SKIP, finalize an
+inner scope before resuming its parent, and drain collection slots in reverse source order to obey
+the runtime collection stack's last-in-first-out (LIFO) contract. Nested `ActionArgKind::Optional`
+extraction uses its own explicit pending/value frames and produces the actual nested option rather
+than a placeholder.
+
+Native recursion or a larger thread stack was rejected because the language definition controls
+nesting depth. A depth ceiling was rejected because it would preserve the semantic hole. Enlarging
+`StackSymbolV2` with caller-specific fields was rejected because every hot parser stack entry would
+pay for a sparse feature. Reconstructing caller metadata in each state was rejected because it
+would duplicate generated code and permit optional and binder-list coordinates to alias. The dense
+marker table centralizes that mapping while the GSS remains the one continuation carrier.
+
+**Algorithm 22 (Nested binder traversal generation).** *Flatten coordinates once; let the
+generated WPDA restore typed continuations.*
+
+```pseudocode
+⟨Index and emit a nested binder-position forest⟩ ≡
+    pending ← children(root) in reverse source order, each owned by RULE
+    sites ← []
+    while pending is not empty:
+        (position, owner, next_position) ← pop(pending)
+        resume ← typed continuation(owner, next_position)
+        if position is OPTIONAL(children):
+            record OPTIONAL(position.group, resume)
+            push children in reverse source order, owned by this OPTIONAL
+        else if position is BINDER_LIST(children):
+            frame ← next dense binder-frame identifier
+            record BINDER_LIST(frame, resume)
+            push children in reverse source order, owned by this BINDER_LIST
+
+    assign one dense marker identifier to every recorded resume coordinate
+    emit each child entry as:
+        replace caller marker with resume; push child marker; enter child state
+    emit each child finish as:
+        pop child marker; decode and restore the exact typed caller continuation
+```
+
+The same table drives marker construction and generated decoding. It is not a second grammar
+representation and is not serialized into a runtime term.
+
+##### 5.18.44.3 How the fix was made
+
+The binder generator gained iterative `traversal_sites`, the three-way `TraversalResume`, and one
+`TraversalMarkerTable` shared by optional-group and binder-list emission. `OptionalGroupAt` and
+`BinderListLoopAt` are distinct `SymbolKind` values whose constructors split and whose accessors
+reassemble the dense marker identifier. The GSS edge classifier and recovery dispatcher recognize
+both kinds without treating them as ordinary rule or category returns. Generated metadata lookup
+decodes each identifier to the exact result category, rule, frame/group index, and sub-position.
+
+Optional classification and nested action extraction now use explicit heap frames. The lifecycle
+model exercises `Clone`, `Debug`, and iterative destruction at the same deep shape used for
+generation. Production source remains separate from its specifications: the recursive forest
+equation lives under `macros/tests/support/binder_traversal_recursive_oracle.rs`, and the deep model
+gate lives under `macros/tests/support/binder_model_lifecycle.rs`. The Rocq development
+`BinderTraversalFrames.v` states marker round-trip/injectivity, kind disjointness, outer-binding-
+power preservation, exact enter/finish restoration, parent-frame identity, and last-child resume.
+It contains no `Admitted`, axiom, or assumption.
+
+##### 5.18.44.4 Results
+
+| metric | result | provenance |
+|---|---:|---|
+| focused Rust binder matrix | **53 passed, 0 failed, 0 ignored**; **0.62 s** test body, **178,064 KiB** process peak RSS | **MEASURED (f)**, `cargo test -p macros --lib binder` in an 8 GiB zero-swap scope |
+| mixed Optional/BinderList generator depth | **20,000** on a **256 KiB** worker stack | **MEASURED (f)**, `binder_codegen_models_are_stack_safe_at_depth_20k` |
+| nested optional action-extraction depth | **20,000** on a **256 KiB** worker stack | **MEASURED (f)**, `nested_optional_action_codegen_is_stack_safe_at_depth_20k` |
+| marker identity and footprint | dense identifiers round-trip; `size_of::<StackSymbolV2>() <= 14` | **MEASURED (f)**, runtime/GSS marker tests |
+| bounded semantic differential | every Optional/BinderList mask through depth 8 plus a branching forest | **MEASURED (f)**, recursive-oracle comparison of exact sites and typed resumes |
+| focused Rocq theory | kernel-check passed in **0.14 s / 183,660 KiB peak RSS** | **MEASURED (f)**, direct `coqc` in a 512 MiB zero-swap scope |
+
+The Rust matrix also checks nested optional field order, absence of the former unit placeholder,
+binder-list entry and loop coordinates, optional TAKE/SKIP branch order, dense unique marker
+decoding, and exact restoration of the containing optional or binder-list frame. The focused proof
+result is intentionally reported as a focused result: a broader 2 GiB aggregate formal target did
+not reach this theory before its resource-bounded command ended, so this row does not claim a fresh
+full-suite result.
+
+##### 5.18.44.5 What it cost
+
+For $`s`$ nested traversal sites, generation stores $`\Theta(s)`$ coordinates and marker metadata.
+For live nesting depth $`d`$, generation and model lifecycle use $`O(d)`$ heap work and $`O(1)`$
+native stack. Runtime carries one existing-size GSS marker per live frame; lookup is a generated
+dense-coordinate dispatch, and no source-depth scan occurs while parsing. Nested optional action
+extraction allocates only its explicit pending/output structures and emits fields in source order.
+
+The change enables previously unsupported meta-grammar shapes, but it does not alter the generated
+program for the campaign's existing production grammars. It changes no reflected Rholang process,
+protobuf or bincode bytes, hash, committed COMM count, charge, EPathMap mode, EPM1 snapshot, or
+PathMap topology/zipper/algebra operation. It therefore extends retired CBR-023's equivalence set
+rather than creating an active may-change-consensus entry.
+
+##### 5.18.44.6 What is still recursive
+
+No production generator or runtime path introduced by this closure recursively traverses nested
+optional or binder-list models. The bounded recursive forest walker remains test-only as the direct
+specification equation. Rocq's inductive data and functions are proof objects checked by the kernel,
+not Rust execution paths. No `RUST_MIN_STACK`, `stacker`, alternate stack, traversal ceiling, or
+PathMap modification was introduced.
+
+##### 5.18.44.7 Anti-vacuity
+
+The bounded oracle enumerates all $`2^d`$ mixtures of OptionalGroup and BinderList through depth
+$`d = 8`$ and separately exercises a branching forest; it compares the complete ordered optional
+and binder-list site traces, frame identifiers, and typed resumes rather than counts alone. Generated
+fixtures require an optional nested inside an optional and a binder list nested inside an optional;
+their assertions fail if the child arm is missing, the old unit placeholder survives, a marker kind
+aliases another, a frame resumes its sibling or grandparent, TAKE/SKIP order reverses, or collection
+drains cease to be LIFO. The independent 20,000-level controls omit the recursive oracle and fail on
+native-stack re-entry, an artificial depth cap, or recursive lifecycle behavior.
 
 ---
 
