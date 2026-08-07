@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # scripts/ci/check-tla-invariants.sh — run TLC against the bounded
-# post-fix MC configs under formal/tlaplus/slashing/ and assert clean.
+# post-fix MC configs under formal/tlaplus/ and assert clean.
 #
 # Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
-#   • MC_EquivocationDetector_liveness.tla / .cfg
-#   • MC_EquivocationDetectorEager.tla / .cfg
-#   • MC_ConcurrentTracker{,_pre_fix}.tla / .cfg
-#   • MC_SlashFlow.tla / .cfg
-#   • MC_TwoLevelSlashing.tla / .cfg
-#   • MC_AuthorizedSlashFlow.tla / .cfg
-#   • MC_JustificationProjection.tla / .cfg
-#   • MC_WithdrawFlow.tla / .cfg
+#   • slashing/MC_EquivocationDetector_liveness{,_2v}.tla / .cfg
+#   • slashing/MC_EquivocationDetectorEager{,_3v2s}.tla / .cfg
+#   • slashing/MC_ConcurrentTracker{,_pre_fix}.tla / .cfg
+#   • slashing/MC_SlashFlow.tla / .cfg
+#   • slashing/MC_TwoLevelSlashing.tla / .cfg
+#   • slashing/MC_AuthorizedSlashFlow.tla / .cfg
+#   • slashing/MC_JustificationProjection.tla / .cfg
+#   • slashing/MC_WithdrawFlow.tla / .cfg
+#   • block_admission/MC_BlockAdmission.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
@@ -31,10 +32,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TLA_DIR="$REPO_ROOT/formal/tlaplus/slashing"
+TLA_ROOT="$REPO_ROOT/formal/tlaplus"
 
-if [[ ! -d "$TLA_DIR" ]]; then
-    echo "ERROR: TLA+ slashing directory not found at $TLA_DIR" >&2
+if [[ ! -d "$TLA_ROOT/slashing" ]]; then
+    echo "ERROR: TLA+ slashing directory not found at $TLA_ROOT/slashing" >&2
     exit 2
 fi
 
@@ -69,29 +70,29 @@ if [[ -z "$TLC_CMD" ]]; then
     exit 3
 fi
 
-# Post-fix configs: each must TLC-clean.
+# Post-fix configs: each must TLC-clean. Entries are
+# <subdir under formal/tlaplus>/<config basename>.
 POST_FIX_CONFIGS=(
-    MC_EquivocationDetector_liveness
-    MC_EquivocationDetector_liveness_2v
-    MC_EquivocationDetectorEager
-    MC_EquivocationDetectorEager_3v2s
-    MC_ConcurrentTracker
-    MC_SlashFlow
-    MC_TwoLevelSlashing
-    MC_AuthorizedSlashFlow
-    MC_JustificationProjection
-    MC_WithdrawFlow
+    slashing/MC_EquivocationDetector_liveness
+    slashing/MC_EquivocationDetector_liveness_2v
+    slashing/MC_EquivocationDetectorEager
+    slashing/MC_EquivocationDetectorEager_3v2s
+    slashing/MC_ConcurrentTracker
+    slashing/MC_SlashFlow
+    slashing/MC_TwoLevelSlashing
+    slashing/MC_AuthorizedSlashFlow
+    slashing/MC_JustificationProjection
+    slashing/MC_WithdrawFlow
+    block_admission/MC_BlockAdmission
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(
-        MC_EquivocationDetector
-        MC_EquivocationDetectorEager_3v
-        MC_EquivocationDetector_safety
+        slashing/MC_EquivocationDetector
+        slashing/MC_EquivocationDetectorEager_3v
+        slashing/MC_EquivocationDetector_safety
     )
 fi
-
-cd "$TLA_DIR"
 
 # Per-config wall-clock cap: one wedged or state-exploded config must not
 # consume the whole job silently (observed: the first config alone exceeded
@@ -104,31 +105,43 @@ if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 fi
 
+# Registered entries are hand-maintained above: a malformed entry or a
+# missing config file is a broken registration, not a skippable condition —
+# a silent SKIP here would let a renamed or deleted model quietly leave CI.
 failed=0
 timeouts=0
 violations=0
-for cfg in "${POST_FIX_CONFIGS[@]}"; do
-    if [[ ! -f "$cfg.tla" || ! -f "$cfg.cfg" ]]; then
-        echo "SKIP   $cfg (missing $cfg.tla or $cfg.cfg)"
+for entry in "${POST_FIX_CONFIGS[@]}"; do
+    if [[ "$entry" != */* ]]; then
+        echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
+        exit 2
+    fi
+    dir="$TLA_ROOT/${entry%/*}"
+    cfg="${entry##*/}"
+    log="/tmp/tlc-${entry//\//-}.log"
+    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+        failed=$((failed + 1))
+        violations=$((violations + 1))
         continue
     fi
     started_epoch="$(date +%s)"
-    echo "CHECK  $cfg (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
+    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla" >"/tmp/tlc-$cfg.log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(( $(date +%s) - started_epoch ))s"
     if (( status == 0 )); then
-        echo "OK     $cfg ($elapsed)"
+        echo "OK     $entry ($elapsed)"
     elif (( status == 124 )); then
-        echo "TIMEOUT $cfg after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else
-        echo "FAIL   $cfg ($elapsed)"
-        echo "--- last 40 lines of /tmp/tlc-$cfg.log ---"
-        tail -40 "/tmp/tlc-$cfg.log"
+        echo "FAIL   $entry ($elapsed)"
+        echo "--- last 40 lines of $log ---"
+        tail -40 "$log"
         echo "--- end log ---"
         failed=$((failed + 1))
         violations=$((violations + 1))
