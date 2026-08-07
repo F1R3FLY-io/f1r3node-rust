@@ -46,14 +46,15 @@ pub enum HistoryError {
     ///
     /// ⚠ DELIBERATELY NOT `ActionError`. The cold-store decode path
     /// (`serializers::decode_datums` / `decode_continuations` / `decode_joins`,
-    /// bounded by `ColdStoreDecode`) is the one place where the node reads bytes
-    /// it did not necessarily write: `rspace_importer` commits peer bytes to
-    /// LMDB without ever deep-decoding them. Before this variant existed, a
-    /// malformed or too-deep leaf had no failure channel at all — the decoders
-    /// `.expect(..)`d, so the read aborted the PROCESS, permanently and on every
-    /// restart. Folding it into `ActionError` would make "the state we synced is
-    /// not decodable" indistinguishable from "the action we just performed was
-    /// invalid", which are different problems with different operator responses.
+    /// bounded by `ColdStoreDecode`) is the one place where the node reads
+    /// bytes it did not necessarily write: `rspace_importer` commits peer
+    /// bytes to LMDB without ever deep-decoding them. Before this variant
+    /// existed, a malformed or too-deep leaf had no failure channel at all
+    /// — the decoders `.expect(..)`d, so the read aborted the PROCESS,
+    /// permanently and on every restart. Folding it into `ActionError`
+    /// would make "the state we synced is not decodable" indistinguishable
+    /// from "the action we just performed was invalid", which are different
+    /// problems with different operator responses.
     DecodeError(String),
     RadixTreeError(RadixTreeError),
     KvStoreError(KvStoreError),

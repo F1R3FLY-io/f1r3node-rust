@@ -25,7 +25,7 @@ use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use models::rust::pathmap_integration::{CursorKind, segments_to_key};
+use models::rust::pathmap_integration::{segments_to_key, CursorKind};
 use models::rust::pathmap_zipper::decode_cursor;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -42,7 +42,6 @@ use smallvec::SmallVec;
 use tokio::sync::RwLock;
 use typed_arena::Arena;
 
-use super::accounting::RuntimeBudget;
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -53,8 +52,9 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::RuntimeBudget;
 use super::dispatch::{
-    DispatchType, RhoDispatch, RholangAndScalaDispatcher, decode_non_deterministic_output,
+    decode_non_deterministic_output, DispatchType, RhoDispatch, RholangAndScalaDispatcher,
 };
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -76,7 +76,7 @@ use crate::rust::interpreter::accounting::costs::{
     size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
 };
 use crate::rust::interpreter::guard::MATCH_CASE_WHERE;
-use crate::rust::interpreter::matcher::r#match::{GuardDisposition, guard_disposition_in_env};
+use crate::rust::interpreter::matcher::r#match::{guard_disposition_in_env, GuardDisposition};
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
@@ -2532,19 +2532,15 @@ impl DebruijnInterpreter {
             )));
         }
         match p.exprs.as_slice() {
-            [
-                Expr {
-                    expr_instance: Some(ExprInstance::GBool(b)),
-                },
-            ] => {
+            [Expr {
+                expr_instance: Some(ExprInstance::GBool(b)),
+            }] => {
                 vals.push(EvVal::Bool(*b));
                 Ok(())
             }
-            [
-                Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                },
-            ] => {
+            [Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+            }] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 let b = self.eval_to_bool(&pv, env)?;
                 vals.push(EvVal::Bool(b));
@@ -2581,19 +2577,15 @@ impl DebruijnInterpreter {
             )));
         }
         match p.exprs.as_slice() {
-            [
-                Expr {
-                    expr_instance: Some(ExprInstance::GInt(v)),
-                },
-            ] => {
+            [Expr {
+                expr_instance: Some(ExprInstance::GInt(v)),
+            }] => {
                 vals.push(EvVal::I64(*v));
                 Ok(())
             }
-            [
-                Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                },
-            ] => {
+            [Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
+            }] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
                 let i = self.eval_to_i64(&pv, env)?;
                 vals.push(EvVal::I64(i));
@@ -8933,8 +8925,7 @@ mod differential_trampoline {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{
         BindPattern, Bundle, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq,
-        ENot, EOr, EPathMap, EPlus, ETuple, Expr, ListParWithRandom, Par, Send,
-        TaggedContinuation,
+        ENot, EOr, EPathMap, EPlus, ETuple, Expr, ListParWithRandom, Par, Send, TaggedContinuation,
     };
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
     use proptest::prelude::*;

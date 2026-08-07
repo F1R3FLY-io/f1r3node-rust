@@ -77,13 +77,11 @@ struct WideTraversal;
 impl Traversal for WideTraversal {
     type Node<'t>
         = Wide<'t>
-    where
-        Self: 't;
+    where Self: 't;
     type Val = ();
     type Kont<'t>
         = &'t Par
-    where
-        Self: 't;
+    where Self: 't;
     type State = ();
     type Err = std::convert::Infallible;
 
@@ -111,9 +109,7 @@ impl Traversal for WideTraversal {
         Ok(Outcome::Value(()))
     }
 
-    fn arity(_kont: &&Par) -> usize {
-        1
-    }
+    fn arity(_kont: &&Par) -> usize { 1 }
 }
 
 // ---------------------------------------------------------------------------
@@ -317,13 +313,11 @@ fn niche_packing() {
     impl Traversal for PaddedKontTraversal {
         type Node<'t>
             = &'t Par
-        where
-            Self: 't;
+        where Self: 't;
         type Val = ();
         type Kont<'t>
             = PaddedKont<'t>
-        where
-            Self: 't;
+        where Self: 't;
         type State = ();
         type Err = std::convert::Infallible;
 
@@ -351,9 +345,7 @@ fn niche_packing() {
             Ok(Outcome::Value(()))
         }
 
-        fn arity(_kont: &PaddedKont<'_>) -> usize {
-            1
-        }
+        fn arity(_kont: &PaddedKont<'_>) -> usize { 1 }
     }
 
     assert_eq!(

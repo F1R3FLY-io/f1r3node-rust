@@ -55,9 +55,21 @@ impl DeployChainIndex {
             + Send
             + Sync
             + 'static,
-        P: std::clone::Clone + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode + Send + Sync + 'static,
-        A: std::clone::Clone + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode + Send + Sync + 'static,
-        K: std::clone::Clone + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode + Send + Sync + 'static,
+        P: std::clone::Clone
+            + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        A: std::clone::Clone
+            + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        K: std::clone::Clone
+            + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
     {
         let deploys_with_cost: HashSet<DeployIdWithCost> = deploys
             .0

@@ -513,22 +513,32 @@ async fn int_addition_and_subtraction_refuse_an_unrepresentable_result() {
         eval_err(&mut runtime, r#"@1!(-9223372036854775808 - 1)"#).await;
 
         // ── THE CONTROL: totals still compute, and compute the same values. ─────────────
-        eval_ok(&mut runtime, r#"@2!(7 + 8) | @3!(10 - 3) | @4!(9223372036854775807 - 1)"#).await;
+        eval_ok(
+            &mut runtime,
+            r#"@2!(7 + 8) | @3!(10 - 3) | @4!(9223372036854775807 - 1)"#,
+        )
+        .await;
         assert!(channel_data(&runtime, int_channel(2))
             .await
             .iter()
-            .any(|p| p.exprs.iter().any(|e| e.expr_instance
-                == Some(ExprInstance::GInt(15)))));
+            .any(|p| p
+                .exprs
+                .iter()
+                .any(|e| e.expr_instance == Some(ExprInstance::GInt(15)))));
         assert!(channel_data(&runtime, int_channel(3))
             .await
             .iter()
-            .any(|p| p.exprs.iter().any(|e| e.expr_instance
-                == Some(ExprInstance::GInt(7)))));
+            .any(|p| p
+                .exprs
+                .iter()
+                .any(|e| e.expr_instance == Some(ExprInstance::GInt(7)))));
         assert!(channel_data(&runtime, int_channel(4))
             .await
             .iter()
-            .any(|p| p.exprs.iter().any(|e| e.expr_instance
-                == Some(ExprInstance::GInt(9223372036854775806)))));
+            .any(|p| p
+                .exprs
+                .iter()
+                .any(|e| e.expr_instance == Some(ExprInstance::GInt(9223372036854775806)))));
     })
     .await
 }
@@ -618,7 +628,10 @@ async fn the_wrap_detect_overflow_idiom_now_raises_and_its_total_replacement_doe
             channel_data(&runtime, int_channel(2))
                 .await
                 .iter()
-                .any(|p| p.exprs.iter().any(|e| e.expr_instance == Some(ExprInstance::GInt(42)))),
+                .any(|p| p
+                    .exprs
+                    .iter()
+                    .any(|e| e.expr_instance == Some(ExprInstance::GInt(42)))),
             "★ THE CONTROL: the total guard must not reject a sum that fits",
         );
     })
@@ -779,7 +792,13 @@ async fn nonnegativenumber_add_refuses_and_restores_the_balance_and_is_exact_at_
         // (store, v, x, expected_success, expected_balance_after)
         let cases: [(&str, i64, i64, bool, i64); 5] = [
             // `test_fail_on_overflow`: v = x = i64::MAX - 50.
-            ("a", 9223372036854775757, 9223372036854775757, false, 9223372036854775757),
+            (
+                "a",
+                9223372036854775757,
+                9223372036854775757,
+                false,
+                9223372036854775757,
+            ),
             // `test_overflow_deposit`: a full purse takes a deposit of 1.
             ("b", 9223372036854775807, 1, false, 9223372036854775807),
             // ★ THE BOUNDARY, accepted: the sum is exactly i64::MAX.

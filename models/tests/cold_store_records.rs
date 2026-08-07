@@ -38,12 +38,12 @@
 
 use std::collections::BTreeSet;
 
+use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
+use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
 };
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::var::VarInstance;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::serializers::serializers::{
@@ -82,54 +82,41 @@ struct WaitingContinuationOracle<P, K> {
 
 fn datum_fixtures() -> Vec<(&'static str, Datum<ListParWithRandom>)> {
     vec![
-        (
-            "loaded",
-            Datum {
-                a: ListParWithRandom {
-                    pars: vec![corpus::all_par_fields(), corpus::deep_mixed_par(24)],
-                    random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
-                }
-                .into(),
-                persist: false,
-                source: Produce::new(
-                    Blake2b256Hash::new(&[1, 2, 3]),
-                    Blake2b256Hash::new(&[4, 5, 6]),
-                    false,
-                ),
-            },
-        ),
-        (
-            "empty",
-            Datum {
-                a: ListParWithRandom {
-                    pars: vec![],
-                    random_state: vec![],
-                }
-                .into(),
-                persist: true,
-                source: Produce::new(
-                    Blake2b256Hash::new(&[7]),
-                    Blake2b256Hash::new(&[8]),
-                    true,
-                ),
-            },
-        ),
-        (
-            "deep_only",
-            Datum {
-                a: ListParWithRandom {
-                    pars: vec![corpus::deep_par(48)],
-                    random_state: vec![9; 32],
-                }
-                .into(),
-                persist: false,
-                source: Produce::new(
-                    Blake2b256Hash::new(&[10]),
-                    Blake2b256Hash::new(&[11]),
-                    false,
-                ),
-            },
-        ),
+        ("loaded", Datum {
+            a: ListParWithRandom {
+                pars: vec![corpus::all_par_fields(), corpus::deep_mixed_par(24)],
+                random_state: vec![0xF1, 0xF2, 0xF3, 0xF4],
+            }
+            .into(),
+            persist: false,
+            source: Produce::new(
+                Blake2b256Hash::new(&[1, 2, 3]),
+                Blake2b256Hash::new(&[4, 5, 6]),
+                false,
+            ),
+        }),
+        ("empty", Datum {
+            a: ListParWithRandom {
+                pars: vec![],
+                random_state: vec![],
+            }
+            .into(),
+            persist: true,
+            source: Produce::new(Blake2b256Hash::new(&[7]), Blake2b256Hash::new(&[8]), true),
+        }),
+        ("deep_only", Datum {
+            a: ListParWithRandom {
+                pars: vec![corpus::deep_par(48)],
+                random_state: vec![9; 32],
+            }
+            .into(),
+            persist: false,
+            source: Produce::new(
+                Blake2b256Hash::new(&[10]),
+                Blake2b256Hash::new(&[11]),
+                false,
+            ),
+        }),
     ]
 }
 
@@ -138,59 +125,53 @@ fn continuation_fixtures() -> Vec<(
     WaitingContinuation<BindPattern, TaggedContinuation>,
 )> {
     vec![
-        (
-            "par_body",
-            WaitingContinuation {
-                patterns: vec![
-                    BindPattern {
-                        patterns: vec![corpus::all_par_fields()],
-                        remainder: Some(Var {
-                            var_instance: Some(VarInstance::FreeVar(0)),
-                        }),
-                        free_count: 2,
-                    },
-                    BindPattern {
-                        patterns: vec![],
-                        remainder: None,
-                        free_count: 0,
-                    },
-                ]
-                .into(),
-                continuation: TaggedContinuation {
-                    guard: Some(corpus::gint(41)),
-                    tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-                        body: Some(corpus::deep_mixed_par(20)),
-                        random_state: vec![1, 2],
-                    })),
-                }
-                .into(),
-                persist: true,
-                peeks: BTreeSet::from([0, 2, -5]),
-                source: Consume {
-                    channel_hashes: vec![Blake2b256Hash::new(&[13])],
-                    hash: Blake2b256Hash::new(&[16]),
-                    persistent: true,
+        ("par_body", WaitingContinuation {
+            patterns: vec![
+                BindPattern {
+                    patterns: vec![corpus::all_par_fields()],
+                    remainder: Some(Var {
+                        var_instance: Some(VarInstance::FreeVar(0)),
+                    }),
+                    free_count: 2,
                 },
-            },
-        ),
-        (
-            "scala_ref_empty_patterns",
-            WaitingContinuation {
-                patterns: Vec::<BindPattern>::new().into(),
-                continuation: TaggedContinuation {
-                    guard: None,
-                    tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
-                }
-                .into(),
-                persist: false,
-                peeks: BTreeSet::new(),
-                source: Consume {
-                    channel_hashes: vec![],
-                    hash: Blake2b256Hash::new(&[19]),
-                    persistent: false,
+                BindPattern {
+                    patterns: vec![],
+                    remainder: None,
+                    free_count: 0,
                 },
+            ]
+            .into(),
+            continuation: TaggedContinuation {
+                guard: Some(corpus::gint(41)),
+                tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                    body: Some(corpus::deep_mixed_par(20)),
+                    random_state: vec![1, 2],
+                })),
+            }
+            .into(),
+            persist: true,
+            peeks: BTreeSet::from([0, 2, -5]),
+            source: Consume {
+                channel_hashes: vec![Blake2b256Hash::new(&[13])],
+                hash: Blake2b256Hash::new(&[16]),
+                persistent: true,
             },
-        ),
+        }),
+        ("scala_ref_empty_patterns", WaitingContinuation {
+            patterns: Vec::<BindPattern>::new().into(),
+            continuation: TaggedContinuation {
+                guard: None,
+                tagged_cont: Some(TaggedCont::ScalaBodyRef(-99)),
+            }
+            .into(),
+            persist: false,
+            peeks: BTreeSet::new(),
+            source: Consume {
+                channel_hashes: vec![],
+                hash: Blake2b256Hash::new(&[19]),
+                persistent: false,
+            },
+        }),
     ]
 }
 
@@ -291,8 +272,7 @@ fn truncated_par_typed_records_are_rejected_by_both() {
             // Re-frame the truncated record as a one-element leaf so it goes
             // through the same public entry point production uses.
             let framed = bincode::serialize(&vec![slice.to_vec()]).expect("frame");
-            let machine =
-                decode_continuations::<BindPattern, TaggedContinuation>(&framed).is_ok();
+            let machine = decode_continuations::<BindPattern, TaggedContinuation>(&framed).is_ok();
             assert_eq!(
                 oracle, machine,
                 "{label} truncated at {cut}: oracle ok={oracle}, machine ok={machine}"
@@ -304,7 +284,10 @@ fn truncated_par_typed_records_are_rejected_by_both() {
         }
     }
 
-    assert!(checked > 5_000, "ANTI-VACUITY: only {checked} truncations tried");
+    assert!(
+        checked > 5_000,
+        "ANTI-VACUITY: only {checked} truncations tried"
+    );
     assert!(
         rejections > checked / 2,
         "ANTI-VACUITY: only {rejections} of {checked} truncated records were rejected"
@@ -332,11 +315,7 @@ fn a_datum_too_deep_for_the_derived_decoder_still_reads_back() {
                 }
                 .into(),
                 persist: true,
-                source: Produce::new(
-                    Blake2b256Hash::new(&[1]),
-                    Blake2b256Hash::new(&[2]),
-                    true,
-                ),
+                source: Produce::new(Blake2b256Hash::new(&[1]), Blake2b256Hash::new(&[2]), true),
             };
             let bytes = encode_datum(&datum);
             models::rust::rholang::par_children::dismantle_all(
@@ -397,8 +376,7 @@ fn step_a_golden_shapes_read_back_through_the_new_path() {
     assert_eq!(decoded.len(), 1);
 
     let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("leaf");
-    let oracle: DatumOracle<ListParWithRandom> =
-        bincode::deserialize(&encoded[0]).expect("oracle");
+    let oracle: DatumOracle<ListParWithRandom> = bincode::deserialize(&encoded[0]).expect("oracle");
     assert!(*decoded[0].a == oracle.a);
 
     // And the `Par` inside is the same one the oracle sees, field for field.

@@ -158,11 +158,13 @@ impl RhoTrieTraverser {
     pub fn node_list(nyb_list: &[i32]) -> Par {
         let ps: Vec<Par> = nyb_list
             .iter()
-            .map(|&n| models::par_from_default! {
-                exprs: vec![Expr {
-                    expr_instance: Some(ExprInstance::GInt(n as i64)),
-                }],
-                ..Default::default()
+            .map(|&n| {
+                models::par_from_default! {
+                    exprs: vec![Expr {
+                        expr_instance: Some(ExprInstance::GInt(n as i64)),
+                    }],
+                    ..Default::default()
+                }
             })
             .collect();
 

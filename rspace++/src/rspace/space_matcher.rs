@@ -8,10 +8,9 @@ use serde::Serialize;
 use super::r#match::Match;
 use super::rspace_interface::ISpace;
 use crate::rspace::candidate_order::order_candidates_with_index;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
-use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC,
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC,
@@ -19,11 +18,12 @@ use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, RSPACE_MATCHER_GUARD_BACKTRACK_METRIC,
     RSPACE_MATCHER_SPATIAL_BACKTRACK_METRIC, RSPACE_METRICS_SOURCE,
 };
+use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
-/// Why a subtree of the candidate search failed — and therefore WHICH of the two
-/// incompletenesses the search is repairing when it backtracks past it.
+/// Why a subtree of the candidate search failed — and therefore WHICH of the
+/// two incompletenesses the search is repairing when it backtracks past it.
 ///
 /// The two are worth separating because their blast radii differ sharply:
 /// a `where` guard is new syntax, so [`SelectionOutcome::GuardRejected`]
@@ -92,8 +92,9 @@ where
     /// candidates needs a residual only for the ones it descends through;
     /// building one per candidate EXAMINED made an exhausted single-bind scan
     /// quadratic (a fresh `n-1` element pool each time, every element a `Datum`
-    /// whose `Produce` source carries two owned hashes) where the scan itself is
-    /// linear — measured at 197 ms → 17 ms for a 1000-datum exhaustive scan.
+    /// whose `Produce` source carries two owned hashes) where the scan itself
+    /// is linear — measured at 197 ms → 17 ms for a 1000-datum exhaustive
+    /// scan.
     fn next_spatial_match(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
@@ -110,9 +111,10 @@ where
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
             // The matcher borrows the pattern and the Arc-shared datum
             // payload — a failing attempt copies nothing at this boundary
-            // (the earlier value-shaped path made one full pattern clone plus one full payload clone per
-            // candidate per attempt; the `rspace.matcher.clone_ns` timer that
-            // measured them is retired with the clones).
+            // (the earlier value-shaped path made one full pattern clone plus one full
+            // payload clone per candidate per attempt; the
+            // `rspace.matcher.clone_ns` timer that measured them is retired
+            // with the clones).
             let t_match = std::time::Instant::now();
             let match_result = matcher.get(pattern, &datum.a);
             metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
@@ -317,8 +319,8 @@ where
     /// unless a later bind finds nothing.
     ///
     /// With a guard, the bill is bounded by `Π_j |pool_j|` leaves and
-    /// `Σ_j Π_{i≤j} |pool_i|` calls to `Match::get`, reached only when the guard
-    /// refuses everything. Measured on this crate's test matcher by
+    /// `Σ_j Π_{i≤j} |pool_i|` calls to `Match::get`, reached only when the
+    /// guard refuses everything. Measured on this crate's test matcher by
     /// `the_cost_of_a_complete_guarded_search_is_bounded_and_measured`
     /// (wall time is the whole `consume`, candidate ordering included):
     ///
@@ -510,8 +512,9 @@ where
         for (cont, index) in &match_candidates {
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
-            // Zip references; the earlier value-shaped path cloned every candidate continuation
-            // cloned every channel and every pattern into an owned pair list.
+            // Zip references; the earlier value-shaped path cloned every candidate
+            // continuation cloned every channel and every pattern into an owned
+            // pair list.
             let __pair_start = std::time::Instant::now();
             let channel_pattern_pairs: Vec<(&C, &P)> =
                 channels.iter().zip(cont.patterns.iter()).collect();
@@ -555,17 +558,18 @@ where
     // ══════════════════════════════════════════════════════════════════════
 
     /// **Every** admissible selection under `channel_pattern_pairs`, in exactly
-    /// the depth-first order [`SpaceMatcher::search_candidate_selection`] visits
-    /// them.
+    /// the depth-first order [`SpaceMatcher::search_candidate_selection`]
+    /// visits them.
     ///
     /// This is that search with one line changed: where the selector *returns*
-    /// at the first admissible leaf, this *records* the leaf and keeps scanning.
-    /// The two therefore agree on the first element by construction —
-    /// `out[0]` is the lexicographically least admissible selection, i.e. the
-    /// one a real `consume` on this state would take. That identity is the
-    /// bridge between speculative enumeration and ordinary execution, and it is
-    /// asserted directly by `the_enumeration_head_is_the_selector_choice` in
-    /// `rspace++/tests/enabled_rendezvous_spec.rs`.
+    /// at the first admissible leaf, this *records* the leaf and keeps
+    /// scanning. The two therefore agree on the first element by
+    /// construction — `out[0]` is the lexicographically least admissible
+    /// selection, i.e. the one a real `consume` on this state would take.
+    /// That identity is the bridge between speculative enumeration and
+    /// ordinary execution, and it is asserted directly by
+    /// `the_enumeration_head_is_the_selector_choice` in `rspace++/tests/
+    /// enabled_rendezvous_spec.rs`.
     ///
     /// # Why it is written out rather than parameterising the selector
     ///
@@ -573,24 +577,25 @@ where
     /// circuits on `Admissible` at *every* level, so "keep going" is not a flag
     /// that can be threaded through it — a caller that wanted all leaves would
     /// have to defeat the early return at each level of the recursion. Rather
-    /// than complicate the consensus-critical selector with a mode it never uses
-    /// in production, the enumeration is a sibling with the identical descent.
-    /// Both live in this trait, so play and replay run one enumeration and one
-    /// selector; neither space carries a private copy that could drift.
+    /// than complicate the consensus-critical selector with a mode it never
+    /// uses in production, the enumeration is a sibling with the identical
+    /// descent. Both live in this trait, so play and replay run one
+    /// enumeration and one selector; neither space carries a private copy
+    /// that could drift.
     ///
     /// # Read-only
     ///
-    /// Nothing here touches the hot store, the event log or the produce counter.
-    /// `channel_to_indexed_data` is the caller's private copy of the pools; it
-    /// is mutated during the descent and restored on the way out, exactly as the
-    /// selector does.
+    /// Nothing here touches the hot store, the event log or the produce
+    /// counter. `channel_to_indexed_data` is the caller's private copy of
+    /// the pools; it is mutated during the descent and restored on the way
+    /// out, exactly as the selector does.
     ///
     /// # Cost
     ///
     /// Bounded by `Π_j |pool_j|` leaves and `Σ_j Π_{i≤j} |pool_i|` calls to
     /// `Match::get` — the selector's guard-refuses-everything worst case, paid
-    /// unconditionally because there is no early exit. For the single-bind shape
-    /// (`l = 1`) that is one linear scan of the channel's pool.
+    /// unconditionally because there is no early exit. For the single-bind
+    /// shape (`l = 1`) that is one linear scan of the channel's pool.
     fn enumerate_admissible_selections(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
@@ -651,8 +656,8 @@ where
     }
 
     /// `E(S)` — the **enabled rendezvous set** of the state `store` currently
-    /// holds: every (waiting continuation × admissible data selection) pair that
-    /// a COMM could fire right now.
+    /// holds: every (waiting continuation × admissible data selection) pair
+    /// that a COMM could fire right now.
     ///
     /// # What a caller gets
     ///
@@ -668,12 +673,12 @@ where
     ///
     /// Three orderings compose, and all three are total and content-derived:
     ///
-    /// 1. **Channel groups** are visited in ascending `Vec<C>` order (`C: Ord`).
-    ///    The group set is read out of a `HashMap`, whose iteration order is
-    ///    seed-dependent, so it is sorted before use. Without this, two
-    ///    validators enumerating the same state would produce the same *set* in
-    ///    different *orders*, and any trace that names a rendezvous by position
-    ///    would diverge.
+    /// 1. **Channel groups** are visited in ascending `Vec<C>` order (`C:
+    ///    Ord`). The group set is read out of a `HashMap`, whose iteration
+    ///    order is seed-dependent, so it is sorted before use. Without this,
+    ///    two validators enumerating the same state would produce the same
+    ///    *set* in different *orders*, and any trace that names a rendezvous by
+    ///    position would diverge.
     /// 2. **Continuations within a group** are ordered by
     ///    [`order_candidates_with_index`] — THE canonical candidate order, the
     ///    same one `produce` uses — with the store index as tie breaker.
@@ -685,12 +690,12 @@ where
     ///
     /// It is what an ordinary **`consume` arriving at this state** does. An
     /// ordinary **`produce`** splices its arriving datum into the pool at index
-    /// `-1` (`RSpace::extract_produce_candidate`), ahead of the canonical order,
-    /// so the produce regime's least admissible selection is generally a
-    /// different member of the same set. The *set* is the same — admissibility
-    /// is monotone in the pool — and this query computes that set. A caller that
-    /// wants to reproduce a particular execution must name the selection it
-    /// wants; it must not assume element 0.
+    /// `-1` (`RSpace::extract_produce_candidate`), ahead of the canonical
+    /// order, so the produce regime's least admissible selection is
+    /// generally a different member of the same set. The *set* is the same
+    /// — admissibility is monotone in the pool — and this query computes
+    /// that set. A caller that wants to reproduce a particular execution
+    /// must name the selection it wants; it must not assume element 0.
     ///
     /// # Installed continuations
     ///

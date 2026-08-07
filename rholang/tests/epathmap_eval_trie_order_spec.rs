@@ -104,12 +104,7 @@ async fn evaluator_preserves_native_roots_when_eval_is_identity() {
         ),
         (
             "map-reflected-process-value",
-            EPathMap::new_map(
-                [(gint(1), reflected_process)],
-                Vec::new(),
-                false,
-                None,
-            ),
+            EPathMap::new_map([(gint(1), reflected_process)], Vec::new(), false, None),
         ),
     ];
 

@@ -102,11 +102,11 @@ use models::rhoapi::{
     ESet, ETuple, EVar, EZipper, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrivate,
     GSysAuthToken, Par, ParWithRandom, VarRef,
 };
-use models::rust::rholang::sorter::score_tree::Tree;
 use models::rust::rholang::bincode_schema_tables::{
     CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, TAGGED_CONT_VARIANTS,
     UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
 };
+use models::rust::rholang::sorter::score_tree::Tree;
 
 // ===========================================================================
 // §1  The property, exercised on every variant that exists today

@@ -630,7 +630,10 @@ enum EvNode<'t> {
 /// a child value.
 enum EvKont<'t> {
     /// Fold `concatenate` over `n` evaluated exprs onto the shell of `par`.
-    ParK { par: &'t Par, n: usize },
+    ParK {
+        par: &'t Par,
+        n: usize,
+    },
     Not,
     Neg,
     BoolK {
@@ -652,7 +655,9 @@ enum EvKont<'t> {
         op: &'static str,
         f: fn(i64, i64) -> Option<i64>,
     },
-    MatchesK { pattern: &'t Par },
+    MatchesK {
+        pattern: &'t Par,
+    },
     /// Apply `single_expr_instance` to the value just produced.
     ///
     /// ⚠ This is what preserves the helpers' per-operand interleaving: it is
@@ -683,13 +688,11 @@ impl<'e> Traversal for EvalTraversal<'e> {
     // this impl illegal outright.
     type Node<'t>
         = EvNode<'t>
-    where
-        Self: 't;
+    where Self: 't;
     type Val = EvVal;
     type Kont<'t>
         = EvKont<'t>
-    where
-        Self: 't;
+    where Self: 't;
     type State = ();
     type Err = EvalError;
 
@@ -958,14 +961,20 @@ fn descend_ev_expr<'t, 'e>(
 
         ExprInstance::EAndBody(EAnd { p1, p2 }) => push_binary(
             work,
-            EvKont::BoolK { op: "&&", f: |a, b| a && b },
+            EvKont::BoolK {
+                op: "&&",
+                f: |a, b| a && b,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EOrBody(EOr { p1, p2 }) => push_binary(
             work,
-            EvKont::BoolK { op: "||", f: |a, b| a || b },
+            EvKont::BoolK {
+                op: "||",
+                f: |a, b| a || b,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
@@ -989,28 +998,40 @@ fn descend_ev_expr<'t, 'e>(
 
         ExprInstance::ELtBody(ELt { p1, p2 }) => push_binary(
             work,
-            EvKont::CmpK { op: "<", interpret: |c| c == -1 },
+            EvKont::CmpK {
+                op: "<",
+                interpret: |c| c == -1,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::ELteBody(ELte { p1, p2 }) => push_binary(
             work,
-            EvKont::CmpK { op: "<=", interpret: |c| c <= 0 },
+            EvKont::CmpK {
+                op: "<=",
+                interpret: |c| c <= 0,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EGtBody(EGt { p1, p2 }) => push_binary(
             work,
-            EvKont::CmpK { op: ">", interpret: |c| c == 1 },
+            EvKont::CmpK {
+                op: ">",
+                interpret: |c| c == 1,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EGteBody(EGte { p1, p2 }) => push_binary(
             work,
-            EvKont::CmpK { op: ">=", interpret: |c| c >= 0 },
+            EvKont::CmpK {
+                op: ">=",
+                interpret: |c| c >= 0,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
@@ -1018,35 +1039,50 @@ fn descend_ev_expr<'t, 'e>(
 
         ExprInstance::EPlusBody(EPlus { p1, p2 }) => push_binary(
             work,
-            EvKont::IntK { op: "+", f: i64::checked_add },
+            EvKont::IntK {
+                op: "+",
+                f: i64::checked_add,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EMinusBody(EMinus { p1, p2 }) => push_binary(
             work,
-            EvKont::IntK { op: "-", f: i64::checked_sub },
+            EvKont::IntK {
+                op: "-",
+                f: i64::checked_sub,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EMultBody(EMult { p1, p2 }) => push_binary(
             work,
-            EvKont::IntK { op: "*", f: i64::checked_mul },
+            EvKont::IntK {
+                op: "*",
+                f: i64::checked_mul,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => push_binary(
             work,
-            EvKont::DivModK { op: "/", f: i64::checked_div },
+            EvKont::DivModK {
+                op: "/",
+                f: i64::checked_div,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
         ),
         ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => push_binary(
             work,
-            EvKont::DivModK { op: "%", f: i64::checked_rem },
+            EvKont::DivModK {
+                op: "%",
+                f: i64::checked_rem,
+            },
             p1.as_ref(),
             p2.as_ref(),
             true,
@@ -1188,7 +1224,6 @@ fn run_ev_combine(
 // continuation pushed with fewer children than its `arity()` claims.
 // ---------------------------------------------------------------------------
 
-
 // ===========================================================================
 // The differential: worklist machine vs. the recursive oracle
 // ===========================================================================
@@ -1212,8 +1247,9 @@ mod differential_eval_with {
     //! vacuity mode the gate subjects and the `eval_par_split` trace were
     //! hardened against.
 
-    use super::*;
     use models::rhoapi::{EDiv, EMod};
+
+    use super::*;
 
     /// An **available** oracle, so `EMatchesBody` reaches its arm at all.
     ///
@@ -1231,17 +1267,11 @@ mod differential_eval_with {
     struct StructuralMatch;
 
     impl SpatialMatch for StructuralMatch {
-        fn matches(&self, target: &Par, pattern: &Par) -> bool {
-            target == pattern
-        }
+        fn matches(&self, target: &Par, pattern: &Par) -> bool { target == pattern }
     }
 
-    fn gint(i: i64) -> Par {
-        par_with_int(i)
-    }
-    fn gbool(b: bool) -> Par {
-        par_with_bool(b)
-    }
+    fn gint(i: i64) -> Par { par_with_int(i) }
+    fn gbool(b: bool) -> Par { par_with_bool(b) }
     fn gstr(s: &str) -> Par {
         par_with_expr(Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
@@ -1257,18 +1287,90 @@ mod differential_eval_with {
     fn binaries(a: Par, b: Par) -> Vec<(&'static str, Par)> {
         let (p1, p2) = (Some(a.clone()), Some(b.clone()));
         vec![
-            ("+", wrap(ExprInstance::EPlusBody(EPlus { p1: p1.clone(), p2: p2.clone() }))),
-            ("-", wrap(ExprInstance::EMinusBody(EMinus { p1: p1.clone(), p2: p2.clone() }))),
-            ("*", wrap(ExprInstance::EMultBody(EMult { p1: p1.clone(), p2: p2.clone() }))),
-            ("/", wrap(ExprInstance::EDivBody(EDiv { p1: p1.clone(), p2: p2.clone() }))),
-            ("%", wrap(ExprInstance::EModBody(EMod { p1: p1.clone(), p2: p2.clone() }))),
-            ("<", wrap(ExprInstance::ELtBody(ELt { p1: p1.clone(), p2: p2.clone() }))),
-            ("<=", wrap(ExprInstance::ELteBody(ELte { p1: p1.clone(), p2: p2.clone() }))),
-            (">", wrap(ExprInstance::EGtBody(EGt { p1: p1.clone(), p2: p2.clone() }))),
-            (">=", wrap(ExprInstance::EGteBody(EGte { p1: p1.clone(), p2: p2.clone() }))),
-            ("==", wrap(ExprInstance::EEqBody(EEq { p1: p1.clone(), p2: p2.clone() }))),
-            ("!=", wrap(ExprInstance::ENeqBody(ENeq { p1: p1.clone(), p2: p2.clone() }))),
-            ("&&", wrap(ExprInstance::EAndBody(EAnd { p1: p1.clone(), p2: p2.clone() }))),
+            (
+                "+",
+                wrap(ExprInstance::EPlusBody(EPlus {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "-",
+                wrap(ExprInstance::EMinusBody(EMinus {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "*",
+                wrap(ExprInstance::EMultBody(EMult {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "/",
+                wrap(ExprInstance::EDivBody(EDiv {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "%",
+                wrap(ExprInstance::EModBody(EMod {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "<",
+                wrap(ExprInstance::ELtBody(ELt {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "<=",
+                wrap(ExprInstance::ELteBody(ELte {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                ">",
+                wrap(ExprInstance::EGtBody(EGt {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                ">=",
+                wrap(ExprInstance::EGteBody(EGte {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "==",
+                wrap(ExprInstance::EEqBody(EEq {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "!=",
+                wrap(ExprInstance::ENeqBody(ENeq {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
+            (
+                "&&",
+                wrap(ExprInstance::EAndBody(EAnd {
+                    p1: p1.clone(),
+                    p2: p2.clone(),
+                })),
+            ),
             ("||", wrap(ExprInstance::EOrBody(EOr { p1, p2 }))),
         ]
     }
@@ -1280,25 +1382,31 @@ mod differential_eval_with {
             (gint(3), gint(7)),
             (gint(-7), gint(3)),
             (gint(0), gint(5)),
-            (gint(5), gint(0)),          // division by zero, one way only
-            (gint(i64::MIN), gint(-1)),  // overflow on / and *
+            (gint(5), gint(0)),         // division by zero, one way only
+            (gint(i64::MIN), gint(-1)), // overflow on / and *
             (gbool(true), gbool(false)),
             (gbool(false), gbool(true)),
             (gstr("a"), gstr("b")),
             (gstr("b"), gstr("a")),
-            (gint(1), gbool(true)),      // operator mismatch
-            (gbool(true), gint(1)),      // mismatch, other way
+            (gint(1), gbool(true)), // operator mismatch
+            (gbool(true), gint(1)), // mismatch, other way
         ]
     }
 
     /// Unary and nested shapes, including the `ENot` chain the probe drives.
     fn unary_corpus() -> Vec<Par> {
         let mut out = vec![
-            wrap(ExprInstance::ENotBody(ENot { p: Some(gbool(true)) })),
+            wrap(ExprInstance::ENotBody(ENot {
+                p: Some(gbool(true)),
+            })),
             wrap(ExprInstance::ENotBody(ENot { p: Some(gint(1)) })),
             wrap(ExprInstance::ENegBody(ENeg { p: Some(gint(5)) })),
-            wrap(ExprInstance::ENegBody(ENeg { p: Some(gint(i64::MIN)) })),
-            wrap(ExprInstance::ENegBody(ENeg { p: Some(gbool(true)) })),
+            wrap(ExprInstance::ENegBody(ENeg {
+                p: Some(gint(i64::MIN)),
+            })),
+            wrap(ExprInstance::ENegBody(ENeg {
+                p: Some(gbool(true)),
+            })),
             Par::default(),
             gint(42),
         ];
@@ -1341,14 +1449,18 @@ mod differential_eval_with {
     const DIFFERENTIAL_WIDTH: usize = 256;
 
     fn eplus(a: Par, b: Par) -> Par {
-        wrap(ExprInstance::EPlusBody(EPlus { p1: Some(a), p2: Some(b) }))
+        wrap(ExprInstance::EPlusBody(EPlus {
+            p1: Some(a),
+            p2: Some(b),
+        }))
     }
     fn eminus(a: Par, b: Par) -> Par {
-        wrap(ExprInstance::EMinusBody(EMinus { p1: Some(a), p2: Some(b) }))
+        wrap(ExprInstance::EMinusBody(EMinus {
+            p1: Some(a),
+            p2: Some(b),
+        }))
     }
-    fn enot(inner: Par) -> Par {
-        wrap(ExprInstance::ENotBody(ENot { p: Some(inner) }))
-    }
+    fn enot(inner: Par) -> Par { wrap(ExprInstance::ENotBody(ENot { p: Some(inner) })) }
     fn ematches(target: Par, pattern: Par) -> Par {
         wrap(ExprInstance::EMatchesBody(EMatches {
             target: Some(target),
@@ -1713,9 +1825,11 @@ mod depth_gate {
     //! teardown, and it is written as an executed assertion so that a future
     //! `Drop`-side conversion turns it red and gets read.
 
-    use super::*;
-    use models::rust::rholang::par_children::dismantle;
     use std::process::{Command, Stdio};
+
+    use models::rust::rholang::par_children::dismantle;
+
+    use super::*;
 
     /// Which implementation the child runs.
     const GATE_ARM: &str = "RHO_PURE_EVAL_GATE_ARM";

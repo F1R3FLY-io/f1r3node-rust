@@ -44,9 +44,9 @@ use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
-use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 #[derive(Clone)]
 pub struct RSpaceStore {
@@ -67,17 +67,27 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
-    /// Live single-step COMM observer (MeTTaIL reactive stepper). `None` in production: the
-    /// `log_comm` seam then pays only one branch-predicted `is_none` check per COMM — zero
-    /// allocation, no vtable. Installed via [`RSpace::set_step_observer`]. Not part of any FFI
-    /// surface (RSpace has no `extern "C"` consumers); appended last so existing field offsets
+    /// Live single-step COMM observer (MeTTaIL reactive stepper). `None` in
+    /// production: the `log_comm` seam then pays only one branch-predicted
+    /// `is_none` check per COMM — zero allocation, no vtable. Installed via
+    /// [`RSpace::set_step_observer`]. Not part of any FFI surface (RSpace
+    /// has no `extern "C"` consumers); appended last so existing field offsets
     /// are unchanged.
     step_observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
-    C: Clone + Debug + Default + StableHashSerialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + StableHashSerialize
+        + std::hash::Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
@@ -156,7 +166,16 @@ struct ChannelLockGuard {
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
 where
-    C: Clone + Debug + Default + StableHashSerialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + StableHashSerialize
+        + std::hash::Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
@@ -166,7 +185,16 @@ where
 #[async_trait]
 impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
 where
-    C: Clone + Debug + Default + StableHashSerialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + StableHashSerialize
+        + std::hash::Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
@@ -293,16 +321,20 @@ where
         curr_event_log
     }
 
-    /// Forward the reactive single-step gate from the installed observer (if any). `None` in
-    /// production (no observer) — the reducer then never pauses. The same `StepGate` the stepper
-    /// `release_one`s after publishing each COMM event.
+    /// Forward the reactive single-step gate from the installed observer (if
+    /// any). `None` in production (no observer) — the reducer then never
+    /// pauses. The same `StepGate` the stepper `release_one`s after
+    /// publishing each COMM event.
     fn step_gate(&self) -> Option<Arc<super::logging::StepGate>> {
-        self.step_observer.as_ref().and_then(|observer| observer.step_gate())
+        self.step_observer
+            .as_ref()
+            .and_then(|observer| observer.step_gate())
     }
 
-    /// Forward a non-COMM structural reduction to the installed observer (if any) — the symmetric
-    /// emit twin of `step_gate`. `None`-op in production (one branch-predicted `is_none` check, no
-    /// allocation, no vtable). `redex` is borrowed; the observer clones only when it captures.
+    /// Forward a non-COMM structural reduction to the installed observer (if
+    /// any) — the symmetric emit twin of `step_gate`. `None`-op in
+    /// production (one branch-predicted `is_none` check, no allocation, no
+    /// vtable). `redex` is borrowed; the observer clones only when it captures.
     fn observe_reduction(&self, redex: &C, kind: super::logging::ReductionKind) {
         if let Some(observer) = &self.step_observer {
             observer.observe_reduction(redex, kind);
@@ -364,9 +396,7 @@ where
         // play/replay asymmetry (see the sibling table in
         // `rspace++/tests/consume_arity_refusal.rs`).
         if channels.is_empty() {
-            Err(RSpaceError::BugFoundError(
-                "RUST ERROR: channels can't be empty".to_string(),
-            ))
+            Err(RSpaceError::BugFoundError("RUST ERROR: channels can't be empty".to_string()))
         } else if channels.len() != patterns.len() {
             Err(RSpaceError::BugFoundError(
                 "RUST ERROR: channels.length must equal patterns.length".to_string(),
@@ -541,9 +571,10 @@ where
         }
     }
 
-    /// Install (or clear) the live single-step COMM observer. Off (`None`) by default; the MeTTaIL
-    /// reactive stepper sets `Some(..)` before running `inj`, and the `log_comm` seam then emits
-    /// each committed COMM to it. Idempotent; pass `None` to detach.
+    /// Install (or clear) the live single-step COMM observer. Off (`None`) by
+    /// default; the MeTTaIL reactive stepper sets `Some(..)` before running
+    /// `inj`, and the `log_comm` seam then emits each committed COMM to it.
+    /// Idempotent; pass `None` to detach.
     pub fn set_step_observer(&mut self, observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>) {
         self.step_observer = observer;
     }
@@ -940,19 +971,21 @@ where
     ///
     /// `locked_produce` reaches it with a candidate it just *searched for*. A
     /// speculative evaluator must fire a candidate it *named* — a specific
-    /// member of [`RSpace::enabled_rendezvous`]'s answer, which for a persistent
-    /// continuation or a join is generally not the one a search would return.
-    /// Forcing the choice by trimming the store instead ("install a state in
-    /// which the wanted match is the only one and let the search find it") is
-    /// not sound: a persistent continuation or a join over a channel bound twice
-    /// still admits several selections after any such trim, and the trim itself
-    /// perturbs the very store indices the removal arithmetic below addresses.
+    /// member of [`RSpace::enabled_rendezvous`]'s answer, which for a
+    /// persistent continuation or a join is generally not the one a search
+    /// would return. Forcing the choice by trimming the store instead
+    /// ("install a state in which the wanted match is the only one and let
+    /// the search find it") is not sound: a persistent continuation or a
+    /// join over a channel bound twice still admits several selections
+    /// after any such trim, and the trim itself perturbs the very store
+    /// indices the removal arithmetic below addresses.
     ///
     /// The alternative to exporting it is for the caller to reimplement the
     /// index arithmetic, the join bookkeeping and the event emission outside
-    /// this crate, where they could drift from the consensus behaviour silently.
-    /// Nothing about the method changed: the body below is untouched, and every
-    /// production caller still reaches it through `locked_produce`.
+    /// this crate, where they could drift from the consensus behaviour
+    /// silently. Nothing about the method changed: the body below is
+    /// untouched, and every production caller still reaches it through
+    /// `locked_produce`.
     pub fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
@@ -1022,15 +1055,18 @@ where
             }
         }
 
-        // Live single-step emit seam. `None` in production (one branch-predicted `is_none`, no
-        // alloc/vtable). When a StepCommObserver is installed, hand it the full COMM payload —
-        // the rendezvous channels, the consumed data, and the firing waiting-continuation
-        // (patterns + continuation) — extracted to slices so the observer can clone lock-free.
+        // Live single-step emit seam. `None` in production (one branch-predicted
+        // `is_none`, no alloc/vtable). When a StepCommObserver is installed,
+        // hand it the full COMM payload — the rendezvous channels, the consumed
+        // data, and the firing waiting-continuation (patterns + continuation) —
+        // extracted to slices so the observer can clone lock-free.
         if let Some(observer) = &self.step_observer {
             // Materialize through the Arc — observer-only path (None in
             // production), cost-identical to the earlier value-shaped clone.
-            let consumed: Vec<A> =
-                data_candidates.iter().map(|candidate| (*candidate.datum.a).clone()).collect();
+            let consumed: Vec<A> = data_candidates
+                .iter()
+                .map(|candidate| (*candidate.datum.a).clone())
+                .collect();
             observer.observe_comm(
                 channels,
                 &consumed,
@@ -1278,8 +1314,8 @@ where
 
     // The public result stays value-shaped (`RSpaceResult<C, A>` /
     // `ContResult` unchanged) — this is the single per-fired-COMM
-    // materialization boundary, cost-identical to the earlier value-shaped clones. The
-    // multiplicative per-ATTEMPT copies died in the store/matcher hops; the
+    // materialization boundary, cost-identical to the earlier value-shaped clones.
+    // The multiplicative per-ATTEMPT copies died in the store/matcher hops; the
     // dispatch-side copy into the continuation env is stage-L2 territory
     // (the continuation-environment boundary is outside this transport change).
     fn wrap_result(

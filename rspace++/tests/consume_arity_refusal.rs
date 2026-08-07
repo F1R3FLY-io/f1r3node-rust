@@ -63,9 +63,10 @@
 //!
 //! This converts *"every node dies"* into *"this call fails"*, which is
 //! consensus-visible: a validator that today aborts would instead reject. It
-//! requires a coordinated `Validate::version` bump — `casper/src/rust/validate.rs`
-//! compares versions for exact equality with no activation-height machinery —
-//! and that bump is **F1r3node's act, not this change's**.
+//! requires a coordinated `Validate::version` bump —
+//! `casper/src/rust/validate.rs` compares versions for exact equality with no
+//! activation-height machinery — and that bump is **F1r3node's act, not this
+//! change's**.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -215,9 +216,7 @@ impl Shape {
     fn expected_message(self) -> Option<&'static str> {
         match self {
             Shape::Wellformed => None,
-            Shape::ArityMismatch => {
-                Some("RUST ERROR: channels.length must equal patterns.length")
-            }
+            Shape::ArityMismatch => Some("RUST ERROR: channels.length must equal patterns.length"),
             Shape::NoChannels => Some("RUST ERROR: channels can't be empty"),
         }
     }
@@ -225,10 +224,7 @@ impl Shape {
 
 /// The `Err` a refusal must be, unpacked to its text. Any other variant, or an
 /// `Ok`, is a failure with the whole outcome printed.
-fn refusal_text<T: std::fmt::Debug>(
-    outcome: &Result<T, RSpaceError>,
-    what: &str,
-) -> String {
+fn refusal_text<T: std::fmt::Debug>(outcome: &Result<T, RSpaceError>, what: &str) -> String {
     match outcome {
         Err(RSpaceError::BugFoundError(msg)) => msg.clone(),
         Err(other) => panic!(
@@ -253,13 +249,7 @@ async fn play_consume_refuses_the_malformed_and_accepts_the_control() {
 
     for shape in Shape::ALL {
         let outcome = play
-            .consume(
-                shape.channels(),
-                shape.patterns(),
-                "k".to_string(),
-                false,
-                BTreeSet::new(),
-            )
+            .consume(shape.channels(), shape.patterns(), "k".to_string(), false, BTreeSet::new())
             .await;
 
         match shape.expected_message() {
@@ -336,23 +326,17 @@ async fn play_install_refuses_the_arity_mismatch_and_accepts_the_control() {
     let (play, _replay) = play_and_replay().await;
 
     let control = play
-        .install(
-            Shape::Wellformed.channels(),
-            Shape::Wellformed.patterns(),
-            "k".to_string(),
-        )
+        .install(Shape::Wellformed.channels(), Shape::Wellformed.patterns(), "k".to_string())
         .await;
     assert!(
-        control.expect("★ CONTROL: a 2-channel/2-pattern install must succeed").is_none(),
+        control
+            .expect("★ CONTROL: a 2-channel/2-pattern install must succeed")
+            .is_none(),
         "the control install found no resting data, so it must install and return None"
     );
 
     let outcome = play
-        .install(
-            Shape::ArityMismatch.channels(),
-            Shape::ArityMismatch.patterns(),
-            "k".to_string(),
-        )
+        .install(Shape::ArityMismatch.channels(), Shape::ArityMismatch.patterns(), "k".to_string())
         .await;
     assert_eq!(
         refusal_text(&outcome, "RSpace::install on ArityMismatch"),
@@ -377,21 +361,13 @@ async fn replay_consume_refuses_the_malformed_and_accepts_the_control() {
 
     for shape in Shape::ALL {
         let outcome = replay
-            .consume(
-                shape.channels(),
-                shape.patterns(),
-                "k".to_string(),
-                false,
-                BTreeSet::new(),
-            )
+            .consume(shape.channels(), shape.patterns(), "k".to_string(), false, BTreeSet::new())
             .await;
 
         match shape.expected_message() {
             None => {
                 let accepted = outcome.unwrap_or_else(|e| {
-                    panic!(
-                        "★ CONTROL: a 2-channel/2-pattern replay consume was refused with {e:?}"
-                    )
+                    panic!("★ CONTROL: a 2-channel/2-pattern replay consume was refused with {e:?}")
                 });
                 assert!(
                     accepted.is_none(),
@@ -399,8 +375,7 @@ async fn replay_consume_refuses_the_malformed_and_accepts_the_control() {
                 );
             }
             Some(expected) => {
-                let text =
-                    refusal_text(&outcome, &format!("ReplayRSpace::consume on {shape:?}"));
+                let text = refusal_text(&outcome, &format!("ReplayRSpace::consume on {shape:?}"));
                 assert_eq!(
                     text, expected,
                     "★ ReplayRSpace::consume on {shape:?} refused with the wrong text"

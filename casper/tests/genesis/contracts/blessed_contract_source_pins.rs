@@ -404,8 +404,14 @@ fn the_pin_table_covers_exactly_the_embedded_contracts() {
         .map(|p| (p.constant.to_string(), p.resource.to_string()))
         .collect();
 
-    let missing: Vec<&String> = declared.keys().filter(|k| !pinned.contains_key(*k)).collect();
-    let stale: Vec<&String> = pinned.keys().filter(|k| !declared.contains_key(*k)).collect();
+    let missing: Vec<&String> = declared
+        .keys()
+        .filter(|k| !pinned.contains_key(*k))
+        .collect();
+    let stale: Vec<&String> = pinned
+        .keys()
+        .filter(|k| !declared.contains_key(*k))
+        .collect();
 
     assert!(
         missing.is_empty() && stale.is_empty(),
@@ -445,8 +451,9 @@ fn every_blessed_rho_normalizes_and_the_rhox_status_is_reported() {
         match (pin.resource.ends_with(".rhox"), outcome) {
             (false, Err(e)) => broken.push(format!("{} does NOT normalize: {e:?}", pin.resource)),
             (false, Ok(_)) => {}
-            (true, Ok(_)) => template_status
-                .push(format!("  {} normalizes UNSUBSTITUTED", pin.resource)),
+            (true, Ok(_)) => {
+                template_status.push(format!("  {} normalizes UNSUBSTITUTED", pin.resource))
+            }
             (true, Err(_)) => template_status.push(format!(
                 "  {} requires substitution before it normalizes",
                 pin.resource
@@ -461,7 +468,10 @@ fn every_blessed_rho_normalizes_and_the_rhox_status_is_reported() {
     );
 
     // Reported, not asserted: the split was measured and is not what it was assumed to be.
-    println!("★ `.rhox` template normalization status:\n{}", template_status.join("\n"));
+    println!(
+        "★ `.rhox` template normalization status:\n{}",
+        template_status.join("\n")
+    );
     assert!(
         !template_status.is_empty(),
         "★ FLOOR: there must be `.rhox` templates to report on, or this cell says nothing",

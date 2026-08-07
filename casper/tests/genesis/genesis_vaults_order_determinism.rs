@@ -161,7 +161,8 @@ fn default_genesis_uses_the_shared_deterministic_keyspace() {
 fn vault_order_is_stable_across_independent_parameter_builds() {
     let orders: BTreeSet<Vec<(String, u64)>> = (0..N_CHEAP_BUILDS)
         .map(|_| {
-            let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+            let (_, _, genesis) =
+                GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
             vault_order_fingerprint(&genesis.vaults)
         })
         .collect();
@@ -324,10 +325,7 @@ async fn genesis_post_state_hash_is_identical_across_independent_builds() {
             .await
             .unwrap_or_else(|e| panic!("genesis build {i} must succeed: {e:?}"));
 
-        observed.push((
-            hex::encode(&block.body.state.post_state_hash),
-            vault_order,
-        ));
+        observed.push((hex::encode(&block.body.state.post_state_hash), vault_order));
     }
 
     let distinct_hashes: BTreeSet<&String> = observed.iter().map(|(h, _)| h).collect();
@@ -810,7 +808,8 @@ fn validator_order_is_stable_and_agrees_with_the_downstream_sorts() {
 fn the_rendered_initial_bonds_map_is_stable_across_independent_builds() {
     let rendered: BTreeSet<String> = (0..N_CHEAP_BUILDS)
         .map(|_| {
-            let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+            let (_, _, genesis) =
+                GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
             ProofOfStake::initial_bonds(&genesis.proof_of_stake.validators)
         })
         .collect();

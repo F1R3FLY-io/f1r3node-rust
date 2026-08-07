@@ -1,14 +1,17 @@
-//! Defect **D1** — a `where`-guard rejection must backtrack to the next resting datum.
+//! Defect **D1** — a `where`-guard rejection must backtrack to the next resting
+//! datum.
 //!
 //! # What was wrong
 //!
-//! `SpaceMatcher::find_matching_data_candidate` returns the first datum that matches
-//! **spatially**; the commit guard was then evaluated once, on that single pick, by
-//! `extract_first_match` / `RSpace::locked_consume`, and a rejection advanced to the next
-//! waiting CONTINUATION rather than to the next DATUM. The guard was candidate APPROVAL and
-//! never candidate SELECTION, so one rejected pick stranded a rendezvous that a different
-//! resting datum would have satisfied. The rho calculus admits no such stuck state: a COMM
-//! whose binds can all be filled and whose guard holds is enabled, and an enabled COMM fires.
+//! `SpaceMatcher::find_matching_data_candidate` returns the first datum that
+//! matches **spatially**; the commit guard was then evaluated once, on that
+//! single pick, by `extract_first_match` / `RSpace::locked_consume`, and a
+//! rejection advanced to the next waiting CONTINUATION rather than to the next
+//! DATUM. The guard was candidate APPROVAL and never candidate SELECTION, so
+//! one rejected pick stranded a rendezvous that a different resting datum would
+//! have satisfied. The rho calculus admits no such stuck state: a COMM
+//! whose binds can all be filled and whose guard holds is enabled, and an
+//! enabled COMM fires.
 //!
 //! # What these tests pin
 //!
@@ -23,11 +26,12 @@
 //! | [`the_canonical_candidate_order_is_a_pure_function_of_the_candidates`] | selection rests on an order that is reproducible, not on store insertion order |
 //! | [`the_guarded_selection_is_stable_across_repetitions`] | the same store answers the same way every time |
 //!
-//! ⚠ **Consensus.** Every one of these fixes changes WHEN A COMM FIRES. See the commit body.
+//! ⚠ **Consensus.** Every one of these fixes changes WHEN A COMM FIRES. See the
+//! commit body.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rspace_plus_plus::rspace::candidate_order::order_candidates_with_index;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
@@ -54,25 +58,26 @@ enum Pattern {
 }
 impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for Pattern {}
 
-/// The guard language. A guard reads the matched data of EVERY bind, in bind order — that is
-/// the whole reason it cannot live inside the per-channel spatial scan.
+/// The guard language. A guard reads the matched data of EVERY bind, in bind
+/// order — that is the whole reason it cannot live inside the per-channel
+/// spatial scan.
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 enum Guard {
-    /// No guard: `Match::check_commit`'s always-true default, and the shape of every
-    /// continuation in ordinary (unguarded) Rholang.
+    /// No guard: `Match::check_commit`'s always-true default, and the shape of
+    /// every continuation in ordinary (unguarded) Rholang.
     #[default]
     Unguarded,
-    /// Every matched datum, read as an integer, is at most this bound. The demo's
-    /// `for(@px <- @"offer" where px <= 45)`.
+    /// Every matched datum, read as an integer, is at most this bound. The
+    /// demo's `for(@px <- @"offer" where px <= 45)`.
     AtMost(i64),
-    /// The matched data are strictly increasing in bind order. Distinguishes an ASSIGNMENT of
-    /// data to binds, not merely a set of data — the case where a permuted selection builds an
-    /// identical COMM event.
+    /// The matched data are strictly increasing in bind order. Distinguishes an
+    /// ASSIGNMENT of data to binds, not merely a set of data — the case
+    /// where a permuted selection builds an identical COMM event.
     StrictlyIncreasing,
 }
 
-/// A continuation is a name (so distinct continuations are distinguishable in the store) plus
-/// its guard.
+/// A continuation is a name (so distinct continuations are distinguishable in
+/// the store) plus its guard.
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 struct GuardedContinuation {
     name: String,
@@ -99,16 +104,16 @@ impl GuardedContinuation {
     }
 }
 
-/// Data are decimal integers rendered as strings, so a guard can read them and the spatial
-/// matcher can still compare them structurally.
+/// Data are decimal integers rendered as strings, so a guard can read them and
+/// the spatial matcher can still compare them structurally.
 fn as_int(datum: &String) -> i64 {
     datum
         .parse::<i64>()
         .unwrap_or_else(|error| panic!("test data are decimal integers: {datum:?}: {error}"))
 }
 
-/// The matcher under test, counting its spatial calls so the cost claim can be asserted rather
-/// than asserted-of.
+/// The matcher under test, counting its spatial calls so the cost claim can be
+/// asserted rather than asserted-of.
 #[derive(Clone, Default)]
 struct GuardingMatch {
     spatial_calls: Arc<AtomicUsize>,
@@ -172,8 +177,7 @@ async fn fixture() -> (TestSpace, TestReplaySpace, GuardingMatch) {
             HotStoreState::default();
         HotStoreInstances::create_from_hs_and_hr(cache, history_reader.base())
     };
-    let space =
-        RSpace::apply(history_repo.clone(), hot_store, Arc::new(Box::new(matcher.clone())));
+    let space = RSpace::apply(history_repo.clone(), hot_store, Arc::new(Box::new(matcher.clone())));
 
     let replay_store = {
         let cache: HotStoreState<String, Pattern, String, GuardedContinuation> =
@@ -207,10 +211,11 @@ async fn waiting(space: &TestSpace, channels: &[&str]) -> usize {
         .len()
 }
 
-/// Where `datum` lands in THE canonical candidate order of `data` — the order the matcher
-/// enumerates candidates in. Used to assert that a test's admissible datum is genuinely NOT
-/// the first spatial pick, so the test exercises backtracking rather than accidentally
-/// agreeing with the old behaviour.
+/// Where `datum` lands in THE canonical candidate order of `data` — the order
+/// the matcher enumerates candidates in. Used to assert that a test's
+/// admissible datum is genuinely NOT the first spatial pick, so the test
+/// exercises backtracking rather than accidentally agreeing with the old
+/// behaviour.
 fn canonical_position(channel: &str, data: &[&str], datum: &str) -> usize {
     let datums: Vec<Datum<String>> = data
         .iter()
@@ -227,14 +232,16 @@ fn canonical_position(channel: &str, data: &[&str], datum: &str) -> usize {
 // The consume path — the demo's shape
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Several data rest; the guard admits exactly ONE of them; the guarded receive is installed
-/// last, so nothing later can re-trigger the rendezvous and whatever the consume decides is
-/// final. The admissible datum must be the one consumed, and it must be consumed on the FIRST
-/// attempt — no matter where the canonical order happens to place it.
+/// Several data rest; the guard admits exactly ONE of them; the guarded receive
+/// is installed last, so nothing later can re-trigger the rendezvous and
+/// whatever the consume decides is final. The admissible datum must be the one
+/// consumed, and it must be consumed on the FIRST attempt — no matter where the
+/// canonical order happens to place it.
 ///
 /// This is the rspace-level transliteration of the settlement demo's Beat 3
-/// (`@"offer"!(55) | @"offer"!(42)` under `for(@px <- @"offer" where px <= 45)`), widened from
-/// two data to eight so that a matcher which merely got lucky with the order cannot pass.
+/// (`@"offer"!(55) | @"offer"!(42)` under `for(@px <- @"offer" where px <=
+/// 45)`), widened from two data to eight so that a matcher which merely got
+/// lucky with the order cannot pass.
 #[tokio::test]
 async fn a_guard_selects_the_one_admissible_datum_out_of_many() {
     let (space, _replay, matcher) = fixture().await;
@@ -245,8 +252,8 @@ async fn a_guard_selects_the_one_admissible_datum_out_of_many() {
 
     assert!(
         canonical_position("offer", &OFFERS, ADMISSIBLE) > 0,
-        "the admissible datum must NOT be the first spatial pick, or this test would pass \
-         without any backtracking at all — choose different payloads"
+        "the admissible datum must NOT be the first spatial pick, or this test would pass without \
+         any backtracking at all — choose different payloads"
     );
 
     for offer in OFFERS {
@@ -287,9 +294,10 @@ async fn a_guard_selects_the_one_admissible_datum_out_of_many() {
     assert!(matcher.guard_calls() >= 2, "the guard was asked about more than one candidate");
 }
 
-/// The negative. When NO resting datum satisfies the guard the receive must rest: every datum
-/// stays, the continuation is installed, and nothing is invented. (A matcher that "fixed" D1
-/// by weakening the guard would consume something here.)
+/// The negative. When NO resting datum satisfies the guard the receive must
+/// rest: every datum stays, the continuation is installed, and nothing is
+/// invented. (A matcher that "fixed" D1 by weakening the guard would consume
+/// something here.)
 #[tokio::test]
 async fn a_guard_no_resting_datum_satisfies_leaves_everything_resting() {
     let (space, _replay, matcher) = fixture().await;
@@ -318,8 +326,16 @@ async fn a_guard_no_resting_datum_satisfies_leaves_everything_resting() {
 
     let mut left = resting(&space, "offer").await;
     left.sort();
-    assert_eq!(left, vec![55, 68, 77, 91], "every datum still rests — none consumed, none invented");
-    assert_eq!(waiting(&space, &["offer"]).await, 1, "the guarded receive is installed and waiting");
+    assert_eq!(
+        left,
+        vec![55, 68, 77, 91],
+        "every datum still rests — none consumed, none invented"
+    );
+    assert_eq!(
+        waiting(&space, &["offer"]).await,
+        1,
+        "the guarded receive is installed and waiting"
+    );
     assert_eq!(
         matcher.guard_calls(),
         OFFERS.len(),
@@ -331,15 +347,16 @@ async fn a_guard_no_resting_datum_satisfies_leaves_everything_resting() {
 // The produce path — `extract_first_match`, shared with replay
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// The produce path reaches the guard through `extract_first_match`, which is also the replay
-/// space's produce path. A two-channel join makes the backtracking visible here: the arriving
-/// datum pairs with several resting data, and only one of those pairings satisfies the guard.
+/// The produce path reaches the guard through `extract_first_match`, which is
+/// also the replay space's produce path. A two-channel join makes the
+/// backtracking visible here: the arriving datum pairs with several resting
+/// data, and only one of those pairings satisfies the guard.
 #[tokio::test]
 async fn the_produce_path_backtracks_across_a_join() {
     let (space, _replay, _matcher) = fixture().await;
 
-    // `for(@bid <- bid; @ask <- ask) where bid, ask <= 50` — with 50 as the budget, only the
-    // 10 can pair with an ask of 20.
+    // `for(@bid <- bid; @ask <- ask) where bid, ask <= 50` — with 50 as the budget,
+    // only the 10 can pair with an ask of 20.
     let fired = space
         .consume(
             vec!["bid".to_string(), "ask".to_string()],
@@ -369,7 +386,11 @@ async fn the_produce_path_backtracks_across_a_join() {
         .expect("produce")
         .expect("⚠ DEFECT D1: (10, 20) satisfies the guard, so the COMM was ENABLED");
 
-    let matched: Vec<String> = fired.1.iter().map(|result| result.matched_datum.clone()).collect();
+    let matched: Vec<String> = fired
+        .1
+        .iter()
+        .map(|result| result.matched_datum.clone())
+        .collect();
     assert_eq!(matched, vec!["10".to_string(), "20".to_string()], "the admissible pairing fired");
 
     let mut bids = resting(&space, "bid").await;
@@ -379,20 +400,23 @@ async fn the_produce_path_backtracks_across_a_join() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// ★ The second, WIDER repair — a guard-free receive that the same search unsticks
+// ★ The second, WIDER repair — a guard-free receive that the same search
+// unsticks
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// ⚠ **CONSENSUS.** This test pins behaviour that changed for programs carrying NO guard.
+/// ⚠ **CONSENSUS.** This test pins behaviour that changed for programs carrying
+/// NO guard.
 ///
-/// A search that can backtrack is complete against spatial dead-ends too. `for(@x <- c; @"k"
-/// <- c)` has a wildcard bind that can swallow the very datum the second bind needs; the
-/// predecessor filled the binds left to right and abandoned the receive the moment the second
-/// found nothing, although `(x = "other", "k")` is a rendezvous the rho calculus enables. The
-/// guard-aware search reaches it, so this COMM now fires where it previously did not — and the
-/// affected shape is ordinary Rholang, not the new `where` syntax.
+/// A search that can backtrack is complete against spatial dead-ends too.
+/// `for(@x <- c; @"k" <- c)` has a wildcard bind that can swallow the very
+/// datum the second bind needs; the predecessor filled the binds left to right
+/// and abandoned the receive the moment the second found nothing, although `(x
+/// = "other", "k")` is a rendezvous the rho calculus enables. The guard-aware
+/// search reaches it, so this COMM now fires where it previously did not — and
+/// the affected shape is ordinary Rholang, not the new `where` syntax.
 ///
-/// The payloads are chosen so the canonical order presents `"1"` (the datum the second bind
-/// needs) FIRST, which is exactly when the wildcard swallows it.
+/// The payloads are chosen so the canonical order presents `"1"` (the datum the
+/// second bind needs) FIRST, which is exactly when the wildcard swallows it.
 #[tokio::test]
 async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
     let (space, _replay, _matcher) = fixture().await;
@@ -402,8 +426,8 @@ async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
     assert_eq!(
         canonical_position("ch", &DATA, "1"),
         0,
-        "this test requires the SPECIFIC datum first in the canonical order, so the wildcard \
-         bind reaches it before the bind that needs it"
+        "this test requires the SPECIFIC datum first in the canonical order, so the wildcard bind \
+         reaches it before the bind that needs it"
     );
 
     for datum in DATA {
@@ -425,38 +449,43 @@ async fn a_guard_free_join_no_longer_strands_on_a_spatial_dead_end() {
         .await
         .expect("consume")
         .expect(
-            "(x = 7, \"1\") is a rendezvous the rho calculus enables; the wildcard bind must \
-             give the \"1\" back rather than stranding the receive",
+            "(x = 7, \"1\") is a rendezvous the rho calculus enables; the wildcard bind must give \
+             the \"1\" back rather than stranding the receive",
         );
 
-    let matched: Vec<String> = fired.1.iter().map(|result| result.matched_datum.clone()).collect();
+    let matched: Vec<String> = fired
+        .1
+        .iter()
+        .map(|result| result.matched_datum.clone())
+        .collect();
     assert_eq!(matched, vec!["7".to_string(), "1".to_string()]);
     assert!(resting(&space, "ch").await.is_empty(), "both data were consumed by the one COMM");
 }
 
-/// ⚠ **CONSENSUS.** A receive that takes two data from the SAME channel must leave neither
-/// behind. It used to leave one.
+/// ⚠ **CONSENSUS.** A receive that takes two data from the SAME channel must
+/// leave neither behind. It used to leave one.
 ///
-/// `remove_datum` removes POSITIONALLY, so a batch of removals from one channel must run from
-/// the highest index down; removing a low index first shifts every higher one. Both spaces
-/// sorted their candidates highest-first and then `.rev()`ed that into lowest-first, so the
-/// second removal of a same-channel pair ran off the end, its `Err` was swallowed, and the
-/// datum stayed in the store AFTER being delivered to the continuation — free to be consumed
-/// again. (Scala's `storePersistentData` / `removeMatchedDatumAndJoin` sort
-/// `_.datumIndex` with `Ordering[Int].reverse` and traverse in THAT order; the port
-/// re-reversed it.)
+/// `remove_datum` removes POSITIONALLY, so a batch of removals from one channel
+/// must run from the highest index down; removing a low index first shifts
+/// every higher one. Both spaces sorted their candidates highest-first and then
+/// `.rev()`ed that into lowest-first, so the second removal of a same-channel
+/// pair ran off the end, its `Err` was swallowed, and the datum stayed in the
+/// store AFTER being delivered to the continuation — free to be consumed again.
+/// (Scala's `storePersistentData` / `removeMatchedDatumAndJoin` sort
+/// `_.datumIndex` with `Ordering[Int].reverse` and traverse in THAT order; the
+/// port re-reversed it.)
 ///
-/// The defect is independent of the guard work, but it could not be left: the guard-aware
-/// search reaches same-channel selections that previously stranded, which would have turned a
-/// latent duplication into a live one.
+/// The defect is independent of the guard work, but it could not be left: the
+/// guard-aware search reaches same-channel selections that previously stranded,
+/// which would have turned a latent duplication into a live one.
 #[tokio::test]
 async fn a_receive_taking_two_data_from_one_channel_removes_both() {
     for (label, patterns) in [
         ("both wildcards", vec![Pattern::Wildcard, Pattern::Wildcard]),
-        (
-            "a wildcard and a literal",
-            vec![Pattern::Wildcard, Pattern::StringMatch("1".to_string())],
-        ),
+        ("a wildcard and a literal", vec![
+            Pattern::Wildcard,
+            Pattern::StringMatch("1".to_string()),
+        ]),
     ] {
         let (space, _replay, _matcher) = fixture().await;
         for datum in ["7", "1"] {
@@ -478,20 +507,23 @@ async fn a_receive_taking_two_data_from_one_channel_removes_both() {
             .expect("consume")
             .expect("both binds can be filled");
 
-        let mut matched: Vec<String> =
-            fired.1.iter().map(|result| result.matched_datum.clone()).collect();
+        let mut matched: Vec<String> = fired
+            .1
+            .iter()
+            .map(|result| result.matched_datum.clone())
+            .collect();
         matched.sort();
         assert_eq!(matched, vec!["1".to_string(), "7".to_string()], "{label}: both were delivered");
         assert!(
             resting(&space, "ch").await.is_empty(),
-            "{label}: a datum delivered to the continuation must NOT still be in the store — \
-             it could be consumed a second time"
+            "{label}: a datum delivered to the continuation must NOT still be in the store — it \
+             could be consumed a second time"
         );
     }
 }
 
-/// The same, on the produce path (`remove_matched_datum_and_join`), where the arriving datum is
-/// one of the two the receive takes.
+/// The same, on the produce path (`remove_matched_datum_and_join`), where the
+/// arriving datum is one of the two the receive takes.
 #[tokio::test]
 async fn a_produce_completing_a_same_channel_join_removes_both() {
     let (space, _replay, _matcher) = fixture().await;
@@ -520,8 +552,11 @@ async fn a_produce_completing_a_same_channel_join_removes_both() {
         .expect("produce")
         .expect("the second datum completes the join");
 
-    let mut matched: Vec<String> =
-        fired.1.iter().map(|result| result.matched_datum.clone()).collect();
+    let mut matched: Vec<String> = fired
+        .1
+        .iter()
+        .map(|result| result.matched_datum.clone())
+        .collect();
     matched.sort();
     assert_eq!(matched, vec!["1".to_string(), "7".to_string()]);
     assert!(
@@ -534,16 +569,18 @@ async fn a_produce_completing_a_same_channel_join_removes_both() {
 // Play / replay agreement
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Replay must reconstruct the SAME selection, not merely a COMM with the same event bytes.
-/// The check is the post-state root: play and replay end on the same history root, and the
-/// replay space's rigged COMM multimap is fully consumed.
+/// Replay must reconstruct the SAME selection, not merely a COMM with the same
+/// event bytes. The check is the post-state root: play and replay end on the
+/// same history root, and the replay space's rigged COMM multimap is fully
+/// consumed.
 #[tokio::test]
 async fn play_and_replay_agree_on_a_guarded_selection() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 88, 42, 68, 77, 44, 91 — so the first spatial pick (88) is INADMISSIBLE
-    // and the selection is reached only by backtracking. Pinned below so a change to the
-    // ordering bytes cannot quietly turn this into a test of the easy case.
+    // Canonical order: 88, 42, 68, 77, 44, 91 — so the first spatial pick (88) is
+    // INADMISSIBLE and the selection is reached only by backtracking. Pinned
+    // below so a change to the ordering bytes cannot quietly turn this into a
+    // test of the easy case.
     const OFFERS: [&str; 6] = ["91", "42", "77", "44", "68", "88"];
     assert_eq!(
         canonical_position("offer", &OFFERS, "88"),
@@ -610,24 +647,26 @@ async fn play_and_replay_agree_on_a_guarded_selection() {
     );
 }
 
-/// ★ The case the shared candidate order exists for. Both binds draw from the SAME channel, so
-/// the two data can be assigned to the binds either way round and `COMM::new` — which sorts its
-/// produce refs — cannot tell the two assignments apart. Only the guard can. If replay selected
-/// by spatial order while play selected by the guard, the trace assertion would still pass and
-/// the two would bind the receive's variables the other way round: a silent post-state
-/// divergence. This pins that they agree.
+/// ★ The case the shared candidate order exists for. Both binds draw from the
+/// SAME channel, so the two data can be assigned to the binds either way round
+/// and `COMM::new` — which sorts its produce refs — cannot tell the two
+/// assignments apart. Only the guard can. If replay selected by spatial order
+/// while play selected by the guard, the trace assertion would still pass and
+/// the two would bind the receive's variables the other way round: a silent
+/// post-state divergence. This pins that they agree.
 #[tokio::test]
 async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
     let (space, replay_space, _matcher) = fixture().await;
 
-    // Canonical order: 8 then 3 — DESCENDING, so the spatial-first assignment `(8, 3)` is the
-    // one the guard refuses and the admissible assignment is the permuted `(3, 8)`.
+    // Canonical order: 8 then 3 — DESCENDING, so the spatial-first assignment `(8,
+    // 3)` is the one the guard refuses and the admissible assignment is the
+    // permuted `(3, 8)`.
     const BOOK: [&str; 2] = ["3", "8"];
     assert_eq!(
         canonical_position("book", &BOOK, "8"),
         0,
-        "this test requires the LARGER datum first in the canonical order, so that the guard \
-         and the spatial order disagree about the assignment"
+        "this test requires the LARGER datum first in the canonical order, so that the guard and \
+         the spatial order disagree about the assignment"
     );
 
     let empty_point = space.create_checkpoint().await.expect("checkpoint");
@@ -698,10 +737,11 @@ async fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel() {
 // Cost and determinism
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Pay-for-what-you-use. Without a guard the search accepts its first leaf, so it makes exactly
-/// the spatial calls the pre-fix single-pick matcher made: one scan of the pool, stopping at the
-/// first match. Asserting the exact count (not merely "not much more") is what keeps a future
-/// refactor from quietly making the COMM path quadratic for everybody.
+/// Pay-for-what-you-use. Without a guard the search accepts its first leaf, so
+/// it makes exactly the spatial calls the pre-fix single-pick matcher made: one
+/// scan of the pool, stopping at the first match. Asserting the exact count
+/// (not merely "not much more") is what keeps a future refactor from quietly
+/// making the COMM path quadratic for everybody.
 #[tokio::test]
 async fn an_unguarded_workload_costs_exactly_what_it_did() {
     let (space, _replay, matcher) = fixture().await;
@@ -756,8 +796,8 @@ async fn an_unguarded_workload_costs_exactly_what_it_did() {
 
 /// ★ The cost of completeness, measured rather than asserted.
 ///
-/// The search visits at most `Π_j |pool_j|` leaves, and a leaf is reached only after a guard
-/// rejection, so the shape of the bill is:
+/// The search visits at most `Π_j |pool_j|` leaves, and a leaf is reached only
+/// after a guard rejection, so the shape of the bill is:
 ///
 /// | receive | pools | `Match::get` calls | `check_commit` calls |
 /// |---|---|---|---|
@@ -765,13 +805,15 @@ async fn an_unguarded_workload_costs_exactly_what_it_did() {
 /// | guarded, one bind | `n` | `≤ n` | `≤ n` |
 /// | guarded, two binds | `n`, `m` | `≤ n + n·m` | `≤ n·m` |
 ///
-/// This test measures the WORST case of each row — a guard that admits nothing, so the search
-/// is driven to exhaustion — on stores far larger than this system has been observed to hold on
-/// one channel, and prints the wall time so the quadratic row is a number the reader can weigh
-/// rather than a word. Run with `--nocapture` to see it.
+/// This test measures the WORST case of each row — a guard that admits nothing,
+/// so the search is driven to exhaustion — on stores far larger than this
+/// system has been observed to hold on one channel, and prints the wall time so
+/// the quadratic row is a number the reader can weigh rather than a word. Run
+/// with `--nocapture` to see it.
 #[tokio::test]
 async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
-    // ── One bind, 1000 resting data, NOTHING admissible: the exhaustive scan ────────────────
+    // ── One bind, 1000 resting data, NOTHING admissible: the exhaustive scan
+    // ────────────────
     let (space, _replay, matcher) = fixture().await;
     const POOL: i64 = 1000;
     for value in 0..POOL {
@@ -806,11 +848,12 @@ async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
     );
     assert_eq!(guards, spatial, "and one guard question per spatial match");
     println!(
-        "★ guarded single bind, {POOL} resting data, exhaustive: {spatial} Match::get, \
-         {guards} check_commit, {elapsed:?}"
+        "★ guarded single bind, {POOL} resting data, exhaustive: {spatial} Match::get, {guards} \
+         check_commit, {elapsed:?}"
     );
 
-    // ── Two binds, 60 × 60, NOTHING admissible: the quadratic corner ────────────────────────
+    // ── Two binds, 60 × 60, NOTHING admissible: the quadratic corner
+    // ────────────────────────
     let (space, _replay, matcher) = fixture().await;
     const SIDE: i64 = 60;
     for value in 0..SIDE {
@@ -854,11 +897,12 @@ async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
         "…and makes one spatial call per bind per selection reached"
     );
     println!(
-        "★ guarded two-bind join, {side} × {side} resting data, exhaustive: {spatial} \
-         Match::get, {guards} check_commit, {elapsed:?}"
+        "★ guarded two-bind join, {side} × {side} resting data, exhaustive: {spatial} Match::get, \
+         {guards} check_commit, {elapsed:?}"
     );
 
-    // ── The same store WITHOUT a guard: what the pre-fix matcher cost ──────────────────────
+    // ── The same store WITHOUT a guard: what the pre-fix matcher cost
+    // ──────────────────────
     let (space, _replay, matcher) = fixture().await;
     for value in 0..SIDE {
         let _ = space
@@ -887,19 +931,15 @@ async fn the_cost_of_a_complete_guarded_search_is_bounded_and_measured() {
     let spatial = matcher.spatial_calls() - spatial_before;
 
     assert_eq!(fired.1.len(), 2);
-    assert_eq!(
-        spatial, 2,
-        "unguarded: one spatial call per bind — the pre-fix cost, unchanged"
-    );
-    println!(
-        "  control — the SAME store with no guard: {spatial} Match::get, {elapsed:?}"
-    );
+    assert_eq!(spatial, 2, "unguarded: one spatial call per bind — the pre-fix cost, unchanged");
+    println!("  control — the SAME store with no guard: {spatial} Match::get, {elapsed:?}");
 }
 
-/// The candidate order the selection rests on is a function of the candidates alone, not of the
-/// order they were inserted in. Two stores holding the same data in different insertion orders
-/// present the same candidate sequence to the matcher — modulo the store index each carries,
-/// which is exactly the removal address and must NOT be canonicalized.
+/// The candidate order the selection rests on is a function of the candidates
+/// alone, not of the order they were inserted in. Two stores holding the same
+/// data in different insertion orders present the same candidate sequence to
+/// the matcher — modulo the store index each carries, which is exactly the
+/// removal address and must NOT be canonicalized.
 #[test]
 fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
     let make = |values: &[&str]| -> Vec<Datum<String>> {
@@ -913,7 +953,10 @@ fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
     let backwards = order_candidates_with_index(make(&["68", "42", "77", "91"]));
 
     let payloads = |ordered: &[(Datum<String>, i32)]| -> Vec<String> {
-        ordered.iter().map(|(datum, _)| (*datum.a).clone()).collect()
+        ordered
+            .iter()
+            .map(|(datum, _)| (*datum.a).clone())
+            .collect()
     };
     assert_eq!(
         payloads(&forwards),
@@ -932,13 +975,15 @@ fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates() {
     );
 }
 
-/// The same store answers the same way every time: repeat the whole guarded rendezvous on fresh
-/// spaces and require an identical selection each time. (Determinism here is per-store, which is
-/// what consensus needs; the payloads themselves determine the order.)
+/// The same store answers the same way every time: repeat the whole guarded
+/// rendezvous on fresh spaces and require an identical selection each time.
+/// (Determinism here is per-store, which is what consensus needs; the payloads
+/// themselves determine the order.)
 #[tokio::test]
 async fn the_guarded_selection_is_stable_across_repetitions() {
-    // Canonical order: 88, 42, 77, 63, 44 — an inadmissible datum first (so the answer is
-    // reached by backtracking) and TWO admissible ones (so "which one" is a real question).
+    // Canonical order: 88, 42, 77, 63, 44 — an inadmissible datum first (so the
+    // answer is reached by backtracking) and TWO admissible ones (so "which
+    // one" is a real question).
     const OFFERS: [&str; 5] = ["63", "42", "77", "44", "88"];
     assert_eq!(
         canonical_position("offer", &OFFERS, "88"),
@@ -974,15 +1019,13 @@ async fn the_guarded_selection_is_stable_across_repetitions() {
         selections.iter().all(|selection| *selection == first),
         "the guarded selection must not vary run to run: {selections:?}"
     );
-    assert!(
-        first == "42" || first == "44",
-        "and it must be one of the ADMISSIBLE offers: {first}"
-    );
+    assert!(first == "42" || first == "44", "and it must be one of the ADMISSIBLE offers: {first}");
 
-    // …and it is the FIRST admissible candidate in the canonical order — the same selection
-    // rule an unguarded receive follows, with "admissible" widened from spatial to spatial+guard.
-    let admissible_first = canonical_position("offer", &OFFERS, "42")
-        .min(canonical_position("offer", &OFFERS, "44"));
+    // …and it is the FIRST admissible candidate in the canonical order — the same
+    // selection rule an unguarded receive follows, with "admissible" widened
+    // from spatial to spatial+guard.
+    let admissible_first =
+        canonical_position("offer", &OFFERS, "42").min(canonical_position("offer", &OFFERS, "44"));
     assert!(
         admissible_first > 0,
         "the answer must lie behind at least one rejection, or this test does not exercise \
@@ -995,10 +1038,11 @@ async fn the_guarded_selection_is_stable_across_repetitions() {
     );
 }
 
-/// A guarded receive that no data satisfy must not disturb the map the next continuation is
-/// matched against. Two continuations wait on one channel: the first rejects everything, the
-/// second accepts. The produce must reach the second — which it can only do if the failed
-/// search restored every pool it touched.
+/// A guarded receive that no data satisfy must not disturb the map the next
+/// continuation is matched against. Two continuations wait on one channel: the
+/// first rejects everything, the second accepts. The produce must reach the
+/// second — which it can only do if the failed search restored every pool it
+/// touched.
 #[tokio::test]
 async fn a_failed_guarded_search_restores_the_candidate_pools() {
     let (space, _replay, _matcher) = fixture().await;
@@ -1040,9 +1084,9 @@ async fn a_failed_guarded_search_restores_the_candidate_pools() {
     assert_eq!(waiting(&space, &["ch"]).await, 1, "the strict receive is still waiting");
 }
 
-/// A regression guard for the pools themselves: `HashMap` iteration order must not leak into
-/// the selection. The join below binds two DIFFERENT channels, so the search visits two map
-/// entries; run it repeatedly and require one answer.
+/// A regression guard for the pools themselves: `HashMap` iteration order must
+/// not leak into the selection. The join below binds two DIFFERENT channels, so
+/// the search visits two map entries; run it repeatedly and require one answer.
 #[tokio::test]
 async fn a_multi_channel_guarded_selection_does_not_depend_on_map_iteration_order() {
     let mut selections: Vec<Vec<String>> = Vec::with_capacity(8);
@@ -1089,8 +1133,9 @@ async fn a_multi_channel_guarded_selection_does_not_depend_on_map_iteration_orde
     );
 }
 
-/// The `HashMap` the search mutates is keyed by channel; this pins that a bind whose channel
-/// has NO pool at all fails the whole selection rather than silently binding fewer variables.
+/// The `HashMap` the search mutates is keyed by channel; this pins that a bind
+/// whose channel has NO pool at all fails the whole selection rather than
+/// silently binding fewer variables.
 #[tokio::test]
 async fn a_bind_on_an_empty_channel_fires_nothing() {
     let (space, _replay, _matcher) = fixture().await;
@@ -1140,7 +1185,9 @@ impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode f
     }
 }
 
-impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode for GuardedContinuation {
+impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
+    for GuardedContinuation
+{
     fn cold_decode_prefix(
         bytes: &[u8],
     ) -> Result<

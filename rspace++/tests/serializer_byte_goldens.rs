@@ -3,20 +3,21 @@
 //! `Datum`/`WaitingContinuation` are Arc-shaped and non-`Serialize`;
 //! the history/cold-store boundary then serializes through borrowed twins in
 //! `serializers.rs`. These tests pin the twin encodings against literal bytes
-//! captured from the earlier value-shaped derived `Serialize` impls (`4e422b6b`), so any
-//! layout drift in the twins is a hard failure — the cold-store leaf bytes
-//! and therefore the checkpoint roots are consensus surfaces.
+//! captured from the earlier value-shaped derived `Serialize` impls
+//! (`4e422b6b`), so any layout drift in the twins is a hard failure — the
+//! cold-store leaf bytes and therefore the checkpoint roots are consensus
+//! surfaces.
 //!
-//! Capture procedure: `EPATHMAP_SERIALIZER_GOLDENS_BLESS=1 cargo test -p rspace_plus_plus --test
-//! serializer_byte_goldens -- --nocapture` at 4e422b6b printed the constants
-//! below; the assert mode then pins them forever.
+//! Capture procedure: `EPATHMAP_SERIALIZER_GOLDENS_BLESS=1 cargo test -p
+//! rspace_plus_plus --test serializer_byte_goldens -- --nocapture` at 4e422b6b
+//! printed the constants below; the assert mode then pins them forever.
 
 use std::collections::BTreeSet;
 
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::serializers::serializers::{
-    decode_datums, decode_continuations, encode_datum, encode_datums, encode_continuations,
+    decode_continuations, decode_datums, encode_continuations, encode_datum, encode_datums,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
@@ -29,8 +30,8 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 /// derived encoder before the cold-store decoder was written. It lives on the
 /// `models` side because `models` depends on `rspace_plus_plus`, so this crate
 /// cannot name `Par` without a dependency cycle. (It remains pinned
-/// transitively by the canonical event-hash goldens and the history checkpoint-root
-/// tests as well.)
+/// transitively by the canonical event-hash goldens and the history
+/// checkpoint-root tests as well.)
 fn fixture_datum() -> Datum<String> {
     Datum {
         a: "data0".to_string().into(),
@@ -108,12 +109,7 @@ fn check(label: &str, pinned_len: usize, pinned_digest: &str, bytes: &[u8]) {
 
 #[test]
 fn datum_encoding_pinned() {
-    check(
-        "DATUM",
-        pinned::DATUM_LEN,
-        pinned::DATUM_DIGEST_HEX,
-        &encode_datum(&fixture_datum()),
-    );
+    check("DATUM", pinned::DATUM_LEN, pinned::DATUM_DIGEST_HEX, &encode_datum(&fixture_datum()));
 }
 
 #[test]

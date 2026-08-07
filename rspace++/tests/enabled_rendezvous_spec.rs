@@ -1,4 +1,5 @@
-//! **`E(S)` — the enabled rendezvous set**, and the named firing that consumes it.
+//! **`E(S)` — the enabled rendezvous set**, and the named firing that consumes
+//! it.
 //!
 //! # What is being added, and why it needs its own spec
 //!
@@ -66,8 +67,8 @@ enum Guard {
     Unguarded,
     /// Every matched datum, read as an integer, is at most this bound.
     AtMost(i64),
-    /// The matched data are strictly increasing in bind order — a predicate over
-    /// an ASSIGNMENT of data to binds, not merely over a set.
+    /// The matched data are strictly increasing in bind order — a predicate
+    /// over an ASSIGNMENT of data to binds, not merely over a set.
     StrictlyIncreasing,
 }
 
@@ -163,19 +164,17 @@ async fn fixture() -> (TestSpace, TestReplaySpace) {
     (play, replay)
 }
 
-async fn play_space() -> TestSpace {
-    fixture().await.0
-}
+async fn play_space() -> TestSpace { fixture().await.0 }
 
 /// The `AtMost(45)` corpus, chosen by MEASUREMENT rather than by eye.
 ///
 /// THE canonical candidate order is a Blake2b hash of the serialized candidate
-/// (`candidate_order::deterministic_candidate_hash`), so which of two data comes
-/// first has nothing to do with their numeric values. The first pair written
-/// here was `["55", "42"]` — and `t0` measured that the canonical order puts the
-/// *admissible* `42` first, which would have made every "the guard and the
-/// enumeration agree" assertion below vacuous: no backtracking would ever have
-/// been entered.
+/// (`candidate_order::deterministic_candidate_hash`), so which of two data
+/// comes first has nothing to do with their numeric values. The first pair
+/// written here was `["55", "42"]` — and `t0` measured that the canonical order
+/// puts the *admissible* `42` first, which would have made every "the guard and
+/// the enumeration agree" assertion below vacuous: no backtracking would ever
+/// have been entered.
 ///
 /// A sweep of the 54 × 45 rejected/admitted pairs on channel `"offer"` found
 /// 1115 pairs whose REJECTED member sorts first; `("46", "2")` is the least of
@@ -246,9 +245,10 @@ fn resting_ints(state: &TestState, channel: &str) -> Vec<i64> {
 // T0 — teeth
 // ════════════════════════════════════════════════════════════════════════════
 
-/// The corpus below leans on `["55", "42"]` under `AtMost(45)`. If `"42"` happened
-/// to be first in THE canonical candidate order the guard would never backtrack
-/// and "the enumeration agrees with the selector" would be vacuously true.
+/// The corpus below leans on `["55", "42"]` under `AtMost(45)`. If `"42"`
+/// happened to be first in THE canonical candidate order the guard would never
+/// backtrack and "the enumeration agrees with the selector" would be vacuously
+/// true.
 ///
 /// This test measures the canonical order directly and requires the admissible
 /// datum to be off the front. It is the same fixture-validity check
@@ -268,8 +268,8 @@ async fn t0_teeth_the_fixture_puts_the_admissible_datum_off_the_front() {
 
     assert_eq!(
         canonical[0], 46,
-        "fixture invalid: the guard-rejected datum must be the canonical FIRST pick, \
-         otherwise no backtracking is exercised (canonical order was {canonical:?})"
+        "fixture invalid: the guard-rejected datum must be the canonical FIRST pick, otherwise no \
+         backtracking is exercised (canonical order was {canonical:?})"
     );
 }
 
@@ -308,8 +308,8 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
         .await;
         assert!(
             fired,
-            "{label}: with data resting, an ordinary consume FIRES — that is the \
-             selector answer this test compares against"
+            "{label}: with data resting, an ordinary consume FIRES — that is the selector answer \
+             this test compares against"
         );
 
         // The consume above fired, so re-stage the same state without firing: a
@@ -355,8 +355,8 @@ async fn t1_the_enumeration_head_is_the_selector_choice() {
 
         assert_eq!(
             head, selector,
-            "{label}: E(S)'s head selection and the production selector's choice must be \
-             the same datum — they are the same descent"
+            "{label}: E(S)'s head selection and the production selector's choice must be the same \
+             datum — they are the same descent"
         );
     }
 }
@@ -412,11 +412,7 @@ async fn t2_the_enumeration_is_complete() {
         .map(|(_, data)| data[0])
         .collect();
     admitted.sort();
-    assert_eq!(
-        admitted,
-        vec![10, 20],
-        "the guard removes exactly the data it rejects"
-    );
+    assert_eq!(admitted, vec![10, 20], "the guard removes exactly the data it rejects");
 
     // (c) two continuations on one channel: the enumeration is the union.
     let two = play_space().await;
@@ -514,9 +510,9 @@ async fn t3_the_query_is_read_only() {
 
 /// The enumeration order is a consensus surface: two validators enumerating the
 /// same state must produce the same sequence, not merely the same set. The
-/// group-key sort exists for exactly this reason (the group set is read out of a
-/// `HashMap`), so the test builds the same logical state by inserting the data
-/// and the channels in DIFFERENT orders and requires an identical answer.
+/// group-key sort exists for exactly this reason (the group set is read out of
+/// a `HashMap`), so the test builds the same logical state by inserting the
+/// data and the channels in DIFFERENT orders and requires an identical answer.
 #[tokio::test]
 async fn t4_the_enumeration_is_deterministic() {
     async fn enumerate(channel_order: &[&str], data_order: &[&str]) -> Vec<(String, Vec<i64>)> {
@@ -572,7 +568,9 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
             BTreeSet::new(),
         ),
     );
-    space.get_store().put_join(&"c".to_string(), &["c".to_string()]);
+    space
+        .get_store()
+        .put_join(&"c".to_string(), &["c".to_string()]);
 
     let enabled = space.enabled_rendezvous();
     assert_eq!(enabled.len(), 3, "three resting data, one wildcard bind");
@@ -598,12 +596,12 @@ async fn t5_a_named_non_least_selection_fires_exactly_itself() {
     let after = space.get_store().snapshot();
     let mut remaining = resting_ints(&after, "c");
     remaining.sort();
-    let mut expected: Vec<i64> = vec![10, 20, 30].into_iter().filter(|v| *v != named).collect();
+    let mut expected: Vec<i64> = vec![10, 20, 30]
+        .into_iter()
+        .filter(|v| *v != named)
+        .collect();
     expected.sort();
-    assert_eq!(
-        remaining, expected,
-        "exactly the named datum is gone from the store"
-    );
+    assert_eq!(remaining, expected, "exactly the named datum is gone from the store");
     assert!(
         after
             .continuations
@@ -663,18 +661,11 @@ async fn t6_play_and_replay_enumerate_identically() {
 async fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing() {
     // (a) a continuation with no data at all.
     let lonely = play_space().await;
-    let fired = rest_receive(
-        &lonely,
-        &["c"],
-        vec![Pattern::Wildcard],
-        GuardedContinuation::unguarded("k"),
-    )
-    .await;
+    let fired =
+        rest_receive(&lonely, &["c"], vec![Pattern::Wildcard], GuardedContinuation::unguarded("k"))
+            .await;
     assert!(!fired, "no data rests, so the consume installs");
-    assert!(
-        lonely.enabled_rendezvous().is_empty(),
-        "a continuation with no datum is not enabled"
-    );
+    assert!(lonely.enabled_rendezvous().is_empty(), "a continuation with no datum is not enabled");
 
     // (b) data with no continuation.
     let mute = play_space().await;
@@ -803,9 +794,7 @@ async fn t8_a_join_enumerates_its_cross_product() {
 // and silences an otherwise-unused import in future edits of this file.
 // ════════════════════════════════════════════════════════════════════════════
 #[allow(dead_code)]
-fn _pool_type_is_nameable(pool: HashMap<String, Vec<(Datum<String>, i32)>>) -> usize {
-    pool.len()
-}
+fn _pool_type_is_nameable(pool: HashMap<String, Vec<(Datum<String>, i32)>>) -> usize { pool.len() }
 
 // ───────────────────────────────────────────────────────────────────────────
 // The cold-store DECODE boundary for this file's test doubles.
@@ -829,7 +818,9 @@ impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode f
     }
 }
 
-impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode for GuardedContinuation {
+impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
+    for GuardedContinuation
+{
     fn cold_decode_prefix(
         bytes: &[u8],
     ) -> Result<

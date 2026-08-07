@@ -31,7 +31,6 @@ enum Pattern {
 // Default-body event-hash bytes for the test-local type.
 impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for Pattern {}
 
-
 #[derive(Clone)]
 struct StringMatch;
 
@@ -57,8 +56,10 @@ struct StringsCaptor {
     res: LinkedList<Vec<String>>,
 }
 // Default-body event-hash bytes for the test-local type.
-impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for StringsCaptor {}
-
+impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
+    for StringsCaptor
+{
+}
 
 impl StringsCaptor {
     fn new() -> Self {
@@ -1849,8 +1850,9 @@ async fn an_install_should_not_allow_installing_after_a_produce_operation() {
     assert!(install_attempt.is_err())
 }
 
-/// ★★ `consume` with `|channels| != |patterns|` RETURNS `Err`, and the store is left
-/// untouched. The test's name has always said `should_error`; it now says what happens.
+/// ★★ `consume` with `|channels| != |patterns|` RETURNS `Err`, and the store is
+/// left untouched. The test's name has always said `should_error`; it now says
+/// what happens.
 ///
 /// ## Three dispositions, in order, and why this is the last one
 ///
@@ -1862,30 +1864,33 @@ async fn an_install_should_not_allow_installing_after_a_produce_operation() {
 ///
 /// The middle form carried its own retirement notice: *"`consume` RETURNED on
 /// |channels| != |patterns|. That is the better behaviour, but it means this guard no
-/// longer measures what it claims and the `panic!` … must be re-derived along with the
-/// store-effect expectations."* That assertion **fired** the moment the guard was
-/// converted, which is what a disposition record is for. This is the re-derivation.
+/// longer measures what it claims and the `panic!` … must be re-derived along
+/// with the store-effect expectations."* That assertion **fired** the moment
+/// the guard was converted, which is what a disposition record is for. This is
+/// the re-derivation.
 ///
 /// ## Why the abort was wrong
 ///
-/// An arity mismatch is a **decidable negative** — the two lengths are in the caller's
-/// own arguments — not an internal invariant violation, and `consume` has always
-/// returned `Result<_, RSpaceError>`. Four sites answered it with `panic!` anyway;
-/// they now refuse. The full argument, the sibling table, and the play/replay
-/// agreement cell are in `rspace++/tests/consume_arity_refusal.rs`; the measurement
-/// that a foreign caller can actually REACH the guard, from bytes, is
-/// `rspace++/libs/rspace_rhotypes/tests/ffi_consume_arity_reachability.rs`.
+/// An arity mismatch is a **decidable negative** — the two lengths are in the
+/// caller's own arguments — not an internal invariant violation, and `consume`
+/// has always returned `Result<_, RSpaceError>`. Four sites answered it with
+/// `panic!` anyway; they now refuse. The full argument, the sibling table, and
+/// the play/replay agreement cell are in
+/// `rspace++/tests/consume_arity_refusal.rs`; the measurement that a foreign
+/// caller can actually REACH the guard, from bytes, is `rspace++/libs/
+/// rspace_rhotypes/tests/ffi_consume_arity_reachability.rs`.
 ///
-/// ⚠ CONSENSUS-VISIBLE: this turns "every node dies" into "this call fails", and a
-/// validator that today aborts would instead reject. It requires a coordinated
-/// `Validate::version` bump, which is **F1r3node's act**.
+/// ⚠ CONSENSUS-VISIBLE: this turns "every node dies" into "this call fails",
+/// and a validator that today aborts would instead reject. It requires a
+/// coordinated `Validate::version` bump, which is **F1r3node's act**.
 ///
 /// ## Anti-vacuity
 ///
-/// A `consume` that refused everything would satisfy the `Err` assertion alone, so the
-/// CONTROL runs first, on the SAME rspace, through the SAME method, differing only in
-/// the length of the `patterns` vector. The store-effect assertions — the ones the
-/// `#[should_panic]` form left dead — are what separate "refused" from "half-consumed".
+/// A `consume` that refused everything would satisfy the `Err` assertion alone,
+/// so the CONTROL runs first, on the SAME rspace, through the SAME method,
+/// differing only in the length of the `patterns` vector. The store-effect
+/// assertions — the ones the `#[should_panic]` form left dead — are what
+/// separate "refused" from "half-consumed".
 #[tokio::test]
 async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
     let rspace = create_rspace().await;
@@ -1922,8 +1927,8 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
     // than about a store nothing ever reaches.
     assert!(
         inserts_after_control > 0,
-        "★ the control consume wrote NOTHING to the hot store, which would make the \
-         'no new inserts' assertion below vacuous"
+        "★ the control consume wrote NOTHING to the hot store, which would make the 'no new \
+         inserts' assertion below vacuous"
     );
 
     // ★ THE SUBJECT: two channels, one pattern.
@@ -1944,12 +1949,12 @@ async fn consuming_with_different_pattern_and_channel_lengths_should_error() {
         ),
         Err(other) => panic!(
             "the arity mismatch was refused with the wrong variant: {other:?}. \
-             `RSpaceError::BugFoundError` is the variant \
-             `ReplayRSpace::locked_install_internal` already used before the conversion."
+             `RSpaceError::BugFoundError` is the variant `ReplayRSpace::locked_install_internal` \
+             already used before the conversion."
         ),
         Ok(value) => panic!(
-            "★★ `consume` ACCEPTED |channels| = 2 with |patterns| = 1, returning {value:?}. \
-             The arity guard is gone, not merely non-fatal."
+            "★★ `consume` ACCEPTED |channels| = 2 with |patterns| = 1, returning {value:?}. The \
+             arity guard is gone, not merely non-fatal."
         ),
     }
 

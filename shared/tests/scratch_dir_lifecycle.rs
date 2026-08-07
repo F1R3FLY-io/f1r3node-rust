@@ -567,9 +567,7 @@ fn staging_guard_verdict(o: &StagingObservation) -> Result<(), String> {
         ));
     }
     if !o.survived {
-        violations.push(
-            "the half-built directory did not survive the reaper".to_string(),
-        );
+        violations.push("the half-built directory did not survive the reaper".to_string());
     }
     match violations.is_empty() {
         true => Ok(()),
@@ -603,7 +601,8 @@ fn staging_guard_verdict(o: &StagingObservation) -> Result<(), String> {
 #[test]
 fn the_staging_guard_goes_red_when_the_incoming_rule_is_reverted() {
     let base = tempfile::tempdir().expect("private base");
-    let observation = observe_young_staging_window(reap_orphans_in_without_staging_rule, base.path());
+    let observation =
+        observe_young_staging_window(reap_orphans_in_without_staging_rule, base.path());
 
     let why = staging_guard_verdict(&observation).expect_err(
         "the staging guard MUST fail against a reaper with the `.incoming` rule reverted — if \

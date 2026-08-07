@@ -925,9 +925,7 @@ fn collect<'a>(
             .field
             .iter()
             .find(|f| f.number == Some(2))
-            .unwrap_or_else(|| {
-                panic!("schema: map entry `{name}` has no value field at tag 2")
-            });
+            .unwrap_or_else(|| panic!("schema: map entry `{name}` has no value field at tag 2"));
         let value_ty = value
             .r#type
             .and_then(|t| Type::try_from(t).ok())
@@ -1198,9 +1196,9 @@ fn resolve_message(
             empty_bytes += 1;
         }
         let proto_name = field.name.clone().unwrap_or_default();
-        let tag = field.number.unwrap_or_else(|| {
-            panic!("schema: `{msg_name}.{proto_name}` has no proto tag")
-        });
+        let tag = field
+            .number
+            .unwrap_or_else(|| panic!("schema: `{msg_name}.{proto_name}` has no proto tag"));
         assert!(
             tag > 0,
             "schema: `{msg_name}.{proto_name}` has proto tag {tag}; protobuf tags start \
@@ -1914,10 +1912,7 @@ impl ClonePlan {
         for oneof in oneofs {
             let owner = owner_of_oneof(messages, oneof);
             let desc = raw.get(owner.as_str()).unwrap_or_else(|| {
-                panic!(
-                    "schema: oneof `{}` has no owner message",
-                    oneof.rust_ident
-                )
+                panic!("schema: oneof `{}` has no owner message", oneof.rust_ident)
             });
             let idx = desc
                 .oneof_decl
@@ -3835,9 +3830,9 @@ fn emit_term_ops_source(
         if extern_set.contains(leaf) || !plan.entered.contains(leaf) {
             continue;
         }
-        let fields = fields_of.get(leaf).unwrap_or_else(|| {
-            panic!("schema: entered type `{leaf}` has no resolved fields")
-        });
+        let fields = fields_of
+            .get(leaf)
+            .unwrap_or_else(|| panic!("schema: entered type `{leaf}` has no resolved fields"));
         emit_clone_family_message(
             &mut src,
             &path_of[leaf],
@@ -5973,9 +5968,9 @@ fn emit_debug_oracle_field(
         }
         Shape::Oneof => {
             let key = format!("{owner}::{name}");
-            let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                panic!("schema: Debug oracle field `{key}` has no oneof")
-            });
+            let oneof = oneof_by_field
+                .get(&key)
+                .unwrap_or_else(|| panic!("schema: Debug oracle field `{key}` has no oneof"));
             writeln!(src, "    let {binding} = OracleOption(value.{name}.as_ref().map(|child| DebugNode::{}(child)));", ord_oneof_arm(oneof)).expect("write");
             writeln!(src, "    builder.field({name:?}, &{binding});").expect("write");
         }
@@ -6009,9 +6004,9 @@ fn emit_ord_driver(
     loop {
         let previous = reachable_messages.len() + reachable_oneofs.len();
         for leaf in reachable_messages.clone() {
-            let fields = fields_of.get(leaf).unwrap_or_else(|| {
-                panic!("schema: Ord-reachable message `{leaf}` has no fields")
-            });
+            let fields = fields_of
+                .get(leaf)
+                .unwrap_or_else(|| panic!("schema: Ord-reachable message `{leaf}` has no fields"));
             for field in *fields {
                 match &field.shape {
                     Shape::Message { leaf } | Shape::RepeatedMessage { leaf } => {
@@ -6643,9 +6638,9 @@ fn emit_ord_message_step(
             }
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
-                let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema: Ord field `{key}` has no resolved oneof")
-                });
+                let oneof = oneof_by_field
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("schema: Ord field `{key}` has no resolved oneof"));
                 writeln!(
                     src,
                     "        match (&left.{name}, &right.{name}) {{\n            \
@@ -7366,9 +7361,9 @@ fn emit_eq_oracle_message(
             }
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
-                let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema: Eq oracle field `{key}` has no oneof")
-                });
+                let oneof = oneof_by_field
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("schema: Eq oracle field `{key}` has no oneof"));
                 let compare = format!("oracle_eq_oneof_{}", oneof.rust_ident.to_snake_case());
                 writeln!(
                     src,
@@ -7902,9 +7897,9 @@ fn emit_hash_oracle_message(
             }
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
-                let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema: Hash oracle field `{key}` has no oneof")
-                });
+                let oneof = oneof_by_field
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("schema: Hash oracle field `{key}` has no oneof"));
                 let hash = format!("oracle_hash_oneof_{}", oneof.rust_ident.to_snake_case());
                 writeln!(
                     src,
@@ -8205,9 +8200,9 @@ fn emit_ord_oracle_message(
             }
             Shape::Oneof => {
                 let key = format!("{leaf}::{name}");
-                let oneof = oneof_by_field.get(&key).unwrap_or_else(|| {
-                    panic!("schema: Ord oracle field `{key}` has no oneof")
-                });
+                let oneof = oneof_by_field
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("schema: Ord oracle field `{key}` has no oneof"));
                 let oneof_stem = oneof.rust_ident.to_snake_case();
                 writeln!(
                     src,

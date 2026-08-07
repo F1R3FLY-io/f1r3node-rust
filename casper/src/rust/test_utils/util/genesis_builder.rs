@@ -331,7 +331,11 @@ impl GenesisBuilder {
                     .expect("GenesisBuilder: Failed to create rev address")
             })
             .collect();
-        bond_vaults.sort_by(|a, b| a.vault_address.to_base58().cmp(&b.vault_address.to_base58()));
+        bond_vaults.sort_by(|a, b| {
+            a.vault_address
+                .to_base58()
+                .cmp(&b.vault_address.to_base58())
+        });
 
         let vaults: Vec<Vault> = genesis_vaults
             .iter()

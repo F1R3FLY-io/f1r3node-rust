@@ -84,8 +84,7 @@ where
 /// Assert that the machine and the derived oracle agree on `bytes`, and that
 /// the machine reports the exact number of bytes the value occupies.
 fn agree<T>(label: &str, value: &T)
-where
-    T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+where T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug
 {
     let bytes = bincode::serialize(value).expect("oracle: serialize");
     let oracle: T = bincode::deserialize(&bytes).expect("oracle: deserialize");
@@ -99,8 +98,7 @@ where
 /// `allow_trailing_bytes()` is part of `bincode::deserialize`'s configuration.
 /// Tightening it would NARROW the accepted language, which is itself a fork.
 fn agree_with_trailing<T>(label: &str, value: &T)
-where
-    T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+where T: ColdStoreDecode + serde::Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug
 {
     let mut bytes = bincode::serialize(value).expect("oracle: serialize");
     let exact_len = bytes.len();
@@ -110,8 +108,14 @@ where
         .expect("oracle: trailing bytes must be ACCEPTED (allow_trailing_bytes)");
     let (machine, consumed) = T::cold_decode_prefix(&bytes)
         .unwrap_or_else(|e| panic!("{label}: machine rejected trailing bytes: {e}"));
-    assert!(machine == oracle, "{label}: disagreement with trailing bytes");
-    assert_eq!(consumed, exact_len, "{label}: extent must exclude the trailing bytes");
+    assert!(
+        machine == oracle,
+        "{label}: disagreement with trailing bytes"
+    );
+    assert_eq!(
+        consumed, exact_len,
+        "{label}: extent must exclude the trailing bytes"
+    );
 }
 
 // ===========================================================================
@@ -761,22 +765,19 @@ fn epathmap_shapes_agree() {
     }
 
     // And the absent `Option<EPathMap>`.
-    agree(
-        "epathmap::absent::zipper",
-        &models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EZipperBody(EZipper {
-                    pathmap: None,
-                    current_path: vec![],
-                    is_write_zipper: true,
-                    locally_free: vec![],
-                    connective_used: false,
-                    cursor_kind: 0,
-                })),
-            }],
-            ..Default::default()
-        },
-    );
+    agree("epathmap::absent::zipper", &models::par_from_default! {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: None,
+                current_path: vec![],
+                is_write_zipper: true,
+                locally_free: vec![],
+                connective_used: false,
+                cursor_kind: 0,
+            })),
+        }],
+        ..Default::default()
+    });
 }
 
 /// A decoded `EPathMap` reconstructs the same canonical trie snapshot rather

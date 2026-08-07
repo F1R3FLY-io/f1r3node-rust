@@ -127,10 +127,7 @@ thread_local! {
 /// ⚠ Reading these is still a DELTA measurement, not an absolute one: a thread that ran an
 /// earlier genesis-building test carries that test's counts. Bracket, and subtract.
 pub fn genesis_cache_stats_this_thread() -> (u64, u64) {
-    (
-        CACHE_ACCESSES.with(Cell::get),
-        CACHE_MISSES.with(Cell::get),
-    )
+    (CACHE_ACCESSES.with(Cell::get), CACHE_MISSES.with(Cell::get))
 }
 
 /// Run `build` on a **fresh OS thread** and report the calling thread's counter delta across it.
@@ -139,7 +136,9 @@ pub fn genesis_cache_stats_this_thread() -> (u64, u64) {
 /// libtest scheduler reproduces the interleaving that exposed it. With process-wide counters the
 /// delta is the foreign thread's count; with per-thread counters it is zero. See
 /// `a_foreign_threads_genesis_build_stays_out_of_this_threads_bracket`.
-pub fn genesis_cache_delta_across_foreign_thread(build: impl FnOnce() + Send + 'static) -> (u64, u64) {
+pub fn genesis_cache_delta_across_foreign_thread(
+    build: impl FnOnce() + Send + 'static,
+) -> (u64, u64) {
     let (accesses_before, misses_before) = genesis_cache_stats_this_thread();
     std::thread::Builder::new()
         .name("foreign-genesis-build".to_string())
@@ -325,7 +324,11 @@ impl GenesisBuilder {
                     .expect("GenesisBuilder: Failed to create rev address")
             })
             .collect();
-        bond_vaults.sort_by(|a, b| a.vault_address.to_base58().cmp(&b.vault_address.to_base58()));
+        bond_vaults.sort_by(|a, b| {
+            a.vault_address
+                .to_base58()
+                .cmp(&b.vault_address.to_base58())
+        });
 
         let vaults: Vec<Vault> = genesis_vaults
             .iter()

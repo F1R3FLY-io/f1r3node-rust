@@ -137,9 +137,7 @@ use prost::Message;
 /// computable thing**, and two copies of one truth do not stay equal. Every
 /// assertion about the sort's totality, stability or permutation-invariance is
 /// made against *this* function, so it cannot drift from the comparator.
-pub fn event_key(event: &Event) -> Vec<u8> {
-    event.to_proto().encode_to_vec()
-}
+pub fn event_key(event: &Event) -> Vec<u8> { event.to_proto().encode_to_vec() }
 
 /// Canonicalise a per-deploy RSpace event log in place.
 ///

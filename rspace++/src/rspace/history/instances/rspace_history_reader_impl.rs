@@ -5,7 +5,7 @@ use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec, StableHashSerialize};
+use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_reader::{HistoryReader, HistoryReaderBase};
@@ -18,8 +18,8 @@ use crate::rspace::metrics_constants::{
     HISTORY_FETCH_DATA_TIME_NS_METRIC, HISTORY_FETCH_DATA_TRIE_READ_NS_METRIC,
     RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::serializers::serializers::{decode_continuations, decode_datums, decode_joins};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
+use crate::rspace::serializers::serializers::{decode_continuations, decode_datums, decode_joins};
 
 #[derive(Clone)]
 pub struct RSpaceHistoryReaderImpl<C, P, A, K> {

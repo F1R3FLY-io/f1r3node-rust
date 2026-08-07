@@ -58,8 +58,8 @@ use models::rhoapi::{
     EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational, KeyValuePair, Par, Var, VarRef,
 };
 use rholang::rust::interpreter::matcher::has_locally_free::{
-    HasLocallyFree, connective_connective_used_ref, connective_locally_free_ref,
-    expr_connective_used_ref, expr_locally_free_ref,
+    connective_connective_used_ref, connective_locally_free_ref, expr_connective_used_ref,
+    expr_locally_free_ref, HasLocallyFree,
 };
 
 /// Every `ExprInstance` variant that `RhoTypes.proto` defines. If a variant is

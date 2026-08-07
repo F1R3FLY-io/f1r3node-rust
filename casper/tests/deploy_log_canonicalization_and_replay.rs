@@ -71,9 +71,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use casper::rust::util::event_converter::to_rspace_event;
-use casper::rust::util::event_log_canonical::{
-    canonicalize_deploy_log, event_key, is_canonical,
-};
+use casper::rust::util::event_log_canonical::{canonicalize_deploy_log, event_key, is_canonical};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     CommEvent, ConsumeEvent, Event, Peek, ProduceEvent,
@@ -91,9 +89,7 @@ use rspace_plus_plus::rspace::trace::event::Event as RspaceEvent;
 
 /// A 32-byte hash whose bytes are determined by `tag`, so every fixture event is
 /// distinguishable and every ordering question has an unambiguous answer.
-fn hash_bytes(tag: u8) -> prost::bytes::Bytes {
-    prost::bytes::Bytes::from(vec![tag; 32])
-}
+fn hash_bytes(tag: u8) -> prost::bytes::Bytes { prost::bytes::Bytes::from(vec![tag; 32]) }
 
 fn produce_event(channel: u8, datum: u8) -> ProduceEvent {
     ProduceEvent {
@@ -147,9 +143,7 @@ fn representative_log() -> Vec<Event> {
 }
 
 /// The elementwise encoding — the bytes that reach `Body.deploys`.
-fn encoded(log: &[Event]) -> Vec<Vec<u8>> {
-    log.iter().map(event_key).collect()
-}
+fn encoded(log: &[Event]) -> Vec<Vec<u8>> { log.iter().map(event_key).collect() }
 
 // ---------------------------------------------------------------------------
 // Q2 — the sort's own soundness
@@ -435,16 +429,13 @@ fn the_named_canonicalization_equals_the_inline_sort_it_replaced() {
 
     let duplicate = Event::Produce(produce_event(0x20, 0x21));
     let other = Event::Consume(consume_event(0x10, 0x11));
-    let fixtures = [
-        representative_log(),
-        vec![
-            duplicate.clone(),
-            other.clone(),
-            duplicate.clone(),
-            other,
-            duplicate,
-        ],
-    ];
+    let fixtures = [representative_log(), vec![
+        duplicate.clone(),
+        other.clone(),
+        duplicate.clone(),
+        other,
+        duplicate,
+    ]];
 
     let mut compared = 0usize;
     for base in fixtures {
@@ -486,11 +477,12 @@ fn in_memory_store() -> RSpaceStore {
 }
 
 fn fresh_replay_space() -> RholangReplay {
-    let (_play, replay) = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
-        in_memory_store(),
-        Arc::new(Box::new(Matcher)),
-    )
-    .expect("create_with_replay must succeed over in-memory stores");
+    let (_play, replay) =
+        RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
+            in_memory_store(),
+            Arc::new(Box::new(Matcher)),
+        )
+        .expect("create_with_replay must succeed over in-memory stores");
     replay
 }
 

@@ -35,7 +35,8 @@
 //! pools down to the produces the recorded COMM actually consumed, which
 //! usually leaves one candidate per bind and makes order moot. It stops being
 //! moot as soon as the matcher can select a candidate other than the first
-//! spatial match — see [`crate::rspace::space_matcher::SpaceMatcher::extract_guarded_data_candidates`].
+//! spatial match — see
+//! [`crate::rspace::space_matcher::SpaceMatcher::extract_guarded_data_candidates`].
 //! Play and replay therefore share this one order, so that the
 //! replay-equivalence argument recorded there ("replay's pool is a subsequence
 //! of play's pool, so the lexicographically least admissible selection is the
@@ -58,9 +59,9 @@ use super::serializers::serializers::CandidateOrderingBytes;
 ///
 /// Candidates are `Arc`-shaped and non-serde; the ordering bytes come from
 /// the serializer twins ([`CandidateOrderingBytes`]), byte-identical to the
-/// the earlier value-shaped `bincode::serialize(candidate)` (golden-pinned). Candidate ordering
-/// participates in replay-visible COMM selection; the bytes are a consensus
-/// surface.
+/// the earlier value-shaped `bincode::serialize(candidate)` (golden-pinned).
+/// Candidate ordering participates in replay-visible COMM selection; the bytes
+/// are a consensus surface.
 pub fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
 where D: CandidateOrderingBytes {
     let bytes = candidate.candidate_ordering_bytes();
@@ -91,7 +92,9 @@ where D: CandidateOrderingBytes {
     // unstable sort yields the same permutation a stable one would — without
     // the stable sort's scratch allocation.
     decorated.sort_unstable_by(|(left_hash, left_index, _), (right_hash, right_index, _)| {
-        left_hash.cmp(right_hash).then_with(|| left_index.cmp(right_index))
+        left_hash
+            .cmp(right_hash)
+            .then_with(|| left_index.cmp(right_index))
     });
 
     // Undecorate, preserving the store index.

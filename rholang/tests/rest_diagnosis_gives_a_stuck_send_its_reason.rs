@@ -415,7 +415,10 @@ async fn analysing_a_snapshot_does_not_change_the_next_snapshot() {
 
         let before = runtime.get_hot_changes().await;
         let sites = rest_diagnosis::diagnose(&before);
-        assert!(!sites.is_empty(), "FLOOR: the analysis must have found something");
+        assert!(
+            !sites.is_empty(),
+            "FLOOR: the analysis must have found something"
+        );
         let _ = rest_diagnosis::report(&sites);
         let after = runtime.get_hot_changes().await;
 

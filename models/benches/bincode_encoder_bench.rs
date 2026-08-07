@@ -78,9 +78,8 @@ use models::rhoapi::{EList, ETuple, Expr, KeyValuePair, ListParWithRandom, Par, 
 // is a fix that drifts apart. See `paired.rs`'s module docs.
 #[path = "paired.rs"]
 mod paired;
-use paired::{loadavg, measure_arms};
-
 use models::rust::rholang::bincode_encoder::{encode, with_encoded};
+use paired::{loadavg, measure_arms};
 
 // ---------------------------------------------------------------------------
 // The measured distribution
@@ -212,8 +211,6 @@ fn weighted_workload() -> Vec<ListParWithRandom> {
 // Statistics
 // ---------------------------------------------------------------------------
 
-
-
 /// The three arms, measured in the same repetitions and rotated: the derived
 /// `bincode::serialize` oracle, the machine returning an owned `Vec`, and the
 /// machine writing into a reused thread-local buffer.
@@ -261,9 +258,18 @@ fn environment() {
         loadavg()
     );
     for (label, path) in [
-        ("governor", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
-        ("cur_freq", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"),
-        ("max_freq", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"),
+        (
+            "governor",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
+        ),
+        (
+            "cur_freq",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        ),
+        (
+            "max_freq",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq",
+        ),
     ] {
         let value = std::fs::read_to_string(path)
             .map(|s| s.trim().to_string())
@@ -324,16 +330,13 @@ fn main() {
     for (label, one) in [
         ("map(64 entries)", vec![map_datum(64); 64]),
         ("map(1024 entries)", vec![map_datum(1024); 8]),
-        (
-            "wide(4096 siblings)",
-            vec![
-                ListParWithRandom {
-                    pars: (0..4096).map(|i| gint(i)).collect(),
-                    random_state: vec![1; 32],
-                };
-                4
-            ],
-        ),
+        ("wide(4096 siblings)", vec![
+            ListParWithRandom {
+                pars: (0..4096).map(|i| gint(i)).collect(),
+                random_state: vec![1; 32],
+            };
+            4
+        ]),
     ] {
         println!("  {label}:");
         let arms = two_arms(&one);

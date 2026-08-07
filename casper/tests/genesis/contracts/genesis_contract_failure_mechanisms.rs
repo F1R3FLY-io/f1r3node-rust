@@ -209,8 +209,8 @@ fn with_single_registered_test(source: &str, keep: &str) -> String {
 
     let narrowed = format!("{}[{entry}]{}", &source[..open], &source[close + 1..]);
 
-    let extracted = registered_test_names(&narrowed)
-        .expect("the narrowed fixture must still normalize");
+    let extracted =
+        registered_test_names(&narrowed).expect("the narrowed fixture must still normalize");
     assert_eq!(
         extracted,
         only(keep),
@@ -833,12 +833,18 @@ async fn either_from_nillable_error_takes_no_default_value() {
     );
 
     // ── (c): the payload, as a RED at the value it refuses plus its green twin. ──────────────────
-    let (as_contract, contract_verdict) =
-        run_suite_with_verdicts(&one_test_suite(PROBE_TEST, SETUP, VALUE_AS_CONTRACT_RETURNS)).await;
+    let (as_contract, contract_verdict) = run_suite_with_verdicts(&one_test_suite(
+        PROBE_TEST,
+        SETUP,
+        VALUE_AS_CONTRACT_RETURNS,
+    ))
+    .await;
     let (as_test_expected, stale_verdict) =
         run_suite_with_verdicts(&one_test_suite(PROBE_TEST, SETUP, VALUE_AS_TEST_EXPECTED)).await;
 
-    println!("value (false, \"Not Nil\")    — the ERROR:   {as_contract:?} verdict={contract_verdict:?}");
+    println!(
+        "value (false, \"Not Nil\")    — the ERROR:   {as_contract:?} verdict={contract_verdict:?}"
+    );
     println!("value (false, \"If not Nil\") — the DEFAULT: {as_test_expected:?} verdict={stale_verdict:?}");
 
     assert_eq!(
@@ -875,7 +881,6 @@ async fn either_from_nillable_error_takes_no_default_value() {
     );
 }
 
-
 /// ★★ **`rho:test:deployerId:make` takes THREE arguments, and getting that wrong looks EXACTLY like
 /// the defect under investigation.**
 ///
@@ -900,7 +905,8 @@ async fn either_from_nillable_error_takes_no_default_value() {
 /// Every rung is asserted rather than printed — a cell whose body is only `println!` passes
 /// unconditionally, which is the vacuity this file exists to refuse.
 #[tokio::test]
-async fn the_rho_spec_runtime_answers_each_slash_setup_step_and_deployer_id_needs_three_arguments() {
+async fn the_rho_spec_runtime_answers_each_slash_setup_step_and_deployer_id_needs_three_arguments()
+{
     /// One setup step, and whether it is expected to answer.
     struct Rung {
         name: &'static str,
@@ -971,7 +977,10 @@ async fn the_rho_spec_runtime_answers_each_slash_setup_step_and_deployer_id_need
     let mut disagreements: Vec<String> = Vec::new();
     for rung in &rungs {
         let out = run_suite(&one_test_suite(PROBE_TEST, rung.setup, BODY)).await;
-        println!("{:<48} must_answer={:<5} → {out:?}", rung.name, rung.must_answer);
+        println!(
+            "{:<48} must_answer={:<5} → {out:?}",
+            rung.name, rung.must_answer
+        );
 
         assert!(
             out.raise_text().is_none(),

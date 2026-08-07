@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{
-    hash, hash_consume, hash_produce, hash_vec, StableHashSerialize,
+    StableHashSerialize, hash, hash_consume, hash_produce, hash_vec,
 };
 use crate::rspace::internal::ConsumeCandidate;
 

@@ -22,19 +22,21 @@
 //!                                    └──────── every restart, every peer ─────┘
 //! ```
 //!
-//! `rspace_importer` writes cold-store bytes to LMDB **without ever deep-decoding
-//! them**, so a too-deep datum enters storage through a path that structurally
-//! cannot observe its depth, and then aborts the node on *every* read-back, on
-//! *every* restart, on *every* peer that synced the same state. Every other
-//! Θ(depth) member is a transient, per-worker fault; this one is not.
+//! `rspace_importer` writes cold-store bytes to LMDB **without ever
+//! deep-decoding them**, so a too-deep datum enters storage through a path that
+//! structurally cannot observe its depth, and then aborts the node on *every*
+//! read-back, on *every* restart, on *every* peer that synced the same state.
+//! Every other Θ(depth) member is a transient, per-worker fault; this one is
+//! not.
 //!
 //! ## Why a trait rather than a free function
 //!
 //! `rspace++` cannot name `Par`. `models` depends on `rspace_plus_plus`
 //! (`models/Cargo.toml`), so the reverse edge would be a cycle. The
 //! cold-store decode sites live here, in `rspace++`; the decoder lives in
-//! `models` (`models/src/rust/rholang/bincode_decoder.rs`). A trait declared on this
-//! side and implemented on the other is the only shape that respects that edge.
+//! `models` (`models/src/rust/rholang/bincode_decoder.rs`). A trait declared on
+//! this side and implemented on the other is the only shape that respects that
+//! edge.
 //!
 //! ## ⚠ Why there is deliberately NO blanket impl
 //!
@@ -82,12 +84,12 @@
 //! unused as a result — which is the compiler confirming the swap was total
 //! rather than additive, and is worth more than the count itself.
 //!
-//! Four further sites, in `shared/src/rust/store/key_value_typed_store_impl.rs`,
-//! are deliberately **untouched**: that is a general typed key/value store, its
-//! generic bincode path has no instantiation anywhere in the workspace (the two
-//! concrete stores override `encode`/`decode`, and the report store uses
-//! `prost`, which *does* enforce a recursion limit), and nothing it holds
-//! contains a `Par`.
+//! Four further sites, in
+//! `shared/src/rust/store/key_value_typed_store_impl.rs`, are deliberately
+//! **untouched**: that is a general typed key/value store, its generic bincode
+//! path has no instantiation anywhere in the workspace (the two concrete stores
+//! override `encode`/`decode`, and the report store uses `prost`, which *does*
+//! enforce a recursion limit), and nothing it holds contains a `Par`.
 //!
 //! ## The obligation: LANGUAGE IDENTITY, not byte identity
 //!
@@ -105,11 +107,11 @@
 //!
 //! agree — the same `Ok` value, or both `Err`. The `Err` half is not a
 //! formality: the **rejection set is consensus-visible**. A node that accepts a
-//! byte string another node rejects forks. `models/tests/bincode_decoder_malformed.rs`
-//! pins that half by truncating every corpus encoding at every byte offset,
-//! flipping bool bytes, pushing `Option` tags and variant indices out of range,
-//! and setting lengths to `usize::MAX`, asserting `Ok`/`Err` **agreement**
-//! (never message equality).
+//! byte string another node rejects forks.
+//! `models/tests/bincode_decoder_malformed.rs` pins that half by truncating
+//! every corpus encoding at every byte offset, flipping bool bytes, pushing
+//! `Option` tags and variant indices out of range, and setting lengths to
+//! `usize::MAX`, asserting `Ok`/`Err` **agreement** (never message equality).
 //!
 //! ## Prefix semantics, and why the primitive is `cold_decode_prefix`
 //!
@@ -117,8 +119,8 @@
 //! **prefix** of the datum encoding, and bincode's format is not
 //! self-delimiting from the outside: to read `persist` you must know where `a`
 //! ended, and the only way to know that is to have parsed `a`. The primitive is
-//! therefore prefix-shaped, and [`ColdStoreDecode::cold_decode`] is derived from
-//! it.
+//! therefore prefix-shaped, and [`ColdStoreDecode::cold_decode`] is derived
+//! from it.
 //!
 //! Trailing bytes are **permitted** at the top level: `bincode::deserialize`
 //! uses `DefaultOptions::new().with_fixint_encoding().allow_trailing_bytes()`
@@ -149,7 +151,8 @@ pub enum ColdStoreDecodeError {
         /// How many were left.
         available: usize,
     },
-    /// A `bool` byte outside `{0, 1}`. Mirrors `ErrorKind::InvalidBoolEncoding`.
+    /// A `bool` byte outside `{0, 1}`. Mirrors
+    /// `ErrorKind::InvalidBoolEncoding`.
     InvalidBoolEncoding(u8),
     /// An `Option` tag byte outside `{0, 1}`. Mirrors
     /// `ErrorKind::InvalidTagEncoding`.
@@ -254,8 +257,9 @@ pub trait ColdStoreDecode: Sized {
     }
 }
 
-/// The delegating prefix decode for **bounded-depth** types: run bincode over an
-/// `io::Cursor` and report the cursor's final position as the consumed count.
+/// The delegating prefix decode for **bounded-depth** types: run bincode over
+/// an `io::Cursor` and report the cursor's final position as the consumed
+/// count.
 ///
 /// This is the body of every rspace++ test-double impl. It is sound *only* for
 /// types whose maximum nesting is fixed by their own definition — the rspace++
@@ -296,11 +300,10 @@ pub trait ColdStoreDecode: Sized {
 /// `size_of::<T>()`; `read_bytes(n)` charges `n`), so the charge is at most the
 /// bytes consumed, and the budget starts at `bytes.len()`.
 pub fn legacy_prefix<T>(bytes: &[u8]) -> Result<(T, usize), ColdStoreDecodeError>
-where
-    T: for<'a> Deserialize<'a>,
-{
-    use bincode::Options;
+where T: for<'a> Deserialize<'a> {
     use std::io::Cursor;
+
+    use bincode::Options;
 
     let mut cursor = Cursor::new(bytes);
     let options = bincode::DefaultOptions::new()
@@ -386,9 +389,7 @@ pub fn cold_decode_vec_prefix<T: ColdStoreDecode>(
 /// whole struct with the derive, which is why this composition is sound rather
 /// than merely convenient.
 pub fn legacy_tail<T>(bytes: &[u8]) -> Result<T, ColdStoreDecodeError>
-where
-    T: for<'a> Deserialize<'a>,
-{
+where T: for<'a> Deserialize<'a> {
     bincode::deserialize(bytes).map_err(|e| ColdStoreDecodeError::Legacy(e.to_string()))
 }
 

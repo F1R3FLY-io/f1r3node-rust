@@ -5,9 +5,9 @@ use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -15,11 +15,11 @@ use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use crate::rspace::state::instances::rspace_importer_store::RSpaceImporterStore;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
-use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepository.scala
 pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync {

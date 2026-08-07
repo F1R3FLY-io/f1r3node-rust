@@ -46,11 +46,9 @@ fn method(target: Par, name: &str, arguments: Vec<Par>) -> Par {
 }
 
 fn native_pathmap(value: &Par) -> &EPathMap {
-    let [
-        Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
-        },
-    ] = value.exprs.as_slice()
+    let [Expr {
+        expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+    }] = value.exprs.as_slice()
     else {
         panic!("generic EPathMap method changed the carrier: {value:?}");
     };

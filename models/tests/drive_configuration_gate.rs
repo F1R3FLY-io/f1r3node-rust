@@ -432,8 +432,12 @@ fn run_arm(arm: &str) {
             (v, visits)
         }
         "region_overfull" => {
-            let v = drive(&mut RegionOverfull, &mut visits, Step::Descend(Chain(CHAIN)))
-                .expect("region_overfull cannot fail");
+            let v = drive(
+                &mut RegionOverfull,
+                &mut visits,
+                Step::Descend(Chain(CHAIN)),
+            )
+            .expect("region_overfull cannot fail");
             (v, visits)
         }
         // ★★ The `Outcome::Tail` arms run on their own `Trail` state, so they are
@@ -454,9 +458,7 @@ fn run_tail_arm(arm: &str) {
     // ⚠ `Step<'_, T>` is parameterised by the visitor, so the root cannot be one
     // shared binding across arms — each arm builds its own.
     fn root<T>() -> Step<'static, T>
-    where
-        T: Traversal<Node<'static> = SeqNode>,
-    {
+    where T: Traversal<Node<'static> = SeqNode> {
         Step::Descend(SeqNode::Seq {
             len: SEQ_LEN,
             cursor: 0,
@@ -555,7 +557,9 @@ fn the_driver_runs_a_well_formed_traversal_to_completion() {
         child.output
     );
     assert!(
-        child.output.contains(&format!("{OK_MARKER} arm=well_formed")),
+        child
+            .output
+            .contains(&format!("{OK_MARKER} arm=well_formed")),
         "the child exited 0 without running the subject:\n{}",
         child.output
     );
@@ -669,19 +673,17 @@ fn assert_rejected(arm: &str, expected: &[&str]) {
 #[test]
 fn a_kont_that_pops_fewer_values_than_its_arity_claims_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "pops_nothing",
-            &["DEFICIT INVARIANT", "V + D + C - A == 1", "Invariant 2"],
-        );
+        assert_rejected("pops_nothing", &[
+            "DEFICIT INVARIANT",
+            "V + D + C - A == 1",
+            "Invariant 2",
+        ]);
     } else {
-        assert_rejected(
-            "pops_nothing",
-            &[
-                "MALFORMED FINAL CONFIGURATION",
-                "obligation that was never popped",
-                "checked UNCONDITIONALLY",
-            ],
-        );
+        assert_rejected("pops_nothing", &[
+            "MALFORMED FINAL CONFIGURATION",
+            "obligation that was never popped",
+            "checked UNCONDITIONALLY",
+        ]);
     }
 }
 
@@ -691,10 +693,7 @@ fn a_kont_that_pops_fewer_values_than_its_arity_claims_is_rejected() {
 #[test]
 fn a_continuation_pushed_with_too_few_children_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "region_underfull",
-            &["declares arity 2", "Invariant 1"],
-        );
+        assert_rejected("region_underfull", &["declares arity 2", "Invariant 1"]);
     } else {
         let child = run_child("region_underfull");
         assert!(
@@ -715,15 +714,12 @@ fn a_continuation_pushed_with_too_few_children_is_rejected() {
 #[test]
 fn a_branching_descend_that_also_pushes_a_value_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "region_overfull",
-            &["must push", "NO value", "Invariant 1"],
-        );
+        assert_rejected("region_overfull", &["must push", "NO value", "Invariant 1"]);
     } else {
-        assert_rejected(
-            "region_overfull",
-            &["MALFORMED FINAL CONFIGURATION", "checked UNCONDITIONALLY"],
-        );
+        assert_rejected("region_overfull", &[
+            "MALFORMED FINAL CONFIGURATION",
+            "checked UNCONDITIONALLY",
+        ]);
     }
 }
 
@@ -795,13 +791,11 @@ struct Resumable;
 impl Traversal for Resumable {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -870,9 +864,7 @@ impl Traversal for Resumable {
         }
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 /// RED: a `Tail` from a `Kont` whose `combine` popped fewer values than its
@@ -882,13 +874,11 @@ struct TailArityLies;
 impl Traversal for TailArityLies {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -947,9 +937,7 @@ impl Traversal for TailArityLies {
         }
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 /// RED: a `Tail` whose suspension region was pushed UNDER-FULL — `arity` 2 with
@@ -959,13 +947,11 @@ struct TailRegionUnderfull;
 impl Traversal for TailRegionUnderfull {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -1017,9 +1003,7 @@ impl Traversal for TailRegionUnderfull {
         }))
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 /// ★★ RED: `Tail`ing FOREVER without advancing the cursor.
@@ -1033,13 +1017,11 @@ struct TailsForever;
 impl Traversal for TailsForever {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -1089,9 +1071,7 @@ impl Traversal for TailsForever {
         }))
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 /// RED: a `Tail` chain that drains `work` leaving `V != 1` — caught by the
@@ -1105,13 +1085,11 @@ struct TailLeavesTwoValues;
 impl Traversal for TailLeavesTwoValues {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -1166,9 +1144,7 @@ impl Traversal for TailLeavesTwoValues {
         }
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 /// RED: a traversal that tails **without declaring itself resumable at all** —
@@ -1182,13 +1158,11 @@ struct TailUndeclared;
 impl Traversal for TailUndeclared {
     type Node<'t>
         = SeqNode
-    where
-        Self: 't;
+    where Self: 't;
     type Val = u64;
     type Kont<'t>
         = SeqResume
-    where
-        Self: 't;
+    where Self: 't;
     type State = Trail;
     type Err = Never;
 
@@ -1237,9 +1211,7 @@ impl Traversal for TailUndeclared {
         }))
     }
 
-    fn arity(kont: &SeqResume) -> usize {
-        kont.arity
-    }
+    fn arity(kont: &SeqResume) -> usize { kont.arity }
 }
 
 // ===========================================================================
@@ -1319,15 +1291,16 @@ fn a_well_formed_tail_chain_completes_and_writes_bytes_between_its_children() {
 #[test]
 fn a_tail_from_a_kont_that_popped_fewer_values_than_its_arity_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "tail_arity_lies",
-            &["DEFICIT INVARIANT", "V + D + C - A == 1", "Invariant 2"],
-        );
+        assert_rejected("tail_arity_lies", &[
+            "DEFICIT INVARIANT",
+            "V + D + C - A == 1",
+            "Invariant 2",
+        ]);
     } else {
-        assert_rejected(
-            "tail_arity_lies",
-            &["MALFORMED FINAL CONFIGURATION", "checked UNCONDITIONALLY"],
-        );
+        assert_rejected("tail_arity_lies", &[
+            "MALFORMED FINAL CONFIGURATION",
+            "checked UNCONDITIONALLY",
+        ]);
     }
 }
 
@@ -1335,7 +1308,10 @@ fn a_tail_from_a_kont_that_popped_fewer_values_than_its_arity_is_rejected() {
 #[test]
 fn a_tail_whose_suspension_region_was_pushed_under_full_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected("tail_region_underfull", &["declares arity 2", "Invariant 1"]);
+        assert_rejected("tail_region_underfull", &[
+            "declares arity 2",
+            "Invariant 1",
+        ]);
     } else {
         let child = run_child("tail_region_underfull");
         assert!(
@@ -1358,15 +1334,12 @@ fn a_tail_whose_suspension_region_was_pushed_under_full_is_rejected() {
 #[test]
 fn a_tail_chain_that_never_advances_its_cursor_is_stopped_by_the_bound() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "tail_forever",
-            &[
-                "TAIL BOUND",
-                "MAX_TAILS_PER_DESCENT",
-                "strictly ADVANCED",
-                "conservation laws, not progress measures",
-            ],
-        );
+        assert_rejected("tail_forever", &[
+            "TAIL BOUND",
+            "MAX_TAILS_PER_DESCENT",
+            "strictly ADVANCED",
+            "conservation laws, not progress measures",
+        ]);
     } else {
         // ⚠ Honest in release: the bound is `debug_assertions`-only by design, so
         // an unadvancing tail chain in a release build does NOT terminate. The
@@ -1390,19 +1363,16 @@ fn a_tail_chain_that_never_advances_its_cursor_is_stopped_by_the_bound() {
 #[test]
 fn a_tail_chain_that_drains_the_work_stack_with_two_values_is_rejected() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "tail_leaves_two_values",
-            &["DEFICIT INVARIANT", "Invariant 2"],
-        );
+        assert_rejected("tail_leaves_two_values", &[
+            "DEFICIT INVARIANT",
+            "Invariant 2",
+        ]);
     } else {
-        assert_rejected(
-            "tail_leaves_two_values",
-            &[
-                "MALFORMED FINAL CONFIGURATION",
-                "obligation that was never popped",
-                "checked UNCONDITIONALLY",
-            ],
-        );
+        assert_rejected("tail_leaves_two_values", &[
+            "MALFORMED FINAL CONFIGURATION",
+            "obligation that was never popped",
+            "checked UNCONDITIONALLY",
+        ]);
     }
 }
 
@@ -1411,14 +1381,11 @@ fn a_tail_chain_that_drains_the_work_stack_with_two_values_is_rejected() {
 #[test]
 fn a_tail_from_a_traversal_that_declared_no_bound_is_rejected_immediately() {
     if cfg!(debug_assertions) {
-        assert_rejected(
-            "tail_undeclared",
-            &[
-                "TAIL BOUND",
-                "MAX_TAILS_PER_DESCENT",
-                "fail-closed default",
-            ],
-        );
+        assert_rejected("tail_undeclared", &[
+            "TAIL BOUND",
+            "MAX_TAILS_PER_DESCENT",
+            "fail-closed default",
+        ]);
         // ★ "Immediately" is the property, so it is asserted rather than implied:
         // the diagnostic must report exactly ONE tail taken.
         let child = run_child("tail_undeclared");

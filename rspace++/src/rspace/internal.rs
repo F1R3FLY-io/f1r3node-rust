@@ -9,7 +9,6 @@ use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 
 use super::hashing::stable_hash_provider::StableHashSerialize;
-
 use super::trace::event::{Consume, Produce};
 
 // Reference-shaped RSpace transport: the payload fields of the hot-store

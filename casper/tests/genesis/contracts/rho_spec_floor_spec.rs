@@ -58,9 +58,7 @@ fn report(reported: &[&str], has_finished: bool) -> TestResult {
     }
 }
 
-fn names(of: &[&str]) -> BTreeSet<String> {
-    of.iter().map(|n| (*n).to_string()).collect()
-}
+fn names(of: &[&str]) -> BTreeSet<String> { of.iter().map(|n| (*n).to_string()).collect() }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // Gate 1 — a fixture that registers nothing
@@ -94,7 +92,9 @@ new rl(`rho:registry:lookup`), subjectCh, resultCh, test in {
         .expect_err("★★ a fixture that registers no test must be REFUSED, not passed");
     assert_eq!(breach, FloorBreach::NoRegisteredTests);
     assert!(
-        breach.to_string().starts_with("registers NO tests with RhoSpec"),
+        breach
+            .to_string()
+            .starts_with("registers NO tests with RhoSpec"),
         "the refusal must name its reason first; got {breach}",
     );
 }
@@ -118,8 +118,7 @@ new rl(`rho:registry:lookup`), RhoSpecCh, test_first, test_second in {
 }
 "#;
 
-    let registered =
-        registered_test_names(REGISTRATION).expect("the probe source must normalize");
+    let registered = registered_test_names(REGISTRATION).expect("the probe source must normalize");
     assert_eq!(
         registered,
         names(&["the first thing", "the second thing"]),
@@ -376,7 +375,9 @@ fn every_corpus_fixture_that_mentions_testsuite_yields_a_registration() {
     let mut examined = 0usize;
 
     for entry in std::fs::read_dir(&directory).expect("the resource directory must be readable") {
-        let path = entry.expect("a readable directory yields readable entries").path();
+        let path = entry
+            .expect("a readable directory yields readable entries")
+            .path();
         if path.extension().and_then(|e| e.to_str()) != Some("rho") {
             continue;
         }

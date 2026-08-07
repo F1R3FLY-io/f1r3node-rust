@@ -66,9 +66,7 @@ fn map1(key: i64, value: i64) -> Expr {
     }
 }
 
-fn par_of(exprs: Vec<Expr>) -> Par {
-    Par::default().with_exprs(exprs)
-}
+fn par_of(exprs: Vec<Expr>) -> Par { Par::default().with_exprs(exprs) }
 
 /// The tie-carrying witness pairs. **Every entry must be a genuine tie** — clause 1 checks it.
 fn witness_pairs() -> Vec<(&'static str, Expr, Expr)> {
@@ -94,7 +92,11 @@ fn wrappers(a: &Expr, b: &Expr) -> Vec<(&'static str, Par, Par)> {
     vec![
         // `Par.exprs` — sorted by `combine_par` from the MESSAGE'S FIELD ORDER. Deterministic,
         // and the one a cross-process check cannot see.
-        ("par-exprs", par_of(vec![a.clone(), b.clone()]), par_of(vec![b.clone(), a.clone()])),
+        (
+            "par-exprs",
+            par_of(vec![a.clone(), b.clone()]),
+            par_of(vec![b.clone(), a.clone()]),
+        ),
         // `ESet` elements — sorted through `SortedParHashSet`'s `HashSet`, i.e. SEEDED.
         ("eset-elements", set(a, b), set(b, a)),
     ]

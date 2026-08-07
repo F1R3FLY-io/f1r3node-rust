@@ -152,7 +152,6 @@
 //! on.** [`environment`] prints `/proc/loadavg` before and after, because this
 //! workspace routinely has several concurrent builds running and a ratio quoted
 //! without its load is not a measurement.
-//!
 //! ```text
 //!   cargo bench -p models --bench term_ops_bench 2>&1 | tee /tmp/term_ops.log
 //! ```
@@ -167,11 +166,12 @@ use models::rhoapi::{EList, ETuple, Expr, Par, Send};
 // behind the same false "interleaved A/B" claim. See `paired.rs`.
 #[path = "paired.rs"]
 mod paired;
-use paired::{loadavg, measure_arms, welch, Arms, Pair};
-
 use models::rust::rholang::drive::{Outcome, Step};
 use models::rust::rholang::par_children::dismantle_all;
-use models::rust::rholang::term_ops::{oracle_clone_par, CloneKont, CloneNode, CloneTraversal, CloneVal};
+use models::rust::rholang::term_ops::{
+    oracle_clone_par, CloneKont, CloneNode, CloneTraversal, CloneVal,
+};
+use paired::{loadavg, measure_arms, welch, Arms, Pair};
 
 // ---------------------------------------------------------------------------
 // The measured distribution
@@ -377,9 +377,7 @@ fn weighted_workload() -> Vec<Par> {
 }
 
 /// `n` independently-built datums of one depth. ⚠ Never `vec![_; n]`.
-fn uniform_workload(depth: usize, n: usize) -> Vec<Par> {
-    (0..n).map(|_| datum(depth)).collect()
-}
+fn uniform_workload(depth: usize, n: usize) -> Vec<Par> { (0..n).map(|_| datum(depth)).collect() }
 
 /// ★★ **The SINGLE-NODE leg — `n = 1`. Stage 0b.**
 ///
@@ -399,9 +397,7 @@ fn uniform_workload(depth: usize, n: usize) -> Vec<Par> {
 ///
 /// ⚠ Never `vec![gint(0); n]` — that would call the function under test while
 /// building the fixture.
-fn single_node_workload(n: usize) -> Vec<Par> {
-    (0..n).map(|_| gint(0)).collect()
-}
+fn single_node_workload(n: usize) -> Vec<Par> { (0..n).map(|_| gint(0)).collect() }
 
 /// ★ **The node count of one `datum(depth)`, computed rather than asserted from
 /// a formula.**
@@ -560,7 +556,9 @@ fn report(name: &str, p: &Pair<'_>) -> f64 {
          significant: {w_significant}"
     );
     if !p_significant {
-        println!("     (the paired difference does not exclude 0 — the arms are indistinguishable)");
+        println!(
+            "     (the paired difference does not exclude 0 — the arms are indistinguishable)"
+        );
     }
     if (speedup - median_speedup).abs() > 0.02 {
         println!(
@@ -593,9 +591,7 @@ fn verdict(name: &str, p: &Pair<'_>) {
     let (_, resolved) = p.paired_t();
     let pass = speedup >= WALL_CLOCK_FLOOR;
     println!();
-    println!(
-        "  ╔══ CORROBORATION (wall clock): {name} ══",
-    );
+    println!("  ╔══ CORROBORATION (wall clock): {name} ══",);
     println!(
         "  ║ ⚠ NOT the primary verdict. Primary = deterministic Ir ratio <= \
          {IR_RATIO_CEILING:.2} (measured {IR_RATIO_MEASURED:.4}); see the header for the \
@@ -636,11 +632,23 @@ fn verdict(name: &str, p: &Pair<'_>) {
 
 fn environment() {
     println!("ENVIRONMENT");
-    println!("  loadavg    {}   ◀── every ns below is conditional on this", loadavg());
+    println!(
+        "  loadavg    {}   ◀── every ns below is conditional on this",
+        loadavg()
+    );
     for (label, path) in [
-        ("governor", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
-        ("cur_freq", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"),
-        ("max_freq", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"),
+        (
+            "governor",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
+        ),
+        (
+            "cur_freq",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        ),
+        (
+            "max_freq",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq",
+        ),
     ] {
         let value = std::fs::read_to_string(path)
             .map(|s| s.trim().to_string())
@@ -678,7 +686,10 @@ fn deep_leg() {
     // debug at depth 128, and FLAT), and 13× short of what the derived form needs.
     const STACK: usize = 1024 * 1024;
 
-    println!("DEEP LEG — the driven clone at depth {DEPTH} on a {} KiB stack", STACK / 1024);
+    println!(
+        "DEEP LEG — the driven clone at depth {DEPTH} on a {} KiB stack",
+        STACK / 1024
+    );
     let handle = std::thread::Builder::new()
         .stack_size(STACK)
         .name("term-ops-deep".to_string())
@@ -806,9 +817,18 @@ fn cachegrind_arm(arm: &str) {
 /// asserted nowhere.
 fn widths() {
     println!("WIDTHS (bytes)");
-    println!("  size_of::<Par>()                    {}", std::mem::size_of::<Par>());
-    println!("  size_of::<Expr>()                   {}", std::mem::size_of::<Expr>());
-    println!("  size_of::<Send>()                   {}", std::mem::size_of::<Send>());
+    println!(
+        "  size_of::<Par>()                    {}",
+        std::mem::size_of::<Par>()
+    );
+    println!(
+        "  size_of::<Expr>()                   {}",
+        std::mem::size_of::<Expr>()
+    );
+    println!(
+        "  size_of::<Send>()                   {}",
+        std::mem::size_of::<Send>()
+    );
     println!(
         "  size_of::<CloneNode>()              {}",
         std::mem::size_of::<CloneNode<'_>>()
@@ -959,9 +979,7 @@ fn constant_footprint_sweep() {
     // contamination: with `t(n) = A + B·n` locally, `A = 2·t(1) − t(2)`.
     let a_direct_d = 2.0 * derived_points[0].1 - derived_points[1].1;
     let a_direct_m = 2.0 * driven_points[0].1 - driven_points[1].1;
-    println!(
-        "  ║ ★ A AT THE INTERCEPT (A = 2·t(1) − t(2), free of the fit's curvature):"
-    );
+    println!("  ║ ★ A AT THE INTERCEPT (A = 2·t(1) − t(2), free of the fit's curvature):");
     println!(
         "  ║     derived {a_direct_d:>8.2} ns/call     driven {a_direct_m:>8.2} ns/call     \
          gap {:+.2} ns/call",
@@ -1111,7 +1129,9 @@ fn main() {
                 speedup
             })
             .expect("term_ops_bench: failed to spawn the tail thread");
-        let speedup = handle.join().expect("term_ops_bench: the tail leg panicked");
+        let speedup = handle
+            .join()
+            .expect("term_ops_bench: the tail leg panicked");
         println!("     (reported only; {speedup:.3}× does not enter the verdict)");
     }
     println!();

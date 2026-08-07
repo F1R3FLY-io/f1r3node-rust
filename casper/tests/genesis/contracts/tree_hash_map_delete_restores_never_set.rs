@@ -98,7 +98,14 @@ const SETUP: &str = r#"    retCh!(Nil)"#;
 /// `prepare` is spliced with `thm` (the map), `TreeHashMap` (the contract, bound as a name exactly as
 /// `TreeHashMapTest.rho:70` binds it) and `updateFn` in scope, and must send on `readyCh` when the
 /// preparation has been acknowledged.
-fn probe_body(depth: i64, key: &str, prepare: &str, observe: &str, expected: &str, clue: &str) -> String {
+fn probe_body(
+    depth: i64,
+    key: &str,
+    prepare: &str,
+    observe: &str,
+    expected: &str,
+    clue: &str,
+) -> String {
     format!(
         r#"    new TreeHashMapCh, invokedCh, updateFn, initCh, readyCh, updCh, getCh, observedCh in {{
       rl!(`rho:lang:treeHashMap`, *TreeHashMapCh) |
@@ -140,11 +147,7 @@ fn probe_body(depth: i64, key: &str, prepare: &str, observe: &str, expected: &st
 const OBSERVE_PAIR: &str = r#"                  observedCh!((invoked, got))"#;
 
 /// Assert that the one recorded assertion of a probe suite passed, or fail with the observation.
-fn expect_probe_pass(
-    outcome: &SuiteOutcome,
-    records: &[AssertionRecord],
-    headline: &str,
-) {
+fn expect_probe_pass(outcome: &SuiteOutcome, records: &[AssertionRecord], headline: &str) {
     assert!(
         outcome.is_completed(),
         "★ the probe suite must reach `testSuiteCompleted` — a block means the map operations never \

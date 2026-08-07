@@ -290,14 +290,17 @@ fn match_row() -> Row {
     Row {
         what: "`match 10 { y => @\"o\"!(x) }` under `for (@x <- @\"c\")`",
         node: node.locally_free.clone(),
-        body: case.source.as_ref().expect("MatchCase.source").locally_free.clone(),
+        body: case
+            .source
+            .as_ref()
+            .expect("MatchCase.source")
+            .locally_free
+            .clone(),
         bound_count: case.free_count as usize,
     }
 }
 
-fn every_row() -> Vec<Row> {
-    vec![new_row(), for_row(), contract_row(), match_row()]
-}
+fn every_row() -> Vec<Row> { vec![new_row(), for_row(), contract_row(), match_row()] }
 
 /// ★★ THE GATE. Every binding form, one law.
 #[test]

@@ -410,8 +410,15 @@ async fn eval_expr_should_still_handle_simple_addition_after_the_overflow_fix() 
         }]);
         let env: Env<Par> = Env::new();
         let result = reducer.eval_expr(&plus_expr, &env);
-        assert!(result.is_ok(), "{lhs} + {rhs} must still compute: {result:?}");
-        assert_eq!(result.unwrap().exprs, vec![new_gint_expr(sum)], "{lhs} + {rhs}");
+        assert!(
+            result.is_ok(),
+            "{lhs} + {rhs} must still compute: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().exprs,
+            vec![new_gint_expr(sum)],
+            "{lhs} + {rhs}"
+        );
     }
 }
 
@@ -467,8 +474,15 @@ async fn eval_expr_should_still_handle_simple_subtraction_after_the_overflow_fix
         }]);
         let env: Env<Par> = Env::new();
         let result = reducer.eval_expr(&minus_expr, &env);
-        assert!(result.is_ok(), "{lhs} - {rhs} must still compute: {result:?}");
-        assert_eq!(result.unwrap().exprs, vec![new_gint_expr(difference)], "{lhs} - {rhs}");
+        assert!(
+            result.is_ok(),
+            "{lhs} - {rhs} must still compute: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().exprs,
+            vec![new_gint_expr(difference)],
+            "{lhs} - {rhs}"
+        );
     }
 }
 

@@ -52,15 +52,11 @@ struct Observation {
 struct ProbeError(String);
 
 impl std::fmt::Display for ProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
 }
 impl std::error::Error for ProbeError {}
 impl serde::ser::Error for ProbeError {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        ProbeError(msg.to_string())
-    }
+    fn custom<T: std::fmt::Display>(msg: T) -> Self { ProbeError(msg.to_string()) }
 }
 
 /// Records the shape of one `serialize_struct` call and stops.
@@ -355,7 +351,8 @@ fn every_generated_type_matches_serdes_own_field_order() {
     let registered: std::collections::BTreeSet<&str> =
         CONFORMANCE_REGISTRY.iter().map(|(n, _, _)| *n).collect();
     assert_eq!(
-        probed, registered,
+        probed,
+        registered,
         "the probe must cover EVERY generated type. Missing from the probe: {:?}; probed but \
          not generated: {:?}",
         registered.difference(&probed).collect::<Vec<_>>(),

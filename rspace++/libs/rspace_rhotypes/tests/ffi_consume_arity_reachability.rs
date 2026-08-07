@@ -56,12 +56,12 @@
 //! The FFI does not merely pass the arguments through — it also `.unwrap()`s
 //! the `Result` (`lib.rs:268`, `:331`, `:2059`). So a refused consume **still
 //! ends the process at the FFI**, on the `unwrap`, not on the guard. That is a
-//! *separate*, already-recorded defect: `rholang/tests/par_read_ceiling_site_registry.rs`
-//! classes this surface `Asymmetric` and records that its signatures
-//! (`-> *const u8`) already spend the null pointer on a legitimate outcome, so
-//! making them refuse is an **ABI change and F1r3node's act**, not this
-//! change's. That registry also bounds the severity: no in-tree caller of these
-//! symbols exists.
+//! *separate*, already-recorded defect:
+//! `rholang/tests/par_read_ceiling_site_registry.rs` classes this surface
+//! `Asymmetric` and records that its signatures (`-> *const u8`) already spend
+//! the null pointer on a legitimate outcome, so making them refuse is an **ABI
+//! change and F1r3node's act**, not this change's. That registry also bounds
+//! the severity: no in-tree caller of these symbols exists.
 //!
 //! ★ [`f2_the_real_ffi_symbol_carries_the_refusal`] therefore measures exactly
 //! what did change: the abort's **stderr now names `BugFoundError`**, which is
@@ -179,9 +179,9 @@ fn refusal_text<T: std::fmt::Debug>(outcome: &Result<T, RSpaceError>, what: &str
 // ═══════════════════════════════════════════════════════════════════════════
 // W — from the wire, in process
 //
-// Each cell performs the FFI's OWN first line (`…Params::decode`) on bytes, then
-// hands the decoded fields to the same method the FFI hands them to. What it
-// does NOT do is re-raise the `Err` — which is the only difference from the
+// Each cell performs the FFI's OWN first line (`…Params::decode`) on bytes,
+// then hands the decoded fields to the same method the FFI hands them to. What
+// it does NOT do is re-raise the `Err` — which is the only difference from the
 // real symbol, and is the residual documented in this file's header.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -220,7 +220,9 @@ async fn w1_wire_encoded_consume_shapes_are_refused_and_the_control_is_accepted(
             .consume(
                 params.channels,
                 params.patterns,
-                params.continuation.expect("the encoded continuation is present"),
+                params
+                    .continuation
+                    .expect("the encoded continuation is present"),
                 params.persist,
                 BTreeSet::new(),
             )
@@ -361,8 +363,8 @@ fn f2_the_real_ffi_symbol_carries_the_refusal() {
     // refusal and something upstream re-raised it. Before the conversion the
     // guard called `panic!` directly and this string did not exist.
     assert!(
-        stderr.contains("BugFoundError")
-            && stderr.contains("RUST ERROR: channels.length must equal patterns.length"),
+        stderr.contains("BugFoundError") &&
+            stderr.contains("RUST ERROR: channels.length must equal patterns.length"),
         "★★ the child died, but stderr does not carry the REFUSAL. Either the guard is panicking \
          again instead of returning `Err`, or the message drifted from the one the other three \
          sites use.\n--- child stderr ---\n{stderr}"
@@ -376,8 +378,8 @@ fn f2_the_real_ffi_symbol_carries_the_refusal() {
         !stdout.contains("CHILD_SURVIVED_MALFORMED"),
         "★ the FFI entry point RETURNED on a malformed `ConsumeParams`. That is BETTER than what \
          is recorded here, but it means the residual documented in this file's header has been \
-         fixed and the disposition in `par_read_ceiling_site_registry.rs` is now stale. \
-         Re-derive it.\n--- child stdout ---\n{stdout}"
+         fixed and the disposition in `par_read_ceiling_site_registry.rs` is now stale. Re-derive \
+         it.\n--- child stdout ---\n{stdout}"
     );
 
     #[cfg(unix)]

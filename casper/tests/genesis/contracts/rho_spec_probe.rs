@@ -66,9 +66,7 @@ pub enum SuiteOutcome {
 }
 
 impl SuiteOutcome {
-    pub fn is_completed(&self) -> bool {
-        matches!(self, SuiteOutcome::Completed { .. })
-    }
+    pub fn is_completed(&self) -> bool { matches!(self, SuiteOutcome::Completed { .. }) }
 
     pub fn raise_text(&self) -> Option<String> {
         match self {
@@ -152,7 +150,9 @@ fn render(assertion: &RhoTestAssertion) -> AssertionRecord {
 ///
 /// Deliberately NOT `RhoSpec::run_tests`: the non-vacuity floor would turn a probe's deliberately
 /// partial suite into a panic, and what a probe wants is the outcome as a value.
-async fn drive(source: &str) -> Result<casper::rust::helper::test_result_collector::TestResult, InterpreterError> {
+async fn drive(
+    source: &str,
+) -> Result<casper::rust::helper::test_result_collector::TestResult, InterpreterError> {
     let compiled = CompiledRholangSource::new(
         source.to_string(),
         HashMap::new(),

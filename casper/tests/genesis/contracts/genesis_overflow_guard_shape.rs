@@ -120,7 +120,11 @@ fn blank(source: &str, blank_literals: bool) -> String {
                     out.push(b);
                     mode = Mode::Code;
                 } else {
-                    out.push(if blank_literals && b != b'\n' { b' ' } else { b });
+                    out.push(if blank_literals && b != b'\n' {
+                        b' '
+                    } else {
+                        b
+                    });
                 }
                 i += 1;
             }
@@ -129,7 +133,11 @@ fn blank(source: &str, blank_literals: bool) -> String {
                     out.push(b);
                     mode = Mode::Code;
                 } else {
-                    out.push(if blank_literals && b != b'\n' { b' ' } else { b });
+                    out.push(if blank_literals && b != b'\n' {
+                        b' '
+                    } else {
+                        b
+                    });
                 }
                 i += 1;
             }
@@ -423,8 +431,10 @@ fn nonnegativenumber_normalized_term_is_pinned_because_it_is_consensus_visible()
     let par = rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
         embedded_rho::NON_NEGATIVE_NUMBER,
     )
-    .expect("★ NonNegativeNumber.rho must normalize — a blessed contract that does not is a \
-             genesis failure, not a hash change");
+    .expect(
+        "★ NonNegativeNumber.rho must normalize — a blessed contract that does not is a \
+             genesis failure, not a hash change",
+    );
     let bytes = par.encode_to_vec();
     let actual = hex::encode(Blake2b256::hash(bytes.clone()));
 

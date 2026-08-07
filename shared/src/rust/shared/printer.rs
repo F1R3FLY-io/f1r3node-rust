@@ -321,8 +321,8 @@ mod tests {
         // THE SUBJECT OF THE SPLIT: one fixed probe, rendered for each audience.
         // The parent compares these across budgets.
         let subject = "0123456789".repeat(8); // 80 bytes: over every budget, under 1 KiB
-        // The subject is longer than every swept budget, so the operator cap is
-        // total on it; the consensus cap is total on everything.
+                                              // The subject is longer than every swept budget, so the operator cap is
+                                              // total on it; the consensus cap is total on everything.
         let operator = Printer::cap(Audience::Operator, &subject);
         let consensus = Printer::cap(Audience::Consensus, &subject);
 

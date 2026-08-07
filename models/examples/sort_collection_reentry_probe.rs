@@ -104,7 +104,11 @@ fn main() {
     // dead-code-eliminated measures the empty program and reports it as a fast one.
     println!(
         "{} depth={} score_atoms={}",
-        if control { "control/EList" } else { "subject/ESet" },
+        if control {
+            "control/EList"
+        } else {
+            "subject/ESet"
+        },
         depth,
         format!("{:?}", scored.score).len()
     );

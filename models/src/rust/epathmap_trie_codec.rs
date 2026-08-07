@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 
-use pathmap::PathMap;
 use pathmap::arena_compact::{ArenaCompactTree, COMPACT_TREE_MAGIC};
 use pathmap::zipper::ZipperReadOnlyIteration;
 #[cfg(test)]
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use pathmap::PathMap;
 use prost::bytes::Bytes;
 
 use crate::rhoapi::Par;
@@ -938,11 +938,9 @@ mod tests {
             panic!("set EPM1 payload changed mode");
         };
         assert_eq!(paths(&map), expected);
-        assert!(
-            bytes
-                .windows(COMPACT_TREE_MAGIC.len())
-                .any(|w| w == COMPACT_TREE_MAGIC)
-        );
+        assert!(bytes
+            .windows(COMPACT_TREE_MAGIC.len())
+            .any(|w| w == COMPACT_TREE_MAGIC));
     }
 
     #[test]

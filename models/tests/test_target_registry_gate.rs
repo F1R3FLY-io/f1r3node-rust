@@ -44,9 +44,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
+fn manifest_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
@@ -240,7 +238,11 @@ fn the_registry_classification_separates_orphans_from_duplicates() {
     let (orphaned, doubled) = classify(&["a", "both"], &["a", "both"], &["both"]);
     assert!(orphaned.is_empty());
     assert_eq!(orphaned.len(), 0);
-    assert_eq!(doubled, vec!["both"], "the double-compilation arm must fire");
+    assert_eq!(
+        doubled,
+        vec!["both"],
+        "the double-compilation arm must fire"
+    );
 
     // CONTROL — the state the crate is in NOW: every file reached exactly once,
     // by exactly one route. Neither arm may fire on it.

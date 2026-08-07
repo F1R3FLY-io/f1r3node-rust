@@ -6,8 +6,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EMap, ENeg, EPathMap, Expr, KeyValuePair, Par};
 
 use super::{
-    RhoExpr, RhoPathMap, RhoPathMapBinding, RhoUnforg, rho_expr_conversion_oracle as oracle,
-    rho_expr_pda,
+    rho_expr_conversion_oracle as oracle, rho_expr_pda, RhoExpr, RhoPathMap, RhoPathMapBinding,
+    RhoUnforg,
 };
 
 #[path = "../../../models/tests/par_corpus/mod.rs"]

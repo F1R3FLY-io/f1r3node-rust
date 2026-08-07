@@ -32,9 +32,9 @@ use std::path::PathBuf;
 
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{DeployData, Event, ProcessedDeploy};
-use crypto::rust::signatures::signed::Signed;
 use serde::{Deserialize, Serialize};
 
 use crate::util::genesis_builder::GenesisContext;
@@ -195,8 +195,7 @@ async fn replay_compute_state(
 }
 
 fn goldens_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/util/rholang/async_driver_goldens.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/util/rholang/async_driver_goldens.json")
 }
 
 fn load_goldens() -> Option<BTreeMap<String, Golden>> {
@@ -288,7 +287,10 @@ async fn async_driver_four_invariants_differential() {
                 // ---- Layer 2: old-vs-new golden ----
                 if let Some(ref goldens) = existing {
                     let old = goldens.get(prog.name).unwrap_or_else(|| {
-                        panic!("[{}] missing from goldens.json (recapture required)", prog.name)
+                        panic!(
+                            "[{}] missing from goldens.json (recapture required)",
+                            prog.name
+                        )
                     });
                     assert_eq!(
                         golden.is_failed, old.is_failed,
@@ -326,8 +328,8 @@ async fn async_driver_four_invariants_differential() {
             }
 
             if existing.is_none() {
-                let json = serde_json::to_string_pretty(&captured)
-                    .expect("failed to serialize goldens");
+                let json =
+                    serde_json::to_string_pretty(&captured).expect("failed to serialize goldens");
                 std::fs::write(goldens_path(), json).expect("failed to write goldens.json");
                 println!(
                     "async_driver goldens CAPTURED ({} programs) -> {}",
@@ -335,7 +337,10 @@ async fn async_driver_four_invariants_differential() {
                     goldens_path().display()
                 );
             } else {
-                println!("async_driver Layer-2 differential PASSED ({} programs)", captured.len());
+                println!(
+                    "async_driver Layer-2 differential PASSED ({} programs)",
+                    captured.len()
+                );
             }
         },
     )

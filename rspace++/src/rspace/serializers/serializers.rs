@@ -5,16 +5,16 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use serde::Serialize;
 /// Only the `#[cfg(test)]` ORACLE twins (`DatumOracleDe`,
 /// `WaitingContinuationOracleDe`) derive `Deserialize` now — production decode
 /// goes through `ColdStoreDecode`.
 #[cfg(test)]
 use serde::Deserialize;
+use serde::Serialize;
 
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::serializers::cold_store_decode::{
-    cold_decode_vec_prefix, legacy_tail, ColdStoreDecode, ColdStoreDecodeError,
+    ColdStoreDecode, ColdStoreDecodeError, cold_decode_vec_prefix, legacy_tail,
 };
 use crate::rspace::trace::event::{Consume, Produce};
 
@@ -48,10 +48,11 @@ struct DatumSer<'a, A> {
 ///
 /// ⚠ **Retained as a `#[cfg(test)]` ORACLE only.** Production decoding goes
 /// through [`decode_datum`], which reads `a` with the O(1)-native-stack machine
-/// (`models/src/rust/rholang/bincode_decoder.rs`) and the bounded tail with bincode.
-/// This twin is what the differential in this file's `mod tests` compares
-/// against; the `Par`-typed half lives in `models/tests/cold_store_records.rs`,
-/// on the far side of the `models -> rspace_plus_plus` dependency edge.
+/// (`models/src/rust/rholang/bincode_decoder.rs`) and the bounded tail with
+/// bincode. This twin is what the differential in this file's `mod tests`
+/// compares against; the `Par`-typed half lives in
+/// `models/tests/cold_store_records.rs`, on the far side of the `models ->
+/// rspace_plus_plus` dependency edge.
 ///
 /// It is a better oracle than the serialize twins were: those are
 /// hand-maintained and could drift from the struct they mirror, whereas this
@@ -77,8 +78,8 @@ impl<A: Clone> From<DatumOracleDe<A>> for Datum<A> {
     }
 }
 
-/// Borrowed serialize twin of the value-shaped `WaitingContinuation<P, K>` layout
-/// (`patterns`, `continuation`, `persist`, `peeks`, `source`).
+/// Borrowed serialize twin of the value-shaped `WaitingContinuation<P, K>`
+/// layout (`patterns`, `continuation`, `persist`, `peeks`, `source`).
 #[derive(Serialize)]
 struct WaitingContinuationSer<'a, P, K> {
     patterns: &'a Vec<P>,
@@ -88,8 +89,8 @@ struct WaitingContinuationSer<'a, P, K> {
     source: &'a Consume,
 }
 
-/// Owned deserialize twin of the value-shaped `WaitingContinuation<P, K>` layout.
-/// Retained as a `#[cfg(test)]` ORACLE only — see [`DatumOracleDe`].
+/// Owned deserialize twin of the value-shaped `WaitingContinuation<P, K>`
+/// layout. Retained as a `#[cfg(test)]` ORACLE only — see [`DatumOracleDe`].
 #[cfg(test)]
 #[derive(Deserialize)]
 pub(crate) struct WaitingContinuationOracleDe<P, K> {
@@ -136,8 +137,8 @@ fn continuation_ser<'a, P: Clone, K: Clone>(
 /// The deterministic candidate-ordering bytes (`rspace.rs`
 /// `shuffle_with_index` → `deterministic_candidate_hash`). Candidate ordering
 /// participates in replay-visible COMM selection, so these bytes must equal
-/// the earlier value-shaped `bincode::serialize(candidate)` exactly — they go through
-/// the same twins as the cold-store encoding (one layout, one pin).
+/// the earlier value-shaped `bincode::serialize(candidate)` exactly — they go
+/// through the same twins as the cold-store encoding (one layout, one pin).
 pub trait CandidateOrderingBytes {
     fn candidate_ordering_bytes(&self) -> Vec<u8>;
 }
@@ -330,13 +331,14 @@ fn compare_byte_vectors(a: &Vec<u8>, b: &Vec<u8>) -> Ordering {
 // ═════════════════════════════════════════════════════════════════════════════
 // THE RECORD-LEVEL DIFFERENTIAL
 //
-// `models/tests/bincode_decoder_differential.rs` proves the machine and the derive
-// agree on `Par`, `ListParWithRandom`, `BindPattern` and `TaggedContinuation`.
-// What it cannot reach from over there is the COMPOSITION performed here: a
-// `Datum<A>` decode is "machine prefix, then bincode tuple tail", and the claim
-// that this equals the derived whole-struct read rests on bincode tuples being
-// pure concatenation. That claim is checked below against the retained
-// compiler-generated oracles, on the rspace++ test-double instantiation.
+// `models/tests/bincode_decoder_differential.rs` proves the machine and the
+// derive agree on `Par`, `ListParWithRandom`, `BindPattern` and
+// `TaggedContinuation`. What it cannot reach from over there is the COMPOSITION
+// performed here: a `Datum<A>` decode is "machine prefix, then bincode tuple
+// tail", and the claim that this equals the derived whole-struct read rests on
+// bincode tuples being pure concatenation. That claim is checked below against
+// the retained compiler-generated oracles, on the rspace++ test-double
+// instantiation.
 //
 // The `Par`-typed half of the same claim is in
 // `models/tests/cold_store_records.rs` — it has to be, because `models` depends
@@ -461,7 +463,7 @@ mod tests {
     /// instantiation depends on it.
     #[test]
     fn legacy_prefix_reports_the_exact_extent() {
-        use crate::rspace::serializers::cold_store_decode::{legacy_prefix, ColdStoreDecode};
+        use crate::rspace::serializers::cold_store_decode::{ColdStoreDecode, legacy_prefix};
 
         let value = "a string with a λ in it".to_string();
         let mut bytes = bincode::serialize(&value).expect("encode");
@@ -474,10 +476,11 @@ mod tests {
         assert_eq!(String::cold_decode(&bytes).expect("cold_decode"), value);
     }
 
-    /// ⚠ The reason `legacy_prefix` carries a byte limit. `IoReader::fill_buffer`
-    /// does `temp_buffer.resize(length, 0)` BEFORE reading, so without the limit
-    /// a `String` prefixed with `[0xFF; 8]` would try to allocate ~16 EiB and
-    /// abort — while `bincode::deserialize` (SliceReader) returns a clean `Err`.
+    /// ⚠ The reason `legacy_prefix` carries a byte limit.
+    /// `IoReader::fill_buffer` does `temp_buffer.resize(length, 0)` BEFORE
+    /// reading, so without the limit a `String` prefixed with `[0xFF; 8]`
+    /// would try to allocate ~16 EiB and abort — while
+    /// `bincode::deserialize` (SliceReader) returns a clean `Err`.
     /// If this test ever OOMs instead of failing, the limit has been dropped.
     #[test]
     fn legacy_prefix_rejects_a_hostile_length_without_allocating() {

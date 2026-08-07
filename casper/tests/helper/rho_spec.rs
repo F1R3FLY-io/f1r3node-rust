@@ -24,12 +24,12 @@ use rholang::rust::interpreter::system_processes::{byte_name, Definition};
 use rspace_plus_plus::rspace::r#match::Match;
 
 use crate::genesis::contracts::test_util::TestUtil;
+use crate::helper::rho_spec_suite_manifest::{
+    check_registration, check_report, registered_test_names,
+};
 use crate::helper::{
     block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
     secp256k1_sign_contract, sys_auth_token_contract,
-};
-use crate::helper::rho_spec_suite_manifest::{
-    check_registration, check_report, registered_test_names,
 };
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext, GenesisParameters};
 use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
@@ -401,9 +401,10 @@ pub async fn genesis_runtime(
     // `cargo test`, where the whole binary shares one process and a sibling test that creates a
     // block over the same genesis scope advances that pointer. `reset` also calls
     // `restore_installs`, so the fixed-channel system processes installed above survive it.
-    let genesis_post_state = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
-        &genesis.genesis_block.body.state.post_state_hash,
-    );
+    let genesis_post_state =
+        rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+            &genesis.genesis_block.body.state.post_state_hash,
+        );
     runtime.reset(&genesis_post_state).await?;
 
     println!(

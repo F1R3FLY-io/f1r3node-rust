@@ -1455,7 +1455,10 @@ impl RuntimeOps {
                 // Materialize the Arc-shaped payloads at the cold-readback boundary.
                 let continuation = std::sync::Arc::unwrap_or_clone(wk.continuation);
                 if let Some(TaggedCont::ParBody(par_body)) = continuation.tagged_cont {
-                    Some((std::sync::Arc::unwrap_or_clone(wk.patterns), par_body.body.unwrap()))
+                    Some((
+                        std::sync::Arc::unwrap_or_clone(wk.patterns),
+                        par_body.body.unwrap(),
+                    ))
                 } else {
                     None
                 }

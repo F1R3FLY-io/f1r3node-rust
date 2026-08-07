@@ -608,9 +608,7 @@ impl EntryTrie {
 
     /// `true` when every key and map value is certified byte-identical under
     /// reducer `eval_expr`. O(1), maintained with the other entry folds.
-    pub fn entries_reducer_eval_identity(&self) -> bool {
-        self.entries_reducer_eval_identity
-    }
+    pub fn entries_reducer_eval_identity(&self) -> bool { self.entries_reducer_eval_identity }
 
     /// Union of the entries' `locally_free` bitsets.
     pub fn union_locally_free(&self) -> &[u8] { &self.union_locally_free }

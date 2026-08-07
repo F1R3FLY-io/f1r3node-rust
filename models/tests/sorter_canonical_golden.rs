@@ -99,6 +99,8 @@
 //! statement about the fixture, not a claim about the sorter: the underlying
 //! order-dependence is pre-existing and is documented here rather than hidden.
 
+use std::collections::BTreeMap;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -106,8 +108,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap,
     EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GDeployId,
-    GBigRational, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair, Match,
+    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GBigRational, GDeployId,
+    GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, If, KeyValuePair, Match,
     MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
@@ -124,7 +126,6 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
 use models::rust::rholang::sorter::var_sort_matcher::VarSortMatcher;
 use prost::Message;
-use std::collections::BTreeMap;
 
 const GOLDEN_PATH: &str = "tests/golden/sorter_canonical_forms.txt";
 
@@ -255,12 +256,8 @@ fn expr_par(ei: ExprInstance) -> Par {
     }
 }
 
-fn a() -> Option<Par> {
-    Some(gint(1))
-}
-fn b() -> Option<Par> {
-    Some(gint(2))
-}
+fn a() -> Option<Par> { Some(gint(1)) }
+fn b() -> Option<Par> { Some(gint(2)) }
 
 /// `[[[…[0]…]]]` — the nesting axis, so a driver whose descent order differs
 /// from the recursive form's is visible.
@@ -277,9 +274,7 @@ fn nested_list(depth: usize) -> Par {
     p
 }
 
-fn pathmap_of(ps: Vec<Par>) -> EPathMap {
-    EPathMap::new(ps, Vec::new(), false, None)
-}
+fn pathmap_of(ps: Vec<Par>) -> EPathMap { EPathMap::new(ps, Vec::new(), false, None) }
 
 /// A set of two distinct scalars — the innermost rung of the nesting fixtures.
 fn set_of(ps: Vec<Par>) -> Par {
@@ -401,8 +396,14 @@ fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
             "EMultBody",
             ExprInstance::EMultBody(EMult { p1: a(), p2: b() }),
         ),
-        ("EDivBody", ExprInstance::EDivBody(EDiv { p1: a(), p2: b() })),
-        ("EModBody", ExprInstance::EModBody(EMod { p1: a(), p2: b() })),
+        (
+            "EDivBody",
+            ExprInstance::EDivBody(EDiv { p1: a(), p2: b() }),
+        ),
+        (
+            "EModBody",
+            ExprInstance::EModBody(EMod { p1: a(), p2: b() }),
+        ),
         (
             "EPlusBody",
             ExprInstance::EPlusBody(EPlus { p1: a(), p2: b() }),
@@ -424,12 +425,24 @@ fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
             ExprInstance::EPercentPercentBody(EPercentPercent { p1: a(), p2: b() }),
         ),
         ("ELtBody", ExprInstance::ELtBody(ELt { p1: a(), p2: b() })),
-        ("ELteBody", ExprInstance::ELteBody(ELte { p1: a(), p2: b() })),
+        (
+            "ELteBody",
+            ExprInstance::ELteBody(ELte { p1: a(), p2: b() }),
+        ),
         ("EGtBody", ExprInstance::EGtBody(EGt { p1: a(), p2: b() })),
-        ("EGteBody", ExprInstance::EGteBody(EGte { p1: a(), p2: b() })),
+        (
+            "EGteBody",
+            ExprInstance::EGteBody(EGte { p1: a(), p2: b() }),
+        ),
         ("EEqBody", ExprInstance::EEqBody(EEq { p1: a(), p2: b() })),
-        ("ENeqBody", ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() })),
-        ("EAndBody", ExprInstance::EAndBody(EAnd { p1: a(), p2: b() })),
+        (
+            "ENeqBody",
+            ExprInstance::ENeqBody(ENeq { p1: a(), p2: b() }),
+        ),
+        (
+            "EAndBody",
+            ExprInstance::EAndBody(EAnd { p1: a(), p2: b() }),
+        ),
         ("EOrBody", ExprInstance::EOrBody(EOr { p1: a(), p2: b() })),
         (
             "EMatchesBody",
@@ -500,10 +513,7 @@ fn expr_instance_corpus() -> Vec<(&'static str, ExprInstance)> {
         ("EMapBody-anti-monotone", anti_monotone_map()),
         (
             "EPathmapBody-nested",
-            ExprInstance::EPathmapBody(pathmap_of(vec![
-                set_of(vec![gint(1), gint(2)]),
-                gint(8),
-            ])),
+            ExprInstance::EPathmapBody(pathmap_of(vec![set_of(vec![gint(1), gint(2)]), gint(8)])),
         ),
         (
             "EZipperBody",
@@ -641,56 +651,35 @@ fn bundle(write_flag: bool, read_flag: bool) -> Bundle {
 
 fn unforgeable_corpus() -> Vec<(&'static str, GUnforgeable)> {
     vec![
-        (
-            "GPrivateBody",
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![7, 7] })),
-            },
-        ),
-        (
-            "GDeployerIdBody",
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-                    public_key: vec![1, 2],
-                })),
-            },
-        ),
-        (
-            "GDeployIdBody",
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![3, 4] })),
-            },
-        ),
-        (
-            "GSysAuthTokenBody",
-            GUnforgeable {
-                unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
-            },
-        ),
+        ("GPrivateBody", GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![7, 7] })),
+        }),
+        ("GDeployerIdBody", GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                public_key: vec![1, 2],
+            })),
+        }),
+        ("GDeployIdBody", GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: vec![3, 4] })),
+        }),
+        ("GSysAuthTokenBody", GUnforgeable {
+            unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+        }),
         ("None", GUnforgeable { unf_instance: None }),
     ]
 }
 
 fn var_corpus() -> Vec<(&'static str, Var)> {
     vec![
-        (
-            "BoundVar",
-            Var {
-                var_instance: Some(VarInstance::BoundVar(5)),
-            },
-        ),
-        (
-            "FreeVar",
-            Var {
-                var_instance: Some(VarInstance::FreeVar(6)),
-            },
-        ),
-        (
-            "Wildcard",
-            Var {
-                var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
-            },
-        ),
+        ("BoundVar", Var {
+            var_instance: Some(VarInstance::BoundVar(5)),
+        }),
+        ("FreeVar", Var {
+            var_instance: Some(VarInstance::FreeVar(6)),
+        }),
+        ("Wildcard", Var {
+            var_instance: Some(VarInstance::Wildcard(models::rhoapi::var::WildcardMsg {})),
+        }),
         ("None", Var { var_instance: None }),
     ]
 }
@@ -750,9 +739,15 @@ fn actual_lines() -> Vec<String> {
         let e = Expr {
             expr_instance: Some(ei.clone()),
         };
-        out.push(line(&format!("expr/{}", name), ExprSortMatcher::sort_match(&e)));
+        out.push(line(
+            &format!("expr/{}", name),
+            ExprSortMatcher::sort_match(&e),
+        ));
         let p = expr_par(ei);
-        out.push(line(&format!("par-of-expr/{}", name), ParSortMatcher::sort_match(&p)));
+        out.push(line(
+            &format!("par-of-expr/{}", name),
+            ParSortMatcher::sort_match(&p),
+        ));
     }
     out.push(line(
         "expr/None",
@@ -779,8 +774,14 @@ fn actual_lines() -> Vec<String> {
     ));
 
     // --- the remaining top-level Sortables
-    out.push(line("send/persistent", SendSortMatcher::sort_match(&send(true))));
-    out.push(line("send/linear", SendSortMatcher::sort_match(&send(false))));
+    out.push(line(
+        "send/persistent",
+        SendSortMatcher::sort_match(&send(true)),
+    ));
+    out.push(line(
+        "send/linear",
+        SendSortMatcher::sort_match(&send(false)),
+    ));
     out.push(line(
         "receive/cond+linear",
         ReceiveSortMatcher::sort_match(&receive(true, false, false)),
@@ -813,11 +814,17 @@ fn actual_lines() -> Vec<String> {
         ));
     }
     for (name, v) in var_corpus() {
-        out.push(line(&format!("var/{}", name), VarSortMatcher::sort_match(&v)));
+        out.push(line(
+            &format!("var/{}", name),
+            VarSortMatcher::sort_match(&v),
+        ));
     }
 
     // --- whole-Par shapes
-    out.push(line("par/empty", ParSortMatcher::sort_match(&Par::default())));
+    out.push(line(
+        "par/empty",
+        ParSortMatcher::sort_match(&Par::default()),
+    ));
     out.push(line("par/full", ParSortMatcher::sort_match(&full_par())));
     for depth in [1usize, 2, 3, 8] {
         out.push(line(
@@ -831,7 +838,10 @@ fn actual_lines() -> Vec<String> {
     permuted.exprs.reverse();
     permuted.sends.reverse();
     permuted.bundles.reverse();
-    out.push(line("par/full-permuted", ParSortMatcher::sort_match(&permuted)));
+    out.push(line(
+        "par/full-permuted",
+        ParSortMatcher::sort_match(&permuted),
+    ));
 
     out
 }
@@ -961,4 +971,3 @@ fn the_fixture_is_deterministic_across_repeated_runs() {
         );
     }
 }
-

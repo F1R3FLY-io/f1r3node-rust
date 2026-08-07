@@ -226,7 +226,8 @@ fn strip(source: &str, keep_strings: bool) -> Vec<String> {
                 continue;
             }
             if let Some(hashes) = raw_hashes {
-                if chars[i] == '"' && chars[i + 1..].iter().take(hashes).all(|c| *c == '#')
+                if chars[i] == '"'
+                    && chars[i + 1..].iter().take(hashes).all(|c| *c == '#')
                     && chars.len() >= i + 1 + hashes
                 {
                     raw_hashes = None;
@@ -439,7 +440,7 @@ fn every_unwind_interceptor_is_allowlisted_with_a_reason() {
                     .collect::<Vec<_>>()
                     .join("\n")
             )),
-            Some(_) => {},
+            Some(_) => {}
         }
     }
 
@@ -505,9 +506,16 @@ fn the_scanner_finds_a_planted_attribute() {
         PANIC_EXPECTING_ATTRIBUTE,
         false,
     );
-    assert_eq!(found.len(), 1, "the planted attribute was not reported: {found:?}");
+    assert_eq!(
+        found.len(),
+        1,
+        "the planted attribute was not reported: {found:?}"
+    );
     assert_eq!(found[0].path, "synthetic/planted_violation.rs");
-    assert_eq!(found[0].line, 2, "the reported line must be the attribute's");
+    assert_eq!(
+        found[0].line, 2,
+        "the reported line must be the attribute's"
+    );
 
     // The `#[tokio::test]` spelling this repository uses is reported too.
     let asynchronous = format!(
@@ -515,15 +523,33 @@ fn the_scanner_finds_a_planted_attribute() {
         PANIC_EXPECTING_ATTRIBUTE
     );
     assert_eq!(
-        scan_source("synthetic/async.rs", &asynchronous, PANIC_EXPECTING_ATTRIBUTE, false).len(),
+        scan_source(
+            "synthetic/async.rs",
+            &asynchronous,
+            PANIC_EXPECTING_ATTRIBUTE,
+            false
+        )
+        .len(),
         1,
         "an async panic-expecting test must be reported too"
     );
 
     // …and the interceptor needle finds a planted interceptor.
-    let interceptor = format!("fn f() {{ let _ = std::panic::{}(|| ()); }}\n", UNWIND_INTERCEPTOR);
-    let found = scan_source("synthetic/interceptor.rs", &interceptor, UNWIND_INTERCEPTOR, true);
-    assert_eq!(found.len(), 1, "the planted interceptor was not reported: {found:?}");
+    let interceptor = format!(
+        "fn f() {{ let _ = std::panic::{}(|| ()); }}\n",
+        UNWIND_INTERCEPTOR
+    );
+    let found = scan_source(
+        "synthetic/interceptor.rs",
+        &interceptor,
+        UNWIND_INTERCEPTOR,
+        true,
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the planted interceptor was not reported: {found:?}"
+    );
 }
 
 /// …and the scanner does NOT report a construct that is merely mentioned.
@@ -540,7 +566,12 @@ fn the_scanner_ignores_comments_and_string_literals() {
          fn f() {{ let _info = \"ignore,{attr}\"; }}\n",
         attr = PANIC_EXPECTING_ATTRIBUTE
     );
-    let found = scan_source("synthetic/mentions.rs", &mentions, PANIC_EXPECTING_ATTRIBUTE, false);
+    let found = scan_source(
+        "synthetic/mentions.rs",
+        &mentions,
+        PANIC_EXPECTING_ATTRIBUTE,
+        false,
+    );
     assert!(
         found.is_empty(),
         "the scanner reported a MENTION as a violation, which would make the ban \
@@ -552,11 +583,20 @@ fn the_scanner_ignores_comments_and_string_literals() {
         attr = PANIC_EXPECTING_ATTRIBUTE
     );
     assert!(
-        scan_source("synthetic/block.rs", &block, PANIC_EXPECTING_ATTRIBUTE, false).is_empty(),
+        scan_source(
+            "synthetic/block.rs",
+            &block,
+            PANIC_EXPECTING_ATTRIBUTE,
+            false
+        )
+        .is_empty(),
         "a multi-line block comment leaked"
     );
 
-    let raw = format!("fn h() {{ let _ = r#\"#[{attr}]\"#; }}\n", attr = PANIC_EXPECTING_ATTRIBUTE);
+    let raw = format!(
+        "fn h() {{ let _ = r#\"#[{attr}]\"#; }}\n",
+        attr = PANIC_EXPECTING_ATTRIBUTE
+    );
     assert!(
         scan_source("synthetic/raw.rs", &raw, PANIC_EXPECTING_ATTRIBUTE, false).is_empty(),
         "a raw string leaked into attribute detection"
@@ -569,14 +609,22 @@ fn the_scanner_ignores_comments_and_string_literals() {
         attr = PANIC_EXPECTING_ATTRIBUTE
     );
     assert_eq!(
-        scan_source("synthetic/quoted_char.rs", &quoted_char, PANIC_EXPECTING_ATTRIBUTE, false)
-            .len(),
+        scan_source(
+            "synthetic/quoted_char.rs",
+            &quoted_char,
+            PANIC_EXPECTING_ATTRIBUTE,
+            false
+        )
+        .len(),
         1,
         "a char literal containing a double quote blinded the scanner"
     );
 
     // …and an interceptor inside a KEPT string is still seen.
-    let emitted = format!("fn e() {{ out.push_str(r#\"std::panic::{}\"#); }}\n", UNWIND_INTERCEPTOR);
+    let emitted = format!(
+        "fn e() {{ out.push_str(r#\"std::panic::{}\"#); }}\n",
+        UNWIND_INTERCEPTOR
+    );
     assert_eq!(
         scan_source("synthetic/emitted.rs", &emitted, UNWIND_INTERCEPTOR, true).len(),
         1,

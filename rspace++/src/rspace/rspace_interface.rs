@@ -105,20 +105,22 @@ pub trait ISpace<
     /// needed.
     async fn take_event_log(&self) -> Log;
 
-    /// The MeTTaIL reactive single-stepper's back-pressure gate, if a step session is active on
-    /// this space. Default `None` (production and replay never pause). `RSpace` overrides this to
-    /// forward to its installed [`super::logging::StepCommObserver`], letting the reducer pause
-    /// after each committed COMM with no construction-path threading. Synchronous and cheap — a
-    /// `None` return is one observer `is_none` check.
-    fn step_gate(&self) -> Option<std::sync::Arc<super::logging::StepGate>> {
-        None
-    }
+    /// The MeTTaIL reactive single-stepper's back-pressure gate, if a step
+    /// session is active on this space. Default `None` (production and
+    /// replay never pause). `RSpace` overrides this to forward to its
+    /// installed [`super::logging::StepCommObserver`], letting the reducer
+    /// pause after each committed COMM with no construction-path threading.
+    /// Synchronous and cheap — a `None` return is one observer `is_none`
+    /// check.
+    fn step_gate(&self) -> Option<std::sync::Arc<super::logging::StepGate>> { None }
 
-    /// Forward a non-COMM structural reduction (dereference, method, match/if/new/bundle body, or a
-    /// produce reaching quiescence) to the installed [`super::logging::StepCommObserver`], if any.
-    /// The symmetric twin of [`Self::step_gate`]: default `None`-op (production and replay never
-    /// observe), `RSpace` overrides it to forward to its observer, and the reducer reaches it through
-    /// `self.space` with no construction-path threading. Synchronous and cheap — the default is a
+    /// Forward a non-COMM structural reduction (dereference, method,
+    /// match/if/new/bundle body, or a produce reaching quiescence) to the
+    /// installed [`super::logging::StepCommObserver`], if any.
+    /// The symmetric twin of [`Self::step_gate`]: default `None`-op (production
+    /// and replay never observe), `RSpace` overrides it to forward to its
+    /// observer, and the reducer reaches it through `self.space` with no
+    /// construction-path threading. Synchronous and cheap — the default is a
     /// no-op, the `RSpace` override is one observer `is_none` check.
     fn observe_reduction(&self, _redex: &C, _kind: super::logging::ReductionKind) {}
 

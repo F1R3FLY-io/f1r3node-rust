@@ -13,7 +13,7 @@ use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec, StableHashSerialize};
+use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
@@ -25,10 +25,10 @@ use crate::rspace::hot_store_trie_action::{
     HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
     TrieInsertAction, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
 };
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
-use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepositoryImpl.
 // scala
