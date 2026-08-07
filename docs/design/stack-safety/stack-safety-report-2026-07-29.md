@@ -174,6 +174,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
 | **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope also eliminated | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
+| **SS-A11** | implementation commit carrying this row | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -2910,6 +2911,90 @@ and source offset so overloaded impl methods cannot overwrite each other; it rep
 components, **50** term-family components across **29** files, **20** mutual components, and zero
 unmeasured dispositions. No `RUST_MIN_STACK`, `stacker`, traversal-depth limit, or PathMap fork is part of
 the repair.
+
+#### 5.16.5 RSpace candidate selection and enumeration PDA [SS-A11]
+
+##### 5.16.5.1 The defect
+
+The RSpace commit selector filled a receive's binds with a recursive depth-first search in
+`rspace++/src/rspace/space_matcher.rs`. The enabled-rendezvous query contained a second recursive copy
+of the same search. **DERIVED:** each descent filled exactly one bind, so a receive with $`b`$ binds
+consumed $`\Theta(b)`$ native call frames even when every channel held one datum and the search itself
+was linear. Receive arity is controlled by source text; it has no trustworthy native-stack bound.
+The duplicated selector/enumerator walks also made candidate ordering, residual-pool rollback, and
+guard consultation two implementations of one consensus-visible rule.
+
+##### 5.16.5.2 Architecture of the repair, and why this shape
+
+One explicit-frame PDA now owns both modes. Its states are `Descend`, `Scan`, and `Return`; a frame
+stores the current channel/pattern pair, immutable candidate-pool snapshot, scan cursor, whether any
+complete leaf reached the guard, and whether the bind is last. The selector supplies a leaf callback
+that stops at the first admissible selection. The enumerator supplies a callback that clones the
+accepted selection and continues. Thus the enumeration head is the selector result by construction,
+not by coordination between sibling algorithms.
+
+The chosen-candidate stack and residual-pool map retain their original transaction law: an accepted
+early stop leaves the selected candidates and residual pools installed; an exhausted subtree pops its
+choice and restores its parent's pool; exhaustive enumeration restores the entry state. A `Vec<Par>`,
+set, hash map, traversal-depth cap, enlarged `RUST_MIN_STACK`, `stacker`, and a second enumerator were
+all rejected because none represents the search continuation or preserves the single ordering source.
+
+##### 5.16.5.3 How the fix was made
+
+The former `search_candidate_selection` and `enumerate_admissible_selections` recursive bodies were
+replaced by calls to private `walk_candidate_selections`. The machine preserves pool order, advances a
+parent cursor only after the selected child returns, and emits the pre-existing
+`GuardRejected`/`NoSpatialMatch` backtrack counters at the same return boundary. The last-bind fast path
+still avoids constructing a residual pool that no descendant can observe. No public trait surface,
+store representation, event hash, serialization, PathMap code, or cost-accounting rule changed.
+
+##### 5.16.5.4 Results
+
+All commands ran under a user systemd scope with **3 GiB `MemoryHigh`, 4 GiB `MemoryMax`, and zero
+swap**. **MEASURED:**
+
+| metric | recursive baseline | explicit-frame PDA | provenance |
+|---|---:|---:|---|
+| native stack versus bind count | $`\Theta(b)`$ (**DERIVED**, one Rust call per bind) | 20,000 binds complete on 256 KiB | public `consume` plus `enabled_rendezvous` gate |
+| focused deep gate | NOT MEASURED — the unsafe baseline was not restored | **1/1 in 2.62 s** | `selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds` |
+| profiled deep gate | NOT MEASURED — no baseline process | **2.61 s; 96,216 KiB maximum RSS; 0 major faults** | GNU `time -v` around the capped test process |
+| guarded-selection suite | same semantic corpus | **16/16** | selector retry, rollback, metrics, play/replay, and deep gate |
+| enabled-rendezvous suite | same semantic corpus | **9/9** | ordering and enumeration-head identity |
+| complete `rspace_plus_plus` package | n/a — acceptance total | **340 passed / 0 failed** | all package test binaries |
+| exact source census | 574 recursive components before this conversion | **572 recursive; 46 term-family; 22 mutual; 28 files** | `handwritten_recursion_census`, 4/4 |
+
+The guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
+exhaustive guard performed 1,000 spatial matches and 1,000 guard checks in 17.303 ms; the 60-by-60
+guarded join performed 3,660 spatial matches and 3,600 guard checks in 11.653 ms; the unguarded store
+needed two spatial matches in 1.878 ms. These are one-run regression observations, not comparative
+throughput claims.
+
+##### 5.16.5.5 What it cost
+
+Native-stack complexity changes from $`\Theta(b)`$ to $`O(1)`$. Explicit control storage is
+$`O(b)`$, which is the irreducible selected-candidate/frame frontier. Search time and output storage
+remain proportional to the candidate combinations actually visited and, for enumeration, emitted.
+The machine creates one frame per live bind and retains one pool snapshot per live frame, matching the
+rollback information the recursive implementation already owned; it does not materialize a Cartesian
+product or convert trie-backed payloads into another collection.
+
+##### 5.16.5.6 What is still recursive
+
+No candidate-selection or enabled-rendezvous recursion remains. The fresh production-only pgmcp
+analysis reports two direct findings and three mutual clusters across the wider target: both direct
+findings and two clusters are `#[cfg(test)]` recursive oracles still physically under `src/`; the one
+genuine production residual is the reducer's eleven-function evaluator SCC. Those wider residuals are
+not evidence against this component's closure and remain campaign work. This repair introduces no
+depth limit, stack-growing dependency, PathMap fork, or alternate RSpace representation.
+
+##### 5.16.5.7 Anti-vacuity
+
+The 20,000-bind test enters both public modes on a 256 KiB thread: `consume` must return all 20,000
+data candidates, while `enabled_rendezvous` must enumerate exactly one 20,000-candidate selection.
+That pair fails if either former recursive body is restored, if the selector short-circuits before the
+deep leaf, or if enumeration omits the continuation. Existing guarded tests separately reject cursor,
+rollback, ordering, guard-veto, and metric drift. The source census must count both removed recursive
+components; its 574-to-572 change supplies the structural anti-vacuity witness.
 
 ---
 

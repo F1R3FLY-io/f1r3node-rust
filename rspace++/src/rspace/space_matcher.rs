@@ -22,6 +22,22 @@ use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 
 type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
 
+struct CandidateWalkFrame<'a, C, P, A: Clone> {
+    channel: &'a C,
+    pattern: &'a P,
+    pool: Vec<(Datum<A>, i32)>,
+    level: usize,
+    cursor: usize,
+    any_leaf_reached: bool,
+    is_last_bind: bool,
+}
+
+#[derive(Clone, Copy)]
+struct CandidateWalkResult {
+    stopped: bool,
+    any_leaf_reached: bool,
+}
+
 /// Why a subtree of the candidate search failed — and therefore WHICH of the
 /// two incompletenesses the search is repairing when it backtracks past it.
 ///
@@ -47,6 +63,137 @@ pub(crate) enum SelectionOutcome {
     /// No complete selection was reachable at all: some bind had no spatial
     /// match left in its pool, so the guard was never consulted.
     NoSpatialMatch,
+}
+
+/// Run the candidate-selection pushdown automaton shared by the committing
+/// selector and the read-only enabled-rendezvous enumerator.
+///
+/// One heap frame represents one receive bind. Native-stack usage is constant
+/// in receive arity; the explicit frame stack grows linearly with the number
+/// of binds. Returning `true` from `on_admissible` stops at the current leaf
+/// and deliberately preserves `chosen` plus the residual pools, which is the
+/// committing selector's contract. Returning `false` continues the traversal;
+/// exhaustive completion restores both structures to their entry state.
+fn walk_candidate_selections<S, C, P, A, K, OnAdmissible, OnBacktrack>(
+    space: &S,
+    matcher: &Box<dyn Match<P, A, K>>,
+    channel_pattern_pairs: &[(&C, &P)],
+    continuation: &K,
+    channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    level: usize,
+    chosen: &mut Vec<ConsumeCandidate<C, A>>,
+    mut on_admissible: OnAdmissible,
+    mut on_backtrack: OnBacktrack,
+) -> CandidateWalkResult
+where
+    S: SpaceMatcher<C, P, A, K> + ?Sized,
+    C: Clone + std::hash::Hash + Eq + Send + Sync,
+    P: Clone + Send + Sync,
+    A: Clone + Send + Sync,
+    K: Clone + Send + Sync,
+    OnAdmissible: FnMut(&[ConsumeCandidate<C, A>]) -> bool,
+    OnBacktrack: FnMut(SelectionOutcome),
+{
+    enum State {
+        Descend(usize),
+        Scan,
+        Return(CandidateWalkResult),
+    }
+
+    let mut frames: Vec<CandidateWalkFrame<'_, C, P, A>> = Vec::new();
+    let mut state = State::Descend(level);
+    loop {
+        match state {
+            State::Descend(current_level) => {
+                if current_level == channel_pattern_pairs.len() {
+                    let matched: Vec<&A> =
+                        chosen.iter().map(|candidate| &*candidate.datum.a).collect();
+                    let stopped =
+                        matcher.check_commit(continuation, &matched) && on_admissible(chosen);
+                    state = State::Return(CandidateWalkResult {
+                        stopped,
+                        any_leaf_reached: true,
+                    });
+                    continue;
+                }
+
+                let (channel, pattern) = channel_pattern_pairs[current_level];
+                let Some(pool) = channel_to_indexed_data.get(channel).cloned() else {
+                    state = State::Return(CandidateWalkResult {
+                        stopped: false,
+                        any_leaf_reached: false,
+                    });
+                    continue;
+                };
+                frames.push(CandidateWalkFrame {
+                    channel,
+                    pattern,
+                    pool,
+                    level: current_level,
+                    cursor: 0,
+                    any_leaf_reached: false,
+                    is_last_bind: current_level + 1 == channel_pattern_pairs.len(),
+                });
+                state = State::Scan;
+            }
+            State::Scan => {
+                let next = {
+                    let frame = frames.last().expect("candidate walk scan without a frame");
+                    space.next_spatial_match(
+                        matcher,
+                        frame.channel.clone(),
+                        &frame.pool,
+                        frame.pattern,
+                        frame.cursor,
+                    )
+                };
+                if let Some((position, candidate)) = next {
+                    let frame = frames
+                        .last_mut()
+                        .expect("candidate walk scan without a frame");
+                    frame.cursor = position + 1;
+                    if !frame.is_last_bind {
+                        let residual = <S as SpaceMatcher<C, P, A, K>>::residual_pool(
+                            &frame.pool,
+                            position,
+                            candidate.datum.persist,
+                        );
+                        channel_to_indexed_data.insert(frame.channel.clone(), residual);
+                    }
+                    chosen.push(candidate);
+                    state = State::Descend(frame.level + 1);
+                } else {
+                    let frame = frames.pop().expect("candidate walk scan without a frame");
+                    if !frame.is_last_bind {
+                        channel_to_indexed_data.insert(frame.channel.clone(), frame.pool);
+                    }
+                    state = State::Return(CandidateWalkResult {
+                        stopped: false,
+                        any_leaf_reached: frame.any_leaf_reached,
+                    });
+                }
+            }
+            State::Return(result) => {
+                if result.stopped {
+                    return result;
+                }
+                let Some(parent) = frames.last_mut() else {
+                    return result;
+                };
+                chosen
+                    .pop()
+                    .expect("candidate walk returned without a parent choice");
+                let outcome = if result.any_leaf_reached {
+                    SelectionOutcome::GuardRejected
+                } else {
+                    SelectionOutcome::NoSpatialMatch
+                };
+                on_backtrack(outcome);
+                parent.any_leaf_reached |= result.any_leaf_reached;
+                state = State::Scan;
+            }
+        }
+    }
 }
 
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
@@ -291,7 +438,7 @@ where
     /// not. They are separated by [`SelectionOutcome`] and counted apart so the
     /// second can be reviewed, and if consensus review decides to narrow the
     /// change to defect D1 alone, one place decides it — refusing to advance
-    /// `cursor` in [`SpaceMatcher::search_candidate_selection`] when the
+    /// `cursor` in the shared candidate-walk automaton when the
     /// subtree returned [`SelectionOutcome::NoSpatialMatch`] reproduces the
     /// predecessor's behaviour exactly for guard-free receives.
     ///
@@ -362,30 +509,6 @@ where
         }
     }
 
-    /// One level of [`SpaceMatcher::extract_guarded_data_candidates`]'s
-    /// depth-first search: fill bind `level` with each of its spatial matches
-    /// in pool order and recurse, until the leaf's guard accepts.
-    ///
-    /// `chosen` accumulates the candidates in BIND order — the order
-    /// `check_commit` reads them in, and the order in which the receive's de
-    /// Bruijn indices were assigned — and is left holding exactly the
-    /// admissible selection on [`SelectionOutcome::Admissible`], and exactly
-    /// what it held on entry on either failure.
-    ///
-    /// `channel_to_indexed_data` is likewise restored on failure: each level
-    /// puts its own pool back when its scan is exhausted, and a level's
-    /// descendants only ever leave entries this level then overwrites. A
-    /// caller iterating continuations therefore sees an untouched map after a
-    /// continuation fails to match, exactly as the rollback list it replaces
-    /// guaranteed.
-    ///
-    /// The recursion depth is the receive's arity — the number of binds
-    /// written in the source term (`for(a <- x; b <- y; …)`) — so it is fixed
-    /// by the program text and is not data-dependent.
-    ///
-    /// The returned [`SelectionOutcome`] distinguishes the two reasons a
-    /// subtree can fail, so the caller can count them apart; see that type for
-    /// why the distinction matters.
     fn search_candidate_selection(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
@@ -395,75 +518,17 @@ where
         level: usize,
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
     ) -> SelectionOutcome {
-        // Leaf: every bind is filled, so the guard can finally be asked. This
-        // is the ONE place a commit guard is consulted on a candidate
-        // selection. It reads the matched payloads through borrows.
-        if level == channel_pattern_pairs.len() {
-            let matched: Vec<&A> = chosen.iter().map(|candidate| &*candidate.datum.a).collect();
-            return match matcher.check_commit(continuation, &matched) {
-                true => SelectionOutcome::Admissible,
-                false => SelectionOutcome::GuardRejected,
-            };
-        }
-
-        let (channel, pattern) = channel_pattern_pairs[level];
-
-        // This level's pool, snapshotted so the scan survives the mutations the
-        // descent makes to the same map entry (a join may bind the same channel
-        // twice, in which case the descendants read what this level wrote).
-        // Cost parity: the predecessor cloned the pool once per bind too — as
-        // the rollback entry it recorded before mutating.
-        let pool = match channel_to_indexed_data.get(channel) {
-            Some(indexed_data) => indexed_data.clone(),
-            // No pool for this channel at all: the bind cannot be filled, so no
-            // selection exists. (The predecessor pushed `None` into its
-            // accumulator, which failed the whole set the same way.)
-            None => return SelectionOutcome::NoSpatialMatch,
-        };
-
-        // Did ANY complete selection under this level reach the guard? If none
-        // did, this level's failure is spatial, not a guard veto.
-        let mut any_leaf_reached = false;
-
-        // The last bind has no binds after it, so nothing reads a residual pool
-        // from it. Skipping that construction is what keeps an exhausted
-        // single-bind scan — the shape almost every guard in practice has —
-        // linear rather than quadratic.
-        let is_last_bind = level + 1 == channel_pattern_pairs.len();
-
-        let mut cursor = 0usize;
-        while let Some((position, candidate)) =
-            self.next_spatial_match(matcher, channel.clone(), &pool, pattern, cursor)
-        {
-            // Speculatively remove the chosen datum for the benefit of the
-            // remaining binds (the residual is the pool minus it, or the whole
-            // pool when the datum is persistent).
-            if !is_last_bind {
-                let residual = Self::residual_pool(&pool, position, candidate.datum.persist);
-                channel_to_indexed_data.insert(channel.clone(), residual);
-            }
-            chosen.push(candidate);
-
-            let outcome = self.search_candidate_selection(
-                matcher,
-                channel_pattern_pairs,
-                continuation,
-                channel_to_indexed_data,
-                level + 1,
-                chosen,
-            );
-            if outcome == SelectionOutcome::Admissible {
-                return SelectionOutcome::Admissible;
-            }
-
-            // The subtree under this choice holds no admissible selection:
-            // undo the choice and resume the scan at the NEXT spatial match of
-            // this bind. This is the step the predecessor was missing — it
-            // abandoned the whole continuation here instead.
-            chosen.pop();
-            match outcome {
+        let result = walk_candidate_selections(
+            self,
+            matcher,
+            channel_pattern_pairs,
+            continuation,
+            channel_to_indexed_data,
+            level,
+            chosen,
+            |_| true,
+            |outcome| match outcome {
                 SelectionOutcome::GuardRejected => {
-                    any_leaf_reached = true;
                     metrics::counter!(
                         RSPACE_MATCHER_GUARD_BACKTRACK_METRIC, "source" => RSPACE_METRICS_SOURCE
                     )
@@ -475,28 +540,15 @@ where
                     )
                     .increment(1);
                 }
-                SelectionOutcome::Admissible => unreachable!("returned above"),
-            }
-            cursor = position + 1;
-        }
-
-        // Exhausted: restore this level's pool for whoever scans next. A last
-        // bind never wrote to the map, so there is nothing to put back.
-        //
-        // The snapshot itself is still taken at every level, including the last,
-        // because the recursive call needs `&mut` on the map and the borrow
-        // checker cannot see that a last bind's recursion only reaches the leaf.
-        // That is where the remaining constant of the quadratic corner lives
-        // (about half of it, measured); buying it back means hoisting the leaf
-        // out of the recursion, which duplicates the one place `check_commit` is
-        // called. Not worth it for a corner only a guarded join over two
-        // well-populated channels can enter.
-        if !is_last_bind {
-            channel_to_indexed_data.insert(channel.clone(), pool);
-        }
-        match any_leaf_reached {
-            true => SelectionOutcome::GuardRejected,
-            false => SelectionOutcome::NoSpatialMatch,
+                SelectionOutcome::Admissible => unreachable!(),
+            },
+        );
+        if result.stopped {
+            SelectionOutcome::Admissible
+        } else if result.any_leaf_reached {
+            SelectionOutcome::GuardRejected
+        } else {
+            SelectionOutcome::NoSpatialMatch
         }
     }
 
@@ -558,30 +610,23 @@ where
     // ══════════════════════════════════════════════════════════════════════
 
     /// **Every** admissible selection under `channel_pattern_pairs`, in exactly
-    /// the depth-first order [`SpaceMatcher::search_candidate_selection`]
-    /// visits them.
+    /// the depth-first order the committing selector visits them.
     ///
-    /// This is that search with one line changed: where the selector *returns*
-    /// at the first admissible leaf, this *records* the leaf and keeps
-    /// scanning. The two therefore agree on the first element by
-    /// construction — `out[0]` is the lexicographically least admissible
-    /// selection, i.e. the one a real `consume` on this state would take.
+    /// Selector and enumerator invoke the same explicit-frame automaton with
+    /// different leaf callbacks: the selector stops at the first admissible
+    /// leaf; this callback records it and keeps scanning. They therefore agree
+    /// on the first element by construction — `out[0]` is the
+    /// lexicographically least admissible selection, i.e. the one a real
+    /// `consume` on this state would take.
     /// That identity is the bridge between speculative enumeration and
     /// ordinary execution, and it is asserted directly by
     /// `the_enumeration_head_is_the_selector_choice` in `rspace++/tests/
     /// enabled_rendezvous_spec.rs`.
     ///
-    /// # Why it is written out rather than parameterising the selector
-    ///
-    /// `search_candidate_selection` returns a [`SelectionOutcome`] and short
-    /// circuits on `Admissible` at *every* level, so "keep going" is not a flag
-    /// that can be threaded through it — a caller that wanted all leaves would
-    /// have to defeat the early return at each level of the recursion. Rather
-    /// than complicate the consensus-critical selector with a mode it never
-    /// uses in production, the enumeration is a sibling with the identical
-    /// descent. Both live in this trait, so play and replay run one
-    /// enumeration and one selector; neither space carries a private copy
-    /// that could drift.
+    /// The shared machine is the single source of candidate ordering,
+    /// residual-pool mutation, rollback, and guard consultation. Only the leaf
+    /// policy differs, so no duplicate traversal can drift from consensus
+    /// selection semantics.
     ///
     /// # Read-only
     ///
@@ -606,53 +651,20 @@ where
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
         out: &mut Vec<Vec<ConsumeCandidate<C, A>>>,
     ) {
-        // Leaf: every bind is filled, so the commit guard decides. Same single
-        // consultation point the selector uses, reading the same borrows.
-        if level == channel_pattern_pairs.len() {
-            let matched: Vec<&A> = chosen.iter().map(|candidate| &*candidate.datum.a).collect();
-            if matcher.check_commit(continuation, &matched) {
-                out.push(chosen.clone());
-            }
-            return;
-        }
-
-        let (channel, pattern) = channel_pattern_pairs[level];
-
-        let pool = match channel_to_indexed_data.get(channel) {
-            Some(indexed_data) => indexed_data.clone(),
-            // No pool for this channel: no selection fills this bind.
-            None => return,
-        };
-
-        let is_last_bind = level + 1 == channel_pattern_pairs.len();
-
-        let mut cursor = 0usize;
-        while let Some((position, candidate)) =
-            self.next_spatial_match(matcher, channel.clone(), &pool, pattern, cursor)
-        {
-            if !is_last_bind {
-                let residual = Self::residual_pool(&pool, position, candidate.datum.persist);
-                channel_to_indexed_data.insert(channel.clone(), residual);
-            }
-            chosen.push(candidate);
-
-            self.enumerate_admissible_selections(
-                matcher,
-                channel_pattern_pairs,
-                continuation,
-                channel_to_indexed_data,
-                level + 1,
-                chosen,
-                out,
-            );
-
-            chosen.pop();
-            cursor = position + 1;
-        }
-
-        if !is_last_bind {
-            channel_to_indexed_data.insert(channel.clone(), pool);
-        }
+        let _ = walk_candidate_selections(
+            self,
+            matcher,
+            channel_pattern_pairs,
+            continuation,
+            channel_to_indexed_data,
+            level,
+            chosen,
+            |selection| {
+                out.push(selection.to_vec());
+                false
+            },
+            |_| {},
+        );
     }
 
     /// `E(S)` — the **enabled rendezvous set** of the state `store` currently

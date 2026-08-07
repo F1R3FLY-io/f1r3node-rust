@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rspace_plus_plus::rspace::candidate_order::order_candidates_with_index;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
-use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -191,6 +191,29 @@ async fn fixture() -> (TestSpace, TestReplaySpace, GuardingMatch) {
     );
 
     (space, replay_space, matcher)
+}
+
+/// Build a play space around an explicitly prepared hot-store state. Deep
+/// candidate-walk tests use this to avoid spending their small native stack on
+/// thousands of setup `produce` calls.
+async fn space_with_state(
+    cache: HotStoreState<String, Pattern, String, GuardedContinuation>,
+) -> TestSpace {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory rspace stores");
+    let history_repo = Arc::new(
+        HistoryRepositoryInstances::<String, Pattern, String, GuardedContinuation>::lmdb_repository(
+            store.history,
+            store.roots,
+            store.cold,
+        )
+        .expect("history repository"),
+    );
+    let history_reader = history_repo
+        .get_history_reader(&history_repo.root())
+        .expect("history reader");
+    let hot_store = HotStoreInstances::create_from_hs_and_hr(cache, history_reader.base());
+    RSpace::apply(history_repo, hot_store, Arc::new(Box::new(GuardingMatch::default())))
 }
 
 /// The data resting on `channel`, as integers, in store order.
@@ -1161,6 +1184,73 @@ async fn a_bind_on_an_empty_channel_fires_nothing() {
 
     let observed: HashMap<String, usize> = HashMap::new();
     assert!(observed.is_empty(), "no side channel was written");
+}
+
+/// Receive arity is controlled by source text, so it cannot be trusted to fit
+/// the native call stack. Both candidate-walk modes must traverse a very deep
+/// bind spine on a deliberately small stack. Unique one-element channels make
+/// the search linear and leave exactly one admissible selection, isolating
+/// stack usage from combinatorial search cost.
+#[tokio::test]
+async fn selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds() {
+    const BINDS: usize = 20_000;
+    const SMALL_STACK: usize = 256 * 1024;
+
+    let channels: Vec<String> = (0..BINDS).map(|index| format!("c{index}")).collect();
+    let patterns = vec![Pattern::Wildcard; BINDS];
+    let continuation = GuardedContinuation::unguarded("deep");
+    let make_state = || {
+        let mut state: HotStoreState<String, Pattern, String, GuardedContinuation> =
+            HotStoreState::default();
+        for (index, channel) in channels.iter().enumerate() {
+            state.data.insert(channel.clone(), vec![Datum::create(
+                channel,
+                index.to_string(),
+                false,
+            )]);
+        }
+        state
+    };
+
+    let selector_space = space_with_state(make_state()).await;
+    let mut enumeration_state = make_state();
+    enumeration_state
+        .continuations
+        .insert(channels.clone(), vec![WaitingContinuation::create(
+            &channels,
+            &patterns,
+            &continuation,
+            false,
+            BTreeSet::new(),
+        )]);
+    let enumeration_space = space_with_state(enumeration_state).await;
+
+    std::thread::Builder::new()
+        .name("candidate-walk-small-stack".to_string())
+        .stack_size(SMALL_STACK)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("small-stack current-thread runtime");
+            let fired = runtime
+                .block_on(selector_space.consume(
+                    channels,
+                    patterns,
+                    continuation,
+                    false,
+                    BTreeSet::new(),
+                ))
+                .expect("deep consume")
+                .expect("one datum per channel forms one admissible selection");
+            assert_eq!(fired.1.len(), BINDS);
+
+            let selections = enumeration_space.enabled_rendezvous();
+            assert_eq!(selections.len(), 1);
+            assert_eq!(selections[0].data_candidates.len(), BINDS);
+        })
+        .expect("spawn small-stack candidate-walk thread")
+        .join()
+        .expect("candidate walk must not overflow its small native stack");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
