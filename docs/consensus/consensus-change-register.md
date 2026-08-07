@@ -3221,6 +3221,14 @@ COMM traces, charges, EPathMap modes, or PathMap operations. The checkpoint is t
 CBR-023's `EQUIVALENCE_PROVEN` classification and creates no active may-change-consensus entry;
 measurements and the machines' exact equations are recorded in the stack-safety report §5.18.33.
 
+**CBR-023 living-set continuation (2026-08-06, SS-G33).** `mettail-rust@af2d984d` converts the
+four recursive walks in the feature-quarantined naive reference backend. Ordered recursive
+differentials preserve automaton tags, located sites, arity maps, and the first typed refusal; the
+20,000-level gate establishes stack safety. The feature has no production entry point and the
+conversion changes no generated process, protobuf byte, hash, COMM, charge, EPathMap mode, or
+PathMap operation. It therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without an active
+may-change-consensus entry; stack-safety report §5.18.34 records the capped measurements.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
