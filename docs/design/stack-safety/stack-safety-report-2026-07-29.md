@@ -7,7 +7,7 @@
 **Report date** 2026-07-29, revised through 2026-08-06
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
-**Companion decision head** `mettail-rust@d1ce352b` (recursive-carrier lifecycle plus operational,
+**Companion decision head** `mettail-rust@2c2cbb95` (recursive-carrier lifecycle plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, and Dovetail set-automaton closure;
 §5.18)
@@ -62,7 +62,9 @@ removing 14 false direct findings and one false mutual cluster; the current cens
 findings and 5 mutual clusters**. `mettail-rust@d1ce352b` next factors the regex quantifier's
 primitive Thompson constructors, removing a semantically one-reentry helper cycle while preserving
 the exact nondeterministic-finite-automaton (NFA) topology; the current census is **86 direct
-findings and 4 mutual clusters**. No production path uses
+findings and 4 mutual clusters**. `mettail-rust@2c2cbb95` applies the same bounded-cycle factoring
+to set-type Top lowering and empty-automaton complementation; the current census is **86 direct
+findings and 3 mutual clusters**. No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
 EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and retired-mechanism
@@ -3041,8 +3043,9 @@ lifecycle census cannot see. Two concrete obligations remain live:
   Dovetail metapattern, and Dovetail set-automaton families are now closed by SS-G10–SS-G25.
   `mettail-rust@da638fe3` additionally resolves the lifecycle analyzer's name collision between an
   enclosing `Drop::drop` method and unqualified `std::mem::drop` calls. Fresh whole-project analysis
-  reports **86 direct findings and 4 mutual clusters** after `mettail-rust@d1ce352b` also removes the
-  regex quantifier's semantically bounded helper cycle; every remaining entry must be converted or
+  reports **86 direct findings and 3 mutual clusters** after `mettail-rust@d1ce352b` removes the
+  regex quantifier's semantically bounded helper cycle and `mettail-rust@2c2cbb95` factors the
+  corresponding set-type universal-automaton constructor; every remaining entry must be converted or
   demonstrated to be non-production/source-resolution evidence before workspace closure.
 - The lifecycle gate still needs a mutation calibration that injects a known-bad recursive derive and
   demonstrates an exact RED result for its file and type.
@@ -4275,6 +4278,16 @@ fragment identifiers, state allocation, and transition ordering across seven qua
 regex selection passes **65/65**. Fresh analysis falls from **86/5** to **86/4** direct/mutual
 findings. Because native-stack complexity was already $`O(1)`$, this source-SCC cleanup is recorded
 here but is not allocated a stack-safety fix-register row.
+
+`mettail-rust@2c2cbb95` next removes the `type_to_automaton` / `complement_automaton` SCC. This cycle
+was likewise bounded to one re-entry: complementing an empty automaton asked the already-iterative
+set-type lowering PDA to construct `Top`, whose arm never called complement. Both sites now share one
+non-recursive universal-tree-automaton constructor. A test-only copy of the former
+`Negation(Bottom)` path compares exact states, transition count and order, final states, and ranked
+alphabet. The type-system selection passes **62/62**, and the existing SetType gate passes lifecycle
+and automaton lowering at **20,000** levels on a **256 KiB** thread. Fresh analysis falls from
+**86/4** to **86/3** direct/mutual findings. Native-stack complexity was already $`O(1)`$, so this
+source-SCC cleanup is not allocated a stack-safety fix-register row.
 
 ![converted subjects and live residuals across both repositories](figures/converted-vs-tripwire-cross-repo.svg)
 
