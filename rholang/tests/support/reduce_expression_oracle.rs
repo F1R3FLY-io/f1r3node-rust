@@ -1,3 +1,5 @@
+// Test-only recursive evaluator oracle, physically separated from production
+// sources and included only when `cfg(test)` is active in `reduce.rs`.
 macro_rules! reducer_expression_oracle_methods {
     () => {
         // RECURSIVE TWIN — the oracle for the differential harness (`differential`

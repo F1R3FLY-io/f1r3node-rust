@@ -14,7 +14,7 @@
 //! Two reasons, and the second is the load-bearing one.
 //!
 //! 1. Uniformity: every other oracle in this workspace already lives in its own
-//!    file (`substitute_oracle.rs`, `normalize_recursive.rs`).
+//!    file (`tests/support/substitute_oracle.rs`, `tests/support/normalize_recursive.rs`).
 //! 2. `rustfmt.toml`'s `ignore` is FILE-level. Text that asserts byte-identity
 //!    against an external source must not be silently rewritten by a formatter —
 //!    but while this code sat inside `pretty_printer.rs`, excluding it would have

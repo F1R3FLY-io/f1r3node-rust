@@ -174,7 +174,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
 | **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope also eliminated | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
-| **SS-A11** | implementation commit carrying this row | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
+| **SS-A11** | `8b81f223` | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -2961,7 +2961,7 @@ swap**. **MEASURED:**
 | guarded-selection suite | same semantic corpus | **16/16** | selector retry, rollback, metrics, play/replay, and deep gate |
 | enabled-rendezvous suite | same semantic corpus | **9/9** | ordering and enumeration-head identity |
 | complete `rspace_plus_plus` package | n/a — acceptance total | **340 passed / 0 failed** | all package test binaries |
-| exact source census | 574 recursive components before this conversion | **572 recursive; 46 term-family; 22 mutual; 28 files** | `handwritten_recursion_census`, 4/4 |
+| exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating five recursive oracle/differential files and the score comparator to `tests/support` | `handwritten_recursion_census`, 5/5; oracle provenance 8/8 |
 
 The guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
 exhaustive guard performed 1,000 spatial matches and 1,000 guard checks in 17.303 ms; the 60-by-60
@@ -2980,12 +2980,22 @@ product or convert trie-backed payloads into another collection.
 
 ##### 5.16.5.6 What is still recursive
 
-No candidate-selection or enabled-rendezvous recursion remains. The fresh production-only pgmcp
-analysis reports two direct findings and three mutual clusters across the wider target: both direct
-findings and two clusters are `#[cfg(test)]` recursive oracles still physically under `src/`; the one
-genuine production residual is the reducer's eleven-function evaluator SCC. Those wider residuals are
-not evidence against this component's closure and remain campaign work. This repair introduces no
-depth limit, stack-growing dependency, PathMap fork, or alternate RSpace representation.
+No candidate-selection or enabled-rendezvous recursion remains. The first production-only pgmcp run
+after SS-A11 reported two direct findings and three mutual clusters across the wider target. Source
+inspection established that both direct findings and two clusters were `#[cfg(test)]` recursive
+oracles still physically under `src/`. They now live under `models/tests/support` or
+`rholang/tests/support`, reached only through `#[cfg(test)]` path declarations; the production census
+therefore falls from 28 to 25 dispositioned files while an exact-path gate independently scans the
+26-member normalizer oracle and the git-provenance suite verifies 23 cited blocks plus six declared
+mechanical deviations. Five of those deviations preserve destructive `locally_free` cache transfers
+after `Par` gained custom iterative `Drop`: move the whole `Par`, `mem::take` the byte vector, then
+move the emptied child into its parent. A clone-only E0509 adaptation was rejected by the differential
+gate with **4 failures / 300 passes** because it retained a duplicate `[1]` cache in the nested
+`Par` and changed canonical protobuf bytes; the transfer-preserving form restores **9/9** focused
+normalizer differential cases and **8/8** provenance checks. The one genuine classic-pgmcp residual
+is the reducer's eleven-function evaluator SCC.
+This repair introduces no depth limit, stack-growing dependency, PathMap fork, or alternate RSpace
+representation.
 
 ##### 5.16.5.7 Anti-vacuity
 

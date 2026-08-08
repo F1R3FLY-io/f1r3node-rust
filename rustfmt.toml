@@ -31,9 +31,12 @@ group_imports = "StdExternalCrate"
 # Formatting the file would silently falsify every one of those citations. A reader who
 # followed one and found a difference could not distinguish tampering from rustfmt.
 #
-# ★ Why this belongs HERE and not as `#[rustfmt::skip]` in the file: that attribute
-# would require EDITING the file, which destroys the byte-identity the exemption exists
-# to protect. A config-side exclusion is the only mechanism that preserves the property.
+# ★ Why this belongs HERE and not as `#[rustfmt::skip]` *inside the oracle*: that
+# attribute would require editing the cited file, which destroys the byte-identity the
+# exemption exists to protect. Since the oracle moved under `tests/support`, its
+# `#[path = ...]` declaration in `compiler/mod.rs` also carries `#[rustfmt::skip]` so a
+# workspace-format run does not rediscover it through the non-canonical relative path;
+# the attribute is outside the cited file and therefore preserves the property.
 #
 # This is not a blanket "oracles are exempt" carve-out. `sort_recursive.rs` and
 # `substitute_oracle.rs` are oracles by ROLE but cite no commit and no line ranges, so
@@ -98,6 +101,6 @@ group_imports = "StdExternalCrate"
 # and `#[rustfmt::skip]` is refused for the reason given above: it edits the very text
 # whose byte-identity is the point.
 ignore = [
-    "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
+    "rholang/tests/support/normalize_recursive.rs",
     "rholang/tests/support/pretty_printer_oracle.rs",
 ]

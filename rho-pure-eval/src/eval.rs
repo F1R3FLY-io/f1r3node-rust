@@ -54,7 +54,7 @@ pub fn eval_with(par: &Par, env: &Env<Par>, matcher: &dyn SpatialMatch) -> Resul
 ///
 /// Θ(depth) on purpose: it is the reference the worklist is compared against,
 /// exactly as `reduce.rs` keeps `eval_expr_recursive` beside its trampoline and
-/// `score_tree.rs` keeps `compare_score_recursive` beside `compare_score`.
+/// `models/tests/support/score_tree_oracle.rs` keeps the recursive comparator.
 #[cfg(test)]
 pub(crate) fn eval_with_recursive(
     par: &Par,

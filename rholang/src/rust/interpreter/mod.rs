@@ -45,6 +45,7 @@ pub mod substitute;
 pub mod substitute_combine;
 pub mod substitute_drive;
 #[cfg(test)]
+#[path = "../../../tests/support/substitute_oracle.rs"]
 pub mod substitute_oracle;
 pub mod system_processes;
 pub mod test_utils;

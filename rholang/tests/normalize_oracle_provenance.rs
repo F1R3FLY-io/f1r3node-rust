@@ -1,6 +1,6 @@
 //! # The normalizer oracle's citations, checked rather than merely checkable
 //!
-//! `rholang/src/rust/interpreter/compiler/normalize_recursive.rs` is the
+//! `rholang/tests/support/normalize_recursive.rs` is the
 //! **recursive oracle twin** of the 26-function `normalize_ann_proc` SCC. It is
 //! the thing the converted machine is differentiated against, so the whole
 //! evidential value of `compiler::normalize_differential` — and of every Leg-2
@@ -99,29 +99,364 @@ const SCC_NAMES: &[&str] = &[
 const SOURCE_ROOT: &str = "rholang/src/rust/interpreter/compiler/";
 
 /// The oracle, relative to the repository root.
-const ORACLE: &str = "rholang/src/rust/interpreter/compiler/normalize_recursive.rs";
+const ORACLE: &str = "rholang/tests/support/normalize_recursive.rs";
 
 /// ★ Edits to a cited block that go **beyond** [`rename_scc`], as data.
 ///
-/// There is exactly one, and it exists because merging two source files that
-/// resolved the bare name `Var` to *different* types made the annotation
-/// ambiguous. It is a type annotation; no expression is touched.
+/// Six narrowly mechanical deviations are required after merging the cited
+/// files. One disambiguates the two source files' different `Var` imports. The
+/// other five preserve the cited code's *destructive* cache transfers after
+/// `Par` gained a custom iterative `Drop`: move the whole `Par` first, then
+/// extract `locally_free` with `mem::take`, and finally move that emptied
+/// `Par` into its parent. Rust E0509 forbids the cited partial-field moves.
+///
+/// A clone-only spelling is not equivalent: it leaves a second cache inside
+/// the nested `Par` and changes canonical protobuf bytes. The differential
+/// gate caught exactly that error while this relocation was being validated.
 ///
 /// Keeping this as a table rather than as a special case in the comparison has
 /// a specific purpose: a maintainer cannot quietly widen a deviation, or add a
 /// second one, without it appearing here — and [`no_undeclared_deviations`]
 /// fails if an entry stops being needed, so the list cannot rot into a licence
 /// for arbitrary drift either.
-const DECLARED_DEVIATIONS: &[Deviation] = &[Deviation {
-    path: "normalizer/collection_normalize_matcher.rs",
-    from: "        remainder: Option<Var>,\n",
-    to: "        remainder: Option<models::rhoapi::Var>,\n",
-    reason: "`Var` is ambiguous once this block is merged with \
-             `name_normalize_matcher.rs`: the former file resolved it to \
-             `models::rhoapi::Var`, the latter to `rholang_parser::ast::Var`. \
-             The annotation names the type the SOURCE file's own imports \
-             resolved to, so the block's meaning is unchanged.",
-}];
+const DECLARED_DEVIATIONS: &[Deviation] = &[
+    Deviation {
+        path: "normalizer/collection_normalize_matcher.rs",
+        from: "        remainder: Option<Var>,\n",
+        to: "        remainder: Option<models::rhoapi::Var>,\n",
+        reason: "`Var` is ambiguous once this block is merged with \
+                 `name_normalize_matcher.rs`: the former file resolved it to \
+                 `models::rhoapi::Var`, the latter to `rholang_parser::ast::Var`. \
+                 The annotation names the type the SOURCE file's own imports \
+                 resolved to, so the block's meaning is unchanged.",
+    },
+    Deviation {
+        path: "normalizer/collection_normalize_matcher.rs",
+        from: r#"            acc_pars.push(result.par.clone());
+            result_known_free = result.free_map.clone();
+            locally_free = union(locally_free, result.par.locally_free);
+            connective_used = connective_used || result.par.connective_used;
+"#,
+        to: r#"            let mut result_par = result.par;
+            connective_used |= result_par.connective_used;
+            locally_free = union(
+                locally_free,
+                std::mem::take(&mut result_par.locally_free),
+            );
+            acc_pars.push(result_par);
+            result_known_free = result.free_map;
+"#,
+        reason: "moving the whole normalized Par makes the cited destructive locally-free cache \
+                 transfer legal under custom Drop. `mem::take` preserves the cited state change: \
+                 the child inserted into the collection no longer retains a duplicate cache.",
+    },
+    Deviation {
+        path: "normalizer/collection_normalize_matcher.rs",
+        from: r#"            acc_pairs.push((key_result.par.clone(), value_result.par.clone()));
+            result_known_free = value_result.free_map.clone();
+            locally_free = union(
+                locally_free,
+                union(key_result.par.locally_free, value_result.par.locally_free),
+            );
+            connective_used = connective_used
+                || key_result.par.connective_used
+                || value_result.par.connective_used;
+"#,
+        to: r#"            let mut key_par = key_result.par;
+            let mut value_par = value_result.par;
+            connective_used |= key_par.connective_used || value_par.connective_used;
+            locally_free = union(
+                locally_free,
+                union(
+                    std::mem::take(&mut key_par.locally_free),
+                    std::mem::take(&mut value_par.locally_free),
+                ),
+            );
+            acc_pairs.push((key_par, value_par));
+            result_known_free = value_result.free_map;
+"#,
+        reason: "the two whole-Par moves plus `mem::take` preserve the cited map fold's \
+                 destructive cache transfer and ordering while remaining legal under custom Drop.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_new_normalizer.rs",
+        from: r#"    let body_result = normalize_ann_proc_recursive(
+        proc,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: new_env.clone(),
+            free_map: input.free_map.clone(),
+        },
+        env,
+        parser,
+    )?;
+
+    // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
+    let btree_map: BTreeMap<String, Par> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+    let result_new = New {
+        bind_count: new_count as i32,
+        p: Some(body_result.par.clone()),
+        uri: uris,
+        injections: btree_map,
+        locally_free: filter_and_adjust_bitset(body_result.par.clone().locally_free, new_count),
+    };
+
+    Ok(ProcVisitOutputs {
+        par: prepend_new(input.par.clone(), result_new),
+        free_map: body_result.free_map.clone(),
+    })
+"#,
+        to: r#"    let mut body_result = normalize_ann_proc_recursive(
+        proc,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: new_env.clone(),
+            free_map: input.free_map.clone(),
+        },
+        env,
+        parser,
+    )?;
+
+    // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
+    let btree_map: BTreeMap<String, Par> =
+        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+    let body_locally_free = filter_and_adjust_bitset(
+        std::mem::take(&mut body_result.par.locally_free),
+        new_count,
+    );
+    let result_new = New {
+        bind_count: new_count as i32,
+        p: Some(body_result.par),
+        uri: uris,
+        injections: btree_map,
+        locally_free: body_locally_free,
+    };
+
+    Ok(ProcVisitOutputs {
+        par: prepend_new(input.par.clone(), result_new),
+        free_map: body_result.free_map,
+    })
+"#,
+        reason: "the body cache is transferred into `New::locally_free` and removed from the \
+                 nested body before that body is moved. This is byte-identical to the cited \
+                 partial move and legal for a Par with custom Drop.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_contr_normalizer.rs",
+        from: r#"    let body_result = normalize_ann_proc_recursive(
+        body,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: new_enw,
+            free_map: name_match_result.free_map.clone(),
+        },
+        env,
+        parser,
+    )?;
+
+    let receive = Receive {
+        binds: vec![ReceiveBind {
+            patterns: init_acc.0.clone().into_iter().rev().collect(),
+            source: Some(name_match_result.par.clone()),
+            remainder: remainder_result.0.clone(),
+            free_count: bound_count as i32,
+        }],
+        body: Some(body_result.par.clone()),
+        persistent: true,
+        peek: false,
+        bind_count: bound_count as i32,
+        locally_free: union(
+            name_match_result.par.locally_free(
+                name_match_result.par.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
+            union(
+                init_acc.2,
+                filter_and_adjust_bitset(body_result.par.clone().locally_free, bound_count),
+            ),
+        ),
+        connective_used: name_match_result
+            .par
+            .connective_used(name_match_result.par.clone())
+            || body_result.par.connective_used(body_result.par.clone()),
+        condition: None,
+    };
+"#,
+        to: r#"    let mut body_result = normalize_ann_proc_recursive(
+        body,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: new_enw,
+            free_map: name_match_result.free_map.clone(),
+        },
+        env,
+        parser,
+    )?;
+
+    let body_connective_used = body_result.par.connective_used;
+    let body_locally_free = filter_and_adjust_bitset(
+        std::mem::take(&mut body_result.par.locally_free),
+        bound_count,
+    );
+    let receive = Receive {
+        binds: vec![ReceiveBind {
+            patterns: init_acc.0.clone().into_iter().rev().collect(),
+            source: Some(name_match_result.par.clone()),
+            remainder: remainder_result.0.clone(),
+            free_count: bound_count as i32,
+        }],
+        body: Some(body_result.par),
+        persistent: true,
+        peek: false,
+        bind_count: bound_count as i32,
+        locally_free: union(
+            name_match_result.par.locally_free(
+                name_match_result.par.clone(),
+                input.bound_map_chain.depth() as i32,
+            ),
+            union(
+                init_acc.2,
+                body_locally_free,
+            ),
+        ),
+        connective_used: name_match_result
+            .par
+            .connective_used(name_match_result.par.clone())
+            || body_connective_used,
+        condition: None,
+    };
+"#,
+        reason: "the contract body cache and connective bit are read before the whole body Par is \
+                 moved into Receive. `mem::take` preserves the cited cache transfer exactly.",
+    },
+    Deviation {
+        path: "normalizer/processes/p_input_normalizer.rs",
+        from: r#"        let proc_visit_outputs = normalize_ann_proc_recursive(
+            body,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: body_env,
+                free_map: guard_result
+                    .as_ref()
+                    .map(|gr| gr.free_map.clone())
+                    .unwrap_or(sources_free),
+            },
+            env,
+            parser,
+        )?;
+
+        let bind_count = receive_binds_free_map.count_no_wildcards();
+
+        let guard_par = guard_result.as_ref().map(|gr| gr.par.clone());
+        let guard_locally_free = guard_result
+            .as_ref()
+            .map(|gr| gr.par.locally_free.clone())
+            .unwrap_or_default();
+        let guard_connective_used = guard_result
+            .as_ref()
+            .map(|gr| gr.par.connective_used)
+            .unwrap_or(false);
+
+        Ok(ProcVisitOutputs {
+            par: input.par.clone().prepend_receive(Receive {
+                binds: receive_binds,
+                body: Some(proc_visit_outputs.clone().par),
+                persistent,
+                peek,
+                bind_count: bind_count as i32,
+                locally_free: {
+                    union(
+                        sources_locally_free,
+                        union(
+                            processed_patterns
+                                .into_iter()
+                                .map(|pattern| pattern.3)
+                                .fold(Vec::new(), |locally_free1, locally_free2| {
+                                    union(locally_free1, locally_free2)
+                                }),
+                            filter_and_adjust_bitset(
+                                union(proc_visit_outputs.par.locally_free, guard_locally_free),
+                                bind_count,
+                            ),
+                        ),
+                    )
+                },
+                connective_used: sources_connective_used
+                    || proc_visit_outputs.par.connective_used
+                    || guard_connective_used,
+                condition: guard_par,
+            }),
+            free_map: proc_visit_outputs.free_map,
+        })
+"#,
+        to: r#"        let mut proc_visit_outputs = normalize_ann_proc_recursive(
+            body,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: body_env,
+                free_map: guard_result
+                    .as_ref()
+                    .map(|gr| gr.free_map.clone())
+                    .unwrap_or(sources_free),
+            },
+            env,
+            parser,
+        )?;
+
+        let bind_count = receive_binds_free_map.count_no_wildcards();
+
+        let guard_par = guard_result.as_ref().map(|gr| gr.par.clone());
+        let guard_locally_free = guard_result
+            .as_ref()
+            .map(|gr| gr.par.locally_free.clone())
+            .unwrap_or_default();
+        let guard_connective_used = guard_result
+            .as_ref()
+            .map(|gr| gr.par.connective_used)
+            .unwrap_or(false);
+
+        let body_connective_used = proc_visit_outputs.par.connective_used;
+        let body_locally_free = std::mem::take(&mut proc_visit_outputs.par.locally_free);
+
+        Ok(ProcVisitOutputs {
+            par: input.par.clone().prepend_receive(Receive {
+                binds: receive_binds,
+                body: Some(proc_visit_outputs.par),
+                persistent,
+                peek,
+                bind_count: bind_count as i32,
+                locally_free: {
+                    union(
+                        sources_locally_free,
+                        union(
+                            processed_patterns
+                                .into_iter()
+                                .map(|pattern| pattern.3)
+                                .fold(Vec::new(), |locally_free1, locally_free2| {
+                                    union(locally_free1, locally_free2)
+                                }),
+                            filter_and_adjust_bitset(
+                                union(body_locally_free, guard_locally_free),
+                                bind_count,
+                            ),
+                        ),
+                    )
+                },
+                connective_used: sources_connective_used
+                    || body_connective_used
+                    || guard_connective_used,
+                condition: guard_par,
+            }),
+            free_map: proc_visit_outputs.free_map,
+        })
+"#,
+        reason: "the receive body cache is taken before the body Par is moved, preserving the \
+                 cited partial-move semantics and preventing a duplicate serialized cache.",
+    },
+];
 
 struct Deviation {
     path: &'static str,
@@ -1344,7 +1679,7 @@ const ARM_TABLE_COLLAPSE_FLOOR: usize = 3;
 const ARM_TABLE_FN: &str = "eval_expr_to_expr";
 
 const REDUCE: &str = "rholang/src/rust/interpreter/reduce.rs";
-const REDUCE_EXPRESSION_ORACLE: &str = "rholang/src/rust/interpreter/reduce_expression_oracle.rs";
+const REDUCE_EXPRESSION_ORACLE: &str = "rholang/tests/support/reduce_expression_oracle.rs";
 
 /// The live evaluator implementation plus the source-only recursive oracle it
 /// expands in test builds. Keeping these separate lets the recursion census

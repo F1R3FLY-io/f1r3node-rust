@@ -103,7 +103,7 @@ fn wrappers(a: &Expr, b: &Expr) -> Vec<(&'static str, Par, Par)> {
 }
 
 /// The **pre-repair** `sort_vec`: score only, no tie-break. Held here verbatim as the control,
-/// in the house idiom (`compare_score_recursive`, `sort_recursive.rs`, `substitute_oracle.rs`).
+/// in the house idiom (`score_tree_oracle.rs`, `sort_recursive.rs`, `substitute_oracle.rs`).
 fn sort_vec_without_tie_break<T>(scored: &mut [ScoredTerm<T>]) {
     scored.sort_by(|s1, s2| compare_score(&s1.score, &s2.score));
 }

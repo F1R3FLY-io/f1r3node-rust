@@ -16,11 +16,14 @@ pub mod normalizer;
 /// machine is differentiated against, and it must never be reachable from
 /// production. See `docs/design/audits/theta-depth-traversals-2026-07-26.md` §8.
 #[cfg(test)]
+#[rustfmt::skip]
+#[path = "../../../../tests/support/normalize_recursive.rs"]
 pub mod normalize_recursive;
 /// The differential that discharges the conversion's neutrality obligation:
 /// the machine against the recursive oracle, on encoded term bytes plus the
 /// final free map and binding chain.
 #[cfg(test)]
+#[path = "../../../../tests/support/normalize_differential.rs"]
 pub mod normalize_differential;
 pub mod receive_binds_sort_matcher;
 pub mod span_utils;

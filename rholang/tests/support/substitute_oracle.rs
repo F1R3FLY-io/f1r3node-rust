@@ -1,5 +1,8 @@
 //! # The recursive oracle twin for the substitution SCC, and its differential
 //!
+//! This source lives under `rholang/tests/support`; the production module tree
+//! reaches it only through a `#[cfg(test)] #[path = ...]` declaration.
+//!
 //! Leg-2 replaced substitution's call stack with an explicit worklist
 //! ([`super::substitute_drive`]). This module keeps the **recursive** form
 //! alive, under `cfg(test)`, and asserts that the two agree.

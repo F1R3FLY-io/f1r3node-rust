@@ -1,5 +1,8 @@
 //! # The RECURSIVE ORACLE TWIN of the normalizer SCC — `#[cfg(test)]` only
 //!
+//! This source lives under `rholang/tests/support`; the production module tree
+//! reaches it only through a `#[cfg(test)] #[path = ...]` declaration.
+//!
 //! A **verbatim** copy of the 26-function `normalize_ann_proc` SCC exactly as it
 //! stood at commit `6ccf71f2`, immediately before it became the explicit
 //! pushdown machine in [`super::normalize_drive`]. Every intra-SCC call is
@@ -13,7 +16,7 @@
 //! and compare the normalized `Par` bytes together with the final `free_map`
 //! and `bound_map_chain`. That is only possible if the pre-conversion code is
 //! linkable. This is the house standard established by
-//! `models/src/rust/rholang/sorter/sort_recursive.rs` (the sorter's twin,
+//! `models/tests/support/sort_recursive.rs` (the sorter's twin,
 //! `2c32b173`) and `reduce.rs::eval_expr_recursive` (`a929a2d6`); see
 //! `docs/design/audits/theta-depth-traversals-2026-07-26.md` §8.3.
 //!
@@ -855,9 +858,10 @@ fn normalize_collection_recursive<'ast>(
 
             let constructor =
                 |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    // Use the invariant-preserving constructor because homogeneous
-                    // trie storage is private. The subsequent metadata update cannot
-                    // invalidate the entry representation or its serialization caches.
+                    // EPathMap fix P3 (PM-2): constructor instead of a
+                    // struct literal (private shadow cell). The value is
+                    // FRESH (never interned), so the field write below stays
+                    // sound under the shadow-cell invariant.
                     let mut tmp_e_pathmap = EPathMap::new(
                         ps,
                         locally_free,

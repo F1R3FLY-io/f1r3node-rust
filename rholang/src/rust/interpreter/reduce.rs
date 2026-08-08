@@ -84,7 +84,7 @@ use crate::rust::interpreter::rho_type::RhoTuple2;
 // derived recursion census classify deliberate reference recursion separately
 // from this module's production heap-stack drivers.
 #[cfg(test)]
-include!("reduce_expression_oracle.rs");
+include!("../../../tests/support/reduce_expression_oracle.rs");
 
 // NOTE: `StackGrowingFuture` (stacker::maybe_grow-based dynamic stack growth) has been REMOVED. The
 // deep async recursion it guarded (eval -> produce/consume -> dispatch -> eval) is no longer a linear

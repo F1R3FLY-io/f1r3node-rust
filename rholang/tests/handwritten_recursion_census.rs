@@ -80,6 +80,32 @@ const CRATE_ROOTS: &[&str] = &[
     "node/src",
 ];
 
+/// Recursive reference implementations must be linkable to unit tests without
+/// being stored in a production source root. The second path in each pair is
+/// the former production-source location and must stay absent.
+const TEST_SUPPORT_ORACLE_MOVES: &[(&str, &str)] = &[
+    (
+        "models/tests/support/sort_recursive.rs",
+        "models/src/rust/rholang/sorter/sort_recursive.rs",
+    ),
+    (
+        "rholang/tests/support/normalize_recursive.rs",
+        "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
+    ),
+    (
+        "rholang/tests/support/normalize_differential.rs",
+        "rholang/src/rust/interpreter/compiler/normalize_differential.rs",
+    ),
+    (
+        "rholang/tests/support/substitute_oracle.rs",
+        "rholang/src/rust/interpreter/substitute_oracle.rs",
+    ),
+    (
+        "rholang/tests/support/reduce_expression_oracle.rs",
+        "rholang/src/rust/interpreter/reduce_expression_oracle.rs",
+    ),
+];
+
 /// The recursive term family. A component is IN SCOPE when any of its functions mentions one
 /// of these, which is the property that makes a cycle a depth exposure rather than merely a
 /// loop.
@@ -106,9 +132,6 @@ const TERM_FAMILY: &[&str] = &[
 /// What is known about a file's hand-written recursion over the term family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
-    /// A deliberate reference implementation, retained so a converted twin can be differentialled
-    /// against it. Its recursion is the point.
-    OracleTwin(&'static str),
     /// Measured by a `stack_depth_gate.rs` subject. The cycle exists and its cost is known.
     Measured(&'static str),
     /// The cycle is over a bounded structure rather than the term's own depth — a fixed-arity
@@ -146,28 +169,12 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
              spine on 256 KiB",
         ),
     ),
-    (
-        "rholang/src/rust/interpreter/reduce_expression_oracle.rs",
-        Disposition::OracleTwin(
-            "the six pre-PDA expression evaluators retained only for result/charge \
-             differentials; the source is separate so its deliberate recursion cannot be \
-             mistaken for the production reducer",
-        ),
-    ),
     // ── printers ───────────────────────────────────────────────────────────────────
     (
         "rholang/src/rust/interpreter/pretty_printer.rs",
         Disposition::Measured("gate subject `pretty`"),
     ),
     // ── normalizer ─────────────────────────────────────────────────────────────────
-    (
-        "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
-        Disposition::OracleTwin(
-            "★ the 26-member SCC oracle twin, extracted by normalize_oracle_provenance.rs. Its \
-             recursion is deliberate and is the reference the converted normalizer is \
-             differentialled against",
-        ),
-    ),
     (
         "rholang/src/rust/interpreter/compiler/normalize.rs",
         Disposition::Measured("gate subject `normalize`; the production path is converted"),
@@ -184,10 +191,6 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         ),
     ),
     // ── substitution ───────────────────────────────────────────────────────────────
-    (
-        "rholang/src/rust/interpreter/substitute_oracle.rs",
-        Disposition::OracleTwin("the pre-conversion substitution, held for the differential"),
-    ),
     (
         "rholang/src/rust/interpreter/substitute.rs",
         Disposition::Measured("gate subjects `substitute`, `substitute_no_sort`"),
@@ -363,7 +366,7 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Every `.rs` file under the declared crate roots.
-fn source_files(root: &Path) -> Vec<PathBuf> {
+fn source_files(root: &Path, roots: &[&str]) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -383,10 +386,12 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    for r in CRATE_ROOTS {
+    for r in roots {
         let d = root.join(r);
         if d.is_dir() {
             walk(&d, &mut out);
+        } else if d.is_file() && d.extension().is_some_and(|ext| ext == "rs") {
+            out.push(d);
         }
     }
     out.sort();
@@ -578,12 +583,12 @@ struct Census {
     rel: Vec<String>,
 }
 
-fn run_census() -> Census {
+fn run_census_for_roots(roots: &[&str]) -> Census {
     let root = workspace_root();
-    let files = source_files(&root);
+    let files = source_files(&root, roots);
     assert!(
         !files.is_empty(),
-        "the census found NO source files under {CRATE_ROOTS:?}. Either a crate root moved or \
+        "the census found NO source files under {roots:?}. Either a root moved or \
          the walk is broken — and an empty scan makes every assertion below vacuous."
     );
 
@@ -674,9 +679,42 @@ fn run_census() -> Census {
     }
 }
 
+fn run_census() -> Census { run_census_for_roots(CRATE_ROOTS) }
+
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // The assertions
 // ═══════════════════════════════════════════════════════════════════════════════════════
+
+/// The recursive twins are test evidence, not production implementation
+/// modules. This catches both halves of a bad relocation: losing the oracle and
+/// retaining a duplicate under `src`.
+#[test]
+fn recursive_oracles_live_only_under_test_support() {
+    let root = workspace_root();
+    for (test_path, old_source_path) in TEST_SUPPORT_ORACLE_MOVES {
+        assert!(
+            root.join(test_path).is_file(),
+            "recursive oracle missing from test support: {test_path}"
+        );
+        assert!(
+            !root.join(old_source_path).exists(),
+            "recursive oracle leaked back into a production source root: {old_source_path}"
+        );
+    }
+
+    let score_tree =
+        std::fs::read_to_string(root.join("models/src/rust/rholang/sorter/score_tree.rs"))
+            .expect("read production score-tree comparator");
+    assert!(
+        !score_tree.contains("fn compare_score_recursive"),
+        "the recursive score comparator must remain in models/tests/support/score_tree_oracle.rs"
+    );
+    assert!(
+        root.join("models/tests/support/score_tree_oracle.rs")
+            .is_file(),
+        "recursive score-tree oracle missing from test support"
+    );
+}
 
 /// ★★ **Every file carrying a term-family cycle has a disposition, and a new one FAILS BY NAME.**
 #[test]
@@ -749,8 +787,9 @@ fn every_handwritten_term_recursion_has_a_disposition() {
          and nothing says what is known about it. That is the state `#121` was in: mutually \
          recursive, unbounded, in no audit and no tripwire, found only when an unrelated probe \
          overflowed.\n\n\
-         Add a row to `RECURSION_DISPOSITIONS`: `Measured(subject)`, \
-         `OracleTwin(why)`, or `NotATermDepthCycle(why)`. A live unmeasured term-depth \
+         Add a row to `RECURSION_DISPOSITIONS`: `Measured(subject)` or \
+         `NotATermDepthCycle(why)`. Deliberate recursive oracles belong under `tests/support`, \
+         outside this production census. A live unmeasured term-depth \
          cycle is intentionally unrepresentable: convert it to a PDA/iterative traversal \
          before updating this exact current-state table.",
         undispositioned.len(),
@@ -828,8 +867,8 @@ fn the_census_confirms_the_121_family_was_converted() {
 /// correct over-report look like a failure.
 #[test]
 fn the_normalizer_oracle_twin_is_found_and_is_a_superset_of_the_scc_oracle() {
-    let c = run_census();
-    const FILE: &str = "rholang/src/rust/interpreter/compiler/normalize_recursive.rs";
+    let c = run_census_for_roots(&["rholang/tests/support/normalize_recursive.rs"]);
+    const FILE: &str = "rholang/tests/support/normalize_recursive.rs";
     const ORACLE_MEMBERS: usize = 26;
 
     let biggest = c

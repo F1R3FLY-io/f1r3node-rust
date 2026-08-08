@@ -17,6 +17,7 @@ pub mod sort_drive;
 /// Leg-2 Stage C-2: the recursive oracle twin and the differential that
 /// compares it against the driver. `#[cfg(test)]`; see its module docs.
 #[cfg(test)]
+#[path = "../../../../tests/support/sort_recursive.rs"]
 pub mod sort_recursive;
 pub mod sortable;
 pub mod unforgeable_sort_matcher;

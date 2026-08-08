@@ -1,5 +1,8 @@
 //! # The normalizer differential — machine against recursive oracle
 //!
+//! This test-only source lives under `rholang/tests/support`; it is compiled as
+//! a private crate module only when `cfg(test)` is active.
+//!
 //! `super::normalize_drive` replaced a 26-function Θ(depth) recursion with an
 //! explicit pushdown machine. `normalize` is on the **deploy and replay** path
 //! (`InterpreterImpl::inj_attempt` → `Compiler::source_to_adt_with_normalizer_env`;

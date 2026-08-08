@@ -330,7 +330,7 @@ The probe left no residue. Nothing about `Drop` is landed by S0-S2.
 |---|---|
 | `models/src/rust/utils.rs` | 27 |
 | `models/src/rust/rholang/implicits.rs` | 12 |
-| `models/src/rust/rholang/sorter/sort_recursive.rs` | 8 |
+| `models/src/rust/rholang/sorter/sort_recursive.rs` *(historical measurement path; now `models/tests/support/sort_recursive.rs`)* | 8 |
 | `models/src/rust/par_to_sexpr.rs` | 5 |
 | `models/src/rust/canonical_path.rs` | 4 |
 | `models/src/rust/rholang/par_children.rs` | 3 |

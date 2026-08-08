@@ -1,12 +1,15 @@
 //! # The sorter's recursive ORACLE, and the differential
 //!
+//! This source lives under `models/tests/support`; the production module tree
+//! reaches it only through a `#[cfg(test)] #[path = ...]` declaration.
+//!
 //! Leg-2 Stage C-2 replaced the sorter's mutual recursion with an explicit heap
 //! worklist ([`super::sort_drive`]). This module keeps the recursive traversal
 //! alive as the reference the driver is compared against — exactly as
 //! `reduce.rs` keeps `eval_expr_recursive` beside its trampoline (commit
-//! `a929a2d6`), `score_tree.rs` keeps `compare_score_recursive` beside
-//! `compare_score`, and `substitute_oracle.rs` keeps its twin beside
-//! `substitute_drive`. It is cited rather than reinvented so a reviewer sees
+//! `a929a2d6`), `models/tests/support/score_tree_oracle.rs` keeps
+//! `compare_score_recursive`, and `rholang/tests/support/substitute_oracle.rs`
+//! keeps its twin. It is cited rather than reinvented so a reviewer sees
 //! the house standard.
 //!
 //! ## What this differential does and does not establish
