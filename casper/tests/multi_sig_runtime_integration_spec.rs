@@ -149,13 +149,13 @@ fn t5_pos_wire_multi_sig_cosigner_threshold_round_trip() {
     let primary_sig = sig_a.clone();
 
     let cosigner_proto = CompoundSigner {
-        pk: pk_b.bytes.clone().into(),
+        pk: pk_b.bytes.clone(),
         sig: sig_b,
         sig_algorithm: Secp256k1::name(),
     };
 
     let proto = models::casper::DeployDataProto {
-        deployer: primary_pk_bytes.clone().into(),
+        deployer: primary_pk_bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: primary_sig,
@@ -185,7 +185,7 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
     let sig_b = sign(&data, &sk_b);
 
     let proto = models::casper::DeployDataProto {
-        deployer: pk_a.bytes.clone().into(),
+        deployer: pk_a.bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: sig_a,
@@ -196,12 +196,12 @@ fn t6_pos_wire_threshold_2_of_3_round_trip_through_proto() {
         expiration_timestamp: 0,
         cosigners: vec![
             CompoundSigner {
-                pk: pk_b.bytes.clone().into(),
+                pk: pk_b.bytes.clone(),
                 sig: sig_b,
                 sig_algorithm: Secp256k1::name(),
             },
             CompoundSigner {
-                pk: pk_c.bytes.clone().into(),
+                pk: pk_c.bytes.clone(),
                 sig: Bytes::new(), // placeholder for threshold
                 sig_algorithm: Secp256k1::name(),
             },

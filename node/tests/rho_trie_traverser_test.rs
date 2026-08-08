@@ -4,7 +4,6 @@
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
-use hex;
 use models::rhoapi::expr::ExprInstance;
 use node::rust::rho_trie_traverser::RhoTrieTraverser;
 use rand::prelude::*;
@@ -139,7 +138,11 @@ new
         // 7. Run exploratory deploy to obtain the trie map handle
         let check2_root_bytes = check2.root.to_bytes_prost();
         let (trie_map_handle_r, _cost) = runtime_ops
-            .play_exploratory_deploy(get_trie_map_handle_rho.to_string(), &check2_root_bytes)
+            .play_exploratory_deploy(
+                get_trie_map_handle_rho.to_string(),
+                &check2_root_bytes,
+                None,
+            )
             .await
             .expect("Failed to play exploratory deploy");
 

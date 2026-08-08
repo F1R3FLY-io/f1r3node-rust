@@ -98,7 +98,10 @@ pub fn sig_key(sig: &Sig) -> SigKey { sig.lane_hash() }
 /// that COMM to the envelope — never inventing a foreign lane (§3.4).
 ///
 /// [`Sig::signer_channels`]: super::Sig::signer_channels
-pub fn match_channel_to_lane(channel: &Par, signer_channels: &[(Vec<u8>, SigKey)]) -> Option<SigKey> {
+pub fn match_channel_to_lane(
+    channel: &Par,
+    signer_channels: &[(Vec<u8>, SigKey)],
+) -> Option<SigKey> {
     let encoded = channel.encode_to_vec();
     signer_channels
         .iter()

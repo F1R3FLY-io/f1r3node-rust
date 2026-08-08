@@ -1,11 +1,12 @@
 /// Whether RSS mem-profiling is enabled for cost-accounting deploy execution.
 /// Compiled off by default so the profiling probes cost nothing when disabled.
-pub fn mem_profile_enabled() -> bool {
-    false
-}
+pub fn mem_profile_enabled() -> bool { false }
 
 #[cfg(target_os = "linux")]
 pub fn read_vm_rss_kb() -> Option<usize> {
+    if !tracing::enabled!(target: "f1r3fly.casper.mem_profile", tracing::Level::DEBUG) {
+        return None;
+    }
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     status
         .lines()

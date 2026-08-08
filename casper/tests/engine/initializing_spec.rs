@@ -94,6 +94,7 @@ impl InitializingSpec {
 
         let chunk_size = lfs_tuple_space_requester::PAGE_SIZE;
 
+        #[allow(clippy::type_complexity)]
         fn genesis_export(
             genesis_exporter: Arc<dyn RSpaceExporter>,
             start_path: Vec<(Blake2b256Hash, Option<u8>)>,
@@ -207,20 +208,8 @@ impl InitializingSpec {
             .as_ref()
             .unwrap()
             .clone();
-        // Tests must feed a MergeableEntryResponse for every block they enqueue;
-        // otherwise the stream's per-block mergeable_pending state never clears
-        // and is_finished() never returns true.
-        let mergeable_message_tx = initializing_engine
-            .mergeable_message_tx
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .clone();
-
         let store_msgs_clone = store_response_messages.clone();
         let genesis_clone = genesis.clone();
-        let genesis_hash_for_mergeable = genesis.block_hash.clone();
 
         let enqueue_responses = async move {
             // Write directly to tuple space channel (equivalent to stateResponseQueue.enqueue1)
@@ -235,24 +224,6 @@ impl InitializingSpec {
                 .send(genesis_clone)
                 .await
                 .expect("Failed to enqueue block response");
-            // Brief yield so the LFS stream processes the genesis BlockMessage
-            // (running save_block → mergeable_pending(genesis)) before the
-            // mergeable response below is delivered. Without this, the select
-            // loop may consume the response first and reject it as unsolicited
-            // (was_pending=false), leaving mergeable_d non-empty forever and
-            // the stream blocked waiting for a response that already arrived.
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            // Empty serialized_entry signals "peer has no entry"; this test
-            // doesn't exercise actual entry import, just the done-on-response gate.
-            mergeable_message_tx
-                .send(
-                    models::rust::casper::protocol::casper_message::MergeableEntryResponse {
-                        block_hash: genesis_hash_for_mergeable,
-                        serialized_entry: prost::bytes::Bytes::new(),
-                    },
-                )
-                .await
-                .expect("Failed to enqueue mergeable response");
         };
 
         let local_for_expected = fixture.local.clone();
@@ -406,6 +377,7 @@ impl InitializingSpec {
 //
 // CRITICAL: Using fixture's stores ensures genesis data exported from fixture.rspace_store
 // is imported into the SAME rspace_store instance, preventing storage isolation bugs.
+#[allow(clippy::type_complexity)]
 async fn create_initializing_engine(
     fixture: &TestFixture,
     the_init: Arc<

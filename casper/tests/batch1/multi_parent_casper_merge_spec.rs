@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
+use casper::rust::casper::Casper;
 use casper::rust::util::{construct_deploy, rspace_util};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -19,6 +20,11 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: non-leader proposers emit empty support blocks instead
+    // of erroring NoNewDeploys under deploy-inclusion leadership.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 
@@ -40,7 +46,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     let deploy_data2 =
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
-    let deploys = vec![deploy_data0, deploy_data1, deploy_data2];
+    let deploys = [deploy_data0, deploy_data1, deploy_data2];
 
     let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
@@ -114,12 +120,47 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     .await;
     assert_eq!(data1, vec!["1"]);
 
-    let data2 = rspace_util::get_data_at_public_channel_block(
-        &multiparent_block,
-        2,
-        &nodes[0].runtime_manager,
-    )
-    .await;
+    // Under deploy-inclusion leadership only the leader may package deploy2, and
+    // which validator leads is hash-order dependent. Drive bounded proposal
+    // rounds (deploy2 queued on both nodes) until the leader includes it, then
+    // assert its effect at that block's post-state.
+    let mut deploy2_block = if multiparent_block
+        .body
+        .deploys
+        .iter()
+        .any(|pd| pd.deploy.sig == deploys[2].sig)
+    {
+        Some(multiparent_block.clone())
+    } else {
+        None
+    };
+    if deploy2_block.is_none() {
+        nodes[1].casper.deploy(deploys[2].clone()).ok();
+        for round in 0..6 {
+            let proposer = round % 2;
+            let block = {
+                let (before, rest) = nodes.split_at_mut(proposer);
+                let (current, after) = rest.split_at_mut(1);
+                let mut others: Vec<&mut TestNode> =
+                    before.iter_mut().chain(after.iter_mut()).collect();
+                current[0].propagate_block(&[], &mut others).await.unwrap()
+            };
+            if block
+                .body
+                .deploys
+                .iter()
+                .any(|pd| pd.deploy.sig == deploys[2].sig)
+            {
+                deploy2_block = Some(block);
+                break;
+            }
+        }
+    }
+    let deploy2_block = deploy2_block.expect("deploy2 should be packaged by the inclusion leader");
+
+    let data2 =
+        rspace_util::get_data_at_public_channel_block(&deploy2_block, 2, &nodes[0].runtime_manager)
+            .await;
     assert_eq!(data2, vec!["2"]);
 }
 
@@ -267,8 +308,12 @@ new getBlockData(`rho:block:data`), stdout(`rho:io:stdout`), tCh in {
     let _b2n2 = nodes[1].create_block(&[reg]).await.unwrap();
 }
 
+// Ported from the Scala `MultiParentCasperMergeSpec`, where it was `ignore`d.
+// The Scala design refused to merge conflicting blocks, so the child had a
+// single parent. The Rust multi-parent design instead links every validator's
+// latest message as a parent and resolves the conflict by rejecting one of the
+// conflicting deploys (asserted below via `rejected_deploys`).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_involving_joins() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
@@ -307,14 +352,14 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     let deploy2 = construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
-    let deploys = vec![deploy0, deploy1, deploy2];
+    let deploys = [deploy0, deploy1, deploy2];
 
-    let _block0 = nodes[0]
+    let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
         .await
         .unwrap();
 
-    let _block1 = nodes[1]
+    let block1 = nodes[1]
         .add_block_from_deploys(&[deploys[1].clone()])
         .await
         .unwrap();
@@ -331,7 +376,37 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     nodes[1].handle_receive().await.unwrap();
 
-    assert_eq!(single_parent_block.header.parents_hash_list.len(), 1);
+    // Under multi-parent merging, a proposed block links the latest message of
+    // every bonded validator as a parent. The genesis is bonded to three
+    // validators but only two nodes exist, so the parents are block0
+    // (validator 0), block1 (validator 1) and — for the third bonded-but-absent
+    // validator — the genesis block itself.
+    assert_eq!(single_parent_block.header.parents_hash_list.len(), 3);
+    assert!(single_parent_block
+        .header
+        .parents_hash_list
+        .contains(&block0.block_hash));
+    assert!(single_parent_block
+        .header
+        .parents_hash_list
+        .contains(&block1.block_hash));
+
+    // block0 (`@1!(47)`) produces on channel @1, while block1
+    // (`for(@x <- @1 & @y <- @2){ @1!(x) }`) consumes from @1 through a join.
+    // The two blocks therefore conflict on @1, so their effects must NOT be
+    // merged together: conflict resolution rejects exactly one of the two
+    // conflicting deploys (observed: block0's `@1!(47)` producer), so the
+    // volatile join never fires. This is the multi-parent-merge analogue of the
+    // original Scala expectation that the blocks are "not merged" — contrast the
+    // non-conflicting multi-parent case above, whose merge block carries an
+    // empty `rejected_deploys`.
+    assert_eq!(single_parent_block.body.rejected_deploys.len(), 1);
+    let rejected_sig = &single_parent_block.body.rejected_deploys[0].sig;
+    assert!(
+        *rejected_sig == deploys[0].sig || *rejected_sig == deploys[1].sig,
+        "the rejected deploy must be one of the two conflicting deploys (the @1 producer or the @1 & @2 join)"
+    );
+
     assert!(nodes[0].contains(&single_parent_block.block_hash));
     assert!(nodes[1].knows_about(&single_parent_block.block_hash));
 }
@@ -353,6 +428,11 @@ async fn hash_set_casper_should_compute_identical_post_states_across_validators_
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: non-leader proposers emit empty support blocks instead
+    // of erroring NoNewDeploys under deploy-inclusion leadership.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 
@@ -465,6 +545,11 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: non-leader proposers emit empty support blocks instead
+    // of erroring NoNewDeploys under deploy-inclusion leadership.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 

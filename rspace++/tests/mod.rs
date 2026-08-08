@@ -1,8 +1,9 @@
-mod history;
-mod storage_actions_test;
+mod concurrent_rspace_test;
 mod export_import_tests;
-mod install_test;
+mod history;
 mod hot_store_spec;
+mod install_test;
 mod replay_rspace_tests;
 
 mod concurrent_rspace_architecture_repro_tests;
+mod storage_actions_test;

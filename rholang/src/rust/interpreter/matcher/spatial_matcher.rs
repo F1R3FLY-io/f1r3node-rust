@@ -324,7 +324,7 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Send, pattern: Send) -> Option<()> {
         let result = guard(target.persistent == pattern.persistent)
             .and_then(|_| self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap()))
-            .and_then(|_| self.fold_match(target.data, pattern.data, None));
+            .and_then(|_| self.fold_match(&target.data, &pattern.data, None));
 
         result.map(|_| ())
     }
@@ -365,7 +365,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     remainder: rem,
                 })),
             ) => {
-                let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
+                let matched_rem = self.fold_match(&tlist, &plist, rem.clone())?;
 
                 match &rem {
                     Some(Var {
@@ -393,7 +393,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     locally_free: _,
                     connective_used: _,
                 })),
-            ) => self.fold_match(tlist, plist, None).map(|_| ()),
+            ) => self.fold_match(&tlist, &plist, None).map(|_| ()),
 
             (
                 Some(ESetBody(
@@ -558,7 +558,7 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Match, pattern: Match) -> Option<()> {
         let result = self
             .spatial_match(target.target.unwrap(), pattern.target.unwrap())
-            .and_then(|_| self.fold_match(target.cases, pattern.cases, None));
+            .and_then(|_| self.fold_match(&target.cases, &pattern.cases, None));
 
         result.map(|_| ())
     }

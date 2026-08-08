@@ -116,9 +116,8 @@ async fn bond_status_should_return_true_for_bonded_validator() {
         .unwrap()
         .public_key
         .clone();
-    assert_eq!(
+    assert!(
         bonded_status(&n1_pk, &nodes[0]).await,
-        true,
         "n1 should be bonded"
     );
 
@@ -128,9 +127,8 @@ async fn bond_status_should_return_true_for_bonded_validator() {
         .unwrap()
         .public_key
         .clone();
-    assert_eq!(
+    assert!(
         bonded_status(&n2_pk, &nodes[0]).await,
-        true,
         "n2 should be bonded"
     );
 
@@ -140,9 +138,8 @@ async fn bond_status_should_return_true_for_bonded_validator() {
         .unwrap()
         .public_key
         .clone();
-    assert_eq!(
+    assert!(
         bonded_status(&n3_pk, &nodes[0]).await,
-        true,
         "n3 should be bonded"
     );
 }
@@ -156,17 +153,16 @@ async fn bond_status_should_return_false_for_not_bonded_validators() {
     let secp256k1 = Secp256k1;
     let (_, public_key) = secp256k1.new_key_pair();
 
-    assert_eq!(
-        bonded_status(&public_key, &node).await,
-        false,
+    assert!(
+        !bonded_status(&public_key, &node).await,
         "Unbonded validator should return false"
     );
 }
 
-// TODO: Bonding not fully implemented with multi-parent merging.
-// Scala ignored this in PR #288.
+// Bonding through consensus IS implemented in the Rust port: a bond deploy propagated
+// through the network makes the validator bonded (the "Scala ignore" from PR #288 is stale —
+// this test passes against the current PoS + multi-parent merging).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn bond_status_should_return_true_for_newly_bonded_validator() {
     let ctx = TestContext::new().await;
 
@@ -208,9 +204,8 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
         .clone();
 
     // Scala line 81: n4 is not bonded initially
-    assert_eq!(
-        bonded_status(&n4_pk, &nodes[0]).await,
-        false,
+    assert!(
+        !bonded_status(&n4_pk, &nodes[0]).await,
         "n4 should not be bonded initially"
     );
 
@@ -222,9 +217,8 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
         .await
         .unwrap();
 
-    assert_eq!(
-        bonded_status(&n4_pk, &nodes[0]).await,
-        false,
+    assert!(
+        !bonded_status(&n4_pk, &nodes[0]).await,
         "n4 should not be bonded yet (b1 not finalized)"
     );
 
@@ -236,9 +230,8 @@ async fn bond_status_should_return_true_for_newly_bonded_validator() {
         .await
         .unwrap();
 
-    assert_eq!(
+    assert!(
         bonded_status(&n4_pk, &nodes[0]).await,
-        true,
         "n4 should be bonded now (b1 finalized)"
     );
 }

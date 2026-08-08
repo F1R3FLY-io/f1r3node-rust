@@ -515,9 +515,15 @@ async fn e1c_re_issues_merge_rejected_slash() {
         .map(|p| p.block_hash.clone())
         .collect();
     sorted_parent_hashes.sort();
+    let key_latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
+        sorted_latest_messages: key_latest_messages.into_iter().collect(),
         disable_late_block_filtering: snapshot
             .on_chain_state
             .shard_conf
@@ -691,9 +697,15 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         .map(|p| p.block_hash.clone())
         .collect();
     sorted_parent_hashes.sort();
+    let key_latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
+        sorted_latest_messages: key_latest_messages.into_iter().collect(),
         disable_late_block_filtering: snapshot
             .on_chain_state
             .shard_conf

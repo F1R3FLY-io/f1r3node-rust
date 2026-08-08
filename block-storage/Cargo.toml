@@ -36,11 +36,11 @@ default = []
 test-internals = []
 
 [dev-dependencies]
+proptest = { workspace = true }
 # Exhaustive thread-interleaving model checker for the
 # `access_equivocations_tracker` non-reentrancy contract (P2-13).
 # See block-storage/tests/loom_equivocations_tracker.rs.
 loom = "=0.7.2"
-proptest = { workspace = true }
 
 # P2-16: integration tests in `tests/block_dag_storage_test.rs` call the
 # gated `equivocation_records` / `insert_equivocation_record` /

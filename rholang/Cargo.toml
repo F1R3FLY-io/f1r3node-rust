@@ -14,6 +14,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 name = "rholang-cli"
 path = "src/rholang_cli.rs"
 
+[[bin]]
+name = "bench_par_reducer"
+path = "src/bin/bench_par_reducer.rs"
+
+[[bin]]
+name = "bench_par_propose"
+path = "src/bin/bench_par_propose.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

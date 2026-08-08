@@ -49,8 +49,9 @@
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.
 
-use proptest::prelude::*;
 use std::collections::BTreeSet;
+
+use proptest::prelude::*;
 
 /// Faithful to the two `models::rust::block_metadata::BlockMetadata` fields that
 /// `filter_deep_parents` reads: `{ block_hash, block_number }`. `u64` stands in for

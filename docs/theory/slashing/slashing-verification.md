@@ -350,7 +350,7 @@ extraction `equivocates_witnesses` (line 177) is retained as a
 mathematical characterization of an on-DAG fork.
 
 > **Faithfulness note (FV audit #2).** The Rust detector
-> `check_equivocations` (`equivocation_detector.rs:86-89`) does **not**
+> `check_equivocations` (`equivocation_detector.rs:78-89`) does **not**
 > compute the same-seq/distinct-hash count above. It compares two
 > `Option<BlockHash>` **pointers** — the arriving block's
 > creator-justification (self-parent) against the sender's current
@@ -391,7 +391,7 @@ in `theories/EquivocationDetector.v:66`.
 
 ### 4.2 Theorem 4.1 (T-1, Detection soundness)
 
-**Statement.** *(`detection_sound`, `EquivocationDetector.v:91`.)*
+**Statement.** *(`detection_sound`, `EquivocationDetector.v:145`.)*
 For every creator-justification pointer `cj`, latest-message pointer `lm`,
 dependency flag `d`, and status `s` returned by the detector,
 
@@ -411,7 +411,7 @@ close the contradictory branch. ∎
 
 ### 4.3 Theorem 4.2 (T-2, Detection completeness)
 
-**Statement.** *(`detection_complete`, `EquivocationDetector.v:111`.)*
+**Statement.** *(`detection_complete`, `EquivocationDetector.v:166`.)*
 For every creator-justification pointer `cj`, latest-message pointer `lm`,
 and flag `d`,
 
@@ -434,7 +434,7 @@ return value explicit:
 
 ### 4.4 Theorem 4.3 (T-3, Slashable taxonomy correctness)
 
-**Statement.** *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:151`.)*
+**Statement.** *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:164`.)*
 For every `ib : InvalidBlock`,
 
 ```
@@ -1978,7 +1978,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:218`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:280`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -2219,7 +2219,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:284`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:375`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2239,7 +2239,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:289`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:380`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2287,7 +2287,7 @@ construction.
 
 The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
-`block_creator.rs:309`) is the operational realisation of this fold;
+`block_creator.rs:498`) is the operational realisation of this fold;
 the harness ↔ oracle cross-implementation agreement test (UC-39,
 §15) exercises it against the mechanized definition. ∎
 

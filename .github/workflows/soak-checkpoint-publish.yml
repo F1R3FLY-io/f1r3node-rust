@@ -1,0 +1,258 @@
+name: Soak Checkpoint Publish
+
+# Publishes a mid-run soak checkpoint to the dashboard.
+#
+# Dispatched by the soak job between segments rather than deploying from inside
+# it: a Pages deploy needs the `github-pages` environment and the `soak-pages`
+# concurrency group at job level, and holding those from a 22h soak would block
+# every other Pages deploy for a day. This job holds them for a minute.
+#
+# It updates only the `latest-*` files for its series. It does not append to
+# history — a history entry means one completed run, and a partial one would
+# double-count the night once the run finishes and publishes for real.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Soak run that produced the checkpoint artifact
+        required: true
+        type: string
+      run_attempt:
+        description: Attempt of the soak run that produced the checkpoint artifact
+        required: true
+        type: string
+      artifact:
+        description: Name of the checkpoint artifact on that run
+        required: true
+        type: string
+      kind:
+        description: Which series this checkpoint belongs to
+        required: true
+        type: choice
+        options:
+          - daily
+          - weekend
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish Soak Checkpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    # Shared with perf_report and the dashboard bootstrap. All three do a
+    # read-modify-write against Pages as the only durable store, so they must
+    # never overlap; a job does not begin fetching until it holds the slot.
+    concurrency:
+      group: soak-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout dashboard source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Download checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          RUN_ATTEMPT: ${{ inputs.run_attempt }}
+          ARTIFACT: ${{ inputs.artifact }}
+          KIND: ${{ inputs.kind }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # Dispatch inputs are caller-supplied. They are only ever used as
+          # quoted environment values, never interpolated into this script, but
+          # constrain their shape anyway: run_id addresses a run and artifact
+          # names one, so anything outside those alphabets is not a mistake to
+          # be tolerated. `kind` is a choice input, so GitHub constrains it.
+          if [[ ! "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::run_id must be a positive integer"
+            exit 1
+          fi
+          if [[ ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::run_attempt must be a positive integer"
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT" =~ ^soak-checkpoint-${RUN_ID}-${RUN_ATTEMPT}-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::artifact must belong to the requested run and attempt"
+            exit 1
+          fi
+
+          mkdir -p checkpoint
+          # The soak run is still in progress. Artifacts are readable as soon as
+          # they finish uploading, but the dispatch can outrun that, so retry a
+          # few times before giving up.
+          #
+          # --repo is load-bearing: this step's working directory is not a git
+          # checkout (the checkout lands in ci-control/), and without it every
+          # gh invocation dies on "failed to determine base repo" before ever
+          # reaching the API — which run 30716000285 then reported as five
+          # rounds of "artifact not ready" against an artifact that existed.
+          # The real error is echoed per attempt so a recurrence names itself.
+          for attempt in 1 2 3 4 5; do
+            if download_err="$(gh run download "$RUN_ID" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --name "$ARTIFACT" --dir checkpoint 2>&1)"; then
+              break
+            fi
+            printf 'attempt %s failed: %s\n' "$attempt" "$download_err"
+            if [ "$attempt" = "5" ]; then
+              echo "::error::artifact ${ARTIFACT} not readable on run ${RUN_ID} after 5 attempts"
+              exit 1
+            fi
+            echo "attempt ${attempt}: retrying"
+            sleep 15
+          done
+          test -s checkpoint/weekly-summary.json || {
+            echo "::error::checkpoint artifact has no weekly-summary.json"; exit 1; }
+          # Refuse anything that is not actually a checkpoint. A completed
+          # summary published here would overwrite the tab with a run that then
+          # never gets its history entry, since this job does not append.
+          jq -e \
+            --arg run_id "$RUN_ID" \
+            --argjson run_attempt "$RUN_ATTEMPT" \
+            --arg kind "$KIND" \
+            '.run.status == "in_progress"
+             and (.run.run_id | tostring) == $run_id
+             and .run.run_attempt == $run_attempt
+             and .run.kind == $kind
+             and (.run.started_at | type) == "number"
+             and (.run.elapsed_seconds | type) == "number"' \
+            checkpoint/weekly-summary.json >/dev/null || {
+              echo "::error::checkpoint metadata does not match the requested run, attempt, and series"
+              exit 1
+            }
+
+      - name: Assemble dashboard site
+        id: assemble
+        shell: bash -euo pipefail {0}
+        env:
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          SERIES_SUFFIX: ${{ inputs.kind == 'daily' && '-daily' || '' }}
+          RUN_ID: ${{ inputs.run_id }}
+          RUN_ATTEMPT: ${{ inputs.run_attempt }}
+        run: |
+          mkdir -p site/data
+          cp -r ci-control/.github/dashboard/. site/
+          # A Pages deploy replaces the whole site, so every published file is
+          # carried forward and only this series' latest-* files are replaced.
+          # Same fail-closed rule as the other publishers: only a 404 may yield
+          # an absent file, anything else aborts rather than publishing a site
+          # with a series missing.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+          done
+          for f in history.json history-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON array; refusing to replace it"; exit 1; }
+          done
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"; exit 1; }
+          done
+
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
+          done
+
+          latest="site/data/latest-summary${SERIES_SUFFIX}.json"
+          if [ -e "$latest" ]; then
+            decision="$(jq -nr \
+              --argjson new_id "$RUN_ID" \
+              --argjson new_attempt "$RUN_ATTEMPT" \
+              --slurpfile current "$latest" \
+              --slurpfile checkpoint checkpoint/weekly-summary.json \
+              '($current[0].run) as $cur
+               | ($checkpoint[0].run) as $new
+               | (try ($cur.run_id | tonumber) catch null) as $cur_id
+               | (try (($cur.run_attempt // 1) | tonumber) catch null) as $cur_attempt
+               | if $cur_id == null or $cur_attempt == null then "error"
+                 elif $cur_id > $new_id then "stale"
+                 elif $cur_id == $new_id and $cur_attempt > $new_attempt then "stale"
+                 elif $cur_id == $new_id and $cur_attempt == $new_attempt
+                      and ($cur.status // "complete") != "in_progress" then "stale"
+                 elif $cur_id == $new_id and $cur_attempt == $new_attempt
+                      and ($cur.started_at // null) != $new.started_at then "error"
+                 elif $cur_id == $new_id and $cur_attempt == $new_attempt
+                      and ($cur.elapsed_seconds // -1) >= $new.elapsed_seconds then "stale"
+                 else "publish"
+                 end')"
+            case "$decision" in
+              publish) ;;
+              stale)
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+                echo "checkpoint is not newer than the published result; skipping deployment"
+                exit 0
+                ;;
+              *)
+                echo "::error::published summary metadata cannot be ordered against this checkpoint"
+                exit 1
+                ;;
+            esac
+          fi
+
+          cp checkpoint/weekly-summary.json "site/data/latest-summary${SERIES_SUFFIX}.json"
+          cp checkpoint/verdict.json "site/data/latest-verdict${SERIES_SUFFIX}.json"
+          cp checkpoint/perf-report.md "site/data/latest-report${SERIES_SUFFIX}.md"
+          # Badge is cosmetic, so it is deliberately absent from the
+          # "history exists but latest-* is missing" abort above: a README badge
+          # must never be able to block publishing the dashboard itself. An
+          # older soak whose aggregator predates badge.json simply leaves the
+          # previously published badge in place.
+          for b in badge:badge-soak badge-stability:badge-stability badge-perf:badge-perf; do
+            src="checkpoint/${b%%:*}.json"
+            [ -e "$src" ] && cp "$src" "site/data/${b##*:}${SERIES_SUFFIX}.json"
+          done
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Pages artifact
+        if: steps.assemble.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        if: steps.assemble.outputs.publish == 'true'
+        id: deploy
+        uses: actions/deploy-pages@v4

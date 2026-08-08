@@ -84,6 +84,7 @@ lazy_static! {
     pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -118,6 +119,17 @@ where
     Ok(f(runtime_manager, genesis_context, genesis_block).await)
 }
 
+/// LMDB named-DB slot budget for the shared, process-cached test
+/// environments. Scoped DB names accumulate monotonically across
+/// store-manager creations (each mints a fresh `{scope}-{db}` name set,
+/// ~10 slots in the worst env per creation, never reclaimed), and the
+/// slashing-tests CI job runs uncapped proptests at PROPTEST_CASES=10000
+/// with a store manager per case: 10k cases x ~2 managers x ~10 slots
+/// = ~200k. Slot bookkeeping is ~100 bytes each (~20 MB per env at this
+/// cap). Durable fix — reusing or evicting scoped DBs per case — is
+/// tracked in the PR #125 findings comment.
+const TEST_LMDB_MAX_DBS: u32 = 200_000;
+
 pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
@@ -138,7 +150,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // If scope_id is provided, create a scoped database name using name_override
             // This ensures test isolation while keeping the original ID for lookup
@@ -206,8 +218,12 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
 ) -> impl KeyValueStoreManager {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Dual-scope variant — same shared-env consideration as
-    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
-    let limit_size = 1 * GB;
+    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB,
+    // then to 4 GB (matching with_scope): scoped-DB data accumulates in the
+    // shared env across store-manager creations, and the slashing proptest
+    // suite filled 1 GB mid-job (MDB_MAP_FULL). map_size is virtual address
+    // space; real disk usage matches data written.
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -218,7 +234,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // Determine which scope to use based on database type
             let scope_to_use = if db.id().starts_with("rspace-") {
@@ -397,12 +413,8 @@ pub async fn block_dag_storage_from_dyn(
         Arc::new(RwLock::new(block_metadata_store)),
         Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
-        KeyValueTypedStoreImpl::new(Arc::new(
-            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-        )),
-        KeyValueTypedStoreImpl::new(Arc::new(
-            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-        )),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))

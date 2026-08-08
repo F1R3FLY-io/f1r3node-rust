@@ -6,11 +6,11 @@ last_updated: 2026-04-15
 
 # User Stories
 
-This document captures user stories that drive feature development. User stories are reverse-engineered from completed epochs and updated as new features are planned.
+This document captures user stories that drive feature development. User stories are reverse-engineered from completed epics and updated as new features are planned.
 
 **Document Structure**
 - Active stories: This file (`docs/UserStories.md`)
-- Implementation tracking: `docs/ToDos.md` (epochs and tasks)
+- Implementation tracking: `docs/ToDos.md` (epics and tasks)
 - Completed work: `docs/CompletedTasks.md`
 
 **Format:** Each story follows the standard template:
@@ -24,13 +24,30 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+
+#### US-004: 60-hour merge-recovery soak benchmark metrics
+
+> As a **release engineer validating consensus changes**, I want **capture benchmark metrics from the 60-hour merge-recovery soak (per-iteration throughput, failure rate, and node resource/finalization measurements) with a machine-readable summary artifact** so that **sustained-load performance and stability are measurable and comparable across releases instead of pass/fail only**.
+
+**Implemented in:** EPIC-010
+
+**Status:** Planned
+
+**Acceptance Criteria:**
+- [ ] Each soak iteration records wall-clock duration, pytest pass/fail counts, and provider (docker/subprocess) in a per-iteration metrics file
+- [ ] Node resource metrics (peak RSS, finalization latency) are sampled during each iteration and included in the metrics file
+- [ ] A run-level summary artifact (JSON) aggregates iterations, failure rate, and throughput, and is uploaded by the merge-recovery-soak workflow
+- [ ] Two soak runs can be diffed to detect performance regressions between refs
+
+---
+
 ## Planned Stories
 
 #### US-001: System-Integration Compatibility
 
 > As a **platform operator**, I want **f1r3node-rust's Docker configuration to be directly compatible with the system-integration orchestration tooling** so that **the migration from dual Scala/Rust support to Rust-only can proceed without manual fixups**.
 
-**Implemented in:** EPOCH-001, EPOCH-002
+**Implemented in:** EPIC-001, EPIC-002
 
 **Acceptance Criteria:**
 - [x] Genesis wallets.txt identical between repos (20 wallets, correct balances)
@@ -48,7 +65,7 @@ This document captures user stories that drive feature development. User stories
 
 > As a **F1R3FLY developer**, I want **the Rust blockchain node to live in a standalone repository (f1r3node-rust) with clean Cargo-only tooling** so that **we can iterate faster without Nix/SBT/Scala build complexity and contributors only need standard Rust tooling**.
 
-**Implemented in:** EPOCH-003 through EPOCH-008
+**Implemented in:** EPIC-003 through EPIC-008
 
 **Acceptance Criteria:**
 - [ ] All critical PRs (Reified RSpaces #328-#338) merged in f1r3node before cutover
@@ -57,7 +74,7 @@ This document captures user stories that drive feature development. User stories
 - [ ] All 22 Rust-relevant issues migrated to f1r3node-rust
 - [ ] External repos (system-integration, pyf1r3fly) point at f1r3node-rust
 - [ ] f1r3node archived with deprecation notice
-- [ ] Docker image published as `f1r3fly-rust` to Oracle Container Registry (`sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust`, public)
+- [ ] Docker image published as `f1r3fly-rust` to Oracle Container Registry (`us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust`, public)
 - [ ] Version continuity maintained (v0.4.x series)
 
 **Completed:** Planned
@@ -68,7 +85,7 @@ This document captures user stories that drive feature development. User stories
 
 > As a **platform engineer**, I want **to deploy a single F1R3FLY shard across two isolated OCI VPSes and run repeatable latency benchmarks against it** so that **we can measure network-latency-bound consensus performance and detect regressions as the node evolves**.
 
-**Implemented in:** EPOCH-009
+**Implemented in:** EPIC-009
 
 **Status:** In Progress
 
@@ -85,22 +102,22 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
-## Relationship to Epochs
+## Relationship to Epics
 
-User stories capture the **why** (user need and benefit). Epochs capture the **what** (technical implementation tasks).
+User stories capture the **why** (user need and benefit). Epics capture the **what** (technical implementation tasks).
 
 | Artifact | Purpose | Location |
 |----------|---------|----------|
 | User Story | Business/user need | `docs/UserStories.md` |
-| Epoch | Implementation scope | `docs/ToDos.md` |
-| Task | Technical work item | Nested in epoch YAML |
+| Epic | Implementation scope | `docs/ToDos.md` |
+| Task | Technical work item | Nested in epic YAML |
 | Acceptance Criteria | Definition of done | In user story |
 
 **Workflow:**
 1. Identify user need -> Create user story
-2. Design solution -> Create epoch with tasks
+2. Design solution -> Create epic with tasks
 3. Implement -> Work through tasks via `/nextTask` and `/implement`
-4. Complete -> Mark epoch complete, update story status
+4. Complete -> Mark epic complete, update story status
 
 ---
 

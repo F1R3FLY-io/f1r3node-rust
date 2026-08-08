@@ -1,0 +1,57 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+// Exercises the PoS active-validator cap.
+//
+// `PoS.pickActiveValidators` (PoS.rhox ~:770-778) selects the active validator set from the
+// bonded validators with `pks.take($$numberOfActiveValidators$$).toSet()`. This cap is applied at
+// genesis (PoS.rhox:168, where the initial "activeValidators" set is computed) and again on epoch
+// change (PoS.rhox:~571). The default genesis parameter `number_of_active_validators = 100` far
+// exceeds the handful of bonded validators in the test genesis, so ordinary suites never reach the
+// `take(N)` truncation branch.
+//
+// This suite runs on a genesis where `number_of_active_validators` (2) is strictly smaller than the
+// number of bonded validators (the default GenesisBuilder bonds 4). `getActiveValidators`
+// (PoS.rhox:267-269) returns `state.get("activeValidators")` — the Set produced by the capped
+// `pickActiveValidators`. We assert the returned set has exactly 2 elements and is strictly smaller
+// than the bonded set, proving the 4-validator bond map was truncated down to the cap.
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  PoSCh,
+  setup,
+  test_active_validators_are_capped
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh &
+      @(_, PoS)      <- PoSCh) {
+    @RhoSpec!("testSuite", *setup,
+      [
+        ("active validator set is capped to numberOfActiveValidators", *test_active_validators_are_capped)
+      ]
+    ) |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    contract test_active_validators_are_capped(rhoSpec, _, ackCh) = {
+      new activeValidatorsCh, bondsCh in {
+        @PoS!("getActiveValidators", *activeValidatorsCh) |
+        @PoS!("getBonds", *bondsCh) |
+        for (@activeValidators <- activeValidatorsCh &
+             @bonds            <- bondsCh) {
+          rhoSpec!("assertMany",
+            [
+              ((2, "==", activeValidators.size()), "active validator set is capped to numberOfActiveValidators (2)"),
+              (activeValidators.size() < bonds.size(), "the active set is strictly smaller than the bonded set (the bonded validators were truncated to the cap)")
+            ],
+            *ackCh
+          )
+        }
+      }
+    }
+  }
+}

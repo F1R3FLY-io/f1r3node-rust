@@ -1145,9 +1145,7 @@ impl RuntimeBudget {
     /// Cheap per-COMM gate: is per-redex channel-match attribution active (i.e. is
     /// this a multi-signer deploy with >1 signer lane)? A single-signer deploy
     /// returns `false` and the reducer does ZERO channel-match work.
-    pub fn any_signed_regions(&self) -> bool {
-        self.any_signed_regions.load(Ordering::Acquire)
-    }
+    pub fn any_signed_regions(&self) -> bool { self.any_signed_regions.load(Ordering::Acquire) }
 
     /// Snapshot the installed signer channels for a channel match (cloned; only
     /// taken on the multi-signer path, gated by [`any_signed_regions`]).
@@ -1546,9 +1544,7 @@ where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::
 /// so `Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ ==` the genesis-seeded wallet `Σ⟦wallet⟧`
 /// (cost-accounting WD-D2 §D2.9). DR-1 (ground/quote channel collapse) means
 /// this reflects to the SAME channel as the genesis seed's `Sig::Ground(pk)`.
-pub fn funding_sig_single(pubkey: &[u8]) -> Sig {
-    Sig::Ground(pubkey.to_vec())
-}
+pub fn funding_sig_single(pubkey: &[u8]) -> Sig { Sig::Ground(pubkey.to_vec()) }
 
 /// The FUNDING signature of a multi-signer deploy: the left-associated
 /// `Sig::And` fold of each cosigner's ground identity atom `Sig::Ground(pkᵢ)`

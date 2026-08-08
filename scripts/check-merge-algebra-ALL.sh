@@ -145,7 +145,7 @@ if command -v cargo >/dev/null 2>&1; then
   # (:269 -> InvalidRejectedDeploy) disagrees with the recompute. Integration test in the
   # `mod` binary (casper/tests/batch2/validate_test.rs).
   if cargo test -p casper --test mod -- batch2::validate_test::validate_block_checkpoint_recompute >/tmp/ma_rust_recompute.log 2>&1 \
-       && grep -q "test result: ok" /tmp/ma_rust_recompute.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/ma_rust_recompute.log; then
     pass "Rust casper T-RECOMPUTE (recompute-vs-recorded reject seam: pre-state + rejected-deploy)"
   else
     fail "Rust casper T-RECOMPUTE test failed (see /tmp/ma_rust_recompute.log)"; tail -20 /tmp/ma_rust_recompute.log | sed 's/^/      /'

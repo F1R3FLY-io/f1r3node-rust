@@ -6,6 +6,7 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashMap;
 use hex::ToHex;
@@ -40,6 +41,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
+    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
@@ -90,6 +92,12 @@ pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
+    // The finalized-floor merge base is derived from the block's frozen
+    // justification snapshot (finality/floor.rs), so identical parent sets
+    // under different justification maps can merge from different floors.
+    // Sorted (validator, latest_block_hash) pairs keep such contexts from
+    // sharing a cache entry.
+    pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
 }
 
@@ -105,6 +113,7 @@ impl RuntimeManager {
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
+    const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
     const MAX_STATE_HASH_CACHE_ENTRIES: usize = 0;
 
@@ -270,7 +279,18 @@ impl RuntimeManager {
 
     fn max_replay_cache_entries() -> usize { Self::MAX_REPLAY_CACHE_ENTRIES }
 
+    fn max_replay_cache_bytes() -> usize { Self::MAX_REPLAY_CACHE_BYTES }
+
     fn max_replay_cache_event_log_entries() -> usize { Self::MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES }
+
+    fn record_replay_cache_metrics(cache: &InMemoryReplayCache) -> (usize, usize) {
+        let stats = cache.stats();
+        metrics::gauge!(REPLAY_CACHE_ENTRIES_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(stats.0 as f64);
+        metrics::gauge!(REPLAY_CACHE_RETAINED_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(stats.1 as f64);
+        stats
+    }
 
     fn max_state_hash_cache_entries() -> usize { Self::MAX_STATE_HASH_CACHE_ENTRIES }
 
@@ -486,11 +506,10 @@ impl RuntimeManager {
                     replay_payload_hash,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                cache.put(key, entry);
-                tracing::debug!(
-                    "[CACHE] Stored replay cache entry for sender seq={}",
-                    seq_num
-                );
+                let replay_cached = cache.put(key, entry);
+                let (cache_entries, cache_retained_bytes) =
+                    Self::record_replay_cache_metrics(cache);
+                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
             } else if !all_logs.is_empty() {
                 tracing::debug!(
                     "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
@@ -683,11 +702,10 @@ impl RuntimeManager {
                     replay_payload_hash,
                 );
                 let entry = ReplayCacheEntry::new(all_logs, state_hash.clone());
-                cache.put(key, entry);
-                tracing::debug!(
-                    "[CACHE] Stored replay cache entry for sender seq={}",
-                    seq_num
-                );
+                let replay_cached = cache.put(key, entry);
+                let (cache_entries, cache_retained_bytes) =
+                    Self::record_replay_cache_metrics(cache);
+                tracing::debug!("[CACHE] Replay cache admission for sender seq={}: cached={}, entries={}, retained_bytes={}", seq_num, replay_cached, cache_entries, cache_retained_bytes);
             } else if !all_logs.is_empty() {
                 tracing::debug!(
                     "[CACHE] Skipped replay cache store for sender seq={} (event_log={})",
@@ -953,6 +971,20 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
+    /// `None` when the chain's genesis predates the parameter. Read once at
+    /// casper construction (`hash_set_casper`) — not cached here.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .get_fault_tolerance_threshold_ppm(start_hash)
+            .await
+    }
+
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(cached) = self.bonds_cache.get(hash) {
             Self::touch_cache_key(&self.bonds_cache_order, hash);
@@ -978,10 +1010,13 @@ impl RuntimeManager {
         &self,
         term: String,
         hash: &StateHash,
+        deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops.play_exploratory_deploy(term, hash).await
+        runtime_ops
+            .play_exploratory_deploy(term, hash, deployer)
+            .await
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {
@@ -1424,13 +1459,12 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
-        // (plan §7.12): the guard moved from BindPattern.condition (Phase 7)
-        // to TaggedContinuation.guard, dropping a field from BindPattern and
-        // adding one to TaggedContinuation. Both shifts re-encode the
-        // bootstrap registry's installed continuations and patterns.
-        // Coordinated upgrade required.
-        hex::decode("cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe")
+        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
+        // VersionedRegistry.rho into genesis, adding one more contract to
+        // the initial installed set and re-encoding the bootstrap
+        // registry's continuations. Coordinated upgrade required.
+        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
+        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
             .unwrap()
             .into()
     }
@@ -1465,8 +1499,12 @@ impl RuntimeManager {
             bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             parents_post_state_cache: Arc::new(DashMap::new()),
             parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            replay_cache: (replay_cache_size > 0)
-                .then(|| Arc::new(InMemoryReplayCache::new(replay_cache_size))),
+            replay_cache: (replay_cache_size > 0).then(|| {
+                Arc::new(InMemoryReplayCache::with_limits(
+                    replay_cache_size,
+                    Self::max_replay_cache_bytes(),
+                ))
+            }),
             state_hash_cache: (state_hash_cache_size > 0)
                 .then(|| Arc::new(StateHashCache::new(state_hash_cache_size))),
             external_services,
@@ -1659,8 +1697,12 @@ mod tests {
         expected_disposition: String,
         #[serde(default)]
         expected_total_cost: i64,
-        #[serde(default)]
-        settlement: serde_json::Value,
+        // DISABLED (2026-08-07 dev merge warning sweep) — never read; the
+        // fixture JSON's settlement blocks are consumed by the native
+        // settlement tests, not this deserializer. serde ignores unknown
+        // JSON keys, so parsing is unaffected.
+        // #[serde(default)]
+        // settlement: serde_json::Value,
         #[serde(default)]
         replay_mutations: Vec<String>,
         #[serde(default)]
@@ -1727,12 +1769,15 @@ mod tests {
         .fixtures
     }
 
-    fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
-        value
-            .get(key)
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
-    }
+    // DISABLED (2026-08-07 dev merge warning sweep) — dead since the v13
+    // settlement assertions moved to the native settlement tests; kept
+    // commented out per the repo's disable-by-commenting rule.
+    // fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
+    // value
+    // .get(key)
+    // .and_then(serde_json::Value::as_i64)
+    // .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
+    // }
 
     #[test]
     fn replay_payload_hash_changes_when_user_cost_changes() {

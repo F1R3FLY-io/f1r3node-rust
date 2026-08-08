@@ -15,14 +15,27 @@ that conflicts defers to it.
 
 ## Branching and Commits
 
-- Branch from `staging` and open pull requests against `staging`. Maintainers promote
-  `staging` → `dev` → `master`.
-- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`.
+- Branch from `dev` and open pull requests against `dev`. Maintainers promote
+  `dev` → `master`. Hotfixes are the one exception — see Hotfixes below.
+- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`, `hotfix/`.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`,
   `perf:`, `refactor:`, `test:`, `chore:`.
 - Keep one concern per pull request.
 - Preserve commit history when picking up someone else's PR — don't squash unrelated commits
   without consent.
+
+### Hotfixes
+
+Urgent work that cannot wait for the next `dev` → `master` promotion — a broken release or CI
+pipeline, a security patch, a production incident — branches from `master` as
+`hotfix/<topic>` and opens its pull request against `master`.
+
+After the hotfix merges, merge `master` back into `dev` so the fix survives the next
+promotion. Skipping that step is how a hotfix silently disappears from the next release.
+
+Use this path sparingly. A hotfix reaches `master` without ever being integrated against the
+work already queued in `dev`, so it trades integration coverage for speed. Anything that can
+wait should go through `dev` like everything else.
 
 ## Local Checks
 
@@ -68,6 +81,38 @@ Maintainers review for correctness, test coverage, scope discipline, and consist
 documented architecture. Respond to feedback in additional commits rather than force-pushing
 over reviewed history.
 
+---
+
+## Branches and Forks
+
+New or occasional contributors should open pull requests from personal forks. Keep fork branches focused and up to date with the target branch.
+
+Known recurring contributors may be invited to work from branches in the upstream `F1R3FLY-io/f1r3node-rust` repository. Maintainers grant upstream access based on project need, contributor identity, prior review history, and expected scope of work.
+
+Upstream access does not bypass review. Protected branches such as `master` and `dev` still require pull requests and required checks before merge.
+
+## CI Approval for Fork Pull Requests
+
+CI for fork-based pull requests requires maintainer approval every time. This protects project CI capacity, GitHub-hosted minutes, and Oracle Cloud Infrastructure runner capacity while contributor trust is established.
+
+Approval to run CI is not approval to merge. Maintainers may review the code, ask for local validation output, or request changes before approving expensive CI.
+
+Full OCI-backed validation runs only after an owner or maintainer approves the pull request for full validation. For fork pull requests, maintainers add a pull request comment containing exactly `/full-oci-validate <pr_number> <head_sha>`, then use the trusted `Full OCI Validation` workflow from the default branch and provide the pull request number, reviewed head SHA, and approval comment ID.
+
+The workflow validates that the SHA still matches the pull request and that the approval comment belongs to the PR and was authored by a user with `maintain` or `admin` permission before launching OCI capacity. Only users with `maintain` or `admin` repository permission may dispatch it.
+
+The workflow also accepts a pinned `system_integration_ref` commit SHA for the trusted OCI runner launcher and integration-test harness. Maintainers should update that SHA deliberately after reviewing the corresponding `F1R3FLY-io/system-integration` change.
+
+Maintainers may alternatively ask a trusted contributor to move work to an upstream branch, or may mirror/cherry-pick reviewed work into an upstream branch before running the full pipeline.
+
+Untrusted fork code must not run on persistent self-hosted runners. Project-managed compute for untrusted code should use disposable or ephemeral runners. Secret-bearing launcher jobs must use trusted workflow code only; fork code may run only in downstream jobs without project secrets.
+
+The project expects to evolve toward a contributor trust and reputation process. Until that process is formalized, maintainers decide when a contributor is trusted enough for upstream branch access and full CI use.
+
+---
+
+## Documentation Expectations
+
 ## Documentation
 
 - Update Markdown when commands, ports, flags, paths, or workflows change.
@@ -78,11 +123,10 @@ over reviewed history.
 
 ## AI-Assisted Contributions
 
-AI coding assistants (Claude Code, Codex, Gemini, Cursor, Copilot, and others) are welcome.
-Per-tool instructions live in the repo's `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`. When
-committing from an autonomous agentic session, prefix the commit subject with `[agent]`. You
-are responsible for every line you submit — review your assistant's output as you would a
-human colleague's.
+AI-assisted contributions are welcome. Repository-wide guidance lives in `AGENTS.md`.
+When committing from an autonomous agentic session, prefix the commit subject with `[agent]`.
+You are responsible for every line you submit — review generated output as you would a human
+colleague's.
 
 ## Security and Privacy
 

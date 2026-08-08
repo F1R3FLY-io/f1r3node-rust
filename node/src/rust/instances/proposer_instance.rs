@@ -54,33 +54,6 @@ pub struct ProposerInstance<T: TransportLayer + Send + Sync + 'static> {
     pub propose_queue_max_pending: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
-
-    use super::*;
-
-    #[test]
-    fn should_not_retry_internal_deploy_error_immediately() {
-        let result = ProposeResult::failure(ProposeFailure::InternalDeployError);
-        assert!(
-            !should_retry_immediately_on_trigger(&result, true),
-            "InternalDeployError should not trigger immediate retry"
-        );
-    }
-
-    #[test]
-    fn should_not_retry_not_enough_new_blocks_for_async_propose() {
-        let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
-            CheckProposeConstraintsFailure::NotEnoughNewBlocks,
-        ));
-        assert!(
-            !should_retry_immediately_on_trigger(&result, true),
-            "NotEnoughNewBlocks should not trigger immediate async retry"
-        );
-    }
-}
-
 impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     /// Create a new ProposerInstance
     ///
@@ -251,7 +224,9 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     }
                                 }
                                 None => {
-                                    if propose_result.is_no_new_deploys() {
+                                    if propose_result.is_no_new_deploys()
+                                        || propose_result.is_recovery_deferred()
+                                    {
                                         tracing::info!("Propose: {}", propose_result.propose_status)
                                     } else {
                                         tracing::error!(
@@ -408,5 +383,32 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
         });
 
         Ok(result_rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
+
+    use super::*;
+
+    #[test]
+    fn should_not_retry_internal_deploy_error_immediately() {
+        let result = ProposeResult::failure(ProposeFailure::InternalDeployError);
+        assert!(
+            !should_retry_immediately_on_trigger(&result, true),
+            "InternalDeployError should not trigger immediate retry"
+        );
+    }
+
+    #[test]
+    fn should_not_retry_not_enough_new_blocks_for_async_propose() {
+        let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+            CheckProposeConstraintsFailure::NotEnoughNewBlocks,
+        ));
+        assert!(
+            !should_retry_immediately_on_trigger(&result, true),
+            "NotEnoughNewBlocks should not trigger immediate async retry"
+        );
     }
 }

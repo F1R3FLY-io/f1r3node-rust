@@ -51,7 +51,7 @@ in {
     .unwrap();
 
     let signed_block = node
-        .add_block_from_deploys(&[deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .unwrap();
 
@@ -71,10 +71,20 @@ in {
     assert_eq!(data, vec![expected]);
 }
 
+// Builds genesis with a LARGE REV-vault set and executes it — a genesis-scale smoke test that a
+// many-wallet genesis assembles and runs without error (the Scala original used 16,000 addresses and
+// asserted no genesis-log warnings; Rust has no in-test log-warning capture, so this checks the
+// genesis builds + a standalone node stands up without panicking). The Scala 16,000 count does NOT
+// finish in practical time in the Rust port (genesis vault creation is ~linear at ~tens of ms per
+// vault → >20 min at 16k), so the count is reduced to 1,000 — still an order of magnitude beyond the
+// ordinary genesis specs (which use a handful of vaults) while completing in a bounded time. Kept
+// ignored (run explicitly with --ignored) because it is still heavy (~minute+) and its assertion is a
+// weak smoke check; correct per-vault issuance is covered with real balance assertions by
+// `genesis::contracts::vault_issuance_test` and `genesis::genesis_from_input_files_...rev_vaults`.
 #[tokio::test]
-#[ignore = "Scala ignore"]
+#[ignore = "heavy: 1,000-vault genesis-scale smoke test (~minute+); run explicitly with --ignored"]
 async fn our_build_system_should_execute_the_genesis_block() {
-    const REV_ADDRESS_COUNT: i32 = 16000;
+    const REV_ADDRESS_COUNT: i32 = 1000;
 
     let mut vaults = Vec::new();
     let secp256k1 = Secp256k1;

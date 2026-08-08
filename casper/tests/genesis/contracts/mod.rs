@@ -2,6 +2,7 @@ use std::time::Duration;
 
 pub mod test_util;
 
+pub mod active_validators_cap_spec;
 pub mod auth_key_spec;
 pub mod block_data_contract_spec;
 pub mod capabilities_registry_spec;
@@ -16,6 +17,7 @@ pub mod non_negative_number_spec;
 pub mod pos_spec;
 pub mod registry_ops_spec;
 pub mod registry_spec;
+pub mod versioned_registry_spec;
 pub mod rho_spec_contract_spec;
 pub mod stack_spec;
 pub mod standard_deploys_spec;

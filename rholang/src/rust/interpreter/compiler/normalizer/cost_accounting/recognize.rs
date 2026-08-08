@@ -44,7 +44,7 @@ pub fn recognize_signed_term<'ast>(
     // continuation is metered to the same `s`. Both are term-level AST→AST; the
     // inner gate (if any) is produced by the ordinary dispatch recursion below.
     let (core_inner, core_sig): (AnnProc<'ast>, &Signature<'ast>) = match sig {
-        Signature::Transfer(s1, s2) => (desugar::lollipop(*inner, &**s2, parser)?, &**s1),
+        Signature::Transfer(s1, s2) => (desugar::lollipop(*inner, s2, parser)?, &**s1),
         core => (desugar::uniform_sign(*inner, core, parser), core),
     };
     // VALIDATE that `s` resolves to a native funding `Sig` (rejects a wildcard

@@ -18,8 +18,8 @@
 # CHANGELOG.md via git-cliff, commits, pushes the commit, then creates an
 # annotated tag via the GitHub API.
 #
-# Commit push uses GITHUB_TOKEN (no workflow triggers).
-# Tag creation uses RELEASE_PAT (triggers on:push:tags workflows for CI publish).
+# Commit push and tag creation use a short-lived GitHub App token so their
+# events trigger downstream workflows and the App can bypass release rulesets.
 
 name: Release
 
@@ -33,12 +33,126 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Bump Version & Tag
+  soak_gate:
+    name: Weekend Soak Verdict Gate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     if: >-
       !startsWith(github.event.head_commit.message, 'chore(release)')
+    permissions:
+      checks: write
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - name: Read latest weekend soak verdict
+        id: gate
+        shell: bash -euo pipefail {0}
+        env:
+          OVERRIDE: ${{ contains(github.event.head_commit.message, '[soak-override]') }}
+        run: |
+          # Releases must not promote past a regressing weekend soak
+          # (EPOCH-010 TASK-010-3). Maintainer override: include
+          # [soak-override] in the release commit message.
+          #
+          # A regress HOLDS the release (the release job skips on
+          # proceed=false) without failing this job: soak state belongs to
+          # the README badges and the dashboard, not to the commit's build
+          # status, which must reflect build/test checks only. The hold is
+          # surfaced on the commit as a neutral `release-held` check run
+          # (next step) instead of a red X.
+          if [ "$OVERRIDE" = "true" ]; then
+            echo "::warning::Soak gate overridden via [soak-override] in commit message"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Randomized heredoc delimiter: the summary embeds strings from
+          # the fetched JSON, so a static delimiter would let a crafted
+          # line terminate the block early and inject further outputs.
+          delim="HELD_EOF_${RANDOM}${RANDOM}_$$"
+          hold() {
+            {
+              echo "held_summary<<$delim"
+              cat
+              echo ""
+              echo "The release job was skipped; the build itself is unaffected. Fix the regression or include \`[soak-override]\` in the release commit message. Soak state and history: https://f1r3fly-io.github.io/f1r3node-rust/"
+              echo "$delim"
+            } >> "$GITHUB_OUTPUT"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          }
+          body="$RUNNER_TEMP/latest-verdict.json"
+          http_code="$(curl -sS --max-time 30 --retry 3 --retry-delay 5 \
+            -o "$body" -w '%{http_code}' \
+            "https://f1r3fly-io.github.io/f1r3node-rust/data/latest-verdict.json" \
+            2>/dev/null)" || http_code=000
+          if [ "$http_code" = "404" ]; then
+            echo "::warning::No published soak verdict yet (dashboard bootstrap); allowing release"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$http_code" != "200" ]; then
+            # Fail closed on an unverifiable verdict (network error, 5xx):
+            # holding a release on a transient fetch failure is recoverable;
+            # releasing past an unseen regress is not. Only a true 404
+            # (pre-bootstrap dashboard) allows the release through.
+            echo "::warning::Could not fetch soak verdict (HTTP $http_code) — release held rather than promoting past an unverifiable verdict. Re-run the workflow to retry."
+            hold <<EOF
+          Could not fetch the weekend soak verdict (HTTP $http_code); the release is held rather than promoted past an unverifiable verdict. Re-run the workflow to retry.
+          EOF
+            exit 0
+          fi
+          verdict_json="$(cat "$body")"
+          verdict="$(printf '%s' "$verdict_json" | jq -r '.verdict // "unknown"' 2>/dev/null || echo unknown)"
+          date="$(printf '%s' "$verdict_json" | jq -r '.run.date // "unknown"' 2>/dev/null || echo unknown)"
+          echo "Latest weekend soak verdict: $verdict ($date)"
+          if [ "$verdict" != "pass" ]; then
+            printf '%s' "$verdict_json" | jq -r '.failures[]? | "FAIL: " + .' 2>/dev/null || true
+            echo "::warning::Latest weekend soak verdict is '$verdict' ($date) — release held. Fix the regression or use [soak-override] in the release commit message."
+            {
+              echo "Latest weekend soak verdict: \`$verdict\` ($date)."
+              echo ""
+              printf '%s' "$verdict_json" | jq -r '.failures[]? | "- " + .' 2>/dev/null || true
+            } | hold
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish neutral release-held check
+        if: steps.gate.outputs.proceed == 'false'
+        uses: actions/github-script@v7
+        env:
+          HELD_SUMMARY: ${{ steps.gate.outputs.held_summary }}
+        with:
+          script: |
+            // Publication is best-effort: a failed check-run API call must
+            // not fail this job, or the gate re-creates the red commit
+            // status the hold mechanism exists to avoid. The held state is
+            // still visible in the job log and the ::warning annotation.
+            try {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'release-held',
+                head_sha: context.sha,
+                status: 'completed',
+                conclusion: 'neutral',
+                output: {
+                  title: 'Release held by the weekend soak verdict gate',
+                  summary: process.env.HELD_SUMMARY,
+                },
+              });
+            } catch (error) {
+              core.warning(`Could not publish the release-held check run: ${error.message}`);
+            }
+
+  release:
+    name: Bump Version & Tag
+    needs: soak_gate
+    runs-on: ubuntu-latest
+    environment: release-credentials
+    timeout-minutes: 10
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release)') &&
+      needs.soak_gate.outputs.proceed == 'true'
     permissions:
       contents: write
     steps:
@@ -65,9 +179,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install git-cliff
         uses: orhun/git-cliff-action@v4
@@ -111,22 +223,44 @@ jobs:
           git add node/Cargo.toml node/Dockerfile Cargo.lock CHANGELOG.md
           git commit -m "chore(release): ${{ steps.version.outputs.TAG_NAME }}"
 
-      - name: Push commit (RELEASE_PAT — required to push to protected master)
+      - name: Create release token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Push commit
+        env:
+          RELEASE_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BRANCH: ${{ steps.version.outputs.BRANCH }}
         run: |
-          # master's rulesets require a pull request for everyone except admins,
-          # so GITHUB_TOKEN (github-actions[bot], not a bypass actor) cannot push
-          # here. RELEASE_PAT is an org-admin token and bypasses both rulesets.
+          # master's rulesets require a pull request for normal actors. The
+          # repository-scoped GitHub App is an explicit ruleset bypass actor.
           # The chore(release) commit message trips ci.yml's build_base skip-guard,
           # so this push does not kick off a redundant pipeline.
-          git remote set-url origin https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git
-          git push origin ${{ steps.version.outputs.BRANCH }}
+          askpass="$RUNNER_TEMP/git-askpass.sh"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$RELEASE_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$askpass"
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git push "https://github.com/${GITHUB_REPOSITORY}.git" "$RELEASE_BRANCH"
 
-      - name: Create tag via API (PAT — triggers downstream CI)
+      - name: Create tag via API
         uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ steps.version.outputs.TAG_NAME }}
         with:
-          github-token: ${{ secrets.RELEASE_PAT }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const tagName = '${{ steps.version.outputs.TAG_NAME }}';
+            const tagName = process.env.TAG_NAME;
 
             // Get the SHA of the release commit (HEAD after our commits)
             const { execSync } = require('child_process');

@@ -298,14 +298,8 @@ pub async fn floor_of_block(
             .iter()
             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
             .collect();
-        let (floor, frontier) = derive_floor(
-            dag,
-            &metadata.parents,
-            &latest_messages,
-            ftt,
-            inherited,
-        )
-        .await?;
+        let (floor, frontier) =
+            derive_floor(dag, &metadata.parents, &latest_messages, ftt, inherited).await?;
 
         dag.put_cached_floor(current.clone(), floor.hash.clone())?;
         // Persist F(current) = the block's own frontier over its own snapshot,
@@ -475,7 +469,13 @@ async fn incremental_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .record(advance as f64);
-    trace_frontier(parent, &best_hash, best_number, advance as usize, "warm-up-walk");
+    trace_frontier(
+        parent,
+        &best_hash,
+        best_number,
+        advance as usize,
+        "warm-up-walk",
+    );
     Ok(Some(Floor {
         hash: best_hash,
         block_number: best_number,
@@ -586,8 +586,6 @@ mod frontier_determinism_tests {
     //! block derives is invariant to whether the caches are cold or warm
     //! (transparency ⇒ no fork). Complements the axiom-free Rocq proof
     //! (Floor.frontier_cache_transparent) and the 400+-block soak.
-    use super::*;
-
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -597,6 +595,8 @@ mod frontier_determinism_tests {
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
     fn val() -> Bytes { Bytes::from(vec![9; 65]) }
@@ -623,7 +623,11 @@ mod frontier_determinism_tests {
     /// Over the snapshot J = {v -> b2}, the clique oracle finalizes genesis, b1,
     /// and b2 (v's latest message b2 DAG-descends from each), but not b3. So the
     /// frontier of b3 over J is b2.
-    fn mk_dag() -> (KeyValueDagRepresentation, Bytes, (Bytes, Bytes, Bytes, Bytes)) {
+    fn mk_dag() -> (
+        KeyValueDagRepresentation,
+        Bytes,
+        (Bytes, Bytes, Bytes, Bytes),
+    ) {
         let v = val();
         let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
 
@@ -707,7 +711,10 @@ mod frontier_determinism_tests {
         // the single parent b3).
         let floor_cold = finalized_floor(&dag, &[b3.clone()], &j, thr).await.unwrap();
         let floor_warm = finalized_floor(&dag, &[b3.clone()], &j, thr).await.unwrap();
-        assert_eq!(floor_cold.hash, b2, "derive_floor must select the sound base b2");
+        assert_eq!(
+            floor_cold.hash, b2,
+            "derive_floor must select the sound base b2"
+        );
         assert_eq!(
             floor_cold, floor_warm,
             "enabling the caches must not change the derived floor (no fork)"
@@ -845,8 +852,14 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         let inherited = vec![
-            Floor { hash: c.clone(), block_number: 2 },
-            Floor { hash: t.clone(), block_number: 1 },
+            Floor {
+                hash: c.clone(),
+                block_number: 2,
+            },
+            Floor {
+                hash: t.clone(),
+                block_number: 1,
+            },
         ];
         let (floor, _f) = derive_floor(&dag, &[p1.clone(), p2.clone()], &j, thr, inherited)
             .await
@@ -880,8 +893,14 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         let inherited = vec![
-            Floor { hash: g_a.clone(), block_number: 0 },
-            Floor { hash: g_b.clone(), block_number: 0 },
+            Floor {
+                hash: g_a.clone(),
+                block_number: 0,
+            },
+            Floor {
+                hash: g_b.clone(),
+                block_number: 0,
+            },
         ];
         let result = derive_floor(&dag, &[a1.clone(), b1.clone()], &j, thr, inherited).await;
         match result {
@@ -922,10 +941,23 @@ mod frontier_determinism_tests {
         j.insert(v.clone(), c.clone());
         let thr = FtThreshold::from_f32_lossy(0.1);
         let inherited = vec![
-            Floor { hash: c.clone(), block_number: 2 },
-            Floor { hash: c.clone(), block_number: 2 },
+            Floor {
+                hash: c.clone(),
+                block_number: 2,
+            },
+            Floor {
+                hash: c.clone(),
+                block_number: 2,
+            },
         ];
-        (dag, j, thr, vec![p1.clone(), p2.clone()], inherited, (g, t, c, p1, p2))
+        (
+            dag,
+            j,
+            thr,
+            vec![p1.clone(), p2.clone()],
+            inherited,
+            (g, t, c, p1, p2),
+        )
     }
 
     /// T-LIN (`Selection.case_a_common_ancestor`): when the highest finalized candidate
@@ -939,13 +971,18 @@ mod frontier_determinism_tests {
         let (floor, _f) = derive_floor(&dag, &parents, &j, thr, inherited)
             .await
             .expect("derive_floor");
-        assert_eq!(floor.hash, c, "Case-A selects the common-ancestor finalized candidate c");
+        assert_eq!(
+            floor.hash, c,
+            "Case-A selects the common-ancestor finalized candidate c"
+        );
         assert!(
-            dag.is_dag_ancestor(&floor.hash, &p1).expect("is_dag_ancestor"),
+            dag.is_dag_ancestor(&floor.hash, &p1)
+                .expect("is_dag_ancestor"),
             "the Case-A floor must be a DAG-ancestor of parent p1"
         );
         assert!(
-            dag.is_dag_ancestor(&floor.hash, &p2).expect("is_dag_ancestor"),
+            dag.is_dag_ancestor(&floor.hash, &p2)
+                .expect("is_dag_ancestor"),
             "the Case-A floor must be a DAG-ancestor of parent p2"
         );
     }
@@ -966,8 +1003,14 @@ mod frontier_determinism_tests {
         // Override the inherited floors with the LAGGING cuts the parents carried before
         // c finalized, forcing g@0 and t@1 into the candidate sort alongside advancement's c@2.
         let lagging = vec![
-            Floor { hash: t.clone(), block_number: 1 },
-            Floor { hash: g.clone(), block_number: 0 },
+            Floor {
+                hash: t.clone(),
+                block_number: 1,
+            },
+            Floor {
+                hash: g.clone(),
+                block_number: 0,
+            },
         ];
         let (floor, _f) = derive_floor(&dag, &parents, &j, thr, lagging)
             .await
@@ -1013,5 +1056,95 @@ mod frontier_determinism_tests {
             finalized,
             "the derive_floor result must be Finalized over the justification snapshot (T-FIN)"
         );
+    }
+
+    // ---- Phase-4 T-DET maximality: derive_floor picks the HIGHEST sound candidate ----
+
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
+
+    lazy_static::lazy_static! {
+        // Shared Tokio runtime for the `#[test]` proptest (it cannot be `#[tokio::test]`);
+        // mirrors casper/tests/fork_choice/prop_estimator_determinism.rs.
+        static ref FLOOR_RUNTIME: tokio::runtime::Runtime =
+            tokio::runtime::Runtime::new().expect("tokio runtime");
+    }
+
+    prop_compose! {
+        /// A single-validator linear chain `g=b0 <- b1 <- … <- b_depth` ({v:1}
+        /// committee), a frontier index `k ∈ [1, depth)` (so `frontier(b_depth over
+        /// {v:b_k}) = b_k`, strictly below the parent), and a random `inherited_mask`
+        /// selecting which strict ancestors `b_0..b_{depth-1}` are also fed as inherited
+        /// floors. Every candidate is a DAG-ancestor of the single parent `b_depth`
+        /// (linear chain) ⇒ every candidate is a Case-A sound base ⇒ maximality alone
+        /// decides the floor.
+        fn chain_scenario()(depth in 2usize..=6)(
+            k in 1usize..depth,
+            inherited_mask in prop::collection::vec(any::<bool>(), depth),
+            depth in Just(depth),
+        ) -> (usize, usize, Vec<bool>) {
+            (depth, k, inherited_mask)
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 24, max_shrink_iters: 8, ..ProptestConfig::default() })]
+
+        // maximality / T-DET (`Selection.select_highest_sound`): over a
+        // descending-sorted candidate set of Case-A sound bases (inherited parent floors
+        // ∪ the per-parent frontier), `derive_floor` returns the candidate of GREATEST
+        // block number — the highest sound base. This is the general (proptest) form of
+        // the hand-built `derive_floor_selects_highest_sound_finalized_candidate` example:
+        // the candidate multiset is randomly `{inherited b_i} ∪ {frontier b_k}`, and the
+        // chosen floor must always be its maximum, regardless of whether inheritance or
+        // advancement supplies it (monotonicity in BOTH directions).
+        #[test]
+        fn derive_floor_selects_highest_sound_candidate_over_chain((depth, k, mask) in chain_scenario()) {
+            FLOOR_RUNTIME.block_on(async move {
+                let v = h(50);
+                let mut blocks: Vec<BlockMetadata> = Vec::with_capacity(depth + 1);
+                for i in 0..=depth {
+                    let parents = if i == 0 { vec![] } else { vec![h((i - 1) as u8)] };
+                    blocks.push(md_wm(h(i as u8), parents, i as i64, &v, vec![(v.clone(), 1)]));
+                }
+                let dag = build_dag(blocks);
+                let parent = h(depth as u8);
+
+                // frontier(parent over {v:b_k}) = b_k (single-validator chain).
+                let mut j = BTreeMap::new();
+                j.insert(v.clone(), h(k as u8));
+                let thr = FtThreshold::from_f32_lossy(0.1);
+
+                // Inherited candidates: the selected strict ancestors b_0..b_{depth-1}.
+                let mut inherited: Vec<Floor> = Vec::new();
+                for (i, &selected) in mask.iter().enumerate().take(depth) {
+                    if selected {
+                        inherited.push(Floor { hash: h(i as u8), block_number: i as i64 });
+                    }
+                }
+
+                let (floor, _f) = derive_floor(&dag, &[parent], &j, thr, inherited.clone())
+                    .await
+                    .expect("derive_floor");
+
+                // Oracle: the maximum block number over inherited ∪ {frontier k}. All
+                // candidates are distinct chain positions, so the max hash is unambiguous.
+                let expected_num = inherited
+                    .iter()
+                    .map(|f| f.block_number)
+                    .chain(std::iter::once(k as i64))
+                    .max()
+                    .expect("candidate set is non-empty (frontier always present)");
+                prop_assert_eq!(
+                    floor.block_number, expected_num,
+                    "derive_floor must select the HIGHEST sound candidate's block number"
+                );
+                prop_assert_eq!(
+                    floor.hash, h(expected_num as u8),
+                    "derive_floor must select the chain block at the highest candidate number"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
     }
 }

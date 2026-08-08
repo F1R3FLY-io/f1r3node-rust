@@ -195,6 +195,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// finalization status.
     fn casper_shard_conf(&self) -> &CasperShardConf;
 
+    fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
@@ -214,7 +218,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
-pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
+pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
     runtime_manager: Arc<RuntimeManager>,
@@ -225,10 +229,46 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
-    casper_shard_conf: CasperShardConf,
+    mut casper_shard_conf: CasperShardConf,
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
+    //
+    // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
+    // floor decides the multi-parent merge base — a validated, node-identical
+    // quantity. Every node (validator or observer) must therefore run the ppm
+    // baked into the PoS contract at genesis, regardless of local config.
+    //
+    // All three constructors of a running casper (`initializing`,
+    // `casper_launch`, `genesis_ceremony_master`) funnel through here, so this
+    // is the only place the adoption can be guaranteed for every path.
+    //
+    // The assignment is UNCONDITIONAL — the `if` gates only the log line. That
+    // is precisely Rocq `FtProvenance.reconcile_agrees_on_onchain`:
+    // `reconcile(local, onchain) = onchain`, so two nodes with ANY two local
+    // configs derive the same floor. Absent/out-of-range now FAILS the node
+    // (see `read_on_chain_fault_tolerance_threshold_ppm`) rather than silently
+    // reopening node-local floor divergence.
+    let onchain_ppm =
+        crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?;
+    if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
+        tracing::info!(
+            onchain_ppm,
+            local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+            "Adopting on-chain protocol fault-tolerance threshold over local configuration"
+        );
+    }
+    casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
+    // Keep the display f32 in lock-step with the exact ppm that decides
+    // finalization, so the API can never report a threshold the oracle is not
+    // using. The ppm remains the sole DECISION input; this f32 is display-only.
+    casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
+
     Ok(MultiParentCasperImpl {
         block_retriever,
         event_publisher,
@@ -470,7 +510,7 @@ impl CasperShardConf {
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
             max_cosigners_per_deploy: crate::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),

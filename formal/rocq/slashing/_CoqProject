@@ -6,8 +6,9 @@
 # bug-fix deltas, composed in main_slashing_algorithm_correct.
 #
 # Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
-#         multi_parent_casper_impl,blocks/proposer/block_creator,
-#         util/rholang/costacc/slash_deploy}.rs
+#         blocks/proposer/block_creator, util/rholang/costacc/slash_deploy}.rs
+#         and engine/multi_parent_casper/{dispatch,validation_dispatcher}.rs
+#         (the former multi_parent_casper_impl.rs was split into engine/ in ab66b87e)
 # Companion docs:
 #   docs/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)

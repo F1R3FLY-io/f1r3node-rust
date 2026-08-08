@@ -135,7 +135,7 @@ fn expected_validation_ok(
             return false;
         }
         if epoch_for_block_number(metadata.block_number, epoch_length)
-            != Ok(Epoch::from(target_activation_epoch))
+            != Ok(Epoch::new(target_activation_epoch))
         {
             return false;
         }
@@ -202,8 +202,7 @@ fuzz_target!(|input: Input| {
                 if !metadata.invalid {
                     continue;
                 }
-                if epoch_for_block_number(metadata.block_number, epoch_length)
-                    != Ok(current_epoch)
+                if epoch_for_block_number(metadata.block_number, epoch_length) != Ok(current_epoch)
                 {
                     continue;
                 }

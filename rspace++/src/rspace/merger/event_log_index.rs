@@ -400,18 +400,19 @@ impl EventLogIndex {
                         )));
                     }
                     let prev_diff = existing.0;
-                    existing.0 = match combine_mergeable_value(existing.0, incoming_diff, incoming_mt)
-                    {
-                        Some(v) => v,
-                        // IntegerAdd overflow in the intra-chain fold: fail loudly
-                        // rather than construct a chain holding a wrapped value.
-                        None => {
-                            return Err(HistoryError::MergeError(format!(
-                                "IntegerAdd overflow combining mergeable channel {:?} ({} + {})",
-                                key, prev_diff, incoming_diff,
-                            )))
-                        }
-                    };
+                    existing.0 =
+                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                            Some(v) => v,
+                            // IntegerAdd overflow in the intra-chain fold: fail loudly
+                            // rather than construct a chain holding a wrapped value.
+                            None => {
+                                return Err(HistoryError::MergeError(format!(
+                                    "IntegerAdd overflow combining mergeable channel {:?} ({} + \
+                                     {})",
+                                    key, prev_diff, incoming_diff,
+                                )));
+                            }
+                        };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -675,10 +676,7 @@ mod tests {
         let a = empty_with_channels(BTreeMap::from([(mk_hash(1), 100i64)]));
         let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 23i64)]));
         let combined = EventLogIndex::combine(&a, &b).unwrap();
-        assert_eq!(
-            combined.number_channels_data.get(&mk_hash(1)).map(|v| v.0),
-            Some(123)
-        );
+        assert_eq!(combined.number_channels_data.get(&mk_hash(1)).map(|v| v.0), Some(123));
     }
 
     // --- BitmaskOr merger property tests ----------------------------------
@@ -790,17 +788,18 @@ mod tests {
     }
 }
 
-// === P2: user/system EventLogIndex split hides no conflict =====================
+// === P2: user/system EventLogIndex split hides no conflict
+// =====================
 //
 // Rust modality companion to
 // formal/rocq/merge_algebra/theories/EventLogSplit.v. `DeployChainIndex::new`
 // folds deploys into a user bucket and a system bucket, then
 //     event_log_index = combine(user_event_log_index, system_event_log_index).
 // Because `EventLogIndex::combine` is a field-wise set-union semilattice
-// (commutative, associative, idempotent), combine(fold user, fold system) equals
-// fold(all), so conflict detection on the split-recombined index is IDENTICAL to
-// detection on the monolithic (single-bucket) index. Rocq: combine_split_eq /
-// conflicts_split_complete / event_log_split_sound.
+// (commutative, associative, idempotent), combine(fold user, fold system)
+// equals fold(all), so conflict detection on the split-recombined index is
+// IDENTICAL to detection on the monolithic (single-bucket) index. Rocq:
+// combine_split_eq / conflicts_split_complete / event_log_split_sound.
 #[cfg(test)]
 mod merge_algebra_p2_tests {
     use std::collections::HashSet;
@@ -816,7 +815,11 @@ mod merge_algebra_p2_tests {
     fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
     fn mk_produce(id: u8) -> Produce { Produce::new(mk_hash(id), mk_hash(id), false) }
     fn mk_consume(id: u8) -> Consume {
-        Consume { channel_hashes: vec![mk_hash(id)], hash: mk_hash(id), persistent: false }
+        Consume {
+            channel_hashes: vec![mk_hash(id)],
+            hash: mk_hash(id),
+            persistent: false,
+        }
     }
 
     // a deploy's conflict-relevant EventLogIndex fields (no number channels, so

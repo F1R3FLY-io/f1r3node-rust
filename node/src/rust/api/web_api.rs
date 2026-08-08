@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use casper::rust::api::block_api::{
+    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
@@ -13,7 +15,9 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+// DISABLED (2026-08-07 dev merge warning sweep): only the commented-out
+// `to_signed_deploy` used this.
+// use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -124,6 +128,7 @@ pub trait WebApi {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse>;
 
     /// Get current epoch rewards from PoS contract
@@ -488,8 +493,12 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes =
-            hex::decode(&deploy_id).map_err(|e| eyre!("Invalid deploy ID format: {}", e))?;
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy ID",
+                deploy_id
+            )))
+        })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
@@ -606,6 +615,7 @@ impl WebApi for WebApiImpl {
             block_hash,
             use_pre_state_hash,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -650,8 +660,12 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
-            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy signature",
+                deploy_sig_hex
+            )))
+        })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
@@ -695,6 +709,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -737,6 +752,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -767,6 +783,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -836,8 +853,21 @@ impl WebApi for WebApiImpl {
         &self,
         term: String,
         block_hash: Option<String>,
+        deployer: Option<String>,
     ) -> Result<EstimateCostResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
+
+        let deployer_pk = deployer
+            .map(|hex_str| {
+                validate_and_decode_pubkey(&hex_str).map(|bytes| PublicKey::from_bytes(&bytes))
+            })
+            .transpose()?;
+
+        let deployer_identity = if deployer_pk.is_some() {
+            DeployerIdentity::Provided
+        } else {
+            DeployerIdentity::Ephemeral
+        };
 
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
@@ -845,6 +875,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            deployer_pk,
         )
         .await?;
 
@@ -852,6 +883,7 @@ impl WebApi for WebApiImpl {
             cost,
             block_number,
             block_hash: resolved_hash,
+            deployer_identity,
         })
     }
 
@@ -872,6 +904,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -893,12 +926,12 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
+        let _ = validate_and_decode_pubkey(&pubkey)?;
+
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
+        }"#
         .to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
@@ -909,6 +942,7 @@ impl WebApi for WebApiImpl {
             Some(resolved_hash.clone()),
             false,
             self.dev_mode,
+            None,
         )
         .await?;
 
@@ -936,10 +970,9 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let pk_bytes = validate_and_decode_pubkey(&pubkey)?;
 
-        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
+        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
             public_key: pubkey,
@@ -1171,7 +1204,7 @@ pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1180,6 +1213,18 @@ pub struct ExploreDeployRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SimpleExploreDeployRequest {
     pub term: String,
+}
+
+/// Request body for POST /api/estimate-cost.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EstimateCostRequest {
+    pub term: String,
+    /// Hex-encoded 65-byte uncompressed secp256k1 public key (`04`-prefixed).
+    /// For identity-dependent terms such as vault transfers, pass the deployer
+    /// public key; without it the term executes under an ephemeral identity and
+    /// the returned cost can be significantly lower than the real deploy cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1196,7 +1241,7 @@ pub struct DataAtNameByBlockHashRequest {
     pub name: RhoUnforg,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1413,6 +1458,18 @@ pub struct EpochResponse {
     pub block_hash: String,
 }
 
+/// Which identity produced a cost estimate.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeployerIdentity {
+    /// The estimate was produced under the caller-supplied deployer public key.
+    Provided,
+    /// The estimate was produced under an ephemeral, process-wide random key.
+    /// This may significantly underestimate the real deploy cost for
+    /// identity-dependent terms.
+    Ephemeral,
+}
+
 /// Cost estimation response
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EstimateCostResponse {
@@ -1421,6 +1478,8 @@ pub struct EstimateCostResponse {
     pub block_number: i64,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
+    #[serde(rename = "deployerIdentity")]
+    pub deployer_identity: DeployerIdentity,
 }
 
 /// Epoch rewards response
@@ -1477,6 +1536,19 @@ impl std::fmt::Display for WebApiError {
 
 impl std::error::Error for WebApiError {}
 
+fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(pubkey_hex).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "invalid public key hex: {}",
+            e
+        )))
+    })?;
+    PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
+    })?;
+    Ok(bytes)
+}
+
 // Conversion functions
 
 /// Look up a signature algorithm by name, supporting all wire-recognized
@@ -1496,25 +1568,29 @@ fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
     }
 }
 
-/// Convert DeployRequest to Signed DeployData (legacy single-sig path).
-/// Used only when `request.cosigners.is_empty()` — the multi-sig path
-/// uses [`to_cosigned_deploy`].
-fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-
-    let pk = PublicKey::from_bytes(&pk_bytes);
-    let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
-    let deploy_data = request.data.clone();
-
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
-}
+// DISABLED (2026-08-07 dev merge warning sweep) — dead since the cosigned
+// path (`to_cosigned_deploy`, which uplifts the empty-cosigners case to a
+// one-element envelope) subsumed the legacy single-sig conversion; kept
+// commented out per the repo's disable-by-commenting rule.
+// /// Convert DeployRequest to Signed DeployData (legacy single-sig path).
+// /// Used only when `request.cosigners.is_empty()` — the multi-sig path
+// /// uses [`to_cosigned_deploy`].
+// fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+//     // Decode hex strings
+//     let pk_bytes = hex::decode(&request.deployer)
+//         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+//
+//     let sig_bytes = hex::decode(&request.signature)
+//         .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+//
+//     let pk = PublicKey::from_bytes(&pk_bytes);
+//     let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
+//     let deploy_data = request.data.clone();
+//
+//     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
+//         .map_err(|e| eyre!("Invalid signature: {}", e))?
+//         .ok_or_else(|| eyre!("Failed to create signed deploy"))
+// }
 
 /// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
 /// both legacy single-signature requests (cosigners empty → one-element

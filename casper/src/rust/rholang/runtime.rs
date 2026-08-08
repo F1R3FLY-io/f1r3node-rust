@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -38,7 +39,6 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -58,6 +58,7 @@ use crate::rust::metrics_constants::{
     EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, EVALUATE_SOURCE_WRAPPER_TIME_NS_METRIC,
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
+use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::interpreter_util;
@@ -67,9 +68,16 @@ use crate::rust::util::rholang::system_deploy_user_error::{
     SystemDeployPlatformFailure, SystemDeployUserError,
 };
 use crate::rust::util::rholang::tools::Tools;
-use crate::rust::util::{construct_deploy, event_converter};
 
-static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
+/// Process-wide ephemeral identity to sign exploratory deploys.
+/// The key pair is generated randomly once per node process, so values derived
+/// from it — including the signature, and therefore `rho:rchain:deployId` — are
+/// stable within a process but not across restarts or between nodes.
+static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new();
+
+fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
+    EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
+}
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
@@ -91,15 +99,26 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
-/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
-/// refund). Called lazily inside tracing field evaluation, so it costs nothing
-/// unless the event is enabled.
+/// Diagnostic label for a system deploy (closeBlock / slash / checkBalance /
+/// redeem — precharge/refund no longer exist under the in-calculus cost
+/// accounting, D3). Called lazily inside tracing field evaluation, so it
+/// costs nothing unless the event is enabled.
 fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
     let any = sd.as_any();
     if any.downcast_ref::<CloseBlockDeploy>().is_some() {
         "closeBlock"
     } else if any.downcast_ref::<SlashDeploy>().is_some() {
         "slash"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::check_balance::CheckBalance>()
+        .is_some()
+    {
+        "checkBalance"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::redeem_deploy::RedeemDeploy>()
+        .is_some()
+    {
+        "redeem"
     } else {
         "other"
     }
@@ -1000,21 +1019,25 @@ impl RuntimeOps {
         &mut self,
         term: String,
         hash: &StateHash,
+        deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            let deploy = construct_deploy::source_deploy(
+            // D3: a deploy carries no phlo price/limit — exploratory execution
+            // is metered by the in-calculus cost accounting, not a deploy field.
+            let data = DeployData {
                 term,
-                0,
-                // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-                Some(100 * 1000 * 1000),
-                None,
-                Some(
-                    EXPLORATORY_DEPLOY_KEY
-                        .get_or_init(|| Secp256k1.new_key_pair().0)
-                        .clone(),
-                ),
-                None,
-                None,
+                time_stamp: 0,
+                valid_after_block_number: 0,
+                shard_id: String::new(),
+                expiration_timestamp: None,
+            };
+
+            let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
+            let deploy = Signed::create_unbound(
+                data,
+                deployer.unwrap_or(ephemeral_pk),
+                ephemeral_sk,
+                Box::new(Secp256k1),
             )?;
 
             // Create return channel as first private name created in deploy term
@@ -1033,10 +1056,39 @@ impl RuntimeOps {
         deploy_result.await
     }
 
-    async fn play_exploratory_par(
+    /// Lenient exploratory query: a runtime execution failure degrades to an
+    /// empty result (logged, not propagated). Appropriate for display/API
+    /// reads (bonds, active validators) — NEVER for consensus-level reads,
+    /// where "failed" and "absent" must stay distinguishable
+    /// (see [`Self::play_exploratory_par_strict`]).
+    pub async fn play_exploratory_par(
         &mut self,
         par: Par,
         hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, false).await
+    }
+
+    /// Strict variant: a runtime injection failure PROPAGATES as an error
+    /// instead of degrading to an empty result. Required for consensus-level
+    /// reads (the protocol fault-tolerance threshold) where "query failed"
+    /// must never be conflated with "value genuinely absent" — the lenient
+    /// empty-result degradation would silently route a transient execution
+    /// failure into the local-config fallback and re-open node-local
+    /// divergence.
+    pub async fn play_exploratory_par_strict(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, true).await
+    }
+
+    async fn play_exploratory_par_with_mode(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+        strict: bool,
     ) -> Result<Vec<Par>, CasperError> {
         use crate::rust::metrics_constants::{
             BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
@@ -1094,8 +1146,15 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!(error = ?err, "play_exploratory_par failed");
-                Ok(Vec::new())
+                tracing::error!(error = ?err, strict, "play_exploratory_par failed");
+                if strict {
+                    Err(CasperError::RuntimeError(format!(
+                        "exploratory query execution failed (strict mode): {:?}",
+                        err
+                    )))
+                } else {
+                    Ok(Vec::new())
+                }
             }
         };
 
@@ -1165,15 +1224,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
         name: &Par,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        match self.capture_results_with_errors(start, deploy, name).await {
-            Ok(result) => Ok(result),
-            Err(err) => Err(CasperError::InterpreterError(
-                InterpreterError::BugFoundError(format!(
-                    "Unexpected error while capturing results from Rholang: {}",
-                    err
-                )),
-            )),
-        }
+        self.capture_results_with_errors(start, deploy, name).await
     }
 
     pub async fn capture_results_with_errors(
@@ -1467,6 +1518,94 @@ impl RuntimeOps {
         }
       "#
         .to_string()
+    }
+
+    /// Reads the protocol fault-tolerance threshold (parts-per-million) from
+    /// the PoS contract at `start_hash`. Returns `None` when the contract does
+    /// not expose the getter (a chain whose genesis predates the parameter) —
+    /// the caller falls back to its local configuration in that case.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        // STRICT query: a runtime execution failure must PROPAGATE (failing
+        // node startup) rather than degrade to an empty result — the lenient
+        // path's `Ok(vec![])`-on-error would be indistinguishable from "the
+        // getter does not exist" and silently route a transient failure into
+        // the local-config fallback, re-opening node-local floor divergence.
+        // `None` is returned only after a SUCCESSFUL query with no result.
+        let ppm_pars = self
+            .play_exploratory_par_strict(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
+            .await?;
+
+        if ppm_pars.is_empty() {
+            tracing::warn!(
+                "No result from getFaultToleranceThresholdPpm query for state {}; \
+                 genesis predates the on-chain protocol FTT — falling back to local config",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if ppm_pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getFaultToleranceThresholdPpm query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                ppm_pars.len()
+            )));
+        }
+
+        let par = &ppm_pars[0];
+        match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::GInt(ppm)) => {
+                // RANGE GATE (θ = ppm/1e6 ∈ [-1, 1]). This is the guard that
+                // discharges the `-den <= num <= den` hypothesis of the Rocq
+                // `FtExact.ft_exact_no_overflow` / `ft_decides_exact` decision
+                // `2q·den ⋛ S·(den+num)`. It is NOT decorative:
+                //   * ppm < -1e6 ⇒ den+num < 0 ⇒ rhs < 0 <= lhs ⇒ the oracle
+                //     returns true for ANY q, bypassing the fault-tolerance
+                //     threshold shard-wide;
+                //   * ppm > 1e6 ⇒ rhs > 2·S·den >= lhs ⇒ nothing ever
+                //     finalizes (liveness halt).
+                // `ft_decides_exact`'s `debug_assert!` cannot be relied on: it
+                // compiles out in release, which is how CI runs. Reject at the
+                // single read choke point so no caller can observe an
+                // out-of-range protocol threshold.
+                if !(-1_000_000..=1_000_000).contains(ppm) {
+                    return Err(CasperError::RuntimeError(format!(
+                        "on-chain fault-tolerance-threshold ppm out of range [-1000000, 1000000] \
+                         in state {}: {}",
+                        PrettyPrinter::build_string_bytes(start_hash),
+                        ppm
+                    )));
+                }
+                Ok(Some(*ppm))
+            }
+            other => Err(CasperError::RuntimeError(format!(
+                "getFaultToleranceThresholdPpm returned a non-integer value in state {}: {:?}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                other
+            ))),
+        }
+    }
+
+    fn fault_tolerance_ppm_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getFaultToleranceThresholdPpm", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn fault_tolerance_ppm_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
+                .expect("Failed to compile fault tolerance ppm query source")
+        })
     }
 
     fn activate_validator_query_par() -> &'static Par {

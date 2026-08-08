@@ -5,6 +5,13 @@
 - Implements concurrent smart contract execution with Byzantine Fault Tolerant consensus
 - If the user does not provide enough information with their prompts, ask the user to clarify before executing the task
 
+**Glossary:** Project terminology lives in [docs/Glossary.md](docs/Glossary.md).
+This glossary is load-bearing: documentation, ADRs, and code reviews cite
+its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
+phrasings. Mathematical notation and theorem naming remain in
+`docs/theory/slashing/design/02-glossary-and-notation.md` pending unification
+(BACKLOG-DOC-001).
+
 ## Architecture Overview
 
 # F1R3node Rust — Pure Rust Blockchain Node
@@ -97,6 +104,33 @@ Three crates have `build.rs` for protobuf code generation:
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
+### Recommended Claude Code local settings
+Add to `.claude/settings.local.json` (personal, not committed) when working
+in this repo with Claude Code:
+
+```json
+{
+  "fileCheckpointingEnabled": false,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "1200000",
+    "BASH_MAX_TIMEOUT_MS": "1800000"
+  }
+}
+```
+
+- `fileCheckpointingEnabled: false` — Claude Code's checkpointing/rewind
+  feature runs `git stash` + `git reset --hard` against the workspace repo
+  around tool events, taking real `.git/index.lock` locks that collide with
+  concurrent git commands ("Unable to create index.lock"; see
+  anthropics/claude-code#68315). Disabling it trades away `/rewind` file
+  restore in this repo.
+- Bash timeouts raised to 20/30 min — the pre-push hook runs the full
+  release test suite for all 11 crates (~9 min, longer on cold caches),
+  which exceeds the default 10-minute window and gets a `git push` killed
+  mid-gate when run through Claude Code.
+
+Both settings take effect at the next session start.
+
 ## Network Ports
 | Port | Service |
 |------|---------|
@@ -114,6 +148,38 @@ Three crates have `build.rs` for protobuf code generation:
 
 ## Git and Version Control
 
+### Git Interaction Policy (agents)
+- Use `/quick-commit` for git add/commit operations
+- Use `/recursive-push` for git push operations
+- Do not run `git add`, `git commit`, or `git push` directly unless explicitly requested
+- **Commit consent is per-commit**: never create a commit — including merge
+  commits and plumbing equivalents (`git commit-tree`, `git update-ref`) —
+  without the user invoking `/quick-commit` or giving an unambiguous
+  per-commit "yes". Consent does not carry over from a plan, an earlier
+  commit, or a previous merge in the same session.
+- **Merge conflicts**: a request to "resolve the merge conflicts" authorizes
+  conflict resolution only — resolve the files, verify the build, report,
+  then STOP before the merge commit. The user running `git merge` in their
+  own terminal is not a request for the agent to act.
+- `git mv` is permitted but requires user confirmation
+- `git stash`:
+  - `git stash list`, `git stash show` are permitted (read-only)
+  - `git stash`, `git stash push|save|apply` require user confirmation
+  - `git stash pop|drop|clear|branch` are blocked (destructive; can silently lose uncommitted work)
+- `git worktree`: NEVER create a worktree (`git worktree add`) unless the
+  user explicitly asks for one. All work happens in this single checkout —
+  create new branches here, not in sibling directories. Worktrees fragment
+  local state (branches pinned to hidden checkouts, invisible to
+  `/recursive-push` discovery, and a past root cause of an accidental push
+  to a protected branch). `git worktree list` is permitted (read-only);
+  `git worktree remove|prune` requires user confirmation.
+- **Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted
+- The workspace stigmergic guidance to "commit frequently" applies to humans
+  and fully-autonomous (YOLO/worktree) modes; in interactive sessions it is
+  overridden by the consent rules above.
+
+**Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
+
 ### Commit Messages
 - Use `[agent]` prefix in agentic mode
 - Do NOT include Claude Code attribution footer or emoji
@@ -121,9 +187,11 @@ Three crates have `build.rs` for protobuf code generation:
 - Keep commit messages clean and professional
 
 ### Branch Strategy
-- `main` — stable releases
-- `master` — current working branch
-- Feature branches for development
+- `master` — default branch and release line; maintainers promote `dev` → `master`
+- `dev` — integration branch; feature and fix PRs target this
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
@@ -143,7 +211,7 @@ This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key diffe
 | Document | Purpose | Location |
 |----------|---------|----------|
 | User Stories | Business needs and acceptance criteria | `docs/UserStories.md` |
-| Tasks/Epochs | Implementation tracking | `docs/ToDos.md` |
+| Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
 | Completed Work | Historical reference | `docs/CompletedTasks.md` |
 | Backlog | Deferred items | `docs/Backlog.md` |
 | Work Logs | Session progress | `docs/work-logs/*.md` |
@@ -230,8 +298,8 @@ This applies to all slash commands and scripts that create configuration files.
 #### Task Management
 - `/nextTask` - Find and select next task to work on
 - `/implement` - Begin implementation of a task
-- `/epoch-review` - Preview and summarize epochs
-- `/epoch-hygiene` - Archive completed epochs
+- `/epic-review` - Preview and summarize epics
+- `/epic-hygiene` - Archive completed epics
 
 #### Workspace Sync
 - `/harmonize` - Sync workspace policies into this repo

@@ -218,6 +218,14 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
 
+    fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
+        self.rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .contains_sig(sig)
+            .map_err(Into::into)
+    }
+
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
         let snapshot = self.get_snapshot().await?;
         self.has_pending_deploys_in_storage_for_snapshot(&snapshot)

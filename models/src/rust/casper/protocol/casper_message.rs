@@ -1380,11 +1380,21 @@ impl DeployData {
                 Ok(())
             }
             // Value/capability type-logic connectives — REJECTED at ingress.
-            Connective::Plus(_) => Err(format!("value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}")),
-            Connective::With(_) => Err(format!("value/capability connective & (With) {NOT_A_FUNDING_FORMER}")),
-            Connective::Bang(_) => Err(format!("value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}")),
-            Connective::Whynot(_) => Err(format!("value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}")),
-            Connective::Lolly(_) => Err(format!("value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}")),
+            Connective::Plus(_) => Err(format!(
+                "value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}"
+            )),
+            Connective::With(_) => Err(format!(
+                "value/capability connective & (With) {NOT_A_FUNDING_FORMER}"
+            )),
+            Connective::Bang(_) => Err(format!(
+                "value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}"
+            )),
+            Connective::Whynot(_) => Err(format!(
+                "value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}"
+            )),
+            Connective::Lolly(_) => Err(format!(
+                "value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}"
+            )),
         }
     }
 
@@ -1588,7 +1598,9 @@ impl DeployData {
         }
     }
 
-    pub fn to_proto(dd: Signed<DeployData>) -> DeployDataProto {
+    pub fn to_proto(dd: Signed<DeployData>) -> DeployDataProto { Self::to_proto_ref(&dd) }
+
+    pub fn to_proto_ref(dd: &Signed<DeployData>) -> DeployDataProto {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,
@@ -2034,7 +2046,6 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
-    use proptest::prelude::*;
 
     use super::*;
 
@@ -2278,9 +2289,8 @@ mod tests {
                 },
             ))),
         };
-        let err_absent =
-            DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra_absent)
-                .expect_err("WhyNot (?) is a capability connective, rejected at ingress");
+        let err_absent = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra_absent)
+            .expect_err("WhyNot (?) is a capability connective, rejected at ingress");
         assert!(
             err_absent.contains("WhyNot") && err_absent.contains("not a funding-signature former"),
             "error must name the rejected ?/WhyNot connective: {}",
@@ -2306,7 +2316,8 @@ mod tests {
             DeployData::from_proto_cosigned_with_sig_algebra(payload2, &algebra_invalid)
                 .expect_err("present-invalid WhyNot is still rejected at the connective boundary");
         assert!(
-            err_invalid.contains("WhyNot") && !err_invalid.contains("failed signature verification"),
+            err_invalid.contains("WhyNot")
+                && !err_invalid.contains("failed signature verification"),
             "ingress reject must fire BEFORE signature verification: {}",
             err_invalid
         );

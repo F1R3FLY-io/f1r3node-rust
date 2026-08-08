@@ -33,8 +33,30 @@
        (a) validation_implies_wf_dag - validation ENFORCES the well-formed DAG;
        (b) honest_forkchoice_parents_validate - honest parents pass validation
                                         (validators range-check, don't recompute);
-       (c) main_parent_first_deterministic - main-parent ordering is a total order;
-       (d) rank_terminates           - the fork-choice descent always halts.
+       (c) ghost_sort_first_deterministic - STAGE 1 ONLY: the (is_main DESC, hash
+                                        ASC) parent sort is a total order, hence
+                                        permutation-invariant (`snapshot.rs:325-331`);
+       (d) rank_terminates           - the fork-choice descent always halts;
+       (e) main_parent_pipeline_deterministic - the FULL two-stage proposer
+                                        pipeline (stage 1's ghost sort, then
+                                        stage 2's deploy-support promotion at
+                                        `snapshot.rs:332`) is deterministic.
+
+     Why (c) and (e) are BOTH needed, and why (c) alone is no longer the bridge:
+     dev's `prefer_deploy_support_main_parent` runs AFTER the ghost sort and may
+     PROMOTE a deploy-carrying branch to index 0, overriding the GHOST head. So
+     "main parent = GHOST argmax" is FALSE for the proposer (witnessed, not
+     asserted, by GuardBridge's computable `pipeline_head_may_differ_from_ghost`).
+     What survives — and is what consensus actually needs — is DETERMINISM: the
+     main parent is a pure function of `(dag, parents, last_finalized_block)`.
+     Clause (c) characterizes stage 1; clause (e) characterizes the composition.
+     Note stage 2 ALONE is not permutation-invariant (with no scored branch it
+     returns its input unchanged, so its head is whatever came first); the
+     composition is deterministic precisely because stage 1 canonicalizes first.
+     Soundness is unaffected: `finalized_floor`'s `Selection.T_PS` proves the
+     floor sound for an UNCONSTRAINED parent oracle, and (by
+     `main_parent_pipeline_permutation`) the pipeline only permutes the parent
+     multiset — so its output lands inside the already-modeled domain.
 
    A `Recovery`-analog capstone (finalized_floor's T-NDA) is intentionally absent:
    fork choice is a stateless re-derivation each round (no effect application).
@@ -169,7 +191,9 @@ Theorem fork_choice_bridge_correct :
   (forall maxn mpd buf nums,
      parents_ok maxn (mpd + buf) (prop_filter maxn mpd nums) = true)
   /\
-  (* (c) main-parent-first parent ordering is deterministic (total order) *)
+  (* (c) STAGE 1 ONLY: the (is_main DESC, hash ASC) sort is a total order, hence
+         permutation-invariant (snapshot.rs:325-331). This is NOT the main-parent
+         bridge on its own — stage 2 may override the head; see (e). *)
   (forall main (l l' : list BlockHash),
      NoDup l -> Permutation l l' ->
      sort (map (parent_entry main) l) = sort (map (parent_entry main) l'))
@@ -177,9 +201,19 @@ Theorem fork_choice_bridge_correct :
   (* (d) the fork-choice descent terminates at a tip *)
   (forall d score is_scored h,
      wf_dag d -> wf_lookup d ->
-     best_child d score is_scored (rank d score is_scored (S (dag_max_num d)) h) = None).
+     best_child d score is_scored (rank d score is_scored (S (dag_max_num d)) h) = None)
+  /\
+  (* (e) the FULL proposer pipeline — stage 1's ghost sort composed with stage 2's
+         deploy-support promotion (snapshot.rs:332) — is deterministic: a pure
+         function of (branch_score, main, parents), invariant under any input
+         permutation. This is the true T-MP bridge; "main parent = GHOST head" is
+         false (GuardBridge.pipeline_head_may_differ_from_ghost witnesses it). *)
+  (forall branch_score main (l l' : list BlockHash),
+     NoDup l -> Permutation l l' ->
+     main_parent_pipeline branch_score main l = main_parent_pipeline branch_score main l').
 Proof.
   exact (conj validation_implies_wf_dag
           (conj honest_forkchoice_parents_validate
-            (conj main_parent_first_deterministic rank_terminates))).
+            (conj ghost_sort_first_deterministic
+              (conj rank_terminates (@main_parent_pipeline_deterministic))))).
 Qed.

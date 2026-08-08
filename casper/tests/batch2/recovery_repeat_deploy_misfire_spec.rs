@@ -1,0 +1,410 @@
+// Tests covering the rejected-deploy-buffer recovery exemption:
+//
+//   - Validator side (`Validate::repeat_deploy`): the exemption is a PURE
+//     FUNCTION OF THE BLOCK — a sig whose latest canonical disposition in
+//     the block's own parent scope is a merge rejection is legal recovery.
+//     An earlier version gated the exemption on the validating node's LOCAL
+//     finalization status, which forked the network when two honest nodes'
+//     finalization progress differed (roaming InvalidRepeatDeploy Heavy
+//     Pipeline failures). Double-execution defense is layered:
+//       * a win never rejected in scope keeps the sig in the check set and
+//         the ancestor scan flags the repeat (deterministic);
+//       * a FABRICATED rejection record (naming a floor-protected deploy an
+//         honest merge could never reject) invalidates the fabricating
+//         block itself via the rejected-list equality check in
+//         `validate_block_checkpoint` (`InvalidRejectedDeploy`), so no
+//         descendant can build on it.
+//
+//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption
+//     when the deploy's effects are already canonical, otherwise it gossips
+//     a recovery block that downstream validators flag — leading to
+//     mutual-slashing on FTT=0 shards.
+
+use std::sync::Arc;
+
+use casper::rust::util::construct_deploy;
+use casper::rust::validate::Validate;
+use dashmap::DashSet;
+use models::rust::casper::protocol::casper_message::RejectedDeploy;
+use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::history::Either;
+
+use crate::helper::block_dag_storage_fixture::with_storage;
+use crate::helper::block_generator::{create_block, create_genesis_block};
+
+fn mk_casper_snapshot(
+    dag: block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+) -> casper::rust::casper::CasperSnapshot {
+    use std::collections::HashMap;
+
+    use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+
+    let shard_conf = CasperShardConf {
+        fault_tolerance_threshold: 0.0,
+        shard_name: "root".to_string(),
+        parent_shard_id: "".to_string(),
+        finalization_rate: 0,
+        max_number_of_parents: 10,
+        max_parent_depth: 0,
+        synchrony_constraint_threshold: 0.0,
+        height_constraint_threshold: 0,
+        deploy_lifespan: 50,
+        casper_version: 1,
+        config_version: 1,
+        bond_minimum: 0,
+        bond_maximum: i64::MAX,
+        epoch_length: 0,
+        quarantine_length: 0,
+        min_phlo_price: 0,
+        enable_mergeable_channel_gc: false,
+        mergeable_channels_gc_depth_buffer: 10,
+        disable_late_block_filtering: false,
+        disable_validator_progress_check: false,
+        ..CasperShardConf::new()
+    };
+
+    let on_chain_state = OnChainCasperState {
+        shard_conf,
+        bonds_map: HashMap::new(),
+        active_validators: vec![],
+    };
+
+    let mut snapshot = CasperSnapshot::new(dag);
+    snapshot.on_chain_state = on_chain_state;
+    snapshot
+}
+
+/// The stale-recovery shape: D's only real inclusion is in genesis (the
+/// finalized base), and a child block FABRICATES a rejected_deploys record
+/// for it — no honest merge can reject a chain protected by its floor.
+///
+/// Under the deterministic exemption, `repeat_deploy` judged in isolation
+/// accepts the re-inclusion (the block's parent scope says latest
+/// disposition = rejected: the predicate deliberately trusts the parent's
+/// on-chain record so that every node returns the SAME verdict). The
+/// double-execution defense for this shape sits one layer down, where it is
+/// also node-deterministic: the fabricating block itself fails
+/// `validate_block_checkpoint`'s rejected-list equality
+/// (`InvalidRejectedDeploy` — the validator's recomputed merge produces no
+/// such rejection), so the fabricated record never becomes buildable
+/// history and the recovery block is orphaned with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Genesis (LFB) carries D — so D is canonically Finalized.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Non-canonical sibling that declares D rejected. This is the
+        // staleness shape: D's sig ends up in `rejected_in_scope` via the
+        // ancestor scan, but the rejection itself is not canonical.
+        let mut block_n = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_n.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy_sig.clone(),
+        }];
+        block_store
+            .put(block_n.block_hash.clone(), &block_n)
+            .unwrap();
+
+        // Recovery block: parent=block_n, body.deploys=[D].
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_n.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig.clone());
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+
+        // Deterministic semantics: repeat_deploy trusts the parent's on-chain
+        // rejection record (same verdict on every node). The fabricated record
+        // itself is what gets rejected — block_n fails the checkpoint
+        // rejected-list equality (InvalidRejectedDeploy) on every validator,
+        // so this Valid verdict can never be reached through buildable history.
+        assert_eq!(
+            result,
+            Either::Right(casper::rust::block_status::ValidBlock::Valid),
+            "repeat_deploy must return the same verdict on every node: the \
+             parent-scope disposition record (rejection in block_n) grants the \
+             exemption; the fabricated record is caught by checkpoint \
+             validation of block_n, not by repeat_deploy; got {:?}",
+            result
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
+    use std::sync::Mutex as StdMutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use casper::rust::blocks::proposer::block_creator;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let processed_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let signed_deploy = processed_deploy.deploy.clone();
+        let deploy_sig: Bytes = signed_deploy.sig.clone();
+
+        // Genesis (LFB) carries D — so D is canonically Finalized.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![processed_deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mut aux_kvm = InMemoryStoreManager::new();
+        let deploy_storage = std::sync::Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut aux_kvm)
+                .await
+                .expect("Failed to create deploy storage"),
+        ));
+        let rejected_deploy_buffer = std::sync::Arc::new(StdMutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut aux_kvm)
+                .await
+                .expect("Failed to create rejected deploy buffer"),
+        ));
+
+        // D sits in the recovery buffer — the stale entry that the proposer
+        // would otherwise re-include via the exemption path.
+        {
+            let mut buf = rejected_deploy_buffer.lock().unwrap();
+            buf.add(vec![signed_deploy.clone()])
+                .expect("Failed to add deploy to buffer");
+        }
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        snapshot.last_finalized_block = block_dag_storage
+            .get_representation()
+            .expect("dag representation")
+            .last_finalized_block();
+        // A proposer always builds on at least one parent; the canonical-won
+        // record scan walks the main-parent chain from here and must see D's
+        // win in genesis.
+        snapshot.parents = vec![genesis.clone()];
+        snapshot.deploys_in_scope.insert(deploy_sig.clone());
+        snapshot.rejected_in_scope.insert(deploy_sig.clone());
+
+        let now_millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let prepared = block_creator::prepare_user_deploys(
+            &snapshot,
+            10,
+            now_millis,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare_user_deploys should not error");
+
+        let included_sigs: Vec<String> = prepared
+            .deploys
+            .iter()
+            .map(|d| hex::encode(&d.sig))
+            .collect();
+
+        assert!(
+            !prepared.deploys.iter().any(|d| d.sig == deploy_sig),
+            "prepare_user_deploys must skip a buffered deploy whose effects are \
+             already in canonical state (re-including it would be double-execution \
+             and the resulting block would be slashed by `repeat_deploy`).\n\
+             Included: {:?}\nD's sig:  {}",
+            included_sigs,
+            hex::encode(&deploy_sig),
+        );
+    })
+    .await
+}
+
+/// Determinism regression (InvalidRepeatDeploy fork, 2026-07-15): the SAME
+/// block must receive the SAME repeat_deploy verdict from validators whose
+/// node-local views differ. The pre-fix exemption read the validating node's
+/// `rejected_in_scope` snapshot set and the sig's LOCAL finalization status:
+/// a node whose scope set (or finality progress) differed from its peers
+/// returned `InvalidRepeatDeploy` for a recovery block the rest accepted,
+/// permanently forking that node (Recording invalid block →
+/// UnknownRootError cascade — the roaming Heavy Pipeline failures that
+/// survived the protocol-FTT fix). The deterministic exemption reads only
+/// the block's own parent scope, so the two divergent snapshots below must
+/// agree — and agree on Valid (the on-chain rejection record makes the
+/// re-inclusion legal recovery).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
+    use dashmap::DashSet;
+    use rspace_plus_plus::rspace::history::Either as RE;
+
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        // Recovery shape with the on-chain disposition record: genesis →
+        // block_x (D) → block_m (rejected_deploys=[D]) → block_w (D again).
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block_x = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut block_m = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_m.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy_sig.clone(),
+        }];
+        block_store
+            .put(block_m.block_hash.clone(), &block_m)
+            .unwrap();
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_m.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Validator A: its recovery pipeline has the sig in rejected_in_scope
+        // (the view the pre-fix exemption keyed on).
+        let dag_a = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot_a = mk_casper_snapshot(dag_a);
+        let rejected: DashSet<Bytes> = DashSet::new();
+        rejected.insert(deploy_sig.clone());
+        snapshot_a.rejected_in_scope = Arc::new(rejected);
+
+        // Validator B: same chain data, but its live view never surfaced the
+        // sig in rejected_in_scope (fresh restart / different snapshot
+        // timing). Pre-fix this node alone flagged InvalidRepeatDeploy.
+        let dag_b = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot_b = mk_casper_snapshot(dag_b);
+
+        let verdict_a = Validate::repeat_deploy(&block_w, &mut snapshot_a, &block_store, 50);
+        let verdict_b = Validate::repeat_deploy(&block_w, &mut snapshot_b, &block_store, 50);
+
+        assert_eq!(
+            verdict_a, verdict_b,
+            "repeat_deploy must be a pure function of the block: divergent \
+             node-local views returned different verdicts (fork)"
+        );
+        assert_eq!(
+            verdict_a,
+            RE::Right(casper::rust::block_status::ValidBlock::Valid),
+            "the on-chain rejection record in block_m makes the re-inclusion \
+             legal recovery on every node"
+        );
+    })
+    .await
+}

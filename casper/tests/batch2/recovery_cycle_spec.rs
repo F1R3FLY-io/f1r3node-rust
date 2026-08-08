@@ -232,11 +232,11 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     // proposes block_b. Neither has seen the other's block yet, so each
     // executes its deploy against the genesis post-state independently.
     let block_a = nodes[0]
-        .add_block_from_deploys(&[deploy_a.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
         .await
         .expect("validator 0 proposes block_a");
     let block_b = nodes[1]
-        .add_block_from_deploys(&[deploy_b.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
         .await
         .expect("validator 1 proposes block_b");
     assert_ne!(
@@ -275,7 +275,7 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
             .expect("build marker_deploy")
     };
     let merge_block = nodes[1]
-        .add_block_from_deploys(&[marker_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
         .await
         .expect("validator 1 proposes merge_block over [block_a, block_b]");
 
@@ -291,16 +291,14 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_a.block_hash),
+            .contains(&block_a.block_hash),
         "merge_block parents must include block_a"
     );
     assert!(
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_b.block_hash),
+            .contains(&block_b.block_hash),
         "merge_block parents must include block_b"
     );
 
@@ -415,10 +413,9 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
     let sibling_blocks = vec![block_0, block_1, block_2];
 
     for (source, block) in sibling_blocks.iter().enumerate() {
-        for target in 0..3 {
+        for (target, node) in nodes.iter_mut().enumerate() {
             if source != target {
-                nodes[target]
-                    .process_block(block.clone())
+                node.process_block(block.clone())
                     .await
                     .expect("process sibling");
             }
@@ -447,8 +444,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             merge_block
                 .header
                 .parents_hash_list
-                .iter()
-                .any(|parent| *parent == block.block_hash),
+                .contains(&block.block_hash),
             "merge block must include sibling {}",
             hex::encode(&block.block_hash)
         );
@@ -462,7 +458,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .collect();
     let conflicting_rejections = deploys
         .iter()
-        .filter(|deploy| rejected_sigs.iter().any(|sig| *sig == deploy.sig))
+        .filter(|deploy| rejected_sigs.contains(&deploy.sig))
         .count();
     assert_eq!(
         conflicting_rejections,
@@ -485,13 +481,12 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         &observed_blocks,
     );
 
-    for target in 1..3 {
-        nodes[target]
-            .process_block(merge_block.clone())
+    for node in nodes.iter_mut().skip(1) {
+        node.process_block(merge_block.clone())
             .await
             .expect("process merge block");
         assert_touched_integer_add_channels_single_valued(
-            &nodes[target],
+            node,
             &merge_block.body.state.post_state_hash,
             &observed_blocks,
         );
@@ -515,10 +510,9 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             &block.body.state.post_state_hash,
             &observed_blocks,
         );
-        for target in 0..3 {
+        for (target, node) in nodes.iter_mut().enumerate() {
             if target != proposer {
-                nodes[target]
-                    .process_block(block.clone())
+                node.process_block(block.clone())
                     .await
                     .expect("process post-merge traffic");
             }
@@ -689,15 +683,15 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     // Sibling blocks: one transfer each, played independently against the genesis
     // post-state (each sees the untouched 9_000_000 REV source vault).
     let block_0 = nodes[0]
-        .add_block_from_deploys(&[deploy_v0.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v0))
         .await
         .expect("validator 0 proposes block_0 (lex-largest transfer)");
     let block_1 = nodes[1]
-        .add_block_from_deploys(&[deploy_v1.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v1))
         .await
         .expect("validator 1 proposes block_1");
     let block_2 = nodes[2]
-        .add_block_from_deploys(&[deploy_v2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v2))
         .await
         .expect("validator 2 proposes block_2");
     let siblings = vec![block_0.clone(), block_1.clone(), block_2.clone()];
@@ -705,10 +699,9 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     // Distribute every sibling to every other validator so the merge proposer
     // (validator 1) sees all three branches.
     for (source, block) in siblings.iter().enumerate() {
-        for target in 0..3 {
+        for (target, node) in nodes.iter_mut().enumerate() {
             if source != target {
-                nodes[target]
-                    .process_block(block.clone())
+                node.process_block(block.clone())
                     .await
                     .expect("process sibling");
             }
@@ -746,8 +739,7 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             merge_block
                 .header
                 .parents_hash_list
-                .iter()
-                .any(|parent| *parent == block.block_hash),
+                .contains(&block.block_hash),
             "merge_block must merge sibling {}",
             hex::encode(&block.block_hash)
         );
@@ -786,7 +778,8 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             .collect::<Vec<_>>(),
     );
     assert_eq!(
-        rejected_transfers[0], rejected_sig,
+        rejected_transfers[0],
+        rejected_sig,
         "the rejected transfer must be the lex-largest sig {} (the branch \
          `fold_rejection` folds last once the vault is exhausted); got {}",
         hex::encode(&rejected_sig),
@@ -818,6 +811,18 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             hex::encode(&rejected_sig)
         );
     }
+
+    // Mark the merge frontier finalized before the recovery propose (ported from
+    // dev's `recovery_cycle_rejected_deploy_retries_while_source_is_visible`,
+    // re-expressed on the D3 vault-draining trigger): the rejected sig must be
+    // retryable WHILE its source block is still visible in unresolved scope —
+    // the record-driven exemption is a pure function of the on-chain record, not
+    // of the source leaving the DAG window.
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark merge frontier finalized for the recovery gate");
 
     // Recovery: validator 0 proposes recovery_block. `prepare_user_deploys` pulls
     // the buffered sig and the `canonical_won_sigs` exemption lets it past the
@@ -853,6 +858,46 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             .iter()
             .map(|s| hex::encode(s.as_ref()))
             .collect::<Vec<_>>()
+    );
+
+    // Packaging the replay must NOT drain the buffer entry (ported from dev's
+    // retry test; this is the invariant behind the disabled finalization-time
+    // purge): the recovery block is not yet canonical — it could be orphaned —
+    // and the buffer holds the only re-proposable copy. The entry is purged only
+    // once the replay is finalized-WON (proposer-side terminal purge in
+    // `prepare_user_deploys_with_policy`).
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&rejected_sig)
+                .expect("buffer.contains_sig"),
+            "the recovered sig {} must remain buffered until its replay is \
+             finalized-won (packaging alone must not evict it)",
+            hex::encode(&rejected_sig)
+        );
+    }
+
+    // A recovery block must never list one of its own accepted deploys as
+    // rejected (ported from dev's retry test: accept/reject overlap would be an
+    // InvalidRejectedDeploy-class self-contradiction).
+    let recovery_body_sigs: std::collections::HashSet<Bytes> = recovery_block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| pd.deploy.sig.clone())
+        .collect();
+    let overlapping: Vec<Bytes> = recovery_block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|rd| recovery_body_sigs.contains(&rd.sig))
+        .map(|rd| rd.sig.clone())
+        .collect();
+    assert!(
+        overlapping.is_empty(),
+        "recovery_block must not list accepted deploy signatures as rejected; overlaps = {:?}",
+        overlapping.iter().map(hex::encode).collect::<Vec<_>>()
     );
 
     // The two surviving transfers stay reachable in the canonical view (they were

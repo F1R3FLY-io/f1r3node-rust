@@ -132,11 +132,18 @@ mod tests {
     // suite. Run explicitly (`cargo test -- --ignored`) to assert the expected
     // inequality.
     #[test]
-    #[ignore = "Finding A: pins the shipped max-union combine's NON-associativity (disclosed, not a fix)"]
+    #[ignore = "Finding A: pins the shipped max-union combine's NON-associativity (disclosed, not \
+                a fix)"]
     fn finding_a_max_union_combine_is_non_associative() {
         let x: u8 = 0x42;
-        let add_x = || ChannelChange { added: vec![x], removed: vec![] };
-        let rem_x = || ChannelChange { added: vec![], removed: vec![x] };
+        let add_x = || ChannelChange {
+            added: vec![x],
+            removed: vec![],
+        };
+        let rem_x = || ChannelChange {
+            added: vec![],
+            removed: vec![x],
+        };
 
         // (a . b) . c
         let ab = add_x().combine(add_x());
@@ -213,6 +220,43 @@ mod tests {
                 fixed_net(&permuted),
                 "sum-union net must be independent of branch fold order"
             );
+        }
+
+        // (4) The SHIPPED (non-associative) max-union combine is nonetheless
+        // ORDER-INDEPENDENT when no datum is contributed to a side by >= 2 distinct
+        // survivors — the exact `OrderDependenceGuard` precondition
+        // (conflict_set_merger.rs). Empirical companion to Rocq
+        // `combine_max_order_independent_under_no_dup`: generate survivor changes in
+        // which every datum has AT MOST ONE adder and AT MOST ONE remover, then fold
+        // the shipped `combine` in two different orders and require the same result.
+        #[test]
+        fn shipped_combine_is_order_independent_under_no_duplication(
+            n in 1usize..5,
+            // For each datum value (0..len), which survivor adds it / removes it.
+            assignments in prop::collection::vec(
+                (prop::option::of(0usize..4), prop::option::of(0usize..4)),
+                0..6),
+            rot in 0usize..6,
+        ) {
+            let mut survivors: Vec<ChannelChange<u8>> =
+                (0..n).map(|_| ChannelChange::empty()).collect();
+            for (datum, &(adder, remover)) in assignments.iter().enumerate() {
+                if let Some(a) = adder { survivors[a % n].added.push(datum as u8); }
+                if let Some(r) = remover { survivors[r % n].removed.push(datum as u8); }
+            }
+            let fold = |order: &[usize]| -> (Vec<u8>, Vec<u8>) {
+                let mut acc = ChannelChange::empty();
+                for &i in order { acc = acc.combine(survivors[i].clone()); }
+                (sorted(&acc.added), sorted(&acc.removed))
+            };
+            let ident: Vec<usize> = (0..n).collect();
+            let mut rotated = ident.clone();
+            rotated.rotate_left(rot % n);
+            let reversed: Vec<usize> = ident.iter().rev().copied().collect();
+            prop_assert_eq!(fold(&ident), fold(&rotated),
+                "shipped max-union combine fold must be order-independent under no-dup");
+            prop_assert_eq!(fold(&ident), fold(&reversed),
+                "shipped max-union combine fold must be order-independent under no-dup");
         }
     }
 }

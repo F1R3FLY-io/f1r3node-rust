@@ -161,11 +161,11 @@ mod tests {
         let expected_result = inputs
             .par
             .with_bundles(vec![Bundle {
-                body: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                body: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 write_flag: true,
                 read_flag: true,
             }])
-            .with_locally_free(create_bit_vector(&vec![0]));
+            .with_locally_free(create_bit_vector(&[0]));
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.clone().unwrap().free_map, bound_inputs.free_map);
@@ -271,11 +271,11 @@ mod tests {
                 .clone()
                 .par
                 .with_bundles(vec![Bundle {
-                    body: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                    body: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                     write_flag,
                     read_flag,
                 }])
-                .with_locally_free(create_bit_vector(&vec![0]))
+                .with_locally_free(create_bit_vector(&[0]))
         }
 
         let test = |bundle_type: BundleType, write_flag: bool, read_flag: bool| {
@@ -324,11 +324,11 @@ mod tests {
         let expected_result = inputs
             .par
             .with_bundles(vec![Bundle {
-                body: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                body: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 write_flag: false, // Read-only because ReadWrite AND Read = Read
                 read_flag: true,
             }])
-            .with_locally_free(create_bit_vector(&vec![0]));
+            .with_locally_free(create_bit_vector(&[0]));
 
         let result = normalize_ann_proc(&outer_bundle, bound_inputs.clone(), &env, &parser);
 

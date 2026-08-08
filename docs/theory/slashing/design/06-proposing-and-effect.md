@@ -127,7 +127,7 @@ literal byte `1` in the `splitByte` call.
 
 > **Verified (T-Slash seed-wiring).** That the seed derives from the
 > offender's `invalidBlockHash` — not some other hash — is
-> `main_TSlash_deploy_seed_uses_invalid_block_hash` (`MainTheorem.v:302`):
+> `main_TSlash_deploy_seed_uses_invalid_block_hash` (`MainTheorem.v:393`):
 > every deploy `prepare_slashing_deploys` emits satisfies
 > `sd_seed = seed_fn(proposer, seqNum, sd_target_hash)`. In Rust both
 > proposer slash paths (the freshly-detected pass and the merge-rejected

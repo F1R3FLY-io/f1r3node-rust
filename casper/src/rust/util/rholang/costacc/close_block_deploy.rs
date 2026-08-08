@@ -743,7 +743,10 @@ mod tests {
                 assert_eq!(old_balance, i64::MAX);
                 assert_eq!(addend, 1);
             }
-            other => panic!("expected ReplaySupplyOverflow deterministic error, got {:?}", other),
+            other => panic!(
+                "expected ReplaySupplyOverflow deterministic error, got {:?}",
+                other
+            ),
         }
     }
 

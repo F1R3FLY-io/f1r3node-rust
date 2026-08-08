@@ -88,7 +88,7 @@ package "Bounds / truncation layer" <<Bound>> {
 }
 
 package "Main-parent + validation bridge" <<Bridge>> {
-  component "Main-parent select + validate bound\n──────────────────────────────────────\nspec  proposer picks ghost main parent;\n      validators only BOUND-CHECK it\nRocq  GuardBridge.v\n        (validation_implies_wf_dag,\n         main_parent_first_deterministic,\n         honest_forkchoice_parents_validate)\nRust  snapshot.rs (ghost_main_parent,\n        proposer-side)\n      validate.rs (parents ──\n        bound-check only, NOT a recompute)" as BRG #F8BBD0
+  component "Main-parent select + validate bound\n──────────────────────────────────────\nspec  proposer picks main parent in TWO\n      stages: (1) ghost sort, then\n      (2) deploy-support promotion, which\n      MAY override the ghost head;\n      deterministic, NOT ghost-equal.\n      validators only BOUND-CHECK it\nRocq  GuardBridge.v\n        (validation_implies_wf_dag,\n         ghost_sort_first_deterministic,\n         main_parent_pipeline_deterministic,\n         main_parent_pipeline_permutation,\n         honest_forkchoice_parents_validate)\nRust  snapshot.rs:325-331 (ghost sort)\n      snapshot.rs:332 (deploy-support\n        promotion, proposer-side)\n      validate.rs (parents ──\n        bound-check only, NOT a recompute)" as BRG #F8BBD0
 }
 
 ' === Explicit (visible) pipeline edges (Estimator::tips order) ===

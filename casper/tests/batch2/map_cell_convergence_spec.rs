@@ -17,6 +17,8 @@
 // run as part of the normal `cargo test -p casper` suite (CI gate). They pass on the
 // floor-based merge with the channel_change netting fix.
 
+use casper::rust::blocks::proposer::block_creator;
+use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
@@ -95,7 +97,7 @@ async fn present_keys(
         );
         if let Ok((res, _)) = node
             .runtime_manager
-            .play_exploratory_deploy(term, state_hash)
+            .play_exploratory_deploy(term, state_hash, None)
             .await
         {
             if res.first().and_then(par_to_i64) != Some(-999) {
@@ -222,9 +224,8 @@ async fn run_convergence(
     .expect("build init");
     nodes[0].casper.deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
-    for j in 0..n_validators {
-        nodes[j]
-            .process_block(init_block.clone())
+    for node in nodes.iter_mut().take(n_validators) {
+        node.process_block(init_block.clone())
             .await
             .expect("process init");
     }
@@ -281,8 +282,8 @@ async fn run_convergence(
             sibling_blocks.push(blk);
         }
         for blk in &sibling_blocks {
-            for j in 0..n_validators {
-                nodes[j].process_block(blk.clone()).await.ok();
+            for node in nodes.iter_mut().take(n_validators) {
+                node.process_block(blk.clone()).await.ok();
             }
         }
         let marker =
@@ -293,8 +294,8 @@ async fn run_convergence(
             .create_block_unsafe(&[])
             .await
             .expect("merge block");
-        for j in 0..n_validators {
-            nodes[j].process_block(merge.clone()).await.ok();
+        for node in nodes.iter_mut().take(n_validators) {
+            node.process_block(merge.clone()).await.ok();
         }
         let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
         let tip = present_keys(&nodes[0], &merge.body.state.post_state_hash, &writes).await;
@@ -321,8 +322,8 @@ async fn run_convergence(
         .expect("drain marker");
         nodes[proposer].casper.deploy(marker).expect("drain deploy");
         if let Ok(blk) = nodes[proposer].create_block_unsafe(&[]).await {
-            for j in 0..n_validators {
-                nodes[j].process_block(blk.clone()).await.ok();
+            for node in nodes.iter_mut().take(n_validators) {
+                node.process_block(blk.clone()).await.ok();
             }
             let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
             let tip = present_keys(&nodes[0], &blk.body.state.post_state_hash, &writes).await;
@@ -386,6 +387,108 @@ async fn run_convergence(
              no Δ-backstop fired across the run)",
             missing.len(),
             writes.len()
+        );
+    }
+}
+
+async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
+    let snapshot = node.casper.get_snapshot().await.expect("snapshot");
+    let validator = node.casper.get_validator().expect("validator");
+    block_creator::create(
+        &snapshot,
+        &validator,
+        None,
+        node.deploy_storage.clone(),
+        node.rejected_deploy_buffer.clone(),
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        &node.runtime_manager,
+        &mut node.block_store,
+        true,
+    )
+    .await
+    .expect("block creation")
+}
+
+/// Deploy admission under an unresolved user frontier.
+///
+/// Original (pre-starvation-fix) semantics required strict single-leader
+/// packaging of ALL ordinary deploys — which starved fresh deploy admission
+/// on live shards (every non-leader returned NoNewDeploys until the leader's
+/// work finalized). The corrected semantics serialize IN-SCOPE recovery /
+/// re-proposal work through the deterministic inclusion leader (covered by
+/// the `deploy_inclusion_leadership_gates_ordinary_selection` unit test)
+/// while allowing each validator to admit its OWN fresh local deploys under
+/// the bounded `fresh_admission_fallback` cap.
+///
+/// This test pins the refined invariant: fresh admission is disjoint (a
+/// validator packages only the fresh deploys it received; nothing is
+/// double-packaged) and the already-included frontier work is never
+/// re-packaged by either proposer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
+    let context = TestContext::new(2).await;
+    let shard = context.genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
+        .await
+        .expect("network");
+    let first = map_set_deploy("leader-a", 1, &signer_key(0), &shard);
+    let second = map_set_deploy("leader-b", 2, &signer_key(1), &shard);
+    let frontier_sigs = [first.sig.clone(), second.sig.clone()];
+    let block_a = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&first))
+        .await
+        .expect("first sibling");
+    let block_b = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&second))
+        .await
+        .expect("second sibling");
+    for node in &mut nodes {
+        node.process_block(block_a.clone()).await.ok();
+        node.process_block(block_b.clone()).await.ok();
+    }
+    let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), &shard);
+    let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), &shard);
+    nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
+    nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
+    let proposal_a = create_allow_empty(&mut nodes[0]).await;
+    let proposal_b = create_allow_empty(&mut nodes[1]).await;
+
+    let packaged_sigs = |result: &BlockCreatorResult| -> Vec<prost::bytes::Bytes> {
+        match result {
+            BlockCreatorResult::Created(block, ..) => block
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let sigs_a = packaged_sigs(&proposal_a);
+    let sigs_b = packaged_sigs(&proposal_b);
+
+    // Disjointness: nothing is packaged by both proposers.
+    for sig in &sigs_a {
+        assert!(
+            !sigs_b.contains(sig),
+            "a deploy was double-packaged by both proposers"
+        );
+    }
+    // Locality: each validator packages at most its own fresh deploy.
+    assert!(
+        sigs_a.iter().all(|sig| sig == &fresh_a.sig),
+        "validator 0 packaged deploys it did not receive: {sigs_a:?}"
+    );
+    assert!(
+        sigs_b.iter().all(|sig| sig == &fresh_b.sig),
+        "validator 1 packaged deploys it did not receive: {sigs_b:?}"
+    );
+    // Frontier work already included in blocks A/B is never re-packaged.
+    for sig in frontier_sigs.iter() {
+        assert!(
+            !sigs_a.contains(sig) && !sigs_b.contains(sig),
+            "already-included frontier deploy was re-packaged"
         );
     }
 }

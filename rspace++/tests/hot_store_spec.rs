@@ -46,11 +46,11 @@ proptest! {
       history.put_continuations(channels.clone(), history_continuations.clone());
 
       let cache = hot_store.snapshot();
-      assert!(cache.continuations.is_empty());
+      assert!(cache.continuations_flat().is_empty());
 
       let read_continuations = hot_store.get_continuations(&channels.clone());
       let cache = hot_store.snapshot();
-      assert_eq!(cache.continuations.get(&channels).unwrap().clone(), history_continuations);
+      assert_eq!(cache.continuations_flat().get(&channels).unwrap().clone(), history_continuations);
       assert_eq!(read_continuations, history_continuations);
   }
 
@@ -60,11 +60,11 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_continuations(channels.clone(), history_continuations.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       let read_continuations = hot_store.get_continuations(&channels.clone());
       let cache = hot_store.snapshot();
-      assert_eq!(cache.continuations.get(&channels).unwrap().clone(), cached_continuations);
+      assert_eq!(cache.continuations_flat().get(&channels).unwrap().clone(), cached_continuations);
       assert_eq!(read_continuations, cached_continuations);
   }
 
@@ -73,7 +73,7 @@ proptest! {
     in vec(any::<Continuation>(), 0..=SIZE_RANGE), installed_continuation in any::<Continuation>()) {
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       hot_store.install_continuation(&channels.clone(), installed_continuation.clone());
       let res = hot_store.get_continuations(&channels);
@@ -91,7 +91,7 @@ proptest! {
 
       let cache = hot_store.snapshot();
       history_continuations.insert(0, inserted_continuation);
-      assert_eq!(cache.continuations.get(&channels).unwrap().clone(), history_continuations);
+      assert_eq!(cache.continuations_flat().get(&channels).unwrap().clone(), history_continuations);
   }
 
   #[test]
@@ -100,13 +100,13 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_continuations(channels.clone(), history_continuations.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       hot_store.put_continuation(&channels.clone(),inserted_continuation.clone());
 
       let cache = hot_store.snapshot();
       cached_continuations.insert(0, inserted_continuation);
-      assert_eq!(cache.continuations.get(&channels).unwrap().clone(), cached_continuations);
+      assert_eq!(cache.continuations_flat().get(&channels).unwrap().clone(), cached_continuations);
   }
 
   #[test]
@@ -115,15 +115,15 @@ proptest! {
       prop_assume!(inserted_continuation != installed_continuation);
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       hot_store.install_continuation(&channels.clone(), installed_continuation.clone());
       hot_store.put_continuation(&channels.clone(), inserted_continuation.clone());
 
       let cache = hot_store.snapshot();
       cached_continuations.insert(0, inserted_continuation);
-      assert_eq!(cache.installed_continuations.get(&channels).unwrap().clone(), installed_continuation);
-      assert_eq!(cache.continuations.get(&channels).unwrap().clone(), cached_continuations);
+      assert_eq!(cache.installed_continuations_flat().get(&channels).unwrap().clone(), installed_continuation);
+      assert_eq!(cache.continuations_flat().get(&channels).unwrap().clone(), cached_continuations);
   }
 
   #[test]
@@ -135,7 +135,7 @@ proptest! {
       let res = hot_store.remove_continuation(&channels.clone(), index);
 
       let state_lock = hot_store.snapshot();
-      assert!(check_removal_works_or_fails_on_error(res, state_lock.continuations.get(&channels).map_or(Vec::new(), |x| x.clone()), history_continuations, index).is_ok());
+      assert!(check_removal_works_or_fails_on_error(res, state_lock.continuations_flat().get(&channels).map_or(Vec::new(), |x| x.clone()), history_continuations, index).is_ok());
   }
 
   #[test]
@@ -144,11 +144,11 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_continuations(channels.clone(), history_continuations.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()));
 
       let res = hot_store.remove_continuation(&channels.clone(), index);
       let state_lock = hot_store.snapshot();
-      assert!(check_removal_works_or_fails_on_error(res, state_lock.continuations.get(&channels).map_or(Vec::new(), |x| x.clone()), cached_continuations, index).is_ok());
+      assert!(check_removal_works_or_fails_on_error(res, state_lock.continuations_flat().get(&channels).map_or(Vec::new(), |x| x.clone()), cached_continuations, index).is_ok());
   }
 
   #[test]
@@ -156,8 +156,7 @@ proptest! {
     mut cached_continuations in vec(any::<Continuation>(), 0..=SIZE_RANGE), installed_continuation in any::<Continuation>(), index in any::<i32>()) {
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), installed_continuations:  HashMap::from_iter(vec![(channels.clone(), installed_continuation.clone())]),
-        data: HashMap::new(), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), cached_continuations.clone())]), HashMap::from_iter(vec![(channels.clone(), installed_continuation.clone())]), HashMap::new(), HashMap::new(), HashMap::new()));
 
       let res = hot_store.remove_continuation(&channels.clone(), index);
       if index == 0 {
@@ -176,11 +175,11 @@ proptest! {
 
       history.put_data(channel.clone(), history_data.clone());
       let cache = hot_store.snapshot();
-      assert!(cache.data.is_empty());
+      assert!(cache.data_flat().is_empty());
 
       let read_data = hot_store.get_data(&channel);
       let cache = hot_store.snapshot();
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), history_data);
+      assert_eq!(cache.data_flat().get(&channel).unwrap().clone(), history_data);
       assert_eq!(read_data, history_data);
   }
 
@@ -190,11 +189,11 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_data(channel.clone(), history_data.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), HashMap::new(), HashMap::new()));
 
       let read_data = hot_store.get_data(&channel);
       let cache = hot_store.snapshot();
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), cached_data);
+      assert_eq!(cache.data_flat().get(&channel).unwrap().clone(), cached_data);
       assert_eq!(read_data, cached_data);
   }
 
@@ -208,7 +207,7 @@ proptest! {
 
       let cache = hot_store.snapshot();
       history_data.insert(0, inserted_data);
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), history_data);
+      assert_eq!(cache.data_flat().get(&channel).unwrap().clone(), history_data);
   }
 
   #[test]
@@ -217,12 +216,12 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_data(channel.clone(), history_data.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), HashMap::new(), HashMap::new()));
 
       hot_store.put_datum(&channel.clone(), inserted_data.clone());
       let cache = hot_store.snapshot();
       cached_data.insert(0, inserted_data);
-      assert_eq!(cache.data.get(&channel).unwrap().clone(), cached_data);
+      assert_eq!(cache.data_flat().get(&channel).unwrap().clone(), cached_data);
   }
 
   #[test]
@@ -234,7 +233,7 @@ proptest! {
       let res = hot_store.remove_datum(&channel.clone(), index);
 
       let cache = hot_store.snapshot();
-      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).map_or(Vec::new(), |x| x.clone()), history_data, index).is_ok());
+      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data_flat().get(&channel).map_or(Vec::new(), |x| x.clone()), history_data, index).is_ok());
   }
 
   #[test]
@@ -243,11 +242,11 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_data(channel.clone(), history_data.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), joins: HashMap::new(), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_data.clone())]), HashMap::new(), HashMap::new()));
 
       let res = hot_store.remove_datum(&channel.clone(), index);
       let cache = hot_store.snapshot();
-      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data.get(&channel).unwrap().clone(), cached_data, index).is_ok());
+      assert!(check_datum_removal_works_or_fails_on_error(res, cache.data_flat().get(&channel).unwrap().clone(), cached_data, index).is_ok());
   }
 
   #[test]
@@ -256,11 +255,11 @@ proptest! {
 
       history.put_joins(channel.clone(), history_joins.clone());
       let cache = hot_store.snapshot();
-      assert!(cache.joins.is_empty());
+      assert!(cache.joins_flat().is_empty());
 
       let read_joins = hot_store.get_joins(&channel.clone());
       let cache = hot_store.snapshot();
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), history_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), history_joins);
       assert_eq!(read_joins, history_joins);
   }
 
@@ -270,11 +269,11 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_joins(channel.clone(), history_joins.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       let read_joins = hot_store.get_joins(&channel.clone());
       let cache = hot_store.snapshot();
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
       assert_eq!(read_joins, cached_joins);
   }
 
@@ -288,7 +287,7 @@ proptest! {
 
       let cache = hot_store.snapshot();
       history_joins.insert(0, inserted_join);
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), history_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), history_joins);
   }
 
   #[test]
@@ -298,28 +297,28 @@ proptest! {
       let (history, hot_store) = fixture();
 
       history.put_joins(channel.clone(), history_joins.clone());
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       hot_store.put_join(&channel.clone(), &inserted_join.clone());
       let cache = hot_store.snapshot();
       cached_joins.insert(0, inserted_join);
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
   }
 
   #[test]
   fn put_join_should_not_allow_inserting_duplicate_joins(channel in  any::<Channel>(), mut cached_joins in any::<Joins>(), inserted_join in any::<Join>()) {
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       hot_store.put_join(&channel.clone(), &inserted_join.clone());
       let cache = hot_store.snapshot();
 
       if !cached_joins.contains(&inserted_join) {
         cached_joins.insert(0, inserted_join);
-        assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+        assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
       } else {
-        assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+        assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
       }
   }
 
@@ -329,28 +328,28 @@ proptest! {
       prop_assume!(inserted_join != installed_join && !cached_joins.contains(&inserted_join));
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       hot_store.put_join(&channel.clone(), &inserted_join.clone());
       hot_store.install_join(&channel.clone(), &installed_join.clone());
 
       let cache = hot_store.snapshot();
-      assert_eq!(cache.installed_joins.get(&channel).unwrap().clone(), vec![installed_join]);
+      assert_eq!(cache.installed_joins_flat().get(&channel).unwrap().clone(), vec![installed_join]);
       cached_joins.insert(0, inserted_join);
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
   }
 
   #[test]
   fn install_join_should_not_allow_installing_duplicate_joins_per_channel(channel in  any::<Channel>(), cached_joins in any::<Joins>(), installed_join in any::<Join>()) {
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       hot_store.install_join(&channel.clone(), &installed_join.clone());
       hot_store.install_join(&channel.clone(), &installed_join.clone());
 
       let cache = hot_store.snapshot();
-      assert_eq!(cache.installed_joins.get(&channel).unwrap().clone(), vec![installed_join]);
+      assert_eq!(cache.installed_joins_flat().get(&channel).unwrap().clone(), vec![installed_join]);
   }
 
   #[test]
@@ -363,7 +362,7 @@ proptest! {
       let res = hot_store.remove_join(&channel.clone(), &to_remove);
 
       let cache = hot_store.snapshot();
-      assert!(check_removal_works_or_ignores_errors(res, cache.joins.get(&channel).unwrap().clone(), history_joins, index).is_ok());
+      assert!(check_removal_works_or_ignores_errors(res, cache.joins_flat().get(&channel).unwrap().clone(), history_joins, index).is_ok());
   }
 
   #[test]
@@ -374,11 +373,11 @@ proptest! {
 
       history.put_joins(channel.clone(), history_joins.clone());
       let to_remove = cached_joins.get(index as usize).unwrap_or(&join).clone();
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       let res = hot_store.remove_join(&channel.clone(), &to_remove);
       let cache = hot_store.snapshot();
-      assert!(check_removal_works_or_ignores_errors(res, cache.joins.get(&channel).unwrap().clone(), cached_joins, index).is_ok());
+      assert!(check_removal_works_or_ignores_errors(res, cache.joins_flat().get(&channel).unwrap().clone(), cached_joins, index).is_ok());
   }
 
   #[test]
@@ -386,8 +385,7 @@ proptest! {
       prop_assume!(cached_joins != installed_joins && !installed_joins.is_empty());
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
-        installed_joins: HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())]) });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())])));
 
       let mut rng = rand::rng();
       let mut shuffled_joins = installed_joins.clone();
@@ -399,12 +397,12 @@ proptest! {
 
       if !cached_joins.contains(&to_remove) {
         assert!(res.is_some());
-        assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+        assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
       } else {
-        let to_remove_count_in_cache = cache.joins.get(&channel).unwrap().clone().into_iter().filter(|x| x.clone() == to_remove).count();
+        let to_remove_count_in_cache = cache.joins_flat().get(&channel).unwrap().clone().into_iter().filter(|x| x.clone() == to_remove).count();
         let to_remove_count_in_cached_joins = cached_joins.into_iter().filter(|x| x.clone() == to_remove).count();
         assert_eq!(to_remove_count_in_cache, to_remove_count_in_cached_joins - 1);
-        assert_eq!(cache.installed_joins.get(&channel).unwrap().clone(), installed_joins);
+        assert_eq!(cache.installed_joins_flat().get(&channel).unwrap().clone(), installed_joins);
       }
   }
 
@@ -413,8 +411,7 @@ proptest! {
       prop_assume!(!cached_joins.is_empty());
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
-        installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]), HashMap::new()));
 
       let mut rng = rand::rng();
       let mut shuffled_joins = cached_joins.clone();
@@ -426,7 +423,7 @@ proptest! {
       let cache = hot_store.snapshot();
 
       assert!(res.is_some());
-      assert_eq!(cache.joins.get(&channel).unwrap().clone(), cached_joins);
+      assert_eq!(cache.joins_flat().get(&channel).unwrap().clone(), cached_joins);
   }
 
     #[test]
@@ -434,13 +431,11 @@ proptest! {
         installed_continuation in any::<Continuation>(), data in vec(any::<Data>(), 0..=SIZE_RANGE), joins in any::<Joins>()) {
       let (_, hot_store) = fixture();
 
-      hot_store.set_state(HotStoreState { continuations: HashMap::from_iter(vec![(channels.clone(), continuations.clone())]), installed_continuations: HashMap::from_iter(vec![(channels.clone(), installed_continuation.clone())]),
-                data: HashMap::from_iter(vec![(channel.clone(), data.clone())]), joins: HashMap::from_iter(vec![(channel.clone(), joins.clone())]),
-        installed_joins: HashMap::new() });
+      hot_store.set_state(HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), continuations.clone())]), HashMap::from_iter(vec![(channels.clone(), installed_continuation.clone())]), HashMap::from_iter(vec![(channel.clone(), data.clone())]), HashMap::from_iter(vec![(channel.clone(), joins.clone())]), HashMap::new()));
 
             let res = hot_store.changes();
             let cache = hot_store.snapshot();
-            assert_eq!(res.len(), cache.continuations.len() + cache.data.len() + cache.joins.len());
+            assert_eq!(res.len(), cache.continuations_flat().len() + cache.data_flat().len() + cache.joins_flat().len());
 
             if continuations.is_empty() {
         assert!(res.contains(&HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations { channels }))));
@@ -659,7 +654,7 @@ proptest! {
       let (_, hot_store) = fixture();
 
       hot_store.put_join(&channel.clone(), &channels.clone());
-      hot_store.put_join(&channel.clone(), &vec!["other_channel".to_string()]);
+      hot_store.put_join(&channel.clone(), &["other_channel".to_string()]);
       hot_store.remove_join(&channel.clone(), &channels.clone());
       let res = hot_store.get_joins(&channel);
       assert_eq!(res, vec![vec!["other_channel".to_string()]]);
@@ -670,78 +665,72 @@ proptest! {
       let channels = vec!["ch1".to_string(), "ch2".to_string()];
       let channel = channels[0].clone();
       let continuation = WaitingContinuation::<Pattern, StringsCaptor>::default();
-      let cache = HotStoreState {
-          continuations: HashMap::from_iter(vec![(channels.clone(), vec![continuation.clone()])]),
-          installed_continuations: HashMap::from_iter(vec![(channels.clone(), continuation)]),
-          data: HashMap::from_iter(vec![(channel.clone(), vec![Datum::<String>::default()])]),
-          joins: HashMap::from_iter(vec![(channel.clone(), vec![channels.clone()])]),
-          installed_joins: HashMap::from_iter(vec![(channel, vec![channels.clone()])]),
-      };
+      let cache = HotStoreState::from_flat_maps(HashMap::from_iter(vec![(channels.clone(), vec![continuation.clone()])]), HashMap::from_iter(vec![(channels.clone(), continuation)]), HashMap::from_iter(vec![(channel.clone(), vec![Datum::<String>::default()])]), HashMap::from_iter(vec![(channel.clone(), vec![channels.clone()])]), HashMap::from_iter(vec![(channel, vec![channels.clone()])]));
       let (_, hot_store) = fixture_with_cache(cache.clone());
 
       let snapshot = hot_store.snapshot();
-      assert!(compare_hashmaps(&snapshot.continuations, &cache.continuations));
-      assert!(compare_hashmaps(&snapshot.installed_continuations, &cache.installed_continuations));
-      assert!(compare_hashmaps(&snapshot.data, &cache.data));
-      assert!(compare_hashmaps(&snapshot.joins, &cache.joins));
-      assert!(compare_hashmaps(&snapshot.installed_joins, &cache.installed_joins));
+      assert!(compare_hashmaps(&snapshot.continuations_flat(), &cache.continuations_flat()));
+      assert!(compare_hashmaps(&snapshot.installed_continuations_flat(), &cache.installed_continuations_flat()));
+      assert!(compare_hashmaps(&snapshot.data_flat(), &cache.data_flat()));
+      assert!(compare_hashmaps(&snapshot.joins_flat(), &cache.joins_flat()));
+      assert!(compare_hashmaps(&snapshot.installed_joins_flat(), &cache.installed_joins_flat()));
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_continuations_in_the_cache(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
+  fn snapshot_should_be_unaffected_by_later_put_continuation(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
       prop_assume!(continuation1 != continuation2);
       let (_, hot_store) = fixture();
 
       hot_store.put_continuation(&channels.clone(), continuation1.clone());
       let snapshot = hot_store.snapshot();
       hot_store.put_continuation(&channels.clone(), continuation2.clone());
-      assert!(snapshot.continuations.get(&channels).unwrap().clone().contains(&continuation1));
-      assert!(!snapshot.continuations.get(&channels).unwrap().clone().contains(&continuation2));
+      assert!(snapshot.continuations_flat().get(&channels).unwrap().clone().contains(&continuation1));
+      assert!(!snapshot.continuations_flat().get(&channels).unwrap().clone().contains(&continuation2));
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_installed_continuations_in_the_cache(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
+  fn snapshot_should_be_unaffected_by_later_install_continuation(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
       prop_assume!(continuation1 != continuation2);
       let (_, hot_store) = fixture();
 
       hot_store.install_continuation(&channels.clone(), continuation1.clone());
       let snapshot = hot_store.snapshot();
       hot_store.install_continuation(&channels.clone(), continuation2.clone());
-      assert_eq!(snapshot.installed_continuations.get(&channels).unwrap().clone(), continuation1);
+      assert_eq!(snapshot.installed_continuations_flat().get(&channels).unwrap().clone(), continuation1);
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_data_in_the_cache(channel in  any::<String>(), data1 in any::<Data>(), data2 in any::<Data>()) {
+  fn snapshot_should_be_unaffected_by_later_put_datum(channel in  any::<String>(), data1 in any::<Data>(), data2 in any::<Data>()) {
       prop_assume!(data1 != data2);
       let (_, hot_store) = fixture();
 
       hot_store.put_datum(&channel.clone(), data1.clone());
       let snapshot = hot_store.snapshot();
       hot_store.put_datum(&channel.clone(), data2.clone());
-      assert!(!snapshot.data.get(&channel).unwrap().clone().contains(&data2));
+      assert!(!snapshot.data_flat().get(&channel).unwrap().clone().contains(&data2));
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_joins_in_the_cache(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
+  fn snapshot_should_be_unaffected_by_later_put_join(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
 
       hot_store.put_join(&channel.clone(), &join1.clone());
       let snapshot = hot_store.snapshot();
       hot_store.put_join(&channel.clone(), &join2.clone());
-      assert!(!snapshot.joins.get(&channel).unwrap().clone().contains(&join2));
+      assert!(!snapshot.joins_flat().get(&channel).unwrap().clone().contains(&join2));
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_installed_joins_in_the_cache(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
+  fn snapshot_should_be_unaffected_by_later_install_join(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
 
       hot_store.install_join(&channel.clone(), &join1.clone());
       let snapshot = hot_store.snapshot();
       hot_store.install_join(&channel.clone(), &join2.clone());
-      assert!(snapshot.installed_joins.get(&channel).unwrap().clone().contains(&join1));
-      assert!(!snapshot.installed_joins.get(&channel).unwrap().clone().contains(&join2));
+      assert!(snapshot.installed_joins_flat().get(&channel).unwrap().clone().contains(&join1));
+      assert!(!snapshot.installed_joins_flat().get(&channel).unwrap().clone().contains(&join2));
   }
 }
 
@@ -856,10 +845,22 @@ impl StringsCaptor {
     }
 }
 
+// A fake, flat-map-backed "history store" fixture -- unrelated to
+// production HotStoreState's sharded/imbl representation (see hot_store.rs
+// for why that one is sharded). This is just a stand-in HistoryReaderBase
+// for tests, never on any hot deploy path, so a plain HashMap is the right
+// (and simplest) choice here.
+#[derive(Clone, Default)]
+pub struct TestHistoryState<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
+    continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
+    data: HashMap<C, Vec<Datum<A>>>,
+    joins: HashMap<C, Vec<Vec<C>>>,
+}
+
 // See rspace/src/test/scala/coop/rchain/rspace/HotStoreSpec.scala
 #[derive(Clone)]
 pub struct TestHistory<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
-    state: Arc<Mutex<HotStoreState<C, P, A, K>>>,
+    state: Arc<Mutex<TestHistoryState<C, P, A, K>>>,
 }
 
 impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + Send>
@@ -871,7 +872,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .data
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         data
     }
 
@@ -881,7 +882,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .continuations
             .get(channels)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         continuations
     }
 
@@ -891,7 +892,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .joins
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         joins
     }
 
@@ -903,21 +904,17 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
 }
 
 impl<C: Eq + Hash, P: Clone, A: Clone, K: Clone> TestHistory<C, P, A, K> {
-    fn put_data(&self, channel: C, data: Vec<Datum<A>>) -> () {
+    fn put_data(&self, channel: C, data: Vec<Datum<A>>) {
         let mut state = self.state.lock().unwrap();
         state.data.insert(channel, data);
     }
 
-    fn put_continuations(
-        &self,
-        channels: Vec<C>,
-        continuations: Vec<WaitingContinuation<P, K>>,
-    ) -> () {
+    fn put_continuations(&self, channels: Vec<C>, continuations: Vec<WaitingContinuation<P, K>>) {
         let mut state = self.state.lock().unwrap();
         state.continuations.insert(channels, continuations);
     }
 
-    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) -> () {
+    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) {
         let mut state = self.state.lock().unwrap();
         state.joins.insert(channel, joins);
     }
@@ -931,7 +928,7 @@ type StateSetup = (
 #[fixture]
 pub fn fixture() -> StateSetup {
     let history_state =
-        Arc::new(Mutex::new(HotStoreState::<String, Pattern, String, StringsCaptor>::default()));
+        Arc::new(Mutex::new(TestHistoryState::<String, Pattern, String, StringsCaptor>::default()));
 
     let history = TestHistory {
         state: history_state.clone(),
@@ -948,7 +945,7 @@ pub fn fixture_with_cache(
     cache: HotStoreState<String, Pattern, String, StringsCaptor>,
 ) -> StateSetup {
     let history_state =
-        Arc::new(Mutex::new(HotStoreState::<String, Pattern, String, StringsCaptor>::default()));
+        Arc::new(Mutex::new(TestHistoryState::<String, Pattern, String, StringsCaptor>::default()));
 
     let history = TestHistory {
         state: history_state.clone(),

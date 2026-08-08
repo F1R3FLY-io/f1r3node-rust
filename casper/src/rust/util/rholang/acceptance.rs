@@ -68,7 +68,7 @@ use prost::bytes::Bytes;
 // (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
 // basis (`Sig::lane_hash`) without reaching into rholang internals.
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
-use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
+use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandEntry};
 use rholang::rust::interpreter::accounting::resource_logic::{
     ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
     GroupShape, GsltPresentation, OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature,
@@ -1196,6 +1196,7 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::DeployData;
+    use rholang::rust::interpreter::accounting::delta_sigma;
 
     use super::*;
 
@@ -1308,10 +1309,7 @@ mod tests {
     /// token-consuming COMM; see `delta_sigma::demand`).
     fn n_sends(n: usize) -> String {
         let one = "@0!(0)";
-        std::iter::repeat(one)
-            .take(n)
-            .collect::<Vec<_>>()
-            .join(" | ")
+        std::iter::repeat_n(one, n).collect::<Vec<_>>().join(" | ")
     }
 
     // ── #12 compound settlement-debit helpers ──────────────────────────────
@@ -2790,7 +2788,7 @@ mod tests {
             result.is_err(),
             "cross-group over-admission of a shared component must be rejected on replay"
         );
-        let msg = format!("{:?}", result.err().expect("err"));
+        let msg = format!("{:?}", result.expect_err("err"));
         assert!(
             msg.contains("cross-group") || msg.contains("over-admission"),
             "replay error must name the cross-group over-admission: {}",

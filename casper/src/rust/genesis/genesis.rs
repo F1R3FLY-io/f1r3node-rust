@@ -90,6 +90,7 @@ impl Genesis {
         // Order of deploys is important for Registry to work correctly
         // - dependencies must be defined first in the list
         let registry = standard_deploys::registry(shard_id);
+        let versioned_registry = standard_deploys::versioned_registry(shard_id);
         let list_ops = standard_deploys::list_ops(shard_id);
         let either = standard_deploys::either(shard_id);
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
@@ -116,6 +117,7 @@ impl Genesis {
 
         let mut all_deploys = Vec::with_capacity(13 + vault_deploys.len());
         all_deploys.push(registry);
+        all_deploys.push(versioned_registry);
         all_deploys.push(list_ops);
         all_deploys.push(either);
         all_deploys.push(non_negative_number);

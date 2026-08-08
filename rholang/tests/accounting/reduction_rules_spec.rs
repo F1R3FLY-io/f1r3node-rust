@@ -226,12 +226,12 @@ async fn observable_cost_strictly_increases_with_each_redex() {
 // pool); Rule 2/5 strip a component PAIR (two pools).
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Rules 1, 3, 4 each strip a SINGLE gate — the `system_token_count` drops by
-/// 1. The Rust witness: the rule's envelope `Sig` is a single atom (Rule 1) or
-/// a combined `s1∘s2` whose COMM draws ONE combined token (Rule 3/4). For the
-/// drop-by-ONE rules the *number of tokens consumed in the step* is 1; we pin
-/// the single-signer pool image (one leaf) and the combined-token image
-/// (the combined pool is drawn as one).
+/// Rules 1, 3, 4 each strip a SINGLE gate — the `system_token_count` drops
+/// by one. The Rust witness: the rule's envelope `Sig` is a single atom
+/// (Rule 1) or a combined `s1∘s2` whose COMM draws ONE combined token
+/// (Rule 3/4). For the drop-by-ONE rules the *number of tokens consumed in
+/// the step* is one; we pin the single-signer pool image (one leaf) and the
+/// combined-token image (the combined pool is drawn as one).
 #[test]
 fn rule1_3_4_strip_one_token() {
     // Rule 1: a single-signer redex — one leaf pool, the single token stripped.

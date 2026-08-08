@@ -442,10 +442,7 @@ impl Finalizer {
 
             if finalized {
                 let lfb_hash = message.block_hash.clone();
-                // Only process blocks that aren't already finalized
-                if !dag.is_finalized(&lfb_hash) {
-                    new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
-                }
+                new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
                 lfb_result = Some((lfb_hash, ft_value));
                 break;
             } else {

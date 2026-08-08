@@ -541,7 +541,7 @@ remaining names to the unforgeable channels `sys:casper:deployerId`,
 `sys:casper:invalidBlockHash`, `sys:casper:authToken`, and
 `sys:casper:return`. Note: `invalidBlockHash` is a hex string in the
 deploy and must be converted via `.hexToBytes()` before being passed
-to `slash` (which expects raw bytes per `PoS.rhox:446`).
+to `slash` (which expects raw bytes per `PoS.rhox:782`).
 
 Source seed: `splitByte(1)` of
 `generateSlashDeployRandomSeed(selfId, seqNum, invalidBlockHash)`.
@@ -1355,7 +1355,7 @@ Scala behavior; T-9.9 establishes that the widening is sound.
 - **Theorem.** T-9.3 — `t_9_3_dispatch_complete` in
   `BugFixDispatcher.v`. Proves: under the fix, every slashable invalid
   block triggers a slash within bounded liveness window.
-- **Statement.** *(`t_9_3_dispatch_complete`, `BugFixDispatcher.v:41`.)*
+- **Statement.** *(`t_9_3_dispatch_complete`, `BugFixDispatcher.v:46`.)*
   ∀ `ib offender baseSeq s`, `is_slashable(ib) = ⊤` ⟹
   `has_key(dispatch_post_fix(ib, offender, baseSeq, s), (offender, baseSeq)) = ⊤`.
 - **Sketch.** Unfold `dispatch_post_fix` to `insert_cond s (mkEqRec offender baseSeq nil)`
@@ -1552,10 +1552,15 @@ Scala behavior; T-9.9 establishes that the widening is sound.
 - **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
   `neglectedInvalidJustification = true`, even if the block itself
   carries a `Slash` system deploy targeting the offender. Rust's
-  `validate.rs:1323-1366` adds an extra branch
-  `if neglectedInvalidJustification ∧ ¬has_slash_system_deploys` that
-  *admits* self-correcting blocks. This is a deliberate widening; the
-  Scala behavior is a bug.
+  `neglected_invalid_block` (`validate.rs:1346`) rejects only when a
+  neglected justification still *requires* a slash the block does not
+  itself issue, which *admits* self-correcting blocks. This is a
+  deliberate widening; the Scala behavior is a bug. Since the
+  2026-07-15 dev merge the exemption is **per-target** rather than the
+  block-level `has_slash_system_deploys`: it is keyed by
+  `slash_target_key(offender, activation_epoch)`, and a neglected
+  justification is excused only when the offender's key is in
+  `slash_targets` (`validate.rs:1448-1449`). See design §9.10.
 - **Fix.** Adopt the Rust behavior: a block that includes a
   `SlashDeploy` against the neglected justification's validator is
   valid.

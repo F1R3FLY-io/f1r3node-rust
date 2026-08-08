@@ -57,7 +57,7 @@ fn capabilities_registry_included_in_default_system_public_keys() {
     let expected_pk = secp.to_public(&sk);
 
     let system_pks = standard_deploys::system_public_keys();
-    let found = system_pks.iter().any(|p| *p == &expected_pk);
+    let found = system_pks.contains(&&expected_pk);
     assert!(
         found,
         "CAPABILITIES_REGISTRY_PUB_KEY must appear in system_public_keys()"

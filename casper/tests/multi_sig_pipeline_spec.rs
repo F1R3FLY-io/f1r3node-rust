@@ -57,14 +57,14 @@ fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
     for _ in 0..(num_signers - 1) {
         let (sk, pk) = fresh_keypair();
         cosigners.push(CompoundSigner {
-            pk: pk.bytes.clone().into(),
+            pk: pk.bytes.clone(),
             sig: sign_canonical_hash(&data, &sk),
             sig_algorithm: Secp256k1::name(),
         });
     }
 
     DeployDataProto {
-        deployer: primary_pk.bytes.clone().into(),
+        deployer: primary_pk.bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: primary_sig,
@@ -84,7 +84,7 @@ fn build_single_sig_proto() -> DeployDataProto {
     let (sk, pk) = fresh_keypair();
     let sig = sign_canonical_hash(&data, &sk);
     DeployDataProto {
-        deployer: pk.bytes.clone().into(),
+        deployer: pk.bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig,
@@ -236,7 +236,7 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         .iter()
         .skip(1)
         .map(|c| CompoundSigner {
-            pk: c.pk.bytes.clone().into(),
+            pk: c.pk.bytes.clone(),
             sig: c.sig.clone(),
             sig_algorithm: c.sig_algorithm.name(),
         })
@@ -292,7 +292,7 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         .iter()
         .skip(1)
         .map(|c| CompoundSigner {
-            pk: c.pk.bytes.clone().into(),
+            pk: c.pk.bytes.clone(),
             sig: c.sig.clone(),
             sig_algorithm: c.sig_algorithm.name(),
         })
@@ -360,7 +360,7 @@ use models::casper::{sig_compound, SigAtom, SigCompound, SigPair, SigPlus, SigTh
 fn make_signed_atom(data: &DeployData, _phlo_share: i64) -> SigAtom {
     let (sk, pk) = fresh_keypair();
     SigAtom {
-        pk: pk.bytes.clone().into(),
+        pk: pk.bytes.clone(),
         sig: sign_canonical_hash(data, &sk),
         sig_algorithm: Secp256k1::name(),
         atom_kind: models::casper::AtomKind::Ground as i32,
@@ -392,14 +392,14 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
     // if the dispatch routed through the flat path:
     let (sk_dummy, pk_dummy) = fresh_keypair();
     let bogus_cosigner = CompoundSigner {
-        pk: pk_dummy.bytes.into(),
+        pk: pk_dummy.bytes,
         sig: sign_canonical_hash(&baseline_deploy_data(999), &sk_dummy), // wrong-deploy sig
         sig_algorithm: Secp256k1::name(),
     };
 
     let (primary_sk, primary_pk) = fresh_keypair();
     let proto = DeployDataProto {
-        deployer: primary_pk.bytes.clone().into(),
+        deployer: primary_pk.bytes.clone(),
         term: data.term.clone(),
         timestamp: data.time_stamp,
         sig: sign_canonical_hash(&data, &primary_sk),
@@ -453,7 +453,7 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
     // tolerates one absent.
     let (_, pk_c) = fresh_keypair();
     let placeholder = SigAtom {
-        pk: pk_c.bytes.clone().into(),
+        pk: pk_c.bytes.clone(),
         sig: Bytes::new(),
         sig_algorithm: Secp256k1::name(),
         atom_kind: models::casper::AtomKind::Ground as i32,
@@ -509,7 +509,7 @@ fn sig_algebra_unknown_signature_algorithm_rejected() {
     // SignaturesAlgFactory::apply.
     let (sk, pk) = fresh_keypair();
     let atom_bad = SigAtom {
-        pk: pk.bytes.into(),
+        pk: pk.bytes,
         sig: sign_canonical_hash(&data, &sk),
         sig_algorithm: "nonexistent_alg_v9999".to_string(),
         atom_kind: models::casper::AtomKind::Ground as i32,

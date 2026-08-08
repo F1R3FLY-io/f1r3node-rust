@@ -316,3 +316,154 @@ Proof.
                 (conj vunion_fold_perm
                   (conj deployed_fold_canonical_deterministic net_cancel)))))).
 Qed.
+
+(* ===========================================================================
+   Section 6 - GENUINE order-independence under the OrderDependenceGuard.
+
+   Section 5 shows the deployed `combine_max` fold is order-independent by
+   CANONICAL ORDER: every node folds the SAME sorted list, so a non-associative
+   operator still yields a node-identical result. Section 6 proves a STRONGER,
+   guard-gated fact: on a channel where the Rust `OrderDependenceGuard`
+   (casper/src/rust/merging/conflict_set_merger.rs) does NOT trip, the SAME
+   `combine_max` fold is order-independent over EVERY permutation of the per-datum
+   contribution list -- not merely the canonical one.
+
+   THE GUARD. For a NON-mergeable channel the guard trips iff some datum is
+   contributed (on the added OR the removed side) by >= 2 distinct survivors.
+   When it does NOT trip, the per-datum contribution list `l : list cc` satisfies
+   `adds l <= 1` and `rems l <= 1`, where `adds`/`rems` total the per-side
+   multiplicities. Under those bounds the sum-union net `netting_fold l` lands in
+   `{(0,0),(1,0),(0,1),(1,1)}`, and the interleaved INLINE cancels of a
+   `combine_max` fold coincide with the SINGLE DEFERRED `cancel` of the sum-net
+   (Finding A's inline-vs-deferred gap vanishes precisely when no side exceeds 1:
+   e.g. one (1,0) and one (0,1) both fold to (0,0) = cancel (1,1)). Hence the fold
+   equals `cancel (netting_fold l)` REGARDLESS of order, so any two permutations
+   agree -- GENUINE order-independence, not merely canonical-order determinism.
+
+   Spec-to-Code (this section):
+   Rocq                                   | Rust
+   ---------------------------------------+-------------------------------------
+   adds / rems (per-side multiplicity sum)| survivor added/removed contributions
+   adds l <= 1 /\ rems l <= 1             | OrderDependenceGuard does NOT trip
+   combine_max_cancel_step                | inline cancel = deferred cancel, per step
+   deployed_fold_id_eq_cancel_netting     | (Lemma 1) whole inline fold = deferred cancel
+   combine_max_order_independent_...      | (Lemma 2) fold is order-free (any permutation)
+   =========================================================================== *)
+
+(* Total per-side multiplicities of a contribution list. *)
+Definition adds (l : list cc) : nat := fold_right Nat.add 0 (map fst l).
+Definition rems (l : list cc) : nat := fold_right Nat.add 0 (map snd l).
+
+Lemma adds_cons : forall x l, adds (x :: l) = fst x + adds l.
+Proof. reflexivity. Qed.
+
+Lemma rems_cons : forall x l, rems (x :: l) = snd x + rems l.
+Proof. reflexivity. Qed.
+
+(* adds / rems are permutation-invariant: each is `fold_right Nat.add 0` over a
+   projected multiplicity list, folded with a commutative monoid (the
+   `netting_fold_perm` pattern, on the swap case discharged by `lia`). *)
+Lemma adds_perm : forall l l', Permutation l l' -> adds l = adds l'.
+Proof.
+  intros l l' H.
+  induction H as [| x l1 l2 Hp IH | x y l0 | l1 l2 l3 H1 IH1 H2 IH2].
+  - reflexivity.
+  - rewrite !adds_cons, IH. reflexivity.
+  - rewrite !adds_cons. lia.
+  - rewrite IH1, IH2. reflexivity.
+Qed.
+
+Lemma rems_perm : forall l l', Permutation l l' -> rems l = rems l'.
+Proof.
+  intros l l' H.
+  induction H as [| x l1 l2 Hp IH | x y l0 | l1 l2 l3 H1 IH1 H2 IH2].
+  - reflexivity.
+  - rewrite !rems_cons, IH. reflexivity.
+  - rewrite !rems_cons. lia.
+  - rewrite IH1, IH2. reflexivity.
+Qed.
+
+(* The sum-union net is exactly the pair of per-side totals -- an unconditional
+   identity (holds for ALL `l`; the guard bounds are only needed downstream). *)
+Lemma netting_fold_eq_adds_rems : forall l, netting_fold l = (adds l, rems l).
+Proof.
+  induction l as [| x l' IH].
+  - reflexivity.
+  - change (netting_fold (x :: l')) with (combine_sum x (netting_fold l')).
+    rewrite IH, adds_cons, rems_cons. unfold combine_sum. simpl. reflexivity.
+Qed.
+
+(* THE per-step algebra (where Finding A becomes benign): with neither side
+   exceeding 1 across the head `(a,r)` and the already-netted tail `(A,R)`, one
+   INLINE `combine_max` step over the deferred cancel of `(A,R)` equals the
+   DEFERRED cancel of the summed pair. Proven by exhausting the {0,1} values --
+   every larger value contradicts a bound (`exfalso; lia`), and the surviving
+   nine concrete cases compute by `reflexivity`. *)
+Lemma combine_max_cancel_step :
+  forall a r A R, a + A <= 1 -> r + R <= 1 ->
+    combine_max (a, r) (cancel (A, R)) = cancel (a + A, r + R).
+Proof.
+  intros a r A R Ha Hr.
+  destruct a as [|[|a]]; try (exfalso; lia);
+  destruct A as [|[|A]]; try (exfalso; lia);
+  destruct r as [|[|r]]; try (exfalso; lia);
+  destruct R as [|[|R]]; try (exfalso; lia);
+  reflexivity.
+Qed.
+
+(* Core induction for LEMMA 1 (on the bare fold): under the guard bounds, the
+   identity-order `combine_max` fold (interleaved INLINE cancels) equals the
+   SINGLE DEFERRED cancel of the sum-union net. *)
+Lemma combine_max_fold_eq_cancel_netting :
+  forall l, adds l <= 1 -> rems l <= 1 ->
+    fold_right combine_max empty_cc l = cancel (netting_fold l).
+Proof.
+  intros l. induction l as [| x l' IH]; intros Ha Hr.
+  - reflexivity.
+  - destruct x as [a r].
+    rewrite adds_cons in Ha. rewrite rems_cons in Hr. simpl in Ha, Hr.
+    assert (Ha' : adds l' <= 1) by lia.
+    assert (Hr' : rems l' <= 1) by lia.
+    specialize (IH Ha' Hr').
+    change (fold_right combine_max empty_cc ((a, r) :: l'))
+      with (combine_max (a, r) (fold_right combine_max empty_cc l')).
+    change (netting_fold ((a, r) :: l'))
+      with (combine_sum (a, r) (netting_fold l')).
+    rewrite IH.
+    rewrite (netting_fold_eq_adds_rems l').
+    change (combine_sum (a, r) (adds l', rems l')) with (a + adds l', r + rems l').
+    apply combine_max_cancel_step; assumption.
+Qed.
+
+(* ---------------------------------------------------------------------------
+   LEMMA 1 (structural): the deployed fold under the IDENTITY canon equals the
+   single deferred cancel of the sum-union net, whenever the guard does not trip.
+   --------------------------------------------------------------------------- *)
+Lemma deployed_fold_id_eq_cancel_netting :
+  forall l, adds l <= 1 -> rems l <= 1 ->
+    deployed_fold (fun x => x) l = cancel (netting_fold l).
+Proof.
+  intros l Ha Hr. unfold deployed_fold. cbv beta.
+  apply combine_max_fold_eq_cancel_netting; assumption.
+Qed.
+
+(* ---------------------------------------------------------------------------
+   LEMMA 2 (headline): when the OrderDependenceGuard does not trip
+   (`adds l <= 1 /\ rems l <= 1`), the shipped `combine_max` fold is GENUINELY
+   order-independent -- equal on ANY permutation, not merely the canonical order.
+   Both sides reduce (Lemma 1) to the deferred cancel of the sum-net, which is
+   permutation-invariant (`netting_fold_perm`); the bounds transfer to the
+   permuted list because `adds`/`rems` are permutation-invariant.
+   --------------------------------------------------------------------------- *)
+Theorem combine_max_order_independent_under_no_dup :
+  forall l l', Permutation l l' -> adds l <= 1 -> rems l <= 1 ->
+    deployed_fold (fun x => x) l = deployed_fold (fun x => x) l'.
+Proof.
+  intros l l' Hperm Ha Hr.
+  assert (Ha' : adds l' <= 1) by (rewrite <- (adds_perm l l' Hperm); exact Ha).
+  assert (Hr' : rems l' <= 1) by (rewrite <- (rems_perm l l' Hperm); exact Hr).
+  rewrite (deployed_fold_id_eq_cancel_netting l Ha Hr).
+  rewrite (deployed_fold_id_eq_cancel_netting l' Ha' Hr').
+  rewrite (netting_fold_perm l l' Hperm).
+  reflexivity.
+Qed.

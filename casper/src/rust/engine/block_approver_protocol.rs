@@ -215,6 +215,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            // Must match the ceremony master's value: the pos_generator deploy is
+            // replayed byte-for-byte, so a ppm mismatch fails genesis validation —
+            // ceremony participants must agree on the protocol FTT like every
+            // other genesis parameter.
             fault_tolerance_threshold_ppm,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,

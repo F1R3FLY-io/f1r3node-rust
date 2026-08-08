@@ -338,8 +338,8 @@ async fn close_block_should_make_epoch_change_and_reward_validator() {
                 &mut runtime_manager,
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
-                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
-                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&[0])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&[0])),
                 |_| true,
             )
             .await
@@ -358,8 +358,8 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
                 &mut runtime_manager,
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
-                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![0])),
-                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&vec![1])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&[0])),
+                &mut CloseBlockDeploy::new(Blake2b512Random::create_from_bytes(&[1])),
                 |_| true,
             )
             .await;
@@ -1613,11 +1613,11 @@ async fn pos_validator_is_halted(
             }}
           }}
         }}"#,
-        hex::encode(validator.bytes.to_vec())
+        hex::encode(&validator.bytes)
     );
 
     let (results, _cost) = ops
-        .play_exploratory_deploy(term, post_state)
+        .play_exploratory_deploy(term, post_state, None)
         .await
         .expect("getMintingHalted exploratory query must execute");
 
@@ -1741,7 +1741,7 @@ async fn gate_decision_replay_determinism() {
             let absent_key = accounting::delta_sigma::sig_key(&absent_env);
             assert_eq!(outcome.debits.get(&funded_key).map(|d| d.amount), Some(2));
             assert!(
-                outcome.debits.get(&absent_key).is_none(),
+                !outcome.debits.contains_key(&absent_key),
                 "absent pool must not be debited"
             );
 
@@ -1879,11 +1879,11 @@ async fn balance_deploy_should_compute_rev_balances() {
                 &genesis_block.body.state.post_state_hash,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 |result| *result == 9000000,
             )
@@ -1919,7 +1919,7 @@ async fn compute_state_should_capture_rholang_errors() {
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
         },
     )
     .await
@@ -1936,12 +1936,29 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
             let s1 = "@2!(2)";
             let s2 = "for(@a <- @1){ @123!(5 * a) }";
 
+            // Deploys must carry DISTINCT timestamps. Signing is deterministic
+            // (RFC 6979), so two deploys with identical DeployData (same source,
+            // deployer, phlo, and millisecond timestamp) produce the SAME
+            // signature. Pre-charge/refund random seeds are derived from that
+            // signature (system_deploy_util), so identical signatures alias the
+            // unforgeable purse channels across blocks, over-filling the
+            // single-value NonNegativeNumber cells. The Scala original avoided
+            // this via a monotonic LogicalTime; here we allocate a distinct
+            // timestamp per deploy across both blocks. s0 and s3 share the source
+            // "@1!(1)" specifically, so distinct timestamps are load-bearing.
+            let base_ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+
             let deploys0 = vec![s0, s1, s2]
                 .into_iter()
-                .map(|s| {
-                    construct_deploy::source_deploy_now_full(
+                .enumerate()
+                .map(|(i, s)| {
+                    construct_deploy::source_deploy(
                         s.to_string(),
-                        None,
+                        base_ts + i as i64,
+                        Some(1000000),
                         None,
                         None,
                         None,
@@ -1956,10 +1973,12 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
 
             let deploys1 = vec![s3, s4]
                 .into_iter()
-                .map(|s| {
-                    construct_deploy::source_deploy_now_full(
+                .enumerate()
+                .map(|(i, s)| {
+                    construct_deploy::source_deploy(
                         s.to_string(),
-                        None,
+                        base_ts + 3 + i as i64,
+                        Some(1000000),
                         None,
                         None,
                         None,
@@ -2119,7 +2138,7 @@ async fn compute_state_should_capture_rholang_parsing_errors_without_token_charg
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
             assert_eq!(result.1.cost.cost, 0);
         },
     )
@@ -2540,14 +2559,14 @@ async fn compute_state_should_charge_deploys_separately() {
                 .find(|d| d.deploy == first_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(first_deploy_cost, deploy_cost(&vec![matched_first]));
+            assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
             let matched_second = compound_deploy
                 .iter()
                 .find(|d| d.deploy == second_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(second_deploy_cost, deploy_cost(&vec![matched_second]));
+            assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
 
             assert_eq!(first_deploy_cost + second_deploy_cost, compound_deploy_cost);
         },
@@ -3018,10 +3037,7 @@ async fn joins_should_be_replayed_correctly() {
                 .await
                 .unwrap();
 
-            assert_eq!(
-                hex::encode(state_hash.to_vec()),
-                hex::encode(replay_state_hash.to_vec())
-            );
+            assert_eq!(hex::encode(&state_hash), hex::encode(&replay_state_hash));
         },
     )
     .await
@@ -3458,7 +3474,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     // Create all stores from the same KVM (shared genesis scope)
@@ -3788,14 +3804,21 @@ in {{
     );
 }
 
-/// Exercises the conflict-detection path for two independent contracts both
-/// calling insertArbitrary. Under multi-parent DAG semantics with
-/// non-persistent Rholang produces on shared system channels, concurrent
-/// operations on the same channel legitimately race and one must be rejected;
-/// the test's `rejected.is_empty()` assertion encodes an obsolete premise and
-/// needs to be rewritten once the rejected-deploy recovery mechanism lands.
+/// Two independent contracts both call insertArbitrary, inserting DISTINCT
+/// registry leaves from sibling branches. They genuinely RACE at the raw level —
+/// both read-modify-write the SAME shared TreeHashMap internal-node produce
+/// channels (`racesForSameIOEvent: produceRaces=2`) — yet because they touch
+/// DIFFERENT leaves the merge keeps BOTH: the keep-one / §3c discriminator
+/// classifies the shared-internal-node produces as mergeable, not a genuine
+/// single-value-cell conflict. The correct outcome is therefore `rejected == 0`
+/// with both contracts' data present in the merged state (verified below).
+///
+/// Historical note: this was `#[ignore]`d under an earlier premise that one insert
+/// "must be rejected"; the current keep-one design correctly merges these distinct
+/// leaves, so that premise no longer holds and the test is re-enabled. The genuine
+/// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
+/// vacuous merge of disjoint branches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "assertion contradicts multi-parent DAG design; awaits rewrite"]
 async fn concurrent_registry_inserts_should_not_conflict() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -3822,7 +3845,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -4080,6 +4103,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             .filter(|p| !p.persistent)
             .collect();
         tracing::info!("Racing produces: {}", racing_produces.len());
+        // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
+        // produce channels, else `rejected == 0` below would be a trivial merge of
+        // disjoint branches rather than a real keep-one/exemption result.
+        assert!(
+            !racing_produces.is_empty(),
+            "expected a genuine shared-channel race between the two registry inserts \
+             (else the no-conflict assertion is vacuous); got 0 racing produces"
+        );
         // Collect racing channel hashes for COMM tracing
         let racing_channels: std::collections::HashSet<_> = racing_produces
             .iter()
@@ -4215,8 +4246,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         // Identify which deploy was rejected
         let a_sig = hex::encode(&pd_a[0].deploy.sig[..8]);
         let b_sig = hex::encode(&pd_b[0].deploy.sig[..8]);
-        let a_rejected = rejected_sigs.iter().any(|s| *s == a_sig);
-        let b_rejected = rejected_sigs.iter().any(|s| *s == b_sig);
+        let a_rejected = rejected_sigs.contains(&a_sig);
+        let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
             "  Contract A ({}): {}",
             a_sig,
@@ -4229,14 +4260,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
     }
 
-    // The key assertion: both deploys should be kept.
-    // If one is rejected, insertArbitrary calls falsely conflict.
+    // Key assertion: keep-one correctly keeps BOTH inserts (0 rejected). They
+    // raw-race on the shared TreeHashMap internal-node produce channels (asserted
+    // non-empty above), but write DISTINCT leaves, so the §3c discriminator
+    // classifies those shared-node produces as mergeable rather than a genuine
+    // single-value-cell conflict. A rejection here would be a real regression: a
+    // genuinely-mergeable race mis-rejected.
     assert!(
         rejected.is_empty(),
-        "Concurrent insertArbitrary calls should not conflict. \
-         {} deploys rejected during merge of two independent registry inserts. \
-         This is a false positive in conflict detection — both contracts write \
-         to different TreeHashMap leaf channels but share internal node channels.",
+        "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
+         rejected (they share TreeHashMap internal nodes, but the produces there are \
+         mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
         rejected.len(),
     );
 
@@ -4357,7 +4391,7 @@ in {
                 eval_result.errors
             );
             let checkpoint = runtime_ops.runtime.create_checkpoint().await;
-            let post_state: StateHash = checkpoint.root.to_bytes_prost().into();
+            let post_state: StateHash = checkpoint.root.to_bytes_prost();
             tracing::info!(
                 "Contract at {}, post_state={}",
                 uri,
@@ -4375,7 +4409,7 @@ in {
                 uri
             );
             let (query_result, _) = runtime_manager
-                .play_exploratory_deploy(query_term, &post_state)
+                .play_exploratory_deploy(query_term, &post_state, None)
                 .await
                 .expect("query exploratory deploy");
             tracing::info!("Query with correct var name: {} pars", query_result.len());
@@ -4396,7 +4430,7 @@ in {
                 uri
             );
             let bad_result = runtime_manager
-                .play_exploratory_deploy(bad_term, &post_state)
+                .play_exploratory_deploy(bad_term, &post_state, None)
                 .await;
             assert!(
                 bad_result.is_err(),
@@ -4574,7 +4608,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -5106,7 +5140,7 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
                     &mut MintPhlogistonDeploy {
                         validator_pk,
                         amount: 1_000,
-                        rand: Blake2b512Random::create_from_bytes(&vec![0xA1]),
+                        rand: Blake2b512Random::create_from_bytes(&[0xA1]),
                     },
                 )
                 .await
@@ -5139,7 +5173,7 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_deposits_to_wallet() {
 async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            let validator_pk_hex = hex::encode(genesis_context.validator_pks()[0].bytes.to_vec());
+            let validator_pk_hex = hex::encode(&genesis_context.validator_pks()[0].bytes);
 
             // `return` is the FIRST `new` name, so it is the channel
             // `play_exploratory_deploy` captures. `forgedToken` is a fresh
@@ -5159,7 +5193,7 @@ async fn mintphlogiston_rejects_forged_or_absent_sys_auth_token() {
             );
 
             let (results, _cost) = runtime_manager
-                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash)
+                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash, None)
                 .await
                 .expect("exploratory mintPhlogiston term must execute");
 
@@ -5222,7 +5256,7 @@ async fn wallet_channel_derivation_is_order_independent() {
             .to_string();
 
             let (results, _cost) = runtime_manager
-                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash)
+                .play_exploratory_deploy(term, &genesis_block.body.state.post_state_hash, None)
                 .await
                 .expect("wallet-channel determinism term must execute");
 

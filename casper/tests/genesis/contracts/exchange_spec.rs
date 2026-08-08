@@ -65,7 +65,7 @@ fn exchange_pubkey_in_system_public_keys() {
     let expected_pk = secp.to_public(&sk);
 
     let system_pks = standard_deploys::system_public_keys();
-    let found = system_pks.iter().any(|p| *p == &expected_pk);
+    let found = system_pks.contains(&&expected_pk);
     assert!(
         found,
         "EXCHANGE_PUB_KEY must appear in system_public_keys()"

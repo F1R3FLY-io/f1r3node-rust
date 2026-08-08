@@ -109,7 +109,10 @@ pub fn signature_to_channel<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Par, InterpreterError> {
-    Ok(SignatureChannel::from_sig(&signature_to_native_sig(sig, bound_map_chain, env, parser)?).par)
+    Ok(
+        SignatureChannel::from_sig(&signature_to_native_sig(sig, bound_map_chain, env, parser)?)
+            .par,
+    )
 }
 
 /// Canonical bytes for a `new`-bound ground principal: the binder's source span,

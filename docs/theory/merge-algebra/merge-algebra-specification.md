@@ -131,6 +131,13 @@ Given a base state and a set of deploy chains to merge:
   eliminated. Any implementation **MUST NOT** alter the observable merge result under the
   guise of a determinism fix. The determinism guarantee is *byte-identical recomputation of
   the current semantics*, **not** a redefinition of the merge.
+  - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
+    that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
+    detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
+    iff a datum is contributed to a side by ≥ 2 distinct survivors on a non-mergeable channel.
+    Such a guard is permitted **because it changes no post-state** (`debug_assert!` + release
+    log/metric only); it does **not** alter the operator or the merge result. Sound by
+    `ChannelNetting.v combine_max_order_independent_under_no_dup`.
 
 ## 7. Safety invariants — MUST NEVER happen
 

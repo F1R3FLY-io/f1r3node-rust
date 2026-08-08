@@ -21,16 +21,12 @@ const PPM_DEN: i64 = 1_000_000;
 ///     casper_shard_conf.fault_tolerance_threshold_ppm = on_chain_ppm;
 /// The assignment is UNCONDITIONAL — the `if` at :1089 gates only the warning log —
 /// so the ppm the node finalizes with is the on-chain value, ignoring local config.
-fn reconcile(_local_ppm: i64, on_chain_ppm: i64) -> i64 {
-    on_chain_ppm
-}
+fn reconcile(_local_ppm: i64, on_chain_ppm: i64) -> i64 { on_chain_ppm }
 
 /// Display inverse of `fault_tolerance_threshold_to_ppm`, mirroring
 /// `token_metadata_check::read_on_chain_fault_tolerance_threshold` (:124) and
 /// `initializing.rs:1087`: `(ppm as f64 / 1e6) as f32`.
-fn from_ppm_f32(ppm: i64) -> f32 {
-    (ppm as f64 / PPM_DEN as f64) as f32
-}
+fn from_ppm_f32(ppm: i64) -> f32 { (ppm as f64 / PPM_DEN as f64) as f32 }
 
 // -- pure-function model of the genesis embed/read path (see LIMITATION) -------------
 // LIMITATION: the true differential runs a genesis ceremony through a live
@@ -41,9 +37,7 @@ fn from_ppm_f32(ppm: i64) -> f32 {
 // that same i64 after the [-1e6, 1e6] range-check (:105). Both are the identity on an
 // in-range ppm, so the differential reduces to the range-guarded identity witnessed
 // below (`genesis_embed_read_ppm_differential`).
-fn embed_ppm_in_genesis(ppm: i64) -> i64 {
-    ppm
-}
+fn embed_ppm_in_genesis(ppm: i64) -> i64 { ppm }
 fn read_on_chain_ppm(embedded_ppm: i64) -> Option<i64> {
     if (-PPM_DEN..=PPM_DEN).contains(&embedded_ppm) {
         Some(embedded_ppm)

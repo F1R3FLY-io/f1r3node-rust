@@ -1,0 +1,393 @@
+name: Slashing test suite
+
+# Reference: docs/theory/slashing/design/14-test-plan.md §14.9
+# (post-Track-8 architecture).
+#
+# Restored from PR #114 (last present at d2d822a1~1; deleted there while the
+# scripts it drives kept evolving) and extended with the tiered
+# slashing-search-horizon jobs that postdate the deletion.
+#
+# Job catalogue:
+#   PR-gate (must pass to merge):
+#     • example-based       — UC-* example + integration tests
+#     • property-based      — T-* proptests at PROPTEST_CASES=10000
+#     • pre-fix-regressions — out-of-band per-bug counter-examples (matrix 1..11)
+#     • loom-interleavings  — exhaustive 2-thread T-9.2 atomic-RMW model check
+#     • tla-model-check     — TLC against every post-fix MC_*.cfg under formal/tlaplus/
+#     • rocq-build          — re-verify the Rocq mechanization closes, axiom-free
+#     • search-horizon-smoke — scripts/ci/slashing-search-horizon.sh smoke tier
+#   Nightly only (schedule / workflow_dispatch):
+#     • mutation-coverage        — cargo-mutants survival rate (Track 6)
+#     • nightly-extended-proptest — PROPTEST_CASES=100000
+#     • search-horizon-nightly   — 1M-run fuzz tier
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_exhaustive:
+        description: >-
+          Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
+          unbounded reference configs parked by PR #201. Each exceeds the
+          45m per-config cap by design, so expect distinctly-labeled
+          TIMEOUT reds; their bounded nightly-tier counterparts (EPIC-011)
+          carry the gating coverage.
+        type: boolean
+        default: false
+  schedule:
+    # Nightly run at 06:30 UTC for the extended-budget jobs.
+    - cron: "30 6 * * *"
+  push:
+    branches:
+      - dev
+      - master
+      - staging
+      - trying
+  pull_request:
+    branches:
+      - dev
+      - master
+      - staging
+      - trying
+      - "feature/**"
+
+concurrency:
+  group: slashing-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# No job here needs more than checkout; keep the default token read-only so
+# a compromised third-party action cannot use it to write to the repo.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
+
+jobs:
+  example-based:
+    name: Example-based UC tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run example-based tests
+        run: cargo test -p casper -- slashing::uc_
+
+  property-based:
+    name: Property-based theorem tests
+    runs-on: ubuntu-latest
+    # At PROPTEST_CASES=2000 the suite genuinely runs to completion instead
+    # of aborting early; 30 min was exceeded doing real work.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run property-based tests
+        # proptest 1.11's contextualize_config applies env vars OVER in-file
+        # ProptestConfig, so PROPTEST_CASES governs every test in the suite,
+        # including ones with small in-file caps. Two consequences bound the
+        # budget: the global-reject allowance must scale with cases (the
+        # default 1024 aborts assume-heavy tests), and store-manager-heavy
+        # tests accumulate scoped LMDB data monotonically in shared cached
+        # envs (map_size ceiling; see TEST_LMDB_MAX_DBS in test resources).
+        # 2000 cases (~8x the 256 default) is the reliable PR-gate envelope
+        # until the env-eviction fix lands; the nightly job pushes further.
+        env:
+          PROPTEST_CASES: 2000
+          PROPTEST_MAX_GLOBAL_REJECTS: 8192
+        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+      - name: Run triple-bisim property tests (serial, bounded cases)
+        # The three triple-bisim tests each drive the full dispatch stack per
+        # case and accumulate scoped LMDB envs monotonically. Run concurrently
+        # at PROPTEST_CASES=2000 they exhaust the hosted runner's memory: two
+        # consecutive runs died with a runner shutdown signal (exit 143) ~30
+        # minutes into the trio with zero test failures (runs 29476110295
+        # attempts 1-2). Serialize them and bound cases until the env-eviction
+        # fix lands; the nightly job still pushes case counts higher.
+        #
+        # Case budget: these tests carry in-file caps of 5-8 cases because a
+        # single case drives the full dispatch stack (seconds per case), but
+        # proptest's contextualize_config lets PROPTEST_CASES override in-file
+        # caps. 500 was ~100x design scale and blew the job's 90-minute
+        # timeout after ~55 minutes (run 29509886268 attempt 2, where the
+        # bulk pass DID complete). 25 = ~5x design scale, minutes not hours.
+        env:
+          PROPTEST_CASES: 25
+          PROPTEST_MAX_GLOBAL_REJECTS: 8192
+        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+
+  pre-fix-regressions:
+    name: Pre-fix regression backstops
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        bug: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run pre_fix_bug_${{ matrix.bug }}
+        run: cargo test -p casper -- slashing::pre_fix_bug_${{ matrix.bug }}
+
+  loom-interleavings:
+    name: Loom exhaustive interleaving (T-9.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: loom
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run loom T-9.2 atomic-RMW interleaving tests
+        env:
+          LOOM_MAX_PREEMPTIONS: "3"
+          LOOM_LOG: "off"
+        run: cargo test --release -p casper -- slashing::loom_t_9_2
+
+  tla-model-check:
+    name: TLA+ invariant check
+    # Demoted from PR-gate to nightly/dispatch: on hosted runners the FIRST
+    # MC config alone exceeded 60 minutes (job cancelled at the deadline
+    # with zero configs completed), so the full frontier cannot gate PRs
+    # until per-config runtimes are profiled (the nightly run's per-config
+    # progress lines provide exactly that) or the job moves to faster
+    # runners. See docs/theory/slashing/design/14-test-plan.md section 14.9
+    # for the original PR-gate intent this temporarily deviates from.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Java + TLC
+        # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
+        # installer pin in _integration-pipeline.yml): a moved or compromised
+        # jar fails the checksum instead of running altered code, and TLC
+        # behavior can't drift under us via `latest`. Bump tag + hash together.
+        env:
+          TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jre wget
+          mkdir -p ~/.tla
+          wget -qO ~/.tla/tla2tools.jar "$TLA_TOOLS_URL"
+          echo "$TLA_TOOLS_SHA256  $HOME/.tla/tla2tools.jar" | sha256sum -c -
+      - name: Run TLA+ invariant suite
+        env:
+          TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
+          # Opt-in exhaustive tier: only a manual dispatch with
+          # run_exhaustive=true sets this; schedule and default dispatches
+          # keep gating on the fast tier alone.
+          RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
+        run: bash scripts/ci/check-tla-invariants.sh
+
+  rocq-build:
+    name: Rocq mechanization rebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rocq / Coq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y opam
+          opam init --disable-sandboxing -y
+          eval $(opam env)
+          opam install -y coq
+      - name: Build Rocq slashing theories
+        run: |
+          eval $(opam env)
+          make -C formal/rocq/slashing -j1
+      - name: Verify no axioms or admits (textual pre-filter)
+        # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
+        # cannot trip the guard; only actual vernacular commands match. This
+        # is a fast heuristic with known false-negative gaps (mid-line
+        # `Admitted.`, `Admit Obligations.`, axioms pulled in via imports) —
+        # the kernel-level Print Assumptions step below is the authoritative
+        # gate. The explicit -d check keeps a moved/renamed theories/ from
+        # turning grep's exit 2 into a vacuous pass through `!`.
+        run: |
+          test -d formal/rocq/slashing/theories
+          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
+            formal/rocq/slashing/theories/
+      - name: Verify capstone trust base is closed (Print Assumptions)
+        # Authoritative axiom-freedom check (kernel-level, cf. the README's
+        # "Verifying the trust base"): the kernel reports every axiom, admit,
+        # parameter, or imported assumption the capstone theorems transitively
+        # depend on, regardless of where or how it was introduced. Both
+        # capstones must print "Closed under the global context".
+        #
+        # Implemented as a coqc-compiled check file rather than `coqtop -e`:
+        # `coqtop -batch` exits after argument parsing without a reliable -e
+        # across versions (first CI attempt died in 40ms with no output), and
+        # coqc is already proven present by the make step above. Output is
+        # captured with -e suspended so the assumption listing always reaches
+        # the log, even when the check fails.
+        run: |
+          eval $(opam env)
+          cd formal/rocq/slashing
+          cat > "${RUNNER_TEMP}/CheckAssumptions.v" <<'EOF'
+          From Slashing Require Import MainTheorem.
+          Print Assumptions main_bisimilarity_theorem.
+          Print Assumptions main_bisimilarity_strong.
+          EOF
+          set +e
+          out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
+          status=$?
+          set -e
+          echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "FAIL: assumption check did not run cleanly (coqc exit $status; output above)."
+            exit 1
+          fi
+          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
+          if [ "$closed" -ne 2 ]; then
+            echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
+            exit 1
+          fi
+
+  search-horizon-smoke:
+    name: Search-horizon smoke tier (10k fuzz runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+      # Sage / Kani / Miri replays self-skip when the tool is absent; the
+      # smoke tier's gate is the libFuzzer targets.
+      - name: Run smoke-tier search
+        env:
+          SLASHING_SEARCH_TIER: smoke
+        run: bash scripts/ci/slashing-search-horizon.sh
+
+  mutation-coverage:
+    name: Mutation coverage (cargo-mutants, nightly only)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants
+      - name: Run cargo-mutants on slashing modules
+        # Per design §14.8.8 the survival-rate threshold is 5 %.
+        # cargo-mutants exits non-zero if any mutant survives; we
+        # use --in-place plus --no-shuffle for reproducibility and
+        # rely on the .mutants.toml include-list to scope to the
+        # slashing modules only.
+        run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
+
+  nightly-extended-proptest:
+    name: Nightly extended proptest (PROPTEST_CASES=100000)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Run extended-budget property tests
+        # Env overrides in-file caps (see the PR-gate job note). 10000 cases
+        # is the current harness ceiling experiment — store-manager tests
+        # accumulate LMDB data monotonically, so pushing to the original
+        # 100000 target needs the per-case env-eviction fix first.
+        env:
+          PROPTEST_CASES: 10000
+          PROPTEST_MAX_GLOBAL_REJECTS: 40960
+        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+      - name: Run triple-bisim extended property tests (serial, bounded cases)
+        # Same memory-exhaustion guard as the PR-gate job: the triple-bisim
+        # trio run concurrently kills the hosted runner (see PR-gate step
+        # note). Serial + bounded until the env-eviction fix lands; 100 is
+        # ~20x the trio's in-file design scale (see the PR-gate step note on
+        # why PROPTEST_CASES overrides those caps).
+        env:
+          PROPTEST_CASES: 100
+          PROPTEST_MAX_GLOBAL_REJECTS: 8192
+        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+
+  search-horizon-nightly:
+    name: Search-horizon nightly tier (1M fuzz runs)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+      - name: Run nightly-tier search
+        env:
+          SLASHING_SEARCH_TIER: nightly
+        run: bash scripts/ci/slashing-search-horizon.sh

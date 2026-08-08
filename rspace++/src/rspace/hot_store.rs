@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dashmap::DashMap;
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
@@ -48,9 +49,144 @@ const MAX_HISTORY_STORE_CACHE_JOIN_ITEMS: usize = 8192;
 const HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 
+// Number of independent shards backing each of the five HotStore state maps
+// (data, continuations, installed_continuations, joins, installed_joins).
+// Matches the 256-way striped-lock scheme already used for phase_a_locks /
+// phase_b_locks in rspace.rs / replay_rspace.rs (PR #72) -- same tradeoff:
+// coarser than per-key, but contention stays negligible in practice while
+// keeping the shard count (and therefore snapshot cost) bounded and small.
+const NUM_SHARDS: usize = 256;
+
+fn shard_of<K: Hash>(k: &K) -> usize {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    k.hash(&mut hasher);
+    (hasher.finish() as usize) % NUM_SHARDS
+}
+
+// Sharded persistent map backing InMemHotStore's five state fields.
+//
+// Investigation: f1r3node-rust#43. `create_soft_checkpoint()` -- called
+// unconditionally before every user deploy, purely to have a rollback point
+// on failure -- used to call `HotStore::snapshot()`, which deep-cloned every
+// entry in all five DashMaps into plain HashMaps: O(total store size), not
+// O(deploy work). Confirmed empirically (see
+// `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` in
+// rspace++/tests/concurrent_rspace_test.rs): more pre-existing store state
+// cost proportionally more time per snapshot call, with zero additional
+// deploy work -- exactly the mechanism behind EVAL ms growing with block
+// size on real replay.
+//
+// Fix: back each state map with NUM_SHARDS independent `imbl::HashMap`
+// (persistent, structural-sharing) slots instead of a `DashMap`. Mutation
+// (produce/consume) goes through one shard's write lock and does an
+// in-place (copy-on-write) insert/remove against that shard's persistent
+// map, so it only pays a deep-clone when the shard is actually shared with
+// a live snapshot. `snapshot()` reads each shard's *current* persistent-map
+// value directly -- an O(1) refcount-bump clone per shard -- so total
+// snapshot cost is O(NUM_SHARDS), independent of how many entries the store
+// holds. This is the same asymmetric trade PR #72 already made elsewhere in
+// this file (O(n) history-cache bounds scan -> O(1) atomic counters): a
+// small, bounded cost on the hot mutation path in exchange for eliminating
+// an unbounded cost on a path that runs once per deploy.
+struct ShardedMap<K, V> {
+    shards: Box<[std::sync::RwLock<imbl::HashMap<K, V>>; NUM_SHARDS]>,
+}
+
+impl<K, V> ShardedMap<K, V>
+where
+    K: Clone + Hash + Eq,
+    V: Clone,
+{
+    fn from_shards(shards: Box<[imbl::HashMap<K, V>; NUM_SHARDS]>) -> Self {
+        Self {
+            shards: Box::new((*shards).map(std::sync::RwLock::new)),
+        }
+    }
+
+    fn get(&self, k: &K) -> Option<V> {
+        self.shards[shard_of(k)]
+            .read()
+            .expect("shard read lock")
+            .get(k)
+            .cloned()
+    }
+
+    fn contains_key(&self, k: &K) -> bool {
+        self.shards[shard_of(k)]
+            .read()
+            .expect("shard read lock")
+            .contains_key(k)
+    }
+
+    fn insert(&self, k: K, v: V) -> Option<V> {
+        let idx = shard_of(&k);
+        self.shards[idx]
+            .write()
+            .expect("shard write lock")
+            .insert(k, v)
+    }
+
+    // Runs a read-modify-write closure against the shard holding `k`. Covers
+    // the DashMap::entry() Occupied/Vacant pattern used throughout the
+    // original produce/consume methods -- one shard-scoped write lock, one
+    // in-place (COW) mutation of that shard's persistent map.
+    fn with_entry<R>(&self, k: &K, f: impl FnOnce(&mut imbl::HashMap<K, V>) -> R) -> R {
+        let idx = shard_of(k);
+        let mut guard = self.shards[idx].write().expect("shard write lock");
+        f(&mut guard)
+    }
+
+    fn len(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|s| s.read().expect("shard read lock").len())
+            .sum()
+    }
+
+    fn clear(&self) {
+        for s in self.shards.iter() {
+            *s.write().expect("shard write lock") = imbl::HashMap::new();
+        }
+    }
+
+    // O(NUM_SHARDS): clone each shard's current persistent map. This is the
+    // whole point of the sharded design -- see the type-level doc comment.
+    fn snapshot_shards(&self) -> Box<[imbl::HashMap<K, V>; NUM_SHARDS]> {
+        Box::new(std::array::from_fn(|i| self.shards[i].read().expect("shard read lock").clone()))
+    }
+
+    // O(NUM_SHARDS): atomically (per-shard) replace this map's contents with
+    // a previously captured sharded snapshot.
+    fn restore_shards(&self, shards: Box<[imbl::HashMap<K, V>; NUM_SHARDS]>) {
+        for (slot, new_map) in self.shards.iter().zip(*shards) {
+            *slot.write().expect("shard write lock") = new_map;
+        }
+    }
+
+    // Materializes every entry across all shards. O(total entries) -- only
+    // for non-hot paths (changes(), to_map(), print(), metrics), never on
+    // the per-deploy checkpoint path.
+    fn iter_flat(&self) -> Vec<(K, V)> {
+        self.shards
+            .iter()
+            .flat_map(|s| {
+                s.read()
+                    .expect("shard read lock")
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+}
+
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
     fn get_continuations(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>>;
+    // Hot-path variant: returns Arc-shared continuations so the matcher can
+    // probe patterns without deep-cloning the continuation body.
+    fn get_continuations_arc(&self, channels: &[C]) -> Vec<Arc<WaitingContinuation<P, K>>>;
     fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool>;
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
@@ -79,7 +215,19 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
 
 pub fn new_hashmap<K: std::cmp::Eq + std::hash::Hash, V>() -> HashMap<K, V> { HashMap::new() }
 
-#[derive(Default, Debug, Clone)]
+// Sharded snapshot of InMemHotStore's five state maps. Each field is
+// NUM_SHARDS independent `imbl::HashMap`s -- the same partitioning the live
+// store uses internally -- so cloning/restoring a `HotStoreState` (what
+// `create_soft_checkpoint`/`revert_to_soft_checkpoint` do on every deploy)
+// costs O(NUM_SHARDS), not O(total entries). See `ShardedMap`'s doc comment
+// for the full rationale.
+//
+// `continuations` keeps values `Arc`-wrapped (matching the live store's
+// representation, see PR #72) so building a snapshot never
+// deep-clones a continuation body; callers that need an owned
+// `WaitingContinuation` (e.g. `to_map()`, FFI/RPC-facing code) deref-clone
+// at the point of use instead of paying that cost on every checkpoint.
+#[derive(Debug, Clone)]
 pub struct HotStoreState<C, P, A, K>
 where
     C: Eq + Hash,
@@ -87,11 +235,116 @@ where
     P: Clone,
     K: Clone,
 {
-    pub continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
-    pub installed_continuations: HashMap<Vec<C>, WaitingContinuation<P, K>>,
-    pub data: HashMap<C, Vec<Datum<A>>>,
-    pub joins: HashMap<C, Vec<Vec<C>>>,
-    pub installed_joins: HashMap<C, Vec<Vec<C>>>,
+    pub continuations:
+        Box<[imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS]>,
+    pub installed_continuations:
+        Box<[imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS]>,
+    pub data: Box<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>,
+    pub joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
+    pub installed_joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
+}
+
+impl<C, P, A, K> Default for HotStoreState<C, P, A, K>
+where
+    C: Eq + Hash + Clone,
+    A: Clone,
+    P: Clone,
+    K: Clone,
+{
+    fn default() -> Self {
+        HotStoreState {
+            continuations: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            installed_continuations: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            data: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            joins: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+            installed_joins: Box::new(std::array::from_fn(|_| imbl::HashMap::new())),
+        }
+    }
+}
+
+impl<C, P, A, K> HotStoreState<C, P, A, K>
+where
+    C: Eq + Hash + Clone,
+    A: Clone,
+    P: Clone,
+    K: Clone,
+{
+    // Builds a sharded HotStoreState from plain flat maps -- the shape
+    // tests and other call sites naturally construct fixture data in.
+    // Shards each flat map by key, same as the live ShardedMap would.
+    pub fn from_flat_maps(
+        continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
+        installed_continuations: HashMap<Vec<C>, WaitingContinuation<P, K>>,
+        data: HashMap<C, Vec<Datum<A>>>,
+        joins: HashMap<C, Vec<Vec<C>>>,
+        installed_joins: HashMap<C, Vec<Vec<C>>>,
+    ) -> Self {
+        fn shard_flat<K: Clone + Hash + Eq, V: Clone>(
+            flat: HashMap<K, V>,
+        ) -> Box<[imbl::HashMap<K, V>; NUM_SHARDS]> {
+            let mut shards: [imbl::HashMap<K, V>; NUM_SHARDS] =
+                std::array::from_fn(|_| imbl::HashMap::new());
+            for (k, v) in flat {
+                let idx = shard_of(&k);
+                shards[idx].insert(k, v);
+            }
+            Box::new(shards)
+        }
+
+        HotStoreState {
+            continuations: shard_flat(
+                continuations
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into_iter().map(Arc::new).collect()))
+                    .collect(),
+            ),
+            installed_continuations: shard_flat(installed_continuations),
+            data: shard_flat(data),
+            joins: shard_flat(joins),
+            installed_joins: shard_flat(installed_joins),
+        }
+    }
+
+    // Flattens a sharded field back into a plain map -- O(total entries),
+    // for test assertions and other cold-path consumers only.
+    pub fn continuations_flat(&self) -> HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>> {
+        self.continuations
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.iter().map(|a| (**a).clone()).collect()))
+            })
+            .collect()
+    }
+
+    pub fn installed_continuations_flat(&self) -> HashMap<Vec<C>, WaitingContinuation<P, K>> {
+        self.installed_continuations
+            .iter()
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
+    }
+
+    pub fn data_flat(&self) -> HashMap<C, Vec<Datum<A>>> {
+        self.data
+            .iter()
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
+    }
+
+    pub fn joins_flat(&self) -> HashMap<C, Vec<Vec<C>>> {
+        self.joins
+            .iter()
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
+    }
+
+    pub fn installed_joins_flat(&self) -> HashMap<C, Vec<Vec<C>>> {
+        self.installed_joins
+            .iter()
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
+    }
 }
 
 // This impl is needed for hot_store_spec.rs
@@ -110,8 +363,8 @@ where
             .map(|_| T::default())
             .collect::<Vec<T>>()
             .iter()
-            .cloned()
             .take(rng.random_range(0..size + 1))
+            .cloned()
             .collect()
     }
 
@@ -125,30 +378,14 @@ where
         let joins: Vec<Vec<C>> = HotStoreState::<C, P, A, K>::random_vec(10);
         let installed_joins: Vec<Vec<C>> = HotStoreState::<C, P, A, K>::random_vec(10);
 
-        HotStoreState {
-            continuations: HashMap::from_iter(vec![(channels.clone(), continuations.clone())]),
-            installed_continuations: HashMap::from_iter(vec![(
-                channels.clone(),
-                installed_continuations.clone(),
-            )]),
-            data: HashMap::from_iter(vec![(channel.clone(), data.clone())]),
-            joins: HashMap::from_iter(vec![(channel.clone(), joins)]),
-            installed_joins: HashMap::from_iter(vec![(channel, installed_joins)]),
-        }
+        HotStoreState::from_flat_maps(
+            HashMap::from_iter(vec![(channels.clone(), continuations.clone())]),
+            HashMap::from_iter(vec![(channels.clone(), installed_continuations.clone())]),
+            HashMap::from_iter(vec![(channel.clone(), data.clone())]),
+            HashMap::from_iter(vec![(channel.clone(), joins)]),
+            HashMap::from_iter(vec![(channel, installed_joins)]),
+        )
     }
-}
-
-#[derive(Default)]
-struct HistoryStoreCache<C, P, A, K>
-where
-    C: Eq + Hash,
-    A: Clone,
-    P: Clone,
-    K: Clone,
-{
-    continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
-    datums: HashMap<C, Vec<Datum<A>>>,
-    joins: HashMap<C, Vec<Vec<C>>>,
 }
 
 struct InMemHotStore<C, P, A, K>
@@ -158,8 +395,34 @@ where
     P: Clone + Sync + Send,
     K: Clone + Sync + Send,
 {
-    state: std::sync::RwLock<HotStoreState<C, P, A, K>>,
-    history_cache: std::sync::RwLock<HistoryStoreCache<C, P, A, K>>,
+    // Hot path: per-key concurrent access via sharded persistent maps.
+    // All produce/consume operations during deploy execution use these
+    // directly without any global lock -- see `ShardedMap`'s doc comment
+    // for why this replaced a plain DashMap.
+    data: ShardedMap<C, Vec<Datum<A>>>,
+    // Continuations are stored behind Arc so the produce/consume matcher can
+    // probe them (get_continuations_arc) with a cheap pointer bump instead of
+    // deep-cloning the continuation body K on every operation. The continuation
+    // body of a persistent contract was being cloned once per produce on its
+    // channel — O(total_produces) deep clones.
+    continuations: ShardedMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>,
+    installed_continuations: ShardedMap<Vec<C>, WaitingContinuation<P, K>>,
+    joins: ShardedMap<C, Vec<Vec<C>>>,
+    installed_joins: ShardedMap<C, Vec<Vec<C>>>,
+    history_cache_continuations: DashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
+    history_cache_datums: DashMap<C, Vec<Datum<A>>>,
+    history_cache_joins: DashMap<C, Vec<Vec<C>>>,
+    // Atomic item counters for O(1) cache bounds checking.
+    // Updated on every insert/evict so enforce_history_cache_bounds never
+    // has to iterate the DashMaps (which was 44% of CPU per the flame graph).
+    history_cache_cont_items: AtomicUsize,
+    history_cache_data_items: AtomicUsize,
+    history_cache_joins_items: AtomicUsize,
+    // Checkpoint path: acquired only by snapshot/changes/set_state/clear/to_map
+    // which need a consistent view of all five maps at once. These are called at the
+    // end of a deploy after all par-branches have joined, so the lock is never
+    // contended during normal execution — it only guards the rare whole-state ops.
+    checkpoint_lock: std::sync::Mutex<()>,
     history_reader_base: Box<dyn HistoryReaderBase<C, P, A, K>>,
 }
 
@@ -172,25 +435,38 @@ where
     K: Clone + Debug + Send + Sync,
 {
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
-        let state = self.state.read().expect("hot store state read lock");
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
         HotStoreState {
-            continuations: state.continuations.clone(),
-            installed_continuations: state.installed_continuations.clone(),
-            data: state.data.clone(),
-            joins: state.joins.clone(),
-            installed_joins: state.installed_joins.clone(),
+            continuations: self.continuations.snapshot_shards(),
+            installed_continuations: self.installed_continuations.snapshot_shards(),
+            data: self.data.snapshot_shards(),
+            joins: self.joins.snapshot_shards(),
+            installed_joins: self.installed_joins.snapshot_shards(),
         }
     }
 
     // Continuations
 
     fn get_continuations(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>> {
+        // Compat path: deref-clone the Arc-shared continuations into owned values.
+        // Used by external/FFI/test callers; the hot matcher path uses the _arc
+        // variant and never deep-clones here.
+        self.get_continuations_arc(channels)
+            .into_iter()
+            .map(|a| (*a).clone())
+            .collect()
+    }
+
+    fn get_continuations_arc(&self, channels: &[C]) -> Vec<Arc<WaitingContinuation<P, K>>> {
         metrics::counter!(HOT_STORE_GET_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let state = self.state.read().expect("hot store state read lock");
-        let continuations = state.continuations.get(channels).cloned();
-        let installed = state.installed_continuations.get(channels).cloned();
-        drop(state);
+        let channels_vec = channels.to_vec();
+        // Cloning a Vec<Arc<_>> is just refcount bumps — no continuation-body clone.
+        let continuations = self.continuations.get(&channels_vec);
+        let installed = self
+            .installed_continuations
+            .get(&channels_vec)
+            .map(Arc::new);
 
         match (continuations, installed) {
             (Some(conts), Some(inst)) => {
@@ -203,27 +479,29 @@ where
             (None, Some(inst)) => {
                 metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
-                let from_history_store = self.get_cont_from_history_store(channels);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .continuations
-                    .insert(channels.to_vec(), from_history_store.clone());
-                let mut result = Vec::with_capacity(from_history_store.len() + 1);
+                let from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
+                    .get_cont_from_history_store(channels)
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect();
+                self.continuations
+                    .insert(channels_vec, from_history.clone());
+                let mut result = Vec::with_capacity(from_history.len() + 1);
                 result.push(inst);
-                result.extend(from_history_store);
+                result.extend(from_history);
                 result
             }
             (None, None) => {
                 metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
-                let from_history_store = self.get_cont_from_history_store(channels);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .continuations
-                    .insert(channels.to_vec(), from_history_store.clone());
-                from_history_store
+                let from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
+                    .get_cont_from_history_store(channels)
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect();
+                self.continuations
+                    .insert(channels_vec, from_history.clone());
+                from_history
             }
         }
     }
@@ -233,120 +511,114 @@ where
         metrics::counter!(HOT_STORE_PUT_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
 
-        let mut inserted = false;
-        let has_existing = self
-            .state
-            .read()
-            .expect("hot store state read lock")
-            .continuations
-            .get(channels)
-            .is_some();
-        let from_history_store = if has_existing {
-            None
-        } else {
-            metrics::counter!(HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            Some(self.get_cont_from_history_store(channels))
-        };
-
-        let mut state = self.state.write().expect("hot store state write lock");
         let __ident_build_start = std::time::Instant::now();
         let wc_identity = Self::continuation_identity(&wc);
         metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__ident_build_start.elapsed().as_nanos() as u64);
-        match state.continuations.entry(channels.to_vec()) {
-            Entry::Occupied(mut occupied) => {
-                let existing_count = occupied.get().len() as u64;
-                metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(existing_count);
-                let __cmp_start = std::time::Instant::now();
-                let dup = occupied
-                    .get()
-                    .iter()
-                    .any(|existing| Self::continuation_identity(existing) == wc_identity);
-                metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(__cmp_start.elapsed().as_nanos() as u64);
-                if !dup {
-                    occupied.get_mut().insert(0, wc);
-                    inserted = true;
-                } else {
-                    metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
+
+        let channels_vec = channels.to_vec();
+        let mut inserted = false;
+        self.continuations.with_entry(&channels_vec, |map| {
+            match map.get_mut(&channels_vec) {
+                Some(existing) => {
+                    let existing_count = existing.len() as u64;
+                    metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                        .increment(existing_count);
+                    let __cmp_start = std::time::Instant::now();
+                    let dup = existing
+                        .iter()
+                        .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                    metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                        .increment(__cmp_start.elapsed().as_nanos() as u64);
+                    if !dup {
+                        existing.insert(0, Arc::new(wc));
+                        inserted = true;
+                    } else {
+                        metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                            .increment(1);
+                    }
+                }
+                None => {
+                    metrics::counter!(HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(1);
+                    let mut new_continuations: Vec<Arc<WaitingContinuation<P, K>>> = self
+                        .get_cont_from_history_store(channels)
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                    let existing_count = new_continuations.len() as u64;
+                    metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                        .increment(existing_count);
+                    let __cmp_start = std::time::Instant::now();
+                    let dup = new_continuations
+                        .iter()
+                        .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                    metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                        .increment(__cmp_start.elapsed().as_nanos() as u64);
+                    if !dup {
+                        new_continuations.insert(0, Arc::new(wc));
+                        inserted = true;
+                    } else {
+                        metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                            .increment(1);
+                    }
+                    map.insert(channels_vec.clone(), new_continuations);
                 }
             }
-            Entry::Vacant(vacant) => {
-                let mut new_continuations = from_history_store.unwrap_or_default();
-                let existing_count = new_continuations.len() as u64;
-                metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(existing_count);
-                let __cmp_start = std::time::Instant::now();
-                let dup = new_continuations
-                    .iter()
-                    .any(|existing| Self::continuation_identity(existing) == wc_identity);
-                metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                    .increment(__cmp_start.elapsed().as_nanos() as u64);
-                if !dup {
-                    new_continuations.insert(0, wc);
-                    inserted = true;
-                } else {
-                    metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(1);
-                }
-                vacant.insert(new_continuations);
-            }
-        }
+        });
         metrics::counter!(HOT_STORE_PUT_CONT_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__put_start.elapsed().as_nanos() as u64);
         Some(inserted)
     }
 
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
-        self.state
-            .write()
-            .expect("hot store state write lock")
-            .installed_continuations
-            .insert(channels.to_vec(), wc);
+        self.installed_continuations.insert(channels.to_vec(), wc);
         Some(())
     }
 
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()> {
-        let mut state = self.state.write().expect("hot store state write lock");
-        let is_installed = state.installed_continuations.get(channels).is_some();
+        let channels_vec = channels.to_vec();
+        let is_installed = self.installed_continuations.contains_key(&channels_vec);
         let removing_installed = is_installed && index == 0;
         let removed_index = if is_installed { index - 1 } else { index };
 
         if removing_installed {
             warn!("Attempted to remove an installed continuation");
-            None
-        } else {
-            match state.continuations.entry(channels.to_vec()) {
-                Entry::Occupied(mut occupied) => {
-                    let len = occupied.get().len();
-                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
-                    if out_of_bounds {
-                        warn!(index, "Index out of bounds when removing continuation");
-                        None
-                    } else {
-                        occupied.get_mut().remove(removed_index as usize);
-                        Some(())
-                    }
-                }
-                Entry::Vacant(vacant) => {
-                    let mut from_history_store = self.get_cont_from_history_store(channels);
-                    let len = from_history_store.len();
-                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
-                    if out_of_bounds {
-                        warn!(index, "Index out of bounds when removing continuation");
-                        vacant.insert(from_history_store);
-                        None
-                    } else {
-                        from_history_store.remove(removed_index as usize);
-                        vacant.insert(from_history_store);
-                        Some(())
-                    }
-                }
-            }
+            return None;
         }
+
+        self.continuations
+            .with_entry(&channels_vec, |map| match map.get_mut(&channels_vec) {
+                Some(existing) => {
+                    let len = existing.len();
+                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
+                    if out_of_bounds {
+                        warn!(index, "Index out of bounds when removing continuation");
+                        None
+                    } else {
+                        existing.remove(removed_index as usize);
+                        Some(())
+                    }
+                }
+                None => {
+                    let mut from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
+                        .get_cont_from_history_store(channels)
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                    let len = from_history.len();
+                    let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
+                    let result = if out_of_bounds {
+                        warn!(index, "Index out of bounds when removing continuation");
+                        None
+                    } else {
+                        from_history.remove(removed_index as usize);
+                        Some(())
+                    };
+                    map.insert(channels_vec.clone(), from_history);
+                    result
+                }
+            })
     }
 
     // Data
@@ -354,25 +626,13 @@ where
     fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let maybe_data = self
-            .state
-            .read()
-            .expect("hot store state read lock")
-            .data
-            .get(channel)
-            .cloned();
-
-        if let Some(data) = maybe_data {
+        if let Some(data) = self.data.get(channel) {
             data
         } else {
             metrics::counter!(HOT_STORE_GET_DATA_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
             let data = self.get_data_from_history_store(channel);
-            self.state
-                .write()
-                .expect("hot store state write lock")
-                .data
-                .insert(channel.clone(), data.clone());
+            self.data.insert(channel.clone(), data.clone());
             data
         }
     }
@@ -381,69 +641,55 @@ where
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_DATUM_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let has_existing = self
-            .state
-            .read()
-            .expect("hot store state read lock")
-            .data
-            .get(channel)
-            .is_some();
-        let from_history_store = if has_existing {
-            None
-        } else {
-            metrics::counter!(HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            Some(self.get_data_from_history_store(channel))
-        };
-
-        let mut state = self.state.write().expect("hot store state write lock");
-        match state.data.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                occupied.get_mut().insert(0, d);
+        self.data.with_entry(channel, |map| match map.get_mut(channel) {
+            Some(existing) => {
+                existing.insert(0, d);
             }
-            Entry::Vacant(vacant) => {
-                let mut new_data = from_history_store.unwrap_or_default();
+            None => {
+                metrics::counter!(HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                    .increment(1);
+                let mut new_data = self.get_data_from_history_store(channel);
                 new_data.insert(0, d);
-                vacant.insert(new_data);
+                map.insert(channel.clone(), new_data);
             }
-        }
+        });
         metrics::counter!(HOT_STORE_PUT_DATUM_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
     }
 
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
-        let mut state = self.state.write().expect("hot store state write lock");
-        match state.data.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                let out_of_bounds = index < 0 || index as usize >= occupied.get().len();
-                if out_of_bounds {
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index,
-                        occupied.get().len()
-                    )))
-                } else {
-                    occupied.get_mut().remove(index as usize);
-                    Ok(())
+        self.data
+            .with_entry(channel, |map| match map.get_mut(channel) {
+                Some(existing) => {
+                    let out_of_bounds = index < 0 || index as usize >= existing.len();
+                    if out_of_bounds {
+                        Err(RSpaceError::BugFoundError(format!(
+                            "Index {} out of bounds when removing datum (len={})",
+                            index,
+                            existing.len()
+                        )))
+                    } else {
+                        existing.remove(index as usize);
+                        Ok(())
+                    }
                 }
-            }
-            Entry::Vacant(vacant) => {
-                let mut from_history_store = self.get_data_from_history_store(channel);
-                let out_of_bounds = index < 0 || index as usize >= from_history_store.len();
-                if out_of_bounds {
-                    let len = from_history_store.len();
-                    vacant.insert(from_history_store);
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index, len
-                    )))
-                } else {
-                    from_history_store.remove(index as usize);
-                    vacant.insert(from_history_store);
-                    Ok(())
+                None => {
+                    let mut from_history = self.get_data_from_history_store(channel);
+                    let out_of_bounds = index < 0 || index as usize >= from_history.len();
+                    let result = if out_of_bounds {
+                        let len = from_history.len();
+                        Err(RSpaceError::BugFoundError(format!(
+                            "Index {} out of bounds when removing datum (len={})",
+                            index, len
+                        )))
+                    } else {
+                        from_history.remove(index as usize);
+                        Ok(())
+                    };
+                    map.insert(channel.clone(), from_history);
+                    result
                 }
-            }
-        }
+            })
     }
 
     // Joins
@@ -451,10 +697,8 @@ where
     fn get_joins(&self, channel: &C) -> Vec<Vec<C>> {
         metrics::counter!(HOT_STORE_GET_JOINS_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let state = self.state.read().expect("hot store state read lock");
-        let joins = state.joins.get(channel).cloned();
-        let installed_joins = state.installed_joins.get(channel).cloned();
-        drop(state);
+        let joins = self.joins.get(channel);
+        let installed_joins = self.installed_joins.get(channel);
 
         match joins {
             Some(joins_data) => {
@@ -468,17 +712,13 @@ where
             None => {
                 metrics::counter!(HOT_STORE_GET_JOINS_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
-                let from_history_store = self.get_joins_from_history_store(channel);
-                self.state
-                    .write()
-                    .expect("hot store state write lock")
-                    .joins
-                    .insert(channel.clone(), from_history_store.clone());
+                let from_history = self.get_joins_from_history_store(channel);
+                self.joins.insert(channel.clone(), from_history.clone());
                 let mut result = Vec::new();
                 if let Some(installed) = installed_joins {
                     result.extend(installed);
                 }
-                result.extend(from_history_store);
+                result.extend(from_history);
                 result
             }
         }
@@ -488,160 +728,137 @@ where
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_JOIN_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
-        let has_existing = self
-            .state
-            .read()
-            .expect("hot store state read lock")
-            .joins
-            .get(channel)
-            .is_some();
-        let from_history_store = if has_existing {
-            None
-        } else {
-            metrics::counter!(HOT_STORE_PUT_JOIN_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            Some(self.get_joins_from_history_store(channel))
-        };
-
-        let mut state = self.state.write().expect("hot store state write lock");
-        match state.joins.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                if !occupied.get().iter().any(|j| j.as_slice() == join) {
-                    occupied.get_mut().insert(0, join.to_vec());
+        self.joins.with_entry(channel, |map| match map.get_mut(channel) {
+            Some(existing) => {
+                if !existing.iter().any(|j| j.as_slice() == join) {
+                    existing.insert(0, join.to_vec());
                 }
             }
-            Entry::Vacant(vacant) => {
-                let mut joins = from_history_store.unwrap_or_default();
+            None => {
+                metrics::counter!(HOT_STORE_PUT_JOIN_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
+                    .increment(1);
+                let mut joins = self.get_joins_from_history_store(channel);
                 if !joins.iter().any(|j| j.as_slice() == join) {
                     joins.insert(0, join.to_vec());
                 }
-                vacant.insert(joins);
+                map.insert(channel.clone(), joins);
             }
-        }
+        });
         metrics::counter!(HOT_STORE_PUT_JOIN_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
         Some(())
     }
 
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()> {
-        let mut state = self.state.write().expect("hot store state write lock");
-        match state.installed_joins.entry(channel.clone()) {
-            Entry::Occupied(mut occupied) => {
-                if !occupied.get().iter().any(|j| j.as_slice() == join) {
-                    occupied.get_mut().insert(0, join.to_vec());
+        self.installed_joins
+            .with_entry(channel, |map| match map.get_mut(channel) {
+                Some(existing) => {
+                    if !existing.iter().any(|j| j.as_slice() == join) {
+                        existing.insert(0, join.to_vec());
+                    }
                 }
-            }
-            Entry::Vacant(vacant) => {
-                vacant.insert(vec![join.to_vec()]);
-            }
-        }
+                None => {
+                    map.insert(channel.clone(), vec![join.to_vec()]);
+                }
+            });
         Some(())
     }
 
     fn remove_join(&self, channel: &C, join: &[C]) -> Option<()> {
-        let mut state = self.state.write().expect("hot store state write lock");
-        let has_join_in_state = state.joins.get(channel).is_some();
-        let current_continuations = {
-            let mut conts = state
-                .installed_continuations
-                .get(join)
-                .map(|c| vec![c.clone()])
-                .unwrap_or_default();
-            conts.extend(
-                state
-                    .continuations
-                    .get(join)
-                    .cloned()
-                    .unwrap_or_else(|| self.get_cont_from_history_store(join)),
-            );
-            conts
+        let has_join_in_state = self.joins.contains_key(channel);
+        let join_vec = join.to_vec();
+        // Only emptiness matters here — avoid deep-cloning continuations.
+        let do_remove = if self.installed_continuations.contains_key(&join_vec) {
+            false
+        } else {
+            match self.continuations.get(&join_vec).map(|v| v.len()) {
+                Some(len) => len == 0,
+                None => self.get_cont_from_history_store(join).is_empty(),
+            }
         };
-
-        let do_remove = current_continuations.is_empty();
 
         if !do_remove {
             if !has_join_in_state {
-                let joins_in_history_store = self.get_joins_from_history_store(channel);
-                state.joins.insert(channel.clone(), joins_in_history_store);
+                let joins_in_history = self.get_joins_from_history_store(channel);
+                self.joins.insert(channel.clone(), joins_in_history);
             }
             Some(())
         } else {
-            match state.joins.entry(channel.clone()) {
-                Entry::Occupied(mut occupied) => {
-                    if let Some(idx) = occupied.get().iter().position(|x| x.as_slice() == join) {
-                        occupied.get_mut().remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
+            self.joins
+                .with_entry(channel, |map| match map.get_mut(channel) {
+                    Some(existing) => {
+                        if let Some(idx) = existing.iter().position(|x| x.as_slice() == join) {
+                            existing.remove(idx);
+                        } else {
+                            warn!("Join not found when removing join");
+                        }
+                        Some(())
                     }
-                    Some(())
-                }
-                Entry::Vacant(vacant) => {
-                    let mut joins_in_history_store = self.get_joins_from_history_store(channel);
-                    if let Some(idx) = joins_in_history_store
-                        .iter()
-                        .position(|x| x.as_slice() == join)
-                    {
-                        joins_in_history_store.remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
+                    None => {
+                        let mut joins_in_history = self.get_joins_from_history_store(channel);
+                        if let Some(idx) =
+                            joins_in_history.iter().position(|x| x.as_slice() == join)
+                        {
+                            joins_in_history.remove(idx);
+                        } else {
+                            warn!("Join not found when removing join");
+                        }
+                        map.insert(channel.clone(), joins_in_history);
+                        Some(())
                     }
-                    vacant.insert(joins_in_history_store);
-                    Some(())
-                }
-            }
+                })
         }
     }
 
     fn changes(&self) -> Vec<HotStoreAction<C, P, A, K>> {
-        let cache = self.state.read().expect("hot store state read lock");
-        let continuations: Vec<HotStoreAction<C, P, A, K>> = cache
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
+        let continuations: Vec<HotStoreAction<C, P, A, K>> = self
             .continuations
-            .iter()
+            .iter_flat()
+            .into_iter()
             .map(|(k, v)| {
                 if v.is_empty() {
                     HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
-                        channels: k.clone(),
+                        channels: k,
                     }))
                 } else {
+                    let v: Vec<WaitingContinuation<P, K>> =
+                        v.iter().map(|a| (**a).clone()).collect();
                     HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
-                        channels: k.clone(),
-                        continuations: v.clone(),
+                        channels: k,
+                        continuations: v,
                     }))
                 }
             })
             .collect();
 
-        let data: Vec<HotStoreAction<C, P, A, K>> = cache
+        let data: Vec<HotStoreAction<C, P, A, K>> = self
             .data
-            .iter()
-            .map(|entry| {
-                let (k, v) = entry;
+            .iter_flat()
+            .into_iter()
+            .map(|(k, v)| {
                 if v.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
-                        channel: k.clone(),
-                    }))
+                    HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: k }))
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertData(InsertData {
-                        channel: k.clone(),
-                        data: v.clone(),
+                        channel: k,
+                        data: v,
                     }))
                 }
             })
             .collect();
 
-        let joins: Vec<HotStoreAction<C, P, A, K>> = cache
+        let joins: Vec<HotStoreAction<C, P, A, K>> = self
             .joins
-            .iter()
-            .map(|entry| {
-                let (k, v) = entry;
+            .iter_flat()
+            .into_iter()
+            .map(|(k, v)| {
                 if v.is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
-                        channel: k.clone(),
-                    }))
+                    HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins { channel: k }))
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
-                        channel: k.clone(),
-                        joins: v.clone(),
+                        channel: k,
+                        joins: v,
                     }))
                 }
             })
@@ -650,163 +867,126 @@ where
         [continuations, data, joins].concat()
     }
 
+    // Acquires `checkpoint_lock` for a consistent view of all five maps (see
+    // the field comment). `std::sync::Mutex` is not reentrant, so `to_map` must
+    // not be called while already holding this lock — no current caller does:
+    // the other holders (snapshot/changes/set_state/clear) never call `to_map`,
+    // and every external caller (rspace/replay_rspace/reporting_rspace) delegates
+    // from outside any checkpoint-lock scope.
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
-        let state = self.state.read().expect("hot store state read lock");
-        let data = state
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
+        let data: HashMap<Vec<C>, Vec<Datum<A>>> = self
             .data
-            .iter()
-            .map(|entry| {
-                let (k, v) = entry;
-                (vec![k.clone()], v.clone())
-            })
-            .collect::<HashMap<_, _>>();
+            .iter_flat()
+            .into_iter()
+            .map(|(k, v)| (vec![k], v))
+            .collect();
 
-        let all_continuations = {
-            let mut all = state
-                .continuations
-                .iter()
-                .map(|entry| {
-                    let (k, v) = entry;
-                    (k.clone(), v.clone())
-                })
-                .collect::<HashMap<_, _>>();
-            for (k, v) in state.installed_continuations.iter().map(|entry| {
-                let (k, v) = entry;
-                (k.clone(), v.clone())
-            }) {
-                all.entry(k).or_insert_with(Vec::new).push(v);
-            }
-            all
-        };
+        let mut all_continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>> = self
+            .continuations
+            .iter_flat()
+            .into_iter()
+            .map(|(k, v)| (k, v.iter().map(|a| (**a).clone()).collect()))
+            .collect();
+        for (k, v) in self.installed_continuations.iter_flat() {
+            all_continuations.entry(k).or_default().push(v);
+        }
 
         let mut map = HashMap::new();
-
-        for (k, v) in data.into_iter() {
+        for (k, v) in data {
             let row = Row {
                 data: v,
-                wks: all_continuations.get(&k).cloned().unwrap_or_else(Vec::new),
+                wks: all_continuations.get(&k).cloned().unwrap_or_default(),
             };
             if !(row.data.is_empty() && row.wks.is_empty()) {
                 map.insert(k, row);
             }
         }
-
         map
     }
 
     fn print(&self) {
-        let hot_store_state = self.state.read().expect("hot store state read lock");
         println!("\nHot Store");
-
         println!("Continuations:");
-        for entry in hot_store_state.continuations.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        for (k, v) in self.continuations.iter_flat() {
+            println!("Key: {:?}, Value: {:?}", k, v);
         }
-
         println!("\nInstalled Continuations:");
-        for entry in hot_store_state.installed_continuations.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        for (k, v) in self.installed_continuations.iter_flat() {
+            println!("Key: {:?}, Value: {:?}", k, v);
         }
-
         println!("\nData:");
-        for entry in hot_store_state.data.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        for (k, v) in self.data.iter_flat() {
+            println!("Key: {:?}, Value: {:?}", k, v);
         }
-
         println!("\nJoins:");
-        for entry in hot_store_state.joins.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        for (k, v) in self.joins.iter_flat() {
+            println!("Key: {:?}, Value: {:?}", k, v);
         }
-
         println!("\nInstalled Joins:");
-        for entry in hot_store_state.installed_joins.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        for (k, v) in self.installed_joins.iter_flat() {
+            println!("Key: {:?}, Value: {:?}", k, v);
         }
-
-        let history_cache_state = self.history_cache.read().expect("history cache read lock");
-        println!("\nHistory Cache");
-
-        println!("Continuations:");
-        for entry in history_cache_state.continuations.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        println!("\nHistory Cache Continuations:");
+        for e in self.history_cache_continuations.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
         }
-
-        println!("\nData:");
-        for entry in history_cache_state.datums.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        println!("\nHistory Cache Data:");
+        for e in self.history_cache_datums.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
         }
-
-        println!("\nJoins:");
-        for entry in history_cache_state.joins.iter() {
-            let (key, value) = (entry.0, entry.1);
-            println!("Key: {:?}, Value: {:?}", key, value);
+        println!("\nHistory Cache Joins:");
+        for e in self.history_cache_joins.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
         }
     }
 
     fn clear(&self) {
-        let mut state = self.state.write().expect("hot store state write lock");
-        state.continuations.clear();
-        state.installed_continuations.clear();
-        state.data.clear();
-        state.joins.clear();
-        state.installed_joins.clear();
-        drop(state);
-
-        let mut history_cache = self
-            .history_cache
-            .write()
-            .expect("history cache write lock");
-        history_cache.continuations.clear();
-        history_cache.datums.clear();
-        history_cache.joins.clear();
-        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(0.0);
-
-        Self::update_hot_store_state_metrics(
-            &self.state.read().expect("hot store state read lock"),
-        );
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
+        self.continuations.clear();
+        self.installed_continuations.clear();
+        self.data.clear();
+        self.joins.clear();
+        self.installed_joins.clear();
+        self.history_cache_continuations.clear();
+        self.history_cache_datums.clear();
+        self.history_cache_joins.clear();
+        self.history_cache_cont_items.store(0, Ordering::Relaxed);
+        self.history_cache_data_items.store(0, Ordering::Relaxed);
+        self.history_cache_joins_items.store(0, Ordering::Relaxed);
+        for g in [
+            HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC,
+            HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC,
+            HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC,
+            HOT_STORE_HISTORY_CONT_CACHE_ITEMS_METRIC,
+            HOT_STORE_HISTORY_DATA_CACHE_ITEMS_METRIC,
+            HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC,
+            HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC,
+            HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
+            HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC,
+            HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC,
+        ] {
+            metrics::gauge!(g, "source" => RSPACE_METRICS_SOURCE).set(0.0);
+        }
+        Self::update_hot_store_state_metrics(self);
     }
 
-    // See rspace/src/test/scala/coop/rchain/rspace/test/package.scala
     fn is_empty(&self) -> bool {
-        let store_actions = self.changes();
-        let has_insert_actions = store_actions
-            .into_iter()
-            .any(|action| matches!(action, HotStoreAction::Insert(_)));
-
-        !has_insert_actions
+        !self
+            .changes()
+            .iter()
+            .any(|a| matches!(a, HotStoreAction::Insert(_)))
     }
 
     fn set_state(&self, new_state: HotStoreState<C, P, A, K>) {
-        *self
-            .state
-            .write()
-            .expect("hot store state write lock for set_state") = new_state;
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
+        self.data.restore_shards(new_state.data);
+        self.continuations.restore_shards(new_state.continuations);
+        self.installed_continuations
+            .restore_shards(new_state.installed_continuations);
+        self.joins.restore_shards(new_state.joins);
+        self.installed_joins
+            .restore_shards(new_state.installed_joins);
     }
 }
 
@@ -854,41 +1034,42 @@ where
         }
     }
 
-    fn update_hot_store_state_metrics(state: &HotStoreState<C, P, A, K>) {
+    fn update_hot_store_state_metrics(store: &InMemHotStore<C, P, A, K>) {
         static LAST_EMIT_AT_MS: AtomicU64 = AtomicU64::new(0);
         if !Self::should_emit_metrics(&LAST_EMIT_AT_MS, Self::state_metrics_update_interval_ms()) {
             return;
         }
-
-        let cont_items: usize = state.continuations.values().map(|v| v.len()).sum();
-        let data_items: usize = state.data.values().map(|v| v.len()).sum();
-        let joins_items: usize = state.joins.values().map(|v| v.len()).sum();
-        let installed_cont_items = state.installed_continuations.len();
-        let installed_joins_items: usize = state.installed_joins.values().map(|v| v.len()).sum();
-
+        let cont_flat = store.continuations.iter_flat();
+        let cont_items: usize = cont_flat.iter().map(|(_, v)| v.len()).sum();
+        let cont_size = cont_flat.len();
+        let data_flat = store.data.iter_flat();
+        let data_items: usize = data_flat.iter().map(|(_, v)| v.len()).sum();
+        let data_size = data_flat.len();
+        let joins_flat = store.joins.iter_flat();
+        let joins_items: usize = joins_flat.iter().map(|(_, v)| v.len()).sum();
+        let joins_size = joins_flat.len();
+        let installed_cont_items = store.installed_continuations.len();
+        let installed_joins_flat = store.installed_joins.iter_flat();
+        let installed_joins_items: usize = installed_joins_flat.iter().map(|(_, v)| v.len()).sum();
         metrics::gauge!(HOT_STORE_STATE_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.continuations.len() as f64);
+            .set(cont_size as f64);
         metrics::gauge!(HOT_STORE_STATE_DATA_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.data.len() as f64);
+            .set(data_size as f64);
         metrics::gauge!(HOT_STORE_STATE_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.joins.len() as f64);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.installed_continuations.len() as f64);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(state.installed_joins.len() as f64);
+            .set(joins_size as f64);
+        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.installed_continuations.len() as f64);
+        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.installed_joins.len() as f64);
         metrics::gauge!(HOT_STORE_STATE_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(cont_items as f64);
         metrics::gauge!(HOT_STORE_STATE_DATA_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(data_items as f64);
         metrics::gauge!(HOT_STORE_STATE_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .set(joins_items as f64);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(installed_cont_items as f64);
-        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(installed_joins_items as f64);
+        metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(installed_cont_items as f64);
+        metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(installed_joins_items as f64);
     }
 
-    fn update_history_cache_metrics(cache: &HistoryStoreCache<C, P, A, K>) {
+    fn update_history_cache_metrics(store: &InMemHotStore<C, P, A, K>) {
         static LAST_EMIT_AT_MS: AtomicU64 = AtomicU64::new(0);
         if !Self::should_emit_metrics(
             &LAST_EMIT_AT_MS,
@@ -896,108 +1077,91 @@ where
         ) {
             return;
         }
-
-        let cont_items: usize = cache.continuations.values().map(|v| v.len()).sum();
-        let data_items: usize = cache.datums.values().map(|v| v.len()).sum();
-        let joins_items: usize = cache.joins.values().map(|v| v.len()).sum();
-
-        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(cache.continuations.len() as f64);
-        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(cache.datums.len() as f64);
-        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(cache.joins.len() as f64);
-        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(cont_items as f64);
-        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(data_items as f64);
-        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .set(joins_items as f64);
+        let cont_items = store.history_cache_cont_items.load(Ordering::Relaxed);
+        let data_items = store.history_cache_data_items.load(Ordering::Relaxed);
+        let joins_items = store.history_cache_joins_items.load(Ordering::Relaxed);
+        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_continuations.len() as f64);
+        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_datums.len() as f64);
+        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.history_cache_joins.len() as f64);
+        metrics::gauge!(HOT_STORE_HISTORY_CONT_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(cont_items as f64);
+        metrics::gauge!(HOT_STORE_HISTORY_DATA_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(data_items as f64);
+        metrics::gauge!(HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(joins_items as f64);
     }
 
-    fn enforce_history_cache_bounds(cache: &mut HistoryStoreCache<C, P, A, K>) {
-        let cont_items: usize = cache.continuations.values().map(|v| v.len()).sum();
-        let data_items: usize = cache.datums.values().map(|v| v.len()).sum();
-        let joins_items: usize = cache.joins.values().map(|v| v.len()).sum();
-
-        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+    fn enforce_history_cache_bounds(&self) {
+        // O(1): read atomic counters instead of iterating DashMaps.
+        if self.history_cache_continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_cont_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_CONT_ITEMS
         {
-            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_CONT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            cache.continuations.clear();
+            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_CONT_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
+            self.history_cache_continuations.clear();
+            self.history_cache_cont_items.store(0, Ordering::Relaxed);
         }
-        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        if self.history_cache_datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_data_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_DATA_ITEMS
         {
-            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_DATUMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            cache.datums.clear();
+            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_DATUMS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
+            self.history_cache_datums.clear();
+            self.history_cache_data_items.store(0, Ordering::Relaxed);
         }
-        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
-            joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        if self.history_cache_joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_joins_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
         {
-            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_JOINS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                .increment(1);
-            cache.joins.clear();
+            metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_JOINS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
+            self.history_cache_joins.clear();
+            self.history_cache_joins_items.store(0, Ordering::Relaxed);
         }
     }
 
     fn get_cont_from_history_store(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>> {
-        let mut cache = self
-            .history_cache
-            .write()
-            .expect("history cache write lock");
-        Self::enforce_history_cache_bounds(&mut cache);
+        self.enforce_history_cache_bounds();
         let channels_vec = channels.to_vec();
-        let entry = cache.continuations.entry(channels_vec.clone());
-        let result = match entry {
-            Entry::Occupied(o) => o.get().clone(),
-            Entry::Vacant(v) => {
+        let result = match self.history_cache_continuations.entry(channels_vec.clone()) {
+            dashmap::Entry::Occupied(o) => o.get().clone(),
+            dashmap::Entry::Vacant(v) => {
                 let ks = self.history_reader_base.get_continuations(&channels_vec);
+                self.history_cache_cont_items
+                    .fetch_add(ks.len(), Ordering::Relaxed);
                 v.insert(ks.clone());
                 ks
             }
         };
-        Self::update_history_cache_metrics(&cache);
+        Self::update_history_cache_metrics(self);
         result
     }
 
     fn get_data_from_history_store(&self, channel: &C) -> Vec<Datum<A>> {
-        let mut cache = self
-            .history_cache
-            .write()
-            .expect("history cache write lock");
-        Self::enforce_history_cache_bounds(&mut cache);
-        let entry = cache.datums.entry(channel.clone());
-        let result = match entry {
-            Entry::Occupied(o) => o.get().clone(),
-            Entry::Vacant(v) => {
+        self.enforce_history_cache_bounds();
+        let result = match self.history_cache_datums.entry(channel.clone()) {
+            dashmap::Entry::Occupied(o) => o.get().clone(),
+            dashmap::Entry::Vacant(v) => {
                 let datums = self.history_reader_base.get_data(channel);
+                self.history_cache_data_items
+                    .fetch_add(datums.len(), Ordering::Relaxed);
                 v.insert(datums.clone());
                 datums
             }
         };
-        Self::update_history_cache_metrics(&cache);
+        Self::update_history_cache_metrics(self);
         result
     }
 
     fn get_joins_from_history_store(&self, channel: &C) -> Vec<Vec<C>> {
-        let mut cache = self
-            .history_cache
-            .write()
-            .expect("history cache write lock");
-        Self::enforce_history_cache_bounds(&mut cache);
-        let entry = cache.joins.entry(channel.clone());
-        let result = match entry {
-            Entry::Occupied(o) => o.get().clone(),
-            Entry::Vacant(v) => {
+        self.enforce_history_cache_bounds();
+        let result = match self.history_cache_joins.entry(channel.clone()) {
+            dashmap::Entry::Occupied(o) => o.get().clone(),
+            dashmap::Entry::Vacant(v) => {
                 let joins = self.history_reader_base.get_joins(channel);
+                self.history_cache_joins_items
+                    .fetch_add(joins.len(), Ordering::Relaxed);
                 v.insert(joins.clone());
                 joins
             }
         };
-        Self::update_history_cache_metrics(&cache);
+        Self::update_history_cache_metrics(self);
         result
     }
 }
@@ -1015,11 +1179,22 @@ impl HotStoreInstances {
         A: Default + Clone + Debug + Send + Sync + 'static,
         K: Default + Clone + Debug + Send + Sync + 'static,
     {
-        Box::new(InMemHotStore {
-            state: std::sync::RwLock::new(cache),
-            history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),
+        let store = InMemHotStore {
+            data: ShardedMap::from_shards(cache.data),
+            continuations: ShardedMap::from_shards(cache.continuations),
+            installed_continuations: ShardedMap::from_shards(cache.installed_continuations),
+            joins: ShardedMap::from_shards(cache.joins),
+            installed_joins: ShardedMap::from_shards(cache.installed_joins),
+            history_cache_continuations: DashMap::new(),
+            history_cache_datums: DashMap::new(),
+            history_cache_joins: DashMap::new(),
+            history_cache_cont_items: AtomicUsize::new(0),
+            history_cache_data_items: AtomicUsize::new(0),
+            history_cache_joins_items: AtomicUsize::new(0),
+            checkpoint_lock: std::sync::Mutex::new(()),
             history_reader_base: history_reader,
-        })
+        };
+        Box::new(store)
     }
 
     pub fn create_from_hr<C, P, A, K>(
@@ -1032,5 +1207,48 @@ impl HotStoreInstances {
         K: Default + Clone + Debug + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `HotStoreState`'s hand-written `Default` is load-bearing: a derived
+    // impl would yield empty `Vec`s (pre-Box<[..; NUM_SHARDS]>) or fail to
+    // compile, and any impl that doesn't produce exactly NUM_SHARDS shards
+    // panics on first lookup (`shard_of` can index out of bounds). Pin the
+    // invariant so a future change can't silently drop it.
+    #[test]
+    fn default_hot_store_state_has_num_shards_shards() {
+        let state = HotStoreState::<String, String, String, String>::default();
+        assert_eq!(state.continuations.len(), NUM_SHARDS);
+        assert_eq!(state.installed_continuations.len(), NUM_SHARDS);
+        assert_eq!(state.data.len(), NUM_SHARDS);
+        assert_eq!(state.joins.len(), NUM_SHARDS);
+        assert_eq!(state.installed_joins.len(), NUM_SHARDS);
+    }
+
+    // Guards the snapshot-cost invariant `ShardedMap` exists for: an
+    // unmutated shard's persistent map is returned by reference-counted
+    // clone, not rebuilt, so back-to-back snapshots with no writes in
+    // between share the same underlying tree per shard.
+    #[test]
+    fn snapshot_shards_share_structure_when_unchanged() {
+        let map: ShardedMap<String, String> =
+            ShardedMap::from_shards(Box::new(std::array::from_fn(|_| imbl::HashMap::new())));
+        for i in 0..1000 {
+            map.insert(format!("key_{i}"), format!("value_{i}"));
+        }
+
+        let snap1 = map.snapshot_shards();
+        let snap2 = map.snapshot_shards();
+
+        for i in 0..NUM_SHARDS {
+            assert!(
+                snap1[i].ptr_eq(&snap2[i]),
+                "shard {i} was rebuilt instead of refcount-cloned between two unmutated snapshots"
+            );
+        }
     }
 }

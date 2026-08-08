@@ -90,6 +90,14 @@ fi
 echo "== [2/5] TLA+ TLC bounded (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
+  # The slashing models are heavier than tlc-run.sh's 4g default envelope:
+  # the Stage-C MC_SlashFlow liveness graph OOMs a 4g heap (observed
+  # 2026-08-08: java.lang.OutOfMemoryError at ~34M states with NO violation).
+  # Match the roomier-but-still-bounded envelope check-tla-invariants.sh uses
+  # for the same models (overridable via TLC_HEAP / TLC_RSS / TLC_WORKERS).
+  : "${TLC_HEAP:=16g}"
+  : "${TLC_RSS:=24G}"
+  : "${TLC_WORKERS:=8}"
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
   # Fast safety cfgs (seconds; exhaustive at their bounds) — MUST pass. Each
@@ -240,14 +248,14 @@ echo "== [4/5] Rust slashing lib + authorization tests (fail-soft) =="
 #     casper/tests/slashing/slash_authorization_regressions.rs.
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p casper --lib blocks::proposer::block_creator >/tmp/sl_rust_bc.log 2>&1 \
-       && grep -q "test result: ok" /tmp/sl_rust_bc.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/sl_rust_bc.log; then
     n_bc=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_bc.log | grep -oE '[0-9]+' | head -1)
     pass "Rust slashing lib tests (${n_bc:-?} passed: T-Slash seed-wiring + T-9.8 candidate filtering)"
   else
     fail "Rust slashing lib tests failed (see /tmp/sl_rust_bc.log)"; tail -20 /tmp/sl_rust_bc.log | sed 's/^/      /'
   fi
   if cargo test -p casper --test mod -- slashing::slash_authorization_regressions >/tmp/sl_rust_auth.log 2>&1 \
-       && grep -q "test result: ok" /tmp/sl_rust_auth.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/sl_rust_auth.log; then
     n_auth=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_auth.log | grep -oE '[0-9]+' | head -1)
     pass "Rust slash-authorization regressions (${n_auth:-?} passed: §9.8 seven-rule receive gate incl. T-9.13 parent-bond)"
   else

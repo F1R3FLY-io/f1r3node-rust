@@ -122,7 +122,9 @@ pub fn normalize_p_contr<'ast>(
 mod tests {
     use models::create_bit_vector;
     use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::var::VarInstance;
     use models::rhoapi::{EPlus, Expr, Par, Receive, ReceiveBind};
+    use models::rust::rholang::implicits::single_expr;
     use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par, new_send_par};
 
     use crate::rust::interpreter::compiler::normalize::VarSort;
@@ -186,32 +188,32 @@ mod tests {
                     new_freevar_par(1, Vec::new()),
                     new_freevar_par(2, Vec::new()),
                 ],
-                source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 3,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![{
                     let mut par = Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(ExprInstance::EPlusBody(EPlus {
-                            p1: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
-                            p2: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                            p1: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
+                            p2: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                         })),
                     }]);
-                    par.locally_free = create_bit_vector(&vec![0, 1]);
+                    par.locally_free = create_bit_vector(&[0, 1]);
                     par
                 }],
                 false,
-                create_bit_vector(&vec![0, 1, 2]),
+                create_bit_vector(&[0, 1, 2]),
                 false,
-                create_bit_vector(&vec![0, 1, 2]),
+                create_bit_vector(&[0, 1, 2]),
                 false,
             )),
             persistent: true,
             peek: false,
             bind_count: 3,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
             condition: None,
         });
@@ -276,29 +278,89 @@ mod tests {
                     new_freevar_par(0, Vec::new()),
                     new_gint_par(5, Vec::new(), false),
                 ],
-                source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 1,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                new_boundvar_par(0, create_bit_vector(&[0]), false),
                 vec![new_gint_par(5, Vec::new(), false)],
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
             )),
             persistent: true,
             peek: false,
             bind_count: 1,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
             condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(result.unwrap().free_map, inputs.free_map);
+    }
+
+    #[test]
+    fn p_contr_should_keep_outer_captures_distinct_in_nested_contracts() {
+        use crate::rust::interpreter::compiler::compiler::Compiler;
+
+        let par = Compiler::source_to_adt(
+            r#"
+contract @"service_id-notify-listeners"(@payload) = {
+  new loop, stdOut(`rho:io:stdout`) in {
+    stdOut!(["before loop", payload]) |
+    contract loop(@listeners) = {
+      stdOut!(["loop", payload, *loop])
+    } |
+    for(@listeners <- @"service_id-listeners") {
+      stdOut!(["outer", payload, *loop]) |
+      loop!("whatever")
+    }
+  }
+}
+"#,
+        )
+        .expect("source should compile");
+
+        let outer_receive = par.receives.first().expect("outer contract receive");
+        let outer_body = outer_receive.body.as_ref().expect("outer contract body");
+        let new_term = outer_body.news.first().expect("new term");
+        let new_body = new_term.p.as_ref().expect("new body");
+        let inner_receive = new_body
+            .receives
+            .iter()
+            .find(|receive| receive.persistent)
+            .expect("inner contract receive");
+        let inner_body = inner_receive.body.as_ref().expect("inner contract body");
+        let send = inner_body.sends.first().expect("inner body send");
+        let payload_list = send.data.first().expect("send payload");
+        let payload_list_expr = single_expr(payload_list).expect("list expr");
+
+        let ExprInstance::EListBody(list) = payload_list_expr
+            .expr_instance
+            .as_ref()
+            .expect("list instance")
+        else {
+            panic!("expected list body");
+        };
+
+        let payload_entry = list.ps.get(1).expect("payload entry");
+        let payload_expr = single_expr(payload_entry).expect("payload expr");
+
+        let ExprInstance::EVarBody(var) = payload_expr.expr_instance.as_ref().expect("var body")
+        else {
+            panic!("expected var body");
+        };
+
+        // Inner `listeners`, recursive `loop`, and surrounding `new` shift the
+        // outer `payload` to index 3.
+        assert_eq!(
+            var.v.as_ref().and_then(|v| v.var_instance.as_ref()),
+            Some(&VarInstance::BoundVar(3))
+        );
     }
 
     #[test]

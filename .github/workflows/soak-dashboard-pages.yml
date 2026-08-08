@@ -1,0 +1,222 @@
+name: Soak Dashboard Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/dashboard/**
+      - .github/workflows/soak-dashboard-pages.yml
+  workflow_dispatch:
+    inputs:
+      remove_run_id:
+        description: Run ID to remove from one dashboard history
+        required: false
+        default: ""
+        type: string
+      restore_run_id:
+        description: Run ID whose final report becomes latest after removal
+        required: false
+        default: ""
+        type: string
+      restore_run_attempt:
+        description: Restore run attempt
+        required: false
+        default: "1"
+        type: string
+      restore_duration_seconds:
+        description: Restore run artifact duration component
+        required: false
+        default: ""
+        type: string
+      restore_series:
+        description: Series to repair
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - daily
+          - weekend
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Publish Soak Dashboard (bootstrap)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: soak-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assemble dashboard site
+        shell: bash -euo pipefail {0}
+        env:
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          GH_TOKEN: ${{ github.token }}
+          REMOVE_RUN_ID: ${{ inputs.remove_run_id }}
+          RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
+          RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
+          RESTORE_DURATION_SECONDS: ${{ inputs.restore_duration_seconds }}
+          RESTORE_SERIES: ${{ inputs.restore_series }}
+        run: |
+          # Bootstrap/refresh deploy: publish the dashboard shell while
+          # preserving any data already published by the weekend soak's
+          # perf_report job. First deploy ships an empty history.
+          # .github/dashboard/ is the source; site/ is the ephemeral tree the
+          # Pages artifact is assembled in (gitignored, CI-only).
+          mkdir -p site/data
+          cp -r .github/dashboard/. site/
+          # Pages is CDN-backed, so a plain GET can return a copy cached from
+          # before the weekend soak's last publish — and we would then
+          # republish that stale copy over the newer data. A per-run query
+          # string forces a cache miss so we always read current state.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Only a 404 proves nothing has been published yet. Every other
+          # outcome (outage, timeout, rate limit, 5xx) is transient, and
+          # treating it as "no data" would republish an empty dashboard
+          # over real soak history — so abort instead.
+          # THIRD carry-forward list. The other two are in
+          # merge-recovery-soak.yml and soak-checkpoint-publish.yml, and all
+          # three must name every published file: whichever publisher runs last
+          # defines the site, so a file missing from one list is deleted the
+          # next time that publisher fires. This job is triggered by any
+          # .github/dashboard/** push, so a dashboard edit alone is enough to
+          # drop anything omitted here. Add new data files to all three.
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md \
+                   history-daily.json latest-summary-daily.json latest-verdict-daily.json \
+                   latest-report-daily.md \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so live dashboard data is not overwritten"
+                exit 1
+                ;;
+            esac
+          done
+          # HTTP 200 is not proof of valid content — a CDN or proxy error page
+          # is served with 200 too. Republishing one would corrupt the data.
+          # Shapes, not just parseability — kept identical to the soak
+          # publisher. `jq -e .` accepts a bare string or number, so an error
+          # body that happens to be valid JSON would pass here and be rejected
+          # there, which is how the two drift apart.
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json \
+                   badge-soak.json badge-soak-daily.json \
+                   badge-stability.json badge-stability-daily.json \
+                   badge-perf.json badge-perf-daily.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
+              exit 1
+            }
+          done
+          for f in history.json history-daily.json; do
+            if [ -e "site/data/${f}" ]; then
+              jq -e 'type == "array"' "site/data/${f}" >/dev/null 2>&1 || {
+                echo "::error::published ${f} is not a JSON array; refusing to replace it"
+                exit 1
+              }
+            else
+              echo '[]' > "site/data/${f}"
+            fi
+          done
+          # Same rule as the soak publisher: once a series' history has
+          # entries, its summary and verdict were written alongside, so a 404
+          # on those is a lying fetch rather than genuine absence. Publishing
+          # anyway would empty that tab. This job only ever carries data
+          # forward, so it has nothing to gain by proceeding on doubt.
+          for s in "" "-daily"; do
+            h="site/data/history${s}.json"
+            [ -e "$h" ] && [ "$(jq 'length' "$h" 2>/dev/null || echo 0)" -gt 0 ] || continue
+            for f in "latest-summary${s}.json" "latest-verdict${s}.json"; do
+              [ -e "site/data/${f}" ] || {
+                echo "::error::history${s}.json has entries but ${f} came back 404; refusing to publish a site missing it"
+                exit 1
+              }
+            done
+          done
+          if [ -n "$REMOVE_RUN_ID" ]; then
+            case "$REMOVE_RUN_ID/$RESTORE_RUN_ID/$RESTORE_RUN_ATTEMPT/$RESTORE_DURATION_SECONDS" in
+              *[!0-9/]*|*//*|/*|*/) echo "::error::dashboard repair inputs must be non-empty integers"; exit 1 ;;
+            esac
+            case "$RESTORE_SERIES" in
+              daily|weekend) ;;
+              *) echo "::error::restore_series must be daily or weekend"; exit 1 ;;
+            esac
+            artifact="merge-recovery-soak-${RESTORE_DURATION_SECONDS}s-${RESTORE_RUN_ID}-${RESTORE_RUN_ATTEMPT}"
+            gh run download "$RESTORE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir restore
+            SITE_DIR=site/data \
+            RESTORE_REPORT_DIR=restore/report \
+            REMOVE_RUN_ID="$REMOVE_RUN_ID" \
+            RESTORE_RUN_ID="$RESTORE_RUN_ID" \
+            RESTORE_RUN_ATTEMPT="$RESTORE_RUN_ATTEMPT" \
+            RESTORE_SERIES="$RESTORE_SERIES" \
+              bash scripts/bench/restore-soak-dashboard-run.sh
+          fi
+          # Seed a grey "no data" badge for any series that has not published
+          # one, exactly as the reports below are seeded.
+          #
+          # README.md renders four shields.io endpoint badges from these files
+          # and documents "any badge grey | ... no data published for that
+          # series yet". That state did not exist: shields renders a missing
+          # endpoint as "resource not found", so the four badges at the top of
+          # the README have read as errors since badge generation was added in
+          # db530ec5 (2026-07-29) — no soak has completed since, so no
+          # badge-*.json was ever produced, and the publisher's copy is
+          # existence-guarded so it skipped silently. The documented graceful
+          # degradation was never implemented.
+          #
+          # These are placeholders, not fallbacks: the soak publisher overwrites
+          # them the moment a run produces real ones, and the carry-forward loop
+          # above then preserves the real values. Message and colour are copied
+          # from the aggregator's own no-data branches so the badge does not
+          # change shape when data arrives.
+          for spec in badge-soak.json:'soak · master' \
+                      badge-soak-daily.json:'soak · dev' \
+                      badge-stability.json:stability \
+                      badge-stability-daily.json:stability \
+                      badge-perf.json:perf \
+                      badge-perf-daily.json:perf; do
+            f="${spec%%:*}"
+            [ -e "site/data/${f}" ] && continue
+            jq -cn --arg label "${spec#*:}" \
+              '{schemaVersion: 1, label: $label, message: "no data", color: "lightgrey"}' \
+              > "site/data/${f}"
+            echo "seeded placeholder ${f}"
+          done
+          test -s site/data/latest-report.md \
+            || echo 'No soak report yet — the first successful weekend soak publishes one.' \
+              > site/data/latest-report.md
+          test -s site/data/latest-report-daily.md \
+            || echo 'No daily soak report yet — the first successful nightly soak publishes one.' \
+              > site/data/latest-report-daily.md
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

@@ -796,6 +796,7 @@ fn assert_terminal_classification(fixture: &GeneratedFixture) {
 ///   * `total_cost` equals the number of COMMITTED `Comm` events (each = 1);
 ///   * `total_cost <= initial_budget` (the COMM budget is never exceeded);
 ///   * `cost_trace_event_count` equals the committed-event count (+1 on OOP).
+///
 /// This validates the per-COMM consensus tally directly from the canonical
 /// reconciliation, independent of the obsolete weight pins.
 fn replay_generated_fixture(fixture: &GeneratedFixture) {

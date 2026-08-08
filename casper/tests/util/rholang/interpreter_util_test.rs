@@ -48,6 +48,22 @@ impl TestContext {
         Self { genesis_context }
     }
 
+    // Build a genesis context bonded to exactly `validators_num` validators.
+    // Tests that assert an exact multi-parent set need a full network (every
+    // bonded validator proposes), otherwise the merge block also carries the
+    // genesis block as a parent for each bonded-but-non-proposing validator.
+    async fn new_with_validators(validators_num: usize) -> Self {
+        let mut genesis_builder = GenesisBuilder::new();
+        let genesis_parameters_tuple =
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(validators_num));
+        let genesis_context = genesis_builder
+            .build_genesis_with_parameters(Some(genesis_parameters_tuple))
+            .await
+            .expect("Failed to build genesis context");
+
+        Self { genesis_context }
+    }
+
     // Helper function to create deploys from Rholang source code with timestamp and shard_id
     // Note: Used in tests that need to create blocks with specific timestamps (e.g., Test #1)
     // This wraps ConstructDeploy.sourceDeploy(..., timestamp, ..., shardId)
@@ -90,6 +106,35 @@ impl TestContext {
                     None,
                 )
                 .unwrap()
+            })
+            .collect()
+    }
+
+    // Like `create_deploys_now`, but threads the genesis shard identifier
+    // through to each deploy. Required by tests that submit the deploys to
+    // the full block-production/validation path (`add_block_from_deploys`),
+    // which rejects blocks whose deploys do not carry the shard's root
+    // identifier (`Validate::shard_identifier`, InvalidShardId). The
+    // shard-less `create_deploys_now` is fine only for tests that feed the
+    // interpreter checkpoint directly (which does not run shard validation).
+    fn create_deploys_now_with_shard(
+        sources: Vec<&str>,
+        sec: Option<PrivateKey>,
+        shard_id: String,
+    ) -> Vec<Signed<DeployData>> {
+        sources
+            .into_iter()
+            .map(|source| {
+                construct_deploy::source_deploy_now(
+                    source.to_string(),
+                    Some(
+                        sec.clone()
+                            .unwrap_or_else(|| construct_deploy::DEFAULT_SEC.clone()),
+                    ),
+                    None,
+                    Some(shard_id.clone()),
+                )
+                .expect("failed to create deploy with shard")
             })
             .collect()
     }
@@ -168,6 +213,7 @@ impl TestContext {
         Ok(costs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compute_deploys_checkpoint(
         &self,
         block_store: &mut KeyValueBlockStore,
@@ -316,23 +362,35 @@ async fn compute_block_checkpoint_should_compute_the_final_post_state_of_a_chain
     assert_eq!(b3_ch7, vec!["7"]);
 }
 
-//TODO: Scala reenable when merging of REV balances is done
+// Ported from the Scala `InterpreterUtilTest`, where it was `ignore`d pending
+// token-balance merging. It now runs against the Rust multi-parent-merging
+// design: b3 merges the histories of its two parents b1 and b2, and the join
+// `for(@a <- @123 & @b <- @456)` fires across the merged state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents() {
-    let b1_deploys = TestContext::create_deploys_now(
+    // A full 2-validator network: both validators propose (b1, b2) before b3,
+    // so under multi-parent merging b3's parents are exactly {b1, b2}. With the
+    // default (4-validator) genesis, the two bonded-but-absent validators would
+    // each contribute the genesis block, giving b3 a third parent.
+    let ctx = TestContext::new_with_validators(2).await;
+    let shard_id = ctx.genesis_context.genesis_block.shard_id.clone();
+
+    let b1_deploys = TestContext::create_deploys_now_with_shard(
         vec!["@5!(5)", "@2!(2)", "for(@a <- @2){ @456!(5 * a) }"],
         Some(construct_deploy::DEFAULT_SEC2.clone()),
+        shard_id.clone(),
     );
 
-    let b2_deploys = TestContext::create_deploys_now(
+    let b2_deploys = TestContext::create_deploys_now_with_shard(
         vec!["@1!(1)", "for(@a <- @1){ @123!(5 * a) }"],
         None, // uses default key
+        shard_id.clone(),
     );
 
-    let b3_deploys = TestContext::create_deploys_now(
+    let b3_deploys = TestContext::create_deploys_now_with_shard(
         vec!["for(@a <- @123 & @b <- @456){ @1!(a + b) }"],
         None, // uses default key
+        shard_id.clone(),
     );
 
     /*
@@ -345,7 +403,6 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
      *         genesis
      */
 
-    let ctx = TestContext::new().await;
     let mut nodes = TestNode::create_network(ctx.genesis_context, 2, None, None, None, None)
         .await
         .unwrap();
@@ -382,8 +439,11 @@ new ri(`rho:registry:insertArbitrary`) in {
 }
 "#;
 
+// Ported from the Scala `InterpreterUtilTest`, where it was `ignore`d pending
+// token-balance merging. It now runs: validating b3, which merges the complex
+// registry-insert histories of b1 and b2, yields Right(None) (no post-state
+// mismatch).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_with_complex_contract(
 ) {
     let contract = REGISTRY;
@@ -476,7 +536,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &b3,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -492,17 +552,32 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
     .await;
 }
 
+// Ported from the Scala `InterpreterUtilTest`, where it was `ignore`d pending
+// token-balance merging. It now runs against the Rust multi-parent-merging
+// design: validating b5, which merges the uneven-length branches b2 and b4,
+// yields Right(None). Each block carries a distinct deploy (see the per-block
+// source suffixes below): the same deploy may not appear in both a block and
+// its descendant, or re-executing it on the descendant's post-state trips the
+// per-deploy phlogiston number-channel's single-value invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_uneven_histories(
 ) {
-    let contract = REGISTRY;
+    let b1_src = format!("{}\n//b1", REGISTRY);
+    let b2_src = format!("{}\n//b2", REGISTRY);
+    let b3_src = format!("{}\n//b3", REGISTRY);
+    let b4_src = format!("{}\n//b4", REGISTRY);
+    let b5_src = format!("{}\n//b5", REGISTRY);
 
-    let b1_deploys_with_cost = TestContext::prepare_deploys(vec![contract], PCost { cost: 2 });
-    let b2_deploys_with_cost = TestContext::prepare_deploys(vec![contract], PCost { cost: 1 });
-    let b3_deploys_with_cost = TestContext::prepare_deploys(vec![contract], PCost { cost: 5 });
-    let b4_deploys_with_cost = TestContext::prepare_deploys(vec![contract], PCost { cost: 5 });
-    let b5_deploys_with_cost = TestContext::prepare_deploys(vec![contract], PCost { cost: 5 });
+    let b1_deploys_with_cost =
+        TestContext::prepare_deploys(vec![b1_src.as_str()], PCost { cost: 2 });
+    let b2_deploys_with_cost =
+        TestContext::prepare_deploys(vec![b2_src.as_str()], PCost { cost: 1 });
+    let b3_deploys_with_cost =
+        TestContext::prepare_deploys(vec![b3_src.as_str()], PCost { cost: 5 });
+    let b4_deploys_with_cost =
+        TestContext::prepare_deploys(vec![b4_src.as_str()], PCost { cost: 5 });
+    let b5_deploys_with_cost =
+        TestContext::prepare_deploys(vec![b5_src.as_str()], PCost { cost: 5 });
 
     /*
      * DAG Looks like this:
@@ -639,7 +714,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &b5,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -764,8 +839,12 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     }
 }
 
+// Ported from the Scala `InterpreterUtilTest`, where it was `pendingUntilFixed`
+// because the reference set omitted the failing deploy's cost. In the Rust
+// runtime a throwing deploy is still processed into a `ProcessedDeploy` with a
+// recorded cost, so the batch yields one cost entry per deploy; the reference
+// set includes the failing deploy's standalone cost and the two agree.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Scala ignore, pendingUntilFixed"]
 async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_of_the_programs_within_the_deployment_throws_an_error(
 ) {
     let deploy1 =
@@ -805,19 +884,39 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
         .await
         .unwrap();
 
+    // A deploy whose program throws is still processed: it yields a
+    // `ProcessedDeploy` with `is_failed = true` and a recorded cost (the
+    // phlogiston consumed up to the point of the error). Therefore a batch of
+    // three deploys — even when one of them throws — produces three cost
+    // entries, and the failing deploy's cost is the same whether it runs alone
+    // or alongside the others (the deploys act on independent channels). Include
+    // the failing deploy's standalone cost in the reference set so the
+    // batch-vs-separate comparison covers all three deploys.
+    let deploy_err =
+        construct_deploy::source_deploy_now(r#"@3!("a" + 3)"#.to_string(), None, None, None)
+            .expect("failed to create erroring deploy");
+
+    let cost_err = ctx
+        .compute_deploy_costs(
+            &mut node.runtime_manager,
+            dag.clone(),
+            &mut node.block_store,
+            vec![deploy_err.clone()],
+        )
+        .await
+        .expect("failed to compute standalone cost of erroring deploy");
+
     let mut acc_costs_sep = Vec::new();
     acc_costs_sep.extend(cost1);
     acc_costs_sep.extend(cost2);
-    let deploy_err =
-        construct_deploy::source_deploy_now(r#"@3!("a" + 3)"#.to_string(), None, None, None)
-            .unwrap();
+    acc_costs_sep.extend(cost_err);
 
     let acc_cost_batch = ctx
         .compute_deploy_costs(&mut node.runtime_manager, dag, &mut node.block_store, vec![
             deploy1, deploy2, deploy_err,
         ])
         .await
-        .unwrap();
+        .expect("failed to compute batch cost");
 
     assert_eq!(
         acc_cost_batch.len(),
@@ -849,8 +948,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
         let invalid_hash = StateHash::default();
 
         // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
-        let mut runtime_manager =
-            resources::mk_runtime_manager("interpreter-util-test-", None).await;
+        let runtime_manager = resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
         let block = block_generator::create_genesis_block(
             &mut block_store,
@@ -874,7 +972,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &block,
             &block_store,
             &mut casper_snapshot,
-            &mut runtime_manager,
+            &runtime_manager,
             None,
         )
         .await
@@ -899,7 +997,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     "@1!(1)",
@@ -939,7 +1037,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -975,7 +1073,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1001,7 +1099,7 @@ async fn validate_block_checkpoint_should_pass_linked_list_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1056,7 +1154,7 @@ contract @"recursionTest"(@list) = {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1092,7 +1190,7 @@ contract @"recursionTest"(@list) = {
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1118,7 +1216,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"new x, y, delay in {
@@ -1177,7 +1275,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1213,7 +1311,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1239,7 +1337,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1294,7 +1392,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1330,7 +1428,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1356,7 +1454,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             for i in 0..=10 {
                 let deploys = TestContext::create_deploys_now(
                     vec![
@@ -1394,7 +1492,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1403,7 +1501,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1427,7 +1525,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
@@ -1440,7 +1538,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await
@@ -1471,7 +1569,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let sources: Vec<String> = (0..1)
                 .map(|i| format!("for(_ <- @{}){{{ } Nil }} | @{}!({})", i, "", i, i))
                 .collect();
@@ -1503,7 +1601,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1555,7 +1653,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1585,7 +1683,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let genesis = ctx.genesis_context.genesis_block.clone();
 
             for i in 0..=10 {
@@ -1625,7 +1723,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1634,7 +1732,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1658,7 +1756,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
@@ -1671,7 +1769,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await

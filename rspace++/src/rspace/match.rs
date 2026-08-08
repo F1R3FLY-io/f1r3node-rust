@@ -11,7 +11,10 @@
  * @tparam K A type representing continuations (used by check_commit)
  */
 pub trait Match<P, A, K>: Send + Sync {
-    fn get(&self, p: P, a: A) -> Option<A>;
+    // Takes pattern and data by reference so the matcher hot path can probe a
+    // datum without cloning the whole pattern/data on every failed attempt.
+    // Only the matched result (Option<A>) is allocated, on success.
+    fn get(&self, p: &P, a: &A) -> Option<A>;
 
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is

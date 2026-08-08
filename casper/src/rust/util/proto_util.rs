@@ -358,10 +358,7 @@ pub fn to_latest_message(
 
 pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64) -> Header {
     Header {
-        parents_hash_list: parent_hashes
-            .into_iter()
-            .map(|bytes| bytes.into())
-            .collect(),
+        parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
@@ -723,13 +720,10 @@ mod fork_choice_b1_repro_tests {
         // Two nodes with DIVERGENT invalid-block views over identical block metadata
         // (the proposer sees none invalid; the validator's view flags b2 and b3).
         let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
-        let dag_validator = dag_with_invalid(
-            blocks.clone(),
-            vec![
-                md(b2.clone(), vec![b1.clone()], 2, &vb),
-                md(b3.clone(), vec![b2.clone()], 3, &vc),
-            ],
-        );
+        let dag_validator = dag_with_invalid(blocks.clone(), vec![
+            md(b2.clone(), vec![b1.clone()], 2, &vb),
+            md(b3.clone(), vec![b2.clone()], 3, &vc),
+        ]);
 
         let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
         let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");

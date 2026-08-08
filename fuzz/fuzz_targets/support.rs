@@ -18,8 +18,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
-
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -31,6 +29,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use parking_lot::RwLock;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -151,6 +150,8 @@ pub fn block_with_system_deploys(
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let deploy_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+    let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+    let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     KeyValueDagRepresentation {
         dag_set: imbl::HashSet::new(),
         latest_messages_map: imbl::HashMap::new(),
@@ -164,8 +165,8 @@ fn empty_dag() -> KeyValueDagRepresentation {
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
         deploy_index: Arc::new(RwLock::new(deploy_store)),
-        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        floor_index: floor_store,
+        frontier_index: frontier_store,
     }
 }
 
@@ -192,6 +193,14 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
 /// production code assumes them consistent and panics or returns
 /// `KeyNotFound` if they aren't. Any future change to those collections
 /// must update this builder in the same atomic step.
+///
+/// Duplicate evidence hashes are skipped (first occurrence wins): a real
+/// DAG has exactly one metadata per block hash, and arbitrary fuzz inputs
+/// that reuse a hash seed would otherwise split the collections — the
+/// first metadata lands in `invalid_blocks_set` while a later one
+/// overwrites `block_metadata_index`, an unreachable state that makes
+/// candidate derivation and validation diverge by construction (found by
+/// the slash_lifecycle_trace fuzzer, crash b60fee62).
 pub fn snapshot(
     evidences: &[Evidence],
     max_block_num: i64,
@@ -199,7 +208,11 @@ pub fn snapshot(
     bonds: Vec<(Validator, i64)>,
 ) -> CasperSnapshot {
     let mut dag = empty_dag();
+    let mut seen_hashes: HashSet<BlockHash> = HashSet::new();
     for evidence in evidences {
+        if !seen_hashes.insert(evidence.hash.clone()) {
+            continue;
+        }
         let metadata = metadata(evidence);
         dag.dag_set.insert(metadata.block_hash.clone());
         dag.block_number_map

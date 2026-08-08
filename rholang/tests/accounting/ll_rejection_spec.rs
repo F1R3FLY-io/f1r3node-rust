@@ -245,7 +245,10 @@ fn is_funding_former_accepts_funding_grammar_rejects_capability_connectives() {
     let [a, b, c, d] = fixed_atoms();
 
     // Funding grammar `g|#P|s∘s` — accepted.
-    assert!(Sig::Unit.is_funding_former(), "Unit (the ∘ identity) is funding");
+    assert!(
+        Sig::Unit.is_funding_former(),
+        "Unit (the ∘ identity) is funding"
+    );
     assert!(a.is_funding_former(), "Ground atom g is funding");
     assert!(
         Sig::Quote(vec![0xDE, 0xAD]).is_funding_former(),
@@ -264,7 +267,10 @@ fn is_funding_former_accepts_funding_grammar_rejects_capability_connectives() {
         Box::new(Sig::And(Box::new(a.clone()), Box::new(b.clone()))),
         Box::new(c.clone()),
     );
-    assert!(and3.is_funding_former(), "left-assoc And-fold of atoms is funding");
+    assert!(
+        and3.is_funding_former(),
+        "left-assoc And-fold of atoms is funding"
+    );
 
     // The five value/capability type-logic connectives — NOT funding.
     assert!(

@@ -214,6 +214,10 @@ where
                     BlockCreatorResult::NoNewDeploys => {
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
+                    BlockCreatorResult::RecoveryDeferred => Ok((
+                        ProposeResult::failure(ProposeFailure::RecoveryDeferred),
+                        None,
+                    )),
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                         // Publish BlockCreated event immediately after block is created (before validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
