@@ -340,9 +340,29 @@ fn retain_pending_rejected_deploys_for_buffer(
         let state = statuses.get(&deploy.sig).map(|status| status.state);
         match state {
             None | Some(DeployFinalizationState::Pending) => true,
-            Some(DeployFinalizationState::Finalized) => finalized_dispositions
-                .get(&deploy.sig)
-                .is_none_or(|(win_height, won)| !won || *win_height <= rejecting_block_number),
+            Some(DeployFinalizationState::Finalized) => {
+                match finalized_dispositions.get(&deploy.sig) {
+                    Some((win_height, true)) => *win_height <= rejecting_block_number,
+                    disagreement => {
+                        // The resolver and the finalized-chain disposition scan
+                        // disagree: `Finalized` without a winning finalized
+                        // disposition (or none at all). Retaining is the safe
+                        // direction — the buffer holds the only re-proposable
+                        // copy — but the disagreement itself is the resolver's
+                        // known blindness to rejections above the LFB, so make
+                        // it visible rather than silent.
+                        tracing::warn!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: resolver reports Finalized for {} but the \
+                             finalized-chain disposition is {:?} (rejecting block #{}); retaining",
+                            PrettyPrinter::build_string_bytes(&deploy.sig),
+                            disagreement,
+                            rejecting_block_number
+                        );
+                        true
+                    }
+                }
+            }
             Some(_) => false,
         }
     });
