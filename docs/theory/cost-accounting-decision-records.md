@@ -518,7 +518,7 @@ are the realized parametric surface.
 §3.2/§3.3/§3.5 (identities + free names, tex:592–619), §1 ("signed terms pervade the syntax", tex:162).
 
 **Context — the representation.** The Rocq syntax layers a Rho-calculus `proc` (`RhoSyntax.v`: `PInput`/`POutput`
-carry `proc` bodies/payloads) under a thin cost-accounted `system` (`CostAccountedSyntax.v:137`,
+carry `proc` bodies/payloads) under a thin cost-accounted `system` (`CostAccountedSyntax.v:136`,
 `SSigned : proc -> sig -> system`). The signed thing is therefore a **bare `proc`**, and the spec's §3
 four-sort mutual grammar — where `for(y<-x){T}` carries a *signed-term* continuation `T` and `send(x,U)` a
 signed-term payload `U` (tex:439–471) — is **not natively representable** at the `system` level: a

@@ -3651,31 +3651,31 @@ per large module.
 
 | Paper Section      | Paper Definition              | Rocq Definition                        | File:Line                        |
 |--------------------|-------------------------------|----------------------------------------|----------------------------------|
-| 2.1 Syntax         | `P`, `Q`, `x`, `y`            | `proc`, `name`                         | `RhoSyntax.v:57`                 |
+| 2.1 Syntax         | `P`, `Q`, `x`, `y`            | `proc`, `name`                         | `RhoSyntax.v:58`                 |
 | 2.3 Struct. equiv. | `≡_S`                         | `struct_equiv`                         | `RhoSyntax.v:719`                |
 | 2.4 COMM rule      | `for(y←x)P ∣ x!(Q) ⇝ P{@Q/y}` | `rs_comm`                              | `RhoReduction.v:72`              |
-| 2.4 PAR rule       | `P⇝P'` / `P∣Q⇝P'∣Q`           | `rs_par_l`, `rs_par_r`                 | `RhoReduction.v:78`              |
+| 2.4 PAR rule       | `P⇝P'` / `P∣Q⇝P'∣Q`           | `rs_par_l`, `rs_par_r`                 | `RhoReduction.v:78`, `RhoReduction.v:83` |
 | 2.4 STRUCT rule    | `P≡P'  P'⇝Q'  Q'≡Q` / `P⇝Q`   | `rs_struct`                            | `RhoReduction.v:90`              |
-| Def 3.3 Signatures | `s`                           | `sig`                                  | `CostAccountedSyntax.v:76`       |
-| Def 3.2 Tokens     | `T`                           | `token`                                | `CostAccountedSyntax.v:96`       |
-| 3.1 Systems        | `S`                           | `system`                               | `CostAccountedSyntax.v:118`      |
-| 3.6 Five rules     | Rules 1–5                     | `ca_step`                              | `CostAccountedReduction.v:83`    |
-| App. A `N⟦·⟧`      | Signatures to names           | `N_tr`                                 | `Translation.v:122`              |
-| App. A `K⟦·⟧`      | Token-stack translation (repo `T_tr` = paper `K⟦·⟧`) | `T_tr`            | `Translation.v:143`              |
-| App. A `P⟦·⟧`      | Signed processes              | `P_tr`                                 | `Translation.v:191`              |
-| App. A `S⟦·⟧`      | System translation            | `S_tr`                                 | `Translation.v:220`              |
-| App. A Split       | Splitter mediator (Split/Join infrastructure) | `Split`                | `Translation.v:263`              |
-| App. A Join        | Joiner mediator (Split/Join infrastructure)   | `Join`                 | `Translation.v:272`              |
-| §4–§5 Verification | Contextual forward reachability | `translation_faithful` / `translation_contextual_reachability` | `TranslationFaithfulness.v:2308` |
-| §4–§5 Bisimulation | Behavioral equivalence        | `bisim`                                | `Bisimulation.v:433`             |
-| —                  | Generic bisim                 | `translation_strong_bisimilar_generic` | `Bisimulation.v:1246`            |
-| —                  | Generic per-step reverse      | `gate_per_step_reverse_generic`        | `TranslationFaithfulness.v:3888` |
-| —                  | Phase-based gate reflection   | `backward_reflection_phased_gate`      | `TranslationFaithfulness.v:4022` |
-| —                  | Recursive whole-system reflection | `well_reflected_backward_reflection` | `TranslationFaithfulness.v:4147` |
-| —                  | Source billing witness        | `billed_step`, `ca_step_billed`        | `TranslationFaithfulness.v:2648` |
-| —                  | Token conservation            | `token_monotone_reachable`             | `TokenConservation.v:98`         |
-| —                  | Token strict decrease         | `token_strictly_decreases`             | `TokenConservation.v:226`        |
-| —                  | Fuel event multiset det.      | `fuel_events_consumed_perm`            | `FuelEventDecomposition.v:198`   |
+| Def 3.3 Signatures | `s`                           | `sig`                                  | `CostAccountedSyntax.v:93`       |
+| Def 3.2 Tokens     | `T`                           | `token`                                | `CostAccountedSyntax.v:114`       |
+| 3.1 Systems        | `S`                           | `system`                               | `CostAccountedSyntax.v:136`      |
+| 3.6 Five rules     | Rules 1–5                     | `ca_step`                              | `CostAccountedReduction.v:95`    |
+| App. A `N⟦·⟧`      | Signatures to names           | `N_tr`                                 | `Translation.v:160`              |
+| App. A `K⟦·⟧`      | Token-stack translation (repo `T_tr` = paper `K⟦·⟧`) | `T_tr`            | `Translation.v:182`              |
+| App. A `P⟦·⟧`      | Signed processes              | `P_tr`                                 | `Translation.v:230`              |
+| App. A `S⟦·⟧`      | System translation            | `S_tr`                                 | `Translation.v:262`              |
+| App. A Split       | Splitter mediator (Split/Join infrastructure) | `Split`                | `Translation.v:305`              |
+| App. A Join        | Joiner mediator (Split/Join infrastructure)   | `Join`                 | `Translation.v:314`              |
+| §4–§5 Verification | Contextual forward reachability | `translation_faithful` / `translation_contextual_reachability` | `TranslationFaithfulness.v:2531` |
+| §4–§5 Bisimulation | Behavioral equivalence        | `bisim`                                | `Bisimulation.v:436`             |
+| —                  | Generic bisim                 | `translation_strong_bisimilar_generic` | `Bisimulation.v:1250`            |
+| —                  | Generic per-step reverse      | `gate_per_step_reverse_generic`        | `TranslationFaithfulness.v:4126` |
+| —                  | Phase-based gate reflection   | `backward_reflection_phased_gate`      | `TranslationFaithfulness.v:4217` |
+| —                  | Recursive whole-system reflection | `well_reflected_backward_reflection` | `TranslationFaithfulness.v:4342` |
+| —                  | Source billing witness        | `billed_step`, `ca_step_billed`        | `TranslationFaithfulness.v:2793` |
+| —                  | Token conservation            | `token_monotone_reachable`             | `TokenConservation.v:101`         |
+| —                  | Token strict decrease         | `token_strictly_decreases`             | `TokenConservation.v:229`        |
+| —                  | Fuel event multiset det.      | `fuel_events_consumed_perm`            | `FuelEventDecomposition.v:199`   |
 | —                  | Reduction-length bound        | `ca_max_steps_bound`                   | `StrongNormalization.v:111`      |
 | —                  | Strong normalization          | `ca_strongly_normalizing`              | `StrongNormalization.v:95`       |
 | —                  | Local confluence (diamond)    | `ca_local_confluence`                  | `Confluence.v:269`               |
@@ -3685,26 +3685,26 @@ per large module.
 | —                  | Cost determinism              | `ca_cost_deterministic`                | `Confluence.v:474`               |
 | —                  | Step determinism (single-tok) | `ca_step_deterministic`                | `StepDeterminism.v:156`          |
 | —                  | Single-token path uniqueness  | `single_token_path_unique`             | `StepDeterminism.v:249`          |
-| MR 2005 §3         | Reflective D-encoding         | `D_encoding`                           | `Replication.v:66`               |
-| MR 2005 §3         | Reflective bang-encoding      | `bang_encoding`                        | `Replication.v:73`               |
-| MR 2005 §3         | One-step operational unfold   | `bang_encoding_unfolds` (Thm 9.19)     | `Replication.v:222`              |
+| MR 2005 §3         | Reflective D-encoding         | `D_encoding`                           | `Replication.v:76`               |
+| MR 2005 §3         | Reflective bang-encoding      | `bang_encoding`                        | `Replication.v:83`               |
+| MR 2005 §3         | One-step operational unfold   | `bang_encoding_unfolds` (Thm 9.19)     | `Replication.v:232`              |
 | §3.6 (this doc)    | Split input observable        | `input_barb`                           | `RhoReduction.v:378`             |
 | §3.6 (this doc)    | Split output observable       | `output_barb`                          | `RhoReduction.v:384`             |
 | §3.6 (this doc)    | Conflated ↔ split barbs       | `barb_iff_input_or_output`             | `RhoReduction.v:391`             |
-| §6.5 (this doc)    | Weak input observable         | `weak_barb_input`                      | `WeakBarbedEquiv.v:53`           |
-| §6.5 (this doc)    | Weak output observable        | `weak_barb_output`                     | `WeakBarbedEquiv.v:56`           |
+| §6.5 (this doc)    | Weak input observable         | `weak_barb_input`                      | `WeakBarbedEquiv.v:51`           |
+| §6.5 (this doc)    | Weak output observable        | `weak_barb_output`                     | `WeakBarbedEquiv.v:54`           |
 | §6.6 (this doc)    | Weak barbed equiv. mod x      | `weak_barbed_equiv_except`             | `WeakBarbedEquiv.v:~165`         |
-| §6.5 (this doc)    | Forward barb propagation      | `preplicate_bang_encoding_body_barbs_sound` (Thm 9.20) | `Replication.v:1448` |
+| §6.5 (this doc)    | Forward barb propagation      | `preplicate_bang_encoding_body_barbs_sound` (Thm 9.20) | `Replication.v:1443` |
 | §8.7 (this doc)    | Sole-replicate predicate      | `only_replicate`                       | `StructEquivHeads.v:~1299`       |
 | §8.7 (this doc)    | PReplicate injectivity mod ≡  | `se_PReplicate_inj`                    | `StructEquivHeads.v:~1426`       |
 | §8.7 (this doc)    | PReplicate head locator       | `se_par_preplicate_locate`             | `Replication.v:~1659`            |
 | §8.7 (this doc)    | Step inv. (bare PReplicate)   | `step_PReplicate_inv_se`               | `Replication.v` Section 13       |
 | §8.7 (this doc)    | Step inv. (PReplicate + rest) | `step_PPar_PReplicate_inv_se` (Lem 9.21) | `Replication.v` Section 14.C   |
-| §6.6 (this doc)    | Closed forward replication boundary | `replication_encoding_forward_barb_sound` (Thm 9.23) | `Replication.v:2063`   |
+| §6.6 (this doc)    | Closed forward replication boundary | `replication_encoding_forward_barb_sound` (Thm 9.23) | `Replication.v:2059`   |
 | post-merge implementation | `BitmaskOr` typed mergeable diff/merge | `bitmask_diff_merge_round_trip` | `MergeableChannelAccounting.v:147` |
 | post-merge implementation | `BitmaskOr` fold order independence | `mergeable_channel_bitmask_fold_permutation` | `MergeableChannelAccounting.v:201` |
 | post-merge implementation | `IntegerAdd` diff/merge round trip | `integer_add_diff_merge_round_trip` | `MergeableChannelAccounting.v:168` |
-| post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:222` |
+| post-merge implementation | Merge type and non-numeric fallback | `mergeable_channel_delta_preserves_type`, `non_numeric_channel_not_mergeable_payload_match` | `MergeableChannelAccounting.v:230` |
 
 Rows tagged with "—" in the *Paper Section* column are not stated
 in [4]. They split into two groups: the determinism/multiset rows
