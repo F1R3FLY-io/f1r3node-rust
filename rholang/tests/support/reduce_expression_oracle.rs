@@ -68,6 +68,42 @@ macro_rules! reducer_expression_oracle_methods {
         }
 
         #[cfg(test)]
+        fn eval_single_step_recursive(
+            &self,
+            step: EvalSingleStep,
+            env: &Env<Par>,
+        ) -> Result<Expr, InterpreterError> {
+            match step {
+                EvalSingleStep::Complete(expr) => Ok(expr),
+                EvalSingleStep::Evaluate(par) => self.eval_single_expr_recursive(&par, env),
+            }
+        }
+
+        #[cfg(test)]
+        fn interpolate_step_recursive(
+            &self,
+            step: InterpolateStep,
+            env: &Env<Par>,
+        ) -> Result<Expr, InterpreterError> {
+            match step {
+                InterpolateStep::Complete(expr) => Ok(expr),
+                InterpolateStep::Evaluate { source, pairs } => {
+                    let pair_count = pairs.len();
+                    let mut evaled = Vec::with_capacity(
+                        pair_count
+                            .checked_mul(2)
+                            .expect("an addressable interpolation map cannot overflow"),
+                    );
+                    for (key, value) in pairs {
+                        evaled.push(self.eval_single_expr_recursive(&key, env)?);
+                        evaled.push(self.eval_single_expr_recursive(&value, env)?);
+                    }
+                    self.finish_percent_percent(source, pair_count, evaled)
+                }
+            }
+        }
+
+        #[cfg(test)]
         fn eval_expr_to_par_recursive(
             &self,
             expr: &Expr,
@@ -186,12 +222,14 @@ macro_rules! reducer_expression_oracle_methods {
                     ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
                         let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                        self.combine_plus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
+                        let step = self.combine_plus(v1, v2, env)?;
+                        self.eval_single_step_recursive(step, env)
                     }
                     ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
                         let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                        self.combine_minus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
+                        let step = self.combine_minus(v1, v2, env)?;
+                        self.eval_single_step_recursive(step, env)
                     }
                     ExprInstance::ELtBody(ELt { p1, p2 }) => {
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
@@ -272,25 +310,22 @@ macro_rules! reducer_expression_oracle_methods {
                         self.metering.reserve_primitive(op_call_cost())?;
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
                         let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                        self.combine_percent_percent(v1, v2, |q| {
-                            self.eval_single_expr_recursive(q, env)
-                        })
+                        let step = self.combine_percent_percent(v1, v2)?;
+                        self.interpolate_step_recursive(step, env)
                     }
                     ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                         self.metering.reserve_primitive(op_call_cost())?;
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
                         let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                        self.combine_plus_plus(v1, v2, env, |q| {
-                            self.eval_single_expr_recursive(q, env)
-                        })
+                        let step = self.combine_plus_plus(v1, v2, env)?;
+                        self.eval_single_step_recursive(step, env)
                     }
                     ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                         self.metering.reserve_primitive(op_call_cost())?;
                         let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
                         let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
-                        self.combine_minus_minus(v1, v2, env, |q| {
-                            self.eval_single_expr_recursive(q, env)
-                        })
+                        let step = self.combine_minus_minus(v1, v2, env)?;
+                        self.eval_single_step_recursive(step, env)
                     }
                     ExprInstance::EVarBody(EVar { v }) => {
                         let p = self.eval_var(v.as_ref().unwrap(), env)?;
@@ -327,10 +362,25 @@ macro_rules! reducer_expression_oracle_methods {
                         self.combine_epathmap(evaled_ps, e1)
                     }
                     ExprInstance::ESetBody(eset) => {
-                        self.combine_eset(eset, |q| self.eval_expr_recursive(q, env))
+                        let evaled = self
+                            .prepare_eset(eset)
+                            .into_iter()
+                            .map(|q| self.eval_expr_recursive(&q, env))
+                            .collect::<Result<Vec<_>, InterpreterError>>()?;
+                        self.combine_eset(evaled, eset)
                     }
                     ExprInstance::EMapBody(emap) => {
-                        self.combine_emap(emap, |q| self.eval_expr_recursive(q, env))
+                        let evaled = self
+                            .prepare_emap(emap)
+                            .into_iter()
+                            .map(|(key, value)| {
+                                Ok((
+                                    self.eval_expr_recursive(&key, env)?,
+                                    self.eval_expr_recursive(&value, env)?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, InterpreterError>>()?;
+                        self.combine_emap(evaled, emap)
                     }
                     ExprInstance::EMethodBody(emethod) => {
                         if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {

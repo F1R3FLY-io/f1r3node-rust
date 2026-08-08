@@ -1,16 +1,16 @@
 //! EPathMap interpreter-internal method-chain view fusion.
 //!
-//! One seam, [`DebruijnInterpreter::try_eval_fused_method_chain`], called
-//! FIRST in BOTH `EMethodBody` dispatch arms (`eval_expr_to_par` and
-//! `eval_expr_to_expr`, reduce.rs). It recognizes a read-only PathMap/zipper
-//! method chain as one nested AST — the chain is fully visible pre-evaluation
-//! because the outermost `EMethod.target` holds the next link — and evaluates
-//! the WHOLE chain against a single borrowed trie plus a lightweight focus
-//! (`Vec<Vec<u8>>` mirroring `EZipper.current_path`), instead of today's
-//! per-link pipeline that re-evaluates the ground map, converts it to a trie,
-//! and materializes an intermediate `EZipper` Par at every link.
+//! One production seam, [`DebruijnInterpreter::begin_fused_method_chain`], is
+//! called first in both `EMethodBody` dispatch arms. It recognizes the whole
+//! read-only PathMap/zipper chain and returns resumable [`FusedAction`] values.
+//! The reducer executes argument evaluation on its existing heap worklist and
+//! resumes the same fusion state, so neither the chain spine nor either
+//! argument-evaluation position starts a nested evaluator drive. Link semantics
+//! operate against one borrowed trie plus a lightweight focus
+//! (`Vec<Vec<u8>>` mirroring `EZipper.current_path`) and never materialize an
+//! intermediate `EZipper` between links.
 //!
-//! `Ok(None)` means "not a fusable chain" and the existing per-link path runs
+//! `Ok(None)` from the production seam means "not a fusable chain" and the existing per-link path runs
 //! UNCHANGED — the seam never partially evaluates before declining (the
 //! recognizer performs no reservation, no evaluation, and no observable work).
 //!
@@ -67,9 +67,9 @@
 //! 2. `reserve_primitive(var_eval_cost())` for a var base (:1217). Literal
 //!    bases charge nothing (:1556's ground fall-through is charge-free).
 //! 3. Per link, innermost→outermost, mirroring each `Method::apply`:
-//!    - **(a)** Position-A argument evaluation (:1538-1542) — the SAME
-//!      `self.eval_expr(arg, env)` on the raw argument ASTs, so var/method
-//!      arguments charge exactly as today, at today's position;
+//!    - **(a)** Position-A argument evaluation (:1538-1542) — the state
+//!      machine yields the raw argument to the reducer's `EEval` work item, so
+//!      var/method arguments charge exactly as today, at today's position;
 //!    - **(b)** the arity check (:3693-3698 et al.) — recognizer-guaranteed
 //!      exact, so in-fusion it cannot fire; wrong-arity chains never fuse and
 //!      the fallback raises the identical `MethodArgumentNumberMismatch`;
@@ -79,9 +79,9 @@
 //!      parity target — with the failing link's arguments already recorded
 //!      and its constant NOT charged;
 //!    - **(d)** Position-B argument re-evaluation for arity-1 links
-//!      (:3701/:3886/:4973/:5402/:5667) — replayed verbatim (charge-free on
-//!      already-evaluated input, but the VALUE pipeline is preserved
-//!      byte-for-byte rather than proven idempotent);
+//!      (:3701/:3886/:4973/:5402/:5667) — yielded as a second `EEval` work
+//!      item, preserving the value pipeline byte-for-byte without recursive
+//!      evaluator re-entry;
 //!    - **(e)** the link constant: `reserve_incremental_primitive(union_cost(1))`
 //!      for the 13 navigation links (:3625/:3704/:3889/:4976/:5051/:5271/
 //!      :5327/:5405/:5484/:5564/:5670/:5760/:5850),
@@ -100,9 +100,9 @@
 //! # Link semantics (pinned per the landed reduce.rs impls)
 //!
 //! The view state is a borrowed `EPathMap`, `focus: Vec<Vec<u8>>`, and the
-//! zipper metadata a materialization needs. Keys are the 0xFF-terminated
-//! segment flattening (`seg ∥ 0xFF ∥ …`, reduce.rs:3998-4007;
-//! `SEGMENT_SEPARATOR`, models pathmap_native_query.rs:32). Each fused link
+//! zipper metadata a materialization needs. Keys use the canonical prefix-free
+//! path codec and retain the cursor arm needed to distinguish bare and split
+//! entries. Each fused link
 //! mirrors its today-impl arm-for-arm — the same
 //! `collect_child_segments`/`collect_subtrie_values`/`path_prefix_exists`
 //! helpers on the same borrowed, uncloned trie, the same
@@ -496,6 +496,18 @@ enum ViewMode {
     Nil,
 }
 
+pub(crate) struct FusedEval<'a> {
+    chain: FusedChain<'a>,
+    mode: ViewMode,
+    next_index: usize,
+}
+
+pub(crate) enum FusedAction<'a> {
+    EvalPositionA { state: FusedEval<'a>, arg: &'a Par },
+    EvalPositionB { state: FusedEval<'a>, arg: Par },
+    Complete(Par),
+}
+
 // W2b-1 RETIREMENT: the former `0xFF`-per-segment key flattening is
 // superseded by the canonical path codec. Trie keys are now built with
 // `models::rust::pathmap_integration::segments_to_key(segments, terminate)`:
@@ -532,17 +544,11 @@ fn single_expr_par(expr_instance: ExprInstance) -> Par {
 }
 
 impl DebruijnInterpreter {
-    /// The production fusion seam. `Ok(None)` means not fusable; the fallback
-    /// remains untouched. `Ok(Some(par))` returns the byte-identical result
-    /// with equivalent diagnostics. `Err` means the fused path owned the chain
-    /// and produced the same error the fallback would have produced.
-    pub(crate) fn try_eval_fused_method_chain(
+    pub(crate) fn begin_fused_method_chain<'a>(
         &self,
-        emethod: &EMethod,
-        env: &Env<Par>,
-    ) -> Result<Option<Par>, InterpreterError> {
-        // The force-disable seam exists ONLY in test builds — no
-        // production runtime flag.
+        emethod: &'a EMethod,
+        env: &'a Env<Par>,
+    ) -> Result<Option<FusedAction<'a>>, InterpreterError> {
         #[cfg(any(test, feature = "epathmap-fusion-differential"))]
         {
             if fusion_test_support::force_disabled() {
@@ -550,8 +556,6 @@ impl DebruijnInterpreter {
             }
         }
 
-        // O(1) NAME GATE before any spine walk — a non-PathMap
-        // method pays exactly one string compare here.
         if LinkKind::from_name(&emethod.method_name).is_none() {
             return Ok(None);
         }
@@ -562,44 +566,17 @@ impl DebruijnInterpreter {
         };
 
         #[cfg(any(test, feature = "epathmap-fusion-differential"))]
-        let shape_key = chain.shape_key();
+        fusion_test_support::record_hit(chain.shape_key());
 
-        let result = self.replay_fused_chain(&chain, env);
-
-        // A fused chain that ERRORS still counts as a fusion hit (the fused
-        // path owned the evaluation); recorded before propagating.
-        #[cfg(any(test, feature = "epathmap-fusion-differential"))]
-        fusion_test_support::record_hit(shape_key);
-
-        result.map(Some)
-    }
-
-    /// Replay the recognized chain: diagnostics in today's exact order, link
-    /// semantics on the shared view. See the module docs for the pinned
-    /// order (method_call ×n outermost-first → base var_eval → per link
-    /// innermost-out: Position-A args → Nil check → Position-B args → link
-    /// constant → semantics).
-    fn replay_fused_chain(
-        &self,
-        chain: &FusedChain<'_>,
-        env: &Env<Par>,
-    ) -> Result<Par, InterpreterError> {
-        // (1) method_call × n, outermost-first (reduce.rs:1536/:2723 reserves
-        // BEFORE recursing into the target, so today the outermost dispatch
-        // records first and a later abort still leaves all n attempts).
         for _ in &chain.links {
             self.metering.reserve_primitive(method_call_cost())?;
         }
 
-        // (2) the base: a var base records var_eval_cost (:1217); the bound
-        // map's re-evaluation adds NO diagnostics under the eval_stable gate
-        // (and a bound zipper is returned as-is today, :2710-2714).
         if matches!(chain.base, FusedBase::VarMap | FusedBase::VarZipper(_)) {
             self.metering.reserve_primitive(var_eval_cost())?;
         }
 
-        // (3) the initial view.
-        let mut mode = match &chain.base {
+        let mode = match &chain.base {
             FusedBase::VarMap | FusedBase::LitMap => ViewMode::Map,
             FusedBase::VarZipper(zipper) | FusedBase::LitZipper(zipper) => ViewMode::Zipper {
                 focus: zipper.current_path.clone(),
@@ -612,163 +589,290 @@ impl DebruijnInterpreter {
             },
         };
 
-        // (4) links innermost → outermost. `links[0]` is the OUTERMOST
-        // (terminal) link, so iterate indices n-1 … 0; value producers can
-        // only sit at index 0 (recognizer invariant) and `return` directly.
-        for idx in (0..chain.links.len()).rev() {
-            let link = chain.links[idx];
-            let kind = chain.kinds[idx];
+        let state = FusedEval {
+            next_index: chain
+                .links
+                .len()
+                .checked_sub(1)
+                .expect("a recognized chain contains at least one link"),
+            chain,
+            mode,
+        };
+        self.advance_fused(state).map(Some)
+    }
 
-            // (a) Position-A argument evaluation (:1538-1542): the same
-            // eval_expr on the raw argument ASTs — full diagnostics (var_eval
-            // for var arguments, method_call for method arguments, …) at
-            // today's position: after the inner links completed, before the
-            // apply-order steps below.
-            let mut args_a: Vec<Par> = Vec::with_capacity(link.arguments.len());
-            for arg in &link.arguments {
-                args_a.push(self.eval_expr(arg, env)?);
+    pub(crate) fn continue_fused_after_position_a<'a>(
+        &self,
+        state: FusedEval<'a>,
+        arg: Par,
+    ) -> Result<FusedAction<'a>, InterpreterError> {
+        debug_assert_eq!(state.chain.kinds[state.next_index].exact_arity(), 1);
+        if matches!(state.mode, ViewMode::Nil) {
+            return Err(InterpreterError::ReduceError(
+                NIL_MID_CHAIN_ERROR.to_string(),
+            ));
+        }
+        Ok(FusedAction::EvalPositionB { state, arg })
+    }
+
+    pub(crate) fn continue_fused_after_position_b<'a>(
+        &self,
+        mut state: FusedEval<'a>,
+        arg: Par,
+    ) -> Result<FusedAction<'a>, InterpreterError> {
+        let kind = state.chain.kinds[state.next_index];
+        debug_assert_eq!(kind.exact_arity(), 1);
+        let terminal = self.apply_fused_link(&mut state, kind, Some(arg))?;
+        self.finish_fused_link(state, terminal)
+    }
+
+    fn advance_fused<'a>(
+        &self,
+        mut state: FusedEval<'a>,
+    ) -> Result<FusedAction<'a>, InterpreterError> {
+        loop {
+            let kind = state.chain.kinds[state.next_index];
+            if kind.exact_arity() == 1 {
+                let link: &'a EMethod = state.chain.links[state.next_index];
+                let arg: &'a Par = link
+                    .arguments
+                    .first()
+                    .expect("an arity-one fused link has one argument");
+                return Ok(FusedAction::EvalPositionA { state, arg });
             }
-
-            // (b) the arity check — recognizer-guaranteed exact (wrong-arity
-            // chains never fuse; the fallback raises the mismatch).
-            debug_assert_eq!(
-                args_a.len(),
-                kind.exact_arity(),
-                "fused link arity must be recognizer-guaranteed"
-            );
-
-            // (c) the apply-entry target check (eval_single_expr, called on
-            // the evaluated target at :3622/:3700/:3824/:3885/:3974/:4053/
-            // :4972/:5048/:5220/:5268/:5324/:5401/:5481/:5561/:5666/:5757/
-            // :5847): a Nil target (zero exprs) hits the `_` arm — the exact
-            // Nil-chain error, with this link's arguments already evaluated
-            // and its constant NOT recorded. Map/zipper targets pass: the map
-            // re-evaluation is the byte-identity under the gate, the zipper
-            // arm returns as-is — both diagnostic-free.
-            if matches!(mode, ViewMode::Nil) {
+            if matches!(state.mode, ViewMode::Nil) {
                 return Err(InterpreterError::ReduceError(
                     NIL_MID_CHAIN_ERROR.to_string(),
                 ));
             }
-
-            // (d) Position-B argument re-evaluation for arity-1 links
-            // (:3701/:3886/:4973/:5402/:5667) — today `apply` re-evaluates
-            // the ALREADY-evaluated argument; replayed verbatim so the value
-            // pipeline (including locally_free recomputation on list
-            // arguments) is byte-identical rather than argued idempotent.
-            let arg_b: Option<Par> = if kind.exact_arity() == 1 {
-                Some(self.eval_expr(&args_a[0], env)?)
-            } else {
-                None
-            };
-
-            // (e) the link's non-consensus diagnostic reservation.
-            match kind.diagnostic() {
-                LinkDiagnostic::IncrementalUnion => {
-                    self.metering.reserve_incremental_primitive(union_cost(1))?
-                }
-                LinkDiagnostic::Lookup => self.metering.reserve_primitive(lookup_cost())?,
+            let terminal = self.apply_fused_link(&mut state, kind, None)?;
+            if let Some(par) = terminal {
+                return Ok(FusedAction::Complete(par));
             }
+            if state.next_index == 0 {
+                return Ok(FusedAction::Complete(Self::materialize_fused(
+                    &state.chain,
+                    state.mode,
+                )));
+            }
+            state.next_index -= 1;
+        }
+    }
 
-            // (f) the link semantics on the view.
-            match kind {
-                // ── readZipper (:3585-3628) ─────────────────────────────
-                LinkKind::ReadZipper => match &mode {
-                    ViewMode::Map => {
-                        // :3589-3595 — fresh read zipper at root; its
-                        // locally_free/connective_used are vec![]/false (NOT
-                        // copied from the map).
-                        mode = ViewMode::Zipper {
-                            focus: Vec::new(),
-                            // The root cursor is the SPLIT frame of zero
-                            // elements — key `0x00`, the empty list.
-                            kind: CursorKind::Split,
-                            meta: ZipperMeta {
-                                is_write: false,
-                                locally_free: Vec::new(),
-                                connective_used: false,
-                            },
-                        };
-                    }
-                    ViewMode::Zipper { .. } => {
-                        // :3600-3603 — a zipper target is not a pathmap.
-                        return Err(method_not_defined(kind, TYPE_ZIPPER));
-                    }
-                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                },
+    fn finish_fused_link<'a>(
+        &self,
+        mut state: FusedEval<'a>,
+        terminal: Option<Par>,
+    ) -> Result<FusedAction<'a>, InterpreterError> {
+        if let Some(par) = terminal {
+            return Ok(FusedAction::Complete(par));
+        }
+        if state.next_index == 0 {
+            return Ok(FusedAction::Complete(Self::materialize_fused(
+                &state.chain,
+                state.mode,
+            )));
+        }
+        state.next_index -= 1;
+        self.advance_fused(state)
+    }
 
-                // ── readZipperAt (:3639-3707) ───────────────────────────
-                LinkKind::ReadZipperAt => match &mode {
-                    ViewMode::Map => {
-                        let path_par = arg_b
-                            .as_ref()
-                            .expect("arity-1 link must have a Position-B argument");
-                        // :3650 par_to_path on the Position-B argument;
-                        // :3661-3671 — locally_free/connective_used copied
-                        // from the map MESSAGE (empty/false under the gate,
-                        // but copied for exactness).
-                        mode = ViewMode::Zipper {
-                            focus: par_to_path(path_par),
-                            // The ARGUMENT's own arm.
-                            kind: CursorKind::of(path_par),
-                            meta: ZipperMeta {
-                                is_write: false,
-                                locally_free: chain.source_map.locally_free.clone(),
-                                connective_used: chain.source_map.connective_used,
-                            },
-                        };
-                    }
-                    ViewMode::Zipper { .. } => {
-                        // :3678-3681.
-                        return Err(method_not_defined(kind, TYPE_ZIPPER));
-                    }
-                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                },
+    #[cfg(test)]
+    pub(crate) fn try_eval_fused_method_chain<'a>(
+        &self,
+        emethod: &'a EMethod,
+        env: &'a Env<Par>,
+    ) -> Result<Option<Par>, InterpreterError> {
+        let mut action = match self.begin_fused_method_chain(emethod, env)? {
+            Some(action) => action,
+            None => return Ok(None),
+        };
+        loop {
+            action = match action {
+                FusedAction::EvalPositionA { state, arg } => {
+                    let arg = self.eval_expr_recursive(arg, env)?;
+                    self.continue_fused_after_position_a(state, arg)?
+                }
+                FusedAction::EvalPositionB { state, arg } => {
+                    let arg = self.eval_expr_recursive(&arg, env)?;
+                    self.continue_fused_after_position_b(state, arg)?
+                }
+                FusedAction::Complete(par) => return Ok(Some(par)),
+            };
+        }
+    }
 
-                // ── descendTo (:3843-3892) ──────────────────────────────
-                LinkKind::DescendTo => match &mut mode {
+    fn apply_fused_link(
+        &self,
+        state: &mut FusedEval<'_>,
+        kind: LinkKind,
+        arg_b: Option<Par>,
+    ) -> Result<Option<Par>, InterpreterError> {
+        let chain = &state.chain;
+        let mut mode = std::mem::replace(&mut state.mode, ViewMode::Nil);
+
+        match kind.diagnostic() {
+            LinkDiagnostic::IncrementalUnion => {
+                self.metering.reserve_incremental_primitive(union_cost(1))?
+            }
+            LinkDiagnostic::Lookup => self.metering.reserve_primitive(lookup_cost())?,
+        }
+
+        match kind {
+            // ── readZipper (:3585-3628) ─────────────────────────────
+            LinkKind::ReadZipper => match &mode {
+                ViewMode::Map => {
+                    // :3589-3595 — fresh read zipper at root; its
+                    // locally_free/connective_used are vec![]/false (NOT
+                    // copied from the map).
+                    mode = ViewMode::Zipper {
+                        focus: Vec::new(),
+                        // The root cursor is the SPLIT frame of zero
+                        // elements — key `0x00`, the empty list.
+                        kind: CursorKind::Split,
+                        meta: ZipperMeta {
+                            is_write: false,
+                            locally_free: Vec::new(),
+                            connective_used: false,
+                        },
+                    };
+                }
+                ViewMode::Zipper { .. } => {
+                    // :3600-3603 — a zipper target is not a pathmap.
+                    return Err(method_not_defined(kind, TYPE_ZIPPER));
+                }
+                ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+            },
+
+            // ── readZipperAt (:3639-3707) ───────────────────────────
+            LinkKind::ReadZipperAt => match &mode {
+                ViewMode::Map => {
+                    let path_par = arg_b
+                        .as_ref()
+                        .expect("arity-1 link must have a Position-B argument");
+                    // :3650 par_to_path on the Position-B argument;
+                    // :3661-3671 — locally_free/connective_used copied
+                    // from the map MESSAGE (empty/false under the gate,
+                    // but copied for exactness).
+                    mode = ViewMode::Zipper {
+                        focus: par_to_path(path_par),
+                        // The ARGUMENT's own arm.
+                        kind: CursorKind::of(path_par),
+                        meta: ZipperMeta {
+                            is_write: false,
+                            locally_free: chain.source_map.locally_free.clone(),
+                            connective_used: chain.source_map.connective_used,
+                        },
+                    };
+                }
+                ViewMode::Zipper { .. } => {
+                    // :3678-3681.
+                    return Err(method_not_defined(kind, TYPE_ZIPPER));
+                }
+                ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+            },
+
+            // ── descendTo (:3843-3892) ──────────────────────────────
+            LinkKind::DescendTo => match &mut mode {
+                ViewMode::Zipper { focus, kind, .. } => {
+                    let path_par = arg_b
+                        .as_ref()
+                        .expect("arity-1 link must have a Position-B argument");
+                    // ★ The composed cursor's arm, by the ONE composition
+                    // law — the ARGUMENT's arm at the root, `Split` below
+                    // it (#108). Read BEFORE the extend, exactly as the
+                    // twin in `reduce.rs` does.
+                    *kind = composed_cursor_kind(focus, path_par);
+                    // :3853-3857 — append WITHOUT existence checking.
+                    focus.extend(par_to_path(path_par));
+                }
+                ViewMode::Map => {
+                    // :3863-3866 — descendTo has NO EPathmapBody arm.
+                    return Err(method_not_defined(kind, TYPE_PATHMAP));
+                }
+                ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+            },
+
+            // ── descendFirst (:5502-5544) ───────────────────────────
+            LinkKind::DescendFirst => {
+                let transition = match &mut mode {
                     ViewMode::Zipper { focus, kind, .. } => {
-                        let path_par = arg_b
-                            .as_ref()
-                            .expect("arity-1 link must have a Position-B argument");
-                        // ★ The composed cursor's arm, by the ONE composition
-                        // law — the ARGUMENT's arm at the root, `Split` below
-                        // it (#108). Read BEFORE the extend, exactly as the
-                        // twin in `reduce.rs` does.
-                        *kind = composed_cursor_kind(focus, path_par);
-                        // :3853-3857 — append WITHOUT existence checking.
-                        focus.extend(par_to_path(path_par));
+                        // :5526 — first (byte-lex smallest) child.
+                        let children = chain
+                            .source_map
+                            .collect_child_segments(&segments_to_key(focus, false), Some(1));
+                        match children.into_iter().next() {
+                            Some(first) => {
+                                focus.push(first);
+                                // A child-SEGMENT move lands on an element BOUNDARY and
+                                // learns nothing about which arm the entry there took, so the
+                                // cursor becomes PREFIX (see reduce.rs's twin).
+                                *kind = CursorKind::Prefix;
+                                None
+                            }
+                            // :5534-5536 — no children ⇒ Nil.
+                            None => Some(ViewMode::Nil),
+                        }
                     }
                     ViewMode::Map => {
-                        // :3863-3866 — descendTo has NO EPathmapBody arm.
+                        // :5539-5542 — no EPathmapBody arm.
                         return Err(method_not_defined(kind, TYPE_PATHMAP));
                     }
                     ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                },
+                };
+                if let Some(next) = transition {
+                    mode = next;
+                }
+            }
 
-                // ── descendFirst (:5502-5544) ───────────────────────────
-                LinkKind::DescendFirst => {
+            // ── descendIndexedBranch (:5578-5648) ───────────────────
+            LinkKind::DescendIndexedBranch => {
+                let idx_par = arg_b
+                    .as_ref()
+                    .expect("arity-1 link must have a Position-B argument");
+                // :5584-5594 — the integer extraction precedes the base
+                // match…
+                let idx = match idx_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    Some(ExprInstance::GInt(n)) => *n,
+                    _ => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from(
+                                "descendIndexedBranch (requires integer argument)",
+                            ),
+                            other_type: "non-integer".to_string(),
+                        })
+                    }
+                };
+                // :5596-5599 — …and so does the negative check: a
+                // negative index yields Nil EVEN on a map-mode view.
+                if idx < 0 {
+                    mode = ViewMode::Nil;
+                } else {
                     let transition = match &mut mode {
                         ViewMode::Zipper { focus, kind, .. } => {
-                            // :5526 — first (byte-lex smallest) child.
-                            let children = chain
-                                .source_map
-                                .collect_child_segments(&segments_to_key(focus, false), Some(1));
-                            match children.into_iter().next() {
-                                Some(first) => {
-                                    focus.push(first);
+                            // :5627-5631 — early-stop after idx+1
+                            // emissions (saturating: a saturated limit
+                            // enumerates all children and `.get` still
+                            // yields None).
+                            let children = chain.source_map.collect_child_segments(
+                                &segments_to_key(focus, false),
+                                Some((idx as usize).saturating_add(1)),
+                            );
+                            match children.into_iter().nth(idx as usize) {
+                                Some(child) => {
+                                    focus.push(child);
                                     // A child-SEGMENT move lands on an element BOUNDARY and
                                     // learns nothing about which arm the entry there took, so the
                                     // cursor becomes PREFIX (see reduce.rs's twin).
                                     *kind = CursorKind::Prefix;
                                     None
                                 }
-                                // :5534-5536 — no children ⇒ Nil.
+                                // :5639-5641 — out of bounds ⇒ Nil.
                                 None => Some(ViewMode::Nil),
                             }
                         }
                         ViewMode::Map => {
-                            // :5539-5542 — no EPathmapBody arm.
+                            // :5644-5647.
                             return Err(method_not_defined(kind, TYPE_PATHMAP));
                         }
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
@@ -777,354 +881,296 @@ impl DebruijnInterpreter {
                         mode = next;
                     }
                 }
+            }
 
-                // ── descendIndexedBranch (:5578-5648) ───────────────────
-                LinkKind::DescendIndexedBranch => {
-                    let idx_par = arg_b
-                        .as_ref()
-                        .expect("arity-1 link must have a Position-B argument");
-                    // :5584-5594 — the integer extraction precedes the base
-                    // match…
-                    let idx = match idx_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                        Some(ExprInstance::GInt(n)) => *n,
-                        _ => {
-                            return Err(InterpreterError::MethodNotDefined {
-                                method: String::from(
-                                    "descendIndexedBranch (requires integer argument)",
-                                ),
-                                other_type: "non-integer".to_string(),
-                            })
-                        }
-                    };
-                    // :5596-5599 — …and so does the negative check: a
-                    // negative index yields Nil EVEN on a map-mode view.
-                    if idx < 0 {
-                        mode = ViewMode::Nil;
-                    } else {
-                        let transition = match &mut mode {
-                            ViewMode::Zipper { focus, kind, .. } => {
-                                // :5627-5631 — early-stop after idx+1
-                                // emissions (saturating: a saturated limit
-                                // enumerates all children and `.get` still
-                                // yields None).
-                                let children = chain.source_map.collect_child_segments(
-                                    &segments_to_key(focus, false),
-                                    Some((idx as usize).saturating_add(1)),
-                                );
-                                match children.into_iter().nth(idx as usize) {
-                                    Some(child) => {
-                                        focus.push(child);
-                                        // A child-SEGMENT move lands on an element BOUNDARY and
-                                        // learns nothing about which arm the entry there took, so the
-                                        // cursor becomes PREFIX (see reduce.rs's twin).
-                                        *kind = CursorKind::Prefix;
-                                        None
-                                    }
-                                    // :5639-5641 — out of bounds ⇒ Nil.
-                                    None => Some(ViewMode::Nil),
-                                }
-                            }
-                            ViewMode::Map => {
-                                // :5644-5647.
-                                return Err(method_not_defined(kind, TYPE_PATHMAP));
-                            }
-                            ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                        };
-                        if let Some(next) = transition {
-                            mode = next;
-                        }
-                    }
-                }
-
-                // ── ascend (:5341-5410) ─────────────────────────────────
-                LinkKind::Ascend => {
-                    let steps_par = arg_b
-                        .as_ref()
-                        .expect("arity-1 link must have a Position-B argument");
-                    // :5343-5355 — extraction precedes the base match.
-                    let steps = match steps_par
-                        .exprs
-                        .first()
-                        .and_then(|e| e.expr_instance.as_ref())
-                    {
-                        Some(ExprInstance::GInt(n)) => *n,
-                        _ => {
-                            return Err(InterpreterError::MethodNotDefined {
-                                method: String::from("ascend (requires integer argument)"),
-                                other_type: "non-integer".to_string(),
-                            })
-                        }
-                    };
-                    // :5357-5362 — so does the negative check.
-                    if steps < 0 {
+            // ── ascend (:5341-5410) ─────────────────────────────────
+            LinkKind::Ascend => {
+                let steps_par = arg_b
+                    .as_ref()
+                    .expect("arity-1 link must have a Position-B argument");
+                // :5343-5355 — extraction precedes the base match.
+                let steps = match steps_par
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
+                    Some(ExprInstance::GInt(n)) => *n,
+                    _ => {
                         return Err(InterpreterError::MethodNotDefined {
-                            method: String::from("ascend (steps must be non-negative)"),
-                            other_type: format!("negative: {}", steps),
-                        });
+                            method: String::from("ascend (requires integer argument)"),
+                            other_type: "non-integer".to_string(),
+                        })
                     }
-                    match &mut mode {
-                        ViewMode::Zipper { focus, kind, .. } => {
-                            // :5366-5373 — pop up to `steps`, capped at root.
-                            let actual_steps = std::cmp::min(steps as usize, focus.len());
-                            for _ in 0..actual_steps {
-                                focus.pop();
-                            }
+                };
+                // :5357-5362 — so does the negative check.
+                if steps < 0 {
+                    return Err(InterpreterError::MethodNotDefined {
+                        method: String::from("ascend (steps must be non-negative)"),
+                        other_type: format!("negative: {}", steps),
+                    });
+                }
+                match &mut mode {
+                    ViewMode::Zipper { focus, kind, .. } => {
+                        // :5366-5373 — pop up to `steps`, capped at root.
+                        let actual_steps = std::cmp::min(steps as usize, focus.len());
+                        for _ in 0..actual_steps {
+                            focus.pop();
+                        }
+                        // A child-SEGMENT move lands on an element BOUNDARY and
+                        // learns nothing about which arm the entry there took,
+                        // so the cursor becomes PREFIX (see reduce.rs's twin).
+                        *kind = CursorKind::Prefix;
+                    }
+                    ViewMode::Map => {
+                        // :5379-5382.
+                        return Err(method_not_defined(kind, TYPE_PATHMAP));
+                    }
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                }
+            }
+
+            // ── ascendOne (:5286-5307) ──────────────────────────────
+            LinkKind::AscendOne => {
+                let transition = match &mut mode {
+                    ViewMode::Zipper { focus, kind, .. } => {
+                        if focus.is_empty() {
+                            // :5290-5293 — at root ⇒ Nil.
+                            Some(ViewMode::Nil)
+                        } else {
+                            // :5296.
+                            focus.pop();
                             // A child-SEGMENT move lands on an element BOUNDARY and
                             // learns nothing about which arm the entry there took,
                             // so the cursor becomes PREFIX (see reduce.rs's twin).
                             *kind = CursorKind::Prefix;
+                            None
                         }
-                        ViewMode::Map => {
-                            // :5379-5382.
-                            return Err(method_not_defined(kind, TYPE_PATHMAP));
-                        }
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    }
-                }
-
-                // ── ascendOne (:5286-5307) ──────────────────────────────
-                LinkKind::AscendOne => {
-                    let transition = match &mut mode {
-                        ViewMode::Zipper { focus, kind, .. } => {
-                            if focus.is_empty() {
-                                // :5290-5293 — at root ⇒ Nil.
-                                Some(ViewMode::Nil)
-                            } else {
-                                // :5296.
-                                focus.pop();
-                                // A child-SEGMENT move lands on an element BOUNDARY and
-                                // learns nothing about which arm the entry there took,
-                                // so the cursor becomes PREFIX (see reduce.rs's twin).
-                                *kind = CursorKind::Prefix;
-                                None
-                            }
-                        }
-                        ViewMode::Map => {
-                            // :5302-5305.
-                            return Err(method_not_defined(kind, TYPE_PATHMAP));
-                        }
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    if let Some(next) = transition {
-                        mode = next;
-                    }
-                }
-
-                // ── toNextSibling (:5684-5740) / toPrevSibling (:5774-5830)
-                LinkKind::ToNextSibling | LinkKind::ToPrevSibling => {
-                    let transition = match &mut mode {
-                        ViewMode::Zipper {
-                            focus,
-                            kind: cursor,
-                            ..
-                        } => {
-                            if focus.is_empty() {
-                                // :5688-5690/:5778-5780 — no siblings at root.
-                                Some(ViewMode::Nil)
-                            } else {
-                                let current_segment = focus
-                                    .last()
-                                    .expect("non-empty focus has a last segment")
-                                    .clone();
-                                let parent_key = segments_to_key(&focus[..focus.len() - 1], false);
-                                // :5713/:5803 — all siblings, ascending
-                                // byte-lex, deduplicated.
-                                let siblings =
-                                    chain.source_map.collect_child_segments(&parent_key, None);
-                                match siblings.iter().position(|s| s == &current_segment) {
-                                    Some(current_idx) => {
-                                        let target_idx = if kind == LinkKind::ToNextSibling {
-                                            // :5719-5729.
-                                            (current_idx + 1 < siblings.len())
-                                                .then_some(current_idx + 1)
-                                        } else {
-                                            // :5809-5819.
-                                            current_idx.checked_sub(1)
-                                        };
-                                        match target_idx {
-                                            Some(sibling_idx) => {
-                                                focus.pop();
-                                                focus.push(siblings[sibling_idx].clone());
-                                                // A child-SEGMENT move lands on
-                                                // an element BOUNDARY and learns
-                                                // nothing about which arm the
-                                                // entry there took, so the
-                                                // cursor becomes PREFIX.
-                                                *cursor = CursorKind::Prefix;
-                                                None
-                                            }
-                                            // No next/previous sibling ⇒ Nil.
-                                            None => Some(ViewMode::Nil),
-                                        }
-                                    }
-                                    // :5730-5733/:5820-5823 — current not
-                                    // found ("shouldn't happen") ⇒ Nil.
-                                    None => Some(ViewMode::Nil),
-                                }
-                            }
-                        }
-                        ViewMode::Map => {
-                            // :5735-5738/:5825-5828.
-                            return Err(method_not_defined(kind, TYPE_PATHMAP));
-                        }
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    if let Some(next) = transition {
-                        mode = next;
-                    }
-                }
-
-                // ── reset (:5236-5251) ──────────────────────────────────
-                LinkKind::Reset => match &mut mode {
-                    ViewMode::Zipper { focus, kind, .. } => {
-                        // :5240 — clear to root.
-                        focus.clear();
-                        // The root cursor is the SPLIT frame of zero elements.
-                        *kind = CursorKind::Split;
                     }
                     ViewMode::Map => {
-                        // :5246-5249.
+                        // :5302-5305.
                         return Err(method_not_defined(kind, TYPE_PATHMAP));
                     }
                     ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                },
-
-                // ── pathExists (:4990-5058) — TERMINAL ──────────────────
-                LinkKind::PathExists => {
-                    let exists = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            let key = segments_to_key(focus, false);
-                            if key.is_empty() {
-                                // :5011-5013 — root exists iff the EMBEDDED
-                                // message is non-empty; the embedded message
-                                // is the source message (carried through
-                                // navigation unchanged).
-                                !chain.source_map.entry_trie().is_empty()
-                            } else {
-                                // :5019 — native trie-path lookup.
-                                chain.source_map.path_prefix_exists(&key)
-                            }
-                        }
-                        // :5022-5024 — a raw map exists iff non-empty.
-                        ViewMode::Map => !chain.source_map.entry_trie().is_empty(),
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    // :5055-5057.
-                    return Ok(single_expr_par(ExprInstance::GBool(exists)));
-                }
-
-                // ── getLeaf (:3904-3977) — TERMINAL ─────────────────────
-                LinkKind::GetLeaf => {
-                    let value = match &mode {
-                        ViewMode::Zipper { focus, kind, .. } => {
-                            // :3915-3930 — the ENTRY key the cursor names;
-                            // absent ⇒ Nil. `focus` says WHERE and `kind` says
-                            // WHICH ARM, which is what tells the bare element
-                            // `1` (key `03 02`) apart from the singleton list
-                            // `[1]` (key `03 02 00`). Byte-identical to the
-                            // retired `segments_to_key(focus, true)` for a
-                            // SPLIT cursor, which every ground-list chain has.
-                            let key = chain.source_map.cursor_entry_key(focus, *kind);
-                            chain
-                                .source_map
-                                .leaf_at_encoded_key(&key)
-                                .unwrap_or_default()
-                        }
-                        ViewMode::Map => Par::default(),
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    // :3976 — apply returns the leaf Par UNWRAPPED.
-                    return Ok(value);
-                }
-
-                // ── getSubtrie (:3989-4056) — TERMINAL ──────────────────
-                LinkKind::GetSubtrie => {
-                    let result = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            // :3999-4013 — native subtrie descent below the
-                            // focus prefix.
-                            single_expr_par(ExprInstance::EPathmapBody(
-                                chain.source_map.subtrie(&segments_to_key(focus, false)),
-                            ))
-                        }
-                        ViewMode::Map => {
-                            // :4025-4029 — the whole map back; today's arm
-                            // returns the re-evaluated message, which is
-                            // byte-identical to the source under the gate.
-                            single_expr_par(ExprInstance::EPathmapBody(chain.source_map.clone()))
-                        }
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    return Ok(result);
-                }
-
-                // ── childCount (:5419-5490) — TERMINAL ──────────────────
-                LinkKind::ChildCount => {
-                    let count = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            // :5428-5444 — distinct immediate children below
-                            // the focus.
-                            chain
-                                .source_map
-                                .collect_child_segments(&segments_to_key(focus, false), None)
-                                .len() as i64
-                        }
-                        ViewMode::Map => {
-                            // :5446-5457 — distinct first segments.
-                            chain.source_map.collect_child_segments(&[], None).len() as i64
-                        }
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    // :5487-5489.
-                    return Ok(single_expr_par(ExprInstance::GInt(count)));
-                }
-
-                // ── atPath (:4895-4977) — TERMINAL ──────────────────────
-                LinkKind::AtPath => {
-                    let path_par = arg_b
-                        .as_ref()
-                        .expect("arity-1 link must have a Position-B argument");
-                    // :4906-4919 / :4935-4943 — the ENTRY key of the argument
-                    // path reached from this view's cursor. Both arms go
-                    // through `entry_key_at`, the ONE place that spends the
-                    // whole-path Par it holds: at the root it asks the codec
-                    // for the key the entry was inserted under (split arm, bare
-                    // arm, or escape arm) rather than rebuilding it and
-                    // guessing "split". Byte-identical to the retired
-                    // expression on the split arm, so the twin in `reduce.rs`
-                    // stays byte-for-byte the same function.
-                    let key = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            chain.source_map.entry_key_at(focus, path_par)
-                        }
-                        ViewMode::Map => chain.source_map.entry_key_at(&[], path_par),
-                        ViewMode::Nil => unreachable!("Nil views return at step (c)"),
-                    };
-                    return Ok(chain
-                        .source_map
-                        .leaf_at_encoded_key(&key)
-                        .unwrap_or_default());
+                };
+                if let Some(next) = transition {
+                    mode = next;
                 }
             }
-        }
 
-        // (5) the chain ended on a view-preserving link: materialize.
+            // ── toNextSibling (:5684-5740) / toPrevSibling (:5774-5830)
+            LinkKind::ToNextSibling | LinkKind::ToPrevSibling => {
+                let transition = match &mut mode {
+                    ViewMode::Zipper {
+                        focus,
+                        kind: cursor,
+                        ..
+                    } => {
+                        if focus.is_empty() {
+                            // :5688-5690/:5778-5780 — no siblings at root.
+                            Some(ViewMode::Nil)
+                        } else {
+                            let current_segment = focus
+                                .last()
+                                .expect("non-empty focus has a last segment")
+                                .clone();
+                            let parent_key = segments_to_key(&focus[..focus.len() - 1], false);
+                            // :5713/:5803 — all siblings, ascending
+                            // byte-lex, deduplicated.
+                            let siblings =
+                                chain.source_map.collect_child_segments(&parent_key, None);
+                            match siblings.iter().position(|s| s == &current_segment) {
+                                Some(current_idx) => {
+                                    let target_idx = if kind == LinkKind::ToNextSibling {
+                                        // :5719-5729.
+                                        (current_idx + 1 < siblings.len())
+                                            .then_some(current_idx + 1)
+                                    } else {
+                                        // :5809-5819.
+                                        current_idx.checked_sub(1)
+                                    };
+                                    match target_idx {
+                                        Some(sibling_idx) => {
+                                            focus.pop();
+                                            focus.push(siblings[sibling_idx].clone());
+                                            // A child-SEGMENT move lands on
+                                            // an element BOUNDARY and learns
+                                            // nothing about which arm the
+                                            // entry there took, so the
+                                            // cursor becomes PREFIX.
+                                            *cursor = CursorKind::Prefix;
+                                            None
+                                        }
+                                        // No next/previous sibling ⇒ Nil.
+                                        None => Some(ViewMode::Nil),
+                                    }
+                                }
+                                // :5730-5733/:5820-5823 — current not
+                                // found ("shouldn't happen") ⇒ Nil.
+                                None => Some(ViewMode::Nil),
+                            }
+                        }
+                    }
+                    ViewMode::Map => {
+                        // :5735-5738/:5825-5828.
+                        return Err(method_not_defined(kind, TYPE_PATHMAP));
+                    }
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                if let Some(next) = transition {
+                    mode = next;
+                }
+            }
+
+            // ── reset (:5236-5251) ──────────────────────────────────
+            LinkKind::Reset => match &mut mode {
+                ViewMode::Zipper { focus, kind, .. } => {
+                    // :5240 — clear to root.
+                    focus.clear();
+                    // The root cursor is the SPLIT frame of zero elements.
+                    *kind = CursorKind::Split;
+                }
+                ViewMode::Map => {
+                    // :5246-5249.
+                    return Err(method_not_defined(kind, TYPE_PATHMAP));
+                }
+                ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+            },
+
+            // ── pathExists (:4990-5058) — TERMINAL ──────────────────
+            LinkKind::PathExists => {
+                let exists = match &mode {
+                    ViewMode::Zipper { focus, .. } => {
+                        let key = segments_to_key(focus, false);
+                        if key.is_empty() {
+                            // :5011-5013 — root exists iff the EMBEDDED
+                            // message is non-empty; the embedded message
+                            // is the source message (carried through
+                            // navigation unchanged).
+                            !chain.source_map.entry_trie().is_empty()
+                        } else {
+                            // :5019 — native trie-path lookup.
+                            chain.source_map.path_prefix_exists(&key)
+                        }
+                    }
+                    // :5022-5024 — a raw map exists iff non-empty.
+                    ViewMode::Map => !chain.source_map.entry_trie().is_empty(),
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                // :5055-5057.
+                return Ok(Some(single_expr_par(ExprInstance::GBool(exists))));
+            }
+
+            // ── getLeaf (:3904-3977) — TERMINAL ─────────────────────
+            LinkKind::GetLeaf => {
+                let value = match &mode {
+                    ViewMode::Zipper { focus, kind, .. } => {
+                        // :3915-3930 — the ENTRY key the cursor names;
+                        // absent ⇒ Nil. `focus` says WHERE and `kind` says
+                        // WHICH ARM, which is what tells the bare element
+                        // `1` (key `03 02`) apart from the singleton list
+                        // `[1]` (key `03 02 00`). Byte-identical to the
+                        // retired `segments_to_key(focus, true)` for a
+                        // SPLIT cursor, which every ground-list chain has.
+                        let key = chain.source_map.cursor_entry_key(focus, *kind);
+                        chain
+                            .source_map
+                            .leaf_at_encoded_key(&key)
+                            .unwrap_or_default()
+                    }
+                    ViewMode::Map => Par::default(),
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                // :3976 — apply returns the leaf Par UNWRAPPED.
+                return Ok(Some(value));
+            }
+
+            // ── getSubtrie (:3989-4056) — TERMINAL ──────────────────
+            LinkKind::GetSubtrie => {
+                let result = match &mode {
+                    ViewMode::Zipper { focus, .. } => {
+                        // :3999-4013 — native subtrie descent below the
+                        // focus prefix.
+                        single_expr_par(ExprInstance::EPathmapBody(
+                            chain.source_map.subtrie(&segments_to_key(focus, false)),
+                        ))
+                    }
+                    ViewMode::Map => {
+                        // :4025-4029 — the whole map back; today's arm
+                        // returns the re-evaluated message, which is
+                        // byte-identical to the source under the gate.
+                        single_expr_par(ExprInstance::EPathmapBody(chain.source_map.clone()))
+                    }
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                return Ok(Some(result));
+            }
+
+            // ── childCount (:5419-5490) — TERMINAL ──────────────────
+            LinkKind::ChildCount => {
+                let count = match &mode {
+                    ViewMode::Zipper { focus, .. } => {
+                        // :5428-5444 — distinct immediate children below
+                        // the focus.
+                        chain
+                            .source_map
+                            .collect_child_segments(&segments_to_key(focus, false), None)
+                            .len() as i64
+                    }
+                    ViewMode::Map => {
+                        // :5446-5457 — distinct first segments.
+                        chain.source_map.collect_child_segments(&[], None).len() as i64
+                    }
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                // :5487-5489.
+                return Ok(Some(single_expr_par(ExprInstance::GInt(count))));
+            }
+
+            // ── atPath (:4895-4977) — TERMINAL ──────────────────────
+            LinkKind::AtPath => {
+                let path_par = arg_b
+                    .as_ref()
+                    .expect("arity-1 link must have a Position-B argument");
+                // :4906-4919 / :4935-4943 — the ENTRY key of the argument
+                // path reached from this view's cursor. Both arms go
+                // through `entry_key_at`, the ONE place that spends the
+                // whole-path Par it holds: at the root it asks the codec
+                // for the key the entry was inserted under (split arm, bare
+                // arm, or escape arm) rather than rebuilding it and
+                // guessing "split". Byte-identical to the retired
+                // expression on the split arm, so the twin in `reduce.rs`
+                // stays byte-for-byte the same function.
+                let key = match &mode {
+                    ViewMode::Zipper { focus, .. } => {
+                        chain.source_map.entry_key_at(focus, path_par)
+                    }
+                    ViewMode::Map => chain.source_map.entry_key_at(&[], path_par),
+                    ViewMode::Nil => unreachable!("Nil views return at step (c)"),
+                };
+                return Ok(Some(
+                    chain
+                        .source_map
+                        .leaf_at_encoded_key(&key)
+                        .unwrap_or_default(),
+                ));
+            }
+        }
+        state.mode = mode;
+        Ok(None)
+    }
+
+    fn materialize_fused(chain: &FusedChain<'_>, mode: ViewMode) -> Par {
         match mode {
-            // A terminal Nil (e.g. `readZipper().ascendOne()`): today's apply
-            // returned `Par::default()` from the failing navigation.
-            ViewMode::Nil => Ok(Par::default()),
-            // The exact EZipper Par today's per-link path produces — ONE map
-            // embed cloned from the borrowed base message (parity, no win
-            // claimed on this arm).
+            ViewMode::Nil => Par::default(),
             ViewMode::Zipper { focus, kind, meta } => {
-                Ok(single_expr_par(ExprInstance::EZipperBody(EZipper {
+                single_expr_par(ExprInstance::EZipperBody(EZipper {
                     pathmap: Some(chain.source_map.clone()),
                     current_path: focus,
                     is_write_zipper: meta.is_write,
                     locally_free: meta.locally_free,
                     connective_used: meta.connective_used,
                     cursor_kind: kind.to_wire(),
-                })))
+                }))
             }
             ViewMode::Map => unreachable!(
                 "a fused chain has at least one link, and no link leaves a map-mode view \
@@ -1198,6 +1244,7 @@ pub mod fusion_test_support {
 #[cfg(test)]
 mod stack_safety_tests {
     use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
+    use models::rust::utils::new_gstring_par;
     use rspace_plus_plus::rspace::rspace::RSpace;
 
     use super::*;
@@ -1218,6 +1265,16 @@ mod stack_safety_tests {
             method_name: method_name.to_owned(),
             target: Some(target),
             arguments: Vec::new(),
+            locally_free: Vec::new(),
+            connective_used: false,
+        }))
+    }
+
+    fn call_with_argument(target: Par, method_name: &str, argument: Par) -> Par {
+        expr(ExprInstance::EMethodBody(EMethod {
+            method_name: method_name.to_owned(),
+            target: Some(target),
+            arguments: vec![argument],
             locally_free: Vec::new(),
             connective_used: false,
         }))
@@ -1257,5 +1314,45 @@ mod stack_safety_tests {
             .expect("spawn fixed-stack fused-chain probe")
             .join()
             .expect("fixed-stack fused-chain probe panicked");
+    }
+
+    #[test]
+    fn fused_arity_one_chain_depth_4096_uses_a_fixed_small_native_stack() {
+        std::thread::Builder::new()
+            .name("fused-pathmap-arity-one-depth-4096".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let (_, reducer) = create_test_space::<
+                        RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+                    >()
+                    .await;
+
+                    let mut chain = expr(ExprInstance::EPathmapBody(EPathMap::default()));
+                    chain = call(chain, "readZipper");
+                    for _ in 0..4_096 {
+                        chain = call_with_argument(
+                            chain,
+                            "descendTo",
+                            new_gstring_par("x".to_owned(), Vec::new(), false),
+                        );
+                    }
+                    chain = call(chain, "pathExists");
+
+                    let result = reducer
+                        .eval_expr(&chain, &Env::new())
+                        .expect("the fused arity-one PathMap chain must evaluate");
+                    assert_eq!(result.exprs.len(), 1);
+                    models::rust::rholang::par_children::dismantle(chain);
+                    models::rust::rholang::par_children::dismantle(result);
+                });
+            })
+            .expect("spawn fixed-stack arity-one fused-chain probe")
+            .join()
+            .expect("fixed-stack arity-one fused-chain probe panicked");
     }
 }

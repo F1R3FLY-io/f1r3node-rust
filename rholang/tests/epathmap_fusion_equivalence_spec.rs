@@ -1,6 +1,6 @@
 //! EPathMap fused-vs-fallback equivalence and COMM-accounting specification.
 //!
-//! The production `try_eval_fused_method_chain` optimization is checked
+//! The production resumable fused-chain state machine is checked
 //! against the unfused per-link implementation from the same source. The
 //! test-only [`QueryRunMode`] exposes
 //! `FusedDisabled` / `Fused` variants — gated by a COMPILE-TIME

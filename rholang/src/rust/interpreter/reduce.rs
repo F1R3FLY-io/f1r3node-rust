@@ -58,6 +58,7 @@ use super::dispatch::{
 };
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::fused_pathmap_chain::{FusedAction, FusedEval};
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
     REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
@@ -455,13 +456,10 @@ trait Method {
 //   * A `?` abort discards `work`/`vals` and leaves already-reserved charges
 //     reserved — identical to the recursive `?`.
 //
-// Owned intermediates (eval_var results, method-apply results, %% map contents,
-// Set/Map arithmetic results, and the SORTED elements of Set/Map literals) are
-// NOT the deep structural spine; they are re-evaluated by DIRECT calls to the
-// (now trampolined) wrappers, each starting a fresh bounded `drive`. This keeps
-// the native stack O(1) for the reported plus/list overflow AND for method
-// chains (whose deep target is a worklisted child), while matching the recursive
-// evaluator's behaviour on the shallow re-eval paths.
+// Owned intermediates (eval_var results, method-apply results, interpolation
+// pairs, collection elements, and fused-chain arguments) are allocated in the
+// drive arena and queued on this same worklist. They therefore retain the exact
+// re-evaluation semantics without nesting another evaluator drive.
 // ============================================================================
 
 /// A produced value, tagged by the evaluator that produced it.
@@ -470,6 +468,25 @@ enum EvVal {
     Expr(Expr),
     Bool(bool),
     I64(i64),
+}
+
+enum EvalSingleStep {
+    Complete(Expr),
+    Evaluate(Par),
+}
+
+enum InterpolateStep {
+    Complete(Expr),
+    Evaluate {
+        source: String,
+        pairs: Vec<(Par, Par)>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum FusedOutput {
+    Par,
+    Expr,
 }
 
 /// A pending unit of work. All AST references borrow the input term (`'e`); the
@@ -547,6 +564,26 @@ enum EvKont<'e> {
         e1: &'e EPathMap,
         n: usize,
     },
+    ESetK {
+        eset: &'e ESet,
+        n: usize,
+    },
+    EMapK {
+        emap: &'e EMap,
+        n: usize,
+    },
+    InterpolateK {
+        source: String,
+        pair_count: usize,
+    },
+    FusedAfterA {
+        state: FusedEval<'e>,
+        output: FusedOutput,
+    },
+    FusedAfterB {
+        state: FusedEval<'e>,
+        output: FusedOutput,
+    },
     // ---- eval_expr_to_expr (method) ----
     EMethodExprK {
         emethod: &'e EMethod,
@@ -591,6 +628,16 @@ fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<Par> {
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(ev_pop_par(vals));
+    }
+    out.reverse();
+    out
+}
+
+#[inline]
+fn ev_pop_n_expr(vals: &mut Vec<EvVal>, n: usize) -> Vec<Expr> {
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(ev_pop_expr(vals));
     }
     out.reverse();
     out
@@ -2290,7 +2337,7 @@ impl DebruijnInterpreter {
     fn eval_drive<'root>(
         &self,
         root: EvWork<'root>,
-        env: &Env<Par>,
+        env: &'root Env<Par>,
     ) -> Result<EvVal, InterpreterError> {
         let decoded_entries = Arena::new();
         self.eval_drive_with_arena(root, env, &decoded_entries)
@@ -2303,7 +2350,7 @@ impl DebruijnInterpreter {
     fn eval_drive_with_arena<'e>(
         &self,
         root: EvWork<'e>,
-        env: &Env<Par>,
+        env: &'e Env<Par>,
         decoded_entries: &'e Arena<Par>,
     ) -> Result<EvVal, InterpreterError> {
         let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
@@ -2312,14 +2359,22 @@ impl DebruijnInterpreter {
         while let Some(w) = work.pop() {
             match w {
                 EvWork::EEval(p) => self.descend_eval(p, env, &mut work, &mut vals)?,
-                EvWork::EToPar(e) => self.descend_to_par(e, env, &mut work, &mut vals)?,
+                EvWork::EToPar(e) => {
+                    self.descend_to_par(e, env, decoded_entries, &mut work, &mut vals)?
+                }
                 EvWork::EToExpr(e) => {
                     self.descend_to_expr(e, env, decoded_entries, &mut work, &mut vals)?
                 }
                 EvWork::ESingle(p) => self.descend_single(p, env, &mut work, &mut vals)?,
-                EvWork::EBool(p) => self.descend_bool(p, env, &mut work, &mut vals)?,
-                EvWork::EI64(p) => self.descend_i64(p, env, &mut work, &mut vals)?,
-                EvWork::Combine(k) => self.combine(k, env, &mut vals)?,
+                EvWork::EBool(p) => {
+                    self.descend_bool(p, env, decoded_entries, &mut work, &mut vals)?
+                }
+                EvWork::EI64(p) => {
+                    self.descend_i64(p, env, decoded_entries, &mut work, &mut vals)?
+                }
+                EvWork::Combine(k) => {
+                    self.combine(k, env, decoded_entries, &mut work, &mut vals)?
+                }
             }
         }
         Ok(vals
@@ -2329,9 +2384,7 @@ impl DebruijnInterpreter {
 
     // =======================================================================
     // The six SCC entry points — now THIN wrappers over `eval_drive`. Their
-    // signatures are unchanged, so every external caller and every method-body
-    // callback is covered transitively (a callback that re-enters simply starts
-    // a fresh bounded `drive`).
+    // signatures are unchanged, so every external caller is covered transitively.
     // =======================================================================
     pub fn eval_expr(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
         match self.eval_drive(EvWork::EEval(par), env)? {
@@ -2362,6 +2415,7 @@ impl DebruijnInterpreter {
             _ => unreachable!("eval_single_expr: drive produced non-Expr"),
         }
     }
+    #[cfg(test)]
     fn eval_to_bool(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
         match self.eval_drive(EvWork::EBool(p), env)? {
             EvVal::Bool(b) => Ok(b),
@@ -2424,14 +2478,14 @@ impl DebruijnInterpreter {
     fn descend_to_par<'e>(
         &self,
         expr: &'e Expr,
-        env: &Env<Par>,
+        env: &'e Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
-        // Fused method-chain seam (runs FIRST; charges internally, may short-circuit).
         if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
-            if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
-                vals.push(EvVal::Par(fused));
+            if let Some(action) = self.begin_fused_method_chain(emethod, env)? {
+                Self::continue_fused_action(action, FusedOutput::Par, decoded_entries, work, vals);
                 return Ok(());
             }
         }
@@ -2445,10 +2499,9 @@ impl DebruijnInterpreter {
         };
         match expr_instance {
             ExprInstance::EVarBody(evar) => {
-                // eval_var (charges var_eval_cost) then re-eval via eval_expr (direct).
+                // eval_var (charges var_eval_cost) then re-eval in this drive.
                 let p = self.eval_var(&unwrap_option_safe(evar.v.clone())?, env)?;
-                let evaled_p = self.eval_expr(&p, env)?;
-                vals.push(EvVal::Par(evaled_p));
+                work.push(EvWork::EEval(decoded_entries.alloc(p)));
                 Ok(())
             }
             ExprInstance::EMethodBody(emethod) => {
@@ -2517,6 +2570,7 @@ impl DebruijnInterpreter {
         &self,
         p: &'e Par,
         env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
@@ -2542,8 +2596,7 @@ impl DebruijnInterpreter {
                 expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
             }] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                let b = self.eval_to_bool(&pv, env)?;
-                vals.push(EvVal::Bool(b));
+                work.push(EvWork::EBool(decoded_entries.alloc(pv)));
                 Ok(())
             }
             [e] => {
@@ -2562,6 +2615,7 @@ impl DebruijnInterpreter {
         &self,
         p: &'e Par,
         env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
@@ -2587,8 +2641,7 @@ impl DebruijnInterpreter {
                 expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
             }] => {
                 let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                let i = self.eval_to_i64(&pv, env)?;
-                vals.push(EvVal::I64(i));
+                work.push(EvWork::EI64(decoded_entries.alloc(pv)));
                 Ok(())
             }
             [e] => {
@@ -2606,7 +2659,7 @@ impl DebruijnInterpreter {
     fn descend_to_expr<'e>(
         &self,
         expr: &'e Expr,
-        env: &Env<Par>,
+        env: &'e Env<Par>,
         decoded_entries: &'e Arena<Par>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
@@ -2832,8 +2885,7 @@ impl DebruijnInterpreter {
             // ---- var: eval_var (charge) + re-eval single (direct) ----
             ExprInstance::EVarBody(EVar { v }) => {
                 let p = self.eval_var(v.as_ref().unwrap(), env)?;
-                let expr_val = self.eval_single_expr(&p, env)?;
-                vals.push(EvVal::Expr(expr_val));
+                work.push(EvWork::ESingle(decoded_entries.alloc(p)));
                 Ok(())
             }
 
@@ -2911,23 +2963,41 @@ impl DebruijnInterpreter {
                 Ok(())
             }
 
-            // ---- Set/Map: SORTED owned elements -> direct eval via shared helper ----
+            // ---- Set/Map: sorted owned elements remain in this drive ----
             ExprInstance::ESetBody(eset) => {
-                let e = self.combine_eset(eset, |q| self.eval_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let children = self.prepare_eset(eset);
+                work.push(EvWork::Combine(EvKont::ESetK {
+                    eset,
+                    n: children.len(),
+                }));
+                for child in children.into_iter().rev() {
+                    work.push(EvWork::EEval(decoded_entries.alloc(child)));
+                }
                 Ok(())
             }
             ExprInstance::EMapBody(emap) => {
-                let e = self.combine_emap(emap, |q| self.eval_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let entries = self.prepare_emap(emap);
+                work.push(EvWork::Combine(EvKont::EMapK {
+                    emap,
+                    n: entries.len(),
+                }));
+                for (key, value) in entries.into_iter().rev() {
+                    work.push(EvWork::EEval(decoded_entries.alloc(value)));
+                    work.push(EvWork::EEval(decoded_entries.alloc(key)));
+                }
                 Ok(())
             }
 
             // ---- method: fused-first; else method_call_cost + worklist target+args ----
             ExprInstance::EMethodBody(emethod) => {
-                if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
-                    let e = self.eval_single_expr(&fused, env)?;
-                    vals.push(EvVal::Expr(e));
+                if let Some(action) = self.begin_fused_method_chain(emethod, env)? {
+                    Self::continue_fused_action(
+                        action,
+                        FusedOutput::Expr,
+                        decoded_entries,
+                        work,
+                        vals,
+                    );
                     return Ok(());
                 }
                 self.metering.reserve_primitive(method_call_cost())?;
@@ -2950,10 +3020,12 @@ impl DebruijnInterpreter {
     // intermediates is dispatched here (trampoline: self.eval_*) so the shared
     // helpers stay pure; the recursive twin passes its *_recursive closures.
     // =======================================================================
-    fn combine(
+    fn combine<'e>(
         &self,
-        k: EvKont,
+        k: EvKont<'e>,
         env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
+        work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
         match k {
@@ -3024,15 +3096,15 @@ impl DebruijnInterpreter {
             EvKont::Plus => {
                 let v2 = ev_pop_expr(vals);
                 let v1 = ev_pop_expr(vals);
-                let e = self.combine_plus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let step = self.combine_plus(v1, v2, env)?;
+                Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::Minus => {
                 let v2 = ev_pop_expr(vals);
                 let v1 = ev_pop_expr(vals);
-                let e = self.combine_minus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let step = self.combine_minus(v1, v2, env)?;
+                Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::Relop {
@@ -3087,22 +3159,33 @@ impl DebruijnInterpreter {
             EvKont::PercentPercent => {
                 let v2 = ev_pop_expr(vals);
                 let v1 = ev_pop_expr(vals);
-                let e = self.combine_percent_percent(v1, v2, |q| self.eval_single_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                match self.combine_percent_percent(v1, v2)? {
+                    InterpolateStep::Complete(e) => vals.push(EvVal::Expr(e)),
+                    InterpolateStep::Evaluate { source, pairs } => {
+                        work.push(EvWork::Combine(EvKont::InterpolateK {
+                            source,
+                            pair_count: pairs.len(),
+                        }));
+                        for (key, value) in pairs.into_iter().rev() {
+                            work.push(EvWork::ESingle(decoded_entries.alloc(value)));
+                            work.push(EvWork::ESingle(decoded_entries.alloc(key)));
+                        }
+                    }
+                }
                 Ok(())
             }
             EvKont::PlusPlus => {
                 let v2 = ev_pop_expr(vals);
                 let v1 = ev_pop_expr(vals);
-                let e = self.combine_plus_plus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let step = self.combine_plus_plus(v1, v2, env)?;
+                Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::MinusMinus => {
                 let v2 = ev_pop_expr(vals);
                 let v1 = ev_pop_expr(vals);
-                let e = self.combine_minus_minus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
-                vals.push(EvVal::Expr(e));
+                let step = self.combine_minus_minus(v1, v2, env)?;
+                Self::continue_eval_single(step, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::EListK { e1, n } => {
@@ -3123,13 +3206,61 @@ impl DebruijnInterpreter {
                 vals.push(EvVal::Expr(e));
                 Ok(())
             }
+            EvKont::ESetK { eset, n } => {
+                let evaled_ps = ev_pop_n_par(vals, n);
+                vals.push(EvVal::Expr(self.combine_eset(evaled_ps, eset)?));
+                Ok(())
+            }
+            EvKont::EMapK { emap, n } => {
+                let evaled = ev_pop_n_par(
+                    vals,
+                    n.checked_mul(2)
+                        .expect("an addressable map cannot overflow its value count"),
+                );
+                let mut values = evaled.into_iter();
+                let entries = (0..n)
+                    .map(|_| {
+                        let key = values
+                            .next()
+                            .expect("EMap continuation has one evaluated key per entry");
+                        let value = values
+                            .next()
+                            .expect("EMap continuation has one evaluated value per entry");
+                        (key, value)
+                    })
+                    .collect();
+                vals.push(EvVal::Expr(self.combine_emap(entries, emap)?));
+                Ok(())
+            }
+            EvKont::InterpolateK { source, pair_count } => {
+                let evaled = ev_pop_n_expr(
+                    vals,
+                    pair_count
+                        .checked_mul(2)
+                        .expect("an addressable interpolation map cannot overflow"),
+                );
+                vals.push(EvVal::Expr(
+                    self.finish_percent_percent(source, pair_count, evaled)?,
+                ));
+                Ok(())
+            }
+            EvKont::FusedAfterA { state, output } => {
+                let arg = ev_pop_par(vals);
+                let action = self.continue_fused_after_position_a(state, arg)?;
+                Self::continue_fused_action(action, output, decoded_entries, work, vals);
+                Ok(())
+            }
+            EvKont::FusedAfterB { state, output } => {
+                let arg = ev_pop_par(vals);
+                let action = self.continue_fused_after_position_b(state, arg)?;
+                Self::continue_fused_action(action, output, decoded_entries, work, vals);
+                Ok(())
+            }
             EvKont::EMethodExprK { emethod, argc } => {
                 let args = ev_pop_n_par(vals, argc);
                 let target = ev_pop_par(vals);
                 let result_par = self.apply_method_expr(emethod, target, args, env)?;
-                // Re-eval the apply result (direct; a fresh bounded drive).
-                let e = self.eval_single_expr(&result_par, env)?;
-                vals.push(EvVal::Expr(e));
+                work.push(EvWork::ESingle(decoded_entries.alloc(result_par)));
                 Ok(())
             }
             EvKont::BoolExtract => {
@@ -3143,6 +3274,43 @@ impl DebruijnInterpreter {
                 let i = Self::extract_i64(evaled)?;
                 vals.push(EvVal::I64(i));
                 Ok(())
+            }
+        }
+    }
+
+    fn continue_fused_action<'e>(
+        action: FusedAction<'e>,
+        output: FusedOutput,
+        decoded_entries: &'e Arena<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) {
+        match action {
+            FusedAction::EvalPositionA { state, arg } => {
+                work.push(EvWork::Combine(EvKont::FusedAfterA { state, output }));
+                work.push(EvWork::EEval(arg));
+            }
+            FusedAction::EvalPositionB { state, arg } => {
+                work.push(EvWork::Combine(EvKont::FusedAfterB { state, output }));
+                work.push(EvWork::EEval(decoded_entries.alloc(arg)));
+            }
+            FusedAction::Complete(par) => match output {
+                FusedOutput::Par => vals.push(EvVal::Par(par)),
+                FusedOutput::Expr => work.push(EvWork::ESingle(decoded_entries.alloc(par))),
+            },
+        }
+    }
+
+    fn continue_eval_single<'e>(
+        step: EvalSingleStep,
+        decoded_entries: &'e Arena<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) {
+        match step {
+            EvalSingleStep::Complete(expr) => vals.push(EvVal::Expr(expr)),
+            EvalSingleStep::Evaluate(par) => {
+                work.push(EvWork::ESingle(decoded_entries.alloc(par)));
             }
         }
     }
@@ -3562,14 +3730,13 @@ impl DebruijnInterpreter {
     }
 
     // EPlus. v1,v2 already `eval_single_expr`'d; ESet sub-arm re-evals via `eval_single`.
-    fn combine_plus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+    fn combine_plus(
         &self,
         v1: Expr,
         v2: Expr,
         env: &Env<Par>,
-        eval_single: F,
-    ) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+    ) -> Result<EvalSingleStep, InterpreterError> {
+        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             // ★ CHECKED, not wrapping — see `combine_minus` for the full rationale and the
             // self-contradiction this closes.
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -3640,8 +3807,7 @@ impl DebruijnInterpreter {
                     env,
                 )?;
 
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::GInt(_), other)
@@ -3660,18 +3826,18 @@ impl DebruijnInterpreter {
                 op: "+".to_string(),
                 other_type: get_type(other),
             }),
-        }
+        };
+        completed.map(EvalSingleStep::Complete)
     }
 
     // EMinus. v1,v2 already `eval_single_expr`'d; Map/Set sub-arms re-eval via `eval_single`.
-    fn combine_minus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+    fn combine_minus(
         &self,
         v1: Expr,
         v2: Expr,
         env: &Env<Par>,
-        eval_single: F,
-    ) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+    ) -> Result<EvalSingleStep, InterpreterError> {
+        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             // ★★ CHECKED, not wrapping — the reducer used to disagree with ITSELF about `Int`.
             //
             // Until 2026-07-29 `+` and `-` on `GInt` were `wrapping_add` / `wrapping_sub` while
@@ -3764,8 +3930,7 @@ impl DebruijnInterpreter {
                     env,
                 )?;
 
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::ESetBody(lhs), rhs) => {
@@ -3780,8 +3945,7 @@ impl DebruijnInterpreter {
                     env,
                 )?;
 
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::GInt(_), other)
@@ -3800,7 +3964,8 @@ impl DebruijnInterpreter {
                 op: "-".to_string(),
                 other_type: get_type(other),
             }),
-        }
+        };
+        completed.map(EvalSingleStep::Complete)
     }
 
     // EEq. v1,v2 already `eval_expr`'d (substitution + NaN-aware compare; substitute is NOT SCC).
@@ -3865,11 +4030,42 @@ impl DebruijnInterpreter {
 
     // EPercentPercent (%%). op_call_cost is charged PRE (in descend). v1,v2 `eval_single_expr`'d;
     // map contents re-eval via `eval_single`.
-    fn combine_percent_percent<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+    fn combine_percent_percent(
         &self,
         v1: Expr,
         v2: Expr,
-        eval_single: F,
+    ) -> Result<InterpolateStep, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GString(source), ExprInstance::EMapBody(emap)) => {
+                let pairs: Vec<(Par, Par)> = ParMapTypeMapper::emap_to_par_map(emap)
+                    .ps
+                    .into_iter()
+                    .collect();
+                if source.is_empty() && pairs.is_empty() {
+                    Ok(InterpolateStep::Complete(Expr {
+                        expr_instance: Some(ExprInstance::GString(source)),
+                    }))
+                } else {
+                    Ok(InterpolateStep::Evaluate { source, pairs })
+                }
+            }
+            (ExprInstance::GString(_), other) => Err(InterpreterError::OperatorExpectedError {
+                op: "%%".to_string(),
+                expected: String::from("Map"),
+                other_type: get_type(other),
+            }),
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: String::from("%%"),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    fn finish_percent_percent(
+        &self,
+        source: String,
+        pair_count: usize,
+        evaled: Vec<Expr>,
     ) -> Result<Expr, InterpreterError> {
         fn eval_to_string_pair(
             key_expr: Expr,
@@ -3933,62 +4129,48 @@ impl DebruijnInterpreter {
 
             result
         }
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-            (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
-                let rhs = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                if !lhs.is_empty() || !rhs.is_empty() {
-                    let key_value_pairs = rhs
-                        .clone()
-                        .into_iter()
-                        .map(|(k, v)| {
-                            let key_expr = eval_single(&k)?;
-                            let value_expr = eval_single(&v)?;
-                            let result = eval_to_string_pair(key_expr, value_expr)?;
-                            Ok(result)
-                        })
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    self.metering
-                        .reserve_incremental_primitive(interpolate_cost(
-                            lhs.len() as i64,
-                            rhs.length() as i64,
-                        ))?;
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GString(interpolate(
-                            &lhs,
-                            &key_value_pairs,
-                        ))),
-                    })
-                } else {
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GString(lhs)),
-                    })
-                }
-            }
-
-            (ExprInstance::GString(_), other) => Err(InterpreterError::OperatorExpectedError {
-                op: "%%".to_string(),
-                expected: String::from("Map"),
-                other_type: get_type(other),
-            }),
-
-            (other, _) => Err(InterpreterError::OperatorNotDefined {
-                op: String::from("%%"),
-                other_type: get_type(other),
-            }),
+        let expected = pair_count
+            .checked_mul(2)
+            .expect("an addressable interpolation map cannot overflow its child count");
+        assert_eq!(
+            evaled.len(),
+            expected,
+            "interpolation continuation has one evaluated key and value per entry"
+        );
+        let mut values = evaled.into_iter();
+        let mut key_value_pairs = Vec::with_capacity(pair_count);
+        for _ in 0..pair_count {
+            key_value_pairs.push(eval_to_string_pair(
+                values
+                    .next()
+                    .expect("interpolation continuation has an evaluated key"),
+                values
+                    .next()
+                    .expect("interpolation continuation has an evaluated value"),
+            )?);
         }
+        self.metering
+            .reserve_incremental_primitive(interpolate_cost(
+                source.len() as i64,
+                pair_count as i64,
+            ))?;
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::GString(interpolate(
+                &source,
+                &key_value_pairs,
+            ))),
+        })
     }
 
     // EPlusPlus (++). op_call_cost PRE. Map/Set union sub-arms re-eval via `eval_single`.
-    fn combine_plus_plus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+    fn combine_plus_plus(
         &self,
         v1: Expr,
         v2: Expr,
         env: &Env<Par>,
-        eval_single: F,
-    ) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+    ) -> Result<EvalSingleStep, InterpreterError> {
+        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
                 self.metering
                     .reserve_incremental_primitive(string_append_cost(
@@ -4033,8 +4215,7 @@ impl DebruijnInterpreter {
                     }])],
                     env,
                 )?;
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
@@ -4047,8 +4228,7 @@ impl DebruijnInterpreter {
                     }])],
                     env,
                 )?;
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::GString(_), other) => Err(InterpreterError::OperatorExpectedError {
@@ -4079,18 +4259,18 @@ impl DebruijnInterpreter {
                 op: String::from("++"),
                 other_type: get_type(other),
             }),
-        }
+        };
+        completed.map(EvalSingleStep::Complete)
     }
 
     // EMinusMinus (--). op_call_cost PRE. Set diff sub-arm re-evals via `eval_single`.
-    fn combine_minus_minus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+    fn combine_minus_minus(
         &self,
         v1: Expr,
         v2: Expr,
         env: &Env<Par>,
-        eval_single: F,
-    ) -> Result<Expr, InterpreterError> {
-        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+    ) -> Result<EvalSingleStep, InterpreterError> {
+        let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
                 let result_par = self.diff_method().apply(
                     Par::default().with_exprs(vec![Expr {
@@ -4101,8 +4281,7 @@ impl DebruijnInterpreter {
                     }])],
                     env,
                 )?;
-                let result_expr = eval_single(&result_par)?;
-                Ok(result_expr)
+                return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::ESetBody(_), other) => Err(InterpreterError::OperatorExpectedError {
@@ -4115,7 +4294,8 @@ impl DebruijnInterpreter {
                 op: String::from("--"),
                 other_type: get_type(other),
             }),
-        }
+        };
+        completed.map(EvalSingleStep::Complete)
     }
 
     // EList. evaled_ps already `eval_expr`'d (owned -> no p.clone()).
@@ -4198,57 +4378,52 @@ impl DebruijnInterpreter {
         })
     }
 
-    // ESet. SORTED owned elements evaluated via `eval_expr` closure.
-    fn combine_eset<F: Fn(&Par) -> Result<Par, InterpreterError>>(
-        &self,
-        eset: &ESet,
-        eval_expr: F,
-    ) -> Result<Expr, InterpreterError> {
-        let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-        let evaled_ps = set
+    fn prepare_eset(&self, eset: &ESet) -> Vec<Par> {
+        ParSetTypeMapper::eset_to_par_set(eset.clone())
             .ps
             .sorted_pars
-            .iter()
-            .map(|p| eval_expr(p))
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
+    }
 
+    fn combine_eset(&self, evaled_ps: Vec<Par>, eset: &ESet) -> Result<Expr, InterpreterError> {
         let updated_ps: Vec<Par> = evaled_ps
             .into_iter()
             .map(|p| self.update_locally_free_par(p))
             .collect();
 
-        let mut cloned_set = set.clone();
-        cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+        let rebuilt = ParSet {
+            ps: SortedParHashSet::create_from_vec(updated_ps),
+            connective_used: eset.connective_used,
+            locally_free: eset.locally_free.clone(),
+            remainder: eset.remainder.clone(),
+        };
         Ok(Expr {
             expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
-                cloned_set,
+                rebuilt,
             ))),
         })
     }
 
-    // EMap. SORTED owned key/value pairs via `eval_expr` closure (no update_locally_free_par).
-    fn combine_emap<F: Fn(&Par) -> Result<Par, InterpreterError>>(
-        &self,
-        emap: &EMap,
-        eval_expr: F,
-    ) -> Result<Expr, InterpreterError> {
-        let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-        let evaled_ps = map
+    fn prepare_emap(&self, emap: &EMap) -> Vec<(Par, Par)> {
+        ParMapTypeMapper::emap_to_par_map(emap.clone())
             .ps
-            .clone()
             .into_iter()
-            .map(|(k, v)| {
-                let e_key = eval_expr(&k)?;
-                let e_value = eval_expr(&v)?;
-                Ok((e_key, e_value))
-            })
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
+            .collect()
+    }
 
-        let mut cloned_map = map.clone();
-        cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
+    fn combine_emap(
+        &self,
+        evaled_ps: Vec<(Par, Par)>,
+        emap: &EMap,
+    ) -> Result<Expr, InterpreterError> {
+        let rebuilt = ParMap {
+            ps: SortedParMap::create_from_vec(evaled_ps),
+            connective_used: emap.connective_used,
+            locally_free: emap.locally_free.clone(),
+            remainder: emap.remainder.clone(),
+        };
         Ok(Expr {
             expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                cloned_map,
+                rebuilt,
             ))),
         })
     }
