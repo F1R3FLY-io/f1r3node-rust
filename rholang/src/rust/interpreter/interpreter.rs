@@ -182,7 +182,10 @@ impl InterpreterImpl {
         InterpreterImpl { c: cost, merge_chs }
     }
 
-    fn handle_error(&self, error: InterpreterError) -> Result<EvaluateResult, InterpreterError> {
+    fn handle_error(
+        &self,
+        mut error: InterpreterError,
+    ) -> Result<EvaluateResult, InterpreterError> {
         match error {
             // Source that fails before a metered source state exists consumes no token cost.
             InterpreterError::ParserError(_) => Ok(EvaluateResult {
@@ -214,9 +217,11 @@ impl InterpreterImpl {
             }),
 
             // InterpreterError(s) - multiple errors are result of parallel execution
-            InterpreterError::AggregateError { interpreter_errors } => Ok(EvaluateResult {
+            InterpreterError::AggregateError {
+                ref mut interpreter_errors,
+            } => Ok(EvaluateResult {
                 cost: self.c.total_cost(),
-                errors: interpreter_errors,
+                errors: std::mem::take(interpreter_errors),
                 mergeable: HashMap::new(),
             }),
 
