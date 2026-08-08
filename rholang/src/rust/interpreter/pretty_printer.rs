@@ -1,13 +1,15 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
+use std::collections::HashSet;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
+    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ETuple, EVar, EZipper, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+    ESet, ETuple, EVar, EZipper, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::epathmap_trie_codec::EPathMapMode;
@@ -650,7 +652,6 @@ impl PrettyPrinter {
                     Ok(format!("GSysAuthTokenBody({:?})", value))
                 }
             },
-            // TODO: Figure out if we can prevent prost from generating - OLD
             None => Ok(String::from("Nil")),
         }
     }
@@ -869,20 +870,6 @@ impl PrettyPrinter {
             .join(", ")
     }
 
-    fn build_vec(&mut self, s: &Vec<Par>) -> String {
-        s.iter().enumerate().fold(String::new(), |string, (i, p)| {
-            let mut result = string;
-
-            result.push_str(&self.build_string_from_message(p));
-
-            if i != s.len() - 1 {
-                result.push_str(", ");
-            }
-
-            result
-        })
-    }
-
     // ⚠ `build_pattern` and `build_match_case` used to sit here. They are not
     // deleted and they are not commented out: they were the two folds whose
     // *interleaving* with the printer's mutable state is the whole difficulty
@@ -893,9 +880,6 @@ impl PrettyPrinter {
     // `PpKont::CaseJoin`). Production reaches those folds only through
     // [`drive`]; keeping a second production copy would be a dual path.
     //
-    // `build_vec` above is NOT in that position: the three re-entrant `Expr`
-    // arms (`ESet`, `EMap`, `EZipper`) still call it, so it stays.
-
     pub(super) fn is_empty_par(&self, p: &Par) -> bool {
         p.sends.is_empty()
             && p.receives.is_empty()
@@ -1042,7 +1026,7 @@ mod drive {
     //! | `Receive`'s body | `New`'s body |
     //! | `Connective`'s `ps` (`ConnAnd`/`ConnOr`/`ConnNot`) | `Receive`'s bind **source** |
     //! | every `Expr` child of a `Par` | the eight `Par` categories |
-    //! | every `build_vec` / `build_pattern` element | `build_match_case`'s two children |
+    //! | every collection / `build_pattern` element | `build_match_case`'s two children |
     //!
     //! **Push order for a catching sub-render is `EndCatch`, then the work,
     //! then `BeginCatch`** — so `BeginCatch` pops first and records
@@ -1179,30 +1163,28 @@ mod drive {
     //!
     //! ---
     //!
-    //! # ★ Three arms stay verbatim (a nested, bounded drive)
+    //! # ★ Owned canonical collections stay inside the same drive
     //!
-    //! Same disposition as the sorter's three re-entrant arms
-    //! (`sort_nested_set` / `sort_nested_map` in `stack_depth_gate`'s
-    //! tripwire), and for the same reason — the values they traverse are
-    //! **owned intermediates** that cannot be borrowed onto a worklist keyed by
-    //! `'a`:
+    //! `ESetBody` and `EMapBody` preserve their historical canonical-ordering
+    //! semantics by passing the source collection through `ParSetTypeMapper` or
+    //! `ParMapTypeMapper`. Those mappers return owned canonical `Par` trees, so
+    //! the driver places their roots in its traversal-local [`Arena`] and puts
+    //! borrowed children on the existing worklist. No nested printer drive is
+    //! opened.
     //!
-    //! * `ESetBody` — `ParSetTypeMapper::eset_to_par_set(eset.clone())` builds
-    //!   an owned, *sorted* `SortedParHashSet`; `sorted_pars` lives in it.
-    //! * `EMapBody` — likewise `sorted_list`.
-    //! * `EZipperBody` — its rendered path segments are `Par`s **decoded** from
-    //!   bytes (`decode_trie_path`), rendered through `build_channel_string`.
+    //! Canonical sorting recursively canonicalizes every nested collection in
+    //! the returned tree. [`CanonicalCollections`] records those collection
+    //! addresses with an iterative child walk. When the PDA later reaches a
+    //! recorded set or map, its stored member order is already authoritative;
+    //! sorting it again would repeatedly canonicalize the remaining suffix of a
+    //! nested chain and turn a linear traversal into a quadratic one. The
+    //! registry visits each canonical `Par` at most once and lives exactly as
+    //! long as the arena whose addresses it records.
     //!
-    //! Each runs the pre-conversion body unchanged inside [`inline_expr`], and
-    //! the nested `build_vec` / `build_string_from_message` /
-    //! `build_channel_string` calls it makes each start a **fresh bounded
-    //! drive**. Native stack is therefore `O(nesting of set/map/zipper)` rather
-    //! than `O(term depth)` — the same residual the sorter carries, tracked by
-    //! the same tripwire subjects, and not reachable at all by the `EList`
-    //! nesting the `pretty` gate subject probes.
-    //!
-    //! Worklisted because they borrow: `EListBody`, `ETupleBody`,
-    //! `EPathmapBody`, `EMethodBody`, and every unary / binary arm.
+    //! `EPathmapBody` and `EZipperBody` follow the same ownership rule: decoded
+    //! trie keys and cursor segments live in the arena, while PathMap values are
+    //! borrowed directly. Every collection arm therefore resumes through the
+    //! one PDA; native-stack use is independent of collection nesting.
     //!
     //! ---
     //!
@@ -1231,7 +1213,7 @@ mod drive {
     //! | debug | `pretty_wide` (width) | 94,208 B flat (already O(1)) | **49,152 B FLAT** @ 4 / 64 / 1,024 / 65,536 |
     //! | release | `pretty_wide` (width) | 12,288 B flat (already O(1)) | **12,288 B FLAT** @ 4 / 64 / 1,024 / 65,536 |
     //!
-    //! The width axis was already `O(1)` — `build_vec` and the eight `Par`
+    //! The width axis was already `O(1)` — the collection loops and eight `Par`
     //! category walks are `for` loops, not tail recursion — so what moved there
     //! is only the intercept (the debug figure fell because the per-element
     //! render no longer opens a native frame). The depth axis is the deliverable:
@@ -1758,6 +1740,14 @@ mod drive {
         ExprK {
             expr: &'a Expr,
         },
+        SetK {
+            set: &'a ESet,
+            child_count: usize,
+        },
+        MapK {
+            map: &'a EMap,
+            entry_count: usize,
+        },
 
         /// ⚠ TEST ONLY. Pops exactly three children and joins them with
         /// `" | "`. Exists so [`PpWork::TestFailureBetweenSiblings`] can put a
@@ -1892,6 +1882,44 @@ mod drive {
     /// from every render.
     const STACK_HINT: usize = 64;
 
+    #[derive(Default)]
+    struct CanonicalCollections {
+        collections: HashSet<*const ()>,
+        visited_pars: HashSet<*const Par>,
+    }
+
+    impl CanonicalCollections {
+        fn collection_id<T>(value: &T) -> *const () { std::ptr::from_ref(value).cast() }
+
+        fn contains<T>(&self, value: &T) -> bool {
+            self.collections.contains(&Self::collection_id(value))
+        }
+
+        fn mark_from(&mut self, root: &Par) {
+            let mut pending = vec![root];
+            let mut children = Vec::new();
+            while let Some(par) = pending.pop() {
+                if !self.visited_pars.insert(std::ptr::from_ref(par)) {
+                    continue;
+                }
+                for expr in &par.exprs {
+                    match expr.expr_instance.as_ref() {
+                        Some(ExprInstance::ESetBody(set)) => {
+                            self.collections.insert(Self::collection_id(set));
+                        }
+                        Some(ExprInstance::EMapBody(map)) => {
+                            self.collections.insert(Self::collection_id(map));
+                        }
+                        _ => {}
+                    }
+                }
+                children.clear();
+                models::rust::rholang::par_children::par_child_pars(par, &mut children);
+                pending.extend(children.iter().copied());
+            }
+        }
+    }
+
     /// The single LIFO loop.
     fn run<'root>(pp: &mut PrettyPrinter, seed: PpWork<'root>) -> Result<String, InterpreterError> {
         let decoded_entries = Arena::new();
@@ -1906,6 +1934,7 @@ mod drive {
         let mut work: Vec<PpWork<'a>> = Vec::with_capacity(STACK_HINT);
         let mut vals: Vec<String> = Vec::with_capacity(STACK_HINT);
         let mut catches: Vec<CatchFrame> = Vec::new();
+        let mut canonical_collections = CanonicalCollections::default();
 
         work.push(seed);
         while let Some(item) = work.pop() {
@@ -1913,6 +1942,7 @@ mod drive {
                 pp,
                 item,
                 decoded_entries,
+                &mut canonical_collections,
                 &mut work,
                 &mut vals,
                 &mut catches,
@@ -1955,6 +1985,7 @@ mod drive {
         pp: &mut PrettyPrinter,
         item: PpWork<'a>,
         decoded_entries: &'a Arena<Par>,
+        canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
         catches: &mut Vec<CatchFrame>,
@@ -1964,7 +1995,9 @@ mod drive {
 
             PpWork::Node(node, indent) => descend_node(pp, node, indent, work, vals)?,
 
-            PpWork::ExprBody(e) => descend_expr(pp, e, decoded_entries, work, vals)?,
+            PpWork::ExprBody(e) => {
+                descend_expr(pp, e, decoded_entries, canonical_collections, work, vals)?
+            }
 
             PpWork::Channel(p, indent) => {
                 // ⚠ Set, never reset. See the module documentation.
@@ -2480,9 +2513,7 @@ mod drive {
     /// in what order" — used by both [`descend_expr`] and [`combine_expr`] so
     /// the two cannot drift.
     enum ExprPlan<'a> {
-        /// No worklisted children: [`inline_expr`] renders it in place. The
-        /// grounds, `EVarBody`, the `None` instance, and the three re-entrant
-        /// arms (`ESetBody`, `EMapBody`, `EZipperBody`).
+        /// No worklisted children: [`inline_expr`] renders it in place.
         Inline,
         /// `{prefix}{wrap_with_braces(p)}`
         Unary {
@@ -2516,14 +2547,28 @@ mod drive {
         /// `{|entries remainder|}` over a `PathMap<()>`. Descent decodes
         /// entries into the traversal-local PDA arena rather than forcing a
         /// persistent flat projection on the EPathMap.
-        PathMap { pathmap: &'a EPathMap },
+        PathMap {
+            pathmap: &'a EPathMap,
+        },
+        Set {
+            set: &'a ESet,
+        },
+        Map {
+            map: &'a EMap,
+        },
         /// `ReadZipper` / `WriteZipper`. Both the underlying set entries and
         /// decodable cursor segments are worklisted in the same PDA.
-        Zipper { zipper: &'a EZipper },
+        Zipper {
+            zipper: &'a EZipper,
+        },
         /// `({elements})`
-        Tuple { ps: &'a [Par] },
+        Tuple {
+            ps: &'a [Par],
+        },
         /// `({target}).{name}({args})` — arguments first, THEN the target.
-        Method { m: &'a EMethod },
+        Method {
+            m: &'a EMethod,
+        },
     }
 
     fn expr_plan(e: &Expr) -> ExprPlan<'_> {
@@ -2668,12 +2713,11 @@ mod drive {
             },
             ExprInstance::ETupleBody(ETuple { ps, .. }) => ExprPlan::Tuple { ps: ps.as_slice() },
             ExprInstance::EPathmapBody(pathmap) => ExprPlan::PathMap { pathmap },
+            ExprInstance::ESetBody(set) => ExprPlan::Set { set },
+            ExprInstance::EMapBody(map) => ExprPlan::Map { map },
             ExprInstance::EZipperBody(zipper) => ExprPlan::Zipper { zipper },
             ExprInstance::EMethodBody(method) => ExprPlan::Method { m: method },
-            // The remaining re-entrant collections, plus every leaf. See [`inline_expr`].
-            ExprInstance::ESetBody(_)
-            | ExprInstance::EMapBody(_)
-            | ExprInstance::EVarBody(_)
+            ExprInstance::EVarBody(_)
             | ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
             | ExprInstance::GString(_)
@@ -2690,6 +2734,7 @@ mod drive {
         pp: &mut PrettyPrinter,
         e: &'a Expr,
         decoded_entries: &'a Arena<Par>,
+        canonical_collections: &mut CanonicalCollections,
         work: &mut Vec<PpWork<'a>>,
         vals: &mut Vec<String>,
     ) -> Result<(), InterpreterError> {
@@ -2777,7 +2822,6 @@ mod drive {
 
             ExprPlan::Bracketed { ps, .. } | ExprPlan::Tuple { ps } => {
                 work.push(PpWork::Combine(PpKont::ExprK { expr: e }));
-                // `build_vec`
                 for p in ps.iter().rev() {
                     push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(p), 0));
                 }
@@ -2786,6 +2830,70 @@ mod drive {
             ExprPlan::PathMap { pathmap } => {
                 work.push(PpWork::Combine(PpKont::ExprK { expr: e }));
                 push_pathmap_children(pathmap, decoded_entries, work);
+            }
+
+            ExprPlan::Set { set } => {
+                if canonical_collections.contains(set) {
+                    work.push(PpWork::Combine(PpKont::SetK {
+                        set,
+                        child_count: set.ps.len(),
+                    }));
+                    for par in set.ps.iter().rev() {
+                        push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(par), 0));
+                    }
+                    return Ok(());
+                }
+                let sorted = ParSetTypeMapper::eset_to_par_set(set.clone())
+                    .ps
+                    .sorted_pars;
+                work.push(PpWork::Combine(PpKont::SetK {
+                    set,
+                    child_count: sorted.len(),
+                }));
+                for par in sorted.into_iter().rev() {
+                    let par = decoded_entries.alloc(par);
+                    canonical_collections.mark_from(par);
+                    push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(par), 0));
+                }
+            }
+
+            ExprPlan::Map { map } => {
+                if canonical_collections.contains(map) {
+                    work.push(PpWork::Combine(PpKont::MapK {
+                        map,
+                        entry_count: map.kvs.len(),
+                    }));
+                    for pair in map.kvs.iter().rev() {
+                        let value = pair.value.as_ref().expect("KeyValuePair.value");
+                        let key = pair.key.as_ref().expect("KeyValuePair.key");
+                        push_catch(
+                            work,
+                            CatchKind::Message,
+                            PpWork::Node(PpNode::Par(value), 0),
+                        );
+                        push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(key), 0));
+                    }
+                    return Ok(());
+                }
+                let sorted = ParMapTypeMapper::emap_to_par_map(map.clone())
+                    .ps
+                    .sorted_list;
+                work.push(PpWork::Combine(PpKont::MapK {
+                    map,
+                    entry_count: sorted.len(),
+                }));
+                for (key, value) in sorted.into_iter().rev() {
+                    let value = decoded_entries.alloc(value);
+                    canonical_collections.mark_from(value);
+                    push_catch(
+                        work,
+                        CatchKind::Message,
+                        PpWork::Node(PpNode::Par(value), 0),
+                    );
+                    let key = decoded_entries.alloc(key);
+                    canonical_collections.mark_from(key);
+                    push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(key), 0));
+                }
             }
 
             ExprPlan::Zipper { zipper } => {
@@ -2834,64 +2942,12 @@ mod drive {
         Ok(())
     }
 
-    /// The arms with no worklisted children: the grounds, `EVarBody`, the
-    /// absent instance, and the three that re-enter the drive.
-    ///
-    /// ⚠ The bodies of `ESetBody`, `EMapBody` and `EZipperBody` are the
-    /// pre-conversion bodies **unchanged**. See the module documentation for
-    /// why they cannot be worklisted and what that costs.
+    /// The arms with no worklisted children.
     fn inline_expr(pp: &mut PrettyPrinter, e: &Expr) -> Result<String, InterpreterError> {
         let Some(instance) = &e.expr_instance else {
-            // TODO: Figure out if we can prevent prost from generating - OLD
             return Ok(String::from("Nil"));
         };
         match instance {
-            ExprInstance::ESetBody(eset) => {
-                let par_set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-                let pars = par_set.ps;
-                let remainder = &par_set.remainder;
-
-                //TODO same problem with comma
-
-                let elements = pp.build_vec(&pars.sorted_pars);
-                let remainder_string = pp.build_remainder_string(remainder);
-                let full_result = if remainder.is_some() && !elements.is_empty() {
-                    format!("Set({}{})", elements, remainder_string)
-                } else if remainder.is_some() {
-                    format!("Set({})", remainder_string)
-                } else {
-                    format!("Set({})", elements)
-                };
-
-                Ok(full_result)
-            }
-
-            ExprInstance::EMapBody(emap) => {
-                let par_map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-                let sorted_list = par_map.ps.sorted_list;
-                let remainder = &par_map.remainder;
-                let mut result = String::from("{");
-
-                for (i, (key, value)) in sorted_list.iter().enumerate() {
-                    result.push_str(&pp.build_string_from_message(key));
-                    result.push_str(" : ");
-                    result.push_str(&pp.build_string_from_message(value));
-
-                    if i != sorted_list.len() - 1 {
-                        result.push_str(", ");
-                    }
-                }
-
-                result.push_str(&pp.build_remainder_string(remainder));
-                result.push('}');
-
-                Ok(result)
-            }
-
-            ExprInstance::EZipperBody(_) => {
-                unreachable!("EZipper is worklisted by ExprPlan::Zipper")
-            }
-
             ExprInstance::EVarBody(EVar { v }) => Ok(pp.build_string_from_var(
                 v.as_ref()
                     .expect("var field on EVar was None, should be Some"),
@@ -3204,6 +3260,41 @@ mod drive {
 
             PpKont::ExprK { expr } => combine_expr(pp, expr, vals),
 
+            PpKont::SetK { set, child_count } => {
+                let elements = take(vals, child_count).join(", ");
+                let remainder = &set.remainder;
+                let remainder_string = pp.build_remainder_string(remainder);
+                let rendered = if remainder.is_some() && !elements.is_empty() {
+                    format!("Set({}{})", elements, remainder_string)
+                } else if remainder.is_some() {
+                    format!("Set({})", remainder_string)
+                } else {
+                    format!("Set({})", elements)
+                };
+                vals.push(rendered);
+            }
+
+            PpKont::MapK { map, entry_count } => {
+                let rendered = take(
+                    vals,
+                    entry_count
+                        .checked_mul(2)
+                        .expect("an addressable map cannot overflow its child count"),
+                );
+                let mut result = String::from("{");
+                for (index, pair) in rendered.chunks_exact(2).enumerate() {
+                    if index != 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&pair[0]);
+                    result.push_str(" : ");
+                    result.push_str(&pair[1]);
+                }
+                result.push_str(&pp.build_remainder_string(&map.remainder));
+                result.push('}');
+                vals.push(result);
+            }
+
             #[cfg(test)]
             PpKont::TestJoinThree => {
                 let three = take(vals, 3);
@@ -3295,6 +3386,10 @@ mod drive {
                 let rendered = take_pathmap_repr(pp, pathmap, vals);
                 vals.push(rendered);
             }
+
+            ExprPlan::Set { .. } | ExprPlan::Map { .. } => unreachable!(
+                "set/map expressions use dedicated continuations after canonical ordering"
+            ),
 
             ExprPlan::Zipper { zipper } => {
                 let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
@@ -3396,7 +3491,8 @@ mod differential {
     //! | [`tame`]d `generate_par(1..=4)` | the *structural* product — `Send` x `Receive` x `New` x `Match` x `Bundle` x `Connective` x `Expr` nested to depth 4, with counts small enough that the printer's `i32` arithmetic is well-defined |
     //! | RAW `generate_par(1..=4)` | the same shapes with `free_count` / `bind_count` / var levels drawn from `any::<i32>()`, compared by *disposition* — the two forms must agree even where the shared arithmetic overflows |
     //! | [`every_node_kind`] | all ten [`PpNode`] variants, each reached through the entry point that actually reaches it |
-    //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the three re-entrant ones (`ESet`, `EMap`, `EZipper`) and both `wrap_with_braces` shapes |
+    //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the owned-canonical (`ESet`, `EMap`, `EZipper`) paths and both `wrap_with_braces` shapes |
+    //! | [`nested_unsorted_sets_and_maps_match_the_recursive_oracle`] | nested canonical collection intermediates reuse their recursively sorted representation without changing one output byte |
     //! | [`two_binds_that_bind_different_counts`] | ★ the ONLY shape where a *sequenced* `bound_shift` differs from a precomputed one |
     //! | [`a_receive_with_a_where_guard`] | ★ `Receive.condition` — a field NEITHER printer used to read, and which `generate_par` never generates, so no proptest corpus here reaches it |
     //! | [`a_match_nested_in_a_send`] | the `Match` target rendered MID-traversal, with siblings on both sides and printer state already moved |
@@ -4218,7 +4314,7 @@ mod differential {
         );
     }
 
-    /// ★ Every `ExprInstance` arm, including the three that re-enter the drive.
+    /// ★ Every `ExprInstance` arm, including the three owned-canonical arms.
     #[test]
     fn every_expr_arm() {
         let a = || Some(gint(11));
@@ -4524,6 +4620,57 @@ mod differential {
             }],
             ..Default::default()
         });
+    }
+
+    #[test]
+    fn nested_unsorted_sets_and_maps_match_the_recursive_oracle() {
+        const DEPTH: usize = 8;
+
+        let mut nested_set = gint(0);
+        for _ in 0..DEPTH {
+            nested_set = expr_par(ExprInstance::ESetBody(ESet {
+                ps: vec![gint(3), nested_set, gint(1)],
+                locally_free: vec![],
+                connective_used: false,
+                remainder: None,
+            }));
+        }
+        agree("nested unsorted ESet canonicalization", &nested_set);
+        let rendered_set = PrettyPrinter::new().build_string_from_message(&nested_set);
+        assert_eq!(
+            rendered_set.matches("Set(").count(),
+            DEPTH,
+            "the ESet differential did not traverse every canonical collection level"
+        );
+
+        let mut nested_map = gint(0);
+        for _ in 0..DEPTH {
+            nested_map = expr_par(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    KeyValuePair {
+                        key: Some(gstring("z")),
+                        value: Some(nested_map),
+                    },
+                    KeyValuePair {
+                        key: Some(gstring("a")),
+                        value: Some(gint(1)),
+                    },
+                ],
+                locally_free: vec![],
+                connective_used: false,
+                remainder: None,
+            }));
+        }
+        agree("nested unsorted EMap canonicalization", &nested_map);
+        let rendered_map = PrettyPrinter::new().build_string_from_message(&nested_map);
+        assert_eq!(
+            rendered_map.bytes().filter(|byte| *byte == b'{').count(),
+            DEPTH,
+            "the EMap differential did not traverse every canonical collection level"
+        );
+
+        models::rust::rholang::par_children::dismantle(nested_set);
+        models::rust::rholang::par_children::dismantle(nested_map);
     }
 
     // -----------------------------------------------------------------------

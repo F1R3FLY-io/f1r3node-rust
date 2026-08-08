@@ -799,6 +799,8 @@ fn subject(name: &str) -> fn(usize) {
         "tree_drop" => tree_drop_body,
         "tree_clone" => tree_clone_body,
         "pretty" => pretty_body,
+        "pretty_nested_set" => pretty_nested_set_body,
+        "pretty_nested_map" => pretty_nested_map_body,
         "clone" => clone_body,
         // ★★ The two stage-F-4 ladders that `clone` alone cannot stand in for.
         // `clone_send_chain` nests through a DIFFERENT `Vec` field so that a
@@ -1014,6 +1016,11 @@ const CONVERTED_DEPTH: &[&str] = &[
     "bincode_ser",
     // Stage D — PrettyPrinter's explicit pushdown driver
     "pretty",
+    // The collection-specific ladders force the owned canonical ESet/EMap
+    // intermediates through the same driver. The generic list ladder cannot
+    // expose a nested re-entry or repeated-canonicalization regression here.
+    "pretty_nested_set",
+    "pretty_nested_map",
     // Stage G — `normalize_ann_proc`'s 26-function SCC becomes
     // `compiler::normalize_drive::norm_drive`. 43,542 → 0 B/level debug and
     // 7,261 → 0 release; the ONLY member that runs before metering exists, so
@@ -2142,6 +2149,40 @@ fn pretty_body(depth: usize) {
     // that returned "Nil" — or the `<unprintable: …>` fallback — would pass it
     // while doing no traversal at all. The RENDERED nesting is the real proof.
     assert_carries("the PRINTED nesting", printed_bracket_depth(&s), depth);
+    dismantle(term);
+}
+
+fn pretty_nested_set_body(depth: usize) {
+    let term = nested_sets(depth);
+    assert_carries(
+        "the pretty_nested_set input's nesting",
+        eset_depth(&term),
+        depth,
+    );
+    let mut pp = PrettyPrinter::new();
+    let rendered = pp.build_string_from_message(&term);
+    assert_carries(
+        "the PRINTED nested-set depth",
+        rendered.matches("Set(").count(),
+        depth,
+    );
+    dismantle(term);
+}
+
+fn pretty_nested_map_body(depth: usize) {
+    let term = nested_maps(depth);
+    assert_carries(
+        "the pretty_nested_map input's nesting",
+        emap_depth(&term),
+        depth,
+    );
+    let mut pp = PrettyPrinter::new();
+    let rendered = pp.build_string_from_message(&term);
+    assert_carries(
+        "the PRINTED nested-map depth",
+        rendered.bytes().filter(|byte| *byte == b'{').count(),
+        depth,
+    );
     dismantle(term);
 }
 
