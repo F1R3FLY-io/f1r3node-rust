@@ -6,7 +6,8 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-07
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@6f1412ee` (matcher stack, proof, equivalence, and heap closure)
+**Living closure head** `f1r3node-rust-mettail@d1a1c3eb` (reducer method-replay machine,
+exact recursion census, production lint gate, and prior matcher/PathMap closure)
 **Companion decision head** `mettail-rust@e831c2ab` (recursive-carrier lifecycle verification plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -23,8 +24,8 @@ live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C
 
 **Verified living status.** The node gate contains **37 converted depth subjects + 8
 converted width subjects and zero production tripwire subjects**. The strengthened hand-written
-recursion census finds **585** recursive components, **50** term-family components across **29** files,
-**20** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
+recursion census finds **566** recursive components, **41** term-family components across **24** files,
+**18** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
 has no unmeasured traversal. The hardened lifecycle gate at `mettail-rust@a58d0925` scans **549**
 production Rust files, indexes **2,279** type definitions, derives a trait-specific maximum of **84**
 recursively owned types in **80** components, and reports zero recursive derive or implicit-`Drop`
@@ -178,6 +179,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
+| **SS-B4** | `d1086fdc` | f1r3node | native-method second-pass operand replay $`\rightarrow`$ typed continuations on `eval_drive`; per-call 55-method table construction deleted | recursive control overflows at depth 16; production depth 4,096 succeeds on 256 KiB in **0.49 s / 118,276 KiB RSS / zero swap** | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`bincode_decoder`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
 | **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`bincode_encoder`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C3** | `7c74260d` | f1r3node | schema-code generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
@@ -285,8 +287,8 @@ A `Par` — the term representation of the Rholang interpreter — is a mutually
 The living register contains **45 converted production subjects — 37 on the depth axis and 8 on the
 width axis — and zero production tripwire subjects**. Every converted subject is driven on the ordinary
 execution architecture, without `RUST_MIN_STACK`, `stacker`, or a traversal-depth ceiling. The
-strengthened hand-written recursion census (585 recursive components, 50 mentioning the term family,
-20 mutual, 29 dispositioned files including `node/src`) carries **zero unmeasured dispositions**. The
+strengthened hand-written recursion census (566 recursive components, 41 mentioning the term family,
+18 mutual, 24 dispositioned files including `node/src`) carries **zero unmeasured dispositions**. The
 40-subject Phase-7 deterministic-time cohort observes no quadratic subject: Ir exponents range from 0.9462
 to 1.0970, and the largest data-counter exponent is 1.4007 Dw. **MEASURED**, §5.12–§5.15;
 the five later matcher subjects have independent depth/width stack and elapsed-time evidence in §5.16.
@@ -939,6 +941,9 @@ set/map addresses, and lets their later continuations consume the canonical orde
 by the sorter. The registry and arena share a lifetime, so an address cannot outlive or be reused
 while it remains authoritative.
 
+**Algorithm 23 (SCHEDULE-CANONICAL-COLLECTION).** *Keep owned canonical descendants on the
+printer's existing machine and register each canonical root once.*
+
 ```pseudocode
 procedure SCHEDULE-CANONICAL-COLLECTION(collection)
     if collection is recorded canonical then
@@ -1021,7 +1026,37 @@ exponents 1.0068 and 1.0023 (§5.14.3).
 
 ★ **Why a *shared* combining helper rather than two independent implementations.** The differential oracle is only worth running if the two sides can actually disagree about the thing under test. Sharing the arm bodies makes the differential test the **driving** — push order, pop order, fold resumption, error position — which is what a worklist conversion can actually get wrong, while arm *semantics* are guarded separately by a round-trip identity test. §5.7.5 shows this was not theoretical: a later structural check found that the twins share **18 `combine_*` helpers**, every one of which is also called from outside the twin family.
 
-**Owned intermediates are re-entered, not linearised.** Values that are *not* sub-terms of the input — `eval_var` results, method-apply results, `%%`/`++`/`--` `Set`/`Map` results, sorted `Set`/`Map` elements — are re-evaluated by direct wrapper calls, **each a fresh bounded drive**. This bounds them by the depth of the *bound value*, exactly as §5.1.5 does, rather than pretending they vanish.
+**Owned intermediates remain inside the same machine.** The original conversion started a fresh
+`eval_drive` whenever evaluation exposed a newly owned `Par`. That is safe only when the exposed value
+has an external depth bound. A native method can instead reveal an arbitrary stored `Par`—for example,
+`getLeaf` can return another method expression—so a chain of method applications nested one native
+driver inside another. The retained recursive control overflows its test thread at only **16** such
+links.
+
+Commit `d1086fdc` makes replay an ordinary continuation. `MethodEvalRequest` names the target or an
+argument and the exact historical coercion (`Par`, single `Expr`, or `i64`); `MethodInvocation` owns
+the already-evaluated operands in the traversal arena; and `ApplyPreparedMethod` resumes the method
+only after those typed requests complete on the existing work/value stacks. Collection and PathMap
+intermediates use the same arena-and-continuation rule. No evaluator wrapper is called from a native
+method core; the only remaining direct helper, `eval_single_unforgeable`, is a constant-depth shape
+check.
+
+**Algorithm 24 (SCHEDULE-METHOD-REPLAY).** *Encode each historical second-pass coercion as work on
+the current evaluator machine.*
+
+```pseudocode
+plan := descriptor(method-name, arity)
+push ApplyPreparedMethod(invocation, plan.length)
+for request in reverse(plan):
+    push Eval(request.source, request.coercion)
+```
+
+Reversing the plan preserves left-to-right execution on the last-in-first-out work stack. The `nth`
+plan is intentionally argument-then-target, matching the old implementation rather than the common
+target-first plans. Its and `last`'s primitive charge remains after the arity check and before operand
+replay. Unknown-method spelling, wrong-arity errors, coercion failures, and charge-before-error order
+are unchanged. Direct name selection also deletes construction of the complete 55-entry native-
+method dispatch map on every call; only the selected method implementation is constructed.
 
 **★ The interleaving a naïve post-order would have silently broken.** The five binary-operator helpers do **not** evaluate both operands and then check them:
 
@@ -1044,6 +1079,15 @@ so if `p1` evaluates but is not a single value, **`p2` is never evaluated**. A m
 | `plus` (nested `EPlus`) | overflow at $`\approx`$ 1,500 | **OK at 20,000 and 50,000** |
 | `list` (nested `EList`) | overflow at $`\approx`$ 750 | **OK at 20,000 and 50,000** |
 | `methodchain` (deep `EMethod` target) | *(new subject)* | **OK at 20,000** |
+| adversarial method replay (`getLeaf` reveals the next `length`) | recursive control overflows at depth **16** | **OK at 4,096 on a 256 KiB stack** |
+
+**SS-B4 results. MEASURED**, `d1086fdc`: the complete reducer differential passes **9/9**, including
+the shallow independent recursive oracle; the full `rholang` library passes **308/308**; and the
+EPathMap collection/fusion/replay integration group passes **6/6**. The exact 4,096-link gate completes
+in **0.49 s** test time with **118,276 KiB** maximum process RSS and zero swap inside a 4 GiB
+systemd scope. Native stack is $`O(1)`$ in replay depth; work/value/arena storage is $`O(d)`$ for
+$`d`$ suspended method links, which is the continuation information the computation necessarily
+retains.
 
 **MEASURED (q)** — `a3fd6fe4`, the separate `rho-pure-eval` SCC: `eval_with_nots` **21,584 $`\rightarrow`$ 0** debug, **3,359 $`\rightarrow`$ 0** release; `the_machine_survives_a_depth_the_oracle_could_not` evaluates **20,000 nested negations** on an ordinary test thread, where at the old constant the recursive form would have needed **$`\approx`$ 412 MiB**. **MEASURED (f)**: flat at 12 KiB, both ends.
 
@@ -2563,11 +2607,13 @@ classifier PDA and is guarded against reintroduction by `par_read_stack_safety_r
 The whole-worktree audit found one production consumer outside the generated/hand-written `Par`
 registry — the node JSON boundary in `web_api.rs` — converted by SS-A9 (§5.13). Commit `26d3e3b9`
 then closed the audit boundary itself: `node/src` is an input to the derived hand-written recursion
-census. The overloaded-method correction `e485a567` supersedes the anchor count: **585 recursive
-components, 50 mentioning the term family, 20 mutual components, and 29 dispositioned files**, with
-**zero unmeasured files**. The term-family count fell while total components rose because body-less
-trait declarations are now excluded and repeated impl methods are retained instead of overwriting one
-another; the calibration reproduces the exact matcher-shaped blind spot.
+census. The overloaded-method correction `e485a567` superseded the anchor count; the current
+exact-set census at `d1086fdc` reports **566 recursive components, 41 mentioning the term family,
+18 mutual components, and 24 dispositioned files**, with **zero unmeasured files**. It requires every
+declared crate root to exist, compares the active and disposition sets in both directions, and
+independently recovers a 31-member recursive normalizer control whose maintained oracle lists 26
+required members. A successful conversion therefore no longer requires lowering a magic
+minimum-file count, while an empty, partial, or under-resolving scan still fails.
 
 #### 5.12.5 Anti-vacuity and equivalence
 
@@ -2645,7 +2691,7 @@ All commands below ran with one Cargo job, `MemoryMax=4G`, and `MemorySwapMax=0`
 | focused node gate | — | **6/6**, 4 GiB cgroup peak, zero swap | **MEASURED**, capped run including all three EPathMap modes |
 | full node library | 113/113 before the conversion | **119/119**, 4 GiB cgroup peak, zero swap | **MEASURED**, final capped run |
 | owned trie visitor | borrowed forward view | owned set/map stream equals borrowed trie order; wrong mode rejected; neutral empty accepted by both | **MEASURED**, 1/1; warm peak 87.8 MiB |
-| whole-worktree recursion census | node crate absent from source roots | anchor 580/54/20/30; ★ current **585** recursive components, **50** term-family components, **20** mutual, **29** files, **0** unmeasured after overloaded-method correction | **MEASURED**, census calibration and 3/3 gate; zero swap |
+| whole-worktree recursion census | node crate absent from source roots | anchor 580/54/20/30; ★ current **566** recursive components, **41** term-family components, **18** mutual, **24** exactly dispositioned files, **0** unmeasured | **MEASURED**, census calibration and 5/5 gate; zero swap |
 | formal binding | no row for this boundary | six production surfaces resolve to the generic Rocq theorem and executable evidence; manifest **5/5** | **MEASURED**, 1.4 GiB peak RSS, zero swap |
 | complete stack-depth gate | boundary outside census | **36** converted subjects (30 depth + 6 width) at `26d3e3b9`; **40** (34 + 6) at the Phase-7 resource anchor; ★ current register **45** (37 + 8) after SS-A10, zero tripwires | **MEASURED**, original 2.3 GiB peak RSS; current matcher-inclusive debug/release gates 206 s / 27 s, zero swap ([§5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10)) |
 | deductive and finite-state checks | generic artifacts existed but were not bound to this boundary | Rocq kernel checks all three files with no admissions or axioms; Z3 returns unsatisfiable; TLC explores 3,238 generated / 2,816 distinct states to depth 8 with no error | **MEASURED**, capped proof script; structural EPM1 refinement re-run 2026-08-04 |
@@ -2963,11 +3009,11 @@ Allocation counts remain linear because every trie level must still be visited a
 removes oversized *live capacity*, not the necessary $`\Theta(d)`$ traversal work.
 
 Within the audited matcher component, no production recursive traversal remains. The recursive oracle is
-test-only and shallow-bounded. The strengthened source census (`e485a567`) keys functions by file, name,
-and source offset so overloaded impl methods cannot overwrite each other; it reports **585** recursive
-components, **50** term-family components across **29** files, **20** mutual components, and zero
-unmeasured dispositions. No `RUST_MIN_STACK`, `stacker`, traversal-depth limit, or PathMap fork is part of
-the repair.
+test-only and shallow-bounded. The strengthened source census keys functions by file, name, and source
+offset so overloaded impl methods cannot overwrite each other; its current exact-set result is **566**
+recursive components, **41** term-family components across **24** files, **18** mutual components, and
+zero unmeasured dispositions. No `RUST_MIN_STACK`, `stacker`, traversal-depth limit, or PathMap fork is
+part of the repair.
 
 #### 5.16.5 RSpace candidate selection and enumeration PDA [SS-A11]
 
@@ -3018,7 +3064,7 @@ swap**. **MEASURED:**
 | guarded-selection suite | same semantic corpus | **16/16** | selector retry, rollback, metrics, play/replay, and deep gate |
 | enabled-rendezvous suite | same semantic corpus | **9/9** | ordering and enumeration-head identity |
 | complete `rspace_plus_plus` package | n/a — acceptance total | **340 passed / 0 failed** | all package test binaries |
-| exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating five recursive oracle/differential files and the score comparator to `tests/support` | `handwritten_recursion_census`, 5/5; oracle provenance 8/8 |
+| exact source census | 574 recursive components before this conversion | **572** after the PDA; then **566 recursive / 42 term-family / 19 mutual / 25 production files** after relocating recursive oracles; current **566 / 41 / 18 / 24** after the fused evaluator cycle disappeared and its stale disposition was retired | `handwritten_recursion_census`, 5/5; independent normalizer control 31 members $`\geq`$ 26 required |
 
 The guarded-search workload retained its expected algorithmic counts: the 1,000-datum single-bind
 exhaustive guard performed 1,000 spatial matches and 1,000 guard checks in 17.303 ms; the 60-by-60

@@ -3474,6 +3474,28 @@ COMM, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or PathMap operati
 extends CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; the retained
 SS-Y8 row and machine design are recorded in stack-safety report §5.1.3a.
 
+**CBR-023 living-set continuation (2026-08-08, SS-B4).**
+`f1r3node-rust-mettail@d1086fdc` closes native-method operand replay inside the existing reducer
+pushdown automaton. The prior method cores could start a fresh evaluator drive after `getLeaf` or
+another method exposed an arbitrary stored `Par`; the recursive control overflows at 16 adversarial
+links. Typed target/argument requests now resume on the same work/value stacks, with the historical
+per-method coercion and evaluation order encoded explicitly. In particular, `nth` still evaluates
+its integer argument before its target, and `nth`/`last` still reserve their primitive charge after
+arity validation but before replay. The independent shallow recursive oracle, all 9 reducer
+differentials, all 308 library tests, and the EPathMap integration group agree; a 4,096-link chain
+runs on a 256 KiB thread. The change also replaces construction of the complete 55-entry native-
+method table on every call with direct selection of the named method.
+
+`f1r3node-rust-mettail@d1a1c3eb` is the follow-up production-gate cleanup: it groups the shared
+descriptor metadata for generated `Ord` and `Debug`, removes an empty generated line left when a
+Prost derive is stripped, derives the same neutral-`Empty` EPathMap default, and removes needless
+borrows/iterations. Models pass 113/113, RSpace passes 41/41, the reducer differential passes 9/9,
+and production `clippy -D warnings` is clean. Neither checkpoint changes a computed Rholang value,
+error selection, protobuf or bincode byte, post-state hash, accepted program, COMM count, charge,
+EPathMap mode, EPM1 snapshot, PathMap topology, or PathMap operation. They extend CBR-023's
+`EQUIVALENCE_PROVEN` evidence and create no active may-change-consensus entry; stack-safety report
+§5.2.1 records the algorithm, complexity, and measured resource result.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
