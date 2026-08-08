@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-07 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-08 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -3495,6 +3495,20 @@ error selection, protobuf or bincode byte, post-state hash, accepted program, CO
 EPathMap mode, EPM1 snapshot, PathMap topology, or PathMap operation. They extend CBR-023's
 `EQUIVALENCE_PROVEN` evidence and create no active may-change-consensus entry; stack-safety report
 §5.2.1 records the algorithm, complexity, and measured resource result.
+
+**CBR-023 living-set continuation (2026-08-08, SS-B5).**
+`f1r3node-rust-mettail@d03939cc` replaces the recursive `InterpreterError` lifecycle with explicit
+work stacks for clone, equality, compact and alternate debug formatting, display formatting,
+root-cause traversal, and destruction. `f1r3node-rust-mettail@382c53d0` updates test-only
+normalizer assertions to borrow diagnostic payloads after the destructor became explicit. A bounded
+recursive oracle preserves the complete error value, child order, compact and alternate `Debug`
+bytes, `Display` bytes, root-cause selection, and one-edge `Error::source` behavior. The 20,000-level
+production gate completes on a 256 KiB stack, and the complete 308-test rholang library suite passes.
+The change alters no error selection, cost/abort classification, accepted program, protobuf or
+bincode byte, post-state hash, COMM, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or
+PathMap operation. It therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without an active
+may-change-consensus entry; stack-safety report §5.2.1a records the machine, complexity, and capped
+resource evidence.
 
 ### B.2 The original commit-level exemptions
 

@@ -4,10 +4,11 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-07
+**Report date** 2026-07-29, revised through 2026-08-08
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@d1a1c3eb` (reducer method-replay machine,
-exact recursion census, production lint gate, and prior matcher/PathMap closure)
+**Living closure head** `f1r3node-rust-mettail@382c53d0` (`InterpreterError` lifecycle machine,
+reducer method-replay machine, exact recursion census, production lint gate, and prior
+matcher/PathMap closure)
 **Companion decision head** `mettail-rust@e831c2ab` (recursive-carrier lifecycle verification plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -23,7 +24,8 @@ live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C
 `docs/design/audits/four-quadrant-s2-protobuf-encoder-2026-07-28.md`
 
 **Verified living status.** The node gate contains **37 converted depth subjects + 8
-converted width subjects and zero production tripwire subjects**. The strengthened hand-written
+converted width subjects and zero production tripwire subjects**; the independent SS-B5 lifecycle
+gate adds one non-`Par` recursive error forest at depth 20,000. The strengthened hand-written
 recursion census finds **566** recursive components, **41** term-family components across **24** files,
 **18** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
 has no unmeasured traversal. The hardened lifecycle gate at `mettail-rust@a58d0925` scans **549**
@@ -122,10 +124,13 @@ nesting, while test-only recursive equations and Rocq laws preserve frame identi
 `mettail-rust@c95d9e73` subsequently replaces each depth-indexed generated shift chain with one
 fixed-size system-process call and applies the composed shift in one iterative traversal, discharging
 the quadratic retained-metadata defect SS-Y7 without changing the reflected result.
-The source-confirmed production ledger is therefore **27 direct findings and zero mutual
-clusters**. The replacement pgmcp semantic refresh did not publish a complete generation; this
-27/0 figure is **DERIVED** from the last complete 78/0 snapshot and the fifty-one removed or
-disambiguated, source-confirmed edges, not presented as a successful new analyzer run.
+Fresh pgmcp classic whole-project analyses completed on 2026-08-08 over **202/202** production files
+in `f1r3node-rust-mettail` and **1,910/1,910** production files in `mettail-rust`. Each reports
+**zero direct-recursion functions and zero mutual-recursion clusters**. **MEASURED**, analysis runs
+`a68a8ca1-6e07-4030-a923-eb0ecb60a511` and `fa00b67e-f056-4cd8-b163-6ecfd28496ab`; this supersedes
+the prior source-derived 27/0 interim ledger. The separate semantic ownership, representation, and
+consensus-reachability refresh remains an independent closure gate rather than evidence for this
+classic call-graph result.
 No production path uses
 `contains_par`, `RUST_MIN_STACK`, `stacker`, or a
 traversal-depth ceiling. Resident-set-size (RSS)-capped verification (`MemoryMax=4G`, `MemorySwapMax=0`, one Cargo job): the focused
@@ -180,6 +185,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B4** | `d1086fdc` | f1r3node | native-method second-pass operand replay $`\rightarrow`$ typed continuations on `eval_drive`; per-call 55-method table construction deleted | recursive control overflows at depth 16; production depth 4,096 succeeds on 256 KiB in **0.49 s / 118,276 KiB RSS / zero swap** | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
+| **SS-B5** | `d03939cc`, `382c53d0` | f1r3node | recursive `InterpreterError` forest: `Clone`, `PartialEq`, compact/pretty `Debug`, `Display`, `root_cause`, and `Drop` $`\rightarrow`$ explicit work stacks | host stack $`\Theta(d) \rightarrow O(1)`$; **20,000** mixed levels and **20,000** `Located` wrappers on **256 KiB**; runtime-only **0.03 s / 24,056 KiB RSS / zero swap** | **yes**; bounded recursive oracle preserves values and bytes | [5.2.1a](#521a-interpretererror-lifecycle-closure-ss-b5) |
 | **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`bincode_decoder`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
 | **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`bincode_encoder`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C3** | `7c74260d` | f1r3node | schema-code generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
@@ -284,8 +290,9 @@ oracle-artefact gap as a threat). At the anchor the tripwire lists are **empty**
 
 A `Par` — the term representation of the Rholang interpreter — is a mutually recursive family of 37 protobuf message types whose every cycle passes through `Par` itself (**MEASURED (q)**, `7c74260d`: 58 nodes, 95 edges, 22 strongly connected components, exactly one cyclic). Until 2026-07-26, essentially every traversal of that family was written as recursive descent, so each consumed native stack in proportion to the *nesting depth of an attacker-chosen term*. Because a native-stack overflow in Rust is a `SIGSEGV` on the guard page and not a catchable panic, program-controlled nesting depth controlled node liveness. The worst reachable instance measured **8.8 kB of source text aborting a node** through the term *destructor* alone (**MEASURED (q)**, `291bc217`), and a second, on unauthenticated pre-consensus gRPC ingress, at **43,565 bytes** (**MEASURED (q)**, `3b265eb7`).
 
-The living register contains **45 converted production subjects — 37 on the depth axis and 8 on the
-width axis — and zero production tripwire subjects**. Every converted subject is driven on the ordinary
+The term-family register contains **45 converted production subjects — 37 on the depth axis and 8 on
+the width axis — and zero production tripwire subjects**. SS-B5 separately closes one recursive
+non-`Par` lifecycle family. Every converted subject is driven on the ordinary
 execution architecture, without `RUST_MIN_STACK`, `stacker`, or a traversal-depth ceiling. The
 strengthened hand-written recursion census (566 recursive components, 41 mentioning the term family,
 18 mutual, 24 dispositioned files including `node/src`) carries **zero unmeasured dispositions**. The
@@ -1088,6 +1095,67 @@ in **0.49 s** test time with **118,276 KiB** maximum process RSS and zero swap i
 systemd scope. Native stack is $`O(1)`$ in replay depth; work/value/arena storage is $`O(d)`$ for
 $`d`$ suspended method links, which is the continuation information the computation necessarily
 retains.
+
+#### 5.2.1a `InterpreterError` lifecycle closure (SS-B5)
+
+**The recursive carrier. DERIVED**, `d03939cc`: `InterpreterError` is a heterogeneous error forest.
+`AggregateError` owns an ordered `Vec<InterpreterError>`; `NonDeterministicProcessFailure` and
+`ProduceFailureWithOutput` each own one boxed cause; and `Located` owns one boxed source. The prior
+derived `Clone`, `PartialEq`, and `Debug`, implicit drop glue, recursive `Display` forwarding, and
+recursive `root_cause` therefore consumed native stack proportional to error depth. This family is
+not part of the protobuf `Par` SCC, so the schema generator and the term-family census could not
+close it.
+
+**The machine.** One exhaustive borrowed leaf view centralizes every nonrecursive variant. The six
+recursive operations then specialize over the same four recursive edges:
+
+- `Clone` is a post-order work/value fold that rebuilds each node after its children.
+- `PartialEq` is an ordered pair worklist; it compares scalar fields before scheduling children.
+- `Debug` and `Display` stream formatter tasks directly, so compact nested output does not build and
+  repeatedly copy one intermediate string per ancestor. Alternate `Debug` preserves Rust's derived
+  indentation and trailing commas.
+- `root_cause` follows `Located` links with a constant-space cursor. `Error::source` continues to
+  expose exactly one borrowed `Located` edge per call.
+- `Drop` detaches owned children into an explicit destruction worklist before each shell falls out of
+  scope. No recursive child remains for compiler drop glue to traverse.
+
+**Algorithm 25 (FOLD-ERROR-FOREST).** *Evaluate an operation over the recursively owned error forest
+without recursive host calls.*
+
+```pseudocode
+work := [Visit(root)]
+values := []
+while work is not empty:
+    task := pop(work)
+    if task is Visit(leaf):
+        push(values, operation_on_leaf(leaf))
+    if task is Visit(branch):
+        push(work, Rebuild(branch.scalar_fields, branch.child_count))
+        push_reverse(work, Visit(branch.children))
+    if task is Rebuild(metadata, child_count):
+        children := pop_last(values, child_count)
+        push(values, rebuild(metadata, children))
+return pop(values)
+```
+
+The specialized equality, formatting, cursor, and destruction machines omit the value stack where
+their operation does not need reconstructed nodes. For $`n`$ error nodes, each operation performs
+$`\Theta(n)`$ node visits; the explicit frontier is $`O(d+w)`$ for depth $`d`$ and maximum scheduled
+sibling width $`w`$. `root_cause` is $`\Theta(\ell)`$ time and $`O(1)`$ auxiliary space for
+$`\ell`$ leading `Located` wrappers. Pretty-format output can itself contain
+$`\Theta(nd)`$ indentation bytes; that is an output-size property rather than retained traversal
+state.
+
+**Equivalence and resource evidence. MEASURED**, `d03939cc`, `382c53d0`: the bounded recursive
+oracle under `rholang/tests/support/interpreter_error_oracle.rs` agrees on clone structure, ordered
+equality, compact `Debug`, alternate `Debug`, `Display`, root-cause selection, and one-edge
+`Error::source` behavior. The focused integration suite passes **3/3**. Independent production-only
+execution drives both a 20,000-level mixed forest and 20,000 consecutive `Located` wrappers on a
+**256 KiB** worker stack; the compiled test binary completes in **0.03 s** at **24,056 KiB** maximum
+RSS with zero swap under a 768 MiB hard systemd limit. Production `clippy -D warnings` is clean, and
+the complete rholang library suite passes **308/308** in **380.94 s** under the 4 GiB cap. No
+`RUST_MIN_STACK`, `stacker`, artificial depth limit, changed error value, changed diagnostic byte, or
+new consensus-path operation is involved.
 
 **MEASURED (q)** — `a3fd6fe4`, the separate `rho-pure-eval` SCC: `eval_with_nots` **21,584 $`\rightarrow`$ 0** debug, **3,359 $`\rightarrow`$ 0** release; `the_machine_survives_a_depth_the_oracle_could_not` evaluates **20,000 nested negations** on an ordinary test thread, where at the old constant the recursive form would have needed **$`\approx`$ 412 MiB**. **MEASURED (f)**: flat at 12 KiB, both ends.
 
@@ -6151,7 +6219,7 @@ DOCLINT_DOI=on /home/dylon/Workspace/f1r3fly.io/mettail-rust/docs/languages/vali
   /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-07) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-08) passes **16 of 17** mechanised checks with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.
