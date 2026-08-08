@@ -137,15 +137,13 @@ macro_rules! reducer_expression_oracle_methods {
                         .iter()
                         .map(|arg| self.eval_expr_recursive(arg, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
-                    let result_par = match self.method_table().get(&emethod.method_name) {
-                        Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
-                        None => {
-                            return Err(InterpreterError::ReduceError(format!(
-                                "Unimplemented method: {}",
-                                emethod.method_name
-                            )));
-                        }
-                    };
+                    let result_par = self.apply_method_recursive(
+                        emethod,
+                        evaled_target,
+                        evaled_args,
+                        env,
+                        MethodOutput::Par,
+                    )?;
                     Ok(result_par)
                 }
                 _ => {
@@ -394,8 +392,13 @@ macro_rules! reducer_expression_oracle_methods {
                             .iter()
                             .map(|arg| self.eval_expr_recursive(arg, env))
                             .collect::<Result<Vec<_>, InterpreterError>>()?;
-                        let result_par =
-                            self.apply_method_expr(emethod, evaled_target, evaled_args, env)?;
+                        let result_par = self.apply_method_recursive(
+                            emethod,
+                            evaled_target,
+                            evaled_args,
+                            env,
+                            MethodOutput::Expr,
+                        )?;
                         self.eval_single_expr_recursive(&result_par, env)
                     }
                 },

@@ -417,7 +417,13 @@ type Application = Option<(
 )>;
 
 trait Method {
-    fn apply(&self, p: Par, args: Vec<Par>, env: &Env<Par>) -> Result<Par, InterpreterError>;
+    fn apply(
+        &self,
+        p: &Par,
+        args: &[Par],
+        prepared: &mut PreparedMethodValues,
+        env: &Env<Par>,
+    ) -> Result<Par, InterpreterError>;
 }
 
 // ============================================================================
@@ -468,6 +474,159 @@ enum EvVal {
     Expr(Expr),
     Bool(bool),
     I64(i64),
+}
+
+/// The historical method dispatcher evaluates the target and arguments once
+/// before dispatch, then each native method evaluates the operands it needs a
+/// second time.  The second pass is consensus-visible through error/charge
+/// order and cannot simply be deleted.  It must, however, remain on this PDA:
+/// a method may return an arbitrary stored `Par` containing another method.
+/// Calling an evaluator wrapper from `Method::apply` would then nest native
+/// drives once per returned-method link.
+#[derive(Clone, Copy)]
+enum MethodEvalSource {
+    Target,
+    Arg(usize),
+}
+
+#[derive(Clone, Copy)]
+enum MethodEvalKind {
+    Par,
+    Single,
+    I64,
+}
+
+#[derive(Clone, Copy)]
+struct MethodEvalRequest {
+    source: MethodEvalSource,
+    kind: MethodEvalKind,
+}
+
+const METHOD_TARGET_PAR: [MethodEvalRequest; 1] = [MethodEvalRequest {
+    source: MethodEvalSource::Target,
+    kind: MethodEvalKind::Par,
+}];
+const METHOD_TARGET_SINGLE: [MethodEvalRequest; 1] = [MethodEvalRequest {
+    source: MethodEvalSource::Target,
+    kind: MethodEvalKind::Single,
+}];
+const METHOD_SINGLE_SINGLE: [MethodEvalRequest; 2] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::Single,
+    },
+];
+const METHOD_SINGLE_PAR: [MethodEvalRequest; 2] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::Par,
+    },
+];
+const METHOD_SINGLE_TWO_PAR: [MethodEvalRequest; 3] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::Par,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(1),
+        kind: MethodEvalKind::Par,
+    },
+];
+const METHOD_SINGLE_I64: [MethodEvalRequest; 2] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::I64,
+    },
+];
+const METHOD_SINGLE_TWO_I64: [MethodEvalRequest; 3] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::I64,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(1),
+        kind: MethodEvalKind::I64,
+    },
+];
+const METHOD_NTH: [MethodEvalRequest; 2] = [
+    MethodEvalRequest {
+        source: MethodEvalSource::Arg(0),
+        kind: MethodEvalKind::I64,
+    },
+    MethodEvalRequest {
+        source: MethodEvalSource::Target,
+        kind: MethodEvalKind::Single,
+    },
+];
+
+struct MethodInvocation {
+    target: Par,
+    args: Vec<Par>,
+}
+
+struct PreparedMethodValues {
+    values: std::vec::IntoIter<EvVal>,
+}
+
+impl PreparedMethodValues {
+    fn empty() -> Self {
+        Self {
+            values: Vec::new().into_iter(),
+        }
+    }
+
+    fn new(values: Vec<EvVal>) -> Self {
+        Self {
+            values: values.into_iter(),
+        }
+    }
+
+    fn next_par(&mut self) -> Par {
+        match self.values.next() {
+            Some(EvVal::Par(value)) => value,
+            _ => unreachable!("method PDA: expected a prepared Par"),
+        }
+    }
+
+    fn next_expr(&mut self) -> Expr {
+        match self.values.next() {
+            Some(EvVal::Expr(value)) => value,
+            _ => unreachable!("method PDA: expected a prepared Expr"),
+        }
+    }
+
+    fn next_i64(&mut self) -> i64 {
+        match self.values.next() {
+            Some(EvVal::I64(value)) => value,
+            _ => unreachable!("method PDA: expected a prepared i64"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MethodOutput {
+    Par,
+    Expr,
 }
 
 enum EvalSingleStep {
@@ -589,6 +748,12 @@ enum EvKont<'e> {
         emethod: &'e EMethod,
         argc: usize,
     },
+    ApplyPreparedMethod {
+        emethod: &'e EMethod,
+        invocation: &'e MethodInvocation,
+        prepared_count: usize,
+        output: MethodOutput,
+    },
     // ---- eval_to_bool / eval_to_i64 ([e] arm: extract from an evaluated Expr) ----
     BoolExtract,
     I64Extract,
@@ -641,6 +806,15 @@ fn ev_pop_n_expr(vals: &mut Vec<EvVal>, n: usize) -> Vec<Expr> {
     }
     out.reverse();
     out
+}
+
+#[inline]
+fn ev_pop_n_values(vals: &mut Vec<EvVal>, n: usize) -> Vec<EvVal> {
+    let split = vals
+        .len()
+        .checked_sub(n)
+        .expect("method PDA produced fewer prepared values than requested");
+    vals.split_off(split)
 }
 
 /// By-reference equivalent of `expr.locally_free(expr.clone(), 0)`.
@@ -2340,7 +2514,8 @@ impl DebruijnInterpreter {
         env: &'root Env<Par>,
     ) -> Result<EvVal, InterpreterError> {
         let decoded_entries = Arena::new();
-        self.eval_drive_with_arena(root, env, &decoded_entries)
+        let method_invocations = Arena::new();
+        self.eval_drive_with_arena(root, env, &decoded_entries, &method_invocations)
     }
 
     /// Execute one evaluator PDA while retaining any set-mode EPathMap entries
@@ -2352,6 +2527,7 @@ impl DebruijnInterpreter {
         root: EvWork<'e>,
         env: &'e Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        method_invocations: &'e Arena<MethodInvocation>,
     ) -> Result<EvVal, InterpreterError> {
         let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
         let mut vals: Vec<EvVal> = Vec::with_capacity(64);
@@ -2372,9 +2548,14 @@ impl DebruijnInterpreter {
                 EvWork::EI64(p) => {
                     self.descend_i64(p, env, decoded_entries, &mut work, &mut vals)?
                 }
-                EvWork::Combine(k) => {
-                    self.combine(k, env, decoded_entries, &mut work, &mut vals)?
-                }
+                EvWork::Combine(k) => self.combine(
+                    k,
+                    env,
+                    decoded_entries,
+                    method_invocations,
+                    &mut work,
+                    &mut vals,
+                )?,
             }
         }
         Ok(vals
@@ -2409,6 +2590,7 @@ impl DebruijnInterpreter {
             _ => unreachable!("eval_expr_to_expr: drive produced non-Expr"),
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))]
     fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         match self.eval_drive(EvWork::ESingle(p), env)? {
             EvVal::Expr(e) => Ok(e),
@@ -2422,6 +2604,7 @@ impl DebruijnInterpreter {
             _ => unreachable!("eval_to_bool: drive produced non-Bool"),
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))]
     fn eval_to_i64(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
         match self.eval_drive(EvWork::EI64(p), env)? {
             EvVal::I64(i) => Ok(i),
@@ -2563,6 +2746,132 @@ impl DebruijnInterpreter {
                 "Error: Multiple expressions given.".to_string(),
             )),
         }
+    }
+
+    /// Return the method's historical *second-pass* operand schedule.  An
+    /// empty schedule either means that the method is shallow or that its
+    /// arity is invalid; in the latter case `Method::apply` emits the original
+    /// mismatch before any operand evaluation.
+    fn method_eval_plan(method: &str, argc: usize) -> &'static [MethodEvalRequest] {
+        match (method, argc) {
+            ("nth", 1) => &METHOD_NTH,
+            ("last", 0) => &METHOD_TARGET_SINGLE,
+            ("toByteArray", 0) => &METHOD_TARGET_PAR,
+
+            (
+                "union" | "diff" | "intersection" | "restriction" | "run" | "graft" | "joinInto",
+                1,
+            ) => &METHOD_SINGLE_SINGLE,
+
+            (
+                "readZipper" | "writeZipper" | "getLeaf" | "getSubtrie" | "removeLeaf"
+                | "removeBranches" | "pathExists" | "prunePath" | "reset" | "ascendOne"
+                | "childCount" | "descendFirst" | "toNextSibling" | "toPrevSibling" | "getPath"
+                | "leafCount" | "toNextLeaf" | "keys" | "size" | "length" | "toList" | "toSet"
+                | "toMap",
+                0,
+            ) => &METHOD_TARGET_SINGLE,
+
+            (
+                "readZipperAt"
+                | "writeZipperAt"
+                | "descendTo"
+                | "setLeaf"
+                | "setSubtrie"
+                | "atPath"
+                | "createPath"
+                | "ascend"
+                | "descendIndexedBranch"
+                | "add"
+                | "delete"
+                | "contains"
+                | "get",
+                1,
+            ) => &METHOD_SINGLE_PAR,
+
+            ("getOrElse" | "set", 2) => &METHOD_SINGLE_TWO_PAR,
+            ("dropHead" | "take", 1) => &METHOD_SINGLE_I64,
+            ("slice", 2) => &METHOD_SINGLE_TWO_I64,
+            _ => &[],
+        }
+    }
+
+    fn push_method_result<'e>(
+        result: Par,
+        output: MethodOutput,
+        decoded_entries: &'e Arena<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) {
+        match output {
+            MethodOutput::Par => vals.push(EvVal::Par(result)),
+            MethodOutput::Expr => work.push(EvWork::ESingle(decoded_entries.alloc(result))),
+        }
+    }
+
+    fn push_method_eval<'e>(
+        request: MethodEvalRequest,
+        invocation: &'e MethodInvocation,
+        work: &mut Vec<EvWork<'e>>,
+    ) {
+        let par = match request.source {
+            MethodEvalSource::Target => &invocation.target,
+            MethodEvalSource::Arg(index) => &invocation.args[index],
+        };
+        work.push(match request.kind {
+            MethodEvalKind::Par => EvWork::EEval(par),
+            MethodEvalKind::Single => EvWork::ESingle(par),
+            MethodEvalKind::I64 => EvWork::EI64(par),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_prepared_method<'e>(
+        &self,
+        emethod: &'e EMethod,
+        target: Par,
+        args: Vec<Par>,
+        output: MethodOutput,
+        env: &Env<Par>,
+        decoded_entries: &'e Arena<Par>,
+        method_invocations: &'e Arena<MethodInvocation>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        let plan = Self::method_eval_plan(&emethod.method_name, args.len());
+        if plan.is_empty() {
+            let mut prepared = PreparedMethodValues::empty();
+            let Some(method) = self.method_named(&emethod.method_name) else {
+                let name = match output {
+                    MethodOutput::Par => emethod.method_name.clone(),
+                    MethodOutput::Expr => format!("{:?}", emethod.method_name),
+                };
+                return Err(InterpreterError::ReduceError(format!(
+                    "Unimplemented method: {name}"
+                )));
+            };
+            let result = method.apply(&target, &args, &mut prepared, env)?;
+            Self::push_method_result(result, output, decoded_entries, work, vals);
+            return Ok(());
+        }
+
+        // `nth` and `last` historically reserve this charge after their arity
+        // check but before the second-pass operand evaluation.
+        if matches!(emethod.method_name.as_str(), "nth" | "last") {
+            self.metering.reserve_primitive(nth_method_call_cost())?;
+        }
+
+        let invocation = method_invocations.alloc(MethodInvocation { target, args });
+        work.push(EvWork::Combine(EvKont::ApplyPreparedMethod {
+            emethod,
+            invocation,
+            prepared_count: plan.len(),
+            output,
+        }));
+        for request in plan.iter().rev().copied() {
+            Self::push_method_eval(request, invocation, work);
+        }
+        Ok(())
     }
 
     // eval_to_bool.
@@ -3025,6 +3334,7 @@ impl DebruijnInterpreter {
         k: EvKont<'e>,
         env: &Env<Par>,
         decoded_entries: &'e Arena<Par>,
+        method_invocations: &'e Arena<MethodInvocation>,
         work: &mut Vec<EvWork<'e>>,
         vals: &mut Vec<EvVal>,
     ) -> Result<(), InterpreterError> {
@@ -3047,17 +3357,17 @@ impl DebruijnInterpreter {
             EvKont::ToParMethod { emethod, argc } => {
                 let args = ev_pop_n_par(vals, argc);
                 let target = ev_pop_par(vals);
-                let result_par = match self.method_table().get(&emethod.method_name) {
-                    Some(_method) => _method.apply(target, args, env)?,
-                    None => {
-                        return Err(InterpreterError::ReduceError(format!(
-                            "Unimplemented method: {}",
-                            emethod.method_name
-                        )));
-                    }
-                };
-                vals.push(EvVal::Par(result_par));
-                Ok(())
+                self.begin_prepared_method(
+                    emethod,
+                    target,
+                    args,
+                    MethodOutput::Par,
+                    env,
+                    decoded_entries,
+                    method_invocations,
+                    work,
+                    vals,
+                )
             }
             EvKont::Neg => {
                 let v = ev_pop_expr(vals);
@@ -3259,8 +3569,31 @@ impl DebruijnInterpreter {
             EvKont::EMethodExprK { emethod, argc } => {
                 let args = ev_pop_n_par(vals, argc);
                 let target = ev_pop_par(vals);
-                let result_par = self.apply_method_expr(emethod, target, args, env)?;
-                work.push(EvWork::ESingle(decoded_entries.alloc(result_par)));
+                self.begin_prepared_method(
+                    emethod,
+                    target,
+                    args,
+                    MethodOutput::Expr,
+                    env,
+                    decoded_entries,
+                    method_invocations,
+                    work,
+                    vals,
+                )
+            }
+            EvKont::ApplyPreparedMethod {
+                emethod,
+                invocation,
+                prepared_count,
+                output,
+            } => {
+                let mut prepared = PreparedMethodValues::new(ev_pop_n_values(vals, prepared_count));
+                let method = self
+                    .method_named(&emethod.method_name)
+                    .expect("a method present before operand evaluation must remain present");
+                let result =
+                    method.apply(&invocation.target, &invocation.args, &mut prepared, env)?;
+                Self::push_method_result(result, output, decoded_entries, work, vals);
                 Ok(())
             }
             EvKont::BoolExtract => {
@@ -3797,13 +4130,18 @@ impl DebruijnInterpreter {
 
             (ExprInstance::ESetBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
-                let result_par = self.add_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
-                    }])],
+                    }])),
+                ]);
+                let result_par = self.add_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
 
@@ -3920,13 +4258,18 @@ impl DebruijnInterpreter {
 
             (ExprInstance::EMapBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
-                let result_par = self.delete_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
-                    }])],
+                    }])),
+                ]);
+                let result_par = self.delete_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
 
@@ -3935,13 +4278,18 @@ impl DebruijnInterpreter {
 
             (ExprInstance::ESetBody(lhs), rhs) => {
                 self.metering.reserve_primitive(op_call_cost())?;
-                let result_par = self.delete_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Par(Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(rhs),
-                    }])],
+                    }])),
+                ]);
+                let result_par = self.delete_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
 
@@ -4206,26 +4554,36 @@ impl DebruijnInterpreter {
             }
 
             (ExprInstance::EMapBody(lhs), ExprInstance::EMapBody(rhs)) => {
-                let result_par = self.union_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(rhs)),
-                    }])],
+                    }),
+                ]);
+                let result_par = self.union_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
                 return Ok(EvalSingleStep::Evaluate(result_par));
             }
 
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
-                let result_par = self.union_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(rhs)),
-                    }])],
+                    }),
+                ]);
+                let result_par = self.union_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
                 return Ok(EvalSingleStep::Evaluate(result_par));
@@ -4272,13 +4630,18 @@ impl DebruijnInterpreter {
     ) -> Result<EvalSingleStep, InterpreterError> {
         let completed = match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
             (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
-                let result_par = self.diff_method().apply(
-                    Par::default().with_exprs(vec![Expr {
+                let mut prepared = PreparedMethodValues::new(vec![
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                    }]),
-                    vec![Par::default().with_exprs(vec![Expr {
+                    }),
+                    EvVal::Expr(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(rhs)),
-                    }])],
+                    }),
+                ]);
+                let result_par = self.diff_method().apply(
+                    &Par::default(),
+                    &[Par::default()],
+                    &mut prepared,
                     env,
                 )?;
                 return Ok(EvalSingleStep::Evaluate(result_par));
@@ -4428,35 +4791,58 @@ impl DebruijnInterpreter {
         })
     }
 
-    // EMethod (eval_expr_to_expr site): method_table lookup (Debug error) + apply. The
-    // re-eval of the result via `eval_single_expr` is done by the caller (combine / twin).
-    fn apply_method_expr(
+    /// Test-only recursive twin of the production method-input continuation.
+    /// It shares the method cores but independently exercises the historical
+    /// recursive evaluation order for the differential oracle.
+    #[cfg(test)]
+    fn apply_method_recursive(
         &self,
         emethod: &EMethod,
         target_val: Par,
         arg_vals: Vec<Par>,
         env: &Env<Par>,
+        output: MethodOutput,
     ) -> Result<Par, InterpreterError> {
-        let result_par = match self.method_table().get(&emethod.method_name) {
-            Some(method_function) => method_function.apply(target_val, arg_vals, env)?,
-            None => {
-                return Err(InterpreterError::ReduceError(format!(
-                    "Unimplemented method: {:?}",
-                    emethod.method_name
-                )));
-            }
+        let Some(method) = self.method_named(&emethod.method_name) else {
+            let name = match output {
+                MethodOutput::Par => emethod.method_name.clone(),
+                MethodOutput::Expr => format!("{:?}", emethod.method_name),
+            };
+            return Err(InterpreterError::ReduceError(format!(
+                "Unimplemented method: {name}"
+            )));
         };
-        Ok(result_par)
+
+        let plan = Self::method_eval_plan(&emethod.method_name, arg_vals.len());
+        if !plan.is_empty() && matches!(emethod.method_name.as_str(), "nth" | "last") {
+            self.metering.reserve_primitive(nth_method_call_cost())?;
+        }
+        let mut values = Vec::with_capacity(plan.len());
+        for request in plan {
+            let par = match request.source {
+                MethodEvalSource::Target => &target_val,
+                MethodEvalSource::Arg(index) => &arg_vals[index],
+            };
+            values.push(match request.kind {
+                MethodEvalKind::Par => EvVal::Par(self.eval_expr_recursive(par, env)?),
+                MethodEvalKind::Single => EvVal::Expr(self.eval_single_expr_recursive(par, env)?),
+                MethodEvalKind::I64 => EvVal::I64(self.eval_to_i64_recursive(par, env)?),
+            });
+        }
+        method.apply(
+            &target_val,
+            &arg_vals,
+            &mut PreparedMethodValues::new(values),
+            env,
+        )
     }
 
     #[cfg(test)]
     reducer_expression_oracle_methods!();
     fn nth_method<'a>(&'a self) -> Box<dyn Method + 'a> {
-        struct NthMethod<'a> {
-            outer: &'a DebruijnInterpreter,
-        }
+        struct NthMethod;
 
-        impl<'a> NthMethod<'a> {
+        impl NthMethod {
             /// Thin delegate to the free [`local_nth`], which `last_method` shares.
             ///
             /// The body moved out verbatim and nothing here changed: `last` IS `nth` at a
@@ -4469,13 +4855,15 @@ impl DebruijnInterpreter {
             }
         }
 
-        impl<'a> Method for NthMethod<'a> {
+        impl Method for NthMethod {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: "nth".to_string(),
@@ -4484,11 +4872,8 @@ impl DebruijnInterpreter {
                     });
                 }
 
-                self.outer
-                    .metering
-                    .reserve_primitive(nth_method_call_cost())?;
-                let nth = self.outer.eval_to_i64(&args[0], env)? as usize;
-                let v = self.outer.eval_single_expr(&p, env)?;
+                let nth = prepared.next_i64() as usize;
+                let v = prepared.next_expr();
 
                 match v.expr_instance.unwrap() {
                     ExprInstance::EListBody(EList { ps, .. }) => self.local_nth(&ps, nth),
@@ -4512,7 +4897,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        Box::new(NthMethod { outer: self })
+        Box::new(NthMethod)
     }
 
     /// `l.last()` — the final element of a sequence carrier.
@@ -4541,17 +4926,17 @@ impl DebruijnInterpreter {
     /// head and `[..._, x]` does not parse. `last` is the method form of that missing
     /// projection.
     fn last_method<'a>(&'a self) -> Box<dyn Method + 'a> {
-        struct LastMethod<'a> {
-            outer: &'a DebruijnInterpreter,
-        }
+        struct LastMethod;
 
-        impl<'a> Method for LastMethod<'a> {
+        impl Method for LastMethod {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: "last".to_string(),
@@ -4560,12 +4945,9 @@ impl DebruijnInterpreter {
                     });
                 }
 
-                self.outer
-                    .metering
-                    .reserve_primitive(nth_method_call_cost())?;
                 // ★ The receiver is evaluated ONCE. This is the entire reason `last` is routed
                 // natively rather than desugared through `nth(length() - 1)`.
-                let v = self.outer.eval_single_expr(&p, env)?;
+                let v = prepared.next_expr();
 
                 match v.expr_instance.unwrap() {
                     ExprInstance::EListBody(EList { ps, .. }) => {
@@ -4597,7 +4979,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        Box::new(LastMethod { outer: self })
+        Box::new(LastMethod)
     }
 
     fn to_byte_array_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -4614,10 +4996,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToByteArrayMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: "toByteArray".to_string(),
@@ -4626,7 +5010,7 @@ impl DebruijnInterpreter {
                     });
                 }
 
-                let expr_evaled = self.outer.eval_expr(&p, env)?;
+                let expr_evaled = prepared.next_par();
                 let expr_subst =
                     self.outer
                         .substitute
@@ -4654,10 +5038,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for HexToBytesMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("hexToBytes"),
@@ -4703,10 +5089,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for BytesToHexMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("bytesToHex"),
@@ -4752,10 +5140,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToUtf8BytesMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toUtf8Bytes"),
@@ -4903,10 +5293,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for UnionMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("union"),
@@ -4914,8 +5306,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let other_expr = self.outer.eval_single_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let other_expr = prepared.next_expr();
                     let result = self.union(&base_expr, &other_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5028,10 +5420,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DiffMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("diff"),
@@ -5039,8 +5433,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let other_expr = self.outer.eval_single_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let other_expr = prepared.next_expr();
                     let result = self.diff(&base_expr, &other_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5108,10 +5502,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for IntersectionMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("intersection"),
@@ -5119,9 +5515,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let other_par = &args[0];
-                    let other_expr = self.outer.eval_single_expr(other_par, env)?;
+                    let base_expr = prepared.next_expr();
+                    let other_expr = prepared.next_expr();
                     let result = self.intersection(&base_expr, &other_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5184,10 +5579,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for RestrictionMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("restriction"),
@@ -5195,9 +5592,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let other_par = &args[0];
-                    let other_expr = self.outer.eval_single_expr(other_par, env)?;
+                    let base_expr = prepared.next_expr();
+                    let other_expr = prepared.next_expr();
                     let result = self.restriction(&base_expr, &other_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5244,10 +5640,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DropHeadMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("dropHead"),
@@ -5255,9 +5653,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let n_par = &args[0];
-                    let n = self.outer.eval_to_i64(n_par, env)?;
+                    let base_expr = prepared.next_expr();
+                    let n = prepared.next_i64();
                     let result = self.drop_head(&base_expr, n)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5298,10 +5695,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for RunMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("run"),
@@ -5309,8 +5708,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let other_expr = self.outer.eval_single_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let other_expr = prepared.next_expr();
                     let result = self.run(&base_expr, &other_expr)?;
                     Ok(Par::default().with_exprs(vec![result]))
                 }
@@ -5386,10 +5785,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ReadZipperMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("readZipper"),
@@ -5397,7 +5798,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -5470,10 +5871,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ReadZipperAtMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("readZipperAt"),
@@ -5481,8 +5884,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let path = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let path = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -5527,10 +5930,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for WriteZipperMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("writeZipper"),
@@ -5538,7 +5943,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -5596,10 +6001,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for WriteZipperAtMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("writeZipperAt"),
@@ -5607,8 +6014,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let path = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let path = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -5672,10 +6079,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DescendToMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("descendTo"),
@@ -5683,8 +6092,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let path = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let path = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -5724,10 +6133,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GetLeafMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("getLeaf"),
@@ -5735,7 +6146,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer.metering.reserve_primitive(lookup_cost())?;
                 self.get_leaf(&base_expr)
             }
@@ -5778,10 +6189,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GetSubtrieMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("getSubtrie"),
@@ -5789,7 +6202,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer.metering.reserve_primitive(lookup_cost())?;
                 self.get_subtrie(&base_expr)
             }
@@ -5851,10 +6264,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for SetLeafMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("setLeaf"),
@@ -5862,8 +6277,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let value = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let value = prepared.next_par();
                 self.outer.metering.reserve_primitive(add_cost())?;
                 let result = self.set_leaf(&base_expr, &value)?;
                 Ok(Par::default().with_exprs(vec![result]))
@@ -5925,10 +6340,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for SetSubtrieMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("setSubtrie"),
@@ -5936,8 +6353,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let source_par = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let source_par = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6004,10 +6421,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for RemoveLeafMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("removeLeaf"),
@@ -6015,7 +6434,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.remove_leaf(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
@@ -6068,10 +6487,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for RemoveBranchesMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("removeBranches"),
@@ -6079,7 +6500,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.remove_branches(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
@@ -6158,10 +6579,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GraftMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("graft"),
@@ -6169,8 +6592,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let source_expr = self.outer.eval_single_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let source_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6256,10 +6679,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for JoinIntoMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("joinInto"),
@@ -6267,8 +6692,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let source_expr = self.outer.eval_single_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let source_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6308,10 +6733,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for AtPathMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("atPath"),
@@ -6319,8 +6746,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let path_par = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let path_par = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6363,10 +6790,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for PathExistsMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("pathExists"),
@@ -6374,7 +6803,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6427,10 +6856,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for CreatePathMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("createPath"),
@@ -6438,8 +6869,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let path_par = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let path_par = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6483,10 +6914,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for PrunePathMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("prunePath"),
@@ -6494,7 +6927,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer.metering.reserve_primitive(remove_cost())?;
                 let result = self.prune_path(&base_expr)?;
                 Ok(Par::default().with_exprs(vec![result]))
@@ -6532,10 +6965,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ResetMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("reset"),
@@ -6543,7 +6978,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6595,10 +7030,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for AscendOneMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("ascendOne"),
@@ -6606,7 +7043,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6679,10 +7116,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for AscendMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("ascend"),
@@ -6690,8 +7129,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let steps_par = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let steps_par = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6733,10 +7172,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ChildCountMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("childCount"),
@@ -6744,7 +7185,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6802,10 +7243,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DescendFirstMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("descendFirst"),
@@ -6813,7 +7256,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6901,10 +7344,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DescendIndexedBranchMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("descendIndexedBranch"),
@@ -6912,8 +7357,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
-                let idx_par = self.outer.eval_expr(&args[0], env)?;
+                let base_expr = prepared.next_expr();
+                let idx_par = prepared.next_par();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -6990,10 +7435,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToNextSiblingMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toNextSibling"),
@@ -7001,7 +7448,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -7078,10 +7525,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToPrevSiblingMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toPrevSibling"),
@@ -7089,7 +7538,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -7195,10 +7644,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GetPathMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("getPath"),
@@ -7206,7 +7657,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -7244,10 +7695,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for LeafCountMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("leafCount"),
@@ -7255,7 +7708,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 // Charged in TWO parts, both from this file's existing cost
                 // vocabulary — no new metering surface (budgets are
                 // f1r3node's).
@@ -7336,10 +7789,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToNextLeafMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     return Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toNextLeaf"),
@@ -7347,7 +7802,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     });
                 }
-                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let base_expr = prepared.next_expr();
                 self.outer
                     .metering
                     .reserve_incremental_primitive(union_cost(1))?;
@@ -7405,10 +7860,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for AddMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("add"),
@@ -7416,8 +7873,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let element = self.outer.eval_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let element = prepared.next_par();
                     self.outer.metering.reserve_primitive(add_cost())?;
                     let result = self.add(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
@@ -7501,10 +7958,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for DeleteMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("delete"),
@@ -7512,8 +7971,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let element = self.outer.eval_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let element = prepared.next_par();
                     //TODO(mateusz.gorski): think whether deletion of an element from the collection should dependent on the collection type/size - OLD
                     self.outer.metering.reserve_primitive(remove_cost())?;
                     let result = self.delete(base_expr, element)?;
@@ -7573,10 +8032,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ContainsMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("contains"),
@@ -7584,8 +8045,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let element = self.outer.eval_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let element = prepared.next_par();
                     self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.contains(base_expr, element)?;
                     Ok(Par::default().with_exprs(vec![result]))
@@ -7632,10 +8093,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GetMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get"),
@@ -7643,8 +8106,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let key = self.outer.eval_expr(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let key = prepared.next_par();
                     self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.get(base_expr, key)?;
                     Ok(result)
@@ -7696,10 +8159,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for GetOrElseMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 2 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("get_or_else"),
@@ -7707,9 +8172,9 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let key = self.outer.eval_expr(&args[0], env)?;
-                    let default = self.outer.eval_expr(&args[1], env)?;
+                    let base_expr = prepared.next_expr();
+                    let key = prepared.next_par();
+                    let default = prepared.next_par();
                     self.outer.metering.reserve_primitive(lookup_cost())?;
                     let result = self.get_or_else(base_expr, key, default)?;
                     Ok(result)
@@ -7768,10 +8233,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for SetMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 2 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("set"),
@@ -7779,9 +8246,9 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let key = self.outer.eval_expr(&args[0], env)?;
-                    let value = self.outer.eval_expr(&args[1], env)?;
+                    let base_expr = prepared.next_expr();
+                    let key = prepared.next_par();
+                    let value = prepared.next_par();
                     self.outer.metering.reserve_primitive(add_cost())?;
                     let result = self.set(base_expr, key, value)?;
                     Ok(result)
@@ -7863,10 +8330,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for KeysMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("keys"),
@@ -7874,7 +8343,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     self.outer.metering.reserve_primitive(keys_method_cost())?;
                     let result = self.keys(base_expr)?;
                     Ok(result)
@@ -7930,10 +8399,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for SizeMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("size"),
@@ -7941,7 +8412,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     let result = self.size(base_expr)?;
                     self.outer
                         .metering
@@ -7986,10 +8457,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for LengthMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("length"),
@@ -7997,7 +8470,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     self.outer
                         .metering
                         .reserve_primitive(length_method_cost())?;
@@ -8076,10 +8549,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for SliceMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 2 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("slice"),
@@ -8087,9 +8562,9 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let from_arg = self.outer.eval_to_i64(&args[0], env)?;
-                    let to_arg = self.outer.eval_to_i64(&args[1], env)?;
+                    let base_expr = prepared.next_expr();
+                    let from_arg = prepared.next_i64();
+                    let to_arg = prepared.next_i64();
                     let from = from_arg.max(0) as usize;
                     let until = to_arg.max(0) as usize;
                     self.outer
@@ -8139,10 +8614,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for TakeMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if args.len() != 1 {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("take"),
@@ -8150,8 +8627,8 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
-                    let n_arg = self.outer.eval_to_i64(&args[0], env)?;
+                    let base_expr = prepared.next_expr();
+                    let n_arg = prepared.next_i64();
                     let n = n_arg.max(0) as usize;
                     self.outer
                         .metering
@@ -8259,10 +8736,12 @@ impl DebruijnInterpreter {
         impl<'a> Method for ToListMethod<'a> {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_list"),
@@ -8270,7 +8749,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     let result = self.to_list(base_expr)?;
                     Ok(result)
                 }
@@ -8281,11 +8760,9 @@ impl DebruijnInterpreter {
     }
 
     fn to_set_method<'a>(&'a self) -> Box<dyn Method + 'a> {
-        struct ToSetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
-        }
+        struct ToSetMethod;
 
-        impl<'a> ToSetMethod<'a> {
+        impl ToSetMethod {
             fn to_set(&self, base_expr: Expr) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
@@ -8348,13 +8825,15 @@ impl DebruijnInterpreter {
             }
         }
 
-        impl<'a> Method for ToSetMethod<'a> {
+        impl Method for ToSetMethod {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_set"),
@@ -8362,22 +8841,20 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     let result = self.to_set(base_expr)?;
                     Ok(result)
                 }
             }
         }
 
-        Box::new(ToSetMethod { outer: self })
+        Box::new(ToSetMethod)
     }
 
     fn to_map_method<'a>(&'a self) -> Box<dyn Method + 'a> {
-        struct ToMapMethod<'a> {
-            outer: &'a DebruijnInterpreter,
-        }
+        struct ToMapMethod;
 
-        impl<'a> ToMapMethod<'a> {
+        impl ToMapMethod {
             fn make_map(
                 &self,
                 ps: Vec<Par>,
@@ -8452,13 +8929,15 @@ impl DebruijnInterpreter {
             }
         }
 
-        impl<'a> Method for ToMapMethod<'a> {
+        impl Method for ToMapMethod {
             fn apply(
                 &self,
-                p: Par,
-                args: Vec<Par>,
+                p: &Par,
+                args: &[Par],
+                prepared: &mut PreparedMethodValues,
                 env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
+                let _ = (p, env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
@@ -8466,14 +8945,14 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let base_expr = self.outer.eval_single_expr(&p, env)?;
+                    let base_expr = prepared.next_expr();
                     let result = self.to_map(base_expr)?;
                     Ok(result)
                 }
             }
         }
 
-        Box::new(ToMapMethod { outer: self })
+        Box::new(ToMapMethod)
     }
 
     fn to_string_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -8507,7 +8986,13 @@ impl DebruijnInterpreter {
         }
 
         impl<'a> Method for ToStringMethod<'a> {
-            fn apply(&self, p: Par, args: Vec<Par>, _: &Env<Par>) -> Result<Par, InterpreterError> {
+            fn apply(
+                &self,
+                p: &Par,
+                args: &[Par],
+                _prepared: &mut PreparedMethodValues,
+                _: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("to_map"),
@@ -8515,7 +9000,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    let un = self.outer.eval_single_unforgeable(&p)?;
+                    let un = self.outer.eval_single_unforgeable(p)?;
                     let result = self.to_string(un)?;
                     Ok(result)
                 }
@@ -8525,78 +9010,70 @@ impl DebruijnInterpreter {
         Box::new(ToStringMethod { outer: self })
     }
 
-    fn method_table<'a>(&'a self) -> HashMap<String, Box<dyn Method + 'a>> {
-        let mut table = HashMap::new();
-        table.insert("nth".to_string(), self.nth_method());
-        // `last` sits beside `nth` because it IS `nth`, at the index `nth` cannot be handed:
-        // upstream's collection remainder is always trailing, so `[..._, x]` does not parse and
-        // a list's final element is not pattern-reachable. ADDITIVE: no program that does not
-        // call `last()` is affected, and before this entry existed `last()` did not execute at
-        // all, so no existing behaviour changes. See `last_method` for why it is a native
-        // routed method rather than a `nth(length() - 1)` desugaring.
-        table.insert("last".to_string(), self.last_method());
-        table.insert("toByteArray".to_string(), self.to_byte_array_method());
-        table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
-        table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
-        table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
-        table.insert("union".to_string(), self.union_method());
-        table.insert("diff".to_string(), self.diff_method());
-        table.insert("intersection".to_string(), self.intersection_method());
-        table.insert("restriction".to_string(), self.restriction_method());
-        table.insert("dropHead".to_string(), self.drop_head_method());
-        table.insert("run".to_string(), self.run_method());
-        // Zipper methods
-        table.insert("readZipper".to_string(), self.read_zipper_method());
-        table.insert("readZipperAt".to_string(), self.read_zipper_at_method());
-        table.insert("writeZipper".to_string(), self.write_zipper_method());
-        table.insert("writeZipperAt".to_string(), self.write_zipper_at_method());
-        table.insert("descendTo".to_string(), self.descend_to_method());
-        table.insert("getLeaf".to_string(), self.get_leaf_method());
-        table.insert("getSubtrie".to_string(), self.get_subtrie_method());
-        table.insert("setLeaf".to_string(), self.set_leaf_method());
-        table.insert("setSubtrie".to_string(), self.set_subtrie_method());
-        table.insert("removeLeaf".to_string(), self.remove_leaf_method());
-        table.insert("removeBranches".to_string(), self.remove_branches_method());
-        table.insert("graft".to_string(), self.graft_method());
-        table.insert("joinInto".to_string(), self.join_into_method());
-        table.insert("atPath".to_string(), self.at_path_method());
-        table.insert("pathExists".to_string(), self.path_exists_method());
-        table.insert("createPath".to_string(), self.create_path_method());
-        table.insert("prunePath".to_string(), self.prune_path_method());
-        table.insert("reset".to_string(), self.reset_method());
-        // Advanced navigation methods
-        table.insert("ascendOne".to_string(), self.ascend_one_method());
-        table.insert("ascend".to_string(), self.ascend_method());
-        table.insert("toNextSibling".to_string(), self.to_next_sibling_method());
-        table.insert("toPrevSibling".to_string(), self.to_prev_sibling_method());
-        table.insert("descendFirst".to_string(), self.descend_first_method());
-        table.insert(
-            "descendIndexedBranch".to_string(),
-            self.descend_indexed_branch_method(),
-        );
-        table.insert("childCount".to_string(), self.child_count_method());
-        // Trie enumeration. See the ZIPPER ENUMERATION METHODS block: additive
-        // only (no proto change, no new state), and `toNextLeaf` signals
-        // exhaustion with `Nil`, which C1 must translate to rhocalc's stuck form.
-        table.insert("getPath".to_string(), self.get_path_method());
-        table.insert("toNextLeaf".to_string(), self.to_next_leaf_method());
-        table.insert("leafCount".to_string(), self.leaf_count_method());
-        table.insert("add".to_string(), self.add_method());
-        table.insert("delete".to_string(), self.delete_method());
-        table.insert("contains".to_string(), self.contains_method());
-        table.insert("get".to_string(), self.get_method());
-        table.insert("getOrElse".to_string(), self.get_or_else_method());
-        table.insert("set".to_string(), self.set_method());
-        table.insert("keys".to_string(), self.keys_method());
-        table.insert("size".to_string(), self.size_method());
-        table.insert("length".to_string(), self.length_method());
-        table.insert("slice".to_string(), self.slice_method());
-        table.insert("take".to_string(), self.take_method());
-        table.insert("toList".to_string(), self.to_list_method());
-        table.insert("toSet".to_string(), self.to_set_method());
-        table.insert("toMap".to_string(), self.to_map_method());
-        table.insert("toString".to_string(), self.to_string_method());
-        table
+    /// Construct exactly one native method implementation.  The former
+    /// `method_table` rebuilt a 55-entry `HashMap<String, Box<_>>` for every
+    /// dispatch (and the resumable path would otherwise need to rebuild it
+    /// again after suspension).  Direct selection makes dispatch allocation
+    /// proportional to one method, not the entire method surface.
+    fn method_named<'a>(&'a self, name: &str) -> Option<Box<dyn Method + 'a>> {
+        Some(match name {
+            "nth" => self.nth_method(),
+            "last" => self.last_method(),
+            "toByteArray" => self.to_byte_array_method(),
+            "hexToBytes" => self.hex_to_bytes_method(),
+            "bytesToHex" => self.bytes_to_hex_method(),
+            "toUtf8Bytes" => self.to_utf8_bytes_method(),
+            "union" => self.union_method(),
+            "diff" => self.diff_method(),
+            "intersection" => self.intersection_method(),
+            "restriction" => self.restriction_method(),
+            "dropHead" => self.drop_head_method(),
+            "run" => self.run_method(),
+            "readZipper" => self.read_zipper_method(),
+            "readZipperAt" => self.read_zipper_at_method(),
+            "writeZipper" => self.write_zipper_method(),
+            "writeZipperAt" => self.write_zipper_at_method(),
+            "descendTo" => self.descend_to_method(),
+            "getLeaf" => self.get_leaf_method(),
+            "getSubtrie" => self.get_subtrie_method(),
+            "setLeaf" => self.set_leaf_method(),
+            "setSubtrie" => self.set_subtrie_method(),
+            "removeLeaf" => self.remove_leaf_method(),
+            "removeBranches" => self.remove_branches_method(),
+            "graft" => self.graft_method(),
+            "joinInto" => self.join_into_method(),
+            "atPath" => self.at_path_method(),
+            "pathExists" => self.path_exists_method(),
+            "createPath" => self.create_path_method(),
+            "prunePath" => self.prune_path_method(),
+            "reset" => self.reset_method(),
+            "ascendOne" => self.ascend_one_method(),
+            "ascend" => self.ascend_method(),
+            "toNextSibling" => self.to_next_sibling_method(),
+            "toPrevSibling" => self.to_prev_sibling_method(),
+            "descendFirst" => self.descend_first_method(),
+            "descendIndexedBranch" => self.descend_indexed_branch_method(),
+            "childCount" => self.child_count_method(),
+            "getPath" => self.get_path_method(),
+            "toNextLeaf" => self.to_next_leaf_method(),
+            "leafCount" => self.leaf_count_method(),
+            "add" => self.add_method(),
+            "delete" => self.delete_method(),
+            "contains" => self.contains_method(),
+            "get" => self.get_method(),
+            "getOrElse" => self.get_or_else_method(),
+            "set" => self.set_method(),
+            "keys" => self.keys_method(),
+            "size" => self.size_method(),
+            "length" => self.length_method(),
+            "slice" => self.slice_method(),
+            "take" => self.take_method(),
+            "toList" => self.to_list_method(),
+            "toSet" => self.to_set_method(),
+            "toMap" => self.to_map_method(),
+            "toString" => self.to_string_method(),
+            _ => return None,
+        })
     }
 
     // (eval_single_expr moved: now a thin wrapper over eval_drive, above.)
@@ -9100,8 +9577,10 @@ mod differential_trampoline {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{
         BindPattern, Bundle, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq,
-        ENot, EOr, EPathMap, EPlus, ETuple, Expr, ListParWithRandom, Par, Send, TaggedContinuation,
+        ENot, EOr, EPathMap, EPlus, ETuple, EZipper, Expr, ListParWithRandom, Par, Send,
+        TaggedContinuation,
     };
+    use models::rust::pathmap_integration::par_to_path;
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -9197,6 +9676,36 @@ mod differential_trampoline {
             locally_free: vec![],
             connective_used: false,
         }))
+    }
+
+    /// Hide `value` behind a zipper leaf.  Evaluating an `EZipper` is
+    /// deliberately shallow, so `getLeaf` returns the stored `Par` without
+    /// evaluating it.  This is the adversarial carrier that makes method
+    /// operand replay exercise a newly revealed method rather than merely a
+    /// ground value.
+    fn opaque_zipper(value: Par) -> Par {
+        let key = new_gstring_par("method-pda-key".to_owned(), Vec::new(), false);
+        let map = EPathMap::new_map([(key.clone(), value)], Vec::new(), false, None);
+        expr_par(ExprInstance::EZipperBody(EZipper {
+            pathmap: Some(map),
+            current_path: par_to_path(&key),
+            is_write_zipper: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+            cursor_kind: CursorKind::of(&key).to_wire(),
+        }))
+    }
+
+    /// Each layer first reveals the next method through `getLeaf`, then asks
+    /// `length` to evaluate that newly revealed target.  Before the method PDA
+    /// this nested one evaluator drive per layer on the native stack.
+    fn method_reentry_chain(depth: usize) -> Par {
+        let mut value = elist(vec![new_gint_par(7, Vec::new(), false)]);
+        for _ in 0..depth {
+            let revealed = method(opaque_zipper(value), "getLeaf", Vec::new());
+            value = method(revealed, "length", Vec::new());
+        }
+        value
     }
     fn reflected_send() -> Par {
         let mut par = Par::default();
@@ -9344,6 +9853,13 @@ mod differential_trampoline {
         for t in &terms {
             assert_agree(t).await;
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn method_reentry_pda_matches_the_recursive_oracle() {
+        // Keep the recursive control deliberately shallow; the production
+        // fixed-stack gate below owns the unbounded-depth obligation.
+        assert_agree(&method_reentry_chain(2)).await;
     }
 
     // ---- the six wrappers each vs their _recursive twin (also exercises the
@@ -9653,5 +10169,31 @@ mod differential_trampoline {
             .expect("spawn fixed-stack reducer probe")
             .join()
             .expect("fixed-stack reducer probe panicked");
+    }
+
+    #[test]
+    fn method_reentry_depth_4096_uses_a_fixed_small_native_stack() {
+        std::thread::Builder::new()
+            .name("method-reentry-pda-depth-4096".to_owned())
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build current-thread runtime");
+                runtime.block_on(async {
+                    let reducer = build().await;
+                    let chain = method_reentry_chain(4_096);
+                    let result = reducer.eval_expr(&chain, &Env::new());
+                    assert!(
+                        result.is_err(),
+                        "the terminal outer length call must reject the inner integer"
+                    );
+                    models::rust::rholang::par_children::dismantle(chain);
+                });
+            })
+            .expect("spawn fixed-stack method-reentry probe")
+            .join()
+            .expect("fixed-stack method-reentry probe panicked");
     }
 }

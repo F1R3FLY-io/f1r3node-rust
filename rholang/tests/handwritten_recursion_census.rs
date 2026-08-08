@@ -156,17 +156,10 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
         Disposition::Measured(
             "production expression descent is `eval_drive`; async process descent is the \
              detached counted-task driver. Gate subjects \
-             `async_reducer_scc_depth_4096_uses_a_fixed_small_native_stack`, the reported deploy \
-             reproducer in `deploy_depth_ceiling`, and the async-driver differential cover the \
-             formerly recursive consensus path",
-        ),
-    ),
-    (
-        "rholang/src/rust/interpreter/fused_pathmap_chain.rs",
-        Disposition::Measured(
-            "the recognizer and replay are explicit loops; gate subject \
-             `fused_chain_depth_4096_uses_a_fixed_small_native_stack` drives the whole EMethod \
-             spine on 256 KiB",
+             `async_reducer_scc_depth_4096_uses_a_fixed_small_native_stack` and \
+             `method_reentry_depth_4096_uses_a_fixed_small_native_stack`, the reported deploy \
+             reproducer in `deploy_depth_ceiling`, and the reducer differentials cover both the \
+             formerly recursive consensus path and second-pass native-method operand replay",
         ),
     ),
     // ── printers ───────────────────────────────────────────────────────────────────
@@ -345,18 +338,15 @@ const RECURSION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ),
 ];
 
-/// ⚠ The non-vacuity floor on the DERIVED file set. If the scan ever returned nothing — a
-/// moved crate root, a regex that stopped matching, a walk that found no `.rs` — every
-/// assertion below would iterate an empty set and PASS.
+/// Anti-vacuity is structural rather than a pinned observation count:
 ///
-/// ★ Measured at the commit that introduced this file: **35** files carry a term-family cycle.
-/// The floor is set below that so a legitimate conversion can retire files without editing it,
-/// and it may only ever move DOWN with a commit that says which files left and why.
-const MIN_FILES_WITH_TERM_RECURSION: usize = 25;
-
-/// ⚠ The floor on MUTUAL components specifically, because they are the ones every prior census
-/// was blind to. Measured: **22** term-family components are mutual.
-const MIN_MUTUAL_COMPONENTS: usize = 15;
+/// * every declared crate root must still exist;
+/// * the independently maintained recursive normalizer oracle calibrates mutual-SCC detection;
+/// * the derived active file set must equal `RECURSION_DISPOSITIONS` in both directions.
+///
+/// A numerical floor becomes stale precisely when this campaign succeeds at retiring a cycle.
+/// Exact set equality catches missing roots, scanner regressions, new cycles, and retired cycles
+/// without requiring a human to bless a progressively smaller magic number.
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -579,7 +569,6 @@ struct Census {
     recursive: Vec<Vec<Node>>,
     /// Of those, the ones touching the term family.
     term_family: Vec<Vec<Node>>,
-    files: Vec<PathBuf>,
     rel: Vec<String>,
 }
 
@@ -674,7 +663,6 @@ fn run_census_for_roots(roots: &[&str]) -> Census {
     Census {
         recursive,
         term_family,
-        files,
         rel,
     }
 }
@@ -721,6 +709,23 @@ fn recursive_oracles_live_only_under_test_support() {
 fn every_handwritten_term_recursion_has_a_disposition() {
     let c = run_census();
 
+    let root = workspace_root();
+    let missing_roots: Vec<&str> = CRATE_ROOTS
+        .iter()
+        .copied()
+        .filter(|path| !root.join(path).is_dir())
+        .collect();
+    assert!(
+        missing_roots.is_empty(),
+        "RECURSION CENSUS ROOTS DISAPPEARED: {missing_roots:?}"
+    );
+
+    let declared: BTreeSet<&str> = RECURSION_DISPOSITIONS.iter().map(|(f, _)| *f).collect();
+    assert!(
+        !declared.is_empty(),
+        "RECURSION CENSUS DECLARATIONS WENT VACUOUS: the exact expected file set is empty"
+    );
+
     let mut with_recursion: BTreeMap<String, usize> = BTreeMap::new();
     for comp in &c.term_family {
         for (fi, _, _) in comp {
@@ -729,31 +734,7 @@ fn every_handwritten_term_recursion_has_a_disposition() {
         }
     }
 
-    // ── non-vacuity, before any comparison ──
-    assert!(
-        with_recursion.len() >= MIN_FILES_WITH_TERM_RECURSION,
-        "CENSUS WENT VACUOUS: only {} file(s) carry a term-family cycle, below the floor of \
-         {MIN_FILES_WITH_TERM_RECURSION}.\n\
-         That is not good news. It means the scan stopped seeing things — a moved crate root, a \
-         `fn` shape the body-delimiter cannot close, or a term type renamed out of TERM_FAMILY. \
-         A census that finds nothing certifies nothing.\n\
-         Scanned {} file(s) across {:?}.",
-        with_recursion.len(),
-        c.files.len(),
-        CRATE_ROOTS
-    );
-
     let mutual = c.term_family.iter().filter(|x| x.len() > 1).count();
-    assert!(
-        mutual >= MIN_MUTUAL_COMPONENTS,
-        "MUTUAL-RECURSION DETECTION WENT VACUOUS: {mutual} mutual component(s), below the floor \
-         of {MIN_MUTUAL_COMPONENTS}.\n\
-         ⚠ Mutual recursion is the ENTIRE reason this census computes SCCs rather than looking \
-         for self-calls. #121 was a 2-cycle. If this count collapses, the census has degraded \
-         into the detector it was built to replace."
-    );
-
-    let declared: BTreeSet<&str> = RECURSION_DISPOSITIONS.iter().map(|(f, _)| *f).collect();
     let undispositioned: Vec<String> = with_recursion
         .iter()
         .filter(|(f, _)| !declared.contains(f.as_str()))
