@@ -169,7 +169,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A3** | `6ce7c5b9` | f1r3node | score tree: comparator, sibling walk, `Clone`, `Drop`, `PartialEq` | 1,329 / 201 / 1,578 / 370 / 719 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A4** | `6ce7c5b9` | f1r3node | `ParSortMatcher` — `sort`, `sort_wide` | 78,592 $`\rightarrow`$ **0** *(debug)* | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A5** | `a3fd6fe4` | f1r3node | `rho-pure-eval`'s `eval_with` SCC | 3,359 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
-| **SS-A6** | `6675fc06` | f1r3node | `PrettyPrinter` pushdown driver | ⌀ $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
+| **SS-A6** | `6675fc06`, completed for owned canonical collections by `50756ec2` | f1r3node | `PrettyPrinter` pushdown driver, including `ESet` / `EMap` owned canonical intermediates | ⌀ $`\rightarrow`$ **0** | **yes**; SS-Y8 retains the repaired evidence gap | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
@@ -247,6 +247,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-Y3** | measured `6a264e05`; repaired `26876b65` | f1r3node | The three collection arms formerly re-scored each element three times per nesting level on the canonical-form path | $`\Theta(3^d)`$; $`3.016\times`$/level $`\rightarrow`$ generated sorter PDA, **Ir exponent 1.0068 set / 1.0023 map** | ★ **repaired**; stack flat and linear observed | [5.6.8](#568-ss-y3--the-collection-arms-re-score-every-element-three-times-per-level) |
 | **SS-Y6** | `c0385b79` | f1r3node | ★★★ **DISSOLVED, not repaired** — the `TRIE_INTERN` LRU dropped a deep `Par` through the recursive destructor **inside a global mutex, on an arbitrary thread**. The store is deleted, so the site no longer exists | ⌀ — the fault has no site; the destructor itself was later converted by SS-A8 | **n/a** — discharged by deletion | [PathMap §5.8](../pathmap/pathmap-report-2026-08-03.md#58-the-dissolved-intern-store) |
 | **SS-Y4** | *(pre-existing; PINNED by `6bdd6ad7`, REPAIRED by `HEAD`)* | f1r3node | ⛔★★★ **A live consensus SAFETY FORK** — sibling order is not a total function of the term. `combine_emap` chains only the **key's** score, so distinct canonical terms share a score tree; `sort_vec` is **stable**, so tied siblings keep their input order | seeded: **20/20** split over 40 processes · deterministic: `{3:30} \| {3:90}` $`\neq`$ `{3:90} \| {3:30}` | ★ **repaired** — sibling order is now TOTAL | [5.6.9](#569-ss-y4--sibling-order-is-not-a-total-function-of-the-term) |
+| **SS-Y8** | exposed by the 2026-08-08 source/evidence audit; repaired `50756ec2` | f1r3node | SS-A6's `ESet` / `EMap` printer arms still opened nested drives over owned canonical intermediates; re-canonicalizing each nested suffix also made the canonicalization component quadratic | native stack $`\Theta(d) \rightarrow O(1)`$; canonicalization $`\Theta(d^2) \rightarrow \Theta(d)`$ for a unary collection chain; depth **4,096** on **256 KiB**: set **0.12 s / 28,444 KiB**, map **0.23 s / 42,696 KiB**, zero swap | ✅ **repaired**; 27 recursive-oracle differential cases preserve replay-visible text | [5.1.3a](#513a-ss-y8--owned-canonical-collections-complete-the-printer-pda) |
 
 ⚠ **`SS-E1` and `SS-Y3` are a second instance of [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape)'s rule 4, in the same *revealed-by* form as `SS-G6`/`SS-Y2`**: `SS-E1`'s commits did not create the defect; they **measured** one that was already live and unquantified. `26876b65` discharged SS-Y3 by repair, and the row remains so the defect and its evidence cannot disappear.
 
@@ -916,8 +917,64 @@ Read line by line. Line 2 seeds the work stack with the root; line 3 the value s
 | `normalize` | 43,542 | **0** | 7,261 | **0** | **(q)** `CONVERTED_DEPTH` note; **(f)** flat 32 KiB |
 | `eval_with_nots` | 21,584 | **0** | 3,359 | **0** | **(q)** `a3fd6fe4`; **(f)** flat 12 KiB |
 | `pretty`, `pretty_wide` | — | **0** | — | **0** | **(f)** flat 12 KiB both axes |
+| `pretty_nested_set`, `pretty_nested_map` | residual nested-drive slope | **0** | residual nested-drive slope | **0** | **(f)** depth 4,096 on 256 KiB; 28,444 / 42,696 KiB peak RSS |
 
 **The reported reproducer is fixed.** `@"OUT"!([[[[[[[[[[0]]]]]]]]]])` at depth 10 now survives the 2 MiB stack a `tokio` worker gets, and `reported_reproducer_depth_survives_a_default_worker_stack` is no longer `#[ignore]`d — **MEASURED (f)**: it passes in the fresh release run.
+
+#### 5.1.3a SS-Y8 — owned canonical collections complete the printer PDA
+
+**The evidence gap.** SS-A6's original `pretty` subject nested `EList` values. It proved the generic
+printer driver but could not enter the two arms that still called public printer entry points from
+inside `inline_expr`: `ESetBody` and `EMapBody`. Each arm first produced an owned, recursively
+canonical `Par` tree through `ParSetTypeMapper` or `ParMapTypeMapper`, then rendered every member by
+opening a fresh drive. A chain of collection intermediates therefore placed one native printer frame
+per collection level. Re-canonicalizing the already-canonical suffix at every level independently
+made the canonicalization component quadratic as well. **DERIVED** from the pre-`50756ec2` source;
+the stale module documentation stated the nested-drive disposition explicitly.
+
+**The machine.** `50756ec2` stores canonical roots in the printer's existing traversal-local arena
+and schedules their members on the same work and value stacks as every borrowed child. One
+`CanonicalCollections` registry walks each arena-owned canonical `Par` at most once, records nested
+set/map addresses, and lets their later continuations consume the canonical order already produced
+by the sorter. The registry and arena share a lifetime, so an address cannot outlive or be reused
+while it remains authoritative.
+
+```pseudocode
+procedure SCHEDULE-CANONICAL-COLLECTION(collection)
+    if collection is recorded canonical then
+        schedule its stored children in reverse order
+    else
+        canonical_roots <- CANONICALIZE(collection)
+        for each root in canonical_roots do
+            arena_root <- ARENA-ALLOCATE(root)
+            MARK-CANONICAL-DESCENDANTS-ITERATIVELY(arena_root)
+            schedule arena_root
+```
+
+The first branch is the complexity repair: the recursive canonicalizer has already established the
+nested order, so invoking it again would compute the same suffix repeatedly. Rendering still uses
+the pre-existing string continuations; this row claims linear **canonicalization work** and flat
+native stack, not a new bound for output-string copying.
+
+**Equivalence and anti-vacuity.** The recursive oracle remains under `tests/support`. The expanded
+27-case differential compares both the message and channel entry points byte-for-byte, including
+depth-8 deliberately unsorted nested sets and maps. The production-only gates independently render
+all 4,096 levels and count the emitted `Set(` or `{` delimiters, so returning a fallback or truncating
+the traversal cannot pass.
+
+**MEASURED (f), 2026-08-08.** Direct execution of the compiled debug gate, excluding Cargo and
+compiler memory, under a 768 MiB zero-swap cgroup:
+
+| subject | depth | native thread stack | elapsed | peak RSS | swap |
+|---|---:|---:|---:|---:|---:|
+| `pretty_nested_set` | 4,096 | 256 KiB | 0.12 s | 28,444 KiB | 0 |
+| `pretty_nested_map` | 4,096 | 256 KiB | 0.23 s | 42,696 KiB | 0 |
+
+**Consensus disposition.** Pretty-printer text is replay-visible, so this is not dismissed as a
+cosmetic refactor. The recursive differential proves exact string identity; no parser value,
+protobuf or bincode byte, hash, COMM, charge, EPathMap mode, PathMap topology, or PathMap operation
+moves. The checkpoint therefore extends retired CBR-023's `EQUIVALENCE_PROVEN` evidence and creates
+no active may-change-consensus entry.
 
 #### 5.1.4 What it cost, and what leg-1 did *not* buy
 
@@ -6011,7 +6068,7 @@ Appendix A are the durable evidence:
 | A3 | `6ce7c5b9` | f1r3node | score tree: comparator, sibling walk, `Clone`, `Drop`, `PartialEq` | 1,329 / 201 / 1,578 / 370 / 719 $`\rightarrow`$ **0** |
 | A4 | (in `6ce7c5b9`/`f11ffb54`) | f1r3node | `ParSortMatcher` — `sort`, `sort_wide` | 78,592 $`\rightarrow`$ **0** (debug) |
 | A5 | `a3fd6fe4` | f1r3node | `rho-pure-eval`'s `eval_with` SCC $`\rightarrow`$ worklist | 21,584 / 3,359 $`\rightarrow`$ **0 / 0** |
-| A6 | `6675fc06` | f1r3node | `PrettyPrinter` $`\rightarrow`$ explicit pushdown driver | flat both axes |
+| A6 | `6675fc06`, `50756ec2` | f1r3node | `PrettyPrinter` $`\rightarrow`$ explicit pushdown driver, including owned canonical sets/maps | flat generic, width, nested-set, and nested-map axes |
 | A7 | (Stage G) | f1r3node | `normalize_ann_proc`'s 26-function SCC $`\rightarrow`$ `norm_drive` | 43,542 / 7,261 $`\rightarrow`$ **0 / 0** |
 | B1 | `a929a2d6` | f1r3node | 6-member expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ **OK at 50,000** |
 | B2 | `29856679`, `55b97f84`, `a0a50473` | f1r3node | `DriveState`/`LiveGuard`/`spawn_detached`; 5 join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** |

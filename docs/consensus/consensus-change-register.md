@@ -3460,6 +3460,20 @@ bincode byte, post-state hash, COMM, charge, EPathMap mode, EPM1 snapshot, or Pa
 They strengthen CBR-023's `EQUIVALENCE_PROVEN` evidence and create no active may-change-consensus
 entry; stack-safety report §5.18 records the architecture and capped measurements.
 
+**CBR-023 living-set continuation (2026-08-08, SS-Y8).** `f1r3node-rust-mettail@50756ec2`
+completes the pretty-printer pushdown automaton for owned canonical `ESet` and `EMap`
+intermediates. Canonical roots live in the traversal-local arena, their descendants resume through
+the existing work/value stacks, and a single iterative registry prevents the already-canonical
+suffix of a nested collection chain from being sorted again at every level. The expanded recursive
+oracle differential compares both replay-relevant entry points byte-for-byte across 27 cases,
+including deliberately unsorted nested sets and maps. Independent production gates render all
+4,096 delimiters on a 256 KiB worker stack; direct capped runs measured 0.12 s / 28,444 KiB for the
+set chain and 0.23 s / 42,696 KiB for the map chain, with zero swap. Exact rendered text is
+unchanged, and the checkpoint changes no parsed value, protobuf or bincode byte, post-state hash,
+COMM, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or PathMap operation. It therefore
+extends CBR-023's `EQUIVALENCE_PROVEN` set without an active may-change-consensus entry; the retained
+SS-Y8 row and machine design are recorded in stack-safety report §5.1.3a.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
