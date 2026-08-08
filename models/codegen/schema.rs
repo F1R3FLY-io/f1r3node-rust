@@ -3391,6 +3391,20 @@ fn message_descent(leaf: &str, plan: &ClonePlan) -> FieldDescent {
     }
 }
 
+/// Descriptor-derived inputs shared by the generated `Ord` and `Debug` PDAs.
+///
+/// Keeping these relationships in one value makes it impossible for the two
+/// emitters to be called with metadata assembled from different schema walks.
+struct TermDriverSchema<'a, 'descriptor> {
+    messages: &'a [Message<'descriptor>],
+    resolved: &'a [(usize, Vec<Field>)],
+    oneofs: &'a [Oneof],
+    extern_set: &'a BTreeSet<&'descriptor str>,
+    plan: &'a ClonePlan,
+    oneof_by_field: &'a BTreeMap<String, &'a Oneof>,
+    path_of: &'a BTreeMap<&'descriptor str, String>,
+}
+
 /// Emit the term-op file: the GENERATED `Clone` for the whole `rhoapi` surface.
 ///
 /// Returns `(source, the item names whose `Clone` was emitted)`. The second value
@@ -3873,30 +3887,21 @@ fn emit_term_ops_source(
     // `Ord` and `PartialOrd` use the same descriptor-derived feedback vertex
     // set as `Clone`: only cut-set impls are stripped from prost's output and
     // replaced, while the residual derived call graph is statically bounded.
-    emit_ord_driver(
-        &mut src,
+    let driver_schema = TermDriverSchema {
         messages,
         resolved,
         oneofs,
         extern_set,
         plan,
-        &oneof_by_field,
-        &path_of,
-    );
+        oneof_by_field: &oneof_by_field,
+        path_of: &path_of,
+    };
+    emit_ord_driver(&mut src, &driver_schema);
 
     // Prost's generated `Debug` follows declaration order, just like the
     // bincode schema.  Break the same descriptor-derived feedback vertex set
     // with a formatter PDA; residual generated impls remain bounded.
-    emit_debug_driver(
-        &mut src,
-        messages,
-        resolved,
-        oneofs,
-        extern_set,
-        plan,
-        &oneof_by_field,
-        &path_of,
-    );
+    emit_debug_driver(&mut src, &driver_schema);
 
     emit_par_message_impl(
         &mut src,
@@ -5282,16 +5287,14 @@ fn ord_oneof_expr(oneof: &Oneof, value: &str) -> String {
     format!("TermRef::{}({value})", ord_oneof_arm(oneof))
 }
 
-fn emit_debug_driver(
-    src: &mut String,
-    messages: &[Message<'_>],
-    resolved: &[(usize, Vec<Field>)],
-    oneofs: &[Oneof],
-    extern_set: &BTreeSet<&str>,
-    plan: &ClonePlan,
-    oneof_by_field: &BTreeMap<String, &Oneof>,
-    path_of: &BTreeMap<&str, String>,
-) {
+fn emit_debug_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
+    let messages = schema.messages;
+    let resolved = schema.resolved;
+    let oneofs = schema.oneofs;
+    let extern_set = schema.extern_set;
+    let plan = schema.plan;
+    let oneof_by_field = schema.oneof_by_field;
+    let path_of = schema.path_of;
     let fields_of: BTreeMap<&str, &[Field]> = resolved
         .iter()
         .map(|(i, fields)| (messages[*i].leaf_name(), fields.as_slice()))
@@ -5990,16 +5993,14 @@ fn emit_debug_oracle_field(
     }
 }
 
-fn emit_ord_driver(
-    src: &mut String,
-    messages: &[Message<'_>],
-    resolved: &[(usize, Vec<Field>)],
-    oneofs: &[Oneof],
-    extern_set: &BTreeSet<&str>,
-    plan: &ClonePlan,
-    oneof_by_field: &BTreeMap<String, &Oneof>,
-    path_of: &BTreeMap<&str, String>,
-) {
+fn emit_ord_driver(src: &mut String, schema: &TermDriverSchema<'_, '_>) {
+    let messages = schema.messages;
+    let resolved = schema.resolved;
+    let oneofs = schema.oneofs;
+    let extern_set = schema.extern_set;
+    let plan = schema.plan;
+    let oneof_by_field = schema.oneof_by_field;
+    let path_of = schema.path_of;
     let fields_of: BTreeMap<&str, &[Field]> = resolved
         .iter()
         .map(|(i, fields)| (messages[*i].leaf_name(), fields.as_slice()))

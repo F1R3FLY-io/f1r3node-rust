@@ -33,7 +33,9 @@ const ACT_VARINT_BIAS: u8 = u8::MAX - 8;
 /// value-free topology remains; otherwise the selected specialization stays
 /// observable. A value can never contain a mixture of set-only and
 /// value-bearing entries.
+#[derive(Default)]
 pub enum EPathMapRepr<T: Clone + Send + Sync + Unpin + 'static> {
+    #[default]
     Empty,
     Set(PathMap<()>),
     Map(PathMap<T>),
@@ -47,10 +49,6 @@ impl<T: Clone + Send + Sync + Unpin + 'static> Clone for EPathMapRepr<T> {
             Self::Map(map) => Self::Map(map.clone()),
         }
     }
-}
-
-impl<T: Clone + Send + Sync + Unpin + 'static> Default for EPathMapRepr<T> {
-    fn default() -> Self { Self::Empty }
 }
 
 impl<T: Clone + Send + Sync + Unpin + 'static> EPathMapRepr<T> {
@@ -408,7 +406,7 @@ fn build_repr(
             let mut map = PathMap::<()>::new();
             visit_act(arena, |path, ordinal| {
                 if !path.is_empty() {
-                    map.create_path(&path);
+                    map.create_path(path);
                 }
                 if let Some(ordinal) = ordinal {
                     if ordinal != 0 {
@@ -429,7 +427,7 @@ fn build_repr(
             let mut map = PathMap::<Par>::new();
             visit_act(arena, |path, ordinal| {
                 if !path.is_empty() {
-                    map.create_path(&path);
+                    map.create_path(path);
                 }
                 let Some(ordinal) = ordinal else {
                     return Ok(());

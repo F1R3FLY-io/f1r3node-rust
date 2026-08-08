@@ -1444,13 +1444,13 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
 
     let remainder_values = ordered
         .iter()
-        .filter_map(|(target_index, assignment)| {
+        .filter(|(_, assignment)| {
             matches!(
                 machine.patterns[assignment.pattern_index],
                 ListPattern::Remainder
             )
-            .then(|| machine.targets[*target_index].clone())
         })
+        .map(|(target_index, _)| machine.targets[*target_index].clone())
         .collect::<Vec<_>>();
     let remainder_sorted = machine
         .targets

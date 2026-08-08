@@ -5043,7 +5043,6 @@ impl DebruijnInterpreter {
                 _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
-                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("hexToBytes"),
@@ -5051,7 +5050,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    match single_expr(&p) {
+                    match single_expr(p) {
                         Some(expr) => match unwrap_option_safe(expr.expr_instance)? {
                             ExprInstance::GString(encoded) => {
                                 self.outer
@@ -5094,7 +5093,6 @@ impl DebruijnInterpreter {
                 _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
-                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("bytesToHex"),
@@ -5102,7 +5100,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    match single_expr(&p) {
+                    match single_expr(p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
                             ExprInstance::GByteArray(bytes) => {
                                 self.outer
@@ -5145,7 +5143,6 @@ impl DebruijnInterpreter {
                 _prepared: &mut PreparedMethodValues,
                 _env: &Env<Par>,
             ) -> Result<Par, InterpreterError> {
-                let _ = (p, _env);
                 if !args.is_empty() {
                     Err(InterpreterError::MethodArgumentNumberMismatch {
                         method: String::from("toUtf8Bytes"),
@@ -5153,7 +5150,7 @@ impl DebruijnInterpreter {
                         actual: args.len(),
                     })
                 } else {
-                    match single_expr(&p) {
+                    match single_expr(p) {
                         Some(expr) => match expr.expr_instance.unwrap() {
                             ExprInstance::GString(utf8_string) => {
                                 self.outer.metering.reserve_incremental_primitive(

@@ -194,7 +194,13 @@ fn main() {
                 ord_stripped.push(item);
             }
         }
-        rewritten.push(out);
+        // A manually driven message loses Prost's complete derive line. Do not
+        // leave an empty physical line between the preceding outer attribute
+        // (for example `#[repr(C)]`) and the item it annotates: besides being
+        // needless generated output, that shape is rejected by Clippy.
+        if !manual_message {
+            rewritten.push(out);
+        }
         // `Debug` is emitted *inside* prost's Message/Oneof derive rather than
         // as a token we can remove.  Prost's own `#[prost(skip_debug)]` switch
         // suppresses it.  Inject the switch at the descriptor-derived feedback

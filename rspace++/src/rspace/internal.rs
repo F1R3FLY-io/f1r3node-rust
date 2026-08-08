@@ -181,7 +181,7 @@ where
     pub fn get_distinct_values_sorted(&self, k: &K) -> Option<Vec<V>>
     where V: Clone + Ord {
         self.map.get(k).map(|counter| {
-            let mut values: Vec<V> = counter.iter().map(|(value, _)| value.clone()).collect();
+            let mut values: Vec<V> = counter.keys().cloned().collect();
             values.sort_unstable();
             values
         })
