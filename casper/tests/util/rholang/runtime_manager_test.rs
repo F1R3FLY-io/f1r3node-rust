@@ -3818,6 +3818,14 @@ in {{
 /// leaves, so that premise no longer holds and the test is re-enabled. The genuine
 /// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
 /// vacuous merge of disjoint branches.
+///
+/// The raw race is PROBABILISTIC per deploy pair: Registry.rho's TreeHashMap
+/// setter locks (consume+produce) only the deepest node that already exists on
+/// the key's hash path (everything above is peeked), so two fresh random URIs
+/// share a consumed produce only when their paths collide at/below their
+/// divergence from the genesis trie (measured ~5/6 per pair). The test therefore
+/// searches a bounded number of fresh deploy pairs for one that genuinely races
+/// and asserts no-conflict on THAT pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_registry_inserts_should_not_conflict() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -3918,293 +3926,334 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let key_a = construct_deploy::DEFAULT_SEC.clone();
     let key_b = construct_deploy::DEFAULT_SEC2.clone();
 
-    // --- Block A: bridge deploy from genesis (funded deployer A) ---
-    let deploy_a = construct_deploy::source_deploy_now_full(
-        bridge_rho.clone(),
-        None,
-        None,
-        Some(key_a),
-        None,
-        None,
-    )
-    .unwrap();
+    // The cross-deploy race is probabilistic (see the doc comment): search a
+    // bounded number of fresh deploy pairs for one that genuinely races, then
+    // run the no-conflict assertions on THAT pair. With measured per-pair
+    // no-race odds of ~1/6, ten misses (~2e-8) can only mean the genesis-trie
+    // shape or the event-log classification changed — fail loudly below.
+    const MAX_RACE_SEARCH_ATTEMPTS: usize = 10;
+    let base_ts = now_millis();
+    let mut found = None;
+    for attempt in 0..MAX_RACE_SEARCH_ATTEMPTS {
+        // Fresh timestamps ⇒ fresh RFC6979 signatures ⇒ fresh insertArbitrary
+        // URIs (and a fresh vault address) for every attempt.
+        let attempt_ts = base_ts + (2 * attempt) as i64;
+        // --- Block A: bridge deploy from genesis (funded deployer A) ---
+        let deploy_a = construct_deploy::source_deploy(
+            bridge_rho.clone(),
+            attempt_ts,
+            None,
+            None,
+            Some(key_a.clone()),
+            None,
+            None,
+        )
+        .unwrap();
 
-    let block_a_raw = block_implicits::get_random_block(
-        Some(1),
-        Some(1),
-        Some(genesis_state.clone()),
-        Some(StateHash::default()),
-        Some(validator.clone()),
-        Some(1),
-        Some(now_millis()),
-        Some(vec![genesis_hash.clone()]),
-        Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_a)]),
-        Some(Vec::new()),
-        Some(genesis_bonds.clone()),
-        Some(shard_name.clone()),
-        None,
-    );
-
-    let parents_a = vec![genesis_block.clone()];
-    let deploys_a = proto_util::deploys(&block_a_raw)
-        .into_iter()
-        .map(|d| d.deploy)
-        .collect();
-    let snapshot_a = mk_snapshot(&genesis_hash);
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
-        &mut block_store,
-        parents_a,
-        deploys_a,
-        Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-        &snapshot_a,
-        &rm,
-        BlockData::from_block(&block_a_raw),
-        HashMap::new(),
-        None,
-    )
-    .await
-    .expect("compute block A");
-
-    assert!(
-        !pd_a[0].is_failed,
-        "Contract A deploy failed: {:?}",
-        pd_a[0].system_deploy_error
-    );
-    tracing::info!(
-        "Block A: cost={}, events={}",
-        pd_a[0].cost.cost,
-        pd_a[0].deploy_log.len()
-    );
-
-    let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = post_state_a.clone();
-    block_a.body.deploys = pd_a.clone();
-    block_a.body.system_deploys = sys_pd_a;
-    block_a.body.state.bonds = bonds_a;
-    block_store.put_block_message(&block_a).expect("store A");
-    dag_storage
-        .insert(&block_a, InsertMode::Normal)
-        .expect("dag A");
-
-    // --- Block B: second bridge deploy from genesis (sibling branch, funded deployer B) ---
-    let deploy_b =
-        construct_deploy::source_deploy_now_full(bridge_rho, None, None, Some(key_b), None, None)
-            .unwrap();
-
-    let block_b_raw = block_implicits::get_random_block(
-        Some(1),
-        Some(2),
-        Some(genesis_state.clone()),
-        Some(StateHash::default()),
-        Some(validator.clone()),
-        Some(1),
-        Some(now_millis()),
-        Some(vec![genesis_hash.clone()]),
-        Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_b)]),
-        Some(Vec::new()),
-        Some(genesis_bonds.clone()),
-        Some(shard_name.clone()),
-        None,
-    );
-
-    let parents_b = vec![genesis_block.clone()];
-    let deploys_b = proto_util::deploys(&block_b_raw)
-        .into_iter()
-        .map(|d| d.deploy)
-        .collect();
-    let snapshot_b = mk_snapshot(&genesis_hash);
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
-        &mut block_store,
-        parents_b,
-        deploys_b,
-        Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-        &snapshot_b,
-        &rm,
-        BlockData::from_block(&block_b_raw),
-        HashMap::new(),
-        None,
-    )
-    .await
-    .expect("compute block B");
-
-    assert!(
-        !pd_b[0].is_failed,
-        "Contract B deploy failed: {:?}",
-        pd_b[0].system_deploy_error
-    );
-    tracing::info!(
-        "Block B: cost={}, events={}",
-        pd_b[0].cost.cost,
-        pd_b[0].deploy_log.len()
-    );
-
-    let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = post_state_b.clone();
-    block_b.body.deploys = pd_b.clone();
-    block_b.body.system_deploys = sys_pd_b;
-    block_b.body.state.bonds = bonds_b;
-    block_store.put_block_message(&block_b).expect("store B");
-    dag_storage
-        .insert(&block_b, InsertMode::Normal)
-        .expect("dag B");
-
-    // Analyze conflict between the two deploys' event logs BEFORE merge
-    {
-        use casper::rust::merging::block_index::create_event_log_index;
-        use rspace_plus_plus::rspace::merger::merging_logic::{conflict_reason, conflicts};
-
-        let history_repo = rm.get_history_repo();
-        let genesis_hash_b256 =
-            rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
-                &genesis_state,
-            );
-
-        let eli_a = create_event_log_index(
-            &pd_a[0].deploy_log,
-            history_repo.clone(),
-            &genesis_hash_b256,
-            std::collections::BTreeMap::new(),
-        );
-        let eli_b = create_event_log_index(
-            &pd_b[0].deploy_log,
-            history_repo.clone(),
-            &genesis_hash_b256,
-            std::collections::BTreeMap::new(),
+        let block_a_raw = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            Some(genesis_state.clone()),
+            Some(StateHash::default()),
+            Some(validator.clone()),
+            Some(1),
+            Some(now_millis()),
+            Some(vec![genesis_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy_a)]),
+            Some(Vec::new()),
+            Some(genesis_bonds.clone()),
+            Some(shard_name.clone()),
+            None,
         );
 
-        let reason = conflict_reason(&eli_a, &eli_b);
-        let conflict_channels = conflicts(&eli_a, &eli_b);
-        tracing::info!(
-            "Conflict analysis: reason={:?}, conflicting_channels={}",
-            reason,
-            conflict_channels.0.len(),
-        );
-        for ch in &conflict_channels.0 {
-            tracing::info!("  conflicting channel: {}", hex::encode(&ch.0[..8]));
-        }
+        let parents_a = vec![genesis_block.clone()];
+        let deploys_a = proto_util::deploys(&block_a_raw)
+            .into_iter()
+            .map(|d| d.deploy)
+            .collect();
+        let snapshot_a = mk_snapshot(&genesis_hash);
+        let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+            &mut block_store,
+            parents_a,
+            deploys_a,
+            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+            &snapshot_a,
+            &rm,
+            BlockData::from_block(&block_a_raw),
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("compute block A");
 
-        // Find which produces are racing
-        let shared_produces: std::collections::HashSet<_> = eli_a
-            .produces_consumed
-            .0
-            .intersection(&eli_b.produces_consumed.0)
-            .cloned()
-            .collect();
-        let mergeable_produces: std::collections::HashSet<_> = eli_a
-            .produces_mergeable
-            .0
-            .intersection(&eli_b.produces_mergeable.0)
-            .cloned()
-            .collect();
-        let racing_produces: Vec<_> = shared_produces
-            .difference(&mergeable_produces)
-            .filter(|p| !p.persistent)
-            .collect();
-        tracing::info!("Racing produces: {}", racing_produces.len());
-        // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
-        // produce channels, else `rejected == 0` below would be a trivial merge of
-        // disjoint branches rather than a real keep-one/exemption result.
         assert!(
-            !racing_produces.is_empty(),
-            "expected a genuine shared-channel race between the two registry inserts \
-             (else the no-conflict assertion is vacuous); got 0 racing produces"
+            !pd_a[0].is_failed,
+            "Contract A deploy failed: {:?}",
+            pd_a[0].system_deploy_error
         );
-        // Collect racing channel hashes for COMM tracing
-        let racing_channels: std::collections::HashSet<_> = racing_produces
-            .iter()
-            .map(|p| p.channel_hash.clone())
-            .collect();
-
-        // Search deploy A's event log for COMMs involving racing channels
         tracing::info!(
-            "Searching deploy A events ({} total) for racing channels...",
+            "Block A: cost={}, events={}",
+            pd_a[0].cost.cost,
             pd_a[0].deploy_log.len()
         );
-        for (idx, event) in pd_a[0].deploy_log.iter().enumerate() {
-            use models::rust::casper::protocol::casper_message::Event as CasperEvent;
-            match event {
-                CasperEvent::Comm(comm) => {
-                    let consume_channels: Vec<String> = comm
-                        .consume
-                        .channels_hashes
-                        .iter()
-                        .map(|h| hex::encode(&h[..std::cmp::min(8, h.len())]))
-                        .collect();
-                    let produce_channels: Vec<String> = comm
-                        .produces
-                        .iter()
-                        .map(|p| {
-                            hex::encode(&p.channels_hash[..std::cmp::min(8, p.channels_hash.len())])
-                        })
-                        .collect();
-                    // Check if any racing channel is in this COMM's produces
-                    for p in &comm.produces {
+
+        let mut block_a = block_a_raw;
+        block_a.body.state.post_state_hash = post_state_a.clone();
+        block_a.body.deploys = pd_a.clone();
+        block_a.body.system_deploys = sys_pd_a;
+        block_a.body.state.bonds = bonds_a;
+
+        // --- Block B: second bridge deploy from genesis (sibling branch, funded deployer B) ---
+        let deploy_b = construct_deploy::source_deploy(
+            bridge_rho.clone(),
+            attempt_ts + 1,
+            None,
+            None,
+            Some(key_b.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let block_b_raw = block_implicits::get_random_block(
+            Some(1),
+            Some(2),
+            Some(genesis_state.clone()),
+            Some(StateHash::default()),
+            Some(validator.clone()),
+            Some(1),
+            Some(now_millis()),
+            Some(vec![genesis_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy_b)]),
+            Some(Vec::new()),
+            Some(genesis_bonds.clone()),
+            Some(shard_name.clone()),
+            None,
+        );
+
+        let parents_b = vec![genesis_block.clone()];
+        let deploys_b = proto_util::deploys(&block_b_raw)
+            .into_iter()
+            .map(|d| d.deploy)
+            .collect();
+        let snapshot_b = mk_snapshot(&genesis_hash);
+        let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+            &mut block_store,
+            parents_b,
+            deploys_b,
+            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+            &snapshot_b,
+            &rm,
+            BlockData::from_block(&block_b_raw),
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("compute block B");
+
+        assert!(
+            !pd_b[0].is_failed,
+            "Contract B deploy failed: {:?}",
+            pd_b[0].system_deploy_error
+        );
+        tracing::info!(
+            "Block B: cost={}, events={}",
+            pd_b[0].cost.cost,
+            pd_b[0].deploy_log.len()
+        );
+
+        let mut block_b = block_b_raw;
+        block_b.body.state.post_state_hash = post_state_b.clone();
+        block_b.body.deploys = pd_b.clone();
+        block_b.body.system_deploys = sys_pd_b;
+        block_b.body.state.bonds = bonds_b;
+
+        // Analyze conflict between the two deploys' event logs BEFORE merge
+        {
+            use casper::rust::merging::block_index::create_event_log_index;
+            use rspace_plus_plus::rspace::merger::merging_logic::{conflict_reason, conflicts};
+
+            let history_repo = rm.get_history_repo();
+            let genesis_hash_b256 =
+                rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+                    &genesis_state,
+                );
+
+            let eli_a = create_event_log_index(
+                &pd_a[0].deploy_log,
+                history_repo.clone(),
+                &genesis_hash_b256,
+                std::collections::BTreeMap::new(),
+            );
+            let eli_b = create_event_log_index(
+                &pd_b[0].deploy_log,
+                history_repo.clone(),
+                &genesis_hash_b256,
+                std::collections::BTreeMap::new(),
+            );
+
+            let reason = conflict_reason(&eli_a, &eli_b);
+            let conflict_channels = conflicts(&eli_a, &eli_b);
+            tracing::info!(
+                "Conflict analysis: reason={:?}, conflicting_channels={}",
+                reason,
+                conflict_channels.0.len(),
+            );
+            for ch in &conflict_channels.0 {
+                tracing::info!("  conflicting channel: {}", hex::encode(&ch.0[..8]));
+            }
+
+            // Find which produces are racing
+            let shared_produces: std::collections::HashSet<_> = eli_a
+                .produces_consumed
+                .0
+                .intersection(&eli_b.produces_consumed.0)
+                .cloned()
+                .collect();
+            let mergeable_produces: std::collections::HashSet<_> = eli_a
+                .produces_mergeable
+                .0
+                .intersection(&eli_b.produces_mergeable.0)
+                .cloned()
+                .collect();
+            let racing_produces: Vec<_> = shared_produces
+                .difference(&mergeable_produces)
+                .filter(|p| !p.persistent)
+                .collect();
+            tracing::info!("Racing produces: {}", racing_produces.len());
+            // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
+            // produce channels, else `rejected == 0` below would be a trivial merge of
+            // disjoint branches rather than a real keep-one/exemption result. The race
+            // is probabilistic per URI set (Registry.rho's TreeHashMap locks only the
+            // deepest pre-existing node on each key's hash path; measured ~5/6 per
+            // pair), so a non-racing pair is REGENERATED with fresh timestamps rather
+            // than failed.
+            if racing_produces.is_empty() {
+                tracing::warn!(
+                    attempt,
+                    "no shared trie-node race for this URI set (all registry-insert \
+                     pairs + the vault pair diverged above the genesis trie); \
+                     regenerating the deploy pair with fresh timestamps"
+                );
+                continue;
+            }
+            // Collect racing channel hashes for COMM tracing
+            let racing_channels: std::collections::HashSet<_> = racing_produces
+                .iter()
+                .map(|p| p.channel_hash.clone())
+                .collect();
+
+            // Search deploy A's event log for COMMs involving racing channels
+            tracing::info!(
+                "Searching deploy A events ({} total) for racing channels...",
+                pd_a[0].deploy_log.len()
+            );
+            for (idx, event) in pd_a[0].deploy_log.iter().enumerate() {
+                use models::rust::casper::protocol::casper_message::Event as CasperEvent;
+                match event {
+                    CasperEvent::Comm(comm) => {
+                        let consume_channels: Vec<String> = comm
+                            .consume
+                            .channels_hashes
+                            .iter()
+                            .map(|h| hex::encode(&h[..std::cmp::min(8, h.len())]))
+                            .collect();
+                        let produce_channels: Vec<String> = comm
+                            .produces
+                            .iter()
+                            .map(|p| {
+                                hex::encode(
+                                    &p.channels_hash[..std::cmp::min(8, p.channels_hash.len())],
+                                )
+                            })
+                            .collect();
+                        // Check if any racing channel is in this COMM's produces
+                        for p in &comm.produces {
+                            let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(&p.channels_hash);
+                            if racing_channels.contains(&ch) {
+                                tracing::info!(
+                                    "  A event[{}] COMM: consume_channels={:?}, produce_channels={:?}, peeks={:?}, persistent_consume={}",
+                                    idx, consume_channels, produce_channels, comm.peeks, comm.consume.persistent,
+                                );
+                            }
+                        }
+                    }
+                    CasperEvent::Produce(p) => {
                         let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(&p.channels_hash);
                         if racing_channels.contains(&ch) {
                             tracing::info!(
-                                "  A event[{}] COMM: consume_channels={:?}, produce_channels={:?}, peeks={:?}, persistent_consume={}",
-                                idx, consume_channels, produce_channels, comm.peeks, comm.consume.persistent,
+                                "  A event[{}] IOProduce: channel={}, persistent={}, output_len={}",
+                                idx,
+                                hex::encode(
+                                    &p.channels_hash[..std::cmp::min(8, p.channels_hash.len())]
+                                ),
+                                p.persistent,
+                                p.output_value.len(),
                             );
                         }
                     }
-                }
-                CasperEvent::Produce(p) => {
-                    let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(&p.channels_hash);
-                    if racing_channels.contains(&ch) {
-                        tracing::info!(
-                            "  A event[{}] IOProduce: channel={}, persistent={}, output_len={}",
-                            idx,
-                            hex::encode(
-                                &p.channels_hash[..std::cmp::min(8, p.channels_hash.len())]
-                            ),
-                            p.persistent,
-                            p.output_value.len(),
-                        );
-                    }
-                }
-                CasperEvent::Consume(c) => {
-                    for h in &c.channels_hashes {
-                        let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(h);
-                        if racing_channels.contains(&ch) {
-                            tracing::info!(
-                                "  A event[{}] IOConsume: channels={:?}, persistent={}",
-                                idx,
-                                c.channels_hashes
-                                    .iter()
-                                    .map(|h| hex::encode(&h[..std::cmp::min(8, h.len())]))
-                                    .collect::<Vec<_>>(),
-                                c.persistent,
-                            );
+                    CasperEvent::Consume(c) => {
+                        for h in &c.channels_hashes {
+                            let ch = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(h);
+                            if racing_channels.contains(&ch) {
+                                tracing::info!(
+                                    "  A event[{}] IOConsume: channels={:?}, persistent={}",
+                                    idx,
+                                    c.channels_hashes
+                                        .iter()
+                                        .map(|h| hex::encode(&h[..std::cmp::min(8, h.len())]))
+                                        .collect::<Vec<_>>(),
+                                    c.persistent,
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
 
-        for p in &racing_produces {
-            // Decode the output_value to see what data is being raced for
-            let output_str: Vec<String> = p
-                .output_value
-                .iter()
-                .map(|v| {
-                    format!(
-                        "raw({} bytes, first8={})",
-                        v.len(),
-                        hex::encode(&v[..std::cmp::min(8, v.len())])
-                    )
-                })
-                .collect();
-            tracing::info!(
-                "  racing produce: channel={}, hash={}, persistent={}, output={:?}",
-                hex::encode(&p.channel_hash.0[..8]),
-                hex::encode(&p.hash.0[..8]),
-                p.persistent,
-                output_str,
-            );
+            for p in &racing_produces {
+                // Decode the output_value to see what data is being raced for
+                let output_str: Vec<String> = p
+                    .output_value
+                    .iter()
+                    .map(|v| {
+                        format!(
+                            "raw({} bytes, first8={})",
+                            v.len(),
+                            hex::encode(&v[..std::cmp::min(8, v.len())])
+                        )
+                    })
+                    .collect();
+                tracing::info!(
+                    "  racing produce: channel={}, hash={}, persistent={}, output={:?}",
+                    hex::encode(&p.channel_hash.0[..8]),
+                    hex::encode(&p.hash.0[..8]),
+                    p.persistent,
+                    output_str,
+                );
+            }
         }
+        found = Some((block_a, block_b, pd_a, pd_b));
+        break;
     }
+    let (block_a, block_b, pd_a, pd_b) = found.expect(
+        "no genuinely-racing deploy pair in 10 attempts: per-attempt no-race odds \
+         are ~1/6, so 10 misses (~2e-8) means the genesis trie shape or the \
+         event-log classification changed — investigate; do not loosen this assert",
+    );
+
+    // Store ONLY the winning racing pair; failed search attempts must not
+    // pollute the DAG that the merge snapshot below reads.
+    block_store.put_block_message(&block_a).expect("store A");
+    dag_storage
+        .insert(&block_a, InsertMode::Normal)
+        .expect("dag A");
+    block_store.put_block_message(&block_b).expect("store B");
+    dag_storage
+        .insert(&block_b, InsertMode::Normal)
+        .expect("dag B");
 
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
