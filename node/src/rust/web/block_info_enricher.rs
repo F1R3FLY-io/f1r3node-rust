@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use crypto::rust::public_key::PublicKey;
 use models::casper::{BlockEventInfo, TransferInfo};
 use models::rhoapi::Par;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use super::transaction::helpers;
 
@@ -10,9 +12,8 @@ use super::transaction::helpers;
 /// Scans each deploy's execution report for COMM events on the `transfer_unforgeable`
 /// channel, then extracts from/to/amount/success from the produce data.
 ///
-/// Only extracts user deploy transfers (not PreCharge/Refund/System deploys).
-/// For user deploys: first report batch is precharge (skip), subsequent batches
-/// where sender == deployer are user transfers.
+/// Only extracts user deploy transfers (not PreCharge/Refund/System deploys),
+/// where sender == deployer.
 pub fn extract_transfers_from_report(
     report: &BlockEventInfo,
     transfer_unforgeable: &Par,
@@ -26,36 +27,33 @@ pub fn extract_transfers_from_report(
             .map(|info| info.sig.clone())
             .unwrap_or_default();
 
-        if deploy.report.is_empty() {
+        let deployer_pk = deploy
+            .deploy_info
+            .as_ref()
+            .map(|info| info.deployer.clone())
+            .unwrap_or_default();
+
+        let Ok(pk_bytes) = hex::decode(&deployer_pk) else {
             continue;
+        };
+        let pk = PublicKey::from_bytes(&pk_bytes);
+        let Some(deployer_vault) = VaultAddress::from_public_key(&pk) else {
+            continue;
+        };
+        let deployer_addr = deployer_vault.to_base58();
+
+        let user_transfers: Vec<TransferInfo> = deploy
+            .report
+            .iter()
+            .flat_map(|single_report| find_transfers_in_report(single_report, transfer_unforgeable))
+            .filter(|t| t.from_addr == deployer_addr)
+            .skip(1)
+            .collect();
+
+        if !user_transfers.is_empty() {
+            transfers_by_deploy.insert(deploy_sig, user_transfers);
         }
-
-        // First report batch is precharge — extract deployer address from it
-        let first_batch_transactions =
-            find_transfers_in_report(&deploy.report[0], transfer_unforgeable);
-        let deployer_addr = first_batch_transactions
-            .first()
-            .map(|t| t.from_addr.clone());
-
-        // Subsequent batches: transactions where sender == deployer are user transfers
-        let mut user_transfers = Vec::new();
-        for single_report in deploy.report.iter().skip(1) {
-            let transfers = find_transfers_in_report(single_report, transfer_unforgeable);
-            for transfer in transfers {
-                match deployer_addr.as_ref() {
-                    Some(addr) if transfer.from_addr == *addr => {
-                        user_transfers.push(transfer);
-                    }
-                    _ => {
-                        // Refund or system side-effect — not a user transfer
-                    }
-                }
-            }
-        }
-
-        transfers_by_deploy.insert(deploy_sig, user_transfers);
     }
-
     transfers_by_deploy
 }
 
@@ -130,6 +128,8 @@ struct RawTransfer {
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::casper::{
         report_proto, BlockEventInfo, DeployInfo, DeployInfoWithEventData, LightBlockInfo,
         ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
@@ -139,6 +139,16 @@ mod tests {
     use models::rhoapi::{Expr, GPrivate, GUnforgeable, ListParWithRandom};
 
     use super::*;
+
+    fn make_deployer() -> (String, String) {
+        let secp256k1 = Secp256k1;
+        let (_sk, pk) = secp256k1.new_key_pair();
+        let deployer_hex = hex::encode(&pk.bytes);
+        let vault_addr = VaultAddress::from_public_key(&pk)
+            .expect("freshly generated key should be a valid curve point")
+            .to_base58();
+        (deployer_hex, vault_addr)
+    }
 
     fn make_par_string(s: &str) -> Par {
         Par {
@@ -167,28 +177,27 @@ mod tests {
         }
     }
 
-    fn make_block_event_info_with_transfer(
-        deploy_sig: &str,
+    fn make_deploy_reports(
         transfer_unforgeable: &Par,
         from: &str,
         to: &str,
         amount: i64,
-    ) -> BlockEventInfo {
-        // Transfer produce data: [from_addr, _, to_addr, amount, _, ret_unforgeable]
-        let ret_unforg = make_transfer_unforgeable();
-        let produce_data = ListParWithRandom {
+    ) -> Vec<SingleReport> {
+        // Precharge: system transfer from deployer to validator (fixed gas payment)
+        let precharge_ret = make_transfer_unforgeable();
+        let precharge_data = ListParWithRandom {
             pars: vec![
                 make_par_string(from),
                 Par::default(),
-                make_par_string(to),
-                make_par_int(amount),
+                make_par_string("validator_addr"),
+                make_par_int(100),
                 Par::default(),
-                ret_unforg,
+                precharge_ret,
             ],
             random_state: vec![],
         };
 
-        let comm = ReportCommProto {
+        let precharge_comm = ReportCommProto {
             consume: Some(ReportConsumeProto {
                 channels: vec![transfer_unforgeable.clone()],
                 patterns: vec![],
@@ -196,32 +205,75 @@ mod tests {
             }),
             produces: vec![ReportProduceProto {
                 channel: Some(transfer_unforgeable.clone()),
-                data: Some(produce_data),
+                data: Some(precharge_data),
             }],
         };
 
-        // First report = precharge (transfer from deployer)
+        // User transfer: actual user-initiated transfer
+        let user_ret = make_transfer_unforgeable();
+        let user_data = ListParWithRandom {
+            pars: vec![
+                make_par_string(from),
+                Par::default(),
+                make_par_string(to),
+                make_par_int(amount),
+                Par::default(),
+                user_ret,
+            ],
+            random_state: vec![],
+        };
+
+        let user_comm = ReportCommProto {
+            consume: Some(ReportConsumeProto {
+                channels: vec![transfer_unforgeable.clone()],
+                patterns: vec![],
+                peeks: vec![],
+            }),
+            produces: vec![ReportProduceProto {
+                channel: Some(transfer_unforgeable.clone()),
+                data: Some(user_data),
+            }],
+        };
+
         let precharge_report = SingleReport {
             events: vec![ReportProto {
-                report: Some(report_proto::Report::Comm(comm.clone())),
+                report: Some(report_proto::Report::Comm(precharge_comm)),
             }],
         };
 
-        // Second report = user transfer (same from_addr as precharge = user deploy)
         let user_report = SingleReport {
             events: vec![ReportProto {
-                report: Some(report_proto::Report::Comm(comm)),
+                report: Some(report_proto::Report::Comm(user_comm)),
             }],
         };
+
+        vec![precharge_report, user_report]
+    }
+
+    fn make_block_event_info_with_transfer(
+        deploy_sig: &str,
+        transfer_unforgeable: &Par,
+        _from: &str,
+        to: &str,
+        amount: i64,
+        deployer_hex: &str,
+    ) -> BlockEventInfo {
+        let deployer_vault = {
+            let pk_bytes = hex::decode(deployer_hex).unwrap();
+            let pk = PublicKey::from_bytes(&pk_bytes);
+            VaultAddress::from_public_key(&pk).unwrap()
+        };
+        let deployer_addr = deployer_vault.to_base58();
 
         BlockEventInfo {
             block_info: Some(LightBlockInfo::default()),
             deploys: vec![DeployInfoWithEventData {
                 deploy_info: Some(DeployInfo {
                     sig: deploy_sig.to_string(),
+                    deployer: deployer_hex.to_string(),
                     ..Default::default()
                 }),
-                report: vec![precharge_report, user_report],
+                report: make_deploy_reports(transfer_unforgeable, &deployer_addr, to, amount),
             }],
             system_deploys: vec![],
             post_state_hash: vec![].into(),
@@ -231,12 +283,14 @@ mod tests {
     #[test]
     fn extract_transfers_finds_user_transfers() {
         let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
         let report = make_block_event_info_with_transfer(
             "deploy_abc",
             &transfer_unforgeable,
-            "sender_addr",
+            &deployer_addr,
             "receiver_addr",
             1000,
+            &deployer_hex,
         );
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -245,7 +299,7 @@ mod tests {
         assert_eq!(transfers.len(), 1, "should have one user transfer");
 
         let t = &transfers[0];
-        assert_eq!(t.from_addr, "sender_addr");
+        assert_eq!(t.from_addr, deployer_addr);
         assert_eq!(t.to_addr, "receiver_addr");
         assert_eq!(t.amount, 1000);
         assert!(t.success);
@@ -255,6 +309,7 @@ mod tests {
     #[test]
     fn extract_transfers_returns_empty_for_no_transfer_deploy() {
         let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, _deployer_addr) = make_deployer();
 
         // Deploy with empty reports (no COMM events on transfer channel)
         let report = BlockEventInfo {
@@ -262,6 +317,7 @@ mod tests {
             deploys: vec![DeployInfoWithEventData {
                 deploy_info: Some(DeployInfo {
                     sig: "deploy_no_transfer".to_string(),
+                    deployer: deployer_hex,
                     ..Default::default()
                 }),
                 report: vec![SingleReport { events: vec![] }, SingleReport {
@@ -274,9 +330,74 @@ mod tests {
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-        let transfers = result
-            .get("deploy_no_transfer")
-            .expect("should have deploy entry");
-        assert!(transfers.is_empty(), "should have no transfers");
+        assert!(
+            result.get("deploy_no_transfer").is_none(),
+            "deploy with no transfers should have no map entry at all"
+        );
+    }
+
+    #[test]
+    fn extract_transfers_two_users() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer1_hex, deployer1_addr) = make_deployer();
+        let (deployer2_hex, deployer2_addr) = make_deployer();
+
+        let report = BlockEventInfo {
+            block_info: Some(LightBlockInfo::default()),
+            deploys: vec![
+                DeployInfoWithEventData {
+                    deploy_info: Some(DeployInfo {
+                        sig: "deploy_user1".to_string(),
+                        deployer: deployer1_hex.clone(),
+                        ..Default::default()
+                    }),
+                    report: make_deploy_reports(
+                        &transfer_unforgeable,
+                        &deployer1_addr,
+                        "receiver_1",
+                        500,
+                    ),
+                },
+                DeployInfoWithEventData {
+                    deploy_info: Some(DeployInfo {
+                        sig: "deploy_user2".to_string(),
+                        deployer: deployer2_hex.clone(),
+                        ..Default::default()
+                    }),
+                    report: make_deploy_reports(
+                        &transfer_unforgeable,
+                        &deployer2_addr,
+                        "receiver_2",
+                        750,
+                    ),
+                },
+            ],
+            system_deploys: vec![],
+            post_state_hash: vec![].into(),
+        };
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers1 = result
+            .get("deploy_user1")
+            .expect("should have user1 deploy entry");
+        assert_eq!(transfers1.len(), 1, "user1 should have one user transfer");
+        let t1 = &transfers1[0];
+        assert_eq!(t1.from_addr, deployer1_addr);
+        assert_eq!(t1.to_addr, "receiver_1");
+        assert_eq!(t1.amount, 500);
+        assert!(t1.success);
+
+        let transfers2 = result
+            .get("deploy_user2")
+            .expect("should have user2 deploy entry");
+        assert_eq!(transfers2.len(), 1, "user2 should have one user transfer");
+        let t2 = &transfers2[0];
+        assert_eq!(t2.from_addr, deployer2_addr);
+        assert_eq!(t2.to_addr, "receiver_2");
+        assert_eq!(t2.amount, 750);
+        assert!(t2.success);
+
+        assert_eq!(result.len(), 2, "should have exactly 2 deploy entries");
     }
 }
