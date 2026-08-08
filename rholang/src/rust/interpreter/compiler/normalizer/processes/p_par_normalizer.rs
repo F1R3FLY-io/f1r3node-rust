@@ -217,7 +217,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(InterpreterError::UnexpectedReuseOfProcContextFree {
-                var_name,
+                ref var_name,
                 first_use: _,
                 second_use: _
             }) if var_name == "x"

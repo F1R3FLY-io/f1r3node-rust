@@ -282,7 +282,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(InterpreterError::UnexpectedReuseOfProcContextFree {
-                var_name,
+                ref var_name,
                 first_use: _,
                 second_use: _
             }) if var_name == "x"
@@ -294,7 +294,7 @@ mod tests {
         let result = Compiler::source_to_adt(r#"new x in { x!(~1) }"#);
         assert!(result.is_err());
         match result {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!(
@@ -309,7 +309,7 @@ mod tests {
         let result = Compiler::source_to_adt(r#"new x in { x!(1 /\ 2) }"#);
         assert!(result.is_err());
         match result {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("/\\ (conjunction)"));
             }
             other => panic!(
@@ -324,7 +324,7 @@ mod tests {
         let result = Compiler::source_to_adt(r#"new x in { x!(1 \/ 2) }"#);
         assert!(result.is_err());
         match result {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!(
@@ -339,7 +339,7 @@ mod tests {
         let result = Compiler::source_to_adt(r#"@"x"!(_)"#);
         assert!(result.is_err());
         match result {
-            Err(InterpreterError::TopLevelWildcardsNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelWildcardsNotAllowedError(ref msg)) => {
                 assert!(msg.contains("_ (wildcard)"));
             }
             other => panic!(
@@ -354,7 +354,7 @@ mod tests {
         let result = Compiler::source_to_adt(r#"@"x"!(y)"#);
         assert!(result.is_err());
         match result {
-            Err(InterpreterError::TopLevelFreeVariablesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelFreeVariablesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("y"));
             }
             other => panic!(
@@ -370,7 +370,7 @@ mod tests {
         let result1 = Compiler::source_to_adt(r#"@{Nil /\ Nil}!(1)"#);
         assert!(result1.is_err());
         match result1 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("/\\ (conjunction)"));
             }
             other => panic!(
@@ -383,7 +383,7 @@ mod tests {
         let result2 = Compiler::source_to_adt(r#"@{Nil \/ Nil}!(1)"#);
         assert!(result2.is_err());
         match result2 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!(
@@ -396,7 +396,7 @@ mod tests {
         let result3 = Compiler::source_to_adt(r#"@{~Nil}!(1)"#);
         assert!(result3.is_err());
         match result3 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!(

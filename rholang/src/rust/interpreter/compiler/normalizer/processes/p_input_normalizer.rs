@@ -1111,7 +1111,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(InterpreterError::UnexpectedReuseOfNameContextFree {
-                var_name,
+                ref var_name,
                 first_use: _,
                 second_use: _
             }) if var_name == "y1"
@@ -1124,7 +1124,7 @@ mod tests {
         let result1 = Compiler::source_to_adt(r#"for(x <- @{Nil \/ Nil}){ Nil }"#);
         assert!(result1.is_err());
         match result1 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!(
@@ -1137,7 +1137,7 @@ mod tests {
         let result2 = Compiler::source_to_adt(r#"for(x <- @{Nil /\ Nil}){ Nil }"#);
         assert!(result2.is_err());
         match result2 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("/\\ (conjunction)"));
             }
             other => panic!(
@@ -1150,7 +1150,7 @@ mod tests {
         let result3 = Compiler::source_to_adt(r#"for(x <- @{~Nil}){ Nil }"#);
         assert!(result3.is_err());
         match result3 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!(
@@ -1166,7 +1166,7 @@ mod tests {
         let result1 = Compiler::source_to_adt(r#"for(x <- @Nil){ 1 /\ 2 }"#);
         assert!(result1.is_err());
         match result1 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("/\\ (conjunction)"));
             }
             other => panic!(
@@ -1179,7 +1179,7 @@ mod tests {
         let result2 = Compiler::source_to_adt(r#"for(x <- @Nil){ 1 \/ 2 }"#);
         assert!(result2.is_err());
         match result2 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!(
@@ -1192,7 +1192,7 @@ mod tests {
         let result3 = Compiler::source_to_adt(r#"for(x <- @Nil){ ~1 }"#);
         assert!(result3.is_err());
         match result3 {
-            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(msg)) => {
+            Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!(
@@ -1208,7 +1208,7 @@ mod tests {
         let result1 = Compiler::source_to_adt(r#"new x in { for(@{Nil \/ Nil} <- x) { Nil } }"#);
         assert!(result1.is_err());
         match result1 {
-            Err(InterpreterError::PatternReceiveError(msg)) => {
+            Err(InterpreterError::PatternReceiveError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!("Expected PatternReceiveError, got: {:?}", other),
@@ -1218,7 +1218,7 @@ mod tests {
         let result2 = Compiler::source_to_adt(r#"new x in { for(@{~Nil} <- x) { Nil } }"#);
         assert!(result2.is_err());
         match result2 {
-            Err(InterpreterError::PatternReceiveError(msg)) => {
+            Err(InterpreterError::PatternReceiveError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!("Expected PatternReceiveError, got: {:?}", other),

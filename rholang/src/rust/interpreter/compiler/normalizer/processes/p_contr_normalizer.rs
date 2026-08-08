@@ -376,7 +376,7 @@ mod tests {
             Compiler::source_to_adt(r#"new x in { contract x(@{ y /\ {Nil \/ Nil}}) = { Nil } }"#);
         assert!(result1.is_err());
         match result1 {
-            Err(InterpreterError::PatternReceiveError(msg)) => {
+            Err(InterpreterError::PatternReceiveError(ref msg)) => {
                 assert!(msg.contains("\\/ (disjunction)"));
             }
             other => panic!("Expected PatternReceiveError, got: {:?}", other),
@@ -387,7 +387,7 @@ mod tests {
             Compiler::source_to_adt(r#"new x in { contract x(@{ y /\ ~Nil}) = { Nil } }"#);
         assert!(result2.is_err());
         match result2 {
-            Err(InterpreterError::PatternReceiveError(msg)) => {
+            Err(InterpreterError::PatternReceiveError(ref msg)) => {
                 assert!(msg.contains("~ (negation)"));
             }
             other => panic!("Expected PatternReceiveError, got: {:?}", other),
