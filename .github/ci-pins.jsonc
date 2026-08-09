@@ -1,0 +1,15 @@
+{
+  "$schema": "./schemas/ci-pins.schema.jsonc",
+  "schemaVersion": 1,
+  "systemIntegration": {
+    "runnerRef": "62f752f48f895be598b25d1281768f66e577e126",
+    "catalogRef": "62f752f48f895be598b25d1281768f66e577e126",
+    "catalogSchemaVersion": 1
+  },
+  "ociCli": {
+    "version": "3.89.1",
+    "installerUrl": "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh",
+    "installerSha256": "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76",
+    "installerPySha256": "f66dc9e2b69cbbd269374db638ffa9c0b08a5a4ea0b836b81336d6581aab9eed"
+  }
+}

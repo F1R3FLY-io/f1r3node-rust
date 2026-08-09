@@ -124,6 +124,32 @@ EOF
 done
 ok "both pipeline callers pass secrets down"
 
+if grep -qE 'SYSTEM_INTEGRATION_REF:[[:space:]]*[0-9a-f]{40}|OCI_CLI_[A-Z_]+:[[:space:]]*"?(https://|[0-9a-f]{64}|[0-9]+\.)' "$PIPELINE"; then
+	err "$PIPELINE contains legacy inline system-integration or OCI pin literals"
+else
+	ok "reusable pipeline contains no legacy inline pin literals"
+fi
+if grep -Fq 'ref: ${{ inputs.gated && github.event.pull_request.base.sha || github.sha }}' "$PIPELINE" &&
+	grep -Fq 'node .github/scripts/resolve-ci-pins.mjs --github-output "$GITHUB_OUTPUT"' "$PIPELINE"; then
+	ok "fork pipeline resolves pins from the trusted base commit"
+else
+	err "$PIPELINE must resolve fork pins from github.event.pull_request.base.sha"
+fi
+if grep -Fq 'SYSTEM_INTEGRATION_RUNNER_REF: ${{ needs.resolve_ci_pins.outputs.runner_ref }}' "$PIPELINE" &&
+	grep -Fq 'ref: ${{ env.SYSTEM_INTEGRATION_RUNNER_REF }}' "$PIPELINE" &&
+	grep -Fq 'SYSTEM_INTEGRATION_CATALOG_REF: ${{ needs.resolve_ci_pins.outputs.catalog_ref }}' "$PIPELINE" &&
+	grep -Fq 'ref: ${{ env.SYSTEM_INTEGRATION_CATALOG_REF }}' "$PIPELINE"; then
+	ok "runner and catalog checkouts consume distinct resolver outputs"
+else
+	err "$PIPELINE must not substitute runnerRef and catalogRef for each other"
+fi
+if [ "$(grep -Fc 'needs: [await_approval, resolve_ci_pins]' "$PIPELINE")" -eq 2 ] &&
+	grep -Fq 'needs: [build_docker_image, launch_ephemeral_runners, resolve_ci_pins]' "$PIPELINE"; then
+	ok "resource-consuming pipeline jobs depend on CI pin resolution"
+else
+	err "$PIPELINE resource-consuming jobs must depend on resolve_ci_pins"
+fi
+
 # 5. The CI runner compartment OCID is pinned identically wherever it appears.
 #    It is hardcoded rather than held in an Actions variable on purpose: the
 #    reaper's own comment claims it "can never touch other compartments", and a
