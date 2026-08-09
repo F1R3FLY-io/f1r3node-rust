@@ -14,6 +14,9 @@
     --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a887f;
     --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #e87ba4;
     --good: #008300; --serious: #c81e1e; --serious-bg: #fdeaea;
+    /* Sheet tint strength: the same perceptual whisper needs a stronger mix
+       on a dark surface than a light one. */
+    --tint: 6%;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) body {
@@ -21,6 +24,7 @@
       --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
       --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
       --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+      --tint: 14%;
     }
   }
   :root[data-theme="dark"] body {
@@ -28,6 +32,7 @@
     --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
     --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
     --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
+    --tint: 14%;
   }
   h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
   .sub { color: var(--text-secondary); margin: 0 0 1.25rem; }
@@ -37,26 +42,41 @@
      inside the bar so the panels stay siblings of them — that is what lets the
      buttons be positioned anywhere on the page. */
   .tabs { position: absolute; opacity: 0; pointer-events: none; }
-  .tabbar { display: flex; flex-wrap: wrap; gap: .75rem; margin: 0 0 1.5rem; }
+  /* The buttons are drawn as tabs physically attached to the panel below:
+     top-rounded, sitting on the panel's top border, with the active tab's
+     bottom edge cut away so button and panel read as one surface. That seam is
+     the visual statement that the panel's data belongs to the selected tab. */
+  .tabbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; margin: 0; }
   .tabbar label {
     display: flex; flex-direction: column; gap: .15rem; min-width: 11rem;
+    position: relative; z-index: 1; margin-bottom: -1px;
     padding: .8rem 1.1rem; cursor: pointer; user-select: none;
     background: var(--surface-2); color: var(--text-secondary);
-    border: 1px solid var(--grid); border-radius: 10px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 3px 10px rgba(0,0,0,.07);
-    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+    border: 1px solid var(--grid); border-radius: 10px 10px 0 0;
+    transition: box-shadow .12s ease, border-color .12s ease, background .12s ease;
   }
   .tabbar label:hover {
-    color: var(--text-primary); transform: translateY(-2px);
-    box-shadow: 0 3px 6px rgba(0,0,0,.14), 0 8px 20px rgba(0,0,0,.11);
+    color: var(--text-primary);
+    box-shadow: 0 -2px 6px rgba(0,0,0,.10);
   }
-  .tabbar label:active { transform: translateY(0); }
   .tab-title { font-weight: 700; font-size: 1.02rem; color: var(--text-primary); }
   .tab-hint { font-size: .82rem; color: var(--text-muted); }
   .tab-status { font-size: .82rem; font-weight: 600; margin-top: .2rem; color: var(--text-muted); }
   .tab-status.pass { color: var(--good); }
   .tab-status.regress { color: var(--serious); }
   .tab-status.running { color: var(--series-1); }
+  /* Shard uptime for the latest run, on the button between the verdict line
+     and the provenance line: the green share of the bar is time the shard was
+     up, the red remainder is time it was not. Collapses when the data is
+     absent, so runs that predate uptime emission show nothing rather than an
+     empty bar. */
+  .tab-uptime { display: flex; flex-direction: column; gap: .2rem; margin-top: .15rem; }
+  .tab-uptime:empty { display: none; }
+  .uptime-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+                background: var(--serious); }
+  .uptime-bar i { display: block; height: 100%; background: var(--good); }
+  .uptime-text { font-size: .78rem; color: var(--text-secondary);
+                 font-variant-numeric: tabular-nums; }
   /* What was soaked, on the button itself: which commit, version and day a
      series last covered is the thing you want before deciding which tab to
      open, not after. Empty until the verdict loads, so the button never shows
@@ -72,20 +92,33 @@
      a passing Daily tab is green twice over. Kept deliberately — the accent
      rides on the border and ring while status stays in its own text, and
      `regress` red against a green accent is still unambiguous. */
-  .tabbar label[for="tab-weekend"] { --accent: var(--series-1); }
-  .tabbar label[for="tab-daily"] { --accent: var(--good); }
+  /* The sheet colour: surface with a whisper of the series accent mixed in.
+     Both the selected tab and its panel paint this same colour, so the tint
+     follows the selection (blue sheet for Weekend, green for Daily) while the
+     tab-to-panel seam stays invisible. Browsers without color-mix fall back
+     to the untinted surface — the tint is a cue, not a load-bearing signal. */
+  .tabbar label[for="tab-weekend"], #panel-weekend { --accent: var(--series-1); }
+  .tabbar label[for="tab-daily"], #panel-daily { --accent: var(--good); }
+  .tabbar label, .panel { --sheet: var(--surface-1); }
+  @supports (background: color-mix(in srgb, red 4%, white)) {
+    .tabbar label, .panel { --sheet: color-mix(in srgb, var(--accent) var(--tint), var(--surface-1)); }
+  }
   /* Always visible, not just when selected, so the colour is a property of the
-     series rather than of the selection. */
-  .tabbar label { border-left-width: 3px; border-left-color: var(--accent); }
+     series rather than of the selection. The accent moves to the tab's top
+     edge — the natural accent position for a tab attached below. */
+  .tabbar label { border-top-width: 3px; border-top-color: var(--accent); }
   .running-note { background: var(--surface-2); border-left: 3px solid var(--series-1);
                   border-radius: 4px; padding: .6rem .9rem; margin-bottom: 1.25rem;
                   color: var(--text-secondary); }
-  /* The selected tab is raised and accented; without this the group reads as
-     four equal cards rather than a choice with one active member. */
+  /* The selected tab merges with the panel: its background becomes the panel
+     background and its bottom border is painted over the panel's top border,
+     so the two form one continuous surface — the inactive tab stays visibly
+     "behind" the sheet. */
   #tab-weekend:checked ~ .tabbar label[for="tab-weekend"],
   #tab-daily:checked ~ .tabbar label[for="tab-daily"] {
-    border-color: var(--accent); background: var(--surface-1);
-    box-shadow: 0 0 0 1px var(--accent), 0 4px 8px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12);
+    background: var(--sheet); color: var(--text-primary);
+    border-color: var(--grid); border-top-color: var(--accent);
+    border-bottom-color: var(--sheet);
   }
   #tab-weekend:focus-visible ~ .tabbar label[for="tab-weekend"],
   #tab-daily:focus-visible ~ .tabbar label[for="tab-daily"] {
@@ -93,11 +126,14 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .tabbar label { transition: none; }
-    .tabbar label:hover { transform: none; }
   }
   .panel { display: none; }
   #tab-weekend:checked ~ #panel-weekend,
-  #tab-daily:checked ~ #panel-daily { display: block; }
+  #tab-daily:checked ~ #panel-daily {
+    display: block;
+    border: 1px solid var(--grid); border-radius: 0 10px 10px 10px;
+    background: var(--sheet); padding: 1.25rem; margin-bottom: 1.5rem;
+  }
 
   .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: 1rem; }
   .panel-head .meta { color: var(--text-secondary); }
@@ -149,23 +185,25 @@
 <input class="tabs" type="radio" name="soak-tab" id="tab-weekend" checked>
 <input class="tabs" type="radio" name="soak-tab" id="tab-daily">
 
+<h1>Merge-recovery soak benchmarks</h1>
+<p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
+
 <div class="tabbar" role="group" aria-label="Soak series">
   <label for="tab-weekend">
     <span class="tab-title">Weekend</span>
     <span class="tab-hint">60h · master</span>
     <span class="tab-status" id="status-weekend">loading…</span>
+    <span class="tab-uptime" id="uptime-weekend"></span>
     <span class="tab-provenance" id="provenance-weekend"></span>
   </label>
   <label for="tab-daily">
     <span class="tab-title">Daily</span>
     <span class="tab-hint">22h · dev</span>
     <span class="tab-status" id="status-daily">loading…</span>
+    <span class="tab-uptime" id="uptime-daily"></span>
     <span class="tab-provenance" id="provenance-daily"></span>
   </label>
 </div>
-
-<h1>Merge-recovery soak benchmarks</h1>
-<p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
 
 <div class="panel" id="panel-weekend">
   <div class="panel-head">
@@ -351,6 +389,28 @@
     el.textContent = r ? provenanceParts(r).join(" · ") : "";
   }
 
+  // Shard uptime for the latest run, between the verdict and provenance lines.
+  // Green share of the bar = time the shard was up; red remainder = time it
+  // was not (bring-up churn, watchdog kills, restarts). The denominator is the
+  // elapsed time for a mid-run checkpoint and the full window for a completed
+  // run. Runs recorded before the soak emitted shard_up_seconds render
+  // nothing — the element collapses rather than showing a bar with no data.
+  function renderUptime(el, verdict) {
+    el.innerHTML = "";
+    const r = (verdict && verdict.run) || null;
+    if (!r) return;
+    const up = r.shard_up_seconds;
+    const span = verdict.verdict === "in_progress" ? r.elapsed_seconds : r.duration_seconds;
+    if (typeof up !== "number" || typeof span !== "number" || span <= 0) return;
+    const ratio = Math.min(Math.max(up / span, 0), 1);
+    const pct = (ratio * 100).toFixed(ratio >= 0.995 && ratio < 1 ? 1 : 0);
+    const hrs = s => (s / 3600).toFixed(s >= 36000 ? 0 : 1);
+    el.innerHTML =
+      `<span class="uptime-bar" role="img" aria-label="shard uptime ${pct}%">` +
+      `<i style="width:${(ratio * 100).toFixed(2)}%"></i></span>` +
+      `<span class="uptime-text">uptime ${pct}% · ${hrs(up)}h of ${hrs(span)}h</span>`;
+  }
+
   // Rendered only when non-empty, so the strip's presence is itself the signal.
   function renderFailures(el, verdict) {
     const f = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
@@ -466,6 +526,7 @@
     const history = Array.isArray(historyRaw) ? historyRaw : [];
 
     renderStatus(document.getElementById("status-" + def.key), verdict, history.length);
+    renderUptime(document.getElementById("uptime-" + def.key), verdict);
     renderProvenance(document.getElementById("provenance-" + def.key), verdict);
     renderProgress(document.getElementById("progress-" + def.key), verdict);
     renderFailures(document.getElementById("failures-" + def.key), verdict);

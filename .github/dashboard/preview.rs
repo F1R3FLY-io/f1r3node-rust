@@ -85,6 +85,7 @@ struct Run {
     // dash-instead-of-"unknown" fallback needs exercising locally.
     version: String,
     duration: u64,
+    up_seconds: u64,
     iterations: u64,
     failure_rate: f64,
     iters_per_hour: f64,
@@ -107,10 +108,11 @@ impl Run {
         format!(
             concat!(
                 r#"{{"date": "{}T07:30:00Z", "run_id": "{}", "target_sha": "{}", "#,
-                r#""target_ref": "{}", "version": "{}", "kind": "{}", "duration_seconds": {}}}"#
+                r#""target_ref": "{}", "version": "{}", "kind": "{}", "duration_seconds": {}, "#,
+                r#""shard_up_seconds": {}}}"#
             ),
             self.date, self.run_id, self.sha, self.target_ref, self.version, self.kind,
-            self.duration
+            self.duration, self.up_seconds
         )
     }
 
@@ -189,10 +191,12 @@ fn series(
 
         // One deliberately regressed run per series, so the failure styling is
         // exercised by the default fixture instead of needing a hand edit.
-        let (f, p, too_far_ahead) = if bad == Some(i) {
-            (fr + 0.06, p95 * 1.28, 5 + (rng.unif(0.0, 4.0) as u64))
+        // The regressed run also loses a visible slice of shard uptime, so the
+        // tab button's green/red uptime bar shows both of its states locally.
+        let (f, p, too_far_ahead, up_frac) = if bad == Some(i) {
+            (fr + 0.06, p95 * 1.28, 5 + (rng.unif(0.0, 4.0) as u64), rng.unif(0.55, 0.72))
         } else {
-            (fr, p95, 0)
+            (fr, p95, 0, rng.unif(0.965, 0.999))
         };
 
         let it = ((iph * hours) as u64).max(1);
@@ -212,6 +216,7 @@ fn series(
                 format!("0.4.{}", 18 + i)
             },
             duration,
+            up_seconds: (duration as f64 * up_frac) as u64,
             iterations: it,
             failure_rate: f,
             iters_per_hour: iph,
@@ -266,7 +271,11 @@ fn seed_sample(data: &Path) -> std::io::Result<()> {
         3.4,
         0.015,
         48.0,
-        Some(13),
+        // The regressed fixture is the LAST daily run: latest-verdict-daily is
+        // hand-written as "regress" from that run, so the Daily tab button's
+        // uptime bar shows the red-slice state while Weekend shows near-full
+        // green — both button states are exercised by the default fixture.
+        Some(15),
         false,
     );
 

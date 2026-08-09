@@ -33,6 +33,7 @@ jq -e '
   and .elapsed_seconds == 180
   and .iterations == 2
   and .failures == 2
+  and .shard_up_seconds == 0
   and .rss_peak_mb == 15580
   and .providers.docker.failures == 1
   and .providers.subprocess.failures == 1
@@ -48,9 +49,19 @@ write_summary "$EMPTY" 0 0
 jq -e '
   .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .shard_up_seconds == 0
   and .tracked_metrics == {}
   and .iteration_metrics == []
 ' "$EMPTY/summary.json" >/dev/null
+
+# Shard uptime counts only completed-cycle iterations: the ok iteration
+# contributes its duration, the failed one contributes nothing.
+MIXED="$TMP/mixed"
+mkdir -p "$MIXED/iteration-00001-docker" "$MIXED/iteration-00002-docker"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":true,"metrics":{}}' >"$MIXED/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"docker","duration_s":120,"ok":false,"metrics":{}}' >"$MIXED/iteration-00002-docker/metrics.json"
+write_summary "$MIXED" 2 1
+jq -e '.shard_up_seconds == 60' "$MIXED/summary.json" >/dev/null
 
 SPARSE="$TMP/sparse"
 mkdir -p "$SPARSE/iteration-00001-docker"
@@ -59,6 +70,7 @@ write_summary "$SPARSE" 1 0
 jq -e '
   .rss_peak_mb == null
   and .cpu_peak_pct == null
+  and .shard_up_seconds == 0
   and .tracked_metrics.lfb_spread.p50 == null
   and .tracked_metrics.lfb_spread.p95 == null
   and .tracked_metrics.lfb_spread.max == null

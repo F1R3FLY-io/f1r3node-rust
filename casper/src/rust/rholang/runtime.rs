@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -54,6 +55,7 @@ use crate::rust::metrics_constants::{
     EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC,
 };
 use crate::rust::rholang::types::eval_collector::EvalCollector;
+use crate::rust::util::event_converter;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::pre_charge_deploy::PreChargeDeploy;
 use crate::rust::util::rholang::costacc::refund_deploy::RefundDeploy;
@@ -65,9 +67,16 @@ use crate::rust::util::rholang::system_deploy_user_error::{
 };
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
-use crate::rust::util::{construct_deploy, event_converter};
 
-static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
+/// Process-wide ephemeral identity to sign exploratory deploys.
+/// The key pair is generated randomly once per node process, so values derived
+/// from it — including the signature, and therefore `rho:rchain:deployId` — are
+/// stable within a process but not across restarts or between nodes.
+static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new();
+
+fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
+    EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
+}
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
@@ -822,21 +831,27 @@ impl RuntimeOps {
         &mut self,
         term: String,
         hash: &StateHash,
+        deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            let deploy = construct_deploy::source_deploy(
+            // Hardcoded phlogiston limit / 1 REV if phloPrice=1
+            let phlo_limit = 100 * 1000 * 1000;
+            let data = DeployData {
                 term,
-                0,
-                // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-                Some(100 * 1000 * 1000),
-                None,
-                Some(
-                    EXPLORATORY_DEPLOY_KEY
-                        .get_or_init(|| Secp256k1.new_key_pair().0)
-                        .clone(),
-                ),
-                None,
-                None,
+                time_stamp: 0,
+                phlo_price: 1,
+                phlo_limit,
+                valid_after_block_number: 0,
+                shard_id: String::new(),
+                expiration_timestamp: None,
+            };
+
+            let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
+            let deploy = Signed::create_unbound(
+                data,
+                deployer.unwrap_or(ephemeral_pk),
+                ephemeral_sk,
+                Box::new(Secp256k1),
             )?;
 
             // Create return channel as first private name created in deploy term

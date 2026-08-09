@@ -42,6 +42,41 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
         })
     }
 
+    /// Construct a `Signed` whose signature is deliberately *not* bound to `pk`.
+    ///
+    /// Unlike [`Signed::create`], which derives `pk` from the signing key, this
+    /// Signs `data` with `signing_sk` while carrying a caller-supplied `pk`.
+    ///
+    /// Standard verification will fail.
+    ///
+    /// Used for exploratory (read-only) deploys where only a public key is
+    /// available. The signature is kept — not omitted — because Rholang exposes
+    /// it via `rho:system:deployId` / `rho:rchain:deployId`, and an empty value
+    /// would cause cost estimates to diverge from real deploys. Folding `pk`
+    /// into the preimage ensures distinct deployers get distinct deployIds.
+    ///
+    /// **Do not use on any path where signature verification matters.**
+    ///
+    /// Returns `Result` for API parity with [`Signed::create`]; this path cannot fail.
+    pub fn create_unbound(
+        data: A,
+        pk: PublicKey,
+        signing_sk: PrivateKey,
+        sig_algorithm: Box<dyn SignaturesAlg>,
+    ) -> Result<Self, String> {
+        let mut preimage = data.to_message().encode_to_vec();
+        preimage.extend_from_slice(&pk.bytes);
+        let hash = Signed::<A>::signature_hash(&sig_algorithm.name(), preimage);
+        let sig = sig_algorithm.sign(&hash, &signing_sk.bytes);
+
+        Ok(Self {
+            data,
+            pk,
+            sig: prost::bytes::Bytes::from(sig),
+            sig_algorithm,
+        })
+    }
+
     pub fn from_signed_data(
         data: A,
         pk: PublicKey,

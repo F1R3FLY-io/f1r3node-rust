@@ -70,6 +70,19 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Harness telemetry roots. Subprocess sessions write monitor artifacts and
+# node logs under data/; docker sessions write them under log-archive/ (the
+# provider's host-visible per-session dir — DockerProvider.monitor_output_dir
+# in system-integration). Every search for monitor output, node logs, breach
+# markers or SOAK_METRIC lines must cover both, or docker iterations lose
+# their telemetry: rss_peak_mb and finalization_latency were null on every
+# docker iteration (runs 30880995655, 30906818259) because only data/ was
+# searched. Created up front so multi-root find never ENOENTs.
+HARNESS_TELEMETRY_DIRS=(
+	"$SYSTEM_INTEGRATION_DIR/integration-tests/data"
+	"$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
+)
+mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
 BENCH_EVERY="${SOAK_BENCH_EVERY:-4}"
 BENCH_DURATION="${SOAK_BENCH_DURATION:-300}"
@@ -184,7 +197,7 @@ fi
 iteration_rss_peak_mb() {
 	local iteration_dir="$1" ts_csv="$1/resource-timeseries.csv"
 	if [ ! -s "$ts_csv" ]; then
-		ts_csv="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+		ts_csv="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 			-name resource-timeseries.csv -newer "$iteration_dir/.started" -print0 2>/dev/null |
 			xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
 		[ -n "$ts_csv" ] || return 0
@@ -212,7 +225,7 @@ snapshot_iteration_monitor_outputs() {
 	started_epoch="$(date +%s)"
 	while :; do
 		for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
-			source="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+			source="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 				-name "$filename" -newer "$iteration_dir/.started" -print0 2>/dev/null |
 				xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
 			[ -n "$source" ] || continue
@@ -273,6 +286,31 @@ scrape_node_memory_timeseries() {
 	done < <(docker ps --filter 'name=rnode.' --format '{{.Names}}' 2>/dev/null || true)
 }
 
+# Drop content-duplicate files from a newline-separated list on stdin (first
+# occurrence wins). The same log can appear under both telemetry roots when
+# teardown archives a copy of a file that also lives under data/, and the
+# counting metrics below (too-far-ahead, sample counts) would double without
+# this. Hash content rather than compare paths: the roots' layouts differ,
+# so the same file carries unrelated relative paths. Fail-soft — an
+# unhashable file passes through rather than being dropped.
+dedup_files_by_content() {
+	local f digest
+	declare -A seen_digests=()
+	while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		if command -v md5sum >/dev/null 2>&1; then
+			digest="$(md5sum "$f" 2>/dev/null | awk '{print $1}')"
+		else
+			digest="$(md5 -q "$f" 2>/dev/null)"
+		fi
+		if [ -n "$digest" ]; then
+			[ -n "${seen_digests[$digest]:-}" ] && continue
+			seen_digests[$digest]=1
+		fi
+		printf '%s\n' "$f"
+	done
+}
+
 # Propose-timing latency samples (total_ms) from node JSON logs written after
 # the iteration's start marker — the f1r3fly.propose.timing parse target from
 # profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
@@ -280,8 +318,9 @@ iteration_finalization_latency() {
 	local iteration_dir="$1"
 	# `|| true` is load-bearing under pipefail: a failed iteration can leave
 	# zero matching samples, making grep exit 1 and the pipeline nonzero.
-	find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+	find "${HARNESS_TELEMETRY_DIRS[@]}" \
 		-name '*.log' -newer "$iteration_dir/.started" 2>/dev/null |
+		dedup_files_by_content |
 		xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null |
 		grep -oE 'total_ms=[0-9]+' | grep -oE '[0-9]+' |
 		sort -n |
@@ -302,8 +341,9 @@ iteration_finalization_latency() {
 # tracks (that measures how slow finalization is, not how often it is refused).
 iteration_too_far_ahead_errors() {
 	local iteration_dir="$1"
-	find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+	find "${HARNESS_TELEMETRY_DIRS[@]}" \
 		-type f \( -name '*.log' -o -name '*.txt' \) -newer "$iteration_dir/.started" 2>/dev/null |
+		dedup_files_by_content |
 		xargs -r grep -h -o 'too far ahead of the last finalized block' 2>/dev/null |
 		wc -l | tr -d ' '
 }
@@ -337,7 +377,10 @@ emit_iteration_metrics() {
 	local registry_metrics
 	registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
 		"$iteration_dir/.started" \
-		"$SYSTEM_INTEGRATION_DIR/integration-tests/data" 2>/dev/null || printf '{}')"
+		"$(
+			IFS=:
+			printf '%s' "${HARNESS_TELEMETRY_DIRS[*]}"
+		)" 2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
 	jq -n \
 		--argjson metrics "$registry_metrics" \
@@ -648,22 +691,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ "$STATUS" -ne 0 ]; then
 		FAILURES="$((FAILURES + 1))"
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
-		if [ -d "$SYSTEM_INTEGRATION_DIR/integration-tests/data" ]; then
+		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
+			[ -d "$evidence_root" ] || continue
 			# Evidence only — logs, CSVs, configs. A full `cp -a` drags the nodes'
 			# LMDB data along, which ran to a silent half-hour stall between
 			# iterations on run 30713818751 (19:16→19:45 with zero output) and
 			# would bloat the results artifact past uploadable size.
 			COPY_STARTED="$(date +%s)"
-			printf 'preserving failure evidence from integration-tests/data (iteration %s)\n' "$ITERATIONS"
-			mkdir -p "$ITERATION_DIR/data"
-			(cd "$SYSTEM_INTEGRATION_DIR/integration-tests/data" &&
+			evidence_name="$(basename "$evidence_root")"
+			printf 'preserving failure evidence from integration-tests/%s (iteration %s)\n' \
+				"$evidence_name" "$ITERATIONS"
+			mkdir -p "$ITERATION_DIR/$evidence_name"
+			(cd "$evidence_root" &&
 				find . -type f \( -name '*.log' -o -name '*.csv' -o -name '*.txt' \
 					-o -name '*.json' -o -name '*.conf' -o -name '*.toml' \) -print0 |
 				tar --null -T - -cf -) |
-				tar -xf - -C "$ITERATION_DIR/data" ||
+				tar -xf - -C "$ITERATION_DIR/$evidence_name" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
-		fi
+		done
 		# Fail closed on a host-protection breach. The guardian killing the nodes
 		# means the load does not fit under the configured ceiling/floor on this
 		# host; every further iteration reproduces the breach (30713818751 breached
@@ -680,7 +726,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			BREACH_LINE="$(head -1 "$HOST_GUARDIAN_BREACH")"
 		else
-			HARNESS_MARKER="$(find "$SYSTEM_INTEGRATION_DIR/integration-tests/data" \
+			HARNESS_MARKER="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 				-name host-protection-breach.txt -newer "$ITERATION_DIR/.started" 2>/dev/null |
 				head -1 || true)"
 			if [ -n "$HARNESS_MARKER" ]; then

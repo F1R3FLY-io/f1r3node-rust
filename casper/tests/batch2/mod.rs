@@ -1,6 +1,7 @@
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
 pub mod estimator_test;
+pub mod finalized_win_pending_rejection_spec;
 pub mod finalizer_test;
 pub mod limited_parent_depth_spec;
 pub mod lmdb_key_value_store_spec;

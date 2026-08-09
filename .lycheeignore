@@ -2,3 +2,8 @@
 # enabled (Settings -> Pages -> source "GitHub Actions") and the first weekend
 # soak deploys it. Remove this entry after the first successful deploy.
 https://f1r3fly-io.github.io/f1r3node-rust/
+
+# doi.org intermittently returns 500 to CI bots (Cloudflare-style rate
+# limiting), even though the DOIs resolve fine in a browser.
+https://doi.org/10.1017/CBO9780511809088
+https://doi.org/10.1017/S0960129598002527

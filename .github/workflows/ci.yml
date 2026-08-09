@@ -252,10 +252,11 @@ jobs:
           # unauthenticated/bot requests. A 403 response from these
           # endpoints still proves the URL is well-formed and the
           # resource exists; a real broken link would 404. The 429
-          # allowance for rate-limited fetches is unchanged. 503 is
-          # accepted because it is transient by definition (seen from
-          # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
-          # dead link returns 404/410, not 503.
+          # allowance for rate-limited fetches is unchanged. 503/504 are
+          # accepted because they are transient by definition (seen
+          # from rust-fuzz.github.io during a GitHub Pages blip and
+          # from zenodo.org DOI redirects during gateway timeouts);
+          # a genuinely dead link returns 404/410, not 503/504.
           # --timeout 45 (lychee defaults to 20). The slashing references carry
           # ~73 doi.org citations, and doi.org resolution is slow and variable:
           # it redirects to publisher portals that can take tens of seconds to
@@ -274,7 +275,7 @@ jobs:
             --max-retries 2
             --retry-wait-time 5
             --timeout 45
-            --accept 200..=299,403,429,503
+            --accept 200..=299,403,429,503,504
             './**/*.md'
           fail: true
 

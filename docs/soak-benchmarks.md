@@ -282,10 +282,18 @@ Thresholds live in one file: `scripts/bench/soak-gate-thresholds.json`
 the soak run**: failure rate +5pts, peak RSS +20%, finalization p95 +20%,
 throughput −20%. Active-segment metrics warn.
 
-**Releases are gated**: the `release.yml` workflow refuses to bump/tag on
-`master` while the latest published soak verdict is `regress`. Maintainer
-override: include `[soak-override]` in the release commit message (the gate
-logs a warning and proceeds).
+**Releases are gated**: while the latest published soak verdict is `regress`,
+the `release.yml` workflow holds the bump/tag without failing anything — the
+gate job stays green (soak state belongs to the badges and dashboard, not to
+the commit's build status), the release job is skipped, and the hold is
+surfaced as a neutral `release-held` check run on the commit plus a
+`::warning::` annotation on the gate job. A held release is quiet by design:
+no red ✗ appears; the release simply does not happen until the regression is
+fixed or overridden. The gate also holds when the verdict cannot be fetched
+(network error, 5xx, malformed JSON) — only a true 404 (pre-bootstrap
+dashboard) lets the release proceed. Maintainer override: include
+`[soak-override]` in the release commit message (the gate logs a warning and
+proceeds).
 
 ## Email subscription (OCI Notifications)
 

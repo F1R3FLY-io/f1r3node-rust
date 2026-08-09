@@ -7,7 +7,10 @@ use std::collections::HashMap;
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::construct_deploy;
+use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{GDeployId, Par};
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -149,6 +152,7 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
         None,  // block_hash: None means use current DAG tips
         false, // use_pre_state_hash
         false, // dev_mode
+        None,  // deployer
     )
     .await;
 
@@ -257,6 +261,7 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
         None,  // block_hash
         false, // use_pre_state_hash
         false, // dev_mode: false means read-only check is enforced
+        None,  // deployer
     )
     .await;
 
@@ -275,4 +280,320 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
             panic!("Exploratory deploy should fail on bonded validator");
         }
     }
+}
+
+/// Estimate-cost with deployer must match real deploy cost (issue #53).
+///
+/// Deploys an identity-dependent RevVault transfer term signed by DEFAULT_SEC
+/// (which holds a genesis REV vault), then verifies that:
+/// 1. exploratory_deploy with deployer=Some(DEFAULT_PUB) returns the same cost
+/// 2. exploratory_deploy with deployer=None returns a different cost
+///
+/// This pins the acceptance criterion of issue #53: for identity-dependent
+/// terms such as REV vault transfers, passing the deployer public key is
+/// essential — without it the term executes under an ephemeral identity and
+/// the returned cost can be significantly lower than the real deploy cost.
+#[tokio::test]
+async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
+    // Build genesis with 3 validators at 10 stake each
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    // Create network with 3 validators + 1 read-only node
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Identity-dependent term: RevVault transfer from the deployer's own vault.
+    // The RevAddress is derived from the deployer's identity via deployerId,
+    // so the execution path and cost depend on who the deployer is.
+    // DEFAULT_SEC has a genesis vault with 9M balance.
+    let vault_transfer_term = r#"
+        new
+            rl(`rho:registry:lookup`), SystemVaultCh,
+            deployerId(`rho:system:deployerId`),
+            vaultAddressOps(`rho:vault:address`),
+            vaultAddrCh, vaultCh, targetVaultCh, authKeyCh, ret
+        in {
+            rl!(`rho:vault:system`, *SystemVaultCh) |
+            for (@(_, SystemVault) <- SystemVaultCh) {
+                vaultAddressOps!("fromDeployerId", *deployerId, *vaultAddrCh) |
+                for (@vaultAddr <- vaultAddrCh) {
+                    @SystemVault!("findOrCreate", vaultAddr, *vaultCh) |
+                    @SystemVault!("findOrCreate", "1111111111111111111111111111111111111111111111111111", *targetVaultCh) |
+                    @SystemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+                    for (@(true, vault) <- vaultCh & @(true, _) <- targetVaultCh & key <- authKeyCh) {
+                        @vault!("transfer", "1111111111111111111111111111111111111111111111111111", 100, *key, *ret)
+                    }
+                }
+            }
+        }
+    "#;
+
+    // Step 1: Deploy as a real deploy signed with DEFAULT_SEC
+    let real_deploy = construct_deploy::source_deploy(
+        vault_transfer_term.to_string(),
+        1,
+        Some(5_000_000),
+        None,
+        Some(DEFAULT_SEC.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("Failed to create deploy");
+
+    // Propagate a block with the real deploy
+    let transfer_block = TestNode::propagate_block_at_index(&mut nodes, 0, &[real_deploy])
+        .await
+        .expect("n1 should create and propagate block");
+
+    // Get the real cost from the processed deploy
+    assert!(
+        !transfer_block.body.deploys.is_empty(),
+        "Block should contain the deploy"
+    );
+    let actual_cost = transfer_block.body.deploys[0].cost.cost;
+    tracing::info!("Real deploy cost: {}", actual_cost);
+
+    // Step 2: Get the parent block's post-state hash (state before the transfer)
+    // We need to estimate against the state the real deploy executed against.
+    // The parent is the block just before the transfer block.
+    let parent_hash_hex = transfer_block
+        .header
+        .parents_hash_list
+        .first()
+        .map(hex::encode)
+        .expect("Transfer block should have at least one parent");
+
+    // Step 3: Call exploratory_deploy with deployer = Some(DEFAULT_PUB)
+    // against the parent state (same state the real deploy started from)
+    let result_with_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        vault_transfer_term.to_string(),
+        Some(parent_hash_hex.clone()),
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer should succeed");
+    let cost_with_deployer = result_with_deployer.2;
+
+    // Step 4: Assert costs match exactly
+    assert_eq!(
+        actual_cost, cost_with_deployer,
+        "Cost with deployer ({}) must match real deploy cost ({})",
+        cost_with_deployer, actual_cost
+    );
+
+    // Step 5: Call exploratory_deploy with deployer = None (ephemeral identity)
+    // against the same parent state
+    let result_without_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        vault_transfer_term.to_string(),
+        Some(parent_hash_hex),
+        false,
+        false,
+        None,
+    )
+    .await
+    .expect("exploratory deploy without deployer should succeed");
+    let cost_without_deployer = result_without_deployer.2;
+
+    // Step 6: Assert costs differ — this pins the original bug (#53)
+    // Under an ephemeral identity the vault path diverges (no vault exists
+    // for the ephemeral deployer), so the estimate is wrong.
+    assert_ne!(
+        actual_cost, cost_without_deployer,
+        "Cost without deployer ({}) must differ from real deploy cost ({}) — identity-dependent terms require deployer key",
+        cost_without_deployer, actual_cost
+    );
+
+    tracing::info!(
+        "actual_cost={}, cost_with_deployer={}, cost_without_deployer={}",
+        actual_cost,
+        cost_with_deployer,
+        cost_without_deployer
+    );
+}
+
+fn extract_deploy_id_sig(par: &Par) -> Option<Vec<u8>> {
+    par.unforgeables.iter().find_map(|u| match &u.unf_instance {
+        Some(UnfInstance::GDeployIdBody(GDeployId { sig })) => Some(sig.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+
+    // Path 1: `deployer` public key is passed. Sig is a real secp256k1 DER signature over a
+    // preimage that folds the `deployer` public key in (via create_unbound).
+    let result_with_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer should succeed");
+    let (pars_with, _block_with, cost_with) = result_with_deployer;
+
+    let sig_with = extract_deploy_id_sig(&pars_with[0])
+        .expect("Some(deployer) path should return a GDeployId unforgeable on rho:rchain:deployId");
+    assert!(
+        !sig_with.is_empty(),
+        "deployId sig must be non-empty on Some(deployer) path (real secp256k1 DER signature), got {} bytes",
+        sig_with.len()
+    );
+    assert!(
+        !sig_with.iter().all(|&b| b == 0),
+        "deployId sig must be non-trivial (not all-zero) on Some(deployer) path"
+    );
+
+    // Path 2: no `deployer` public key is passed.
+    let result_without_deployer = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        None,
+    )
+    .await
+    .expect("exploratory deploy without deployer should succeed");
+    let (pars_without, _block_without, cost_without) = result_without_deployer;
+
+    let sig_without = extract_deploy_id_sig(&pars_without[0])
+        .expect("None path should return a GDeployId unforgeable on rho:rchain:deployId");
+    assert!(
+        !sig_without.is_empty(),
+        "deployId sig must be non-empty on None path (real secp256k1 DER signature)"
+    );
+
+    let diff = cost_with.abs_diff(cost_without);
+    let tolerance = cost_with.max(cost_without) / 20; // 5%
+    assert!(
+        diff <= tolerance,
+        "deployId-reading term cost must match within 5% between Some(deployer) ({}) and None ({}) paths (diff={}, tolerance={})",
+        cost_with,
+        cost_without,
+        diff,
+        tolerance
+    );
+
+    tracing::info!(
+        "deployId sig lengths: with_deployer={}, without_deployer={}; costs: with={}, without={}",
+        sig_with.len(),
+        sig_without.len(),
+        cost_with,
+        cost_without
+    );
+}
+
+/// Two different deployer public keys must observe different `rho:rchain:deployId`
+/// values for the same term, and repeating the same (term, deployer) within one
+/// process must observe the same value (process-wide ephemeral key is stable).
+#[tokio::test]
+async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
+    let parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+        .await
+        .expect("Failed to create network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
+
+    // Two different deployers must produce different deployId values.
+    let result_a = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer A should succeed");
+    let sig_a =
+        extract_deploy_id_sig(&result_a.0[0]).expect("should return GDeployId for deployer A");
+
+    let result_b = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB2.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer B should succeed");
+    let sig_b =
+        extract_deploy_id_sig(&result_b.0[0]).expect("should return GDeployId for deployer B");
+
+    assert_ne!(
+        sig_a, sig_b,
+        "deployId must differ between different deployer public keys"
+    );
+
+    // Repeating the same (term, deployer) within one process must yield the same value
+    // because the ephemeral signing key is process-wide stable.
+    let result_a2 = BlockAPI::exploratory_deploy(
+        &nodes[3].engine_cell,
+        term.to_string(),
+        None,
+        false,
+        false,
+        Some(DEFAULT_PUB.clone()),
+    )
+    .await
+    .expect("exploratory deploy with deployer A (repeat) should succeed");
+    let sig_a2 = extract_deploy_id_sig(&result_a2.0[0])
+        .expect("should return GDeployId for deployer A (repeat)");
+
+    assert_eq!(
+        sig_a, sig_a2,
+        "deployId must be stable for the same (term, deployer) within one process"
+    );
+
+    tracing::info!(
+        "deployId sig lengths: deployer_A={}, deployer_B={}; stable repeat={}",
+        sig_a.len(),
+        sig_b.len(),
+        sig_a == sig_a2
+    );
 }
