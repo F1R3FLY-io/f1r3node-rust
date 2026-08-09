@@ -4,7 +4,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-08
+**Report date** 2026-07-29, revised through 2026-08-09
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** `f1r3node-rust-mettail@382c53d0` (`InterpreterError` lifecycle machine,
 reducer method-replay machine, exact recursion census, production lint gate, and prior
@@ -16,7 +16,7 @@ correlated-matching, numeric-cast, Delta-one matching, nested optional/binder-li
 pushdown-automaton (WPDA) generation, and Rho-network code-generation closure;
 §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
-live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C11` and
+live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C12` and
 `SS-Y6` register rows below point there.
 **Audit ledgers superseded by nothing; this report *cites* them** —
 `docs/design/audits/theta-depth-traversals-2026-07-26.md`,
@@ -138,7 +138,10 @@ EPathMap/codec/formal-manifest matrix passed **84/84**; the recursion census and
 registry passed **7/7**; the complete stack gate passed **8/8 active** with **4 ignored = 3
 measurement-only probes + 1 forked-child driver** (**DERIVED** from the four `#[ignore]` attributes
 in `rholang/tests/stack_depth_gate.rs`); Rocq, Z3, and TLC passed, with TLC exploring 2,816 distinct
-states to depth 8.
+states to depth 8. The subsequent SS-C12 checkpoint kernel-checks all four Rocq theories, verifies
+**6/6** Verus obligations with `--no-cheating`, and runs the canonical-key/value worklist through
+depth **20,000** on a **256 KiB** worker stack; §5.19 records the distinct time, heap, and
+acceptance evidence rather than folding it into the older 84-test measurement.
 
 ---
 
@@ -197,6 +200,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-C9** | `26876b65` | f1r3node | `EPathMapRepr = Empty | Set(PathMap<()>) | Map(PathMap<Par>)`; EPM1 carries PathMap's compact ACTree03 topology and a generated-PDA value table directly on protobuf and bincode | depth 4,096 succeeds on a 256 KiB stack; no entry projection | **yes** | [PathMap §5.1–§5.5](../pathmap/pathmap-report-2026-08-03.md#51-the-homogeneous-representation) |
 | **SS-C10** | `7b25df5a` | f1r3node | expression-evaluator PDA: forward `Vec<&Par>` projection $`\rightarrow`$ direct reverse PathMap visitor | projected pointer payload $`n \operatorname{sizeof}(\&\mathrm{Par})`$ (set) / $`2n \operatorname{sizeof}(\&\mathrm{Par})`$ (map) $`\rightarrow 0`$; traversal remains $`\Theta(n)`$ | stack safety inherited from SS-B1; heap refinement | [PathMap §5.7](../pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality) |
 | **SS-C11** | `b30a1568`; mettail harness `bb98055b`, `9dccb346` | cross-repository | reducer-identity EPathMaps retain their native root; shared clone-family teardown releases one root without PathMap copy-on-write; E-6a binds the index once per phase | 4,119,482 $`\rightarrow`$ 278,527 allocation events; treatment 18.730 ms vs 32.281 ms control; PathMap clone/drop ladders remain **0 B/level** | measured-neutral optimization; no new traversal or PathMap change | [5.17](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11) |
+| **SS-C12** | this checkpoint; pgmcp #5193, #5282, #5283 | f1r3node | direct ACTree03 replay, range-backed canonical-key/value worklist, and exact deferred EPathMap fold construction; exhaustive comparison residues and malformed-gate resource closure | decoder/canonicalizer host re-entry $`\Theta(d) \rightarrow O(1)`$ native stack; repeated trie reconstruction/hash $`\Theta(d^2) \rightarrow \Theta(d)`$; depth **20,000** on **256 KiB**; malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak | **yes** for the decoder SCC; byte/acceptance neutral under CBR-044 and retired CBR-023 | [5.19](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -338,7 +342,7 @@ companion repository — that the Rholang parser was depth-independent (§5.6.3)
 The PathMap/EPathMap half of the campaign — the homogeneous representation, the EPM1 wire format,
 their benchmarks, and the intern-store deletion — is reported in the
 [PathMap companion report](../pathmap/pathmap-report-2026-08-03.md); this report keeps their
-register rows (SS-C5…SS-C11, SS-Y6) and the stack-safety consequences.
+register rows (SS-C5…SS-C12, SS-Y6) and the stack-safety consequences.
 
 ---
 
@@ -384,6 +388,8 @@ register rows (SS-C5…SS-C11, SS-Y6) and the stack-safety consequences.
   - [5.15 Subject depth distributions [SS-E4]](#515-subject-depth-distributions-ss-e4)
   - [5.16 Spatial matcher and PathMap-native retry PDA [SS-A10]](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10)
   - [5.17 EPathMap evaluator and clone-family teardown integration [SS-C11]](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11)
+  - [5.18 Recursive-carrier lifecycle and weighted-logic closure [SS-G8]](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8)
+  - [5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -5367,6 +5373,176 @@ native-stack re-entry, an artificial depth cap, or recursive lifecycle behavior.
 
 ---
 
+### 5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]
+
+#### 5.19.1 The defect was a decoder SCC plus repeated trie reconstruction
+
+EPM1 is the versioned snapshot of one homogeneous `EPathMap` representation:
+`Empty`, `Set(PathMap<()>)`, or `Map(PathMap<Par>)`. Its topology payload is PathMap's compact
+ACTree03 arena, and map mode appends a generated-protobuf-PDA value table. The representation did
+not regress to a list, set of pairs, ordinary hash map, or shadow trie during this repair, and the
+PathMap repository was not modified.
+
+The first deferred-validation implementation nevertheless left two coupled defects around that
+trie. First, validating an escape-form canonical key called the generated protobuf decoder; decoding
+a nested EPathMap immediately validated its keys; validation of an escape key then called the decoder
+again. The resulting decoder/canonicalizer strongly connected component (SCC) made source nesting a
+native-stack control path even though each individual decoder was iterative. Second, the validator
+reconstructed a temporary PathMap from the ACT arena and repeatedly derived the same semantic node
+and line hash while walking deeper keys. **MEASURED (f)**, doubling a one-entry nested-map key from
+depth 512 to 1,024 moved the decode phase from **15.799 s** to a **64.45 s** test body, approximately
+the fourfold signature of quadratic work. The predecessor was stopped before a native-stack
+bytes-per-level ladder because that time defect made the required depths impractical; its pre-fix
+$`B/\mathrm{level}`$ is therefore **NOT MEASURED**, while the source SCC and the low-stack successor
+establish the class change independently.
+
+A third correctness defect was exposed while breaking the SCC: deferred construction initially
+installed neutral defaults for `entries_stable`, reducer-evaluation identity, locally-free union,
+and connective use. An accepted escape-form map could therefore later choose a serializer arm from
+stale metadata. The repair had to construct all four folds exactly without recursively re-entering
+the generated decoder.
+
+#### 5.19.2 Architecture: parse once, replay the producer, finish folds bottom-up
+
+The direct inspector parses the ACTree03 physical arena once and precomputes one semantic node per
+reachable physical node. A physical line's `gxhash` is likewise computed once. Canonical replay then
+follows PathMap's producer order, line-reuse rule, branch order, value ordinals, gap rules, and trailer
+rules directly against those cached nodes. A key that occupies one physical line is represented as a
+borrowed byte range into the original snapshot; only a key assembled from multiple branch pieces owns
+a new byte vector. Validation never reconstructs a temporary PathMap and never converts the trie to
+`Vec<Par>`.
+
+The generated protobuf machine has two explicit modes. Ordinary public decode validates EPathMaps.
+The canonical-key worker decodes a value with nested EPathMap key validation deferred, finishes the
+generated child/value machine, and then drains one global key/value worklist. `EntryTrie` construction
+computes the four maintained folds in both modes. Stable structural keys contribute their known
+identity metadata directly; split unstable list paths contribute the exact unstable verdict; a
+single escape shallow-scans only the top-level protobuf fields needed for the folds. That shallow scan
+length-skips nested payloads and therefore cannot re-enter the decoder SCC.
+
+The literate form of the algorithm is:
+
+```text
+DIRECT-VALIDATE-EPM1(snapshot)
+    parsed := PARSE-ACT-ONCE(snapshot)
+    for each reachable physical ACT node
+        cache its semantic children, value ordinal, and one line hash
+
+    jobs := REPLAY-PATHMAP-PRODUCER(parsed)
+    while jobs is not empty
+        job := jobs.pop()
+        key := BORROW-RANGE-OR-ASSEMBLE-BRANCH-KEY(job)
+        value := GENERATED-PROTOBUF-PDA-DEFERRED(job.value_range)
+        validate key against value without decoder re-entry
+        merge exact stability, reducer identity, locally-free, and connective folds
+
+    return Empty | Set(PathMap<()>) | Map(PathMap<Par>)
+```
+
+For ACT arena size $`a`$, total canonical-key bytes $`k`$, and decoded value nodes $`v`$, the direct
+pass performs $`\Theta(a+k+v)`$ work. It retains $`O(a)`$ semantic-node metadata plus the explicit
+decode/validation frontier and owned bytes only for branched keys. Native stack is $`O(1)`$ in source
+depth. The neutral `Empty` arm remains unresolved until a set member or map entry selects a homogeneous
+mode; mixed set/map membership remains rejected.
+
+#### 5.19.3 Equivalence and anti-vacuity
+
+The proof and executable evidence deliberately use independent shapes:
+
+- Rocq theorem `direct_act_replay_equivalent_to_reconstruction_oracle` relates direct producer replay
+  to the former materialized writer-image oracle. `canonical_validation_worklist_equivalent_to_recursive_validation`
+  proves the Boolean validation fold, and `canonical_fold_worklist_equivalent_to_recursive_fold`
+  proves the four-field entry summary for arbitrary trees. Generated PDA value-body and value-table
+  theorems connect snapshot framing to the recursive specification. All four theories kernel-check
+  without admissions.
+- Verus proves relative range containment and the cursor-worklist/recursive-suffix equivalence;
+  `--no-cheating` reports **6 verified, 0 errors**.
+- The Rust direct-replay differential reconstructs the writer image only in the test oracle and
+  compares every accepted image and targeted mutation. Separate mutations independently perturb
+  line reuse, unary compression, unreachable arena bytes, trailer bytes, sibling offsets, and value
+  ordinals, so agreement cannot pass by accepting everything.
+- The key/value differential covers bounded recursive values, split escape paths, neutral empty,
+  set/map modes, unstable values, nested maps, and all four maintained folds. The empty-list seed that
+  exposed the terminator-only split path is retained in `models/proptest-regressions/rust/canonical_path.txt`
+  and as an ordinary regression.
+- An independent depth-20,000 case runs on a 256 KiB worker stack without invoking a recursive oracle.
+  Restoring decoder re-entry, a native recursive fold, or an artificial depth ceiling makes this case
+  fail independently of the bounded equivalence corpus.
+
+#### 5.19.4 Measured time, space, and proof results
+
+**MEASURED (f)** under `MemorySwapMax=0`; durable rows are in
+[`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv).
+
+| measurement | result |
+|---|---:|
+| predecessor, depth 512 | **15.799 s decode** |
+| predecessor, depth 1,024 | **64.45 s test body** |
+| direct replay, depths 512 / 1,024 / 2,048 / 4,096 | **10.136 / 18.843 / 37.647 / 74.721 ms decode** |
+| final five-test key/fold binary | **5/5**, **4.12 s**, **25,204 KiB peak RSS**, zero swap |
+| depth witness | **20,000** levels on a **256 KiB** worker stack |
+| formal aggregate | **5.87 s**, four Rocq theories, Verus **6/6**, Z3, and two exhaustive TLC models |
+| complete `models` package gate | **all targets passed**, **18 min 30.75 s**, **518,108 KiB peak process RSS**, zero swap |
+| complete `rholang` library gate | **308/308**, **4 min 25.12 s**, **1,413,656 KiB peak process RSS**, zero swap |
+
+The post-fix doubling ratios are close to two rather than four. Heap block count is **NOT MEASURED**
+for the canonical ladder: the worklist's process RSS and exact allocation-owning branches were the
+selected space observables, and running a sampling allocator would perturb millisecond decode phases.
+This limitation is explicit rather than inferred as a zero.
+
+#### 5.19.5 The malformed-input gate is resource-bounded without losing cases [SS-C12, #5283]
+
+The complete bincode rejection-language differential was itself capable of exhausting the host.
+Its seven families were already serialized, but one child processed 64 offsets; each offset expands
+to five or six mutations, and every mutation invokes both decoders. Freed derived-decoder arenas
+remained resident until that child exited. **MEASURED (f)**, one-worker execution reached a
+**6,573,944,832-byte (6.12 GiB) cgroup peak** with zero swap.
+
+The final scheduler makes allocator lifetime an explicit resource unit: four offsets per child,
+at most 20–24 mutations or 40–48 decoder invocations, with two independent children at a time.
+Workers are joined and aggregated in source order. The scheduler uses constant-size window state;
+the operating system returns retained arenas between windows. No offset, replacement, decoder call,
+rejection comparison, or anti-vacuity count is sampled or removed.
+
+The complete post-fix target passed **7/7 active families** with one worker-only test ignored in
+**1,098.39 s** test time (**1,099.40 s** command wall), used 176 % CPU, peaked at **682,548 KiB**
+process RSS, and used zero swap under a 2 GiB cap. Comparing the pre-fix cgroup peak with the final
+process peak gives a conservative **9.4-fold** reduction; the observables are named separately so the
+comparison is not mistaken for a same-tool paired heap profile.
+
+The same exhaustive target subsequently passed in its ordinary position inside the complete
+`cargo test -p models` package gate. That end-to-end command completed in **18 min 30.75 s**, peaked
+at **518,108 KiB** process RSS, and used zero swap under a 4 GiB cap. This second run proves that
+resource isolation composes with the surrounding test targets rather than depending on a dedicated
+single-target invocation.
+
+#### 5.19.6 Consensus and compiler-exhaustiveness boundary [#5193, #5282]
+
+SS-C12 refines the implementation of active CBR-044; it does not create another wire transition.
+The EPM1 writer, version, ACTree03 bytes, value-table bytes, value ordinals, canonical key relation,
+decoded `Par`, accepted/rejected language, and public error boundary are unchanged. Consequently no
+protobuf byte, bincode byte, event hash, post-state hash, COMM schedule, charge, EPathMap mode, or
+PathMap algebra/zipper operation moves. The direct-reconstruction differential, generated-decoder
+differential, EPM1 mutation suite, and formal laws are the evidence for that neutrality.
+
+The full-model gate also found five comparison-PDA catch-all arms in `Sig`, `Token`,
+`SignedProcess`, and `InterpreterError`. They returned the same `false` result for every current
+cross-variant pair, but a future enum variant could compile silently. `Sig`, `Token`, and
+`SignedProcess` now enumerate every left-hand variant. `InterpreterError` instead uses one
+compiler-exhaustive borrowed view shared by `Clone`, `PartialEq`, `Debug`, and `Display`; both the
+source enum-to-view classification and every view consumer must disposition a future variant.
+The scanner was repaired so a named-field struct pattern cannot be truncated to its trailing
+wildcard; a synthetic negative control pins that distinction. The complete `rholang` library gate
+passes **308/308** in **4 min 25.12 s**, at **1,413,656 KiB** peak process RSS and zero swap under a
+4 GiB cap. Current equality, clone, debug, and display results do not move, so this extends retired
+CBR-023's `EQUIVALENCE_PROVEN` set rather than opening a new entry.
+
+No production path introduced here is recursively source-shaped. The only recursive equations are
+test specifications and proof functions; no `RUST_MIN_STACK`, `stacker`, alternate stack, artificial
+traversal limit, PathMap fork, list projection, shadow trie, or default-fold shortcut remains.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6141,6 +6317,7 @@ done
 | [`measurements/phase7-depth-corpora-2026-08-03.tsv`](measurements/phase7-depth-corpora-2026-08-03.tsv) | corpus denominators for the histograms (§5.15.1) |
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
+| [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
@@ -6171,7 +6348,7 @@ Appendix A are the durable evidence:
 > chronological snapshot behind the early sections, but it is not extended with later PathMap,
 > generated-PDA, matcher, proof, or resource-closure commits. The stable-ID register in [§0](#0-the-fix-register--the-scannable-index)
 > is the living and authoritative inventory. Treating this appendix as current would silently omit
-> SS-A8…SS-A10, SS-C5…SS-C11, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
+> SS-A8…SS-A10, SS-C5…SS-C12, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
 
 ### C.1 Historical code fixes
 
@@ -6215,11 +6392,11 @@ manual doc-guideline gate (`mettail-rust`'s `docs/languages/validate.sh`, 17 mec
 accepting this file as a positional extra page):
 
 ```bash
-DOCLINT_DOI=on /home/dylon/Workspace/f1r3fly.io/mettail-rust/docs/languages/validate.sh \
-  /home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/docs/design/stack-safety/stack-safety-report-2026-07-29.md
+DOCLINT_DOI=on ../mettail-rust/docs/languages/validate.sh \
+  docs/design/stack-safety/stack-safety-report-2026-07-29.md
 ```
 
-The run of record for this revision (2026-08-08) passes **16 of 17** mechanised checks with the
+The run of record for this revision (2026-08-09) passes **16 of 17** mechanised checks with the
 network-dependent DOI-resolution check explicitly skipped (`DOCLINT_DOI=off`); the four
 editorially-judged guidelines are dispositioned in §E.3. This is a timestamped measurement, not a
 standing property — re-run the command after any edit, and do not count the skip as a pass.

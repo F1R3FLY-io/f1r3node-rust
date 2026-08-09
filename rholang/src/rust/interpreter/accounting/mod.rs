@@ -1709,7 +1709,16 @@ impl PartialEq for Sig {
                 (Sig::Bang(left), Sig::Bang(right)) | (Sig::WhyNot(left), Sig::WhyNot(right)) => {
                     work.push((left, right))
                 }
-                _ => return false,
+                (Sig::Unit, _)
+                | (Sig::Ground(_), _)
+                | (Sig::Quote(_), _)
+                | (Sig::And(_, _), _)
+                | (Sig::Threshold { .. }, _)
+                | (Sig::Plus(_, _), _)
+                | (Sig::With(_, _), _)
+                | (Sig::Bang(_), _)
+                | (Sig::WhyNot(_), _)
+                | (Sig::Lolly(_, _), _) => return false,
             }
         }
         true
@@ -2507,7 +2516,9 @@ impl PartialEq for Token {
                     left = left_rest;
                     right = right_rest;
                 }
-                _ => return false,
+                (Token::Unit, _) | (Token::Count { .. }, _) | (Token::Gate { .. }, _) => {
+                    return false
+                }
             }
         }
     }
@@ -2748,7 +2759,9 @@ impl PartialEq for SignedProcess {
                     work.push((lr, rr));
                     work.push((ll, rl));
                 }
-                _ => return false,
+                (SignedProcess::Signed { .. }, _)
+                | (SignedProcess::Token(_), _)
+                | (SignedProcess::Par(_, _), _) => return false,
             }
         }
         true

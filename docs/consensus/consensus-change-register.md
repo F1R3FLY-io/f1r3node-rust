@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-08 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-09 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -3509,6 +3509,51 @@ bincode byte, post-state hash, COMM, charge, EPathMap mode, EPM1 snapshot, PathM
 PathMap operation. It therefore extends CBR-023's `EQUIVALENCE_PROVEN` set without an active
 may-change-consensus entry; stack-safety report §5.2.1a records the machine, complexity, and capped
 resource evidence.
+
+**CBR-044 implementation refinement (2026-08-09, SS-C12; pgmcp #5193).** The EPM1 reader now
+parses the ACTree03 arena once, replays PathMap's physical producer contract directly, represents
+single-line canonical keys as borrowed snapshot ranges, and allocates key bytes only for branched
+paths. Nested map values are decoded by the generated protobuf pushdown automaton with key
+validation deferred to one global bottom-up key/value worklist. `EntryTrie` construction computes
+stability, reducer-evaluation identity, locally-free union, and connective use exactly in both
+ordinary and deferred modes; no neutral default fold survives. A shallow top-level escape scan
+supplies declared metadata without re-entering the decoder SCC.
+
+This is a byte- and acceptance-neutral implementation refinement of active CBR-044, not a second
+wire decision. The EPM1 version, mode, ACTree03 bytes, value table, ordinal association, canonical
+key relation, decoded `Par`, accepted/rejected language, and public error boundary are unchanged.
+Direct replay is differential-tested against reconstruction on writer images and targeted
+mutations; canonical values and all four folds are compared against bounded recursive equations;
+the depth-20,000 key/value case runs on a 256 KiB stack. Rocq proves direct-replay,
+validation-worklist, entry-fold, and generated-value equivalence; Verus verifies six range/worklist
+obligations with `--no-cheating`; Z3 and both exhaustive TLC models remain green. Therefore no
+protobuf byte, bincode byte, post-state hash, event hash, COMM schedule, charge, EPathMap mode, or
+PathMap topology/zipper/algebra operation moves. The stack-safety report §5.19 and its durable TSV
+record the quadratic predecessor, linear successor ladder, proof aggregate, and explicit
+not-measured axes.
+
+**CBR-023 living-set continuation (2026-08-09, comparison exhaustiveness; pgmcp #5282).** The full
+models gate found catch-all mismatch arms in the already-iterative `Sig`, `Token`, `SignedProcess`,
+and `InterpreterError` equality machines. Each arm returned `false` for every currently representable
+cross-variant pair, but would have allowed a future variant to compile without an explicit
+disposition. `Sig`, `Token`, and `SignedProcess` now enumerate every left-hand variant;
+`InterpreterError` uses one compiler-exhaustive borrowed view shared by `Clone`, `PartialEq`,
+`Debug`, and `Display`, so both classification and consumption must disposition a future variant.
+The source scanner was also corrected so a named-field struct pattern is not reduced to its trailing
+wildcard; a synthetic negative control pins that distinction. The complete `rholang` library gate
+passes 308/308 with zero swap. Current equality, clone, debug, and display results are unchanged, so
+the checkpoint extends CBR-023's `EQUIVALENCE_PROVEN` set without creating an active
+may-change-consensus entry.
+
+**Tests-only resource closure (2026-08-09, pgmcp #5283).** The exhaustive malformed-bincode
+language differential retains every offset, replacement, oracle call, ordered result, and
+anti-vacuity count, but bounds allocator retention to four offsets per short-lived child and two
+ordered workers. All seven active families pass; peak process RSS is 682,548 KiB with zero swap,
+against a measured 6.12 GiB pre-fix cgroup peak. The complete `cargo test -p models` package gate
+also passes in 18 min 30.75 s at 518,108 KiB peak process RSS with zero swap. This changes test
+scheduling and resource lifetime only. It cannot move a production byte, value, acceptance verdict,
+error, hash, COMM, or charge and is recorded here so the negative resource result remains attached
+to the proof that depends on it.
 
 ### B.2 The original commit-level exemptions
 

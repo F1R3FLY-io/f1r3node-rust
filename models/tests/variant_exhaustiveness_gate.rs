@@ -745,6 +745,9 @@ fn arms(body: &str) -> Vec<Arm> {
     while i < c.len() {
         match c[i] {
             '(' | '[' => stack.push(c[i]),
+            '{' if matches!(stack.last(), Some('(') | Some('[') | Some('s')) => {
+                stack.push('s');
+            }
             '{' => {
                 stack.push('{');
                 boundary = i + 1;
@@ -753,11 +756,12 @@ fn arms(body: &str) -> Vec<Arm> {
                 stack.pop();
             }
             '}' => {
-                stack.pop();
-                boundary = i + 1;
+                if stack.pop() != Some('s') {
+                    boundary = i + 1;
+                }
             }
             ';' => boundary = i + 1,
-            ',' if !matches!(stack.last(), Some('(') | Some('[')) => boundary = i + 1,
+            ',' if !matches!(stack.last(), Some('(') | Some('[') | Some('s')) => boundary = i + 1,
             // `=>`, but not the tail of `>=`, `<=`, `==`, `!=`.
             '=' if c.get(i + 1) == Some(&'>')
                 && !matches!(c.get(i.wrapping_sub(1)), Some('=' | '!' | '<' | '>')) =>
@@ -1044,6 +1048,24 @@ fn the_catch_all_scanner_can_go_red() {
         vec![],
         "★ a GUARDED catch-all was flagged. Guarded arms do not count toward exhaustiveness, so \
          flagging them is a false positive — and false positives are how a gate gets disabled."
+    );
+
+    let exhaustive_struct_residue = r#"
+        impl PartialEq for Example {
+            fn eq(&self, other: &Self) -> bool {
+                match (self, other) {
+                    (Self::Named { value: left }, Self::Named { value: right }) => left == right,
+                    (Self::Unit, Self::Unit) => true,
+                    (Self::Named { .. }, _) | (Self::Unit, _) => false,
+                }
+            }
+        }
+    "#;
+    assert_eq!(
+        scan_text("synthetic.rs", exhaustive_struct_residue),
+        vec![],
+        "★ an exhaustive residue containing a named-field variant was reduced to its trailing \
+         wildcard. That false positive would force comparison PDAs back to catch-all arms."
     );
 }
 

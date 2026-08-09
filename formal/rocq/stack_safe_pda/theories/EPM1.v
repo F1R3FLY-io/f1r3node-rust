@@ -227,6 +227,38 @@ Proof.
     rewrite association, canonical_frame_round_trip, induction. reflexivity.
 Qed.
 
+Fixpoint direct_object_replay (writer_objects : list bytes) (candidate : bytes) : Prop :=
+  match writer_objects with
+  | [] => candidate = []
+  | object :: rest =>
+      firstn (length object) candidate = object /\
+      direct_object_replay rest (skipn (length object) candidate)
+  end.
+
+Theorem direct_object_replay_iff_materialized_writer_image :
+  forall writer_objects candidate,
+    direct_object_replay writer_objects candidate <->
+    concat writer_objects = candidate.
+Proof.
+  induction writer_objects as [|object rest induction]; intro candidate; simpl.
+  - split; intro empty; symmetry; exact empty.
+  - split.
+    + intros [head tail]. apply induction in tail.
+      rewrite <- (firstn_skipn (length object) candidate).
+      rewrite head. now rewrite <- tail.
+    + intro image. subst candidate. split.
+      * apply firstn_length_app.
+      * rewrite skipn_length_app. apply induction. reflexivity.
+Qed.
+
+Theorem direct_act_replay_equivalent_to_reconstruction_oracle :
+  forall writer_objects candidate,
+    direct_object_replay writer_objects candidate <->
+    concat writer_objects = candidate.
+Proof.
+  apply direct_object_replay_iff_materialized_writer_image.
+Qed.
+
 Record epm1_snapshot : Type := Epm1Snapshot {
   snapshot_mode : mode;
   topology_arena : bytes;
@@ -459,6 +491,81 @@ Proof.
 Qed.
 
 End TopologyOrdinalAssociation.
+
+Definition validation_algebra (local_valid : bool) (children : list bool) : bool :=
+  local_valid && forallb (fun valid => valid) children.
+
+Definition recursive_validate (subject : @tree bool) : bool :=
+  @fold_tree bool bool validation_algebra subject.
+
+Definition pda_validate (subject : @tree bool) : bool :=
+  match @run bool bool validation_algebra (@compile_tree bool subject) [] with
+  | Some [valid] => valid
+  | _ => false
+  end.
+
+Theorem canonical_validation_worklist_equivalent_to_recursive_validation :
+  forall subject, pda_validate subject = recursive_validate subject.
+Proof.
+  intro subject. unfold pda_validate, recursive_validate.
+  rewrite (@pda_fold_equivalent_to_recursive_fold
+    bool bool validation_algebra subject).
+  reflexivity.
+Qed.
+
+Theorem canonical_validation_worklist_is_linear_in_reachable_subjects :
+  forall subject,
+    length (@compile_tree bool subject) = @tree_nodes bool subject.
+Proof.
+  exact (proj1 (@compiled_program_has_one_instruction_per_node bool)).
+Qed.
+
+Section EntryFoldConstruction.
+
+Context {LocallyFree : Type}.
+Variable locally_free_union : LocallyFree -> LocallyFree -> LocallyFree.
+
+Record entry_fold := EntryFold {
+  fold_stable : bool;
+  fold_reducer_identity : bool;
+  fold_locally_free : LocallyFree;
+  fold_connective_used : bool
+}.
+
+Definition entry_fold_algebra (local : entry_fold) (children : list entry_fold) : entry_fold :=
+  fold_left
+    (fun accumulated child =>
+       EntryFold
+         (fold_stable accumulated && fold_stable child)
+         (fold_reducer_identity accumulated && fold_reducer_identity child)
+         (locally_free_union
+            (fold_locally_free accumulated)
+            (fold_locally_free child))
+         (fold_connective_used accumulated || fold_connective_used child))
+    children
+    local.
+
+Definition recursive_entry_fold (subject : @tree entry_fold) : entry_fold :=
+  @fold_tree entry_fold entry_fold entry_fold_algebra subject.
+
+Definition pda_entry_fold (subject : @tree entry_fold) : option entry_fold :=
+  match @run entry_fold entry_fold entry_fold_algebra
+          (@compile_tree entry_fold subject) [] with
+  | Some [summary] => Some summary
+  | _ => None
+  end.
+
+Theorem canonical_fold_worklist_equivalent_to_recursive_fold :
+  forall subject,
+    pda_entry_fold subject = Some (recursive_entry_fold subject).
+Proof.
+  intro subject. unfold pda_entry_fold, recursive_entry_fold.
+  rewrite (@pda_fold_equivalent_to_recursive_fold
+    entry_fold entry_fold entry_fold_algebra subject).
+  reflexivity.
+Qed.
+
+End EntryFoldConstruction.
 
 Section GeneratedValueCodec.
 

@@ -38,7 +38,10 @@ use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
 
-use super::canonical_path::{decode_trie_path, encode_trie_path, encode_trie_path_with_stability};
+use super::canonical_path::{
+    declared_canonical_path_metadata, decode_trie_path, encode_trie_path,
+    encode_trie_path_with_stability, validate_canonical_path, CanonicalPathMetadata,
+};
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
 use super::pathmap_crate_type_mapper::{
     eval_stable_par, reducer_eval_identity_par, PathFrameError, PathFrames,
@@ -318,18 +321,17 @@ fn copy_dropped_topology<V>(
 }
 
 #[allow(deprecated)]
-fn validate_canonical_key(kind: &str, key: &[u8]) -> Result<(), DecodeError> {
-    let decoded = decode_trie_path(key)
-        .map_err(|error| DecodeError::new(format!("EPathMap {kind} key: {error:?}")))?;
-    let canonical = encode_trie_path(&decoded);
-    crate::rust::rholang::par_children::dismantle(decoded);
-    if canonical == key {
-        Ok(())
+fn canonical_key_metadata(
+    kind: &str,
+    key: &[u8],
+    validate: bool,
+) -> Result<CanonicalPathMetadata, DecodeError> {
+    let metadata = if validate {
+        validate_canonical_path(key)
     } else {
-        Err(DecodeError::new(format!(
-            "EPathMap {kind} key is not canonical"
-        )))
-    }
+        declared_canonical_path_metadata(key)
+    };
+    metadata.map_err(|error| DecodeError::new(format!("EPathMap {kind} key: {error:?}")))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,35 +409,74 @@ impl std::error::Error for EPathMapAlgebraError {}
 impl EntryTrie {
     #[allow(deprecated)]
     fn from_repr(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
+        Self::from_repr_with_key_validation(repr, true)
+    }
+
+    #[allow(deprecated)]
+    fn from_repr_deferred_key_validation(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
+        Self::from_repr_with_key_validation(repr, false)
+    }
+
+    #[allow(deprecated)]
+    fn from_repr_with_key_validation(
+        repr: EPathMapRepr<Par>,
+        validate_canonical_keys: bool,
+    ) -> Result<Self, DecodeError> {
         let mut len = 0usize;
+        let mut entries_stable = true;
+        let mut entries_reducer_eval_identity = true;
+        let mut union_locally_free = Vec::new();
+        let mut any_connective_used = false;
+        let mut fold = |contribution: CanonicalPathMetadata| {
+            entries_stable &= contribution.stable;
+            entries_reducer_eval_identity &= contribution.reducer_eval_identity;
+            union_locally_free = crate::rust::utils::union(
+                std::mem::take(&mut union_locally_free),
+                contribution.locally_free,
+            );
+            any_connective_used |= contribution.connective_used;
+        };
         match &repr {
             EPathMapRepr::Empty => {}
             EPathMapRepr::Set(map) => {
                 for (key, ()) in map.iter() {
-                    validate_canonical_key("set", &key)?;
+                    fold(canonical_key_metadata(
+                        "set",
+                        &key,
+                        validate_canonical_keys,
+                    )?);
                     len += 1;
                 }
             }
             EPathMapRepr::Map(map) => {
-                for (key, _) in map.iter() {
-                    validate_canonical_key("map", &key)?;
+                for (key, value) in map.iter() {
+                    fold(canonical_key_metadata(
+                        "map",
+                        &key,
+                        validate_canonical_keys,
+                    )?);
+                    let stable = eval_stable_par(value);
+                    fold(CanonicalPathMetadata {
+                        stable,
+                        reducer_eval_identity: reducer_eval_identity_par(value, stable),
+                        locally_free: value.locally_free.clone(),
+                        connective_used: value.connective_used,
+                    });
                     len += 1;
                 }
             }
         }
 
-        let mut built = EntryTrie {
+        Ok(EntryTrie {
             repr,
             len,
-            entries_stable: true,
-            entries_reducer_eval_identity: true,
-            union_locally_free: Vec::new(),
-            any_connective_used: false,
+            entries_stable,
+            entries_reducer_eval_identity,
+            union_locally_free,
+            any_connective_used,
             trie_snapshot: Arc::new(OnceLock::new()),
             epm_layout: Arc::new(OnceLock::new()),
-        };
-        built.recompute_folds();
-        Ok(built)
+        })
     }
 
     /// Decode set members into an owned vector in canonical trie order.
@@ -2225,6 +2266,20 @@ impl EPathMap {
         self.replace_decoded_representation(repr)
     }
 
+    /// Decode a canonical EPM1 snapshot without recursively validating the
+    /// canonical paths stored inside its PathMap. The enclosing canonical-key
+    /// worklist validates those paths exactly once and dismantles the temporary
+    /// semantic graph as it advances.
+    #[allow(deprecated)]
+    pub(crate) fn replace_trie_snapshot_deferred_key_validation(
+        &mut self,
+        region: &[u8],
+    ) -> Result<(), DecodeError> {
+        let repr = epathmap_trie_codec::decode_deferred_key_validation(region)
+            .map_err(|error| DecodeError::new(format!("EPathMap trie_snapshot: {error}")))?;
+        self.replace_decoded_representation_deferred_key_validation(repr)
+    }
+
     /// Install a representation already validated by the pausable EPM1
     /// decoder. This is the generated protobuf PDA's non-recursive completion
     /// edge; it deliberately performs no second byte decode.
@@ -2232,6 +2287,23 @@ impl EPathMap {
     pub(crate) fn replace_decoded_representation(
         &mut self,
         repr: EPathMapRepr<Par>,
+    ) -> Result<(), DecodeError> {
+        self.replace_decoded_representation_with(repr, true)
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn replace_decoded_representation_deferred_key_validation(
+        &mut self,
+        repr: EPathMapRepr<Par>,
+    ) -> Result<(), DecodeError> {
+        self.replace_decoded_representation_with(repr, false)
+    }
+
+    #[allow(deprecated)]
+    fn replace_decoded_representation_with(
+        &mut self,
+        repr: EPathMapRepr<Par>,
+        validate_canonical_keys: bool,
     ) -> Result<(), DecodeError> {
         let current = self.mode();
         let incoming = repr.mode();
@@ -2242,7 +2314,11 @@ impl EPathMap {
                 current, incoming
             )));
         }
-        self.ps = EntryTrie::from_repr(repr)?;
+        self.ps = if validate_canonical_keys {
+            EntryTrie::from_repr(repr)?
+        } else {
+            EntryTrie::from_repr_deferred_key_validation(repr)?
+        };
         Ok(())
     }
 

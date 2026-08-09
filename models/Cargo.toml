@@ -58,6 +58,13 @@ typed-arena = "2.0.2"
 # Generated event-hash encoding and serde use the workspace's bincode format.
 bincode = { workspace = true }
 
+# EPM1's canonical ACTree03 inspector reproduces PathMap 0.2.2's deterministic
+# line-reuse decision without rebuilding a PathMap. Keep this target predicate
+# identical to PathMap's own dependency so consensus validation follows the
+# exact writer on every supported architecture.
+[target.'cfg(not(any(miri,target_arch="riscv64")))'.dependencies]
+gxhash = "3.5"
+
 # ── The aggregate target: the seven files `tests/mod.rs` includes ──────────
 #
 # ⚠ Its NAME is load-bearing: `tests/sorter_canonical_golden.rs` prints
@@ -112,6 +119,10 @@ path = "tests/epathmap_canonical_fixtures.rs"
 [[test]]
 name = "epathmap_canonicalization"
 path = "tests/epathmap_canonicalization.rs"
+
+[[test]]
+name = "epathmap_canonical_key_worklist"
+path = "tests/epathmap_canonical_key_worklist.rs"
 
 [[test]]
 name = "epathmap_epm1_snapshot"

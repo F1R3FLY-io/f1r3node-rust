@@ -298,7 +298,11 @@ pub fn reachable_exprs_and_connectives(root: &Par) -> (Vec<&Expr>, Vec<&Connecti
 /// Move every child `Par` out of `e`, leaving a child-free shell that drops in
 /// `O(1)`. The by-move twin of [`expr_instance_child_pars`]; the two matches
 /// must stay in step, which the test `move_and_borrow_tables_agree` enforces.
-fn take_expr_instance_child_pars(e: ExprInstance, out: &mut Vec<Par>) {
+fn take_expr_instance_child_pars_with(
+    e: ExprInstance,
+    out: &mut Vec<Par>,
+    drain_epathmap: &mut impl FnMut(crate::rhoapi::EPathMap, &mut Vec<Par>),
+) {
     match e {
         ExprInstance::GBool(_)
         | ExprInstance::GInt(_)
@@ -393,22 +397,14 @@ fn take_expr_instance_child_pars(e: ExprInstance, out: &mut Vec<Par>) {
                 out.extend(kv.value);
             }
         }
-        // ★ BY MOVE, like every arm above. These two used to read
-        // `out.extend(x.ps().iter().cloned())` — the only arms in this function that CLONED
-        // while their siblings consumed — which meant teardown did the work twice and *still*
-        // left the originals to the recursive destructor when `x` fell out of scope.
-        //
-        // ⚠ It was worse than one stray copy: `ps()` forces a MEMOISED `Vec<Par>` built by
-        // cloning every entry, and a freshly built map's memo is cold — so the teardown path
-        // materialised a full second copy in order to destroy the first.
-        //
-        // `drain_owned_pars` consumes the value and hands over both retainers (the memo and the
-        // trie, plus the interned handle for `EPathMap`); see its doc for the uniqueness test
-        // and why a shared trie's copy-on-write is never a regression.
-        ExprInstance::EPathmapBody(x) => x.drain_owned_pars(out),
+        // ★ BY MOVE, like every arm above. Set-mode storage owns byte keys and
+        // therefore contributes no `Par`; map-mode storage moves each
+        // PathMap-owned value onto the caller's teardown worklist. There is no
+        // decoded-entry projection or interned shadow store.
+        ExprInstance::EPathmapBody(x) => drain_epathmap(x, out),
         ExprInstance::EZipperBody(x) => {
             if let Some(pm) = x.pathmap {
-                pm.drain_owned_pars(out);
+                drain_epathmap(pm, out);
             }
         }
 
@@ -435,10 +431,14 @@ fn take_connective_instance_child_pars(c: ConnectiveInstance, out: &mut Vec<Par>
 }
 
 /// By-move twin of [`par_child_pars`]: strips `p` of every child `Par`.
-fn take_par_child_pars(p: &mut Par, out: &mut Vec<Par>) {
+fn take_par_child_pars_with(
+    p: &mut Par,
+    out: &mut Vec<Par>,
+    drain_epathmap: &mut impl FnMut(crate::rhoapi::EPathMap, &mut Vec<Par>),
+) {
     for e in std::mem::take(&mut p.exprs) {
         if let Some(instance) = e.expr_instance {
-            take_expr_instance_child_pars(instance, out);
+            take_expr_instance_child_pars_with(instance, out, drain_epathmap);
         }
     }
     for c in std::mem::take(&mut p.connectives) {
@@ -477,6 +477,34 @@ fn take_par_child_pars(p: &mut Par, out: &mut Vec<Par>) {
         out.extend(i.condition.take());
         out.extend(i.if_true.take());
         out.extend(i.if_false.take());
+    }
+}
+
+fn take_par_child_pars(p: &mut Par, out: &mut Vec<Par>) {
+    take_par_child_pars_with(p, out, &mut |pathmap, pars| {
+        pathmap.drain_owned_pars(pars);
+    });
+}
+
+/// Consume a decoded `Par` graph while moving every canonical EPathMap key to
+/// `keys`. Map values remain on the same explicit teardown worklist, so keys
+/// nested in values are reached without retaining decoded ancestor graphs.
+pub(crate) fn dismantle_collecting_epathmap_keys(root: Par, keys: &mut Vec<Vec<u8>>) {
+    use crate::rust::rhoapi_ext::OwnedEPathMapEntry;
+
+    let mut work = vec![root];
+    while let Some(mut par) = work.pop() {
+        take_par_child_pars_with(&mut par, &mut work, &mut |pathmap, pars| {
+            for entry in pathmap.into_owned_parts().entries {
+                match entry {
+                    OwnedEPathMapEntry::Set(key) => keys.push(key),
+                    OwnedEPathMapEntry::Map { key, value } => {
+                        keys.push(key);
+                        pars.push(value);
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -1058,8 +1086,9 @@ mod tests {
     /// `dismantle` silently leaks a subtree back onto the recursive `Drop`.
     /// How many live owners the children of this `ExprInstance` have.
     ///
-    /// One for every arm except the two that hold an `EPathMap`: a map's entries live in the
-    /// trie, in the projection memo once forced, and in the interned handle once interned.
+    /// One for every ordinary child slot. An `EPathMap` reports zero for
+    /// `PathMap<()>` set storage and one for each `PathMap<Par>` value slot;
+    /// canonical byte keys are not `Par` retainers.
     fn expr_instance_retainers(e: &ExprInstance) -> usize {
         match e {
             ExprInstance::EPathmapBody(m) => m.live_retainer_count(),
@@ -1077,9 +1106,9 @@ mod tests {
     ///
     /// * **by-reference** reports the **logical children** — what a matcher or a collector wants.
     /// * **by-move** must release every **owned `Par`**. A set-mode `EPathMap`'s
-    ///   `PathMap<()>` owns byte keys rather than `Par`s, while its legacy
-    ///   projection owns decoded entries once forced; a map-mode
-    ///   `PathMap<Par>` owns its values directly.
+    ///   `PathMap<()>` owns byte keys rather than `Par`s; a map-mode
+    ///   `PathMap<Par>` owns its values directly. No projection or interned
+    ///   shadow store remains.
     ///
     /// ⚠ So strict equality is the WRONG assertion here: it would force the by-move table to
     /// leak whichever retainers it declined to drain. What must hold instead is **containment
@@ -1108,15 +1137,16 @@ mod tests {
         // ⚠⚠ `retainers` is PINNED FROM THE VALUE, never inferred from `actual.len() /
         // expected.len()`. That inference is what makes a counted allowance vacuous: drop a
         // retainer's drain and the ratio just becomes a smaller whole number, still "valid".
-        // MEASURED — with the multiplier derived, removing the memo drain left this GREEN.
+        // The multiplier is obtained from the representation mode, not from
+        // the observed output, so removing a map-value drain makes this red.
         assert_eq!(
             actual.len(),
             expected.len() * retainers,
             "{table}: the by-move table yielded {} `Par`s; the by-reference table reports {} \
              children and the value declares {retainers} live retainer(s), so {} were \
              expected.\n\n\
-             by-move must release EVERY owned `Par` — only value-carrying trie slots and a forced \
-             projection count. A shortfall is a retainer left to the \
+             by-move must release EVERY owned `Par`, including every value-carrying trie slot. \
+             A shortfall is a retainer left to the \
              RECURSIVE destructor; a surplus is one drained twice.\n\
              moved = {actual:?}\n  borrowed = {expected:?}",
             actual.len(),
@@ -1148,13 +1178,14 @@ mod tests {
             expr_instance_child_pars(&instance, &mut borrowed);
             let expected = tags(&borrowed);
 
-            // ⚠ Computed AFTER the borrow pass, because that pass calls `ps()` and therefore
-            // FORCES the projection memo — which is itself one of the retainers being counted.
-            // Computing it first would under-count by exactly the memo.
+            // Compute after the borrow pass so both observations describe the
+            // same immutable variant state. Neither path forces a projection.
             let retainers = expr_instance_retainers(&instance);
 
             let mut moved: Vec<Par> = Vec::new();
-            take_expr_instance_child_pars(instance, &mut moved);
+            take_expr_instance_child_pars_with(instance, &mut moved, &mut |pathmap, pars| {
+                pathmap.drain_owned_pars(pars)
+            });
             let actual: Vec<u8> = moved
                 .iter()
                 .map(|p| *p.locally_free.first().unwrap_or(&0))

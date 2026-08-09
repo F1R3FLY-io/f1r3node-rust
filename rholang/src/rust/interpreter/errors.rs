@@ -240,6 +240,24 @@ enum InterpreterErrorLeaf<'a> {
     },
 }
 
+#[derive(Clone, Copy)]
+enum InterpreterErrorView<'a> {
+    Leaf(InterpreterErrorLeaf<'a>),
+    Aggregate(&'a Vec<InterpreterError>),
+    NonDeterministic {
+        cause: &'a InterpreterError,
+        output_not_produced: &'a Vec<Vec<u8>>,
+    },
+    Produce {
+        cause: &'a InterpreterError,
+        output_not_produced: &'a Vec<Vec<u8>>,
+    },
+    Located {
+        path: &'a Vec<u32>,
+        source: &'a InterpreterError,
+    },
+}
+
 impl InterpreterErrorLeaf<'_> {
     fn to_owned(self) -> InterpreterError {
         match self {
@@ -387,8 +405,8 @@ impl InterpreterErrorLeaf<'_> {
 }
 
 impl InterpreterError {
-    fn as_leaf(&self) -> Option<InterpreterErrorLeaf<'_>> {
-        Some(match self {
+    fn view(&self) -> InterpreterErrorView<'_> {
+        let leaf = match self {
             Self::RSpaceError(value) => InterpreterErrorLeaf::RSpaceError(value),
             Self::BugFoundError(value) => InterpreterErrorLeaf::BugFoundError(value),
             Self::UndefinedRequiredProtobufFieldError(value) => {
@@ -520,11 +538,32 @@ impl InterpreterError {
                 clause,
                 obstructions,
             },
-            Self::AggregateError { .. }
-            | Self::NonDeterministicProcessFailure { .. }
-            | Self::ProduceFailureWithOutput { .. }
-            | Self::Located { .. } => return None,
-        })
+            Self::AggregateError { interpreter_errors } => {
+                return InterpreterErrorView::Aggregate(interpreter_errors)
+            }
+            Self::NonDeterministicProcessFailure {
+                cause,
+                output_not_produced,
+            } => {
+                return InterpreterErrorView::NonDeterministic {
+                    cause,
+                    output_not_produced,
+                }
+            }
+            Self::ProduceFailureWithOutput {
+                cause,
+                output_not_produced,
+            } => {
+                return InterpreterErrorView::Produce {
+                    cause,
+                    output_not_produced,
+                }
+            }
+            Self::Located { path, source } => {
+                return InterpreterErrorView::Located { path, source }
+            }
+        };
+        InterpreterErrorView::Leaf(leaf)
     }
 }
 
@@ -542,37 +581,31 @@ impl Clone for InterpreterError {
         let mut values = Vec::new();
         while let Some(task) = tasks.pop() {
             match task {
-                Task::Visit(error) => {
-                    if let Some(leaf) = error.as_leaf() {
-                        values.push(leaf.to_owned());
-                        continue;
+                Task::Visit(error) => match error.view() {
+                    InterpreterErrorView::Leaf(leaf) => values.push(leaf.to_owned()),
+                    InterpreterErrorView::Aggregate(interpreter_errors) => {
+                        tasks.push(Task::Aggregate(interpreter_errors.len()));
+                        tasks.extend(interpreter_errors.iter().rev().map(Task::Visit));
                     }
-                    match error {
-                        Self::AggregateError { interpreter_errors } => {
-                            tasks.push(Task::Aggregate(interpreter_errors.len()));
-                            tasks.extend(interpreter_errors.iter().rev().map(Task::Visit));
-                        }
-                        Self::NonDeterministicProcessFailure {
-                            cause,
-                            output_not_produced,
-                        } => {
-                            tasks.push(Task::NonDeterministic(output_not_produced));
-                            tasks.push(Task::Visit(cause));
-                        }
-                        Self::ProduceFailureWithOutput {
-                            cause,
-                            output_not_produced,
-                        } => {
-                            tasks.push(Task::Produce(output_not_produced));
-                            tasks.push(Task::Visit(cause));
-                        }
-                        Self::Located { path, source } => {
-                            tasks.push(Task::Located(path));
-                            tasks.push(Task::Visit(source));
-                        }
-                        _ => unreachable!(),
+                    InterpreterErrorView::NonDeterministic {
+                        cause,
+                        output_not_produced,
+                    } => {
+                        tasks.push(Task::NonDeterministic(output_not_produced));
+                        tasks.push(Task::Visit(cause));
                     }
-                }
+                    InterpreterErrorView::Produce {
+                        cause,
+                        output_not_produced,
+                    } => {
+                        tasks.push(Task::Produce(output_not_produced));
+                        tasks.push(Task::Visit(cause));
+                    }
+                    InterpreterErrorView::Located { path, source } => {
+                        tasks.push(Task::Located(path));
+                        tasks.push(Task::Visit(source));
+                    }
+                },
                 Task::Aggregate(count) => {
                     let interpreter_errors = values.split_off(values.len() - count);
                     values.push(Self::AggregateError { interpreter_errors });
@@ -611,69 +644,63 @@ impl PartialEq for InterpreterError {
     fn eq(&self, other: &Self) -> bool {
         let mut work = vec![(self, other)];
         while let Some((left, right)) = work.pop() {
-            match (left.as_leaf(), right.as_leaf()) {
-                (Some(left), Some(right)) => {
+            match (left.view(), right.view()) {
+                (InterpreterErrorView::Leaf(left), InterpreterErrorView::Leaf(right)) => {
                     if left != right {
                         return false;
                     }
                 }
-                (None, None) => match (left, right) {
-                    (
-                        Self::AggregateError {
-                            interpreter_errors: left,
-                        },
-                        Self::AggregateError {
-                            interpreter_errors: right,
-                        },
-                    ) => {
-                        if left.len() != right.len() {
-                            return false;
-                        }
-                        work.extend(left.iter().zip(right).rev());
+                (InterpreterErrorView::Aggregate(left), InterpreterErrorView::Aggregate(right)) => {
+                    if left.len() != right.len() {
+                        return false;
                     }
-                    (
-                        Self::NonDeterministicProcessFailure {
-                            cause: left_cause,
-                            output_not_produced: left_output,
-                        },
-                        Self::NonDeterministicProcessFailure {
-                            cause: right_cause,
-                            output_not_produced: right_output,
-                        },
-                    )
-                    | (
-                        Self::ProduceFailureWithOutput {
-                            cause: left_cause,
-                            output_not_produced: left_output,
-                        },
-                        Self::ProduceFailureWithOutput {
-                            cause: right_cause,
-                            output_not_produced: right_output,
-                        },
-                    ) => {
-                        if left_output != right_output {
-                            return false;
-                        }
-                        work.push((left_cause, right_cause));
+                    work.extend(left.iter().zip(right).rev());
+                }
+                (
+                    InterpreterErrorView::NonDeterministic {
+                        cause: left_cause,
+                        output_not_produced: left_output,
+                    },
+                    InterpreterErrorView::NonDeterministic {
+                        cause: right_cause,
+                        output_not_produced: right_output,
+                    },
+                )
+                | (
+                    InterpreterErrorView::Produce {
+                        cause: left_cause,
+                        output_not_produced: left_output,
+                    },
+                    InterpreterErrorView::Produce {
+                        cause: right_cause,
+                        output_not_produced: right_output,
+                    },
+                ) => {
+                    if left_output != right_output {
+                        return false;
                     }
-                    (
-                        Self::Located {
-                            path: left_path,
-                            source: left_source,
-                        },
-                        Self::Located {
-                            path: right_path,
-                            source: right_source,
-                        },
-                    ) => {
-                        if left_path != right_path {
-                            return false;
-                        }
-                        work.push((left_source, right_source));
+                    work.push((left_cause, right_cause));
+                }
+                (
+                    InterpreterErrorView::Located {
+                        path: left_path,
+                        source: left_source,
+                    },
+                    InterpreterErrorView::Located {
+                        path: right_path,
+                        source: right_source,
+                    },
+                ) => {
+                    if left_path != right_path {
+                        return false;
                     }
-                    _ => return false,
-                },
-                _ => return false,
+                    work.push((left_source, right_source));
+                }
+                (InterpreterErrorView::Leaf(_), _)
+                | (InterpreterErrorView::Aggregate(_), _)
+                | (InterpreterErrorView::NonDeterministic { .. }, _)
+                | (InterpreterErrorView::Produce { .. }, _)
+                | (InterpreterErrorView::Located { .. }, _) => return false,
             }
         }
         true
@@ -735,121 +762,117 @@ fn fmt_interpreter_error_debug(
                     fmt::Debug::fmt(output, formatter)?;
                 }
             }
-            Task::Visit(error, depth) => {
-                if let Some(leaf) = error.as_leaf() {
+            Task::Visit(error, depth) => match error.view() {
+                InterpreterErrorView::Leaf(leaf) => {
                     if alternate {
                         write_embedded_pretty_debug(&leaf, formatter, depth)?;
                     } else {
                         fmt::Debug::fmt(&leaf, formatter)?;
                     }
-                    continue;
                 }
-                match error {
-                    InterpreterError::AggregateError { interpreter_errors } if alternate => {
-                        formatter.write_str("AggregateError {\n")?;
-                        write_indent(formatter, depth + 1)?;
-                        if interpreter_errors.is_empty() {
-                            formatter.write_str("interpreter_errors: [],\n")?;
-                            write_indent(formatter, depth)?;
-                            formatter.write_str("}")?;
-                        } else {
-                            formatter.write_str("interpreter_errors: [\n")?;
-                            tasks.push(Task::Text("}"));
-                            tasks.push(Task::Indent(depth));
-                            tasks.push(Task::Text("],\n"));
-                            tasks.push(Task::Indent(depth + 1));
-                            for child in interpreter_errors.iter().rev() {
-                                tasks.push(Task::Text(",\n"));
-                                tasks.push(Task::Visit(child, depth + 2));
-                                tasks.push(Task::Indent(depth + 2));
-                            }
+                InterpreterErrorView::Aggregate(interpreter_errors) if alternate => {
+                    formatter.write_str("AggregateError {\n")?;
+                    write_indent(formatter, depth + 1)?;
+                    if interpreter_errors.is_empty() {
+                        formatter.write_str("interpreter_errors: [],\n")?;
+                        write_indent(formatter, depth)?;
+                        formatter.write_str("}")?;
+                    } else {
+                        formatter.write_str("interpreter_errors: [\n")?;
+                        tasks.push(Task::Text("}"));
+                        tasks.push(Task::Indent(depth));
+                        tasks.push(Task::Text("],\n"));
+                        tasks.push(Task::Indent(depth + 1));
+                        for child in interpreter_errors.iter().rev() {
+                            tasks.push(Task::Text(",\n"));
+                            tasks.push(Task::Visit(child, depth + 2));
+                            tasks.push(Task::Indent(depth + 2));
                         }
                     }
-                    InterpreterError::AggregateError { interpreter_errors } => {
-                        formatter.write_str("AggregateError { interpreter_errors: [")?;
-                        tasks.push(Task::Text("] }"));
-                        for (index, child) in interpreter_errors.iter().enumerate().rev() {
-                            tasks.push(Task::Visit(child, depth));
-                            if index != 0 {
-                                tasks.push(Task::Text(", "));
-                            }
+                }
+                InterpreterErrorView::Aggregate(interpreter_errors) => {
+                    formatter.write_str("AggregateError { interpreter_errors: [")?;
+                    tasks.push(Task::Text("] }"));
+                    for (index, child) in interpreter_errors.iter().enumerate().rev() {
+                        tasks.push(Task::Visit(child, depth));
+                        if index != 0 {
+                            tasks.push(Task::Text(", "));
                         }
                     }
-                    InterpreterError::NonDeterministicProcessFailure {
-                        cause,
-                        output_not_produced,
-                    } if alternate => {
-                        formatter.write_str("NonDeterministicProcessFailure {\n")?;
-                        tasks.push(Task::Text("}"));
-                        tasks.push(Task::Indent(depth));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Output(output_not_produced, depth + 1));
-                        tasks.push(Task::Text("output_not_produced: "));
-                        tasks.push(Task::Indent(depth + 1));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Visit(cause, depth + 1));
-                        tasks.push(Task::Text("cause: "));
-                        tasks.push(Task::Indent(depth + 1));
-                    }
-                    InterpreterError::NonDeterministicProcessFailure {
-                        cause,
-                        output_not_produced,
-                    } => {
-                        formatter.write_str("NonDeterministicProcessFailure { cause: ")?;
-                        tasks.push(Task::Text(" }"));
-                        tasks.push(Task::Output(output_not_produced, depth));
-                        tasks.push(Task::Text(", output_not_produced: "));
-                        tasks.push(Task::Visit(cause, depth));
-                    }
-                    InterpreterError::ProduceFailureWithOutput {
-                        cause,
-                        output_not_produced,
-                    } if alternate => {
-                        formatter.write_str("ProduceFailureWithOutput {\n")?;
-                        tasks.push(Task::Text("}"));
-                        tasks.push(Task::Indent(depth));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Output(output_not_produced, depth + 1));
-                        tasks.push(Task::Text("output_not_produced: "));
-                        tasks.push(Task::Indent(depth + 1));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Visit(cause, depth + 1));
-                        tasks.push(Task::Text("cause: "));
-                        tasks.push(Task::Indent(depth + 1));
-                    }
-                    InterpreterError::ProduceFailureWithOutput {
-                        cause,
-                        output_not_produced,
-                    } => {
-                        formatter.write_str("ProduceFailureWithOutput { cause: ")?;
-                        tasks.push(Task::Text(" }"));
-                        tasks.push(Task::Output(output_not_produced, depth));
-                        tasks.push(Task::Text(", output_not_produced: "));
-                        tasks.push(Task::Visit(cause, depth));
-                    }
-                    InterpreterError::Located { path, source } if alternate => {
-                        formatter.write_str("Located {\n")?;
-                        tasks.push(Task::Text("}"));
-                        tasks.push(Task::Indent(depth));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Visit(source, depth + 1));
-                        tasks.push(Task::Text("source: "));
-                        tasks.push(Task::Indent(depth + 1));
-                        tasks.push(Task::Text(",\n"));
-                        tasks.push(Task::Path(path, depth + 1));
-                        tasks.push(Task::Text("path: "));
-                        tasks.push(Task::Indent(depth + 1));
-                    }
-                    InterpreterError::Located { path, source } => {
-                        formatter.write_str("Located { path: ")?;
-                        tasks.push(Task::Text(" }"));
-                        tasks.push(Task::Visit(source, depth));
-                        tasks.push(Task::Text(", source: "));
-                        tasks.push(Task::Path(path, depth));
-                    }
-                    _ => unreachable!(),
                 }
-            }
+                InterpreterErrorView::NonDeterministic {
+                    cause,
+                    output_not_produced,
+                } if alternate => {
+                    formatter.write_str("NonDeterministicProcessFailure {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Output(output_not_produced, depth + 1));
+                    tasks.push(Task::Text("output_not_produced: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(cause, depth + 1));
+                    tasks.push(Task::Text("cause: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                InterpreterErrorView::NonDeterministic {
+                    cause,
+                    output_not_produced,
+                } => {
+                    formatter.write_str("NonDeterministicProcessFailure { cause: ")?;
+                    tasks.push(Task::Text(" }"));
+                    tasks.push(Task::Output(output_not_produced, depth));
+                    tasks.push(Task::Text(", output_not_produced: "));
+                    tasks.push(Task::Visit(cause, depth));
+                }
+                InterpreterErrorView::Produce {
+                    cause,
+                    output_not_produced,
+                } if alternate => {
+                    formatter.write_str("ProduceFailureWithOutput {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Output(output_not_produced, depth + 1));
+                    tasks.push(Task::Text("output_not_produced: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(cause, depth + 1));
+                    tasks.push(Task::Text("cause: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                InterpreterErrorView::Produce {
+                    cause,
+                    output_not_produced,
+                } => {
+                    formatter.write_str("ProduceFailureWithOutput { cause: ")?;
+                    tasks.push(Task::Text(" }"));
+                    tasks.push(Task::Output(output_not_produced, depth));
+                    tasks.push(Task::Text(", output_not_produced: "));
+                    tasks.push(Task::Visit(cause, depth));
+                }
+                InterpreterErrorView::Located { path, source } if alternate => {
+                    formatter.write_str("Located {\n")?;
+                    tasks.push(Task::Text("}"));
+                    tasks.push(Task::Indent(depth));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Visit(source, depth + 1));
+                    tasks.push(Task::Text("source: "));
+                    tasks.push(Task::Indent(depth + 1));
+                    tasks.push(Task::Text(",\n"));
+                    tasks.push(Task::Path(path, depth + 1));
+                    tasks.push(Task::Text("path: "));
+                    tasks.push(Task::Indent(depth + 1));
+                }
+                InterpreterErrorView::Located { path, source } => {
+                    formatter.write_str("Located { path: ")?;
+                    tasks.push(Task::Text(" }"));
+                    tasks.push(Task::Visit(source, depth));
+                    tasks.push(Task::Text(", source: "));
+                    tasks.push(Task::Path(path, depth));
+                }
+            },
         }
     }
     Ok(())
@@ -1144,43 +1167,39 @@ impl fmt::Display for InterpreterError {
                 Task::Debug(error) => {
                     fmt_interpreter_error_debug(error, formatter, false)?;
                 }
-                Task::Visit(error) => {
-                    if let Some(leaf) = error.as_leaf() {
+                Task::Visit(error) => match error.view() {
+                    InterpreterErrorView::Leaf(leaf) => {
                         fmt_interpreter_error_leaf(leaf, formatter)?;
-                        continue;
                     }
-                    match error {
-                        InterpreterError::AggregateError { interpreter_errors } => {
-                            formatter.write_str("Error: Aggregate Error\n")?;
-                            for (index, child) in interpreter_errors.iter().enumerate().rev() {
-                                tasks.push(Task::Debug(child));
-                                if index != 0 {
-                                    tasks.push(Task::Text("\n"));
-                                }
+                    InterpreterErrorView::Aggregate(interpreter_errors) => {
+                        formatter.write_str("Error: Aggregate Error\n")?;
+                        for (index, child) in interpreter_errors.iter().enumerate().rev() {
+                            tasks.push(Task::Debug(child));
+                            if index != 0 {
+                                tasks.push(Task::Text("\n"));
                             }
                         }
-                        InterpreterError::NonDeterministicProcessFailure { cause, .. } => {
-                            formatter.write_str("Non-deterministic process failure: ")?;
-                            tasks.push(Task::Visit(cause));
-                        }
-                        InterpreterError::ProduceFailureWithOutput { cause, .. } => {
-                            formatter.write_str("Produce failure with output: ")?;
-                            tasks.push(Task::Visit(cause));
-                        }
-                        InterpreterError::Located { path, source } => {
-                            formatter.write_str("[")?;
-                            for (index, component) in path.iter().enumerate() {
-                                if index != 0 {
-                                    formatter.write_str(".")?;
-                                }
-                                fmt::Display::fmt(component, formatter)?;
-                            }
-                            formatter.write_str("] ")?;
-                            tasks.push(Task::Visit(source));
-                        }
-                        _ => unreachable!(),
                     }
-                }
+                    InterpreterErrorView::NonDeterministic { cause, .. } => {
+                        formatter.write_str("Non-deterministic process failure: ")?;
+                        tasks.push(Task::Visit(cause));
+                    }
+                    InterpreterErrorView::Produce { cause, .. } => {
+                        formatter.write_str("Produce failure with output: ")?;
+                        tasks.push(Task::Visit(cause));
+                    }
+                    InterpreterErrorView::Located { path, source } => {
+                        formatter.write_str("[")?;
+                        for (index, component) in path.iter().enumerate() {
+                            if index != 0 {
+                                formatter.write_str(".")?;
+                            }
+                            fmt::Display::fmt(component, formatter)?;
+                        }
+                        formatter.write_str("] ")?;
+                        tasks.push(Task::Visit(source));
+                    }
+                },
             }
         }
         Ok(())

@@ -24,6 +24,14 @@ tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
 popd >/dev/null
 
+verus_bin="${VERUS:-$(command -v verus || true)}"
+if [[ -z "$verus_bin" || ! -x "$verus_bin" ]]; then
+  echo "stack-safe-pda: Verus not found on PATH" >&2
+  exit 3
+fi
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
+
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
   echo "stack-safe-pda: expected Z3 to prove no mode-law counterexample; got: $z3_output" >&2
@@ -37,4 +45,4 @@ tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 popd >/dev/null
 
-echo "stack-safe-pda: Rocq, Z3, and TLC verification passed"
+echo "stack-safe-pda: Rocq, Verus, Z3, and TLC verification passed"

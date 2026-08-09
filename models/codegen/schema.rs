@@ -9489,6 +9489,7 @@ struct Machine<B> {
     buf: DecoderInput<B>,
     input_stack: Vec<DecoderInput<B>>,
     epm_depth: usize,
+    validate_epathmaps: bool,
     frames: Vec<Frame>,
     values: Vec<Value>,
     garbage: Vec<Value>,
@@ -9496,11 +9497,12 @@ struct Machine<B> {
 }
 
 impl<B: Buf> Machine<B> {
-    fn new(buf: B, root: Node) -> Self {
+    fn new(buf: B, root: Node, validate_epathmaps: bool) -> Self {
         Machine {
             buf: DecoderInput::Root(buf),
             input_stack: Vec::new(),
             epm_depth: 0,
+            validate_epathmaps,
             frames: vec![Frame::Node(root)],
             values: Vec::new(),
             garbage: Vec::new(),
@@ -10045,7 +10047,13 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
                 error.push("EPathMap", "trie_snapshot");
                 error
             })?;
-        frame.parent.replace_decoded_representation(repr)?;
+        if self.validate_epathmaps {
+            frame.parent.replace_decoded_representation(repr)?;
+        } else {
+            frame
+                .parent
+                .replace_decoded_representation_deferred_key_validation(repr)?;
+        }
         self.epm_depth = self
             .epm_depth
             .checked_sub(1)
@@ -10583,6 +10591,7 @@ fn emit_protobuf_decoder_entries(src: &mut String, rows: &[(&Message<'_>, Option
                  let mut machine = Machine::new(\n\
                      buf,\n\
                      Node::{variant} {{ value: Default::default(), limit: 0 }},\n\
+                     true,\n\
                  );\n\
                  machine.run()?;\n\
                  if machine.values.len() != 1 {{\n\
@@ -10609,6 +10618,7 @@ fn emit_protobuf_decoder_entries(src: &mut String, rows: &[(&Message<'_>, Option
             value: EPathMap::default(),
             limit: 0,
         },
+        true,
     );
     machine.run()?;
     if machine.values.len() != 1 {
@@ -10635,8 +10645,19 @@ pub fn decode_par<B: Buf>(buf: B) -> Result<Par, DecodeError> {
     decode_par_with_stats(buf).map(|(value, _stats)| value)
 }
 
+pub(crate) fn decode_par_deferred_epathmap_validation<B: Buf>(buf: B) -> Result<Par, DecodeError> {
+    decode_par_with_epathmap_validation(buf, false).map(|(value, _stats)| value)
+}
+
 pub fn decode_par_with_stats<B: Buf>(
     buf: B,
+) -> Result<(Par, DecodeStats), DecodeError> {
+    decode_par_with_epathmap_validation(buf, true)
+}
+
+fn decode_par_with_epathmap_validation<B: Buf>(
+    buf: B,
+    validate_epathmaps: bool,
 ) -> Result<(Par, DecodeStats), DecodeError> {
     let mut machine = Machine::new(
         buf,
@@ -10644,6 +10665,7 @@ pub fn decode_par_with_stats<B: Buf>(
             value: Par::default(),
             limit: 0,
         },
+        validate_epathmaps,
     );
     machine.run()?;
     if machine.values.len() != 1 {

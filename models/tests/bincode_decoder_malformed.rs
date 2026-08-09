@@ -282,10 +282,21 @@ where F: FnOnce() -> String {
 /// allocator retention in the long-lived libtest process. Every child inherits
 /// the parent's cgroup, and every individual decode is additionally checked by
 /// the 8 MiB allocation gate above.
-/// Offsets per isolated worker. A worker covering one offset peaks near
-/// 23 MiB after the decoder topology fix; 64 amortizes process startup while
-/// the enclosing cgroup and per-decode allocation gate remain authoritative.
-const MUTATION_BATCH_OFFSETS: usize = 64;
+/// Offsets per isolated worker. One offset expands to five byte/variant
+/// mutations or six hostile-length mutations, and each mutation runs both
+/// decoders. The derived decoder may retain freed arenas until the worker
+/// exits, so the resource unit is the number of *decode attempts*, not merely
+/// the number of offsets. Four offsets bound a worker to at most 24 mutations
+/// (48 decoder invocations) while still amortising process startup. The parent
+/// starts the next two-worker window only after both preceding workers exit, so
+/// the operating system returns every retained arena between windows without
+/// dropping or sampling any mutation.
+const MUTATION_BATCH_OFFSETS: usize = 4;
+/// Independent batches execute in a small fixed-width window. Two workers use
+/// otherwise idle cores without multiplying the post-fix resident-set bound
+/// back toward the pre-fix multi-gigabyte peak. Results are joined and folded
+/// in source order, so scheduling cannot affect counts or diagnostics.
+const MUTATION_BATCH_WORKERS: usize = 2;
 const MUTATION_CHILD_FAMILY: &str = "BINCODE_MALFORMED_CHILD_FAMILY";
 const MUTATION_CHILD_FIXTURE: &str = "BINCODE_MALFORMED_CHILD_FIXTURE";
 const MUTATION_CHILD_START: &str = "BINCODE_MALFORMED_CHILD_START";
@@ -334,61 +345,95 @@ fn run_mutation_batches(family: MutationFamily) -> (usize, usize) {
 
     for (fixture, (label, _kind, bytes)) in fixtures.iter().enumerate() {
         let count = family.offset_count(bytes.len());
-        for start in (0..count).step_by(MUTATION_BATCH_OFFSETS) {
-            let end = (start + MUTATION_BATCH_OFFSETS).min(count);
-            let output = Command::new(&executable)
-                .arg("mutation_batch_child")
-                .arg("--exact")
-                .arg("--ignored")
-                .arg("--nocapture")
-                .env(MUTATION_CHILD_FAMILY, family.name())
-                .env(MUTATION_CHILD_FIXTURE, fixture.to_string())
-                .env(MUTATION_CHILD_START, start.to_string())
-                .env(MUTATION_CHILD_END, end.to_string())
-                .output()
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "failed to start {} mutation child for {label}[{start}..{end}]: {error}",
-                        family.name()
-                    )
-                });
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success(),
-                "{} mutation child failed for {label}[{start}..{end}] with {}\nstdout:\n{}\nstderr:\n{}",
-                family.name(),
-                output.status,
-                stdout,
-                stderr
-            );
-            let line = stdout
-                .lines()
-                .find(|line| line.starts_with(MUTATION_BATCH_RESULT))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{} mutation child for {label}[{start}..{end}] returned no result marker\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                        family.name()
-                    )
-                });
-            let mut fields = line.split_whitespace();
-            assert_eq!(fields.next(), Some(MUTATION_BATCH_RESULT));
-            mutations += fields
-                .next()
-                .expect("batch result mutation count")
-                .parse::<usize>()
-                .expect("numeric batch mutation count");
-            rejections += fields
-                .next()
-                .expect("batch result rejection count")
-                .parse::<usize>()
-                .expect("numeric batch rejection count");
-            assert!(
-                fields.next().is_none(),
-                "unexpected fields in mutation batch result {line:?}"
-            );
+        let window_stride = MUTATION_BATCH_OFFSETS * MUTATION_BATCH_WORKERS;
+        for window_start in (0..count).step_by(window_stride) {
+            let executable_path = executable.as_path();
+            let label_text = label.as_str();
+            let results = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(MUTATION_BATCH_WORKERS);
+                for worker in 0..MUTATION_BATCH_WORKERS {
+                    let start = window_start + worker * MUTATION_BATCH_OFFSETS;
+                    if start >= count {
+                        break;
+                    }
+                    let end = (start + MUTATION_BATCH_OFFSETS).min(count);
+                    handles.push(scope.spawn(move || {
+                        run_mutation_batch(executable_path, family, fixture, label_text, start, end)
+                    }));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("malformed mutation worker panicked"))
+                    .collect::<Vec<_>>()
+            });
+            for (batch_mutations, batch_rejections) in results {
+                mutations += batch_mutations;
+                rejections += batch_rejections;
+            }
         }
     }
+    (mutations, rejections)
+}
+
+fn run_mutation_batch(
+    executable: &std::path::Path,
+    family: MutationFamily,
+    fixture: usize,
+    label: &str,
+    start: usize,
+    end: usize,
+) -> (usize, usize) {
+    let output = Command::new(executable)
+        .arg("mutation_batch_child")
+        .arg("--exact")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env(MUTATION_CHILD_FAMILY, family.name())
+        .env(MUTATION_CHILD_FIXTURE, fixture.to_string())
+        .env(MUTATION_CHILD_START, start.to_string())
+        .env(MUTATION_CHILD_END, end.to_string())
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to start {} mutation child for {label}[{start}..{end}]: {error}",
+                family.name()
+            )
+        });
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{} mutation child failed for {label}[{start}..{end}] with {}\nstdout:\n{}\nstderr:\n{}",
+        family.name(),
+        output.status,
+        stdout,
+        stderr
+    );
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with(MUTATION_BATCH_RESULT))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} mutation child for {label}[{start}..{end}] returned no result marker\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                family.name()
+            )
+        });
+    let mut fields = line.split_whitespace();
+    assert_eq!(fields.next(), Some(MUTATION_BATCH_RESULT));
+    let mutations = fields
+        .next()
+        .expect("batch result mutation count")
+        .parse::<usize>()
+        .expect("numeric batch mutation count");
+    let rejections = fields
+        .next()
+        .expect("batch result rejection count")
+        .parse::<usize>()
+        .expect("numeric batch rejection count");
+    assert!(
+        fields.next().is_none(),
+        "unexpected fields in mutation batch result {line:?}"
+    );
     (mutations, rejections)
 }
 

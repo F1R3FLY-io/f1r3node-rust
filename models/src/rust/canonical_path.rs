@@ -154,12 +154,15 @@
 //! structural value is `eval_stable_par`, and every accepted escape payload is
 //! canonical prost of a ¬`eval_stable_par` value.
 
+use std::ops::Range;
+use std::sync::Arc;
+
 use pathmap::PathMap;
 #[cfg(test)]
 use prost::Message;
 
-use super::epathmap_trie_codec::EPathMapMode;
-use super::pathmap_crate_type_mapper::eval_stable_par;
+use super::epathmap_trie_codec::{self, CanonicalSnapshotKey, EPathMapMode, EPathMapRepr};
+use super::pathmap_crate_type_mapper::{eval_stable_par, reducer_eval_identity_par};
 #[cfg(test)]
 use super::pathmap_integration::RholangSetPathMap;
 use crate::rhoapi::expr::ExprInstance;
@@ -433,13 +436,11 @@ fn ground_etuple_carrier(elements: Vec<Par>) -> Par {
     }))
 }
 
-fn epathmap_carrier(entries: Vec<Par>) -> Par {
-    expr_carrier(ExprInstance::EPathmapBody(EPathMap::new(
-        entries,
-        Vec::new(),
-        false,
-        None,
-    )))
+fn epathmap_carrier(repr: EPathMapRepr<Par>) -> Par {
+    let mut map = EPathMap::default();
+    map.replace_decoded_representation_deferred_key_validation(repr)
+        .expect("canonical-path decoder constructs one homogeneous representation");
+    expr_carrier(ExprInstance::EPathmapBody(map))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -459,7 +460,7 @@ enum EncOp<'p> {
     /// segment position (the only place the trie escape may appear).
     Segment {
         par: &'p Par,
-        known_stable: bool,
+        known_stable: Option<bool>,
         top_level: bool,
     },
     CloseNestedRegion,
@@ -492,6 +493,8 @@ impl<'p> EncMachine<'p> {
         }
     }
 
+    fn classify_stability(&self, par: &Par) -> Result<bool, CodecError> { Ok(eval_stable_par(par)) }
+
     fn emit(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
         match self.detours.last_mut() {
             Some(EncCtx::Region(_)) => {
@@ -517,8 +520,15 @@ impl<'p> EncMachine<'p> {
     /// Schedule the §1.3 top-level path ops for `par` (split / bare / escape
     /// on the trie grammar). Total over ALL Pars — a ¬eval_stable node at a
     /// top-level segment position takes the `0x0F` escape arm.
-    fn push_path_ops(&mut self, par: &'p Par, known_stable: bool) -> Result<(), CodecError> {
-        let stable = known_stable || eval_stable_par(par);
+    fn push_path_ops(
+        &mut self,
+        par: &'p Par,
+        known_stable: Option<bool>,
+    ) -> Result<(), CodecError> {
+        let stable = match known_stable {
+            Some(stable) => stable,
+            None => self.classify_stability(par)?,
+        };
         // ★ Record the TOP-LEVEL verdict so callers can have the bit the codec already
         // computed, instead of running `eval_stable_par` a second time over the same term.
         // Only the outermost call sets it: nested pushes are heredity, not the entry's
@@ -533,7 +543,7 @@ impl<'p> EncMachine<'p> {
             for element in list.ps.iter().rev() {
                 self.ops.push(EncOp::Segment {
                     par: element,
-                    known_stable: stable,
+                    known_stable: stable.then_some(true),
                     top_level: true,
                 });
             }
@@ -543,7 +553,7 @@ impl<'p> EncMachine<'p> {
             // holds by construction).
             self.ops.push(EncOp::Segment {
                 par,
-                known_stable: stable,
+                known_stable: Some(stable),
                 top_level: true,
             });
         }
@@ -601,10 +611,13 @@ impl<'p> EncMachine<'p> {
     fn encode_segment(
         &mut self,
         par: &'p Par,
-        known_stable: bool,
+        known_stable: Option<bool>,
         top_level: bool,
     ) -> Result<(), CodecError> {
-        let stable = known_stable || eval_stable_par(par);
+        let stable = match known_stable {
+            Some(stable) => stable,
+            None => self.classify_stability(par)?,
+        };
         if !stable {
             #[cfg(feature = "phase7-depth-histograms")]
             crate::rust::rholang::phase7_depth_histogram::record_par("escape_arm", par);
@@ -705,7 +718,7 @@ impl<'p> EncMachine<'p> {
                         for child in list.ps.iter().rev() {
                             self.ops.push(EncOp::Segment {
                                 par: child,
-                                known_stable: true,
+                                known_stable: Some(true),
                                 top_level: false,
                             });
                         }
@@ -717,7 +730,7 @@ impl<'p> EncMachine<'p> {
                         for child in tuple.ps.iter().rev() {
                             self.ops.push(EncOp::Segment {
                                 par: child,
-                                known_stable: true,
+                                known_stable: Some(true),
                                 top_level: false,
                             });
                         }
@@ -818,7 +831,7 @@ pub fn encode_trie_path(par: &Par) -> Vec<u8> { encode_trie_path_with_stability(
 pub fn encode_trie_path_with_stability(par: &Par) -> (Vec<u8>, bool) {
     let mut machine = EncMachine::new();
     machine
-        .push_path_ops(par, false)
+        .push_path_ops(par, None)
         .expect("trie path scheduling is total");
     machine.run().expect("trie path encoding is total");
     let stable = machine
@@ -833,7 +846,7 @@ pub fn encode_trie_segment(par: &Par) -> Vec<u8> {
     let mut machine = EncMachine::new();
     machine.ops.push(EncOp::Segment {
         par,
-        known_stable: false,
+        known_stable: None,
         top_level: true,
     });
     machine.run().expect("trie segment encoding is total");
@@ -857,7 +870,10 @@ enum DecFrame {
     /// zipper walk over the intern trie, not a region parse.
     Region {
         region_end: usize,
-        entries: Vec<Par>,
+        /// Semantic decoding retains the real compressed set. Canonical-only
+        /// validation needs no temporary trie: every frame is checked in place
+        /// and the enclosing stable expression receives an empty placeholder.
+        entries: Option<PathMap<()>>,
         /// Byte range of the previous path (order check anchor).
         prev_path: Option<(usize, usize)>,
     },
@@ -874,6 +890,23 @@ enum DecOutcome {
     Entry(Par),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecMode {
+    Semantic,
+    Validate,
+}
+
+pub(crate) enum DeferredCanonicalBytes {
+    Relative(Range<usize>),
+    Owned(Vec<u8>),
+}
+
+struct DecValidation {
+    par: Par,
+    nested_keys: Vec<DeferredCanonicalBytes>,
+    stable_value_bodies: Vec<Range<usize>>,
+}
+
 struct DecMachine<'b> {
     bytes: &'b [u8],
     cursor: usize,
@@ -888,21 +921,27 @@ struct DecMachine<'b> {
     /// respect, and it was a latent off-by-one: `enter_collection` incremented
     /// `depth` *before* the empty-collection early return, so an EMPTY list at
     /// the boundary was refused although it opened no frame at all.)
-    col_or_region_frames: u32,
+    col_or_region_frames: usize,
     frames: Vec<DecFrame>,
     /// Innermost byte boundary stack: input length at the bottom, then one
     /// entry per open Region (region_end) and Path (frame_end).
     limits: Vec<usize>,
+    mode: DecMode,
+    nested_keys: Vec<DeferredCanonicalBytes>,
+    stable_value_bodies: Vec<Range<usize>>,
 }
 
 impl<'b> DecMachine<'b> {
-    fn new(bytes: &'b [u8]) -> Self {
+    fn new(bytes: &'b [u8], mode: DecMode) -> Self {
         DecMachine {
             bytes,
             cursor: 0,
             col_or_region_frames: 0,
             frames: Vec::new(),
             limits: vec![bytes.len()],
+            mode,
+            nested_keys: Vec::new(),
+            stable_value_bodies: Vec::new(),
         }
     }
 
@@ -936,8 +975,7 @@ impl<'b> DecMachine<'b> {
     // nothing for it to do, and a `fn` that only bumps a duplicate counter would
     // be a place for the cap to grow back.
 
-    /// Decode one whole top-level path (the `decode_trie_path` driver).
-    fn run_path(mut self) -> Result<Par, CodecError> {
+    fn begin_path(&mut self) -> Result<(), CodecError> {
         if self.bytes.is_empty() {
             return Err(CodecError::EmptyInput);
         }
@@ -947,8 +985,24 @@ impl<'b> DecMachine<'b> {
             segments: Vec::new(),
         });
         self.limits.push(self.bytes.len());
+        Ok(())
+    }
+
+    /// Decode one whole top-level path (the semantic driver).
+    fn run_path(mut self) -> Result<Par, CodecError> {
+        self.begin_path()?;
         let DecOutcome::Entry(par) = self.drive()?;
         Ok(par)
+    }
+
+    fn run_validation(mut self) -> Result<DecValidation, CodecError> {
+        self.begin_path()?;
+        let DecOutcome::Entry(par) = self.drive()?;
+        Ok(DecValidation {
+            par,
+            nested_keys: self.nested_keys,
+            stable_value_bodies: self.stable_value_bodies,
+        })
     }
 
     /// Read the next NESTED-region frame header (`uv(|path|)`) and open its
@@ -1117,7 +1171,10 @@ impl<'b> DecMachine<'b> {
                 if region_len == 0 {
                     // R3F-1: the 0x0D arm admits R = ε — the canonical empty
                     // map. Top-level region non-emptiness does NOT recurse.
-                    return self.deliver(epathmap_carrier(Vec::new()));
+                    return self.deliver(match self.mode {
+                        DecMode::Semantic => epathmap_carrier(EPathMapRepr::Empty),
+                        DecMode::Validate => expr_carrier(ExprInstance::GBool(false)),
+                    });
                 }
                 let region_len = usize::try_from(region_len).map_err(|_| CodecError::Truncated)?;
                 let region_end = self
@@ -1129,7 +1186,7 @@ impl<'b> DecMachine<'b> {
                 }
                 self.frames.push(DecFrame::Region {
                     region_end,
-                    entries: Vec::new(),
+                    entries: (self.mode == DecMode::Semantic).then(PathMap::new),
                     prev_path: None,
                 });
                 self.col_or_region_frames += 1;
@@ -1139,14 +1196,42 @@ impl<'b> DecMachine<'b> {
             tag::EPATHMAP_MAP => {
                 let len = self.read_uv()?;
                 let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
+                let snapshot_start = self.cursor;
                 let snapshot = self.take(len)?;
-                let mut map = EPathMap::default();
-                map.replace_trie_snapshot(snapshot)
-                    .map_err(|_| CodecError::MapSnapshotInvalid)?;
-                if map.mode() != EPathMapMode::Map {
-                    return Err(CodecError::MapSnapshotMode);
+                match self.mode {
+                    DecMode::Semantic => {
+                        let mut map = EPathMap::default();
+                        map.replace_trie_snapshot_deferred_key_validation(snapshot)
+                            .map_err(|_| CodecError::MapSnapshotInvalid)?;
+                        if map.mode() != EPathMapMode::Map {
+                            return Err(CodecError::MapSnapshotMode);
+                        }
+                        self.deliver(expr_carrier(ExprInstance::EPathmapBody(map)))
+                    }
+                    DecMode::Validate => {
+                        let inspection =
+                            epathmap_trie_codec::inspect_canonical_map_snapshot(snapshot)
+                                .map_err(|_| CodecError::MapSnapshotInvalid)?;
+                        for key in inspection.keys {
+                            self.nested_keys.push(match key {
+                                CanonicalSnapshotKey::Relative(range) => {
+                                    DeferredCanonicalBytes::Relative(
+                                        snapshot_start + range.start..snapshot_start + range.end,
+                                    )
+                                }
+                                CanonicalSnapshotKey::Owned(bytes) => {
+                                    DeferredCanonicalBytes::Owned(bytes)
+                                }
+                            });
+                        }
+                        self.stable_value_bodies.extend(
+                            inspection.value_bodies.into_iter().map(|range| {
+                                snapshot_start + range.start..snapshot_start + range.end
+                            }),
+                        );
+                        self.deliver(expr_carrier(ExprInstance::GBool(false)))
+                    }
                 }
-                self.deliver(expr_carrier(ExprInstance::EPathmapBody(map)))
             }
             tag::GPRIVATE => {
                 let len = self.read_uv()?;
@@ -1169,7 +1254,7 @@ impl<'b> DecMachine<'b> {
                 // `Par::decode` here would re-enter Prost's recursive `merge_field` chain and
                 // make EPathMap tag-8 decoding stack-dependent precisely for the non-ground
                 // keys the escape arm exists to carry.
-                let par = crate::rust::rholang::protobuf_decoder::decode_par(payload)
+                let par = crate::rust::rholang::protobuf_decoder::decode_par_deferred_epathmap_validation(payload)
                     .map_err(|_| CodecError::EscapePayloadInvalid)?;
                 // Canonicality of the payload (decode-accepts ≡ image): the
                 // encoder writes canonical prost bytes of ¬eval_stable Pars
@@ -1185,7 +1270,8 @@ impl<'b> DecMachine<'b> {
                 if crate::rust::rholang::protobuf_encoder::encode_to_vec(&par) != payload {
                     return Err(CodecError::EscapePayloadNonCanonical);
                 }
-                if eval_stable_par(&par) {
+                let stable = eval_stable_par_declared_keys(&par)?;
+                if stable {
                     return Err(CodecError::EscapeOfStablePar);
                 }
                 self.deliver(par)
@@ -1293,7 +1379,10 @@ impl<'b> DecMachine<'b> {
                     }
                 }
                 *prev_path = Some(current);
-                entries.push(entry);
+                if let Some(entries) = entries {
+                    entries.insert(&self.bytes[path_start..frame_end], ());
+                }
+                crate::rust::rholang::par_children::dismantle(entry);
                 if self.cursor == region_end {
                     // Region complete: frames tiled exactly.
                     let Some(DecFrame::Region { entries, .. }) = self.frames.pop() else {
@@ -1301,7 +1390,10 @@ impl<'b> DecMachine<'b> {
                     };
                     self.col_or_region_frames -= 1;
                     self.limits.pop();
-                    let map_par = epathmap_carrier(entries);
+                    let map_par = match entries {
+                        Some(entries) => epathmap_carrier(EPathMapRepr::Set(entries)),
+                        None => expr_carrier(ExprInstance::GBool(false)),
+                    };
                     self.deliver(map_par)?;
                     return Ok(None);
                 }
@@ -1316,6 +1408,170 @@ impl<'b> DecMachine<'b> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public decode surface
 // ─────────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct CanonicalPathMetadata {
+    pub(crate) stable: bool,
+    pub(crate) reducer_eval_identity: bool,
+    pub(crate) locally_free: Vec<u8>,
+    pub(crate) connective_used: bool,
+}
+
+#[derive(Clone)]
+enum CanonicalBacking<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Arc<[u8]>),
+}
+
+impl CanonicalBacking<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CanonicalRegion<'a> {
+    backing: CanonicalBacking<'a>,
+    range: Range<usize>,
+}
+
+impl<'a> CanonicalRegion<'a> {
+    fn as_slice(&self) -> &[u8] { &self.backing.as_slice()[self.range.clone()] }
+
+    fn relative(&self, range: Range<usize>) -> Result<Self, CodecError> {
+        if range.end > self.range.len() || range.start > range.end {
+            return Err(CodecError::MapSnapshotInvalid);
+        }
+        Ok(Self {
+            backing: self.backing.clone(),
+            range: self.range.start + range.start..self.range.start + range.end,
+        })
+    }
+
+    fn owned(bytes: Vec<u8>) -> Self {
+        let bytes: Arc<[u8]> = bytes.into();
+        let len = bytes.len();
+        Self {
+            backing: CanonicalBacking::Owned(bytes),
+            range: 0..len,
+        }
+    }
+}
+
+enum CanonicalValidationTask<'a> {
+    Key {
+        region: CanonicalRegion<'a>,
+        require_stable: bool,
+        root: bool,
+    },
+    StableValue(CanonicalRegion<'a>),
+}
+
+/// Validate a canonical path and every EPathMap key/value body reachable from
+/// it with one explicit global worklist. Nested ACT line keys remain borrowed
+/// subranges of the root buffer, so a depth-N one-entry map chain touches each
+/// encoded byte at its owning layer instead of rebuilding N suffix tries.
+pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetadata, CodecError> {
+    let mut tasks = vec![CanonicalValidationTask::Key {
+        region: CanonicalRegion {
+            backing: CanonicalBacking::Borrowed(path),
+            range: 0..path.len(),
+        },
+        require_stable: false,
+        root: true,
+    }];
+    let mut root_metadata = None;
+
+    while let Some(task) = tasks.pop() {
+        match task {
+            CanonicalValidationTask::Key {
+                region,
+                require_stable,
+                root,
+            } => {
+                let declared_stable = path_declares_stable(region.as_slice())?;
+                let validation =
+                    DecMachine::new(region.as_slice(), DecMode::Validate).run_validation()?;
+                let stable = eval_stable_par_declared_keys(&validation.par)?;
+                if stable != declared_stable || require_stable && !stable {
+                    crate::rust::rholang::par_children::dismantle(validation.par);
+                    return Err(CodecError::CanonicalFormMismatch);
+                }
+                if root {
+                    root_metadata = Some(CanonicalPathMetadata {
+                        stable,
+                        reducer_eval_identity: reducer_eval_identity_par(&validation.par, stable),
+                        locally_free: validation.par.locally_free.clone(),
+                        connective_used: validation.par.connective_used,
+                    });
+                }
+
+                for key in validation.nested_keys {
+                    let nested = match key {
+                        DeferredCanonicalBytes::Relative(range) => region.relative(range)?,
+                        DeferredCanonicalBytes::Owned(bytes) => CanonicalRegion::owned(bytes),
+                    };
+                    tasks.push(CanonicalValidationTask::Key {
+                        region: nested,
+                        require_stable: true,
+                        root: false,
+                    });
+                }
+                for range in validation.stable_value_bodies {
+                    tasks.push(CanonicalValidationTask::StableValue(
+                        region.relative(range)?,
+                    ));
+                }
+
+                let mut escaped_keys = Vec::new();
+                crate::rust::rholang::par_children::dismantle_collecting_epathmap_keys(
+                    validation.par,
+                    &mut escaped_keys,
+                );
+                tasks.extend(
+                    escaped_keys
+                        .into_iter()
+                        .map(|bytes| CanonicalValidationTask::Key {
+                            region: CanonicalRegion::owned(bytes),
+                            require_stable: false,
+                            root: false,
+                        }),
+                );
+            }
+            CanonicalValidationTask::StableValue(region) => {
+                let value = crate::rust::rholang::protobuf_decoder::decode_par_deferred_epathmap_validation(
+                    region.as_slice(),
+                )
+                .map_err(|_| CodecError::MapSnapshotInvalid)?;
+                if crate::rust::rholang::protobuf_encoder::encode_to_vec(&value)
+                    != region.as_slice()
+                    || !eval_stable_par_declared_keys(&value)?
+                {
+                    crate::rust::rholang::par_children::dismantle(value);
+                    return Err(CodecError::MapSnapshotInvalid);
+                }
+                let mut nested_keys = Vec::new();
+                crate::rust::rholang::par_children::dismantle_collecting_epathmap_keys(
+                    value,
+                    &mut nested_keys,
+                );
+                tasks.extend(
+                    nested_keys
+                        .into_iter()
+                        .map(|bytes| CanonicalValidationTask::Key {
+                            region: CanonicalRegion::owned(bytes),
+                            require_stable: true,
+                            root: false,
+                        }),
+                );
+            }
+        }
+    }
+
+    root_metadata.ok_or(CodecError::CanonicalFormMismatch)
+}
 
 /// Decode one top-level TRIE path — the inverse of [`encode_trie_path`]:
 /// deterministic, left-to-right, iterative, and **UNBOUNDED IN DEPTH**. The
@@ -1332,7 +1588,14 @@ impl<'b> DecMachine<'b> {
 /// message depth. Escape payloads are decoded by the generated protobuf PDA,
 /// not Prost's recursively budgeted `Par::decode`; canonicality is then checked
 /// against the same iterative encoder that produced the payload.
-pub fn decode_trie_path(path: &[u8]) -> Result<Par, CodecError> { DecMachine::new(path).run_path() }
+pub(crate) fn decode_trie_path_after_validation(path: &[u8]) -> Result<Par, CodecError> {
+    DecMachine::new(path, DecMode::Semantic).run_path()
+}
+
+pub fn decode_trie_path(path: &[u8]) -> Result<Par, CodecError> {
+    validate_canonical_path(path)?;
+    decode_trie_path_after_validation(path)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The segment-extent scanner (incremental, clonable — the DFS parser state)
@@ -1565,9 +1828,275 @@ pub fn segment_extent(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+pub(crate) fn path_declares_stable(path: &[u8]) -> Result<bool, CodecError> {
+    if path.is_empty() {
+        return Err(CodecError::EmptyInput);
+    }
+    let mut cursor = 0usize;
+    let mut segments = 0usize;
+    let mut stable = true;
+    loop {
+        if path[cursor] == tag::TERM {
+            cursor += 1;
+            return if cursor == path.len() {
+                Ok(stable)
+            } else {
+                Err(CodecError::TerminatorMisplaced)
+            };
+        }
+        stable &= path[cursor] != tag::ESCAPE;
+        skip_declared_segment(path, &mut cursor)?;
+        segments += 1;
+        if cursor == path.len() {
+            return if segments == 1 {
+                Ok(stable)
+            } else {
+                Err(CodecError::UnterminatedMultiSegment)
+            };
+        }
+    }
+}
+
+fn skip_declared_segment(path: &[u8], cursor: &mut usize) -> Result<(), CodecError> {
+    let mut pending = vec![1u64];
+    while let Some(remaining) = pending.last_mut() {
+        if *remaining == 0 {
+            pending.pop();
+            continue;
+        }
+        *remaining -= 1;
+        let segment_tag = *path.get(*cursor).ok_or(CodecError::Truncated)?;
+        *cursor += 1;
+        match segment_tag {
+            tag::GBOOL_FALSE | tag::GBOOL_TRUE => {}
+            tag::GINT => {
+                read_uv(path, cursor, path.len())?;
+            }
+            tag::GSTRING
+            | tag::GURI
+            | tag::GBYTE_ARRAY
+            | tag::GBIG_INT
+            | tag::GPRIVATE
+            | tag::EPATHMAP
+            | tag::EPATHMAP_MAP
+            | tag::ESCAPE => {
+                let len = read_uv(path, cursor, path.len())?;
+                let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
+                skip_declared_bytes(path, cursor, len)?;
+            }
+            tag::GDOUBLE => skip_declared_bytes(path, cursor, 8)?,
+            tag::GBIG_RAT => {
+                for _ in 0..2 {
+                    let len = read_uv(path, cursor, path.len())?;
+                    let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
+                    skip_declared_bytes(path, cursor, len)?;
+                }
+            }
+            tag::GFIXED_POINT => {
+                let len = read_uv(path, cursor, path.len())?;
+                let len = usize::try_from(len).map_err(|_| CodecError::Truncated)?;
+                skip_declared_bytes(path, cursor, len)?;
+                read_uv(path, cursor, path.len())?;
+            }
+            tag::ELIST | tag::ETUPLE => {
+                let children = read_uv(path, cursor, path.len())?;
+                if children > 0 {
+                    pending.push(children);
+                }
+            }
+            tag::TERM => return Err(CodecError::TerminatorMisplaced),
+            other => return Err(CodecError::ReservedTag(other)),
+        }
+    }
+    Ok(())
+}
+
+fn skip_declared_bytes(path: &[u8], cursor: &mut usize, count: usize) -> Result<(), CodecError> {
+    *cursor = cursor
+        .checked_add(count)
+        .filter(|end| *end <= path.len())
+        .ok_or(CodecError::Truncated)?;
+    Ok(())
+}
+
+pub(crate) fn declared_canonical_path_metadata(
+    path: &[u8],
+) -> Result<CanonicalPathMetadata, CodecError> {
+    if path_declares_stable(path)? {
+        return Ok(CanonicalPathMetadata {
+            stable: true,
+            reducer_eval_identity: true,
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+    }
+
+    if path[0] != tag::ESCAPE {
+        return Ok(CanonicalPathMetadata {
+            stable: false,
+            reducer_eval_identity: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+    }
+
+    let mut cursor = 1usize;
+    let payload_len = read_uv(path, &mut cursor, path.len())?;
+    let payload_len = usize::try_from(payload_len).map_err(|_| CodecError::Truncated)?;
+    let payload_end = cursor
+        .checked_add(payload_len)
+        .ok_or(CodecError::Truncated)?;
+    if payload_end != path.len() {
+        return Err(CodecError::CanonicalFormMismatch);
+    }
+    let payload = &path[cursor..payload_end];
+    let mut payload_cursor = 0usize;
+    let mut has_expr = false;
+    let mut locally_free = Vec::new();
+    let mut connective_used = false;
+    while payload_cursor < payload.len() {
+        let key = read_uv(payload, &mut payload_cursor, payload.len())?;
+        let field = key >> 3;
+        if field == 0 {
+            return Err(CodecError::EscapePayloadInvalid);
+        }
+        match key & 0x07 {
+            0 => {
+                let value = read_uv(payload, &mut payload_cursor, payload.len())?;
+                if field == 10 {
+                    connective_used = value != 0;
+                }
+            }
+            1 => {
+                payload_cursor = payload_cursor
+                    .checked_add(8)
+                    .filter(|end| *end <= payload.len())
+                    .ok_or(CodecError::EscapePayloadInvalid)?;
+            }
+            2 => {
+                let len = read_uv(payload, &mut payload_cursor, payload.len())?;
+                let len = usize::try_from(len).map_err(|_| CodecError::EscapePayloadInvalid)?;
+                let end = payload_cursor
+                    .checked_add(len)
+                    .filter(|end| *end <= payload.len())
+                    .ok_or(CodecError::EscapePayloadInvalid)?;
+                if field == 5 {
+                    has_expr = true;
+                } else if field == 9 {
+                    locally_free = payload[payload_cursor..end].to_vec();
+                }
+                payload_cursor = end;
+            }
+            5 => {
+                payload_cursor = payload_cursor
+                    .checked_add(4)
+                    .filter(|end| *end <= payload.len())
+                    .ok_or(CodecError::EscapePayloadInvalid)?;
+            }
+            _ => return Err(CodecError::EscapePayloadInvalid),
+        }
+    }
+    Ok(CanonicalPathMetadata {
+        stable: false,
+        reducer_eval_identity: !has_expr,
+        locally_free,
+        connective_used,
+    })
+}
+
+fn eval_stable_par_declared_keys(root: &Par) -> Result<bool, CodecError> {
+    let mut current = Some(root);
+    let mut deferred = Vec::<&Par>::new();
+
+    loop {
+        let Some(par) = current.take().or_else(|| deferred.pop()) else {
+            return Ok(true);
+        };
+
+        if !par.sends.is_empty()
+            || !par.receives.is_empty()
+            || !par.news.is_empty()
+            || !par.matches.is_empty()
+            || !par.bundles.is_empty()
+            || !par.connectives.is_empty()
+            || !par.conditionals.is_empty()
+            || !par.locally_free.is_empty()
+            || par.connective_used
+        {
+            return Ok(false);
+        }
+
+        let expr = match (par.exprs.as_slice(), par.unforgeables.as_slice()) {
+            ([], [unforgeable])
+                if matches!(unforgeable.unf_instance, Some(UnfInstance::GPrivateBody(_))) =>
+            {
+                continue;
+            }
+            ([expr], []) => expr,
+            _ => return Ok(false),
+        };
+
+        let children = match &expr.expr_instance {
+            Some(
+                ExprInstance::GBool(_)
+                | ExprInstance::GInt(_)
+                | ExprInstance::GString(_)
+                | ExprInstance::GUri(_)
+                | ExprInstance::GByteArray(_)
+                | ExprInstance::GDouble(_)
+                | ExprInstance::GBigInt(_)
+                | ExprInstance::GBigRat(_)
+                | ExprInstance::GFixedPoint(_),
+            ) => continue,
+            Some(ExprInstance::EListBody(list))
+                if list.remainder.is_none()
+                    && list.locally_free.is_empty()
+                    && !list.connective_used =>
+            {
+                list.ps.as_slice()
+            }
+            Some(ExprInstance::ETupleBody(tuple))
+                if tuple.locally_free.is_empty() && !tuple.connective_used =>
+            {
+                tuple.ps.as_slice()
+            }
+            Some(ExprInstance::EPathmapBody(pathmap))
+                if pathmap.remainder.is_none()
+                    && pathmap.locally_free.is_empty()
+                    && !pathmap.connective_used =>
+            {
+                match pathmap.entry_trie().representation() {
+                    EPathMapRepr::Empty => {}
+                    EPathMapRepr::Set(entries) => {
+                        for (key, ()) in entries.iter() {
+                            if !path_declares_stable(&key)? {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    EPathMapRepr::Map(entries) => {
+                        for (key, value) in entries.iter() {
+                            if !path_declares_stable(&key)? {
+                                return Ok(false);
+                            }
+                            deferred.push(value);
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => return Ok(false),
+        };
+
+        if let Some((first, siblings)) = children.split_first() {
+            deferred.extend(siblings.iter().rev());
+            current = Some(first);
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// The parser-state DFS (the collect_child_segments successor — side-by-side,
-// wired to NOTHING; the existing 0xFF-separator queries are untouched)
+// The parser-state DFS used by the production PathMap-native query surface
 // ─────────────────────────────────────────────────────────────────────────────
 
 use pathmap::zipper::{Zipper, ZipperMoving};
@@ -1597,9 +2126,7 @@ use pathmap::zipper::{Zipper, ZipperMoving};
 ///   segment, no extension of it is a segment, so emitted segments are
 ///   pairwise non-prefix and plain ascending traversal (children visited in
 ///   ascending byte order at every node) yields ascending byte-lex segment
-///   order DIRECTLY — the separator-first special case and the
-///   `BitMask::clear_bit`-is-XOR workaround of the retired implementation
-///   both dissolve.
+///   order DIRECTLY; the retired separator-first special case is absent.
 /// * **Early stop.** Emission is already in final order, so the `limit`
 ///   truncation is sound.
 pub fn collect_child_segments_codec<V>(
@@ -1700,7 +2227,14 @@ mod tests {
     fn gprivate(id: &[u8]) -> Par { gprivate_carrier(id.to_vec()) }
     fn glist(elements: Vec<Par>) -> Par { ground_elist_carrier(elements) }
     fn gtuple(elements: Vec<Par>) -> Par { ground_etuple_carrier(elements) }
-    fn gmap(entries: Vec<Par>) -> Par { epathmap_carrier(entries) }
+    fn gmap(entries: Vec<Par>) -> Par {
+        expr_carrier(ExprInstance::EPathmapBody(EPathMap::new(
+            entries,
+            Vec::new(),
+            false,
+            None,
+        )))
+    }
 
     /// `wrappers` list levels around a GInt leaf, built ITERATIVELY.
     fn deep_list(wrappers: u32) -> Par {
@@ -1838,7 +2372,7 @@ mod tests {
             prop_oneof![
                 proptest::collection::vec(inner.clone(), 0..4).prop_map(ground_elist_carrier),
                 proptest::collection::vec(inner.clone(), 0..4).prop_map(ground_etuple_carrier),
-                proptest::collection::vec(inner, 0..3).prop_map(epathmap_carrier),
+                proptest::collection::vec(inner, 0..3).prop_map(gmap),
             ]
         })
     }

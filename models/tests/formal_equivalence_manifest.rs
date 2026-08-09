@@ -201,3 +201,23 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         }
     }
 }
+
+#[test]
+fn verus_range_and_worklist_proof_is_non_vacuous_and_runs_without_cheating() {
+    let proof = read_repository_file("formal/verus/epathmap_canonical_worklist.rs");
+    for marker in [
+        "pub fn relative_region(",
+        "proof fn canonical_validation_worklist_equivalent(",
+    ] {
+        assert!(proof.contains(marker), "Verus proof is missing `{marker}`");
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !proof.contains(forbidden),
+            "Verus proof contains forbidden escape `{forbidden}`"
+        );
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(runner.contains("--no-cheating --num-threads 1"));
+    assert!(runner.contains("formal/verus/epathmap_canonical_worklist.rs"));
+}

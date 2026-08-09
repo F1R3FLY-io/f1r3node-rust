@@ -468,6 +468,35 @@ pub static EPATHMAP_FORMAL_EVIDENCE: &[EquivalenceEvidence] = &[
         executable_marker: "nested_map_value_snapshots_stream_on_a_256_kib_stack",
     },
     EquivalenceEvidence {
+        surface: "EPathMap::canonical-key validation worklist equivalence",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "canonical_validation_worklist_equivalent_to_recursive_validation",
+        executable_file: "models/tests/epathmap_canonical_key_worklist.rs",
+        executable_marker: "canonical_map_key_worklist_preserves_bounded_reference_values",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::canonical-key validation worklist linearity",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "canonical_validation_worklist_is_linear_in_reachable_subjects",
+        executable_file: "models/tests/epathmap_canonical_key_worklist.rs",
+        executable_marker: "canonical_map_key_worklist_is_stack_safe_at_depth_20000",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::decoder maintained-fold construction",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "canonical_fold_worklist_equivalent_to_recursive_fold",
+        executable_file: "models/tests/epathmap_canonical_key_worklist.rs",
+        executable_marker: "deferred_validation_preserves_all_entry_folds_for_escape_form_maps",
+    },
+    EquivalenceEvidence {
+        surface: "EPathMap::direct ACT canonical replay equivalence",
+        proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
+        theorem: "direct_act_replay_equivalent_to_reconstruction_oracle",
+        executable_file: "models/src/rust/epathmap_trie_codec.rs",
+        executable_marker:
+            "direct_act_replay_matches_reconstruction_oracle_on_writer_images_and_mutations",
+    },
+    EquivalenceEvidence {
         surface: "EPathMap::EPM1 malformed canonical varint rejection",
         proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
         theorem: "canonical_varint_rejects_redundant_continuation",
