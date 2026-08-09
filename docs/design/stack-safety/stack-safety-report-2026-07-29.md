@@ -149,6 +149,10 @@ zippers, and its 20,000-level gates, 48-test constructor suite, 55-test promoted
 Ascent package, and admission-free worklist theorem are reported separately in §5.20. Pgmcp's
 semantic, representation, and consensus analyses must still be refreshed after the checkpoint is
 committed; this paragraph does not substitute the source-index closure gate with a test result.
+The subsequent `mettail-rust@4fa08387` SS-G44 checkpoint removes two heap/work slopes inside the
+already stack-safe generated parser: repeated first-parent GSS ancestry walks and copied k-best
+decision/packing prefixes. The complete 31-case deep traversal binary now passes under a 2 GiB cap
+on the default native stack; §5.21 records the exact predecessor/successor and profiler evidence.
 
 ---
 
@@ -258,6 +262,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L20 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G42** | `mettail-rust@98dc72ad` | mettail | arbitrarily nested generated OptionalGroup/BinderList WPDA traversal, action extraction, and model lifecycle | artificial nesting limit and recursive generator-model walk $`\rightarrow O(1)`$ native stack with $`O(d)`$ typed heap frames; **20,000** alternating levels on **256 KiB**; focused matrix **53/53**, **0.62 s / 178,064 KiB** | **yes**; bounded recursive forest oracle, exact generated-marker/action assertions, dense-marker round trips, lifecycle gates, and admission-free Rocq continuation laws | [5.18.44](#51844-nested-optional-and-binder-list-wpda-closure-ss-g42) |
 | **SS-G43** | this checkpoint; pgmcp #5192 | mettail | vendored Ascent disjunction/macro/token lifecycle and analysis, plus testkit constructor emission and historical-corpus migration $`\rightarrow`$ typed work/value PDAs | input-shaped recursion and macro-expansion depth ceiling $`\rightarrow O(1)`$ native stack; nested constructor string copying $`\Theta(d^2) \rightarrow \Theta(W)`$ direct output for $`W`$ bytes; **20,000** levels on **256 KiB** | **yes**; bounded recursive Ascent/constructor oracles, complete mode/error matrix, promoted corpus, and admission-free generic worklist-fold theorem | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
+| **SS-G44** | `mettail-rust@4fa08387` | mettail | generated generalized-parser GSS ancestry queries and k-best election prefixes $`\rightarrow`$ compact per-node prefix summaries, persistent decision vectors, and borrowed immutable SPPF families | native stack remains $`O(1)`$; ancestry probes $`\Theta(d^2) \rightarrow \Theta(d)`$; copied decision payload $`\Theta(d^2) \rightarrow`$ structurally shared prefixes with $`O(\log d)`$ update; unary depth **20,000**: **8,286,196 $`\rightarrow`$ 188,924 KiB RSS** | heap/work refinement; **3,654** library tests plus **31/31** deep traversal cases preserve results | [5.21](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -400,6 +405,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.18 Recursive-carrier lifecycle and weighted-logic closure [SS-G8]](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8)
   - [5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12)
   - [5.20 Semantic-SCC, constructor, and PathMap-streaming closure [SS-G43, SS-C13]](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13)
+  - [5.21 Generated-parser ancestry and election-prefix closure [SS-G44]](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -5683,6 +5689,79 @@ charge, EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result change
 
 ---
 
+### 5.21 Generated-parser ancestry and election-prefix closure [SS-G44]
+
+#### 5.21.1 Stack-safe control still retained two input-depth amplification mechanisms
+
+The generalized parser already used heap-backed descriptor and k-best machines, so these failures
+were not host-recursive stack overflows. They were nevertheless violations of the campaign's
+resource criterion: replacing a native stack with a quadratic heap is not closure.
+
+The first mechanism recomputed collection, receiver, acceptor, separator, scope, and cross-category
+context by walking a GSS node's deterministic first-parent chain for each descriptor. A depth-$`d`$
+chain therefore performed $`\Theta(d^2)`$ hash-table probes. The 100,000-parenthesis probe ran for
+more than 30 minutes and reached its 16 GiB cgroup ceiling before it was stopped; the equal-token
+20,000-ternary control took 81.11 s.
+
+The second mechanism was independent. Each unary parent copied its child's complete
+`CgllKTuple::decisions` `Vec`, then candidate extraction cloned packing child vectors and optional
+families. At unary depth 20,000 the unprofiled process took 8.57 s and peaked at 8,286,196 KiB RSS.
+Heaptrack at depth 10,000 attributed a 1.86 GB peak heap principally to retained decision prefixes
+and their candidate-key clones. The equal-token controls were essential: they separated ancestry
+rewalks from election-prefix retention instead of assigning both slopes to token count.
+
+#### 5.21.2 Prefix summaries and structural sharing remove the roots
+
+`CgllPureParentCtx` now derives the first-parent prefix once when a GSS node is created. It stores
+compact grammar indices for the nearest collection frame, direct separator frame, channel
+receiver, and structured acceptor together with inherited scope depth and the cross-category
+ancestor bit. Each former ancestry query is one map lookup plus, when required, one
+`collection_spec` projection. The pure parser retains its existing first-insert-wins rule for a
+shared GSS node and still counts divergent caller symbols; only the time at which the same derived
+context is computed has changed.
+
+`CgllKTuple::decisions` is now an `im::Vector`. Parent tuples structurally share child prefixes,
+clone in constant time, and add a local decision with an $`O(\log d)`$ persistent-tree update rather
+than copying $`\Theta(d)`$ payload bytes. K-best seed, successor, optional-present, and candidate-walk
+frames borrow immutable SPPF packing/child slices directly. They preserve insertion order and
+materialize the same ordered decision sequence only at the existing stable comparison/output
+boundary.
+
+Both repairs remain explicit-PDA operations. They add no traversal limit, enlarged native stack,
+stack switch, `RUST_MIN_STACK`, `stacker`, recursion fallback, PathMap projection, or serializer
+special case.
+
+#### 5.21.3 Equivalence and measured resource result
+
+The complete PraTTaIL package passes **3,654/3,654** library tests, every integration target, and
+**21/21** documentation tests. The generated-language deep binary passes **31/31**, including
+100,000 nested parentheses, 20,000 unary operators, 20,000 nested ternaries, and both 10,000-link
+associativity directions. These gates cover the first-parent context choices, ambiguity ordering,
+stable election order, realized terms, errors, and teardown. No test uses a stack-size override.
+
+**MEASURED (f)** with `MemorySwapMax=0`:
+
+| subject | predecessor | SS-G44 | containment |
+|---|---:|---:|---|
+| parentheses, depth 100,000 | >30 min; 16 GiB cgroup ceiling, stopped | **2.38 s / 255,736 KiB RSS** | 2 GiB |
+| ternary, depth 20,000 | **81.11 s / 336,160 KiB RSS** | **5.50 s / 337,796 KiB RSS** | 2 GiB |
+| unary, depth 20,000 | **8.57 s / 8,286,196 KiB RSS** | **2.22 s / 188,924 KiB RSS** | 1 GiB |
+| complete 31-case binary | not previously completable within the intended envelope | **5.79 s / 964,384 KiB RSS**, 392% CPU, zero swap | 2 GiB |
+| Heaptrack unary, depth 10,000 | **1.86 GB** peak heap | **75.90 MB** peak heap; **110.39 MB** profiler RSS | 1 GiB |
+
+AMD uProf 5.3 time-based sampling of the repaired 20,000-unary case recorded 2.088 s total sampled
+CPU time. `cgll_kbest_next` accounted for 0.062 s (2.97%); the hottest named function accounted for
+0.077 s. The profile therefore does not expose a replacement parser hotspot after the retained
+prefix was removed. This is hotspot evidence, not an instruction-count or cache-miss claim.
+
+The durable rows are
+[`measurements/generated-parser-prefix-closure-2026-08-09.tsv`](measurements/generated-parser-prefix-closure-2026-08-09.tsv).
+SS-G44 changes neither parser results nor any generated process. Consequently no protobuf byte,
+bincode byte, post-state/event hash, COMM schedule, charge, EPathMap mode, EPM1 snapshot, PathMap
+topology, zipper/algebra/lattice result, or accepted-program set moves.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6459,6 +6538,7 @@ done
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
 | [`measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv`](measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv) | SS-G43/SS-C13 capped Ascent, constructor/corpus, EPathMap zipper-streaming, f1r3node visitor, and Rocq validation rows (§5.20) |
+| [`measurements/generated-parser-prefix-closure-2026-08-09.tsv`](measurements/generated-parser-prefix-closure-2026-08-09.tsv) | SS-G44 predecessor/successor deep-parser runtime, RSS, heap, and AMD uProf hotspot rows (§5.21) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

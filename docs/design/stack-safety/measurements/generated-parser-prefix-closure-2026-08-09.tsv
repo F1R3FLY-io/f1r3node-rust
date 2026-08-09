@@ -1,0 +1,13 @@
+# SS-G44 generated-parser prefix-closure measurements. All capped commands used MemorySwapMax=0 and the default native stack.
+# Heaptrack byte values use the profiler's decimal-unit report. The 16 GiB predecessor is a cgroup-accounted ceiling, not process RSS.
+implementation	subject	depth	memory_cap_kib	wall_s	process_peak_rss_kib	cgroup_peak_kib	heaptrack_peak_heap_bytes	swap_bytes	result	notes
+predecessor	parentheses	100000	16777216	>1800	NA	16777216	NA	0	stopped	stopped to avoid host exhaustion after the cgroup reached its ceiling
+SS-G44	parentheses	100000	2097152	2.38	255736	NA	NA	0	pass	default stack
+predecessor	ternary	20000	NA	81.11	336160	NA	NA	0	pass	equal-token ancestry discriminator
+SS-G44	ternary	20000	2097152	5.50	337796	NA	NA	0	pass	default stack
+predecessor	unary	20000	NA	8.57	8286196	NA	NA	0	pass	copied Vec decision prefixes
+SS-G44	unary	20000	1048576	2.22	188924	NA	NA	0	pass	persistent decisions and borrowed SPPF families
+SS-G44	complete-deep-binary	31-cases	2097152	5.79	964384	NA	NA	0	pass	100k grouping; 20k unary and ternary; 10k associativity; 392 percent CPU
+predecessor-heaptrack	unary	10000	NA	NA	NA	NA	1860000000	NA	pass	peak heap principally retained decision prefixes and candidate clones
+SS-G44-heaptrack	unary	10000	1048576	2.84	110390	NA	75900000	0	pass	RSS includes profiler overhead
+SS-G44-amduprof-tbp	unary	20000	1048576	2.756	NA	NA	NA	0	pass	2.088 CPU seconds sampled; cgll_kbest_next 0.062 seconds; hottest named function 0.077 seconds

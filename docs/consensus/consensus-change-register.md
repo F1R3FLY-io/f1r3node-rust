@@ -3579,6 +3579,21 @@ snapshot, PathMap topology, or zipper/algebra/lattice result. It therefore creat
 may-change-consensus entry; stack-safety report §5.20 records the machines, complexity, formal model,
 and capped resource evidence.
 
+**CBR-023 living-set continuation (2026-08-09, SS-G44).** `mettail-rust@4fa08387` removes two
+resource slopes from the already iterative generated generalized parser. Compact per-GSS-node
+prefix summaries replace repeated first-parent ancestry walks; structurally shared k-best decision
+vectors and borrowed immutable SPPF families replace copied decision and packing prefixes. The
+complete PraTTaIL package passes 3,654 library tests, all integration targets, and 21 documentation
+tests. The 31-case deep traversal binary passes under a 2 GiB cap on the default native stack; the
+20,000-unary process falls from 8,286,196 to 188,924 KiB peak RSS. The derived first-parent context,
+SPPF insertion order, stable election sequence, realized terms, and errors are unchanged.
+
+This is a heap/work refinement within CBR-023's `EQUIVALENCE_PROVEN` set. It changes no accepted
+program, generated process, protobuf or bincode byte, post-state or event hash, COMM schedule,
+charge, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result. It creates
+no active may-change-consensus entry; stack-safety report §5.21 and its durable TSV retain the
+predecessor/successor and profiler evidence.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
