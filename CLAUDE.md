@@ -5,6 +5,13 @@
 - Implements concurrent smart contract execution with Byzantine Fault Tolerant consensus
 - If the user does not provide enough information with their prompts, ask the user to clarify before executing the task
 
+**Glossary:** Project terminology lives in [docs/Glossary.md](docs/Glossary.md).
+This glossary is load-bearing: documentation, ADRs, and code reviews cite
+its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
+phrasings. Mathematical notation and theorem naming remain in
+`docs/theory/slashing/design/02-glossary-and-notation.md` pending unification
+(BACKLOG-DOC-001).
+
 ## Architecture Overview
 
 # F1R3node Rust — Pure Rust Blockchain Node

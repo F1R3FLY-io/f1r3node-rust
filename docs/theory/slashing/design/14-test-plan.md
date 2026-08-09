@@ -907,14 +907,21 @@ A TLC violation immediately fails CI.
 The exhaustive tier — enabled by `RUN_EXHAUSTIVE_TLA=1` and
 intentionally excluded from the default gate — holds three
 configurations: `MC_EquivocationDetector_safety.cfg` (the exhaustive
-detector safety run), plus `MC_EquivocationDetector.cfg` and
-`MC_EquivocationDetectorEager_3v.cfg`, whose interleaved liveness
-passes exceed the 45-minute per-config CI cap (neither completed in
-any nightly run between the schedule's start on 2026-07-25 and their
-move to this tier). A liveness/safety split to return those two —
-`MC_EquivocationDetectorEager_3v` in particular, as the only
-three-validator detector model — to the nightly tier is tracked as
-follow-up.
+detector safety run), `MC_EquivocationDetector.cfg` (whose interleaved
+liveness passes exceed the 45-minute per-config CI cap), and
+`MC_EquivocationDetectorEager_3v.cfg` (safety-only — the Eager rewrite
+checks liveness as the `Inv_LivenessAsSafety` invariant — but its
+3v×3s×2b state space alone exceeds the cap). None of the three
+completed in any nightly run between the schedule's start on
+2026-07-25 and their move to this tier. Three-validator detector
+coverage returned to the nightly tier on 2026-08-05 via
+`MC_EquivocationDetectorEager_3v2s.cfg` (3 validators × 2 seqnums ×
+2 blocks; ~5.7M distinct states, completing in about two minutes).
+The same day, `MC_EquivocationDetector_liveness_2v.cfg` (2 validators
+× 1 seqnum × 2 blocks; ~54K distinct states, seconds) stepped the
+non-eager liveness check up from one validator to two in the nightly
+tier. The unbounded combined `MC_EquivocationDetector.cfg` remains
+the exhaustive tier's liveness reference.
 
 ### 14.6.1 Trace replay against the Rust harness
 
@@ -1103,10 +1110,10 @@ TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
 bash scripts/ci/check-tla-invariants.sh
 ```
 
-The exhaustive tier (the detector safety run plus the two
-cap-busting liveness configurations, `MC_EquivocationDetector` and
-`MC_EquivocationDetectorEager_3v`) is intentionally opt-in because it
-can run for many hours:
+The exhaustive tier (the detector safety run, the cap-busting
+liveness configuration `MC_EquivocationDetector`, and the full-depth
+three-validator run `MC_EquivocationDetectorEager_3v`) is
+intentionally opt-in because it can run for many hours:
 
 ```sh
 RUN_EXHAUSTIVE_TLA=1 TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \

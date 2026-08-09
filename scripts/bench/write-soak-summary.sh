@@ -75,6 +75,13 @@ jq -n \
           finished_at: $finished,
           requested_seconds: $requested,
           elapsed_seconds: $elapsed,
+          # Shard uptime at iteration granularity: the summed wall-clock of
+          # iterations that completed their full bring-up -> load -> finalize
+          # cycle. A failed or watchdog-killed iteration contributes nothing —
+          # the shard was not reliably up for any of it — and inter-iteration
+          # gaps count as downtime. Feeds the dashboard uptime bar
+          # (run.shard_up_seconds vs duration/elapsed).
+          shard_up_seconds: ([$all[] | select(.ok? == true) | .duration_s? | select(type == "number")] | add // 0),
           iterations: $iterations,
           failures: $failures,
           failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),

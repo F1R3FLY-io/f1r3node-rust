@@ -97,7 +97,7 @@ async fn present_keys(
         );
         if let Ok((res, _)) = node
             .runtime_manager
-            .play_exploratory_deploy(term, state_hash)
+            .play_exploratory_deploy(term, state_hash, None)
             .await
         {
             if res.first().and_then(par_to_i64) != Some(-999) {

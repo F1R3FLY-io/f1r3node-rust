@@ -445,15 +445,22 @@ async fn prepare_user_deploys_with_policy(
 
     // Terminal purge: a rejected-buffer entry is dropped only once its sig is
     // canonically WON inside the FINALIZED ancestry (latest finalized
-    // disposition is a win). A win that is merely canonical-but-unfinalized
-    // can still be orphaned, so the entry must survive until finality — the
-    // buffer is the only re-proposable copy of merge-rejected work.
+    // disposition is a win) AND that finalized win sits strictly above every
+    // rejection visible from the current parents. A win that is merely
+    // canonical-but-unfinalized can still be orphaned, so the entry must
+    // survive until finality; symmetrically, a finalized win with a visible
+    // rejection at or above its height is not terminal — block finalization
+    // does not finalize effects, and the pending rejection can finalize and
+    // drop the win from canonical state (finalized-win blindness,
+    // finalized_win_pending_rejection_spec). The buffer is the only
+    // re-proposable copy of merge-rejected work.
     let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
         Vec::new()
     } else {
-        let finalized_won = interpreter_util::canonical_won_sigs(
+        let finalized_won = interpreter_util::finalized_won_terminal_sigs(
             block_store,
-            std::slice::from_ref(&casper_snapshot.last_finalized_block),
+            &casper_snapshot.last_finalized_block,
+            &parent_hashes,
             buffer_scan_floor,
         )?;
         buffered_deploys
