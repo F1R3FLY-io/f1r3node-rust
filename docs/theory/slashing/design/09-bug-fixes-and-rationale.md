@@ -925,4 +925,10 @@ atomic-transition contract that documents resume-time reconciliation.
 
 ---
 
-**Next:** [§10 — Bisimilarity (Rust ↔ Scala)](10-bisimilarity.md)
+**Next:** §10 — Bisimilarity (Rust ↔ Scala) — **removed (2026-05-29,
+DR-6)**: the cost-accounted-rho migration made the two implementations
+structurally incomparable; the chapter, its Rocq mechanization
+(`Bisimulation.v`) and the `prop_t_13*/14/15` property tests were
+retired together. See the removal notice in
+[slashing-verification.md](../slashing-verification.md); the surviving
+headline is `main_slashing_algorithm_correct`.
