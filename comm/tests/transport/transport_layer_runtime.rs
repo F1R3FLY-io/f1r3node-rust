@@ -112,7 +112,7 @@ impl TransportLayerTestRuntime {
             env.port,
             env.cert.clone(),
             env.key.clone(),
-            self.max_message_size,
+            self.max_message_size as usize,
             self.max_stream_message_size,
             4, // parallelism
         );

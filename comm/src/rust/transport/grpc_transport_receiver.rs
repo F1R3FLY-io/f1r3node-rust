@@ -13,6 +13,7 @@ use prost::Message;
 use shared::rust::shared::recent_hash_filter::RecentHashFilter;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinHandle;
+use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status};
 
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
@@ -574,6 +575,22 @@ impl TransportLayer for TransportLayerService {
 /// GrpcTransportReceiver for handling incoming gRPC messages
 pub struct GrpcTransportReceiver;
 
+/// Configure the protobuf ingress bound before installing the request interceptor.
+pub fn bounded_transport_service<T, I>(
+    service: T,
+    interceptor: I,
+    max_message_size: usize,
+) -> InterceptedService<TransportLayerServer<T>, I>
+where
+    T: TransportLayer,
+    I: tonic::service::Interceptor,
+{
+    InterceptedService::new(
+        TransportLayerServer::new(service).max_decoding_message_size(max_message_size),
+        interceptor,
+    )
+}
+
 impl GrpcTransportReceiver {
     /// Create a new gRPC transport receiver with F1r3fly custom TLS
     pub async fn create(
@@ -582,7 +599,7 @@ impl GrpcTransportReceiver {
         port: u16,
         cert_pem: String,
         key_pem: String,
-        max_message_size: i32,
+        max_message_size: usize,
         max_stream_message_size: u64,
         buffers_map: Arc<Mutex<HashMap<PeerNode, PeerBufferSlot>>>,
         message_handlers: MessageHandlers,
@@ -613,6 +630,9 @@ impl GrpcTransportReceiver {
             cache,
             parallelism,
         );
+
+        let transport_service =
+            bounded_transport_service(transport_service, ssl_interceptor, max_message_size);
 
         // Create F1r3fly server with custom TLS configuration
         let f1r3fly_server = F1r3flyServer::builder(network_id.clone(), &cert_pem, &key_pem, addr)
@@ -645,38 +665,7 @@ impl GrpcTransportReceiver {
                 // TCP nodelay - handled by F1r3flyServer configuration above
                 // HTTP/2 keepalive interval - handled by F1r3flyServer configuration above
                 // HTTP/2 keepalive timeout - handled by F1r3flyServer configuration above
-                // Configure HTTP/2 max frame size
-                .max_frame_size(Some(max_message_size as u32))
-                // **F1r3fly Message Size Architecture**
-                //
-                // Unlike Scala's NettyServerBuilder.maxInboundMessageSize(), tonic does not provide
-                // server-wide message size configuration. Instead, tonic requires per-service limits
-                // via Grpc<T>.max_decoding_message_size(), but TransportLayerServer::with_interceptor()
-                // doesn't expose the underlying Grpc<T> instance.
-                //
-                // Our F1r3fly architecture addresses this limitation through multiple layers:
-                //
-                // 1. **HTTP/2 Frame Limits** (configured above): Provides network-level protection
-                //    by limiting individual HTTP/2 frames to prevent oversized packets
-                //
-                // 2. **Application-Level Buffer Management**: TransportLayerService implements
-                //    intelligent buffer overflow policies for both regular and streaming messages
-                //
-                // 3. **Client-Side Configuration**: GrpcTransportClient correctly configures both
-                //    max_encoding_message_size and max_decoding_message_size per connection
-                //
-                // 4. **Stream-Based Protection**: Large messages use our streaming protocol with
-                //    configurable max_stream_message_size limits and circuit breaker patterns
-                //
-                // This multi-layered approach provides equivalent protection to the Scala implementation
-                // while working within tonic's architectural constraints. Server defaults: 4MB decoding,
-                // unlimited encoding, with streaming handling for larger payloads.
-                //
-                // Add the transport layer service with SSL interceptor
-                .add_service(TransportLayerServer::with_interceptor(
-                    transport_service,
-                    ssl_interceptor,
-                ))
+                .add_service(transport_service)
                 // Use F1r3fly incoming stream instead of standard TLS configuration
                 .serve_with_incoming(incoming)
                 .await;

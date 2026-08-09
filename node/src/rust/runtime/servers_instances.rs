@@ -137,7 +137,7 @@ impl ServersInstances {
                 node_conf.protocol_server.port,
                 &node_conf.tls.certificate_path,
                 &node_conf.tls.key_path,
-                node_conf.protocol_server.grpc_max_recv_message_size as i32,
+                node_conf.protocol_server.grpc_max_recv_message_size as usize,
                 node_conf.protocol_server.grpc_max_recv_stream_message_size as u64,
                 node_conf.protocol_server.max_message_consumers as usize,
                 rp_conf.clone(),

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use models::casper::v1::deploy_service_server::DeployServiceServer;
+use models::casper::v1::deploy_service_server::{DeployService, DeployServiceServer};
 use models::casper::v1::propose_service_server::ProposeServiceServer;
 use tonic::transport::Server as TonicServer;
 
@@ -57,19 +57,22 @@ pub async fn acquire_internal_server(
     // Create adapter wrappers that implement the proto-generated server traits
     // Note: These adapters need to be implemented separately to bridge between
     // the trait-based service implementations and the proto-generated server traits
-    let repl_server = ReplServer::new(repl_grpc_service);
-    let lsp_server = LspServer::new(lsp_grpc_service);
-    let propose_server = ProposeServiceServer::new(propose_grpc_service);
-    let deploy_server = DeployServiceServer::new(deploy_grpc_service);
+    let repl_server =
+        ReplServer::new(repl_grpc_service).max_decoding_message_size(max_message_size);
+    let lsp_server = LspServer::new(lsp_grpc_service).max_decoding_message_size(max_message_size);
+    let propose_server =
+        ProposeServiceServer::new(propose_grpc_service).max_decoding_message_size(max_message_size);
+    let deploy_server =
+        DeployServiceServer::new(deploy_grpc_service).max_decoding_message_size(max_message_size);
 
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-        .build_v1()?;
+        .build_v1()?
+        .max_decoding_message_size(max_message_size);
 
     // Build the server router with all services
     let router = TonicServer::builder()
         .tcp_keepalive(Some(permit_keep_alive_time))
-        .max_frame_size(Some(max_message_size as u32))
         .http2_keepalive_interval(Some(keep_alive_time))
         .http2_keepalive_timeout(Some(keep_alive_timeout))
         .http2_adaptive_window(Some(true))
@@ -101,8 +104,8 @@ pub async fn acquire_internal_server(
 /// * `max_connection_idle` - Maximum time a connection can be idle
 /// * `max_connection_age` - Maximum age of a connection (not directly supported in tonic)
 /// * `max_connection_age_grace` - Grace period for closing connections after max_connection_age (not directly supported in tonic)
-pub fn acquire_external_server(
-    deploy_grpc_service: DeployGrpcServiceV1Impl,
+pub fn acquire_external_server<T>(
+    deploy_grpc_service: T,
     max_message_size: usize,
     keep_alive_time: Duration,
     keep_alive_timeout: Duration,
@@ -110,20 +113,24 @@ pub fn acquire_external_server(
     max_connection_idle: Duration,
     max_connection_age: Duration,
     _max_connection_age_grace: Duration,
-) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>>
+where
+    T: DeployService,
+{
     // Create adapter wrappers that implement the proto-generated server traits
     // Note: These adapters need to be implemented separately to bridge between
     // the trait-based service implementations and the proto-generated server traits
-    let deploy_server = DeployServiceServer::new(deploy_grpc_service);
+    let deploy_server =
+        DeployServiceServer::new(deploy_grpc_service).max_decoding_message_size(max_message_size);
 
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-        .build_v1()?;
+        .build_v1()?
+        .max_decoding_message_size(max_message_size);
 
     // Build the server router with all services
     let router = TonicServer::builder()
         .tcp_keepalive(Some(permit_keep_alive_time))
-        .max_frame_size(Some(max_message_size as u32))
         .http2_keepalive_interval(Some(keep_alive_time))
         .http2_keepalive_timeout(Some(keep_alive_timeout))
         .http2_adaptive_window(Some(true))

@@ -71,7 +71,7 @@ pub struct GrpcTransportServer {
     /// TLS private key in PEM format
     pub key: String,
     /// Maximum message size for regular gRPC messages in bytes
-    pub max_message_size: i32,
+    pub max_message_size: usize,
     /// Maximum message size for streamed messages in bytes
     pub max_stream_message_size: u64,
     /// Number of parallel message processing tasks
@@ -88,7 +88,7 @@ impl GrpcTransportServer {
         port: u16,
         cert: String,
         key: String,
-        max_message_size: i32,
+        max_message_size: usize,
         max_stream_message_size: u64,
         parallelism: usize,
     ) -> Self {
@@ -112,7 +112,7 @@ impl GrpcTransportServer {
         port: u16,
         cert_path: &Path,
         key_path: &Path,
-        max_message_size: i32,
+        max_message_size: usize,
         max_stream_message_size: u64,
         parallelism: usize,
         local_peer: RPConf,
