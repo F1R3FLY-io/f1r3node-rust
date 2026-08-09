@@ -3275,7 +3275,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 49 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 50 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3333,6 +3333,7 @@ material now lives.
 | `CBR-L17` | `mettail-rust@ce60f76f` | Weighted MSO (monadic second-order logic) enumeration no longer inherits a `u64` word-length ceiling | `BUG_FIX_RULED_NONCONSENSUS` | arbitrary-length bit-vector odometer; 64/65-position boundary gate, bounded recursive-evaluator differential, and 20,000-depth / 256 KiB stack evidence in stack-safety report §5.18 |
 | `CBR-L18` | `mettail-rust@e3f2812f` | KAT equivalence stops treating exhaustion of a 100-pair work budget as proof | `BUG_FIX_RULED_NONCONSENSUS` | exact canonical Antimirov partial-derivative subsets; the former one-step false-positive reproducer is rejected; 144-pair independent guarded-string differential, 80-atom no-word-ceiling gate, 20,000-depth / 256 KiB stack gate, and the rejected non-canonical attempt are recorded in stack-safety report §5.18.8 |
 | `CBR-L19` | `mettail-rust@250f0929` | A sigma slot literally named `__t` remains the carrier value when a generated reduct shifts it through two or more template binders | `BUG_FIX_RULED_NONCONSENSUS` | the former recursive builder resolved `value_name` only after pushing its private `__t`, so the implementation detail shadowed a legal source identifier and shifted the fresh return channel instead of the matched value. The PDA captures the caller's de Bruijn index before introducing private frames. A targeted two-shift byte witness pins the correct binding; ordinary-name recursive-byte differentials, 20,000-level / 256 KiB gates, and the complete 359/359 codegen suite pass. The rest of `250f0929` is byte/hash neutral under CBR-023; stack-safety report §5.18.31 |
+| `CBR-L21` | this checkpoint; pgmcp #5192 | Finite acyclic Ascent macro chains are no longer rejected by an artificial 100-link traversal budget | `BUG_FIX_RULED_NONCONSENSUS` | an active-definition set rejects actual cycles with the existing recursive-macro error and accepts a 150-link witness plus 20,000 head/body links on a 256 KiB stack; all formerly accepted shallow expansions retain exact rule/source order. This is compile-time Ascent tooling and changes no installed Rholang runtime value, byte, hash, COMM, or charge; stack-safety report §5.20 |
 
 **CBR-023 living-set continuation (2026-08-06).** `mettail-rust@d3ff8dcb` adds SS-G32 to the
 retired conversion programme. Test-only recursive differentials preserve every closed-ground
@@ -3554,6 +3555,29 @@ also passes in 18 min 30.75 s at 518,108 KiB peak process RSS with zero swap. Th
 scheduling and resource lifetime only. It cannot move a production byte, value, acceptance verdict,
 error, hash, COMM, or charge and is recorded here so the negative resource result remains attached
 to the proof that depends on it.
+
+**CBR-023 living-set continuation (2026-08-09, SS-G43/SS-C13; pgmcp #5192).** The vendored Ascent
+syntax walks, testkit constructor/corpus migration, and benchmark receive counter now use explicit
+work/value machines. Bounded recursive oracles preserve rule expansion order, summaries,
+bound/free-variable visits, constructor source, refusal classes, and receive counts. The constructor
+keeps neutral empty, `PathMap<()>` set membership, and `PathMap<Par>` key/value mode distinct; it
+does not infer a mode for a non-empty untagged historical value. The one non-equivalent correction is
+isolated as retired CBR-L21: finite acyclic macro chains beyond the former artificial 100-link budget
+are accepted, while actual cycles retain the recursive-macro error.
+
+The shared f1r3node canonical-`Par` visitor suspends native PathMap read/owned zippers on the PDA
+frontier. It advances one entry at a time, decodes only the current key, and leaves later map values
+inside `PathMap<Par>`; forward raw visitors likewise use read zippers rather than the allocating
+`PathMap::iter` compatibility iterator. Neither borrowed nor owned traversal calls `trie_snapshot`,
+reconstructs a trie, projects decoded entries, or changes a key/value association. Empty/set/map
+recursive differentials, borrowed/owned preorder equality, and the 20,000-level 256 KiB gates pass.
+
+Except for CBR-L21's compile-time acceptance repair, this checkpoint extends CBR-023's
+`EQUIVALENCE_PROVEN` evidence. It changes no generated process for a formerly accepted language,
+protobuf or bincode byte, post-state or event hash, COMM schedule, charge, EPathMap mode, EPM1
+snapshot, PathMap topology, or zipper/algebra/lattice result. It therefore creates no active
+may-change-consensus entry; stack-safety report §5.20 records the machines, complexity, formal model,
+and capped resource evidence.
 
 ### B.2 The original commit-level exemptions
 

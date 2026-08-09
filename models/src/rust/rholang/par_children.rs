@@ -76,7 +76,11 @@ pub use crate::rust::rholang::bincode_schema_tables::EXPR_INSTANCE_VARIANT_COUNT
 /// "Structurally contained" means *reachable by `drop_in_place`* — including
 /// PathMap-owned values and `EZipperBody` cursor state. Logical traversal
 /// disposition remains a separate table below.
-pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>) {
+fn expr_instance_child_pars_with<'a>(
+    e: &'a ExprInstance,
+    out: &mut Vec<&'a Par>,
+    visit_epathmap: &mut impl FnMut(&'a crate::rhoapi::EPathMap, &mut Vec<&'a Par>),
+) {
     match e {
         // ---- grounds: no child Par ----
         ExprInstance::GBool(_)
@@ -179,10 +183,10 @@ pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>)
         // Structural ownership, not logical set membership: `PathMap<()>`
         // owns byte keys and contributes no borrowed `Par`; `PathMap<Par>`
         // contributes only its associated values.
-        ExprInstance::EPathmapBody(x) => x.entry_trie().extend_owned_par_refs(out),
+        ExprInstance::EPathmapBody(x) => visit_epathmap(x, out),
         ExprInstance::EZipperBody(x) => {
             for pm in x.pathmap.iter() {
-                pm.entry_trie().extend_owned_par_refs(out);
+                visit_epathmap(pm, out);
             }
         }
 
@@ -192,6 +196,12 @@ pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>)
             out.extend(x.arguments.iter());
         }
     }
+}
+
+pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>) {
+    expr_instance_child_pars_with(e, out, &mut |pathmap, pars| {
+        pathmap.entry_trie().extend_owned_par_refs(pars);
+    });
 }
 
 /// Append every child `Par` structurally contained in `c`, in traversal order.
@@ -217,10 +227,14 @@ pub fn connective_instance_child_pars<'a>(c: &'a ConnectiveInstance, out: &mut V
 /// connectives, sends, bundles, receives, news, matches, conditionals.
 /// `unforgeables` carries no `Par` (`GUnforgeable`'s four variants are all
 /// byte arrays), which is why it is absent rather than forgotten.
-pub fn par_child_pars<'a>(p: &'a Par, out: &mut Vec<&'a Par>) {
+fn par_child_pars_with<'a>(
+    p: &'a Par,
+    out: &mut Vec<&'a Par>,
+    visit_epathmap: &mut impl FnMut(&'a crate::rhoapi::EPathMap, &mut Vec<&'a Par>),
+) {
     for e in &p.exprs {
         if let Some(instance) = &e.expr_instance {
-            expr_instance_child_pars(instance, out);
+            expr_instance_child_pars_with(instance, out, visit_epathmap);
         }
     }
     for c in &p.connectives {
@@ -260,6 +274,12 @@ pub fn par_child_pars<'a>(p: &'a Par, out: &mut Vec<&'a Par>) {
         out.extend(i.if_true.iter());
         out.extend(i.if_false.iter());
     }
+}
+
+pub fn par_child_pars<'a>(p: &'a Par, out: &mut Vec<&'a Par>) {
+    par_child_pars_with(p, out, &mut |pathmap, pars| {
+        pathmap.entry_trie().extend_owned_par_refs(pars);
+    });
 }
 
 /// Every `Par` reachable from `root`, `root` included, collected **without
@@ -484,6 +504,217 @@ fn take_par_child_pars(p: &mut Par, out: &mut Vec<Par>) {
     take_par_child_pars_with(p, out, &mut |pathmap, pars| {
         pathmap.drain_owned_pars(pars);
     });
+}
+
+enum BorrowedEPathMapEntries<'a> {
+    Empty,
+    Set(pathmap::zipper::ReadZipperUntracked<'a, 'static, ()>),
+    Map(pathmap::zipper::ReadZipperUntracked<'a, 'static, Par>),
+}
+
+enum CanonicalParTask<'a> {
+    BorrowedPar(&'a Par),
+    OwnedPar(Par),
+    BorrowedEPathMapEntries(BorrowedEPathMapEntries<'a>),
+    OwnedEPathMapEntries(crate::rust::rhoapi_ext::OwnedEPathMapEntries),
+}
+
+fn borrowed_epathmap_entries(pathmap: &crate::rhoapi::EPathMap) -> BorrowedEPathMapEntries<'_> {
+    use crate::rust::epathmap_trie_codec::EPathMapMode;
+
+    match pathmap.mode() {
+        EPathMapMode::Empty => BorrowedEPathMapEntries::Empty,
+        EPathMapMode::Set => {
+            BorrowedEPathMapEntries::Set(pathmap.entry_trie().set_trie().read_zipper())
+        }
+        EPathMapMode::Map => BorrowedEPathMapEntries::Map(
+            pathmap
+                .entry_trie()
+                .map_trie()
+                .expect("map-mode EPathMap must own PathMap<Par>")
+                .read_zipper(),
+        ),
+    }
+}
+
+fn drive_canonical_par_tree<'a>(
+    root: CanonicalParTask<'a>,
+    visit: &mut impl FnMut(&Par),
+) -> Result<(), crate::rust::canonical_path::CodecError> {
+    use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
+
+    use crate::rust::canonical_path::decode_trie_path;
+    use crate::rust::rhoapi_ext::OwnedEPathMapEntry;
+
+    let mut work = vec![root];
+    let mut owned_children = Vec::<Par>::new();
+    let mut borrowed_children = Vec::<&'a Par>::new();
+    let mut owned_tries = Vec::<(usize, crate::rust::rhoapi_ext::OwnedEPathMapEntries)>::new();
+    let mut borrowed_tries = Vec::<(usize, &'a crate::rhoapi::EPathMap)>::new();
+    let mut ordered_children = Vec::<CanonicalParTask<'a>>::new();
+    let mut first_error = None;
+
+    while let Some(task) = work.pop() {
+        match task {
+            CanonicalParTask::OwnedPar(mut par) => {
+                visit(&par);
+                owned_children.clear();
+                owned_tries.clear();
+                take_par_child_pars_with(&mut par, &mut owned_children, &mut |pathmap, pars| {
+                    owned_tries.push((pars.len(), pathmap.into_owned_parts().entries));
+                });
+
+                ordered_children.clear();
+                let child_count = owned_children.len();
+                {
+                    let mut pars = owned_children.drain(..);
+                    let mut tries = owned_tries.drain(..).peekable();
+                    for position in 0..=child_count {
+                        while tries.peek().is_some_and(|(index, _)| *index == position) {
+                            let (_, entries) = tries
+                                .next()
+                                .expect("peeked owned EPathMap cursor must still exist");
+                            ordered_children.push(CanonicalParTask::OwnedEPathMapEntries(entries));
+                        }
+                        if let Some(child) = pars.next() {
+                            ordered_children.push(CanonicalParTask::OwnedPar(child));
+                        }
+                    }
+                    debug_assert!(tries.next().is_none());
+                }
+                ordered_children.reverse();
+                work.append(&mut ordered_children);
+            }
+            CanonicalParTask::BorrowedPar(par) => {
+                visit(par);
+                borrowed_children.clear();
+                borrowed_tries.clear();
+                par_child_pars_with(par, &mut borrowed_children, &mut |pathmap, pars| {
+                    borrowed_tries.push((pars.len(), pathmap));
+                });
+
+                ordered_children.clear();
+                let child_count = borrowed_children.len();
+                {
+                    let mut pars = borrowed_children.drain(..);
+                    let mut tries = borrowed_tries.drain(..).peekable();
+                    for position in 0..=child_count {
+                        while tries.peek().is_some_and(|(index, _)| *index == position) {
+                            let (_, pathmap) = tries
+                                .next()
+                                .expect("peeked borrowed EPathMap cursor must still exist");
+                            ordered_children.push(CanonicalParTask::BorrowedEPathMapEntries(
+                                borrowed_epathmap_entries(pathmap),
+                            ));
+                        }
+                        if let Some(child) = pars.next() {
+                            ordered_children.push(CanonicalParTask::BorrowedPar(child));
+                        }
+                    }
+                    debug_assert!(tries.next().is_none());
+                }
+                ordered_children.reverse();
+                work.append(&mut ordered_children);
+            }
+            CanonicalParTask::OwnedEPathMapEntries(mut entries) => {
+                let Some(entry) = entries.next() else {
+                    continue;
+                };
+
+                // Retain the prefix-compressed owned trie cursor as the
+                // continuation. Only the current encoded key leaves PathMap
+                // storage; all later map values remain in PathMap<Par>.
+                work.push(CanonicalParTask::OwnedEPathMapEntries(entries));
+                let (key, value) = match entry {
+                    OwnedEPathMapEntry::Set(key) => (key, None),
+                    OwnedEPathMapEntry::Map { key, value } => (key, Some(value)),
+                };
+                if let Some(value) = value {
+                    work.push(CanonicalParTask::OwnedPar(value));
+                }
+                if first_error.is_none() {
+                    match decode_trie_path(&key) {
+                        Ok(decoded_key) => work.push(CanonicalParTask::OwnedPar(decoded_key)),
+                        Err(error) => first_error = Some(error),
+                    }
+                }
+            }
+            CanonicalParTask::BorrowedEPathMapEntries(mut entries) => {
+                let (advanced, decoded_key, value) = match &mut entries {
+                    BorrowedEPathMapEntries::Empty => (false, None, None),
+                    BorrowedEPathMapEntries::Set(zipper) => {
+                        let advanced = zipper.to_next_get_val().is_some();
+                        let decoded = (advanced && first_error.is_none())
+                            .then(|| decode_trie_path(zipper.path()));
+                        (advanced, decoded, None)
+                    }
+                    BorrowedEPathMapEntries::Map(zipper) => {
+                        let value = zipper.to_next_get_val();
+                        let decoded = (value.is_some() && first_error.is_none())
+                            .then(|| decode_trie_path(zipper.path()));
+                        (value.is_some(), decoded, value)
+                    }
+                };
+                if !advanced {
+                    continue;
+                }
+
+                // The read zipper itself is the suspended continuation. No key
+                // byte vector, decoded-key collection, or map-value pointer
+                // projection is materialized.
+                work.push(CanonicalParTask::BorrowedEPathMapEntries(entries));
+                if let Some(value) = value {
+                    work.push(CanonicalParTask::BorrowedPar(value));
+                }
+                if let Some(decoded_key) = decoded_key {
+                    match decoded_key {
+                        Ok(decoded_key) => work.push(CanonicalParTask::OwnedPar(decoded_key)),
+                        Err(error) => first_error = Some(error),
+                    }
+                }
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Consume an owned `Par` graph in canonical preorder, including decoded
+/// EPathMap keys, while keeping both traversal and destruction stack-safe.
+///
+/// `visit` observes each node before its children are detached. EPathMap map
+/// values stay owned by the native `PathMap<Par>` until that trie is consumed;
+/// encoded keys are decoded one at a time and moved directly onto the same
+/// explicit traversal frontier. No decoded-key projection or secondary entry
+/// collection is retained.
+///
+/// The function returns the first invalid canonical key after safely consuming
+/// the complete owned graph. Valid `EPathMap` construction prevents that case,
+/// but returning the codec error keeps this utility total for independently
+/// deserialized or adversarially assembled model values.
+pub fn consume_canonical_par_tree(
+    root: Par,
+    mut visit: impl FnMut(&Par),
+) -> Result<(), crate::rust::canonical_path::CodecError> {
+    drive_canonical_par_tree(CanonicalParTask::OwnedPar(root), &mut visit)
+}
+
+/// Visit a borrowed `Par` graph in canonical preorder without projecting
+/// EPathMap entries or map-value pointers out of their native tries.
+///
+/// Read zippers are suspended directly on the explicit work stack. Each step
+/// decodes and consumes at most one canonical key; later keys and map values
+/// remain prefix-compressed in `PathMap<()>` or `PathMap<Par>`. The visitor
+/// therefore pays `O(frontier + largest decoded key)` auxiliary heap rather
+/// than retaining all decoded key graphs or one pointer per map value.
+pub fn visit_canonical_par_tree(
+    root: &Par,
+    mut visit: impl FnMut(&Par),
+) -> Result<(), crate::rust::canonical_path::CodecError> {
+    drive_canonical_par_tree(CanonicalParTask::BorrowedPar(root), &mut visit)
 }
 
 /// Consume a decoded `Par` graph while moving every canonical EPathMap key to
@@ -1216,6 +1447,53 @@ mod tests {
             // `ExprInstance` one uses.
             assert_containment_with_counted_allowance(&actual, &expected, 1, "ConnectiveInstance");
         }
+    }
+
+    #[test]
+    fn consuming_canonical_tree_visits_epathmap_keys_and_values_in_preorder() {
+        fn with_receive_count(count: usize) -> Par {
+            par_from_default! {
+                receives: vec![Receive::default(); count],
+                ..Default::default()
+            }
+        }
+
+        let nested_key = with_receive_count(3);
+        let key = par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                    vec![nested_key],
+                    Vec::new(),
+                    false,
+                    None,
+                ))),
+            }],
+            receives: vec![Receive::default(); 2],
+            ..Default::default()
+        };
+        let value = with_receive_count(4);
+        let root = par_from_default! {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new_map(
+                    vec![(key, value)],
+                    Vec::new(),
+                    false,
+                    None,
+                ))),
+            }],
+            receives: vec![Receive::default()],
+            ..Default::default()
+        };
+
+        let mut borrowed_preorder = Vec::new();
+        visit_canonical_par_tree(&root, |par| borrowed_preorder.push(par.receives.len()))
+            .expect("constructor-produced EPathMap keys are canonical");
+
+        let mut owned_preorder = Vec::new();
+        consume_canonical_par_tree(root, |par| owned_preorder.push(par.receives.len()))
+            .expect("constructor-produced EPathMap keys are canonical");
+        assert_eq!(borrowed_preorder, vec![1, 2, 3, 4]);
+        assert_eq!(owned_preorder, borrowed_preorder);
     }
 
     /// Every `Par`-bearing field of `Par` itself must be reported. Built as one

@@ -534,11 +534,14 @@ impl EntryTrie {
         &self,
         mut visit: impl FnMut(&[u8]),
     ) -> Result<(), EPathMapModeError> {
+        use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
+
         match &self.repr {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(map) => {
-                for (key, ()) in map.iter() {
-                    visit(&key);
+                let mut zipper = map.read_zipper();
+                while zipper.to_next_get_val().is_some() {
+                    visit(zipper.path());
                 }
                 Ok(())
             }
@@ -556,6 +559,8 @@ impl EntryTrie {
         &'trie self,
         mut visit: impl FnMut(&[u8], &'trie Par),
     ) -> Result<(), EPathMapModeError> {
+        use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
+
         match &self.repr {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
@@ -563,8 +568,9 @@ impl EntryTrie {
                 actual: EPathMapMode::Set,
             }),
             EPathMapRepr::Map(map) => {
-                for (key, value) in map.iter() {
-                    visit(&key, value);
+                let mut zipper = map.read_zipper();
+                while let Some(value) = zipper.to_next_get_val() {
+                    visit(zipper.path(), value);
                 }
                 Ok(())
             }

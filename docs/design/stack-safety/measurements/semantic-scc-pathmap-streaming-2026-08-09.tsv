@@ -1,0 +1,12 @@
+# SS-G43 / SS-C13 validation measurements. All commands used MemorySwapMax=0.
+# Peak RSS is the complete command, including any incremental compilation; it is resource-containment evidence, not a per-node heap slope.
+repository	subject	cases_or_depth	worker_stack_kib	memory_cap_kib	command_wall_s	peak_rss_kib	swap_bytes	result	notes
+mettail-rust	ascent_syntax_export package	16 unit + 2 doc; depth 20000	256	4194304	1.27	144588	0	pass	bounded recursive equivalence plus independent disjunction, macro-chain, token-group, Clone, and Drop depth gates
+mettail-rust	testkit all targets	48 tests; depth 20000	256	4194304	24.56	1338380	0	pass	constructor/corpus migration, EPathMap mode/refusal, lifecycle, and corpus-census gates; peak includes compilation
+mettail-rust	promoted Rholang corpus	55 tests; 54 source seeds	NA	12582912	NA	NA	0	pass	53 exact translations, three type-correct interpretations of one ambiguous numeric root, and one proved non-isomorphic PInputs disposition
+mettail-rust	EPathMap benchmark traversal integration	3 tests; depth 20000	256	8388608	163.22	6531456	0	pass	0.07 s test body; whole-command peak includes the bench-naive-baseline feature build
+f1r3node-rust-mettail	borrowed/owned canonical Par visitor preorder	1 focused test	NA	8388608	16.65	1197368	0	pass	whole-command peak includes models compilation; nested key/map-value preorder [1,2,3,4]
+f1r3node-rust-mettail	forward/reverse/owned raw PathMap zipper order	2 focused tests	NA	8388608	0.43	101820	0	pass	set/map key order, value association, ownership movement, and mode errors agree
+f1r3node-rust-mettail	models library	118 tests	mixed	8388608	1.78	174100	0	pass	complete library regression gate after the shared borrowed/owned visitor and raw forward-zipper changes
+mettail-rust	Rocq trampoline suite	11 theories	NA	8388608	NA	15360	0	pass	WorklistFoldEquivalence.v registered and kernel-checked
+mettail-rust	Rocq critical zero-admission scanner	self-test + configured roots	NA	8388608	NA	12903	0	pass	trampoline suite included; separate campaign task #386 records 11 admissions in a not-yet-covered PraTTaIL runtime proof suite

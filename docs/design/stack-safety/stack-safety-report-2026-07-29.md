@@ -17,7 +17,8 @@ pushdown-automaton (WPDA) generation, and Rho-network code-generation closure;
 §5.18)
 **Companion report** — the PathMap/EPathMap representation, wire format, and performance results
 live in the [PathMap report](../pathmap/pathmap-report-2026-08-03.md); the `SS-C5`…`SS-C12` and
-`SS-Y6` register rows below point there.
+`SS-Y6` register rows below point there, while SS-C13 records the subsequent native-cursor consumer
+closure in this report.
 **Audit ledgers superseded by nothing; this report *cites* them** —
 `docs/design/audits/theta-depth-traversals-2026-07-26.md`,
 `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`,
@@ -142,6 +143,12 @@ states to depth 8. The subsequent SS-C12 checkpoint kernel-checks all four Rocq 
 **6/6** Verus obligations with `--no-cheating`, and runs the canonical-key/value worklist through
 depth **20,000** on a **256 KiB** worker stack; §5.19 records the distinct time, heap, and
 acceptance evidence rather than folding it into the older 84-test measurement.
+The SS-G43/SS-C13 checkpoint then closes the refreshed vendored-syntax, constructor, and benchmark-
+visitor residues. Its shared borrowed/owned model visitor holds later EPathMap entries in native
+zippers, and its 20,000-level gates, 48-test constructor suite, 55-test promoted corpus, 18-test
+Ascent package, and admission-free worklist theorem are reported separately in §5.20. Pgmcp's
+semantic, representation, and consensus analyses must still be refreshed after the checkpoint is
+committed; this paragraph does not substitute the source-index closure gate with a test result.
 
 ---
 
@@ -201,6 +208,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-C10** | `7b25df5a` | f1r3node | expression-evaluator PDA: forward `Vec<&Par>` projection $`\rightarrow`$ direct reverse PathMap visitor | projected pointer payload $`n \operatorname{sizeof}(\&\mathrm{Par})`$ (set) / $`2n \operatorname{sizeof}(\&\mathrm{Par})`$ (map) $`\rightarrow 0`$; traversal remains $`\Theta(n)`$ | stack safety inherited from SS-B1; heap refinement | [PathMap §5.7](../pathmap/pathmap-report-2026-08-03.md#57-reverse-zipper-totality) |
 | **SS-C11** | `b30a1568`; mettail harness `bb98055b`, `9dccb346` | cross-repository | reducer-identity EPathMaps retain their native root; shared clone-family teardown releases one root without PathMap copy-on-write; E-6a binds the index once per phase | 4,119,482 $`\rightarrow`$ 278,527 allocation events; treatment 18.730 ms vs 32.281 ms control; PathMap clone/drop ladders remain **0 B/level** | measured-neutral optimization; no new traversal or PathMap change | [5.17](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11) |
 | **SS-C12** | this checkpoint; pgmcp #5193, #5282, #5283 | f1r3node | direct ACTree03 replay, range-backed canonical-key/value worklist, and exact deferred EPathMap fold construction; exhaustive comparison residues and malformed-gate resource closure | decoder/canonicalizer host re-entry $`\Theta(d) \rightarrow O(1)`$ native stack; repeated trie reconstruction/hash $`\Theta(d^2) \rightarrow \Theta(d)`$; depth **20,000** on **256 KiB**; malformed gate **6.12 GiB $`\rightarrow`$ 682,548 KiB** peak | **yes** for the decoder SCC; byte/acceptance neutral under CBR-044 and retired CBR-023 | [5.19](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12) |
+| **SS-C13** | this checkpoint; pgmcp #5192 | cross-repository | one shared borrowed/owned canonical-`Par` PDA suspends native read/owned EPathMap zippers directly; set keys remain `PathMap<()>`, map values remain `PathMap<Par>` until their entry is current | all-entry decoded-key/value-pointer frontier $`\rightarrow O(1)`$ live trie cursors plus the current decoded key and structural frontier; **20,000** levels on **256 KiB**; integration **3/3** | **yes**; borrowed/owned preorder equality, independent recursive receive-count oracle, and existing forward/reverse raw-zipper order gates | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -249,6 +257,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G40** | `mettail-rust@4770cc0e`, optimized by `2f65391f` | mettail | shared-prefix factoring-trie construction and deterministic wide-node partitioning | host recursion $`\Theta(d) \rightarrow O(1)`$ native stack; expected-amortized $`\Theta(p)`$ prefix grouping; **20,000** levels on **256 KiB**; focused matrix **0.07 s / 35,608 KiB** | **yes**; bounded recursive equations preserve the exact forest, branch/accept/refusal order, and 1,024-way first-occurrence order | [5.18.42](#51842-shared-prefix-factoring-trie-closure-ss-g40) |
 | **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L20 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G42** | `mettail-rust@98dc72ad` | mettail | arbitrarily nested generated OptionalGroup/BinderList WPDA traversal, action extraction, and model lifecycle | artificial nesting limit and recursive generator-model walk $`\rightarrow O(1)`$ native stack with $`O(d)`$ typed heap frames; **20,000** alternating levels on **256 KiB**; focused matrix **53/53**, **0.62 s / 178,064 KiB** | **yes**; bounded recursive forest oracle, exact generated-marker/action assertions, dense-marker round trips, lifecycle gates, and admission-free Rocq continuation laws | [5.18.44](#51844-nested-optional-and-binder-list-wpda-closure-ss-g42) |
+| **SS-G43** | this checkpoint; pgmcp #5192 | mettail | vendored Ascent disjunction/macro/token lifecycle and analysis, plus testkit constructor emission and historical-corpus migration $`\rightarrow`$ typed work/value PDAs | input-shaped recursion and macro-expansion depth ceiling $`\rightarrow O(1)`$ native stack; nested constructor string copying $`\Theta(d^2) \rightarrow \Theta(W)`$ direct output for $`W`$ bytes; **20,000** levels on **256 KiB** | **yes**; bounded recursive Ascent/constructor oracles, complete mode/error matrix, promoted corpus, and admission-free generic worklist-fold theorem | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -342,7 +351,7 @@ companion repository — that the Rholang parser was depth-independent (§5.6.3)
 The PathMap/EPathMap half of the campaign — the homogeneous representation, the EPM1 wire format,
 their benchmarks, and the intern-store deletion — is reported in the
 [PathMap companion report](../pathmap/pathmap-report-2026-08-03.md); this report keeps their
-register rows (SS-C5…SS-C12, SS-Y6) and the stack-safety consequences.
+register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
 
 ---
 
@@ -390,6 +399,7 @@ register rows (SS-C5…SS-C12, SS-Y6) and the stack-safety consequences.
   - [5.17 EPathMap evaluator and clone-family teardown integration [SS-C11]](#517-epathmap-evaluator-and-clone-family-teardown-integration-ss-c11)
   - [5.18 Recursive-carrier lifecycle and weighted-logic closure [SS-G8]](#518-recursive-carrier-lifecycle-and-weighted-logic-closure-ss-g8)
   - [5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12)
+  - [5.20 Semantic-SCC, constructor, and PathMap-streaming closure [SS-G43, SS-C13]](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -5543,6 +5553,136 @@ traversal limit, PathMap fork, list projection, shadow trie, or default-fold sho
 
 ---
 
+### 5.20 Semantic-SCC, constructor, and PathMap-streaming closure [SS-G43, SS-C13]
+
+#### 5.20.1 The remaining source findings were three coupled implementation classes
+
+The refreshed semantic strongly connected component (SCC) analysis exposed three classes not
+covered by the earlier generated-driver closure.
+
+1. The vendored Ascent syntax model recursively cloned, destroyed, summarized, desugared, and
+   renamed nested disjunctions. Macro expansion recursively followed body/head macro links and used
+   the literal depth budget 100, rejecting finite acyclic chains for their shape rather than their
+   work. Nested `proc_macro2::Group` replacement was another host-recursive token-tree walk.
+2. The testkit constructor rebuilt a recursive debug tree into one `String` through nested child
+   strings. Its generic PathMap spelling could not preserve the semantic distinction among neutral
+   `Empty`, `Set(PathMap<()>)`, and `Map(PathMap<Par>)`; treating every spelling as an ordinary map
+   would make the constructor both slower and wrong for set membership.
+3. The benchmark receive counter recursively traversed `Par`. An initial iterative draft replaced
+   host recursion but queued every PathMap value pointer and decoded key root before resuming the
+   trie. That draft was stack-safe but retained an avoidable entry-cardinality-proportional frontier.
+   The supposedly raw forward accessors also called `PathMap::iter`, whose own documentation says it
+   is less efficient than a read zipper and whose item type allocates a `Vec<u8>` key.
+
+The third finding is why stack safety alone is not the completion criterion. Moving a complete
+decoded-key projection from the native stack to a heap `Vec` removes overflow but preserves the
+wrong representation and a positive retained-memory slope. SS-C13 eliminates that projection rather
+than merely renaming it as the traversal frontier. The sibling PathMap crate remains unmodified.
+
+#### 5.20.2 One canonical borrowed/owned driver keeps EPathMap native
+
+`models::rust::rholang::par_children` now owns one canonical heterogeneous driver. Its task alphabet
+contains borrowed `Par`, owned `Par`, borrowed EPathMap read cursors, and owned EPathMap zipper
+cursors. The canonical child-slot table supplies ordinary children and the exact positions at which
+an EPathMap cursor occurs. A last-in, first-out work stack reverses those tasks once, preserving
+preorder without recursively re-entering the driver.
+
+For an EPathMap task, one transition advances exactly one native zipper entry:
+
+```text
+STEP-EPATHMAP(cursor)
+    entry := cursor.next()
+    if entry is absent
+        finish
+
+    push cursor                         // later entries remain compressed
+    if entry has a PathMap<Par> value
+        push value                      // executes after its key
+    decode entry.key                    // only the current key
+    push decoded key
+```
+
+Set mode therefore suspends `PathMap<()>`; map mode suspends `PathMap<Par>` and does not move or
+borrow a later value until that entry becomes current. Neutral `Empty` finishes without guessing a
+future mode. Borrowed traversal keeps key bytes inside the zipper path buffer; owned traversal moves
+only the current key. Neither path calls `trie_snapshot`, reconstructs a PathMap, makes a
+`Vec<Par>`, builds a key-to-value side index, or forces EPM1 serialization. The forward raw-entry
+accessors now use the same direct read-zipper loop as the reverse accessors, eliminating their former
+per-entry key-vector allocation.
+
+For $`n`$ visited model nodes, $`k`$ total encoded key bytes, structural frontier $`f`$, and largest
+decoded key graph $`q`$, the traversal performs $`\Theta(n+k)`$ work, uses $`O(1)`$ native stack in
+input depth, and retains $`O(f+q)`$ auxiliary heap beyond the input tries. Width or depth may enlarge
+the necessary structural frontier; the eliminated term is the sum of *all* decoded-key graphs and
+one projected pointer per map value. This is an algorithmic live-set bound, not a claim that a whole
+feature build has constant RSS.
+
+#### 5.20.3 Generated-source construction and Ascent use specialized PDAs
+
+The testkit emitter is now a streaming pushdown automaton. Typed tasks append punctuation, fields,
+collection entries, and leaves directly to one output buffer. A node never returns a child `String`
+to its parent, so output construction is $`\Theta(W)`$ in the emitted byte length $`W`$ rather than
+re-copying an ever-growing unary prefix. EPathMap construction is intentionally specialized:
+
+- neutral empty emits `PathMapLit::new()`;
+- set membership emits `PathMapLit::from_set_iter` and requires unit membership markers;
+- key/value mode emits `PathMapLit::from_map_iter`;
+- a non-empty legacy untagged `PathMapLit(HashMapLit(...))` is refused because its mode cannot be
+  inferred without changing meaning.
+
+The historical-corpus migration is another explicit worklist. It converts the complete 48-entry
+legacy method-constructor manifest, the uniquely meaningful empty byte carrier, and the uniquely
+neutral empty PathMap. The promoted Rholang test source accounts for all 54 stored seeds: 53 have an
+exact constructor translation, while the single `PInputs` seed is proved non-isomorphic because its
+historical binder layout cannot be reconstructed from the surviving debug form. Refusal preserves
+information; guessing a term would not be migration.
+
+The Ascent conversion uses specialized work/value machines for structural clone, lifecycle release,
+summary folds, Cartesian disjunction expansion, bound/free-variable visits, macro expansion, and
+token groups. Macro expansion carries an active-definition set: a repeated active name produces the
+existing recursive-macro error, while every finite acyclic chain is accepted independent of depth.
+This removes the artificial 100-link limit without replacing it with another traversal cap.
+
+#### 5.20.4 Equivalence, formal model, and resource evidence
+
+The executable and mechanized evidence separates exact-equivalence claims from the one ruled
+acceptance repair:
+
+- bounded recursive Ascent oracles compare desugared rule order, summaries, bound/free-variable
+  order and mutation, macro token replacement, clone, and error results; independent 20,000-level
+  cases cover disjunction lifecycle, head/body macro chains, and token groups on 256 KiB stacks;
+- constructor tests compare every field family, all EPathMap modes, malformed/refusal classes, and
+  recursive-oracle source text; constructor and corpus migration each survive 20,000 levels on a
+  256 KiB stack;
+- the receive counter agrees with an independent recursive oracle for `Empty`, set, map, and nested
+  `New.injections`; borrowed and owned canonical visitors produce the same nested key/value preorder;
+  an independent 20,000-level receive chain completes on 256 KiB;
+- `WorklistFoldEquivalence.v` proves, for an arbitrary algebra, that the `VisitTree`, `VisitForest`,
+  `BuildNode`, and `ConsForest` machine returns the mutually recursive tree/forest fold under every
+  continuation. Observer equality is a corollary. The theorem kernel-checks with no admissions, and
+  the zero-admission scanner now includes the trampoline suite.
+
+**MEASURED (f)** validation used `MemorySwapMax=0` throughout. The Ascent package passed 16 unit and
+2 documentation tests; its capped command peaked at **144,588 KiB**. The complete testkit target set
+passed **48/48**; the final capped command took **24.56 s**, peaked at **1,338,380 KiB**, and used zero
+swap, with compilation included. The promoted Rholang corpus passed **55/55**. The EPathMap benchmark
+integration passed **3/3** in **0.07 s**; its feature-build command took **2 min 43.22 s**, peaked at
+**6,531,456 KiB**, and used zero swap under an 8 GiB cap. The focused f1r3node model command passed
+the shared borrowed/owned preorder gate, peaked at **1,197,368 KiB** including compilation, and used
+zero swap. The direct forward/reverse/owned raw-zipper order gate passed **2/2** in **0.43 s** at
+**101,820 KiB** peak RSS and zero swap; the complete models library then passed **118/118** in
+**1.78 s** at **174,100 KiB** peak RSS and zero swap. Those command peaks establish containment, not
+per-node heap slopes; the retained-live-set result above follows from the cursor state machine and
+the absence of an all-entry collection.
+
+The only intentional semantic delta is acceptance of finite acyclic Ascent macro chains longer than
+100, isolated as retired non-consensus correction CBR-L21. For every formerly accepted input, the
+oracles preserve emitted source, rule order, constructor value, error choice, EPathMap mode, and
+visitor order. No production Rholang value, protobuf or bincode byte, post-state/event hash, COMM,
+charge, EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result changes.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6318,6 +6458,7 @@ done
 | [`measurements/spatial-matcher-heap-2026-08-04.tsv`](measurements/spatial-matcher-heap-2026-08-04.tsv) | matched matcher/control allocator, peak-heap, profiler-RSS, unprofiled-RSS, and runtime rows before `714d618c`, after it, and after the final singleton refinement `6f1412ee` (§5.16.4) |
 | [`measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv`](measurements/e8b-native-pathmap-par-e6a-2026-08-04.tsv) | the 51 submitted samples per arm, treatment phase splits, finalized digests, and locked E-8b decision metadata (§5.17.3) |
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
+| [`measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv`](measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv) | SS-G43/SS-C13 capped Ascent, constructor/corpus, EPathMap zipper-streaming, f1r3node visitor, and Rocq validation rows (§5.20) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
@@ -6348,7 +6489,7 @@ Appendix A are the durable evidence:
 > chronological snapshot behind the early sections, but it is not extended with later PathMap,
 > generated-PDA, matcher, proof, or resource-closure commits. The stable-ID register in [§0](#0-the-fix-register--the-scannable-index)
 > is the living and authoritative inventory. Treating this appendix as current would silently omit
-> SS-A8…SS-A10, SS-C5…SS-C12, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
+> SS-A8…SS-A10, SS-C5…SS-C13, SS-E2…SS-E4, and the repaired `SS-Y…` rows.
 
 ### C.1 Historical code fixes
 
