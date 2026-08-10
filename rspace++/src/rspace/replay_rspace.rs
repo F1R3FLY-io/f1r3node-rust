@@ -32,6 +32,7 @@ use super::metrics_constants::{
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
+use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
@@ -53,10 +54,10 @@ pub struct ReplayRSpace<C, P, A, K> {
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
-    // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72,
-    // "Per-channel locks → fixed striped locks"). ReplayRSpace still had the
-    // pre-#72 growing DashMap<u64, Arc<Mutex>> (unbounded, `entry()` shard
-    // contention on insert), which #72 never ported here — see #43.
+    // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
+    // ReplayRSpace still had the pre-#72 growing DashMap<u64, Arc<Mutex>>
+    // (unbounded, `entry()` shard contention on insert), which #72 never
+    // ported here — see #43. See striped_locks.rs for the shared scheme.
     phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -81,69 +82,29 @@ where
             .clone()
     }
 
-    fn channel_hash(channel: &C) -> u64 {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        channel.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    async fn acquire_locks(
-        stripes: &[Arc<tokio::sync::Mutex<()>>],
-        keys: &[u64],
-    ) -> ChannelLockGuard {
-        // Map channel hashes to stripe indices, sort to prevent deadlocks,
-        // dedup so two channels in the same stripe are only locked once.
-        let mut indices: Vec<usize> = keys.iter().map(|k| (*k as usize) % stripes.len()).collect();
-        indices.sort();
-        indices.dedup();
-
-        let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
-        for idx in indices {
-            let guard = stripes[idx].clone().lock_owned().await;
-            held.push(HeldLock { _guard: guard });
-        }
-
-        ChannelLockGuard { _held: held }
-    }
-
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, channel_hashes).await;
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, channel_hashes).await;
-        (phase_a, phase_b)
+        striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
-        let channel_hash = Self::channel_hash(channel);
-        let phase_a = Self::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
+        let channel_hash = striped_locks::channel_hash(channel);
+        let phase_a = striped_locks::acquire_locks(&self.phase_a_locks, &[channel_hash]).await;
 
         let store = self.get_store();
         let join_hashes: Vec<u64> = store
             .get_joins(channel)
             .into_iter()
             .flatten()
-            .map(|ch| Self::channel_hash(&ch))
+            .map(|ch| striped_locks::channel_hash(&ch))
             .collect();
 
-        let phase_b = Self::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
         (phase_a, phase_b)
     }
 
     fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
-        Arc::new(
-            (0..256)
-                .map(|_| Arc::new(tokio::sync::Mutex::new(())))
-                .collect(),
-        )
+        striped_locks::new_striped_locks()
     }
-}
-
-struct HeldLock {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-struct ChannelLockGuard {
-    _held: Vec<HeldLock>,
 }
 
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for ReplayRSpace<C, P, A, K>
@@ -283,8 +244,10 @@ where
             panic!("RUST ERROR: channels.length must equal patterns.length");
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
-            let channel_hashes: Vec<u64> =
-                channels.iter().map(|ch| Self::channel_hash(ch)).collect();
+            let channel_hashes: Vec<u64> = channels
+                .iter()
+                .map(|ch| striped_locks::channel_hash(ch))
+                .collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
 
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);

@@ -14,8 +14,12 @@ cat >"$TMP/bin/poetry" <<'SH'
 #!/usr/bin/env bash
 trap 'exit 143' TERM INT
 printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
-mkdir -p "$FAKE_DATA_DIR/session"
-cat >"$FAKE_DATA_DIR/session/resource-timeseries.csv" <<'CSV'
+# Docker sessions write monitor artifacts under log-archive/ (the provider's
+# host-visible per-session dir); subprocess sessions write under data/. The
+# monitor CSV goes to the archive root and the metrics CSV to the data root
+# so a driver that searches only one of them fails this test.
+mkdir -p "$FAKE_ARCHIVE_DIR/session" "$FAKE_DATA_DIR/session"
+cat >"$FAKE_ARCHIVE_DIR/session/resource-timeseries.csv" <<'CSV'
 elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
 1.0,rnode.test.validator1,256.0,10.0,0
 1.0,rnode.test.validator2,512.0,20.0,0
@@ -25,6 +29,12 @@ elapsed_s,node,metric,value
 1.0,rnode.test.validator1,replay_cache_entries,12
 1.0,rnode.test.validator1,replay_cache_retained_bytes,1048576
 CSV
+# The identical node log in BOTH roots (teardown archives a copy of a log
+# that also lives under data/): counting metrics must see it once.
+cat >"$FAKE_DATA_DIR/session/validator1.log" <<'LOG'
+proposal rejected: too far ahead of the last finalized block
+LOG
+cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
 while :; do sleep 1; done
 SH
@@ -56,6 +66,7 @@ chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry.pid" \
 	FAKE_DATA_DIR="$TMP/system-integration/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/system-integration/integration-tests/log-archive" \
 	SOAK_DURATION_SECONDS=120 \
 	SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
 	SOAK_OUTPUT_DIR="$TMP/output" \
@@ -109,6 +120,7 @@ jq -e '
   and .rss_peak_mb == 768
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].too_far_ahead_errors == 1
 ' "$TMP/output/summary.json" >/dev/null
 grep -q 'replay_cache_retained_bytes,1048576' \
 	"$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv"

@@ -677,7 +677,7 @@ proptest! {
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_continuations_in_the_cache(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
+  fn snapshot_should_be_unaffected_by_later_put_continuation(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
       prop_assume!(continuation1 != continuation2);
       let (_, hot_store) = fixture();
 
@@ -689,7 +689,7 @@ proptest! {
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_installed_continuations_in_the_cache(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
+  fn snapshot_should_be_unaffected_by_later_install_continuation(channels in  vec(any::<String>(), 0..=SIZE_RANGE), continuation1 in any::<Continuation>(), continuation2 in any::<Continuation>()) {
       prop_assume!(continuation1 != continuation2);
       let (_, hot_store) = fixture();
 
@@ -700,7 +700,7 @@ proptest! {
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_data_in_the_cache(channel in  any::<String>(), data1 in any::<Data>(), data2 in any::<Data>()) {
+  fn snapshot_should_be_unaffected_by_later_put_datum(channel in  any::<String>(), data1 in any::<Data>(), data2 in any::<Data>()) {
       prop_assume!(data1 != data2);
       let (_, hot_store) = fixture();
 
@@ -711,7 +711,7 @@ proptest! {
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_joins_in_the_cache(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
+  fn snapshot_should_be_unaffected_by_later_put_join(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
 
@@ -722,7 +722,7 @@ proptest! {
   }
 
   #[test]
-  fn remove_join_should_create_a_deep_copy_of_the_installed_joins_in_the_cache(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
+  fn snapshot_should_be_unaffected_by_later_install_join(channel in  any::<String>(), join1 in any::<Join>(), join2 in any::<Join>()) {
       prop_assume!(join1 != join2);
       let (_, hot_store) = fixture();
 

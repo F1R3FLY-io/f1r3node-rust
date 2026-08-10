@@ -77,16 +77,16 @@ fn block_in_floor_merge_scope(
     Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
 }
 
-fn canonical_disposition_sigs(
+/// BFS-walk the closure of `parents` down to `earliest_block_number`,
+/// returning each sig's latest disposition as `sig -> (height, won)`.
+/// A win and a rejection never share a height (a merge sits one block above
+/// its siblings), so the highest-block disposition is the latest; a
+/// same-height tie prefers REJECTION so a keep-one loser stays re-proposable.
+fn canonical_dispositions(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
     earliest_block_number: i64,
-    target_won: bool,
-) -> Result<HashSet<Bytes>, CasperError> {
-    // sig -> (highest block_number observed, won at that height?). A win and a
-    // rejection never share a height (a merge sits one block above its siblings),
-    // so the highest-block disposition is the latest; a same-height tie prefers
-    // REJECTION so a keep-one loser stays re-proposable.
+) -> Result<HashMap<Bytes, (i64, bool)>, CasperError> {
     let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
     let mut visited: HashSet<BlockHash> = HashSet::new();
     let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
@@ -111,9 +111,93 @@ fn canonical_disposition_sigs(
             queue.push_back(p.clone());
         }
     }
-    Ok(disposition
+    Ok(disposition)
+}
+
+fn canonical_disposition_sigs(
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    earliest_block_number: i64,
+    target_won: bool,
+) -> Result<HashSet<Bytes>, CasperError> {
+    Ok(
+        canonical_dispositions(block_store, parents, earliest_block_number)?
+            .into_iter()
+            .filter_map(|(sig, (_, won))| (won == target_won).then_some(sig))
+            .collect(),
+    )
+}
+
+/// BFS-walk the closure of `parents` down to `earliest_block_number`,
+/// returning each rejected sig's HIGHEST rejection height. Unlike
+/// `canonical_dispositions`, a later win does not mask the rejection —
+/// callers use this to ask "is there any rejection at or above height H?",
+/// which the latest-disposition map cannot answer once a higher win exists.
+fn max_visible_rejection_heights(
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    earliest_block_number: i64,
+) -> Result<HashMap<Bytes, i64>, CasperError> {
+    let mut latest: HashMap<Bytes, i64> = HashMap::new();
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
+    while let Some(hash) = queue.pop_front() {
+        if !visited.insert(hash.clone()) {
+            continue;
+        }
+        let Some(block) = block_store.get(&hash)? else {
+            continue;
+        };
+        let bn = block.body.state.block_number;
+        if bn < earliest_block_number {
+            continue;
+        }
+        for rd in &block.body.rejected_deploys {
+            latest
+                .entry(rd.sig.clone())
+                .and_modify(|height| *height = (*height).max(bn))
+                .or_insert(bn);
+        }
+        for p in &block.header.parents_hash_list {
+            queue.push_back(p.clone());
+        }
+    }
+    Ok(latest)
+}
+
+/// Sigs whose rejected-buffer entry is TERMINAL: the latest disposition in
+/// the FINALIZED ancestry is a win, AND that finalized win sits strictly
+/// above every rejection visible from `visible_parents`. Block finalization
+/// does not finalize a deploy's effects — a conflict-set merge above the
+/// LFB can still reject a deploy whose winning block already finalized, and
+/// once that rejecting block finalizes, canonical state has dropped the
+/// deploy. A finalized win therefore only terminates recovery once no
+/// visible rejection at or above its height can overturn it. (Walking the
+/// finalized chain alone — the pre-fix behavior — is blind to exactly that
+/// pending rejection; regression: finalized_win_pending_rejection_spec,
+/// root-caused from integration run 31150220859.)
+pub fn finalized_won_terminal_sigs(
+    block_store: &KeyValueBlockStore,
+    last_finalized_block: &BlockHash,
+    visible_parents: &[BlockHash],
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    let finalized = canonical_dispositions(
+        block_store,
+        std::slice::from_ref(last_finalized_block),
+        earliest_block_number,
+    )?;
+    let visible_rejections =
+        max_visible_rejection_heights(block_store, visible_parents, earliest_block_number)?;
+    Ok(finalized
         .into_iter()
-        .filter_map(|(sig, (_, won))| (won == target_won).then_some(sig))
+        .filter_map(|(sig, (win_height, won))| {
+            let terminal = won
+                && visible_rejections
+                    .get(&sig)
+                    .is_none_or(|rejection_height| win_height > *rejection_height);
+            terminal.then_some(sig)
+        })
         .collect())
 }
 
@@ -215,6 +299,7 @@ fn retain_pending_rejected_deploys_for_buffer(
     block_store: &KeyValueBlockStore,
     deploy_lifespan: i64,
     deploys: &mut Vec<Signed<DeployData>>,
+    rejecting_block_number: i64,
 ) -> Result<usize, CasperError> {
     if deploys.is_empty() {
         return Ok(0);
@@ -229,12 +314,57 @@ fn retain_pending_rejected_deploys_for_buffer(
                     err
                 ))
             })?;
+
+    // `Finalized` is not terminal by itself: the resolver scans only the
+    // finalized chain, so it cannot see the rejection this populate call is
+    // servicing. A finalized win only settles the sig when it sits strictly
+    // ABOVE the rejecting block — otherwise the pending rejection can
+    // finalize and drop the win's effects from canonical state, and the
+    // buffer holds the only re-proposable copy (regression:
+    // finalized_win_pending_rejection_spec). A win above the rejection
+    // (late validation of an already-recovered rejection) stays terminal.
+    let scan_floor = deploys
+        .iter()
+        .map(|d| d.data.valid_after_block_number)
+        .min()
+        .unwrap_or(rejecting_block_number)
+        .min(rejecting_block_number);
+    let finalized_dispositions = canonical_dispositions(
+        block_store,
+        std::slice::from_ref(&dag.last_finalized_block()),
+        scan_floor,
+    )?;
+
     let before = deploys.len();
     deploys.retain(|deploy| {
-        statuses
-            .get(&deploy.sig)
-            .map(|status| status.state == DeployFinalizationState::Pending)
-            .unwrap_or(true)
+        let state = statuses.get(&deploy.sig).map(|status| status.state);
+        match state {
+            None | Some(DeployFinalizationState::Pending) => true,
+            Some(DeployFinalizationState::Finalized) => {
+                match finalized_dispositions.get(&deploy.sig) {
+                    Some((win_height, true)) => *win_height <= rejecting_block_number,
+                    disagreement => {
+                        // The resolver and the finalized-chain disposition scan
+                        // disagree: `Finalized` without a winning finalized
+                        // disposition (or none at all). Retaining is the safe
+                        // direction — the buffer holds the only re-proposable
+                        // copy — but the disagreement itself is the resolver's
+                        // known blindness to rejections above the LFB, so make
+                        // it visible rather than silent.
+                        tracing::warn!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: resolver reports Finalized for {} but the \
+                             finalized-chain disposition is {:?} (rejecting block #{}); retaining",
+                            PrettyPrinter::build_string_bytes(&deploy.sig),
+                            disagreement,
+                            rejecting_block_number
+                        );
+                        true
+                    }
+                }
+            }
+            Some(_) => false,
+        }
     });
     Ok(before - deploys.len())
 }
@@ -1335,6 +1465,7 @@ pub async fn compute_parents_post_state(
                         block_store,
                         s.on_chain_state.shard_conf.deploy_lifespan,
                         &mut deploys_to_buffer,
+                        max_parent_block_number.saturating_add(1),
                     ) {
                         Ok(skipped) if skipped > 0 => {
                             tracing::info!(
@@ -2104,13 +2235,26 @@ mod backstop_tests {
         let mut dag = dag_storage.get_representation().expect("dag");
         dag.last_finalized_block_hash = finalized_block.block_hash.clone();
 
+        // Rejection below the finalized win (late validation of an
+        // already-recovered rejection): the finalized sig is terminal.
         let mut deploys = vec![finalized.clone(), pending.clone()];
         let skipped =
-            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys)
+            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 0)
                 .expect("retain pending");
 
         assert_eq!(skipped, 1);
         assert_eq!(deploys.len(), 1);
         assert_eq!(deploys[0].sig, pending.sig);
+
+        // Rejection ABOVE the finalized win: `Finalized` is not terminal —
+        // the pending rejection can finalize and drop the win's effects, so
+        // the deploy must stay buffered (finalized-win blindness fix).
+        let mut deploys = vec![finalized.clone(), pending.clone()];
+        let skipped =
+            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys, 2)
+                .expect("retain pending with rejection above win");
+
+        assert_eq!(skipped, 0);
+        assert_eq!(deploys.len(), 2);
     }
 }

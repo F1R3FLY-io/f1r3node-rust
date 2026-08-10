@@ -329,6 +329,14 @@ jobs:
         # use --in-place plus --no-shuffle for reproducibility and
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
+        env:
+          # The 7GB ubuntu-latest VM dies with a runner shutdown signal
+          # 30s-5min into the initial workspace build under cargo-mutants
+          # (nightlies 30992663244, 30895783563) — parallel rustc peak
+          # exceeds memory. Capping build concurrency keeps the peak
+          # inside the VM; the build is slower but the 240-minute job
+          # budget was never the binding constraint.
+          CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
   nightly-extended-proptest:
