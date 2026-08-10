@@ -44,7 +44,7 @@ env:
   # the old..new range in system-integration; never replace with a tag/branch.
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit.
-  SYSTEM_INTEGRATION_REF: 4ba41e9df848e65b3329bb5521b3b45a7b34b300
+  SYSTEM_INTEGRATION_REF: a2c690a171acb2f3d7006cad8a26273487f74ae5
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
