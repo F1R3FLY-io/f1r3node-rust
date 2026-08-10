@@ -530,6 +530,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
+            --rss-ceiling-mb=7000 \
             -v --tb=short --instafail --maxfail=10 \
             -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
