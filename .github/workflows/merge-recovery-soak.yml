@@ -72,7 +72,14 @@ permissions:
 
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
-  SOAK_RSS_CEILING_MB: "14336"
+  # 2026-08-09: raised 14336 -> 20480 after the weekend-soak breaches (runs
+  # 31331480002 / 31332864501). Attribution before raising: local A/B of
+  # pre- vs post-merge master showed no node-code memory change, and the
+  # green-vs-failed harness pins carry an empty test_load diff — the 6-node
+  # shard's real envelope is 16.7-19.3GB (the last GREEN run already peaked
+  # 16693MB, over the old ceiling), so 14336 was below the workload, not a
+  # regression guard. SOAK_HOST_FREE_FLOOR_MB remains the host-thrash guard.
+  SOAK_RSS_CEILING_MB: "20480"
   SOAK_HOST_FREE_FLOOR_MB: "12288"
   # THIRD pin site. The other two — .github/oci-validation.env and
   # _integration-pipeline.yml — are held identical by build_base's drift check;
