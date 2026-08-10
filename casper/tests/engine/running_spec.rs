@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_validator_should_transition_to_initializing_and_request_approved_block() {
+    async fn stale_validator_should_stay_running_and_request_fork_choice_tips() {
         let fixture = TestFixture::new().await;
         let engine_cell = Arc::new(EngineCell::init());
 
@@ -436,8 +436,8 @@ mod tests {
 
         let engine = engine_cell.get().await;
         assert!(
-            engine.with_casper().is_none(),
-            "stale validator should leave Running and transition into Initializing"
+            engine.with_casper().is_some(),
+            "stale validator should remain Running while requesting peer tips"
         );
 
         let expected_proto = ApprovedBlockRequestProto {
@@ -455,9 +455,13 @@ mod tests {
         });
 
         assert!(
-            found_approved_block_request,
-            "recovery should request an approved block from peers; requests: {:?}",
+            !found_approved_block_request,
+            "stale validator should not request an approved block; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+        );
+        assert!(
+            !requests.is_empty(),
+            "stale validator should request fork-choice tips"
         );
     }
 

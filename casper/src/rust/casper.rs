@@ -478,11 +478,15 @@ pub mod test_helpers {
         }
 
         pub fn new(snapshot: CasperSnapshot, lfb: BlockMessage) -> Self {
+            let block_store = Self::create_test_block_store();
+            block_store
+                .put(snapshot.last_finalized_block.clone(), &lfb)
+                .expect("store test LFB");
             Self {
                 snapshot,
                 lfb,
                 pending_deploy_count: 0,
-                block_store: Self::create_test_block_store(),
+                block_store,
             }
         }
 
@@ -491,11 +495,15 @@ pub mod test_helpers {
             lfb: BlockMessage,
             pending_deploy_count: usize,
         ) -> Self {
+            let block_store = Self::create_test_block_store();
+            block_store
+                .put(snapshot.last_finalized_block.clone(), &lfb)
+                .expect("store test LFB");
             Self {
                 snapshot,
                 lfb,
                 pending_deploy_count,
-                block_store: Self::create_test_block_store(),
+                block_store,
             }
         }
 
