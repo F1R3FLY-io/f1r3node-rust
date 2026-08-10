@@ -1651,6 +1651,7 @@ impl BlockAPI {
         block_hash: Option<String>,
         use_pre_state_hash: bool,
         dev_mode: bool,
+        deployer: Option<PublicKey>,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
@@ -1746,7 +1747,7 @@ impl BlockAPI {
                 match target_block {
                     Some(b) => {
                         let (res, cost) = runtime_manager
-                            .play_exploratory_deploy(term, &state_hash)
+                            .play_exploratory_deploy(term, &state_hash, deployer)
                             .await?;
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;

@@ -22,7 +22,10 @@ impl PublicKey {
 
     pub fn validate_secp256k1_bytes(bytes: &[u8]) -> Result<()> {
         if bytes.len() != 65 || bytes[0] != 0x04 {
-            return Err(eyre!("Invalid validator public key"));
+            return Err(eyre!(
+                "public key must be a 65-byte uncompressed secp256k1 key (0x04-prefixed), got {} bytes",
+                bytes.len()
+            ));
         }
 
         VerifyingKey::from_sec1_bytes(bytes)
