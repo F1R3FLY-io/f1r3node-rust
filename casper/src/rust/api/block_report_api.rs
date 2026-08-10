@@ -35,6 +35,14 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Failed to trace block: {0}")]
     ReplayFailed(String),
+    #[error(
+        "computed post-state {computed} does not match recorded post-state {recorded} for block {block}"
+    )]
+    PostStateMismatch {
+        block: String,
+        computed: String,
+        recorded: String,
+    },
     #[error("Block info error: {0}")]
     BlockInfoError(String),
     #[error("Report store error: {0}")]
@@ -100,12 +108,11 @@ impl BlockReportAPI {
 
         let expected_post_state = proto_util::post_state_hash(block);
         if report_result.post_state_hash.as_slice() != expected_post_state.as_ref() {
-            return Err(BlockReportError::ReplayFailed(format!(
-                "computed post-state {} does not match recorded post-state {} for block {}",
-                hex::encode(&report_result.post_state_hash),
-                hex::encode(&expected_post_state),
-                hex::encode(&block.block_hash)
-            )));
+            return Err(BlockReportError::PostStateMismatch {
+                block: hex::encode(&block.block_hash),
+                computed: hex::encode(&report_result.post_state_hash),
+                recorded: hex::encode(&expected_post_state),
+            });
         }
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
