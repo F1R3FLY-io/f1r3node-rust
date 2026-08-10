@@ -15,15 +15,15 @@
 //!                              so against 7 it writes before it refuses
 //!                                        │
 //!   ConnNotBody inverts        the inner attempt refused ⇒ the negation
-//!   (spatial_matcher.rs)       SUCCEEDS — carrying a binding out with it
+//!   (spatial_matcher_pda.rs)   SUCCEEDS — carrying a binding out with it
 //!                                        │
 //!   ~ and \/ are numbered      each body has its OWN fresh FreeMap, so BOTH
 //!   from zero, per body        siblings' leaks are level 0
 //!   (p_negation_normalizer)              │
 //!   δ₁ = {0 ↦ 7}, δ₂ = {0 ↦ 6}           │
 //!                                        ▼
-//!   aggregate_updates          two claimed matches added the SAME level ⇒
-//!   (list_match.rs)            refuse the whole list match
+//!   ListMachine finalization   two claimed matches added the SAME level ⇒
+//!   (spatial_matcher_pda.rs)   refuse the whole list match
 //!                                        │
 //!                                        ▼
 //!   the reducer                the first `match` case does not fire and the
@@ -139,9 +139,9 @@ async fn matches_answers_true_for_two_binding_negations() {
     );
 }
 
-/// The `Set` route, which reaches the production `ESetBody` `ListMatch<Par>`
-/// rather than the `ListMatch<Send>` the two tests above drive. Same defect,
-/// different list.
+/// The `Set` route, which reaches the production `ESetBody` `ListMachine`
+/// rather than its `Send` lane exercised by the two tests above. Same defect,
+/// different carrier lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_set_pattern_of_two_binding_negations_takes_the_first_case() {
     let program = r#"

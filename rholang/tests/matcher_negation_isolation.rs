@@ -180,8 +180,8 @@ fn a_single_sibling_negation_leaves_the_callers_map_clean() {
 /// `None`, and the list match refuses. HEAD prints
 /// `RHOLANG-MATCHER-AGGREGATE-UPDATES-REFUSAL: level 0 …` and answers `None`.
 ///
-/// `ListMatch<Par>` is the production `ESetBody` list
-/// (`spatial_matcher.rs:578-586`), i.e. a Rholang `Set` pattern.
+/// `ListMatch<Par>` is the compatibility unit surface corresponding to the
+/// production PDA's `ESetBody` `ListMachine`, i.e. a Rholang `Set` pattern.
 #[test]
 fn two_sibling_binding_negations_do_not_refuse_the_list_match() {
     // ★ MUTATION APPLIED (1): each sibling matches its target on its own, so
@@ -218,7 +218,8 @@ fn two_sibling_binding_negations_do_not_refuse_the_list_match() {
 }
 
 /// The same verdict through a full `spatial_match(Par, Par)` — two sibling
-/// **sends**, which is `ListMatch<Send>` (`spatial_matcher.rs:353`), the list a
+/// **sends**. This direct compatibility test exercises `ListMatch<Send>`; the
+/// end-to-end reduction witness exercises the production `ListMachine` path a
 /// `match` case pattern of the shape `@0!(~{x /\ 8}) | @1!(~{y /\ 9})`
 /// actually drives.
 #[test]

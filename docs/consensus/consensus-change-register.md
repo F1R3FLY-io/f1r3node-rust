@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-09 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-10 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -3619,6 +3619,36 @@ binary remains green. This is a `BYTE_NEUTRAL_MEASURED` heap/work optimization w
 process, protobuf or bincode byte, post-state or event hash, COMM schedule, charge, EPathMap mode,
 EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result. Stack-safety report §5.22 and its
 durable TSV retain the full predecessor/successor, formal, regression, and profiler evidence.
+
+**CBR-023 living-set continuation (2026-08-10, D-E4/SS-A10; pgmcp #3807).**
+`f1r3node-rust-mettail@3a3db311` adds sparse relational-row reuse to the production
+`spatial_matcher_pda::ListMachine` and shares the relation utility with the compatibility
+`MaximumBipartiteMatch` surface. A row retains only its evaluated-prefix frontier and
+successful edges; failed pairs are represented by the frontier rather than a dense table, remainder
+filler rows retain no relation payload, and binding results are delta-only. Storage is
+$`O(P+E)`$ for $`P`$ pattern rows and $`E`$ successful cacheable edges.
+
+On the preregistered 128-by-128 rejecting displacement graph, all 51 nominal samples perform 699,263
+edge evaluations and all 51 production samples perform 16,384: exactly 682,879 fewer calls, or
+42.67962646484375×. Both diagonal controls perform 8,256 calls with identical assignments and zero
+cache reuse. The zero variance makes the generic Welch statistic undefined; the frozen protocol's
+exact-inequality rule is therefore the decision authority. Exhaustive graphs through four-by-four,
+512 generated graphs through eight-by-eight, production recursive-oracle comparisons, nonlinear and
+duplicate carriers, and the complete capped `rholang` package preserve every verdict and
+`FreeMap`.
+
+`mettail-rust@b6095533` proves in admission-free Rocq that cached-prefix plus unseen-suffix
+rows equal nominal full scans, that the two regions are disjoint, and that every valid injective
+assignment is preserved. `f1r3node-rust-mettail@0c5e297a` contains only the test
+reconciliation needed by the complete gate after earlier stack-safe `Drop` and cache-transfer
+changes.
+
+This is a `BYTE_NEUTRAL_MEASURED` heap/work optimization within CBR-023's
+`EQUIVALENCE_PROVEN` set, not a new consensus decision. It changes no accepted program,
+match verdict, binding, generated process, protobuf or bincode byte, post-state or event hash, COMM
+schedule, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result.
+The PathMap crate is untouched. Stack-safety report §5.16.6, its durable TSV, and the committed
+scientific ledger retain the experiment and closure evidence.
 
 ### B.2 The original commit-level exemptions
 

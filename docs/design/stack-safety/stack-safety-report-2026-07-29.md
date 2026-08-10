@@ -4,12 +4,14 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-09
+**Report date** 2026-07-29, revised through 2026-08-10
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@c1feaf36` (complete-message protobuf ingress
-bounds, `InterpreterError` lifecycle machine, reducer method-replay machine, exact recursion
-census, production lint gate, and prior matcher/PathMap closure)
-**Companion decision head** `mettail-rust@e831c2ab` (recursive-carrier lifecycle verification plus operational,
+**Living closure head** `f1r3node-rust-mettail@0c5e297a` (sparse relational-row reuse in the
+production spatial-matcher PDA, complete-message protobuf ingress bounds, `InterpreterError`
+lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
+and prior matcher/PathMap closure)
+**Companion decision head** `mettail-rust@b6095533` (admission-free relational-row equivalence,
+recursive-carrier lifecycle verification, and operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
 correlated-matching, numeric-cast, Delta-one matching, nested optional/binder-list weighted
@@ -203,7 +205,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-A7** | Stage G | f1r3node | `normalize_ann_proc`'s 26-fn SCC $`\rightarrow`$ `norm_drive` | 7,261 $`\rightarrow`$ **0** | **yes** | [5.1](#51-family-a--the-substitution-sorting-normalisation-and-evaluation-cores) |
 | **SS-A8** | `26876b65` | f1r3node | generated recursive `Par` family surfaces: `Clone`, `Drop`, `PartialEq`, `Hash`, `Ord`, `Debug`, protobuf `Message` encode/length/merge/clear, and `Oneof` encode/length/merge | recursive derive/host calls $`\rightarrow`$ **generated explicit PDAs** | **yes** | [5.12](#512-generated-par-pda-closure-ss-a8-ss-e2) |
 | **SS-A9** | `e2cf939f`, `26d3e3b9` | f1r3node | node JSON boundary: `Par`/`Expr`/`Bundle`/`EPathMap` $`\rightarrow`$ `RhoExpr`, plus `RhoExpr` `Clone`, `Drop`, `Serialize`, and `Debug` | recursive calls/derives $`\rightarrow`$ explicit PDAs; depth 16,384 on a 256 KiB stack | **yes** | [5.13](#513-the-node-json-boundary-ss-a9) |
-| **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope also eliminated | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
+| **SS-A10** | `78611b11`, `6799b406`, `fc497f94`, `98bb3d5e`, `acfd194f`, `714d618c`, `6f1412ee`, `3a3db311` | f1r3node | heterogeneous spatial-matcher SCC, including concrete binders, connective rollback, subset retry, sparse relational-row reuse, `PathMap<()>` and `PathMap<Par>` | ~70,237 B/level debug on the recursive binding path $`\rightarrow`$ **0**; depth 4,096 and width 65,536; retained matcher RSS slope eliminated; repeated edge evaluations reduced 42.68× on the D-E4 displacement control | **yes** | [5.16](#516-spatial-matcher-and-pathmap-native-retry-pda-ss-a10) |
 | **SS-A11** | `8b81f223` | f1r3node | RSpace guarded candidate selector and enabled-rendezvous enumerator $`\rightarrow`$ one shared explicit-frame depth-first-search PDA | host recursion $`\Theta(b)`$ in receive-bind count $`b \rightarrow O(1)`$ native stack; **20,000 binds** on **256 KiB** in **2.61 s / 96,216 KiB RSS** | **yes** | [5.16.5](#5165-rspace-candidate-selection-and-enumeration-pda-ss-a11) |
 | **SS-B1** | `a929a2d6` | f1r3node | expression-evaluator SCC $`\rightarrow`$ `eval_drive` | overflow $`\approx`$ 1.5k $`\rightarrow`$ OK at 50,000 | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B2** | `29856679`, `55b97f84`, `a0a50473` | f1r3node | five async join sites detached | 300 s $`\rightarrow`$ **93.7 s CPU** | **yes** (heap chain) | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
@@ -3241,6 +3243,103 @@ That pair fails if either former recursive body is restored, if the selector sho
 deep leaf, or if enumeration omits the continuation. Existing guarded tests separately reject cursor,
 rollback, ordering, guard-veto, and metric drift. The source census must count both removed recursive
 components; its 574-to-572 change supplies the structural anti-vacuity witness.
+
+#### 5.16.6 Sparse relational-row reuse inside the production PDA [SS-A10 refinement]
+
+##### 5.16.6.1 The repeated-work defect
+
+The stack-safe conversion had already removed native recursion, but the production
+`spatial_matcher_pda::ListMachine` could still re-evaluate the same pattern/target edge whenever
+an augmenting path displaced an earlier assignment. The compatibility `MaximumBipartiteMatch`
+surface exhibits the same graph problem, but it is **not** the production driver; older task and
+architecture prose that named it as production was stale. `sub_pars` remains upstream of the
+list machine for connective remainder enumeration.
+
+Let $`P`$ be the pattern-row count, $`T`$ the target count, and $`E`$ the number
+of successful cacheable edges discovered. A dense table would require $`\Theta(PT)`$
+retained cells even when the relation is sparse. Re-scanning would retain less memory but could
+perform the same structural match many times. Neither choice is necessary.
+
+##### 5.16.6.2 Sparse prefix-plus-delta relation
+
+`f1r3node-rust-mettail@3a3db311` introduces one shared `LazyRelation` utility used by
+both the production list PDA and the compatibility matcher. Every cacheable row stores:
+
+1. one integer frontier delimiting the target prefix already evaluated; and
+2. only its successful edges, in discovery order.
+
+A resumed augmenting frame first consumes the successful edges that existed when the frame was
+created and then evaluates only the unseen suffix. The cursor's snapshot bound prevents a frame from
+immediately replaying an edge it just discovered. Failed edges need no bitmap: membership in the
+evaluated prefix plus absence from the successful-edge vector is sufficient. Retained relation
+storage is therefore $`O(P+E)`$, not $`O(PT)`$.
+
+Remainder filler rows are deliberately non-cacheable because their cheap locally-free predicate is
+dense and their result payloads would dominate the sparse relation. Concrete successful edges share
+one empty binding delta. Structural edges retain only the binding **delta** produced relative to the
+attempt baseline, not a clone of the complete `FreeMap`. Before final assignment
+materialization, the relation releases its references so `Rc::try_unwrap` can move unique
+deltas instead of cloning them.
+
+This is an internal refinement of the existing PDA. PathMap-backed set and map carriers still enter
+as `PathMap<()>` and `PathMap<Par>`; exact subtraction, owned/read zippers, canonical
+byte keys, and the singleton paths described in §5.16.2 remain unchanged. No trie snapshot,
+`Vec<Par>` projection, PathMap reconstruction, mixed-mode carrier, or PathMap crate
+modification was added.
+
+##### 5.16.6.3 Deterministic experiment
+
+The preregistered D-E4 displacement graph has 128 pattern rows and 128 targets. Target zero has no
+incoming edge, while every later row can displace the preceding assignment. Both arms execute from
+the same production-shaped graph and binary. Because every exact-counter replicate is identical,
+sample variance is zero; a Welch statistic is undefined. The frozen protocol therefore decides the
+primary metric by exact inequality rather than inventing variance. **MEASURED:**
+
+| control | samples | calls/sample | result |
+|---|---:|---:|---|
+| nominal no-cache displacement schedule | 51 | 699,263 | rejecting assignment, as constructed |
+| production sparse relation | 51 | 16,384 | same rejecting assignment; every pair evaluated at most once |
+| exact difference | 51 paired constants | 682,879 fewer | **42.67962646484375× fewer calls** |
+| diagonal invariant, both implementations | one exact control each | 8,256 | same successful assignment; zero cached-edge visits and zero row reuse |
+
+The displacement treatment additionally asserts positive row reuse and cached-edge visits,
+$`\mathrm{evaluated\_pairs} \leq |P||T|`$, and at most $`2|P|`$ successful edge
+evaluations. The diagonal control prevents a nominally easy graph from appearing faster merely
+because instrumentation or traversal order changed. The 51 control and 51 treatment constants,
+digests, commands, and gate rows are committed in
+[`measurements/relational-ac-edge-reuse-2026-08-10.tsv`](measurements/relational-ac-edge-reuse-2026-08-10.tsv);
+the human-readable experiment record is
+[`../../scientific-ledger/d-e4-lazy-relational-ac-edge-reuse-2026-08-09-2026-08-10.md`](../../scientific-ledger/d-e4-lazy-relational-ac-edge-reuse-2026-08-09-2026-08-10.md).
+
+##### 5.16.6.4 Equivalence and closure evidence
+
+The executable relation differential exhausts every bipartite graph through four patterns/four
+targets and checks 512 generated graphs through eight/eight. Independent controls cover the
+rejecting displacement chain, the diagonal graph, the historical impure `FnMut` callback
+schedule, and a deep explicit-frame chain. Production-PDA comparisons additionally cover all
+three-element permutations, duplicate targets, nonlinear binders, nonempty baseline `FreeMap`
+ownership, and 51 deterministic samples. The existing Stage-AC carrier, shuffle, corruption,
+atomicity, and recursive spatial-matcher oracle suites remain green.
+
+`mettail-rust@b6095533` adds the admission-free Rocq theory
+`LazyRelationalAcEdges.v`. It proves prefix-plus-suffix row equality, exact membership,
+prefix/suffix disjointness under a duplicate-free target partition, equivalence of every injective
+assignment against the nominal full relation, and well-founded decrease of the unseen suffix. All
+five printed assumption sets are closed under the global context.
+
+`f1r3node-rust-mettail@0c5e297a` reconciles pre-existing stack-safe cache-transfer tests
+exposed by the complete gate; it does not change production behavior. The final capped
+`cargo test -p rholang` run passed 311 library tests, the 545-test aggregate integration
+target with one intentional ignore, every standalone integration target, the
+11-active/four-intentionally-ignored stack-depth gate, and documentation tests. The whole
+multi-target gate reached the 12 GiB systemd scope ceiling during parallel compilation and
+deliberate tripwire child runs; that number is **not** attributed to the D-E4 matcher. The focused
+three-test production counter/equivalence run completed in 57.80 s and the systemd scope reported
+approximately 1.2 GiB peak memory. Both runs used the ordinary Rust stack, zero swap, and no
+`RUST_MIN_STACK`, `stacker`, or traversal-depth limit.
+
+No new stack-fix identifier is allocated: D-E4 changes repeated heap work inside SS-A10's already
+stack-safe PDA, not the traversal's native-stack complexity class.
 
 ---
 
@@ -6705,6 +6804,7 @@ done
 | [`measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv`](measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv) | SS-G43/SS-C13 capped Ascent, constructor/corpus, EPathMap zipper-streaming, f1r3node visitor, and Rocq validation rows (§5.20) |
 | [`measurements/generated-parser-prefix-closure-2026-08-09.tsv`](measurements/generated-parser-prefix-closure-2026-08-09.tsv) | SS-G44 predecessor/successor deep-parser runtime, RSS, heap, and AMD uProf hotspot rows (§5.21) |
 | [`measurements/canonical-gll-boundary-summary-2026-08-09.tsv`](measurements/canonical-gll-boundary-summary-2026-08-09.tsv) | SS-G45 exact 1,000-binder predecessor/successor counters, runtime, RSS, complete gates, formal proof, and AMD uProf rows (§5.22) |
+| [`measurements/relational-ac-edge-reuse-2026-08-10.tsv`](measurements/relational-ac-edge-reuse-2026-08-10.tsv) | D-E4/SS-A10 nominal and sparse-relation production counters, zero-variance decision rule, focused/full capped gates, and Rocq closure (§5.16.6) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

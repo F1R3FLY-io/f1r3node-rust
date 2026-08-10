@@ -1,0 +1,11 @@
+# D-E4 sparse relational AC edge-reuse evidence. Exact counters are deterministic production ListMachine observations at f1r3node-rust-mettail@3a3db311; all scoped commands used the ordinary Rust stack and MemorySwapMax=0.
+kind	implementation	subject	width	samples	calls_per_sample	total_calls	difference_per_sample	ratio_vs_nominal	relation_row_reuses	cached_edge_visits	result	wall_s	scope_peak_memory	notes
+primary	nominal-no-cache	displacement-chain	128	51	699263	35662413	0	1.0	NA	NA	reject	NA	NA	frozen control schedule evaluated from the same production-shaped graph
+primary	sparse-lazy-relation	displacement-chain	128	51	16384	835584	-682879	0.023430383131955	positive	positive	reject	NA	NA	every pattern-target pair evaluated at most once; 42.67962646484375x fewer calls
+invariant	nominal-no-cache	diagonal	128	1	8256	8256	0	1.0	0	0	accept	NA	NA	exact nominal assignment
+invariant	sparse-lazy-relation	diagonal	128	1	8256	8256	0	1.0	0	0	accept	NA	NA	identical assignment and evaluation count; no relation reuse
+gate	f1r3node-3a3db311	production-list-pda-focused	128	1	NA	NA	NA	NA	NA	NA	pass	57.80	approximately-1.2-GiB-systemd-rounded	3 tests including 51x2 primary samples and production/oracle semantics
+gate	f1r3node-0c5e297a	rholang-complete	all-targets	1	NA	NA	NA	NA	NA	NA	pass	approximately-1061	12-GiB-cgroup-ceiling	311 library; 545 aggregate integration with 1 intentional ignore; every standalone integration and doc target green; peak is whole parallel gate plus tripwire children, not matcher RSS
+formal	mettail-b6095533	LazyRelationalAcEdges.v	all-finite-partitions	1	NA	NA	NA	NA	NA	NA	pass	NA	NA	five Print Assumptions audits closed under the global context; zero admissions
+tracker	pgmcp-experiment-172	control-digest	128	51	699263	35662413	NA	NA	NA	NA	finalized	NA	NA	sha256:0d55a62b0d2a0a0e799a9f620b7635389ea34e3ec25aad2afdf27c5f9d916442
+tracker	pgmcp-experiment-172	treatment-digest	128	51	16384	835584	NA	NA	NA	NA	finalized	NA	NA	sha256:7e988f7e5eee28a48cf60e0cbcdda12a996c4ea8007a33e2298e8e6de9cb52fe
