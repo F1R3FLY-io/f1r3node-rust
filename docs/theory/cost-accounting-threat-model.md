@@ -1,7 +1,7 @@
 # Cost-Accounted Rho Threat Model
 
-**Status:** Implementation-aligned security and thread-safety model
-**Scope:** Cost-accounted rho calculus, runtime-budget refinement,
+**Status:** D3-aligned living security and thread-safety model with historical evidence retained
+**Scope:** COMM-token accounting, pre-COMM ingress bounds, supply-gated admission,
 Casper replay/settlement integration, and slashing composition.
 
 This document applies the slashing threat-model style to the
@@ -19,35 +19,52 @@ implementation.
 
 | Term | Meaning |
 |---|---|
-| Runtime fuel | The per-deploy source-token budget used during Rholang evaluation. |
-| Settlement balance | Casper account arithmetic used before and after evaluation for precharge and refund. |
-| Cost trace | The recorded sequence of successful billable source-token events plus the optional out-of-phlo boundary event. It is required to compute `total_cost` and is retained alongside the signature as diagnostic/audit evidence. **As of TM-CA-151 its per-operation digest/event-count is no longer a consensus commitment** — consensus cost integrity is carried by `total_cost` (clamped) + status + post-state hash; the digest is diagnostic only. (Rows authored before TM-CA-151 — e.g. the "Cost trace" usage in TM-CA-006/007 and the §7 digest/count failure modes — describe the pre-decision consensus role and are superseded by TM-CA-151 on the digest/count point.) |
+| Runtime token count | The number of committed `BillableKind::Comm` events. Each committed send or receive contributes exactly one consensus token; other event kinds contribute zero. |
+| Supply balance | The renewable per-signature token pool used by the block-assembly funding gate and debited once at block close. |
+| Cost trace | Diagnostic/audit evidence containing COMM and per-operation events. Its digest and event count are not consensus commitments; consensus integrity is carried by COMM-count `total_cost`, status, admission, and post-state hash. |
 | Diagnostic log | Bounded observability data that is not consensus evidence. Clearing it cannot affect cost or replay. |
 | Cost-invalid evidence | Replay-visible evidence that a block's cost accounting fields are invalid and may feed slashing only through the current evidence epoch, current target activation epoch, and parent pre-state bond boundary. |
-| Legacy replay | Pre-activation compatibility mode. It may accept absent cost traces only under the explicit legacy mode. |
-| Cost-accounted replay | Post-activation replay mode. It requires an explicit cost-trace commitment and event count. |
-| Thread vector | A concurrency vector in which evaluator workers race on frame queues, budget reservation, OOP ownership, or trace finalization. |
+| Ingress byte bound | The maximum decoded protobuf message size enforced by tonic before prost allocates/decodes the body or dispatches the service handler. |
+| Historical budget row | A matrix row about deleted `phlo_limit`, price, precharge/refund, OOP, or consensus trace-digest behavior. Such rows preserve the experiment history but are superseded by D3/DR-9 and are not current runtime claims. |
+| Thread vector | A concurrency vector in which evaluator workers race on event queues, canonical reconciliation, or trace finalization. |
+
+### 1.1 Current-model interpretation rule
+
+This is a longitudinal threat ledger: removing an old row would erase why a design changed. Read it
+under the following precedence rule. D3 / DR-9 / OD-1 / OD-3 is the current contract; rows naming
+deleted escrow fields, finite accepted-user budgets, precharge/refund, OOP replay, or a consensus
+cost-trace digest are historical evidence. They remain searchable, but they do not override the
+current model:
+
+1. consensus cost is one token per committed `BillableKind::Comm`;
+2. block assembly admits against the per-signature supply pool and replay recomputes the decision;
+3. accepted user deploys have no per-deploy OOP cap;
+4. per-operation weights and trace digests are diagnostic only; and
+5. work before the first COMM is bounded by the network byte envelope, not billed as a synthetic
+   COMM and not restricted by traversal depth.
 
 ## 2. Adversary Model
 
 The adversary may:
 
-- Submit validly signed deploys with adversarial source terms, phlo
-  limits, phlo prices, timestamps, and signatures.
+- Submit validly signed deploys with adversarial source terms, timestamps,
+  signatures, cosigner sets, and signature algebra.
+- Split one oversized protobuf across many HTTP/2 frames in an attempt to bypass
+  a frame-size-only defense.
 - Attempt to forge or replay cost-trace fields in processed deploys,
   block payloads, replay-cache keys, and serialized wire messages.
 - Control evaluator scheduling indirectly through deploy structure,
-  causing concurrent branches to race on budget reservation and OOP
-  boundaries.
-- Cause deploy failures, parser failures, out-of-phlo failures,
-  rollback paths, and mixed success/failure blocks.
-- Submit blocks with low prices, missing traces, mutated costs,
+  causing concurrent branches to race on event recording and reconciliation.
+- Cause deploy failures, parser failures, rollback paths, and mixed
+  success/failure blocks.
+- Submit blocks with missing evidence, mutated costs,
   stale or ambient-only cost-invalid evidence, or unauthorized
   fee-settlement effects.
 - Attempt downgrade attacks at the legacy/cost-accounted activation
   boundary.
-- Attempt denial of service with oversized event weights, large event
-  descriptors, many deploys, and long finalization windows.
+- Attempt denial of service with over-limit protobuf messages, maximum-allowed
+  deeply nested terms, oversized event descriptors, many deploys, long
+  finalization windows, and streamed peer payloads.
 
 The adversary may not:
 
@@ -73,7 +90,7 @@ boundaries.
 | **T** | Mutated processed-deploy cost, replay payload, block hash, settlement, slashing, source, or model fields (the per-op cost-trace digest/event count are diagnostics, not consensus fields — TM-CA-151) | Replay mismatch checks on the consensus quantities (`total_cost` + status + post-state hash), replay payload hashing, block hash tests, settlement proofs, and production-oracle fixtures. |
 | **R** | Proposer or model output denies cost-invalid evidence, replay mismatch, source-witness status, or promotion traceability | Replay-failure records, source-anchor digests, witness classification, and promotion-gate tests. |
 | **I** | Diagnostic data, API/source metadata, private-key debug surfaces, dependency advisory policy, or TLS key-path disclosure | Non-consensus diagnostic separation, audit classifications, TLS/source-graph fixtures, and dependency policy review. |
-| **D** | Oversized weights, descriptor growth, trace/cache pressure, unbounded search, scheduler pressure, or CI resource exhaustion | Reject-before-mutation admission, production event caps, cache bounds, and bounded search envelopes. |
+| **D** | Over-limit multi-frame protobufs, maximum-allowed deep terms, descriptor growth, trace/cache pressure, unbounded search, scheduler pressure, or CI resource exhaustion | Per-service protobuf decode limits, stack-safe PDAs, stream reconstruction bounds, reject-before-mutation admission, production event caps, cache bounds, and bounded search envelopes. |
 | **E** | System deploy authority leaks into user deploys, settlement replenishes runtime fuel, legacy activation bypasses replay, or slashing authority is spoofed | Scoped unmetered mode, post-evaluation settlement, activation guards, and slashing authorization checks. |
 
 ## 4. Attack Tree
@@ -81,25 +98,25 @@ boundaries.
 Root: violate cost-accounted rho safety, replay determinism, settlement
 authority, or parallelism.
 
-1. Execute without fuel.
+1. Execute without funded tokens.
    - Forge signature channel.
    - Reuse another deploy's token.
-   - Enter user execution through legacy charging.
+   - Bypass the block-assembly funding gate.
 2. Make validators disagree on cost.
    - Exploit parallel scheduling.
-   - Exploit OOP race ownership.
-   - Mutate cost trace or event count.
+   - Count diagnostic weights as consensus cost.
+   - Mutate the recorded COMM count.
    - Exploit nondeterministic primitive descriptors or source-path identities.
 3. Hide tampering from replay.
-   - Drop trace fields.
+   - Drop replay-visible cost or admission fields.
    - Reuse replay cache after mutation.
    - Serialize through a default/empty trace field after activation.
    - Mutate block fields not covered by the hash/signature payload.
-4. Manipulate settlement.
-   - Refund during evaluation.
-   - Over-refund after evaluation.
+4. Manipulate supply settlement.
+   - Debit a foreign signature pool.
+   - Oversubscribe a shared component pool.
    - Use unauthorized system deploys.
-   - Accept low deploy price as cost-valid.
+   - Credit supply without an authorized mint or conserving fee conversion.
 5. Abuse slashing composition.
    - Present stale or ambient-only cost-invalid evidence.
    - Recover a rejected slash with non-current evidence.
@@ -107,10 +124,12 @@ authority, or parallelism.
    - Forge low-price or unauthorized-settlement evidence.
    - Apply slashing effects that mutate runtime fuel.
 6. Exhaust validator resources.
-   - Submit oversized event weights.
+   - Split an oversized gRPC message across legal HTTP/2 frames.
+   - Submit a maximum-size, adversarially deep term.
+   - Exceed the peer stream reconstruction limit.
    - Produce large cost-trace descriptors.
    - Retain traces beyond finalization.
-   - Force many mixed success/OOP deploys.
+   - Force many mixed success/failure deploys.
 
 ## 5. Threat Coverage Matrix
 
@@ -127,12 +146,12 @@ security failure mode.
 | Category | Review lens |
 |---|---|
 | `CA-CAP` | Capability, auth, signature, and system-authority boundaries. |
-| `CA-BUDGET` | Runtime fuel, admission, producer routing, trace-slot, and OOP accounting. |
+| `CA-BUDGET` | COMM-token counting, admission, producer routing, and diagnostic reconciliation. |
 | `CA-TRACE` | Cost-trace identity, digest, canonicalization, and deterministic semantics. |
 | `CA-REPLAY` | Replay, replay cache, block authentication, activation, and legacy downgrade. |
-| `CA-SETTLE` | Precharge, refund, fee settlement, and fuel-isolation boundaries. |
+| `CA-SETTLE` | Supply debit, fee settlement, mint/conversion, and pool-isolation boundaries. |
 | `CA-SLASH` | Cost-invalid evidence and slashing composition. |
-| `CA-RESOURCE` | Descriptor, trace-window, cache, validator, CI, and search resource pressure. |
+| `CA-RESOURCE` | Network ingress, descriptor, trace-window, cache, validator, CI, and search resource pressure. |
 | `CA-EXT` | External service, API, source-corpus, and production semantic boundaries. |
 | `CA-SEARCH` | Model/search/frontier promotion and traceability governance. |
 | `CA-SOURCE` | Current-source anchoring and source-graph security surfaces. |
@@ -145,7 +164,7 @@ security failure mode.
 | `CA-REPLAY` | TM-CA-006, TM-CA-009, TM-CA-010, TM-CA-011, TM-CA-045, TM-CA-080, TM-CA-119, TM-CA-151 |
 | `CA-SETTLE` | TM-CA-016, TM-CA-017, TM-CA-018, TM-CA-028, TM-CA-053, TM-CA-095 |
 | `CA-SLASH` | TM-CA-021, TM-CA-022, TM-CA-054, TM-CA-078, TM-CA-090, TM-CA-138 |
-| `CA-RESOURCE` | TM-CA-024, TM-CA-025, TM-CA-038, TM-CA-040, TM-CA-069, TM-CA-074 |
+| `CA-RESOURCE` | TM-CA-024, TM-CA-025, TM-CA-038, TM-CA-040, TM-CA-069, TM-CA-074, TM-CA-167 |
 | `CA-EXT` | TM-CA-026, TM-CA-030, TM-CA-055, TM-CA-093, TM-CA-107, TM-CA-113 |
 | `CA-SEARCH` | TM-CA-049, TM-CA-057, TM-CA-062, TM-CA-085, TM-CA-108, TM-CA-142 |
 | `CA-SOURCE` | TM-CA-124, TM-CA-128, TM-CA-132, TM-CA-136, TM-CA-137, TM-CA-140, TM-CA-141 |
@@ -319,6 +338,16 @@ security failure mode.
 | TM-CA-164 (DR-28) | `CA-REPLAY` | **T + R** | Compound over-admission / oversubscription (found by red-team): a malicious proposer hand-crafts `block.body.deploys` so a COMPOUND (multi-sig) group's cumulative admitted demand `ΣΔ` exceeds its effective supply `effectiveΣ = Σ_compound + min(Σ_l, Σ_r)`. The deploys execute (unmetered-for-liveness) consuming `ΣΔ`, but `compute_settlement_debits` residual-caps the pair-draw at `min(Σ_l, Σ_r)`, so the settlement is silently capped at `effectiveΣ` (every per-pool debit ≤ balance), the per-pool `debit > balance` replay check (TM-CA-153 guard 2) does NOT fire, the post-state agrees play↔replay, and honest validators ACCEPT the block with `ΣΔ − effectiveΣ` units of UN-FUNDED compute (the cosigners oversubscribe their shared component wallets). Worked example: `Σ⟦And⟧=0, Σ⟦Ground(a)⟧=Σ⟦Ground(b)⟧=5` (effectiveΣ=5), two Δ=4 compound deploys (ΣΔ=8) ⇒ 3 un-funded units. LIVE on a strict + client-funded shard; latent on a default (non-strict, empty `client_fuel_allocations`) shard. | **Protected (fix landed `3a4e03eb`-series).** The replay recompute now re-imposes the gate's per-group admissibility on the RAW cumulative demand BEFORE the residual-capping settlement: for every ENFORCED group (`strict ∨ present(own pool)`) it asserts `Σ(cost + fee) ≤ effectiveΣ` (the SAME static per-group `effective_supply_with` the gate keys on at `:712`), raising `ReplayAdmissionMismatch` on violation. This SUBSUMES the prior `effective ≤ 0` strict check, matches the gate EXACTLY (never forks a gate-admitted block — equality is admissible), and closes the compound asymmetry (single-sig was already caught via its uncapped own-pool debit). | the gate's own per-group `is_funded` prefix bound (`LinearLogicResources.admit_prefix_maximal`) now re-verified on replay; the Rocq/TLA+/Sage models assume `demand ≤ effectiveΣ` "by admission" so they model the FIXED behavior — a witness for the over-set rejection is a tracked formal follow-on | `acceptance.rs::recompute_settlement_debits_with_logic` (the cumulative `cost + fee ≤ effectiveΣ` re-check); test `compound_over_admission_rejected_on_replay` (Δ=8 over effectiveΣ=5 ⇒ rejected; Δ=4 at the boundary ⇒ admitted). **Tracked follow-up:** cross-group component sharing across DISTINCT cosigner sets (`A∘s` + `B∘s` sharing `Σ⟦Ground(s)⟧`) is bounded by the gate's per-group static `effective` + the settlement cross-group residual ledger, NOT independently by this per-group replay check. **Resolved by TM-CA-165** — the gate AND the replay re-verification now run a LIVE cross-group residual ledger that bounds cumulative demand across DISTINCT cosigner sets sharing a component; this per-group `cost + fee ≤ effectiveΣ` check is the single-group special case the cross-group ledger subsumes (the per-group loop was replaced by the cross-group ledger pass). |
 | TM-CA-165 (DR-28) | `CA-REPLAY` | **T + R** | Cross-group component over-admission (red-team follow-on to TM-CA-164): two DISTINCT cosigner sets sharing a component wallet — `{A,s}` and `{B,s}` both drawing `Σ⟦Ground(s)⟧` — were each admitted against the STATIC per-group effective supply (the gate computed `effective_supply_with(raw, …)` ONCE and re-read each group's slice WITHOUT decrementing the shared stack across groups), so their COMBINED demand on `Σ⟦Ground(s)⟧` could exceed it. The deploys run unmetered-for-liveness consuming the combined demand; `compute_settlement_debits`'s cross-group residual ledger caps the post-state (NO conservation break, play↔replay agree), but `ΣΔ − Σ⟦Ground(s)⟧` units of UN-FUNDED compute already executed — honest-proposer-reachable, a soundness hole in the gate's funding proof (linearity admits no contraction: a shared token cannot fund two groups). Worked example: `Σ⟦Ground(s)⟧=3`, `Σ⟦Ground(a)⟧=Σ⟦Ground(b)⟧=100`, two cost+fee=2 compounds `{A,s}`,`{B,s}` ⇒ combined demand 4 on s > 3 ⇒ 1 un-funded unit. LIVE on a strict + client-funded shard; latent on a default shard. | **Protected (this fix).** The gate's admission DECISION and the replay re-verification BOTH run a LIVE cross-group residual ledger `remaining` (seeded `raw.clone()`): groups are processed in canonical `SigKey` order; each group's admission cap is its effective supply read from the DRAWN-DOWN `remaining` (`group_capacity` — own-pool for a single group, `Σ⟦compound⟧ + min(Σ⟦l⟧,Σ⟦r⟧)` for a compound), and after admission its folded `cost + fee` is drawn DOWN the shared ledger (`draw_group_from_ledger`, combined-pool-first — the conservative reservation that DOMINATES the two-pass cost-then-fee settlement on every pool, so admission-fundable ⟹ settlement-safe). So a later group sharing a component sees the reduced balance and is reject-both on the exhausted stack. The replay re-verification re-runs the IDENTICAL ledger over the admitted set (margin-free — the margin only removes deploys on play, never present in the block; SigKey order) and raises `ReplayAdmissionMismatch` if any admitted group's folded demand exceeds its LIVE capacity — bounding CUMULATIVE demand on a shared component (which the per-group TM-CA-164 check could not). The settlement passes are UNTOUCHED (already cross-group-correct, byte-identical play↔replay). No-op on a default shard (absent pools early-admit, no ledger draw). | Rocq `cross_group_draw_le_supply` + `cross_group_admission_sound` (`LinearLogicResources.v` — the multi-group threaded-ledger generalization of `competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`); TLA+ `CompoundSettlement.tla` `Inv_CrossGroupAdmissionBounded` (the `AdmitGate` threads the shared residual across groups); Sage `settlement_model.sage` cross-group admission scenario (admit each group against the LIVE residual, assert summed shared-stack draw ≤ supply) | `acceptance.rs`: gate `admit_by_funding_with_logic` (LIVE `remaining` ledger + `group_capacity` cap + `draw_group_from_ledger`); replay `recompute_settlement_debits_with_logic` (cross-group ledger re-verification superseding the per-group check); shared `group_shape_from`/`group_capacity`/`draw_group_from_ledger`/`index_decompositions` helpers. Tests `cross_group_two_compounds_sharing_component_admits_one`, `cross_group_boundary_demand_equals_shared_supply_admits_both`, `cross_group_over_admission_distinct_sets_rejected_on_replay`, `single_sig_and_compound_sharing_component_bounded`, `cross_group_migration_no_op_default_shard_both_admitted`, `nary_nested_compound_absent_inner_pool_rejected` |
 | TM-CA-166 (DR-28) | `CA-REPLAY` | **T** | Single-component no-weakening over-credit (red-team, §D2.9-R2): the Split/Join closure `effective_supply_with` credited a single component's effective supply with the compound pool — `effective[s₁] = Σ_{s₁} + Σ_{s₁∘s₂}` — but a single-signature group settles ONLY on its own pool (`GroupShape::Single` draws `Σ_{s₁}`, never the compound pool). So once a compound pool `Σ⟦And(…)⟧` is provisioned, a single-sig `s₁` deploy could be admitted against `Σ_{s₁}+Σ_compound` while settlement can only draw `Σ_{s₁}` ⇒ `close_block_deploy` `checked_sub` underflow / invalid block. This is WEAKENING — consuming a compound token `s₁∘s₂` to discharge a single-`s₁` demand discards the `s₂` authority — which the paper and model forbid. Latent today (genesis seeds only per-pubkey wallets, so `Σ_compound=0` always), but a code-only outlier that would weaponize on any compound-pool provisioning. | **Protected (this fix, §D2.9-R2).** `effective_supply_with` drops the two single-component over-credit terms; only the Join term `effective[s₁∘s₂] = Σ_{s₁∘s₂} + min(Σ_{s₁},Σ_{s₂})` remains. A single component passes through at its raw balance (`effective[s₁] = Σ_{s₁}`), matching the settlement's `GroupShape::Single` own-pool-only draw EXACTLY (so the cross-group ledger's single-sig cap is its own-pool live residual). Funding a single component from a compound now requires the explicit, observable `Split` reduction that credits `Σ⟦s₂⟧` (the runtime Splitter), never a static admission credit. No-op on every current post-state (`Σ_compound=0`). | Rocq `CAJoinConservation.join_no_weakening` (axiom-free: `s₁∘s₂` carries strictly more signature atoms than `s₁`, so it cannot be discharged as `s₁` alone) — the model already proved R2; the code now matches it. Cost-Accounted Rho "Weakening Is Forbidden" (`cost-accounted-rho.tex:1175-1191`, unverified vs the canonical paper — confirm before relying) | `delta_sigma.rs::effective_supply_with` (the two single-component inserts removed); tests `effective_supply_split_join_closure_arithmetic` (s1 = Σ_s1, not Σ_s1+Σ_compound), `effective_supply_treats_absent_component_as_zero` (components unset), `single_sig_and_compound_sharing_component_bounded` |
+| TM-CA-167 | `CA-RESOURCE` | **D** | An unauthenticated sender splits an oversized protobuf across individually legal HTTP/2 frames, bypassing a frame-size-only setting and forcing prost allocation/decoding or service dispatch before any COMM exists. | **Protected.** Every API generated service and the peer `TransportLayerServer` apply the configured `max_decoding_message_size`; peer configuration occurs before the TLS interceptor is installed. Tonic rejects the declared gRPC message length before body allocation/decode and before handler dispatch. API defaults to 16 MiB, peer unary ingress to 256 KiB; reconstructed peer streams retain their separate 256 MiB circuit bound. Traversal remains stack-safe and depth-unlimited within this byte envelope. | Network admission invariant: for accepted unary message `m`, its encoded length is at most the configured byte bound; D3 keeps this non-COMM bound outside consensus token accounting. | `external_router_rejects_oversized_protobuf_before_dispatch` and `transport_service_rejects_oversized_protobuf_before_dispatch` each prove one under-limit dispatch and one over-limit `OutOfRange` with an unchanged handler counter. |
+
+**TM-CA-167 — work agreement and validator disposition.** The configured byte envelope defines the
+pre-COMM work a node advertises that it will accept. Within that envelope, the decoder, normalizer,
+generated serializers, destructors, and recursive term operations are stack-safe worklist/PDA
+machines; a validator may not substitute a private depth cap and thereby change the acceptance set.
+Failure to complete accepted work is an availability/SLA violation, not permission to reinterpret
+COMM cost. Evidence-backed validator liveness policy may slash or eject a validator that repeatedly
+fails that agreement; a local timeout alone is not consensus evidence and cannot change another
+validator's computed result.
 
 **TM-CA-151 — guarded invariants.** Schedule-independence of the
 consensus quantity `total_cost` (not of the dropped digest) rests on two
@@ -417,22 +446,21 @@ change is authorized by model-only evidence.
 
 | Failure | Required behavior |
 |---|---|
-| Cost scalar mismatch | Reject replay with cost-invalid evidence; do not alter settlement arithmetic. |
-| Cost trace digest mismatch | Reject replay and expose recorded/observed digest and event count. |
-| Cost trace count mismatch | Reject replay even if digest bytes match. |
-| Missing trace after activation | Reject as cost-accounted replay failure. |
-| Missing trace in legacy replay | Accept only in legacy mode; never use it to authorize new cost-accounted execution. |
-| Out-of-phlo rollback | Roll back tuple-space effects while retaining OOP boundary trace evidence. |
+| API or peer unary protobuf exceeds the configured byte bound | Reject with gRPC `OutOfRange` before prost decode and before handler dispatch. |
+| Peer stream exceeds its reconstructed-message bound | Open the stream circuit, discard partial reconstruction state, and do not dispatch the blob. |
+| Accepted deep input reaches a recursive implementation edge | Treat as an implementation defect; repair the edge as a stack-safe PDA/worklist, never by narrowing the accepted depth. |
+| Static funding demand exceeds live per-signature supply | Reject at block assembly; replay must recompute the same decision. |
+| COMM-count scalar mismatch | Reject replay with cost-invalid evidence; do not alter supply settlement. |
+| Cost-trace digest or event-count mismatch | Report diagnostically only; it cannot change block validity after TM-CA-151/D3. |
+| User evaluation failure | Roll back the deploy's tuple-space effects while preserving deterministic cost, status, and post-state evidence. |
 | Unauthorized fee settlement | Classify as cost-invalid evidence; system deploy authority remains required. |
-| Low deploy price | Classify as cost-invalid evidence before treating execution as cost-valid. |
+| Unauthorized supply mint, debit, or conversion | Reject through system-authority, pool-ownership, conservation, and replay checks. |
 | Stale cost-invalid evidence | Reject at the slashing boundary; recovered rejected slashes require exact current evidence and target activation epochs. |
 | Ambient-only slash authorization | Reject unless the parent pre-state bond is positive. |
 | Slash target epoch mutation | Reject through replay-payload authentication. |
-| Diagnostic log truncation | Leave consensus digest, event count, cost, remaining fuel, and OOP evidence unchanged. |
-| Zero-weight billable event | Reject before appending to the cost trace or consuming tokens. |
-| Oversized weight | Reject before appending to the cost trace or consuming tokens. |
-| Oversized descriptor or trace window | Reject before appending to replay evidence or consuming tokens. |
-| Worker race at OOP boundary | Commit exactly one boundary event and attribute the returned failure to the branch that crossed the boundary. |
+| Diagnostic log truncation | Leave COMM-count cost, admission, status, settlement, and post-state unchanged. |
+| Invalid diagnostic event or oversized descriptor/trace window | Reject before mutating diagnostic evidence; never reinterpret it as a consensus token. |
+| Validator repeatedly fails work inside its advertised byte envelope | Record availability evidence and apply the network's evidence-backed SLA policy; ejection/slashing must not create a private acceptance rule. |
 
 ## 8. Tier Architecture
 
@@ -444,27 +472,25 @@ change is authorized by model-only evidence.
 
 ## 9. Security Conclusions
 
-The cost-accounted model is protected against the practical security
-vectors that follow from moving cost from an external RSpace wrapper into
-the calculus:
+The D3 cost-accounted model is protected at both sides of the first COMM:
 
-- Runtime fuel is capability-scoped and cannot be minted by refund or
-  slashing effects.
-- Replay authenticates cost, trace digest, trace count, failure status,
-  deploy signature, system deploy kind, slashing fields, slash target
-  activation epoch, event logs, and genesis mode.
-- Parallel evaluation preserves total cost and canonical trace
-  commitments while keeping OOP boundary ownership stable.
-- Legacy compatibility is explicit and quarantined; it cannot authorize
-  post-activation cost-accounted replay without a trace commitment.
-- Slashing consumes current cost-invalid evidence as a post-evaluation
-  system effect, uses parent pre-state bond authorization, and does not
-  mutate user fuel or settlement inputs.
-- Resource-exhaustion vectors are bounded by oversized-event rejection,
-  diagnostic/non-consensus separation, the production trace-event cap, and
-  deploy-reset trace clearing after replay commitment recording.
+- Before a COMM exists, API and peer unary protobuf length is enforced by the generated service
+  decoder rather than by HTTP/2 frame size. Multi-frame requests cannot bypass it, and separate
+  reconstruction limits cover peer streams.
+- Within the accepted byte envelope, recursive term machinery is stack-safe and depth-unlimited;
+  native stack capacity is not an implicit acceptance rule.
+- Block assembly admits against capability-scoped per-signature supply, and replay independently
+  recomputes admission, COMM-count cost, settlement, status, and post-state.
+- Per-operation weights and trace digests are diagnostic. Their retention, ordering, or truncation
+  cannot change consensus cost.
+- Supply cannot be minted by diagnostic accounting or slashing effects. Minting, conserving fee
+  conversion, debit, and redemption remain system-authorized and replay checked.
+- Slashing consumes current evidence as a post-evaluation system effect and does not mutate the
+  COMM-count rule or the accepted byte envelope.
+- Resource pressure is bounded by protobuf decode limits, peer stream circuits, event/descriptor
+  caps, cache bounds, and deploy-reset trace clearing.
 
 The remaining trust base is cryptographic collision resistance,
 signature validity, the independently verified slashing authorization
-suite, and faithful execution of the Rust production paths tested by the
-implementation harness.
+suite, operator selection of a byte envelope the validator can honor, and faithful execution of the
+Rust production paths tested by the implementation harness.

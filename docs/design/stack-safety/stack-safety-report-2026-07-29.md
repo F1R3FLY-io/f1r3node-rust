@@ -6,9 +6,9 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-09
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@382c53d0` (`InterpreterError` lifecycle machine,
-reducer method-replay machine, exact recursion census, production lint gate, and prior
-matcher/PathMap closure)
+**Living closure head** `f1r3node-rust-mettail@c1feaf36` (complete-message protobuf ingress
+bounds, `InterpreterError` lifecycle machine, reducer method-replay machine, exact recursion
+census, production lint gate, and prior matcher/PathMap closure)
 **Companion decision head** `mettail-rust@e831c2ab` (recursive-carrier lifecycle verification plus operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -153,6 +153,10 @@ The subsequent `mettail-rust@4fa08387` SS-G44 checkpoint removes two heap/work s
 already stack-safe generated parser: repeated first-parent GSS ancestry walks and copied k-best
 decision/packing prefixes. The complete 31-case deep traversal binary now passes under a 2 GiB cap
 on the default native stack; §5.21 records the exact predecessor/successor and profiler evidence.
+`f1r3node-rust-mettail@c1feaf36` then closes a separate ingress-envelope defect: configured gRPC
+limits now bound complete protobuf messages rather than individual HTTP/2 frames. §5.13.8 records
+the black-box rejection and containment evidence. This is a byte-work boundary before the first
+COMM, not a traversal-depth cap or substitute for a stack-safe implementation.
 
 ---
 
@@ -2811,6 +2815,36 @@ errors and neutral-empty dual validity, while the conversion differential indepe
 three cases—neutral, `PathMap<()>`, and `PathMap<Par>`—so neither the map branch nor the empty-mode edge can
 be represented by set-only evidence. The formal manifest compares its closed six-surface inventory in
 both directions and resolves the production marker as well as the proof and executable markers.
+
+#### 5.13.8 Complete-message ingress boundary [pgmcp #4107]
+
+Stack-safe decoding and teardown remove native-stack dependence on term depth; they do not make an
+unbounded unauthenticated byte stream free. Before `c1feaf36`, the configured API and peer
+`max_message_size` values were passed to tonic's HTTP/2 `max_frame_size`. A sender could therefore
+split one oversized protobuf across individually legal frames: the configured value bounded each
+transport frame, not the complete message presented to prost. This was a resource-envelope defect,
+not a recursive traversal.
+
+Every generated API service now receives `max_decoding_message_size(max_message_size)`. The peer
+`TransportLayerServer` receives the same complete-message decoder bound before the TLS request
+interceptor wraps it. API unary ingress defaults to 16 MiB and peer unary ingress to 256 KiB; the
+peer stream circuit retains its independent 256 MiB reconstructed-message bound. No depth ceiling,
+`RUST_MIN_STACK`, stack switch, `stacker` integration, synthetic COMM, or PathMap projection was
+introduced.
+
+Two black-box tests run real tonic routers. Each sends one under-limit request and observes exactly
+one handler invocation, then sends one over-limit request and observes gRPC `OutOfRange` with the
+handler count unchanged. **MEASURED (f)** under `MemorySwapMax=0`: the peer gate passed **1/1** in
+36.74 s at **1,401,836 KiB** peak RSS; the API gate passed **1/1** in 23.59 s at **3,078,992 KiB**
+peak RSS. Those peaks include test-profile compilation and are command-containment observations,
+not per-message heap measurements or steady-state server requirements.
+
+The accepted byte envelope now matches the advertised work agreement: a finite message within it
+continues into depth-independent PDA/worklist machinery, while an oversized message is rejected
+before application dispatch. This preserves the stack-safety rule that input shape is not privately
+narrowed by a validator. It changes neither protobuf encoding nor any normalized term, COMM count,
+consensus charge, EPathMap mode, EPM1 snapshot, PathMap topology, zipper/algebra/lattice result,
+post-state, or event hash; CBR-051 records the consensus review and TM-CA-167 the threat-model result.
 
 ---
 
