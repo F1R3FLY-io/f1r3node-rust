@@ -90,16 +90,17 @@ their recursive counterparts definitely are not. Each qualifying change is class
 independent axes: computed value, verdict, serialized bytes (per lane), post-state hash, accepted
 programs, and metering under the token cost model.
 
-**Result: 22 entries** — 14 on the F1r3node node, 8 on MeTTaIL's Rholang; **21 landed, 1 in
+**Result: 23 entries** — 14 on the F1r3node node, 9 on MeTTaIL's Rholang; **22 landed, 1 in
 flight**. The core is the EPathMap data-model lineage (CBR-011/012/013 — the trie ruling's stages —
 and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on which six of the seven
 axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
 the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-shift fusion
-(L20), and slotted/indexed matcher-network transition (L23). **The metering axis was re-derived
+(L20), slotted/indexed matcher-network transition (L23), and certified persistent-root production
+route (L24). **The metering axis was re-derived
 under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
-are diagnostics): **CBR-L20 and CBR-L23 move that prefix-event schedule**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **54 further changes
+are diagnostics): **CBR-L20, CBR-L23, and CBR-L24 move that prefix-event schedule**; the
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **53 further changes
 were examined and retired** with typed reasons — 40 bug fixes, 5
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
@@ -142,7 +143,7 @@ with typed reasons so the account stays checkable.
    the metering axis defined under the current token cost model.
 2. An explicit account of the **two wire formats** a `Par` crosses (§2.5), including the field-order
    asymmetry that produced a measured, round-trip-invisible defect class.
-3. A **derived** register (§3, §4): 22 entries, each with all six axes answered, a stated blast
+3. A **derived** register (§3, §4): 23 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
 4. The **negative results**: 53 retired entries with typed reasons (Appendix B.1) and 21 commit-level
@@ -600,13 +601,14 @@ is a *future* fork, not a present one).
 | [CBR-L15](#cbr-l15) | L | One generic method-call constructor replaces 47 grammar-owned method names; reducer dispatch becomes the only method semantics | `438e3a3d` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
 | [CBR-L20](#cbr-l20) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and D3 prefix metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 | [CBR-L23](#cbr-l23) | L | Alpha-equivalent matcher states share dense slot interfaces and positional channels use one exact indexed arena | `c63c6ca8` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-L24](#cbr-l24) | L | Generated identity-beta root spines select the certified finite-route persistent R3 driver; the general quiescence PDA remains the fallback | `57239207` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
-**Totals — 22 entries**: **14 on Surface N, 8 on Surface L**; **21 landed, 1 in flight**
-(**CBR-L08**); zero open hazards. By evidence grade: **20 WITNESSED**, 1 MECHANISM-ONLY
-(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **14 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
+**Totals — 23 entries**: **14 on Surface N, 9 on Surface L**; **22 landed, 1 in flight**
+(**CBR-L08**); zero open hazards. By evidence grade: **21 WITNESSED**, 1 MECHANISM-ONLY
+(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **15 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
 resolved under the token model (§3.3). The 53 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 22 + 53 = 75 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 23 + 53 = 76 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3047,26 +3049,141 @@ and stack-safety report §5.23 carries the architecture, complexity, anti-vacuit
 
 ---
 
+### CBR-L24
+
+**Generated root-identity-beta spines select the certified finite-route persistent R3 driver.
+Final values and verdicts are equivalent, while the emitted invocation, both serialized lanes,
+persistent continuation identity, committed matching COMMs, and D3 prefix schedule move.**
+
+| | |
+|---|---|
+| Commit(s) | `57239207` (`mettail-rust`); experiment 174 |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `mettail-rust/macros/src/gen/runtime/rho_invocation.rs`, `rholang-codegen/src/rho_net_pattern_guard.rs`, `rho_net_drive.rs`, `rholang-runtime/src/backend.rs`, and `rholang-runtime/tests/rho_net_lambda_firing.rs` |
+
+#### (a) The issue
+
+After D-E5, the finite-route persistent R3 matcher was materially faster and smaller than its
+historical growing-path predecessor, but generated production invocations could not select it.
+Every Lambda term entered the general congruence-capable `^drive` network, including positive
+root-only chains of `App(lambda(bound(0)), rest)` where each firing returns `rest` and no descent is
+needed. Experiment 174 was the preregistered production rematch needed to decide whether that
+special case should remain benchmark-only.
+
+The repair adds an iterative term-and-ruleset certificate. It admits exactly one positional
+substitution entry of compiled shape `R(^lambda(scope), replacement)`, a positive root spine whose
+binders are `^lambda(^bound(^Z))`, and a terminal subtree containing no remaining rewrite root,
+collection, or reserved R3 label. Native, associative-commutative, structural, value-producing, or
+unclassified deferred families fail the certificate. Generated code then uses the persistent route
+only on this proved envelope and invokes the existing general quiescence driver otherwise.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — the production observation-set differential and Rocq equivalence theorem return exactly the same normal-form tail as the general driver on every certified spine; all other terms retain that driver. |
+| 2 · verdict | **NO** — certificate failure is fallback, not refusal. The accepted source language, rewrite applicability, firing labels/count, and typed success/error outcome remain unchanged. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — the selected invocation contains the persistent pattern-guard, dispatcher, and finite-route walker instead of the general `^drive` seed/network. Serializing that `Par` on Lane B therefore changes; no bincode schema changes. |
+| 3 · bytes (Lane P, protobuf) | **MOVES** — the same generated invocation changes on Lane P. Experiment 174 measures 14,045–43,899 R3 bytes versus 31,540–6,862,080 SA bytes over depths 2–64. No protobuf schema changes. |
+| 4 · post-state hash | **MOVES** — the two executions install different persistent continuation bodies and channel families, so serialized RSpace state identity can differ even when the resting normal form is equal. |
+| 5 · accepted programs | **NO** — the certificate is an internal strategy selection after parsing and lowering. A term outside its envelope routes to the existing driver rather than becoming invalid. |
+| 6 · metering | **MOVES** — D3 counts evaluated `Send`/`Receive` prefixes, and the persistent route changes that prefix schedule. Experiment 174 also measures fewer committed matching COMMs at every size; this separate runtime count is not substituted for the D3 definition. |
+
+**The disagreement.** Execute a certified depth-64 identity spine under predecessor and successor
+generators. The predecessor selects the general network (6,862,080 encoded bytes, 6,496 committed
+matching COMMs, evaluated prefix cost 32,480 in the experiment harness); the successor selects R3
+(43,899 bytes, 256 matching COMMs, cost 1,034). Both emit the same normal form and 64 visible
+firings, but nodes treating the two generators as one protocol version can retain different
+persistent processes, compute different state roots, and charge different D3 prefix totals. This is
+a future Surface-L exposure, not a present-chain fork: MeTTaIL has not produced consensus blocks.
+
+**Blast radius.** Only generated languages whose complete ruleset and concrete subject satisfy the
+certificate can change route. At this checkpoint that is the Lambda identity-beta root-spine
+family. General beta bodies, nested congruence, shared-root networks, collections, native/AC
+families, normal forms, and failed certificates remain on the general driver.
+
+**Could live chain state have been produced under the old behaviour?** **NO** under the standing
+pre-production ruling. If that ruling changes, scan installed RSpace continuations for the general
+`^drive` family and the persistent `^respread` family, replay certified subjects under both
+generators, and compare serialized state roots, D3 prefix totals, committed COMM traces, complete
+observation sets, and firing ledgers.
+
+#### (c) Why the change was necessary or correct
+
+For $`I_0(t)=t`$ and $`I_{n+1}(t)=R(\lambda.\underline{0},I_n(t))`$, one substitution step is
+definitionally $`I_{n+1}(t)\rightarrow I_n(t)`$. The certified count $`n`$ is therefore an exact
+well-founded rank rather than an artificial fuel or traversal-depth ceiling. The certificate walks
+the spine and terminal subtree iteratively; production execution uses the already iterative
+finite-route re-spread PDA. No `RUST_MIN_STACK`, `stacker`, alternate stack, or raised traversal cap
+participates.
+
+The strategy is explicit in `RhoNetDriveInvocation`, together with the reflected subject and exact
+contraction count. Runtime readback no longer reverse-engineers these values from one assumed seed
+byte shape. The general route remains a first-class fallback, so this is a proved specialization,
+not a claim that the persistent root matcher implements congruence or every rewrite family.
+
+This change does not alter EPathMap's homogeneous `PathMap<()>` set mode, `PathMap<Par>` map mode,
+neutral empty mode, EPM1 bytes, trie topology, zipper API, algebra, or lattice operations. It does
+not modify the PathMap crate.
+
+**Authority.** Owner authorization requires the generated PDAs to be as fast and space-efficient
+as possible, prove full equivalence to the recursive implementations they replace, preserve the
+general behavior when a specialized proof does not apply, and use ordinary stacks without
+workaround crates or artificial traversal limits.
+
+**★ Sibling enumeration, ON THE DRIVER-SELECTION AXIS.** There are two production routes: the
+certified persistent-root PDA and the general quiescence PDA. The bounded recursive root equation is
+test/formal evidence only. The unshared Appendix-A matcher remains a benchmark export and is not a
+third generated production route.
+
+**★ If the entry claims something needed no change, name the GUARD.** Value and verdict
+neutrality are guarded by complete OUT/firing/error/fuel observation-set comparisons at depths
+1–8, explicit certified/fallback route tests, the 20,000-level small-stack admission witness, and
+Rocq equality with both the recursive oracle and general `drives` semantics. The macro token pin
+guards both generated route names. Experiment 174 guards result, firing, COMM, evaluated-prefix,
+encoded-size, and wall-time claims independently.
+
+#### Evidence
+
+**MEASURED** — experiment 174 used 3 warmups and 51 measurements per arm at depths
+2/4/8/16/32/64, a 12 GiB build cap, a 4 GiB run cap, zero swap, and ordinary stacks. Every cell
+returned the expected normal form and exact firing count. The R3/SA wall ratio decreases from
+0.7354 to 0.1866; every one-sided 95 % upper bound is below the frozen 1.05 non-inferiority limit.
+The live runtime suite passes 9/9 at 59,760 KiB peak RSS, and certificate depth 20,000 passes on a
+256 KiB worker stack.
+
+**DERIVED** — `PersistentRootDriveEquivalence.v` proves equality of the counted persistent system,
+bounded recursive oracle, and general quiescence driver, plus result uniqueness and a two-fire
+anti-vacuity witness. All three assumption audits close under the global context. The authenticated
+samples and corrected analysis live in
+`mettail-rust/docs/benchmarks/data/sa-vs-naive/2026-08-10-post-d-e5-r3-r2/`; stack-safety report
+§5.24 records the architecture, resource envelopes, and proof boundary.
+
+---
+
 ## 5. Risk analysis
 
 ### 5.1 Aggregate axis exposure
 
-Projected from the 22 rows of §4.1 (each column counts `●` cells):
+Projected from the 23 rows of §4.1 (each column counts `●` cells):
 
-| Axis | entries that move it | share of the 22 |
+| Axis | entries that move it | share of the 23 |
 |---|---:|---:|
-| computed value (V) | **8** | 36 % |
-| verdict (T) | **13** | 59 % |
-| bytes, Lane B (B) | **13** | 59 % |
-| bytes, Lane P (P) | **11** | 50 % |
-| post-state hash (H) | **15** | 68 % |
-| accepted programs (A) | **10** | 45 % |
-| metering (M) | **2** | 9 % |
+| computed value (V) | **8** | 35 % |
+| verdict (T) | **13** | 57 % |
+| bytes, Lane B (B) | **14** | 61 % |
+| bytes, Lane P (P) | **12** | 52 % |
+| post-state hash (H) | **16** | 70 % |
+| accepted programs (A) | **10** | 43 % |
+| metering (M) | **3** | 13 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
 entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L20 changes a
-depth-proportional shift-prefix cascade into one fixed dispatch; CBR-L23 changes the generated
-matcher route. Both preserve their stated semantic result while moving evaluated
+depth-proportional shift-prefix cascade into one fixed dispatch; CBR-L23 changes matcher identity
+and indexed routing; CBR-L24 selects the certified persistent-root route. All three preserve their
+stated semantic result while moving evaluated
 `Send`/`Receive` prefixes. Neither M cell is derived from the separately measured count of committed
 RSpace rendezvous.
 
@@ -3086,16 +3203,19 @@ RSpace rendezvous.
 5. **CBR-L23** — slotted state identity and indexed channels preserve matching results but change
    the installed matcher bytes, persistent identity, and D3 prefix schedule across every generated
    positional network.
+6. **CBR-L24** — the persistent-root promotion is equivalence-proved and narrowly certified, but
+   deliberately changes generated invocation bytes, retained continuation identity, committed
+   matching COMMs, and D3 prefix metering on its admitted family.
 
 ### 5.3 Direction profile
 
-Projected from §4.1: **14 CORRECTIVE** (the data-model lineage, schema additions, the
+Projected from §4.1: **15 CORRECTIVE** (the data-model lineage, schema additions, the
 single-registry method repair, corrective in
 the sense that the representation now matches the ruling, the shift-fusion repair, and the slotted
-matcher-network repair, while all
+matcher-network and certified persistent-route repairs, while all
 remain deliberate transitions),
 **4 PERMISSIVE** (CBR-024, CBR-025, CBR-037, CBR-L07), **4 REGRESSIVE** (CBR-002, CBR-027, CBR-L08,
-CBR-L11). Total 22.
+CBR-L11). Total 23.
 
 ### 5.4 The chain-history questions
 
@@ -3112,7 +3232,7 @@ are retained because the ruling, not the evidence, is what discharges them.
 
 ### 5.5 The conjunction risk
 
-No activation-height machinery exists: `Validate::version` is exact equality, so the 22 entries ship
+No activation-height machinery exists: `Validate::version` is exact equality, so the 23 entries ship
 as one coordinated protocol-version bump. The reviewer's object of study is therefore the
 **conjunction**: if entry $`i`$ carries residual risk $`r_i`$, the bump carries
 $`1 - \prod_i (1 - r_i)`$, and the CBR-027/CBR-030 pair is the register's concrete demonstration
@@ -3273,8 +3393,8 @@ above is the maintenance mechanism.
 
 ## 8. Conclusions
 
-1. The register holds **22** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **8** on MeTTaIL's Rholang; **21 landed, 1 in flight**. **50** examined
+1. The register holds **23** may-change-consensus entries derived from the campaign record: **14**
+   on the F1r3node node, **9** on MeTTaIL's Rholang; **22 landed, 1 in flight**. **53** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3287,13 +3407,13 @@ above is the maintenance mechanism.
    report.
 4. **Four entries are REGRESSIVE** (§5.3) and are named plainly; one of them (CBR-L08, in flight)
    refuses source that parses today.
-5. **The metering axis moves in two kept entries, CBR-L20 and CBR-L23.** Under the token model,
-   consensus cost is the evaluated `Send`/`Receive` prefix count; shift fusion and matcher-route
-   indexing change that count even though formal and executable differentials preserve their stated
+5. **The metering axis moves in three kept entries, CBR-L20, CBR-L23, and CBR-L24.** Under the token model,
+   consensus cost is the evaluated `Send`/`Receive` prefix count; shift fusion, matcher-route
+   indexing, and certified persistent-route selection change that count even though formal and executable differentials preserve their stated
    results. The count is not the number of committed RSpace rendezvous. Historical per-op "charge
    site" claims remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the
    same derivation.
-6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 22 ship as
+6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 23 ship as
    one coordinated bump, and the CBR-027/CBR-030 pair is the in-register proof that entries
    interact.
 

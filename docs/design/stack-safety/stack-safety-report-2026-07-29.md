@@ -10,8 +10,10 @@
 production spatial-matcher PDA, complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
 prior matcher/PathMap closure, and D-E4 evidence reconciliation)
-**Companion decision head** `mettail-rust@2a626e50` (D-E5 slotted-state and indexed-channel
-implementation, exact communication-accounting witness, admission-free relational-row equivalence,
+**Companion decision head** `mettail-rust@57239207` (certified persistent-root R3 production
+specialization, exact contraction metadata, closed recursive/general-driver equivalence, D-E5
+slotted-state and indexed-channel implementation, exact communication-accounting witness,
+admission-free relational-row equivalence,
 recursive-carrier lifecycle verification, and operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -170,6 +172,14 @@ driver exact collision-free fixed-width position identities instead of repeatedl
 absolute prefixes. The production spread scales approximately linearly through depth 1,024 and
 passes depth 20,000 on a 256 KiB worker stack; §5.23 records the independent nominal oracle,
 zero-admission Rocq theorems, exact state/channel counters, runtime trace, and profiler evidence.
+`mettail-rust@57239207` then promotes the finite-route persistent-root R3 matcher from a benchmark
+arm to a generated production specialization. An iterative certificate admits only positive
+identity-beta root spines whose terminal subtree is globally rewrite-normal; every other subject
+retains the general congruence-capable quiescence PDA. The certificate reaches depth 20,000 on a
+256 KiB stack, the live nine-test runtime suite compares complete observation sets between the two
+routes, and Rocq proves equality with both the bounded recursive oracle and the general driver.
+Section 5.24 records the experiment-174 performance decision, exact resource envelopes, and
+consensus boundary.
 `f1r3node-rust-mettail@c1feaf36` then closes a separate ingress-envelope defect: configured gRPC
 limits now bound complete protobuf messages rather than individual HTTP/2 frames. §5.13.8 records
 the black-box rejection and containment evidence. This is a byte-work boundary before the first
@@ -286,6 +296,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G44** | `mettail-rust@4fa08387` | mettail | generated generalized-parser GSS ancestry queries and k-best election prefixes $`\rightarrow`$ compact per-node prefix summaries, persistent decision vectors, and borrowed immutable shared packed parse forest (SPPF) families | native stack remains $`O(1)`$; ancestry probes $`\Theta(d^2) \rightarrow \Theta(d)`$; copied decision payload $`\Theta(d^2) \rightarrow`$ structurally shared prefixes with $`O(\log d)`$ update; unary depth **20,000**: **8,286,196 $`\rightarrow`$ 188,924 KiB RSS** | heap/work refinement; **3,654** library tests plus **31/31** deep traversal cases preserve results | [5.21](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44) |
 | **SS-G45** | `mettail-rust@adc76524` | mettail | canonical-GLL cross-category boundary reachability: repeated exhaustive caller-ancestry DFS $`\rightarrow`$ incremental target-category lattice with exact positive fallback | native stack remains $`O(1)`$; 1,000-binder boundary visits **336,387,001 $`\rightarrow`$ 0**; exact workload **248.42 $`\rightarrow`$ 10.83 s** (**22.94×**); peak RSS **609,152 $`\rightarrow`$ 605,132 KiB** | heap/work refinement; admission-free path and multi-caller equivalence, 1,000-case independent oracle, **3,654** library tests, every integration target, **21** doc tests, and **31/31** deep cases preserve results | [5.22](#522-canonical-gll-boundary-summary-closure-ss-g45) |
 | **SS-G46** | `mettail-rust@c63c6ca8`; evidence `2a626e50` | mettail | D-E5 matcher identity and location ABI: nominal binder names $`\rightarrow`$ dense slot interfaces; repeated absolute channel prefixes $`\rightarrow`$ one shared indexed subject arena | native stack remains $`O(1)`$; channel construction $`\Theta(d^2) \rightarrow \Theta(d)`$ on a unary depth-$`d`$ subject; alpha-pair state count **6 $`\rightarrow`$ 2**; production depth **20,000** passes on **256 KiB** at **248,892 KiB** peak RSS | yes; independent nominal oracle, exact specificity and state laws, runtime differentials, **11** admission-free slot audits, indexed-channel injectivity proof, and complete capped gates | [5.23](#523-slotted-state-and-indexed-channel-closure-ss-g46) |
+| **SS-G47** | `mettail-rust@57239207`; experiment 174 | mettail | generated Lambda root-identity-beta driver: general whole-term quiescence network $`\rightarrow`$ statically certified finite-route persistent R3 PDA, with general fallback outside the proof envelope | native stack $`O(1)`$; exact contraction rank, no traversal cap; certificate depth **20,000** on **256 KiB**; live runtime **9/9**, **59,760 KiB** peak RSS; R3/SA wall ratio **0.7354 $`\rightarrow`$ 0.1866** across depths 2–64 | yes for the certified result; complete observation-set differential, bounded recursive oracle, deterministic counted semantics, and **3** admission-free Rocq audits; generated bytes/COMM intentionally move under CBR-L24 | [5.24](#524-certified-persistent-root-production-driver-closure-ss-g47) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -431,6 +442,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.21 Generated-parser ancestry and election-prefix closure [SS-G44]](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44)
   - [5.22 Canonical-GLL boundary-summary closure [SS-G45]](#522-canonical-gll-boundary-summary-closure-ss-g45)
   - [5.23 Slotted-state and indexed-channel closure [SS-G46]](#523-slotted-state-and-indexed-channel-closure-ss-g46)
+  - [5.24 Certified persistent-root production-driver closure [SS-G47]](#524-certified-persistent-root-production-driver-closure-ss-g47)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -6195,6 +6207,132 @@ are classified separately as CBR-L23 in the living consensus register.
 
 ---
 
+### 5.24 Certified persistent-root production-driver closure [SS-G47]
+
+#### 5.24.1 The measured opportunity and safety boundary
+
+The D-E5 finite-route R3 matcher had removed the historical quadratic growing-path re-spread, but
+it remained exposed only as a benchmark strategy. Generated Lambda invocations therefore always
+entered the general `^drive` quiescence network, even for a root-only identity-beta spine on which
+one persistent pattern receiver can make every contraction without descending through a
+congruence context. Experiment 174 re-ran that exact production comparison instead of inferring a
+decision from the old R3 implementation.
+
+The promotion is not a language-wide replacement. A generated invocation selects persistent R3
+only after an iterative certificate establishes all of the following:
+
+1. the compiled ruleset has exactly one positional substitution entry and no native,
+   associative-commutative, or structural dispatch family;
+2. every deferred entry is congruence closure for that positional rewrite;
+3. the compiled pattern is `R(^lambda(scope), replacement)` with two linear variable leaves;
+4. the subject is a positive root spine of
+   `R(^lambda(^bound(^Z)), rest)`; and
+5. the terminal `rest` contains neither another `R` root nor a collection or reserved R3 label.
+
+Failure of any clause is an ordinary routing result, not an execution error: the generated caller
+uses the existing general quiescence PDA. Thus shared-root, non-identity substitution, nested
+congruence, collection, native, and unclassified deferred work retain the previously verified
+driver.
+
+#### 5.24.2 Architecture and exact ranking function
+
+The certificate and its production call are iterative. Let
+
+```math
+I_0(t)=t,
+\qquad
+I_{n+1}(t)=R(\lambda.\underline{0}, I_n(t)).
+```
+
+One persistent accept substitutes the argument for bound zero and therefore maps
+$`I_{n+1}(t)`$ to $`I_n(t)`$. The certificate records $`n`$ as the exact number of contractions;
+it is a decreasing semantic rank, not a defensive fuel ceiling. `RhoNetDriveInvocation` carries
+the reflected subject, selected strategy, and exact per-path count explicitly, so runtime
+observation code no longer parses those fields back out of an assumed `^drive` seed shape.
+
+```text
+certify(subject):
+    reject unless the complete ruleset and compiled pattern satisfy clauses 1–3
+    contractions := 0
+    tail := subject
+    while tail has the exact identity-redex root shape:
+        contractions += 1
+        tail := tail.argument
+    reject if contractions = 0
+
+    pending := [tail]
+    while pending is not empty:
+        node := pending.pop()
+        reject if node is a rewrite root, collection, or reserved R3 label
+        push node.children in reverse order
+
+    return exact certificate(contractions)
+```
+
+The persistent call retains the same OUT, firing-ledger, typed-error, and fuel-observation channel
+surface as the general route. Reserved re-spread labels participate in the production reflection
+namespace census. The shared engine is consequently named `rho_net_pattern_guard`; only the
+unshared Appendix-A oracle exports remain feature-quarantined, and the recursive equation lives
+under `tests/support` rather than production source.
+
+#### 5.24.3 Performance and resource results
+
+**MEASURED (f)**, experiment 174 used three warmups and 51 measured repetitions per arm and size,
+CPU affinity 0–7, a 12 GiB build cap, a 4 GiB run cap, zero swap, and ordinary Rust stacks. All
+twelve cells returned the expected normal form and exact visible firing count.
+
+| depth $`n`$ | SA match COMMs | R3 match COMMs | evaluated prefix cost SA / R3 | encoded bytes SA / R3 | wall ratio R3 / SA | upper 95 % |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 17 | 8 | 85 / 42 | 31,540 / 14,045 | 0.7354 | 0.7461 |
+| 4 | 46 | 16 | 230 / 74 | 74,880 / 15,005 | 0.5874 | 0.5970 |
+| 8 | 140 | 32 | 700 / 138 | 196,960 / 16,925 | 0.4766 | 0.4815 |
+| 16 | 472 | 64 | 2,360 / 266 | 582,720 / 20,765 | 0.3899 | 0.3944 |
+| 32 | 1,712 | 128 | 8,560 / 522 | 1,920,640 / 28,445 | 0.2908 | 0.2919 |
+| 64 | 6,496 | 256 | 32,480 / 1,034 | 6,862,080 / 43,899 | 0.1866 | 0.1872 |
+
+Every one-sided upper bound is below the frozen 1.05 non-inferiority threshold. The initial
+analyzer incorrectly required both arms to emit one observation per firing; SA intentionally emits
+$`n`$ step observations while R3 emits one combined normal-form observation and the same $`n`$
+firing records. The derived analysis was corrected against these arm-specific contracts without
+altering or repeating the authenticated raw samples.
+
+The production admission test reaches depth 20,000 on a 256 KiB worker stack. The live runtime
+binary passes 9/9 in 4.65 s with 59,760 KiB peak RSS under a 4 GiB zero-swap cap. Its production
+compile/relink completed in 2 min 9 s with 7,619,156 KiB peak RSS under a 14 GiB zero-swap cap; that
+is a build-envelope measurement, not a runtime requirement. The focused Rocq target completes at
+234.5 MiB peak RSS under its capped zero-swap harness. No measurement or implementation uses
+`RUST_MIN_STACK`, `stacker`, an alternate stack, or an artificial traversal-depth limit.
+
+#### 5.24.4 Equivalence, anti-vacuity, and residuals
+
+`PersistentRootDriveEquivalence.v` defines the counted persistent transition system and a bounded
+copy of the former recursive root equation. The theorem
+`certified_persistent_recursive_general_equivalence` proves that, for a beta-normal tail, persistent
+R3, the recursive oracle, and the existing general `drives` relation return exactly the same tail
+after the certificate's exact count. Separate theorems prove result uniqueness and exhibit a
+non-vacuous two-fire execution. All three `Print Assumptions` audits report closure under the global
+context.
+
+Executable evidence compares complete OUT, firing, error, and fuel observation sets between the
+persistent and general routes at depths 1–8. Route-selection tests pin both the certified case and
+the congruence fallback; additional live cases cover binders, normal forms, nontermination/fuel,
+and corrupted substitution state. The 20,000-level certificate test supplies the unbounded-depth
+anti-vacuity witness on the required small stack.
+
+The finite-route engine's subject traversal and generated re-spread continuations remain explicit
+PDAs with $`O(1)`$ native-stack use. The certificate retains $`O(d)`$ heap only for the terminal
+subtree worklist; its root-spine scan is constant auxiliary space. No EPathMap representation,
+EPM1 byte, PathMap topology, zipper/algebra/lattice operation, or PathMap crate source changes in
+SS-G47.
+
+SS-G47 does intentionally change the generated invocation process, its protobuf and bincode bytes,
+persistent continuation identity, evaluated communication-prefix schedule, and committed matching
+COMMs inside the certified envelope. Source acceptance, final normalized value, firing labels and
+count, and typed observation outcome are equivalent. These distinct semantic and integration axes
+are classified separately as CBR-L24 in the living consensus register.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6975,6 +7113,7 @@ done
 | [`measurements/canonical-gll-boundary-summary-2026-08-09.tsv`](measurements/canonical-gll-boundary-summary-2026-08-09.tsv) | SS-G45 exact 1,000-binder predecessor/successor counters, runtime, RSS, complete gates, formal proof, and AMD uProf rows (§5.22) |
 | [`measurements/relational-ac-edge-reuse-2026-08-10.tsv`](measurements/relational-ac-edge-reuse-2026-08-10.tsv) | D-E4/SS-A10 nominal and sparse-relation production counters, zero-variance decision rule, focused/full capped gates, and Rocq closure (§5.16.6) |
 | [`measurements/slotted-state-indexed-channels-2026-08-10.tsv`](measurements/slotted-state-indexed-channels-2026-08-10.tsv) | D-E5/SS-G46 state quotient, indexed-channel ladder, 20,000-level small-stack gate, runtime accounting distinction, complete regressions, formal closure, and profiler row (§5.23) |
+| `mettail-rust/docs/benchmarks/data/sa-vs-naive/2026-08-10-post-d-e5-r3-r2/` | SS-G47/experiment-174 authenticated SA-versus-persistent-R3 samples, corrected derived decision, exact resource protocol, and production-promotion evidence (§5.24) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
