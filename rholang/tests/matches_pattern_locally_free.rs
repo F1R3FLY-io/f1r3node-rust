@@ -15,6 +15,12 @@
 //! `bound_map_chain` exactly as those two do) did not. These tests assert the
 //! three agree, on the **bitset value** — never on the absence of an error.
 //!
+//! `Receive` is also a cache-ownership boundary: normalization transfers the
+//! root `Par::locally_free` cache of its body into `Receive::locally_free` and
+//! clears that nested duplicate. The tests therefore distinguish semantic
+//! propagation (carrier and `Receive` caches) from storage ownership (the
+//! retained body root is empty after transfer).
+//!
 //! ⚠ `connective_used` is the OTHER half of the same trait and is deliberately
 //! NOT symmetric: its contract is about *concreteness*, a `matches` pattern is
 //! allowed to be non-concrete, and `1 matches ~1` is a concrete term. The last
@@ -139,8 +145,8 @@ fn a_matches_pattern_var_ref_reaches_the_enclosing_par() {
         "the Send carrying it must report index 0 free"
     );
     assert_eq!(
-        body.locally_free, IDX_0,
-        "the `for` body must report index 0 free"
+        body.locally_free, CLOSED,
+        "the body-root cache is transferred into the enclosing Receive"
     );
 
     // The binder that owns index 0 is where it is discharged, not before.
@@ -163,7 +169,10 @@ fn b_match_case_pattern_var_ref_reaches_the_enclosing_par() {
     assert_eq!(match_case_pattern(datum).locally_free, IDX_0);
     assert_eq!(only_match(datum).locally_free, IDX_0);
     assert_eq!(datum.locally_free, IDX_0);
-    assert_eq!(body.locally_free, IDX_0);
+    assert_eq!(
+        body.locally_free, CLOSED,
+        "Receive owns the body-root cache"
+    );
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -179,7 +188,10 @@ fn c_receive_bind_pattern_var_ref_reaches_the_enclosing_par() {
         "`=x` in a `for` pattern names index 0"
     );
     assert_eq!(inner.locally_free, IDX_0);
-    assert_eq!(body.locally_free, IDX_0);
+    assert_eq!(
+        body.locally_free, CLOSED,
+        "Receive owns the body-root cache"
+    );
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -187,27 +199,34 @@ fn c_receive_bind_pattern_var_ref_reaches_the_enclosing_par() {
 /// FOR: it is the one that fails no matter which of the three drifts.
 #[test]
 fn d_all_three_pattern_positions_agree() {
-    let rows: [(&str, &str); 3] = [
+    let via_matches = compile(r#"for (@x <- @"c") { @"o"!(10 matches =x) }"#);
+    let via_match = compile(r#"for (@x <- @"c") { @"o"!(match 10 { =x => Nil }) }"#);
+    let via_receive = compile(r#"for (@x <- @"c") { for (@{=x} <- @"d") { Nil } }"#);
+    let rows = [
         (
             "EMatches::pattern",
-            r#"for (@x <- @"c") { @"o"!(10 matches =x) }"#,
+            only_sent_datum(only_receive_body(&via_matches))
+                .locally_free
+                .as_slice(),
         ),
         (
             "MatchCase::pattern",
-            r#"for (@x <- @"c") { @"o"!(match 10 { =x => Nil }) }"#,
+            only_sent_datum(only_receive_body(&via_match))
+                .locally_free
+                .as_slice(),
         ),
         (
             "ReceiveBind::patterns",
-            r#"for (@x <- @"c") { for (@{=x} <- @"d") { Nil } }"#,
+            only_receive(only_receive_body(&via_receive))
+                .locally_free
+                .as_slice(),
         ),
     ];
-    for (position, src) in rows {
-        let par = compile(src);
+    for (position, cache) in rows {
         assert_eq!(
-            only_receive_body(&par).locally_free,
+            cache,
             IDX_0,
-            "{position}: a `VarRef` naming index 0 from inside a pattern must be \
-             reported by the enclosing scope"
+            "{position}: a VarRef naming index 0 must reach that position's nearest semantic cache owner"
         );
     }
 }
@@ -233,15 +252,23 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
         pattern.locally_free, IDX_1,
         "inside two binders, `x` is index 1 and `y` is index 0"
     );
-    assert_eq!(inner_body.locally_free, IDX_1, "the inner `for` body");
+    assert_eq!(
+        only_sent_datum(inner_body).locally_free,
+        IDX_1,
+        "the EMatches carrier retains the semantic bit"
+    );
+    assert_eq!(
+        inner_body.locally_free, CLOSED,
+        "the inner Receive owns the transferred body-root cache"
+    );
     assert_eq!(
         inner.locally_free, ADJUSTED_PAST_ONE_BINDER,
         "★ the inner `for` binds `y` only, so `x` SURVIVES it — pre-fix this was \
          `[]`, i.e. the inner `for` claimed to be closed"
     );
     assert_eq!(
-        outer_body.locally_free, ADJUSTED_PAST_ONE_BINDER,
-        "and reaches the outer `for` body"
+        outer_body.locally_free, CLOSED,
+        "the outer Receive owns the transferred outer-body cache"
     );
     assert_eq!(
         only_receive(&par).locally_free,
@@ -250,7 +277,9 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
     );
 }
 
-/// ★ The whole ancestor chain of the two escaping programs must be BYTE-EQUAL.
+/// ★ The whole stored-cache chain of the two escaping programs must be
+/// BYTE-EQUAL, including the intentional empty body-root slots at each
+/// `Receive` ownership boundary.
 ///
 /// This is the strongest form of the differential and the one that does not
 /// depend on `filter_and_adjust_bitset` being right: whatever it computes, the
@@ -259,8 +288,8 @@ fn e_matches_pattern_var_ref_escapes_an_intervening_binder() {
 /// `EMatches` node up.
 #[test]
 fn e_f_the_matches_and_match_chains_are_byte_equal() {
-    /// `(EMatches-or-Match carrier, inner body, inner Receive, outer body,
-    /// outer Receive)`, as bitsets.
+    /// `(EMatches-or-Match carrier, transferred inner body root, inner
+    /// Receive, transferred outer body root, outer Receive)`, as bitsets.
     fn chain(src: &str) -> Vec<Vec<u8>> {
         let par = compile(src);
         let outer_body = only_receive_body(&par);
@@ -288,9 +317,9 @@ fn e_f_the_matches_and_match_chains_are_byte_equal() {
         via_matches,
         vec![
             IDX_1.to_vec(),
-            IDX_1.to_vec(),
+            CLOSED.to_vec(),
             ADJUSTED_PAST_ONE_BINDER.to_vec(),
-            ADJUSTED_PAST_ONE_BINDER.to_vec(),
+            CLOSED.to_vec(),
             CLOSED.to_vec(),
         ],
         "the shared chain, spelled out"
@@ -310,9 +339,10 @@ fn f_match_case_pattern_var_ref_escapes_an_intervening_binder() {
         match_case_pattern(only_sent_datum(inner_body)).locally_free,
         IDX_1
     );
-    assert_eq!(inner_body.locally_free, IDX_1);
+    assert_eq!(only_sent_datum(inner_body).locally_free, IDX_1);
+    assert_eq!(inner_body.locally_free, CLOSED);
     assert_eq!(inner.locally_free, ADJUSTED_PAST_ONE_BINDER);
-    assert_eq!(outer_body.locally_free, ADJUSTED_PAST_ONE_BINDER);
+    assert_eq!(outer_body.locally_free, CLOSED);
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 
@@ -348,7 +378,10 @@ fn h_an_ordinary_bound_reference_is_still_reported() {
         IDX_0,
         "a plain `x` is a BoundVar at index 0 and must be reported"
     );
-    assert_eq!(body.locally_free, IDX_0);
+    assert_eq!(
+        body.locally_free, CLOSED,
+        "Receive owns the body-root cache"
+    );
     assert_eq!(only_receive(&par).locally_free, CLOSED);
 }
 

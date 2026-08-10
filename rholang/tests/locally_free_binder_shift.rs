@@ -24,15 +24,18 @@
 //!
 //! The unit rows in `interpreter::util::binder_shift_law` check the function
 //! against an index-space oracle. These rows check the **compiler**: for a
-//! binding node `N` with `n` binders and body `B`, they decode `B.locally_free`
-//! into an index set, apply `from(n).map(_ - n)` **in index space**, re-render,
-//! and require `N.locally_free` to equal it byte for byte.
+//! binding node `N` with `n` binders and body `B`, they derive the body's
+//! pre-binding member set from the source fixture, apply
+//! `from(n).map(_ - n)` **in index space**, re-render, and require
+//! `N.locally_free` to equal it byte for byte. This is source-derived because
+//! `New` and `Receive` deliberately transfer the body cache into the binding
+//! node and clear the nested duplicate; `MatchCase` retains its nested cache.
 //!
 //! The decode (`members_of`) and the shift (`escapes`) are the only two things
-//! the test computes, and neither mentions `filter_and_adjust_bitset`. So the
-//! expectation and the value under test do not move together: a reading that
-//! emitted the shifted POSITION instead of the member fails here even though
-//! the input it read is unchanged.
+//! the test computes, and neither mentions `filter_and_adjust_bitset`. The
+//! fixtures additionally pin whether the nested cache is transferred or
+//! retained. Thus the expectation and the value under test cannot move with
+//! either the shift implementation or the cache-ownership implementation.
 //!
 //! ⚠ Every row additionally asserts that the node's **other** contributions —
 //! the channel/source it listens on, the patterns it binds, a `match`'s target —
@@ -143,8 +146,23 @@ struct Row {
     /// What the program is, for the failure message.
     what: &'static str,
     node: Vec<u8>,
-    body: Vec<u8>,
+    /// Body cache before the enclosing binder shifts it, derived from the
+    /// fixture's two de Bruijn names: the inner binder at 0 and outer `x` at 1.
+    body_before_binding: Vec<u8>,
+    /// Cache stored on the nested body after the binding node is assembled.
+    stored_body: Vec<u8>,
+    body_cache_policy: BodyCachePolicy,
     bound_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BodyCachePolicy {
+    /// `New` and `Receive` move the cache to the enclosing node, avoiding a
+    /// duplicate allocation on the nested body.
+    Transferred,
+    /// `MatchCase` keeps the cache on its source as well as using it to derive
+    /// the enclosing `Match` cache.
+    Retained,
 }
 
 impl Row {
@@ -154,18 +172,28 @@ impl Row {
         let Row {
             what,
             node,
-            body,
+            body_before_binding,
+            stored_body,
+            body_cache_policy,
             bound_count,
         } = self;
         assert_eq!(
             node,
-            &shifted(body, *bound_count),
+            &shifted(body_before_binding, *bound_count),
             "{what}: the body reports {:?} (members {:?}); {bound_count} binder(s) are \
              discharged here, so the node must report members {:?} — got members {:?}",
-            body,
-            members_of(body),
-            escapes(&members_of(body), *bound_count),
+            body_before_binding,
+            members_of(body_before_binding),
+            escapes(&members_of(body_before_binding), *bound_count),
             members_of(node),
+        );
+        let expected_stored_body = match body_cache_policy {
+            BodyCachePolicy::Transferred => Vec::new(),
+            BodyCachePolicy::Retained => body_before_binding.clone(),
+        };
+        assert_eq!(
+            stored_body, &expected_stored_body,
+            "{what}: nested body cache ownership must be {body_cache_policy:?}"
         );
     }
 
@@ -173,7 +201,7 @@ impl Row {
     /// names an index the node does not own. A suite of rows that all discharge
     /// everything would satisfy the law with `[]` on both sides.
     fn is_non_trivial(&self) -> bool {
-        !escapes(&members_of(&self.body), self.bound_count).is_empty()
+        !escapes(&members_of(&self.body_before_binding), self.bound_count).is_empty()
     }
 }
 
@@ -194,7 +222,9 @@ fn new_row() -> Row {
     Row {
         what: "`new y in { @\"o\"!(x) }` under `for (@x <- @\"c\")`",
         node: node.locally_free.clone(),
-        body: inner.locally_free.clone(),
+        body_before_binding: vec![0, 1],
+        stored_body: inner.locally_free.clone(),
+        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -225,7 +255,9 @@ fn for_row() -> Row {
     Row {
         what: "`for (@y <- @\"d\") { @\"o\"!(x) }` under `for (@x <- @\"c\")`",
         node: node.locally_free.clone(),
-        body: inner.locally_free.clone(),
+        body_before_binding: vec![0, 1],
+        stored_body: inner.locally_free.clone(),
+        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -257,7 +289,9 @@ fn contract_row() -> Row {
     Row {
         what: "`contract @\"k\"(@y) = { @\"o\"!(x) }` under `for (@x <- @\"c\")`",
         node: node.locally_free.clone(),
-        body: inner.locally_free.clone(),
+        body_before_binding: vec![0, 1],
+        stored_body: inner.locally_free.clone(),
+        body_cache_policy: BodyCachePolicy::Transferred,
         bound_count: node.bind_count as usize,
     }
 }
@@ -290,12 +324,14 @@ fn match_row() -> Row {
     Row {
         what: "`match 10 { y => @\"o\"!(x) }` under `for (@x <- @\"c\")`",
         node: node.locally_free.clone(),
-        body: case
+        body_before_binding: vec![0, 1],
+        stored_body: case
             .source
             .as_ref()
             .expect("MatchCase.source")
             .locally_free
             .clone(),
+        body_cache_policy: BodyCachePolicy::Retained,
         bound_count: case.free_count as usize,
     }
 }
@@ -334,7 +370,7 @@ fn every_binding_form_shifts_its_body_bitset_into_its_own_index_space() {
 fn the_surviving_index_is_the_member_not_the_position() {
     for row in every_row() {
         assert_eq!(
-            row.body,
+            row.body_before_binding,
             vec![0, 1],
             "{}: the body names index 1 (`x`), and index 0 is the node's own name",
             row.what
@@ -346,6 +382,7 @@ fn the_surviving_index_is_the_member_not_the_position() {
              is the empty set with a trailing zero",
             row.what
         );
+        row.check();
     }
 }
 

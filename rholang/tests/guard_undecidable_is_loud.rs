@@ -345,15 +345,15 @@ async fn a_programmatically_built_undecidable_guard_is_refused_by_the_reducer() 
     // gate cannot have fired. The reducer must refuse it anyway, BEFORE the
     // consume, which is why the error arrives with the space untouched.
     let outcome = run_with_guard(tautological_method_guard()).await;
-    match outcome.error {
+    match &outcome.error {
         Some(InterpreterError::UndecidableGuard {
             clause,
             obstructions,
         }) => {
-            assert_eq!(clause, "where");
-            assert_eq!(obstructions, vec![
-                "a method call (`nth`)".to_string(),
-                "a method call (`nth`)".to_string()
+            assert_eq!(*clause, "where");
+            assert_eq!(obstructions.as_slice(), [
+                "a method call (`nth`)",
+                "a method call (`nth`)"
             ]);
         }
         other => panic!("expected UndecidableGuard, got {other:?}"),
