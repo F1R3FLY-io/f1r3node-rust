@@ -573,6 +573,11 @@ const GENESIS_VAULT_BALANCE: i64 = 9_000_000;
 /// one deterministic merge rejection.
 const TRANSFER_AMOUNT: i64 = 4_000_000;
 
+const _: () = {
+    assert!(2 * TRANSFER_AMOUNT <= GENESIS_VAULT_BALANCE);
+    assert!(3 * TRANSFER_AMOUNT > GENESIS_VAULT_BALANCE);
+};
+
 pub(super) struct D3VaultConflictFixture {
     pub(super) nodes: Vec<TestNode>,
     pub(super) shard_id: String,
@@ -585,8 +590,6 @@ pub(super) struct D3VaultConflictFixture {
 pub(super) async fn build_d3_vault_conflict_siblings(
     genesis: &GenesisContext,
 ) -> D3VaultConflictFixture {
-    assert!(2 * TRANSFER_AMOUNT <= GENESIS_VAULT_BALANCE);
-    assert!(3 * TRANSFER_AMOUNT > GENESIS_VAULT_BALANCE);
     let shard_id = genesis.genesis_block.shard_id.clone();
     let from_addr = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB)
         .expect("DEFAULT_PUB vault address")
@@ -703,7 +706,7 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
                 .iter()
                 .any(|rejected| rejected.sig == **sig)
         })
-        .map(|sig| sig.clone())
+        .cloned()
         .collect();
     assert_eq!(rejected_transfers, vec![fixture.rejected_sig.clone()]);
 
