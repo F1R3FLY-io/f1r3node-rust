@@ -17,6 +17,7 @@ use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
+use super::spatial_matcher_pda::match_par_list_with_stats;
 
 fn compare(label: &str, target: Par, pattern: Par) {
     let mut recursive = RecursiveContext::new();
@@ -66,6 +67,94 @@ fn connective(instance: models::rhoapi::connective::ConnectiveInstance) -> Par {
         connective_used: true,
         ..Default::default()
     }
+}
+
+#[derive(Clone, Copy)]
+struct NominalFrame {
+    pattern: usize,
+    next_target: usize,
+    pending_target: Option<usize>,
+}
+
+/// Exact pre-reuse Kuhn work counter. This oracle owns no relation cache and
+/// is intentionally separate from the production PDA.
+fn nominal_edge_evaluations(
+    pattern_count: usize,
+    target_count: usize,
+    edge: impl Fn(usize, usize) -> bool,
+) -> (bool, usize) {
+    let mut assignments = vec![None; target_count];
+    let mut evaluations = 0;
+
+    for root_pattern in 0..pattern_count {
+        let mut seen_targets = vec![false; target_count];
+        let mut search = vec![NominalFrame {
+            pattern: root_pattern,
+            next_target: 0,
+            pending_target: None,
+        }];
+        let mut augmented = false;
+
+        loop {
+            let Some(frame) = search.last_mut() else {
+                break;
+            };
+            let mut descended = false;
+            while frame.next_target < target_count {
+                let target = frame.next_target;
+                frame.next_target += 1;
+                if seen_targets[target] {
+                    continue;
+                }
+                evaluations += 1;
+                if !edge(frame.pattern, target) {
+                    continue;
+                }
+                seen_targets[target] = true;
+                match assignments[target] {
+                    None => {
+                        assignments[target] = Some(frame.pattern);
+                        search.pop();
+                        while let Some(parent) = search.pop() {
+                            assignments[parent
+                                .pending_target
+                                .expect("a nominal parent carries its displaced edge")] =
+                                Some(parent.pattern);
+                        }
+                        augmented = true;
+                        break;
+                    }
+                    Some(previous_pattern) => {
+                        frame.pending_target = Some(target);
+                        search.push(NominalFrame {
+                            pattern: previous_pattern,
+                            next_target: 0,
+                            pending_target: None,
+                        });
+                        descended = true;
+                        break;
+                    }
+                }
+            }
+            if augmented {
+                break;
+            }
+            if descended {
+                continue;
+            }
+            search.pop();
+            if let Some(parent) = search.last_mut() {
+                parent.pending_target = None;
+            } else {
+                break;
+            }
+        }
+        if !augmented {
+            return (false, evaluations);
+        }
+    }
+
+    (true, evaluations)
 }
 
 fn send(chan: Par, data: Vec<Par>, connective_used: bool) -> Par {
@@ -308,6 +397,152 @@ fn recursive_oracle_and_pda_agree_on_the_semantic_corpus() {
         "string mismatch",
         new_gstring_par("a".into(), Vec::new(), false),
         new_gstring_par("b".into(), Vec::new(), false),
+    );
+}
+
+#[test]
+fn production_list_pda_preserves_the_attempt_baseline_when_committing_deltas() {
+    let baseline_value = new_gstring_par("baseline".into(), Vec::new(), false);
+    let first = new_gint_par(11, Vec::new(), false);
+    let second = new_gint_par(29, Vec::new(), false);
+    let mut context = SpatialMatcherContext::new();
+    context.free_map.insert(41, baseline_value.clone());
+
+    let (result, _) =
+        match_par_list_with_stats(&mut context, vec![first.clone(), second.clone()], vec![
+            first,
+            new_freevar_par(0, Vec::new()),
+        ]);
+
+    assert!(result.is_some());
+    assert_eq!(context.free_map.len(), 2);
+    assert_eq!(context.free_map.get(&41), Some(&baseline_value));
+    assert_eq!(context.free_map.get(&0), Some(&second));
+}
+
+#[test]
+fn production_list_pda_matches_the_oracle_across_orderings_duplicates_and_nonlinearity() {
+    const PERMUTATIONS: [[usize; 3]; 6] =
+        [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+            2, 1, 0,
+        ]];
+
+    let integer = |value| new_gint_par(value, Vec::new(), false);
+    for target_values in [[1, 2, 3], [1, 1, 2]] {
+        for target_order in PERMUTATIONS {
+            let targets = target_order
+                .map(|index| integer(target_values[index]))
+                .into_iter()
+                .collect::<Vec<_>>();
+            for pattern_order in PERMUTATIONS {
+                let base_patterns = [
+                    new_freevar_par(0, Vec::new()),
+                    integer(2),
+                    new_freevar_par(1, Vec::new()),
+                ];
+                let patterns = pattern_order
+                    .map(|index| base_patterns[index].clone())
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                compare(
+                    &format!(
+                        "AC ordering target={target_order:?} pattern={pattern_order:?} values={target_values:?}"
+                    ),
+                    list(targets.clone(), false),
+                    list(patterns, true),
+                );
+
+                let nonlinear_base = [
+                    new_freevar_par(0, Vec::new()),
+                    integer(2),
+                    new_freevar_par(0, Vec::new()),
+                ];
+                let nonlinear = pattern_order
+                    .map(|index| nonlinear_base[index].clone())
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                compare(
+                    &format!(
+                        "nonlinear AC refusal target={target_order:?} pattern={pattern_order:?} values={target_values:?}"
+                    ),
+                    list(targets.clone(), false),
+                    list(nonlinear, true),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn production_list_pda_relational_counters_meet_preregistered_controls() {
+    const WIDTH: usize = 128;
+    const SAMPLES: usize = 51;
+
+    let integers = || {
+        (0..WIDTH)
+            .map(|value| new_gint_par(value as i64, Vec::new(), false))
+            .collect::<Vec<_>>()
+    };
+
+    let diagonal_patterns = integers();
+    let (diagonal_verdict, diagonal_control) =
+        nominal_edge_evaluations(WIDTH, WIDTH, |pattern, target| pattern == target);
+    let mut diagonal_context = SpatialMatcherContext::new();
+    let (diagonal_result, diagonal_stats) =
+        match_par_list_with_stats(&mut diagonal_context, integers(), diagonal_patterns);
+    assert!(diagonal_verdict);
+    assert!(diagonal_result.is_some());
+    assert_eq!(diagonal_stats.edge_evaluations, diagonal_control);
+    assert_eq!(diagonal_stats.relation_row_reuses, 0);
+    assert_eq!(diagonal_stats.cached_edge_visits, 0);
+
+    let chain_edge = |pattern: usize, target: usize| {
+        if pattern == 0 {
+            target == 1
+        } else {
+            target == pattern || target == pattern + 1
+        }
+    };
+    let (chain_verdict, chain_control) = nominal_edge_evaluations(WIDTH, WIDTH, chain_edge);
+    assert!(
+        !chain_verdict,
+        "target zero deliberately has no incoming edge"
+    );
+
+    let chain_patterns = || {
+        (0..WIDTH)
+            .map(|pattern| {
+                if pattern == 0 {
+                    new_gint_par(1, Vec::new(), false)
+                } else {
+                    connective(ConnOrBody(ConnectiveBody {
+                        ps: vec![
+                            new_gint_par(pattern as i64, Vec::new(), false),
+                            new_gint_par((pattern + 1) as i64, Vec::new(), false),
+                        ],
+                    }))
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut control_samples = Vec::with_capacity(SAMPLES);
+    let mut treatment_samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let mut context = SpatialMatcherContext::new();
+        let (result, stats) = match_par_list_with_stats(&mut context, integers(), chain_patterns());
+        assert!(result.is_none());
+        assert_eq!(stats.edge_evaluations, WIDTH * WIDTH);
+        assert!(stats.relation_row_reuses > 0);
+        assert!(stats.cached_edge_visits > 0);
+        assert!(stats.successful_edge_evaluations <= 2 * WIDTH);
+        assert!(stats.edge_evaluations < chain_control);
+        control_samples.push(chain_control);
+        treatment_samples.push(stats.edge_evaluations);
+    }
+
+    println!(
+        "D_E4_PRODUCTION_COUNTERS width={WIDTH} control={control_samples:?} treatment={treatment_samples:?} invariant={diagonal_control}"
     );
 }
 

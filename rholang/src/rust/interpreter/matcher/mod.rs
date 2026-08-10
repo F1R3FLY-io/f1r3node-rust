@@ -1,6 +1,7 @@
 pub mod exports;
 pub mod fold_match;
 pub mod has_locally_free;
+mod lazy_relation;
 pub mod list_match;
 pub mod r#match;
 pub mod match_pars;

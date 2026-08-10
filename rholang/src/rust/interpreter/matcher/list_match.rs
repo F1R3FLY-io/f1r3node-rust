@@ -42,6 +42,10 @@ pub trait ListMatch<T: Clone> {
     ) -> Option<()>;
 
     fn match_function(&mut self, pattern: Pattern<T>, t: T) -> Option<FreeMap>;
+
+    /// Borrowed hot path used by the relational matcher. The owned method is
+    /// retained as the compatibility surface for direct callers.
+    fn match_function_ref(&mut self, pattern: &Pattern<T>, t: &T) -> Option<FreeMap>;
 }
 
 // Rust extension doesn't auto-format custom macros.
@@ -129,22 +133,31 @@ macro_rules! list_match {
                 // println!("\nlist_match all_patterns: {:?}", all_patterns);
 
                 let mut cloned_self = self.clone();
-                let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
-                // NOTE: 'memoizeInHashMap' (SpatialMatcher.scala:289-292) is bypassed here.
-                //
-                // That bypass used to be FORCED: before task #144 restored per-attempt
-                // state isolation, `match_function` was an impure function of
-                // `(pattern, target)` — its answer depended on whatever the previous
-                // attempts had left in `cloned_self.free_map` — and memoizing an impure
-                // function is unsound. With the isolation restored, `match_function` IS
-                // a pure function of `(pattern, target)` and the cache is sound.
-                //
-                // It is now OPTIONAL rather than forced, and deliberately not adopted:
-                // it needs `Pattern<$type>: Hash + Eq` and holds up to |P|·|T| FreeMaps,
-                // which is a real concern for wide targets. Adopt it on measurement, not
-                // on principle — it changes call counts only (observability), never a
-                // verdict.
-                let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function);
+                let _match_function: Box<
+                    dyn for<'pattern, 'target> FnMut(
+                        &'pattern Pattern<$type>,
+                        &'target $type,
+                    ) -> Option<FreeMap>,
+                > = Box::new(
+                    move |pattern: &Pattern<$type>, t: &$type| {
+                        cloned_self.match_function_ref(pattern, t)
+                    },
+                );
+                // D-E4: retain the now-pure structural edge relation across augmenting
+                // paths. The matcher stores only successful edges plus one scanned-prefix
+                // frontier per row, so failed pairs never form a dense |P|×|T| matrix.
+                // Remainder fillers are deliberately non-cacheable: they are cheap,
+                // intentionally dense, bind nothing inside the bipartite match, and would
+                // otherwise retain Θ((|T|-|fixed|)·|T|) identical FreeMaps. Term rows —
+                // the actual structural AC obligations — receive exact lazy reuse.
+                let _cache_structural_term = Box::new(|pattern: &Pattern<$type>| {
+                    matches!(pattern, Pattern::Term(_))
+                });
+                let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> =
+                    MaximumBipartiteMatch::new_with_cache_policy(
+                        _match_function,
+                        _cache_structural_term,
+                    );
 
                 // println!("\ncurrent free_map: {:?}", self.free_map);
 
@@ -258,6 +271,10 @@ macro_rules! list_match {
               // compile time (it's a closure that captures its environment), so it cannot be stored directly on the stack. The Box provides a fixed-size
               // pointer to the function on the heap, which can be stored on the stack.' - GPT-4
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
+                self.match_function_ref(&pattern, &t)
+              }
+
+              fn match_function_ref(&mut self, pattern: &Pattern<$type>, t: &$type) -> Option<FreeMap> {
                 match pattern {
                   Pattern::Term(p) => {
                      if !self.connective_used(p.clone()) {
@@ -280,7 +297,7 @@ macro_rules! list_match {
                          )
                          .increment(__isolate_start.elapsed().as_nanos() as u64);
 
-                         let effect = self.spatial_match(t, p);
+                         let effect = self.spatial_match(t.clone(), p.clone());
 
                          // `resultState <- get; set(initState); yield resultState` as
                          // ONE move. `std::mem::replace` — not clone-then-assign: the
@@ -295,7 +312,7 @@ macro_rules! list_match {
                   // remainder's own binding happens AFTER the bipartite match, on
                   // `self`, in `handle_remainder`.
                   Pattern::Remainder(_) =>
-                      guard(self.locally_free(t, 0).is_empty()).map(|_| self.free_map.clone()),
+                      guard(self.locally_free(t.clone(), 0).is_empty()).map(|_| self.free_map.clone()),
                 }
               }
           }

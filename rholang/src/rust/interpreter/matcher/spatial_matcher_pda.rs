@@ -7,7 +7,10 @@
 //! `Job`/`Frame` pushdown automaton. A nested pattern therefore grows heap work
 //! storage, never the native call stack.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cmp::Ordering;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
@@ -21,6 +24,9 @@ use models::rust::utils::*;
 
 use super::exports::*;
 use super::has_locally_free::HasLocallyFree;
+#[cfg(test)]
+use super::lazy_relation::RelationalMatchStats;
+use super::lazy_relation::{EdgeResult, LazyRelation, RelationCursor};
 use super::list_match::aggregate_updates;
 use super::match_pars::match_pars;
 use super::par_count::ParCount;
@@ -33,6 +39,40 @@ pub(super) fn match_par(
     pattern: Par,
 ) -> Option<()> {
     drive(context, MatchPair::Par(target, pattern))
+}
+
+#[cfg(test)]
+thread_local! {
+    static LIST_RELATION_STATS: Cell<RelationalMatchStats> =
+        Cell::new(RelationalMatchStats::default());
+}
+
+#[cfg(test)]
+fn update_list_relation_stats(update: impl FnOnce(&mut RelationalMatchStats)) {
+    LIST_RELATION_STATS.with(|stats| {
+        let mut current = stats.get();
+        update(&mut current);
+        stats.set(current);
+    });
+}
+
+#[cfg(test)]
+pub(super) fn match_par_list_with_stats(
+    context: &mut SpatialMatcherContext,
+    targets: Vec<Par>,
+    patterns: Vec<Par>,
+) -> (Option<()>, RelationalMatchStats) {
+    LIST_RELATION_STATS.with(|stats| stats.set(RelationalMatchStats::default()));
+    let request = ListRequest::new(
+        targets.into_iter().map(MatchValue::Par).collect(),
+        patterns.into_iter().map(MatchValue::Par).collect(),
+        Merger::Identity,
+        None,
+        false,
+    );
+    let result = drive_job(context, Job::ListInit(request));
+    let stats = LIST_RELATION_STATS.with(Cell::get);
+    (result, stats)
 }
 
 pub(super) fn match_par_pair(
@@ -112,6 +152,7 @@ enum Frame {
     ListEdge {
         machine: Box<ListMachine>,
         target_index: usize,
+        candidate_was_seen: bool,
         snapshot: FreeMap,
     },
     PathEdge {
@@ -149,7 +190,10 @@ enum MatchPair {
 }
 
 fn drive(context: &mut SpatialMatcherContext, root: MatchPair) -> Option<()> {
-    let mut job = match_job(root);
+    drive_job(context, match_job(root))
+}
+
+fn drive_job(context: &mut SpatialMatcherContext, mut job: Job) -> Option<()> {
     let mut frames = FrameStack::new();
 
     loop {
@@ -239,13 +283,42 @@ fn resume(
             }
         }
         Frame::ListEdge {
-            machine,
+            mut machine,
             target_index,
+            candidate_was_seen,
             snapshot,
         } => {
-            let produced = std::mem::replace(&mut context.free_map, snapshot);
+            let mut produced = std::mem::replace(&mut context.free_map, snapshot);
             if result {
-                (*machine).accept_edge(target_index, produced)
+                #[cfg(test)]
+                update_list_relation_stats(|stats| {
+                    stats.successful_edge_evaluations += 1;
+                });
+                let pattern_index = machine
+                    .search
+                    .last()
+                    .expect("a suspended list edge has a search frame")
+                    .pattern_index;
+                // The final fold already owns the attempt baseline. Retain
+                // only writes that differ from it instead of duplicating the
+                // complete FreeMap once per successful relation edge.
+                produced.retain(|level, value| context.free_map.get(level) != Some(value));
+                let produced = if produced.is_empty() {
+                    machine.relation.record_shared_success(
+                        pattern_index,
+                        target_index,
+                        Rc::clone(&machine.empty_delta),
+                    )
+                } else {
+                    machine
+                        .relation
+                        .record_success(pattern_index, target_index, produced)
+                };
+                if candidate_was_seen {
+                    Job::List(machine)
+                } else {
+                    (*machine).accept_edge(target_index, EdgeResult::Shared(produced))
+                }
             } else {
                 Job::List(machine)
             }
@@ -1207,13 +1280,14 @@ enum ListPattern {
 
 struct ListAssignment {
     pattern_index: usize,
-    free_map: FreeMap,
+    free_map: EdgeResult<FreeMap>,
 }
 
 struct ListSearchFrame {
     pattern_index: usize,
     next_target: usize,
-    pending: Option<(usize, FreeMap)>,
+    relation_cursor: RelationCursor,
+    pending: Option<(usize, EdgeResult<FreeMap>)>,
 }
 
 struct ListMachine {
@@ -1223,6 +1297,8 @@ struct ListMachine {
     root_pattern: usize,
     seen_targets: Vec<bool>,
     search: Vec<ListSearchFrame>,
+    relation: LazyRelation<FreeMap>,
+    empty_delta: Rc<FreeMap>,
     merger: Merger,
     remainder: Option<i32>,
     wildcard: bool,
@@ -1290,6 +1366,11 @@ fn init_list(
         patterns.extend((0..remainder_count).map(|_| ListPattern::Remainder));
     }
     patterns.extend(request.patterns.into_iter().map(ListPattern::Term));
+    let relation = LazyRelation::new(
+        patterns
+            .iter()
+            .map(|pattern| matches!(pattern, ListPattern::Term(_))),
+    );
 
     let mut machine = ListMachine {
         targets: request.targets.into(),
@@ -1298,6 +1379,8 @@ fn init_list(
         root_pattern: 0,
         seen_targets: vec![false; target_len],
         search: Vec::new(),
+        relation,
+        empty_delta: Rc::new(new_free_map()),
         merger: request.merger,
         remainder: request.remainder,
         wildcard: request.wildcard,
@@ -1307,18 +1390,32 @@ fn init_list(
 }
 
 impl ListMachine {
+    fn push_search(&mut self, pattern_index: usize) {
+        #[cfg(test)]
+        update_list_relation_stats(|stats| {
+            stats.augmenting_frames += 1;
+            if self.relation.is_cacheable(pattern_index)
+                && self.relation.has_scanned_targets(pattern_index)
+            {
+                stats.relation_row_reuses += 1;
+            }
+        });
+        self.search.push(ListSearchFrame {
+            pattern_index,
+            next_target: 0,
+            relation_cursor: self.relation.cursor(pattern_index),
+            pending: None,
+        });
+    }
+
     fn start_next_root(&mut self) {
         if self.root_pattern < self.patterns.len() {
             self.seen_targets.fill(false);
-            self.search.push(ListSearchFrame {
-                pattern_index: self.root_pattern,
-                next_target: 0,
-                pending: None,
-            });
+            self.push_search(self.root_pattern);
         }
     }
 
-    fn accept_edge(mut self, target_index: usize, free_map: FreeMap) -> Job {
+    fn accept_edge(mut self, target_index: usize, free_map: EdgeResult<FreeMap>) -> Job {
         self.seen_targets[target_index] = true;
         let frame = self
             .search
@@ -1348,11 +1445,7 @@ impl ListMachine {
             Some(previous) => {
                 let displaced = previous.pattern_index;
                 frame.pending = Some((target_index, free_map));
-                self.search.push(ListSearchFrame {
-                    pattern_index: displaced,
-                    next_target: 0,
-                    pending: None,
-                });
+                self.push_search(displaced);
                 Job::List(Box::new(self))
             }
         }
@@ -1369,46 +1462,112 @@ fn step_list(
     }
 
     loop {
-        let Some(frame) = machine.search.last_mut() else {
+        let Some(pattern_index) = machine.search.last().map(|frame| frame.pattern_index) else {
             return Job::Return(false);
         };
-        if frame.next_target == machine.targets.len() {
-            machine.search.pop();
-            if let Some(parent) = machine.search.last_mut() {
-                parent.pending = None;
+
+        let cacheable = machine.relation.is_cacheable(pattern_index);
+        let target_index = if cacheable {
+            loop {
+                let cached = {
+                    let frame = machine
+                        .search
+                        .last_mut()
+                        .expect("the relational list row has a search frame");
+                    machine
+                        .relation
+                        .next_cached(pattern_index, &mut frame.relation_cursor)
+                };
+                match cached {
+                    Some((target_index, produced)) if !machine.seen_targets[target_index] => {
+                        #[cfg(test)]
+                        update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
+                        return machine.accept_edge(target_index, EdgeResult::Shared(produced));
+                    }
+                    Some(_) => {
+                        #[cfg(test)]
+                        update_list_relation_stats(|stats| stats.cached_edge_visits += 1);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+
+            let Some(target_index) = machine
+                .relation
+                .next_unscanned(pattern_index, machine.targets.len())
+            else {
+                machine.search.pop();
+                if let Some(parent) = machine.search.last_mut() {
+                    parent.pending = None;
+                    continue;
+                }
+                return Job::Return(false);
+            };
+            target_index
+        } else {
+            let frame = machine
+                .search
+                .last_mut()
+                .expect("the non-cacheable list row has a search frame");
+            if frame.next_target == machine.targets.len() {
+                machine.search.pop();
+                if let Some(parent) = machine.search.last_mut() {
+                    parent.pending = None;
+                    continue;
+                }
+                return Job::Return(false);
+            }
+            let target_index = frame.next_target;
+            frame.next_target += 1;
+            if machine.seen_targets[target_index] {
                 continue;
             }
-            return Job::Return(false);
-        }
+            target_index
+        };
 
-        let target_index = frame.next_target;
-        frame.next_target += 1;
-        if machine.seen_targets[target_index] {
-            continue;
-        }
-        let pattern = machine.patterns[frame.pattern_index].clone();
-        let target = machine.targets[target_index].clone();
-        match pattern {
+        let candidate_was_seen = machine.seen_targets[target_index];
+        #[cfg(test)]
+        update_list_relation_stats(|stats| stats.edge_evaluations += 1);
+        match &machine.patterns[pattern_index] {
             ListPattern::Remainder => {
-                if target.locally_free_is_empty(context) {
-                    let produced = context.free_map.clone();
-                    return machine.accept_edge(target_index, produced);
+                if machine.targets[target_index].locally_free_is_empty(context) {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| {
+                        stats.successful_edge_evaluations += 1;
+                    });
+                    let produced = new_free_map();
+                    return machine.accept_edge(target_index, EdgeResult::Owned(produced));
                 }
             }
             ListPattern::Term(pattern) if !pattern.connective_used(context) => {
-                if target == pattern {
-                    let produced = context.free_map.clone();
-                    return machine.accept_edge(target_index, produced);
+                if &machine.targets[target_index] == pattern {
+                    #[cfg(test)]
+                    update_list_relation_stats(|stats| {
+                        stats.successful_edge_evaluations += 1;
+                    });
+                    let produced = machine.relation.record_shared_success(
+                        pattern_index,
+                        target_index,
+                        Rc::clone(&machine.empty_delta),
+                    );
+                    if !candidate_was_seen {
+                        return machine.accept_edge(target_index, EdgeResult::Shared(produced));
+                    }
                 }
             }
             ListPattern::Term(pattern) => {
-                let Some(pair) = target.into_pair(pattern) else {
+                let Some(pair) = machine.targets[target_index]
+                    .clone()
+                    .into_pair(pattern.clone())
+                else {
                     continue;
                 };
                 let snapshot = context.free_map.clone();
                 frames.push(Frame::ListEdge {
                     machine: Box::new(machine),
                     target_index,
+                    candidate_was_seen,
                     snapshot,
                 });
                 return match_job(pair);
@@ -1418,50 +1577,54 @@ fn step_list(
 }
 
 fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job {
-    let mut ordered: Vec<_> = machine
-        .assignments
-        .iter()
+    let ListMachine {
+        targets,
+        patterns,
+        assignments,
+        mut relation,
+        merger,
+        remainder,
+        wildcard,
+        ..
+    } = machine;
+    relation.clear();
+
+    let mut ordered: Vec<_> = assignments
+        .into_iter()
         .enumerate()
         .filter_map(|(target_index, assignment)| {
-            assignment
-                .as_ref()
-                .map(|assignment| (target_index, assignment))
+            assignment.map(|assignment| (target_index, assignment))
         })
         .collect();
     ordered.sort_by(|(left_index, _), (right_index, _)| {
-        match machine.targets[*left_index].cmp(&machine.targets[*right_index]) {
+        match targets[*left_index].cmp(&targets[*right_index]) {
             Ordering::Equal => left_index.cmp(right_index),
             order => order,
         }
     });
-    let maps = ordered
-        .iter()
-        .map(|(_, assignment)| assignment.free_map.clone())
-        .collect::<Vec<_>>();
-    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
-        return Job::Return(false);
-    };
-
     let remainder_values = ordered
         .iter()
         .filter(|(_, assignment)| {
-            matches!(
-                machine.patterns[assignment.pattern_index],
-                ListPattern::Remainder
-            )
+            matches!(patterns[assignment.pattern_index], ListPattern::Remainder)
         })
-        .map(|(target_index, _)| machine.targets[*target_index].clone())
+        .map(|(target_index, _)| targets[*target_index].clone())
         .collect::<Vec<_>>();
-    let remainder_sorted = machine
-        .targets
+    let remainder_sorted = targets
         .iter()
         .filter(|target| remainder_values.contains(target))
         .cloned()
         .collect::<Vec<_>>();
+    let maps = ordered
+        .into_iter()
+        .map(|(_, assignment)| assignment.free_map.into_owned())
+        .collect::<Vec<_>>();
+    let Some(updated) = aggregate_updates(context.free_map.clone(), maps) else {
+        return Job::Return(false);
+    };
     context.free_map = updated;
 
-    match machine.remainder {
-        None if machine.wildcard || remainder_sorted.is_empty() => Job::Return(true),
+    match remainder {
+        None if wildcard || remainder_sorted.is_empty() => Job::Return(true),
         None => Job::Return(false),
         Some(level) => {
             let prior = context
@@ -1471,7 +1634,7 @@ fn finish_list(context: &mut SpatialMatcherContext, machine: ListMachine) -> Job
                 .unwrap_or_else(|| vector_par(Vec::new(), false));
             context
                 .free_map
-                .insert(level, machine.merger.merge(prior, remainder_sorted));
+                .insert(level, merger.merge(prior, remainder_sorted));
             Job::Return(true)
         }
     }
