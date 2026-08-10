@@ -150,9 +150,15 @@ Ascent package, and admission-free worklist theorem are reported separately in �
 semantic, representation, and consensus analyses must still be refreshed after the checkpoint is
 committed; this paragraph does not substitute the source-index closure gate with a test result.
 The subsequent `mettail-rust@4fa08387` SS-G44 checkpoint removes two heap/work slopes inside the
-already stack-safe generated parser: repeated first-parent GSS ancestry walks and copied k-best
+already stack-safe generated parser: repeated first-parent graph-structured stack (GSS) ancestry walks and copied k-best
 decision/packing prefixes. The complete 31-case deep traversal binary now passes under a 2 GiB cap
 on the default native stack; §5.21 records the exact predecessor/successor and profiler evidence.
+`mettail-rust@adc76524` then closes the remaining measured canonical generalized LL (GLL) ancestry
+amplification:
+515,500 cross-category boundary queries had revisited 336,387,001 GSS nodes in the 1,000-binder
+workload. An incremental monotone target-category lattice reduces that exact workload from 248.42 s
+to 10.83 s while the positive path retains the exhaustive cycle-safe walk. §5.22 records the
+admission-free equivalence proof, independent oracle, complete regressions, and AMD uProf result.
 `f1r3node-rust-mettail@c1feaf36` then closes a separate ingress-envelope defect: configured gRPC
 limits now bound complete protobuf messages rather than individual HTTP/2 frames. §5.13.8 records
 the black-box rejection and containment evidence. This is a byte-work boundary before the first
@@ -266,7 +272,8 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G41** | `mettail-rust@c95d9e73` | mettail | depth-composed binder shift: constant-size call plus one-pass native PDA | generated carrier $`\Theta(k^2) \rightarrow \Theta(1)`$ bytes/allocation; runtime traversal $`\Theta(kn) \rightarrow \Theta(n)`$ for reflected size $`n`$; **20,000** levels on **256 KiB**; carrier **85 B / 17 allocations / 4,164 allocated B** at every ladder point | **yes**; Rocq fusion theorem, recursive differential, live RSpace/Ambient witnesses, and exact refusal-domain tests preserve the reflected result and verdict; bytes/COMM intentionally move under CBR-L20 | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G42** | `mettail-rust@98dc72ad` | mettail | arbitrarily nested generated OptionalGroup/BinderList WPDA traversal, action extraction, and model lifecycle | artificial nesting limit and recursive generator-model walk $`\rightarrow O(1)`$ native stack with $`O(d)`$ typed heap frames; **20,000** alternating levels on **256 KiB**; focused matrix **53/53**, **0.62 s / 178,064 KiB** | **yes**; bounded recursive forest oracle, exact generated-marker/action assertions, dense-marker round trips, lifecycle gates, and admission-free Rocq continuation laws | [5.18.44](#51844-nested-optional-and-binder-list-wpda-closure-ss-g42) |
 | **SS-G43** | this checkpoint; pgmcp #5192 | mettail | vendored Ascent disjunction/macro/token lifecycle and analysis, plus testkit constructor emission and historical-corpus migration $`\rightarrow`$ typed work/value PDAs | input-shaped recursion and macro-expansion depth ceiling $`\rightarrow O(1)`$ native stack; nested constructor string copying $`\Theta(d^2) \rightarrow \Theta(W)`$ direct output for $`W`$ bytes; **20,000** levels on **256 KiB** | **yes**; bounded recursive Ascent/constructor oracles, complete mode/error matrix, promoted corpus, and admission-free generic worklist-fold theorem | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
-| **SS-G44** | `mettail-rust@4fa08387` | mettail | generated generalized-parser GSS ancestry queries and k-best election prefixes $`\rightarrow`$ compact per-node prefix summaries, persistent decision vectors, and borrowed immutable SPPF families | native stack remains $`O(1)`$; ancestry probes $`\Theta(d^2) \rightarrow \Theta(d)`$; copied decision payload $`\Theta(d^2) \rightarrow`$ structurally shared prefixes with $`O(\log d)`$ update; unary depth **20,000**: **8,286,196 $`\rightarrow`$ 188,924 KiB RSS** | heap/work refinement; **3,654** library tests plus **31/31** deep traversal cases preserve results | [5.21](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44) |
+| **SS-G44** | `mettail-rust@4fa08387` | mettail | generated generalized-parser GSS ancestry queries and k-best election prefixes $`\rightarrow`$ compact per-node prefix summaries, persistent decision vectors, and borrowed immutable shared packed parse forest (SPPF) families | native stack remains $`O(1)`$; ancestry probes $`\Theta(d^2) \rightarrow \Theta(d)`$; copied decision payload $`\Theta(d^2) \rightarrow`$ structurally shared prefixes with $`O(\log d)`$ update; unary depth **20,000**: **8,286,196 $`\rightarrow`$ 188,924 KiB RSS** | heap/work refinement; **3,654** library tests plus **31/31** deep traversal cases preserve results | [5.21](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44) |
+| **SS-G45** | `mettail-rust@adc76524` | mettail | canonical-GLL cross-category boundary reachability: repeated exhaustive caller-ancestry DFS $`\rightarrow`$ incremental target-category lattice with exact positive fallback | native stack remains $`O(1)`$; 1,000-binder boundary visits **336,387,001 $`\rightarrow`$ 0**; exact workload **248.42 $`\rightarrow`$ 10.83 s** (**22.94×**); peak RSS **609,152 $`\rightarrow`$ 605,132 KiB** | heap/work refinement; admission-free path and multi-caller equivalence, 1,000-case independent oracle, **3,654** library tests, every integration target, **21** doc tests, and **31/31** deep cases preserve results | [5.22](#522-canonical-gll-boundary-summary-closure-ss-g45) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -410,6 +417,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.19 Direct EPM1 canonical validation and fold-construction closure [SS-C12]](#519-direct-epm1-canonical-validation-and-fold-construction-closure-ss-c12)
   - [5.20 Semantic-SCC, constructor, and PathMap-streaming closure [SS-G43, SS-C13]](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13)
   - [5.21 Generated-parser ancestry and election-prefix closure [SS-G44]](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44)
+  - [5.22 Canonical-GLL boundary-summary closure [SS-G45]](#522-canonical-gll-boundary-summary-closure-ss-g45)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -2826,7 +2834,8 @@ transport frame, not the complete message presented to prost. This was a resourc
 not a recursive traversal.
 
 Every generated API service now receives `max_decoding_message_size(max_message_size)`. The peer
-`TransportLayerServer` receives the same complete-message decoder bound before the TLS request
+`TransportLayerServer` receives the same complete-message decoder bound before the transport-layer
+security (TLS) request
 interceptor wraps it. API unary ingress defaults to 16 MiB and peer unary ingress to 256 KiB; the
 peer stream circuit retains its independent 256 MiB reconstructed-message bound. No depth ceiling,
 `RUST_MIN_STACK`, stack switch, `stacker` integration, synthetic COMM, or PathMap projection was
@@ -5796,6 +5805,128 @@ topology, zipper/algebra/lattice result, or accepted-program set moves.
 
 ---
 
+### 5.22 Canonical-GLL boundary-summary closure [SS-G45]
+
+#### 5.22.1 The defect
+
+The generated generalized parser was already stack-safe, but one canonical-GLL query still paid for
+the same caller ancestry repeatedly. `cgll_pure_crosscat_boundaries` decides whether a pending
+operator belongs to the current source category or to an enclosing cross-category projection. For
+each eligible descriptor it performed a cycle-safe DFS over every caller edge until it found a
+recognizing target or a re-scoping frame. The walk was semantically necessary; recomputing its
+token-independent reachability component was not.
+
+**MEASURED (f)** on `binders/output_width/1000`: 515,500 boundary queries examined 336,387,001 GSS
+nodes. The unchanged complete workload took **248.42 s** wall, **246.52 s** user, **0.23 s** system,
+and **609,152 KiB** peak process RSS with zero swap. AMD uProf 5.3 attributed **94.09% inclusive CPU
+time** to `cgll_pure_crosscat_boundaries`; canonical-GLL edge lookup accounted for 4.41% self and
+18.71% inclusive, while the parent/return maps each contributed approximately 2.2% self and 10.2%
+inclusive. This was a repeated-work slope on the heap-backed GSS, not host recursion or a native-
+stack risk.
+
+#### 5.22.2 The architecture of the repair, and why this shape
+
+Each GSS node now carries a monotone summary with three facts: the explicit target categories that
+may equal the source, the inferred target categories that must differ from the source, and whether
+the node inherits caller summaries. The first 256 category indices use four inline machine words;
+larger `u16` indices use a sorted sparse overflow. Reverse caller-to-dependent edges drive a
+semi-naive worklist. Every category bit changes only from absent to present, so propagation reaches
+a fixed point without recursion or an iteration ceiling.
+
+The summary deliberately forgets target order and binding-power floors. It therefore answers only
+the negative existential question: if no reachable target category recognizes the lookahead, the
+exact result is empty. A positive answer still executes the original cycle-safe exhaustive DFS,
+which preserves first-recognizing-target, target-floor, and ANY-yield/ALL-suppress aggregation.
+
+The alternatives were rejected for specific reasons. Memoizing whole query results by GSS node had
+no reuse on the measured descriptor stream and required invalidation on every new caller edge.
+Caching by token would multiply retained state by the operator alphabet. Replacing the positive walk
+with the unordered summary would discard observable order and floor information. A depth limit or a
+larger native stack would neither remove the repeated work nor establish semantic equivalence.
+
+#### 5.22.3 How the fix was made
+
+`crosscat_boundary::BoundaryTargetSummary::from_hop` projects the existing, independently tested
+`classify_hop` verdict into the local lattice. `cgll_pure_boundary_refresh_summary` records current
+callers after `gll_create`, joins their categories, and synchronously propagates every delta before a
+descriptor can query the node. `cgll_pure_crosscat_boundaries` asks `may_recognize` first and returns
+the empty boundary vector when the answer is false; every true answer enters the pre-existing exact
+walk byte-for-byte.
+
+The executable oracle is independent on the comparison side: it transcribes re-scoping, explicit
+evidence, inferred evidence, same-category exclusion, and linear ancestry without calling
+`classify_hop`. One thousand generated cases cover chains up to 79 hops and category indices through
+511; direct cases cover 0, 63, 64, 255, 256, 4,095, and `u16::MAX`, plus join idempotence.
+
+`CrossCatBoundarySummary.v` proves the stronger equality, not merely one-way safety: summary
+recognition equals exhaustive recognition for every finite caller path and for the union of all
+finite caller paths. It separately proves semantic join idempotence and monotonicity, the laws used
+by the semi-naive worklist. All six audited theorems kernel-check **Closed under the global context**;
+the repository-wide zero-admission scanner passes **222 registered/critical sources**.
+
+#### 5.22.4 Results
+
+**MEASURED (f)** on the same exact benchmark workload, default native stack, and no swap:
+
+| metric | predecessor | SS-G45 | interpretation |
+|---|---:|---:|---|
+| wall clock | 248.42 s | **10.83 s** | **22.94×** faster |
+| user / system CPU | 246.52 / 0.23 s | **10.56 / 0.17 s** | repeated ancestry work removed |
+| peak process RSS | 609,152 KiB | **605,132 KiB** | 4,020 KiB lower; no heap-for-time substitution |
+| boundary queries | 515,500 exact walks | **515,500 summary rejects; 0 exact walks** | every measured query proved empty |
+| GSS ancestry nodes visited | 336,387,001 | **0** | root mechanism eliminated |
+| summary growth events | n/a | 42,001 | finite monotone propagation receipt |
+| core result counters | $`|U|=1{,}583{,}507`$; processed 1,607,507; accepts 1 | **identical** | semantic worklist/result invariant |
+| GLL create / pop / replay | 42,004 / 1,030,001 / 7,000 | **identical** | control-flow invariant |
+| collection-separator folds | 999 | **identical** | workload anti-vacuity |
+
+The profiled successor took **11.35 s**, peaked at **615,272 KiB**, and used zero swap. AMD uProf
+sampled 10.16 CPU seconds. No boundary-walk or boundary-summary function received a sample in the
+detailed function report; the hottest named parser function was the ordinary `gll_pop` closure at
+0.64 s self (6.30%). The formerly 94.09%-inclusive function is therefore absent rather than replaced
+by another boundary-maintenance hotspot.
+
+The complete PraTTaIL package passes **3,654/3,654** library tests, every integration target, and
+**21/21** documentation tests. The complete generated-language all-targets command passes every
+test, bench target, and example; its 31-case deep traversal binary passes **31/31**. The latter
+all-targets command took **5 min 14.00 s**, peaked at **10,276,632 KiB** including compilation, and
+used zero swap under a 16 GiB cap. The focused summary oracle passes all 1,000 generated cases.
+
+#### 5.22.5 What it cost
+
+Each live GSS node gains four inline `u64` words per lattice component, sparse-overflow vector
+headers, and reverse-dependency bookkeeping. For $`C`$ reachable categories and $`E`$ dependency
+edges, a category bit can cross an edge at most once; the common Rholang grammar stays inside the
+allocation-free 0–255 category range. The measured workload's RSS decreased by 0.66%, so the new
+state did not create a retained-memory slope at this scale. Categories above 255 remain fully
+supported rather than being rejected or silently truncated.
+
+#### 5.22.6 What is still recursive
+
+No host-recursive production traversal is introduced. The positive boundary fallback remains an
+explicit `Vec` frontier plus visited set over the GSS; the lattice propagation remains a
+`VecDeque` worklist. Both are cycle-safe, have no artificial traversal-depth limit, and use the
+default native stack. Wider whole-project classic recursion analyses remain the separate census
+reported in the executive summary; this checkpoint changes only the named boundary query.
+
+#### 5.22.7 Anti-vacuity
+
+The predecessor's 515,500 walks and 336,387,001 visited nodes prove that the workload exercised the
+removed mechanism. The successor retains the same accepted result, $`|U|`$, processed descriptors,
+GLL creates, pops, replays, and 999 separator folds while reporting 515,500 summary rejects and zero
+fallback visits. Positive-path semantics are not inferred from that all-negative benchmark: the
+independent generated oracle deliberately includes recognizing explicit and inferred targets,
+re-scoping stops, same-category accept/refuse cases, and sparse-overflow categories, while the full
+3,654-test package exercises positive boundary behavior.
+
+The durable rows are
+[`measurements/canonical-gll-boundary-summary-2026-08-09.tsv`](measurements/canonical-gll-boundary-summary-2026-08-09.tsv).
+SS-G45 changes no accepted program, generated process, protobuf or bincode byte, post-state/event
+hash, COMM schedule, charge, EPathMap mode, EPM1 snapshot, PathMap topology, or
+zipper/algebra/lattice result.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6573,6 +6704,7 @@ done
 | [`measurements/epathmap-canonical-worklist-2026-08-08.tsv`](measurements/epathmap-canonical-worklist-2026-08-08.tsv) | the SS-C12 quadratic predecessor, reproducible linear ladder, depth-20,000 worklist, malformed-gate allocator lifetime, and formal-equivalence aggregate (§5.19) |
 | [`measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv`](measurements/semantic-scc-pathmap-streaming-2026-08-09.tsv) | SS-G43/SS-C13 capped Ascent, constructor/corpus, EPathMap zipper-streaming, f1r3node visitor, and Rocq validation rows (§5.20) |
 | [`measurements/generated-parser-prefix-closure-2026-08-09.tsv`](measurements/generated-parser-prefix-closure-2026-08-09.tsv) | SS-G44 predecessor/successor deep-parser runtime, RSS, heap, and AMD uProf hotspot rows (§5.21) |
+| [`measurements/canonical-gll-boundary-summary-2026-08-09.tsv`](measurements/canonical-gll-boundary-summary-2026-08-09.tsv) | SS-G45 exact 1,000-binder predecessor/successor counters, runtime, RSS, complete gates, formal proof, and AMD uProf rows (§5.22) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

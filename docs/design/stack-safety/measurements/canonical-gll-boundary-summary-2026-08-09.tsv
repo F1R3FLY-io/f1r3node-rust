@@ -1,0 +1,10 @@
+# SS-G45 canonical-GLL boundary-summary measurements. Runtime rows use the exact Criterion workload with --test, the default native stack, MemorySwapMax=0, and the complete width-1000 case intact.
+implementation	subject	width	memory_cap_kib	wall_s	user_s	system_s	process_peak_rss_kib	swap_bytes	u_size	processed	accepts	gll_creates	gll_pops	replays	collection_sep_folds	boundary_walks	boundary_summary_rejects	boundary_summary_updates	boundary_nodes_visited	result	notes
+predecessor	binders-output-width	1000	8388608	248.42	246.52	0.23	609152	0	1583507	1607507	1	42004	1030001	7000	999	515500	0	0	NA	pass	exact unprofiled baseline before incremental summary
+predecessor-instrumented	binders-output-width	1000	8388608	NA	NA	NA	NA	0	1583507	1607507	1	42004	1030001	7000	999	515500	0	0	336387001	pass	unchanged exhaustive traversal with node-visit counter only
+SS-G45	binders-output-width	1000	8388608	10.83	10.56	0.17	605132	0	1583507	1607507	1	42004	1030001	7000	999	0	515500	42001	0	pass	exact unprofiled successor; 22.94x wall-clock speedup
+predecessor-amduprof-5.3	binders-output-width	1000	NA	248.34	259.77	72.63	614128	0	NA	NA	1	NA	NA	NA	NA	NA	NA	NA	NA	pass	94.09 percent inclusive CPU in cgll_pure_crosscat_boundaries
+SS-G45-amduprof-5.3	binders-output-width	1000	2097152	11.35	10.75	3.93	615272	0	NA	NA	1	NA	NA	NA	NA	0	NA	NA	0	pass	10.16 sampled CPU seconds; no boundary function sampled; gll_pop closure 0.64 seconds self
+SS-G45-test	prattail-complete	3654-library-plus-all-integration-plus-21-doc	8388608	49.40	89.52	12.34	2369108	0	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	pass	cargo test -p prattail -j 8 including compilation
+SS-G45-test	languages-all-targets	31-deep-cases-plus-all-targets	16777216	314.00	869.82	75.95	10276632	0	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	pass	all tests benches and examples; compilation included
+SS-G45-formal	CrossCatBoundarySummary.v	all-finite-paths	2097152	NA	NA	NA	NA	0	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	pass	6 Print Assumptions audits closed under global context; zero-admission scan 222 sources

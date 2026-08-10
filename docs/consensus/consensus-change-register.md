@@ -46,6 +46,10 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **TSV** | *tab-separated values* — the durable measurement files the evidence links. | **CBR-044** |
 | **DFA** | *deterministic finite automaton* | **CBR-L14** lexer account |
 | **KAT** | *Kleene algebra with tests* | retired **CBR-L18** decision-procedure evidence |
+| **GLL** | *generalized LL parsing* — a generalized top-down parsing algorithm | retired **CBR-023** SS-G45 evidence |
+| **GSS** | *graph-structured stack* — the shared caller-stack graph used by GLL parsing | retired **CBR-023** SS-G44/SS-G45 evidence |
+| **SPPF** | *shared packed parse forest* — the compact graph of ambiguous parse results | retired **CBR-023** SS-G44 evidence |
+| **DFS** | *depth-first search* | retired **CBR-023** SS-G45 exact-fallback evidence |
 | **RAII** | *resource acquisition is initialisation* — the scope-tied resource idiom named in one exemption row. | [Appendix B.2](#b2-the-original-commit-level-exemptions) |
 
 ⚠ **This document also uses ALL-CAPS as emphasis inside verbatim quotations of commit messages**;
@@ -93,8 +97,8 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15) and binder
 (L20). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **CBR-L20 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **53 further changes
-were examined and retired** with typed reasons — 40 bug fixes, 4
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **54 further changes
+were examined and retired** with typed reasons — 40 bug fixes, 5
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
@@ -3596,6 +3600,26 @@ charge, EPathMap mode, EPM1 snapshot, PathMap topology, or zipper/algebra/lattic
 no active may-change-consensus entry; stack-safety report §5.21 and its durable TSV retain the
 predecessor/successor and profiler evidence.
 
+**CBR-023 living-set continuation (2026-08-09, SS-G45; pgmcp #5290/#5291).**
+`mettail-rust@adc76524` removes the remaining measured canonical-GLL caller-ancestry amplification
+from cross-category projection-boundary queries. A monotone per-node target-category lattice and
+reverse dependency worklist answer only the negative existential case; every positive answer still
+executes the original cycle-safe exhaustive DFS, preserving target order, binding-power floors, and
+ANY-yield/ALL-suppress aggregation. The exact 1,000-binder workload falls from 248.42 to 10.83 s
+(22.94×) and from 336,387,001 ancestry-node visits to zero, while the accepted result, descriptor
+set size, processed count, GLL create/pop/replay counts, and separator folds remain identical.
+
+An independent 1,000-case executable oracle covers explicit and inferred targets, re-scoping,
+same-category exclusion, and the complete `u16` representation boundary. Admission-free Rocq proves
+summary/exhaustive equality for each finite caller path and for the union of all finite caller paths,
+plus join monotonicity and semantic idempotence. The complete PraTTaIL package passes 3,654 library
+tests, every integration target, and 21 documentation tests; the generated-language 31-case deep
+binary remains green. This is a `BYTE_NEUTRAL_MEASURED` heap/work optimization within CBR-023's
+`EQUIVALENCE_PROVEN` set, not a new consensus decision. It changes no accepted program, generated
+process, protobuf or bincode byte, post-state or event hash, COMM schedule, charge, EPathMap mode,
+EPM1 snapshot, PathMap topology, or zipper/algebra/lattice result. Stack-safety report §5.22 and its
+durable TSV retain the full predecessor/successor, formal, regression, and profiler evidence.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a
@@ -3657,6 +3681,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-L22 bring the living appendix to 53. The re-scope also removed
+to B.1; subsequent classified findings through CBR-L22 bring the living appendix to 54. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*
