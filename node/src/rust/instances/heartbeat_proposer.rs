@@ -521,7 +521,8 @@ async fn check_lfb_and_propose(
         std::cmp::max(pending_deploy_max_lag, advanced_deploy_recovery_max_lag);
     let idle_recovery_window_open =
         finality_progress.stalled && finality_progress.recovery_round_due;
-    let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
+    let lag_recovery_leader =
+        is_lag_recovery_leader(&snapshot, validator_identity, last_finalized_block_number);
     let effective_frontier_chase_cap = effective_frontier_chase_cap(
         frontier_chase_max_lag,
         deploy_recovery_max_lag,
@@ -995,6 +996,7 @@ fn inspect_parent_updates(
 fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
+    last_finalized_block_number: i64,
 ) -> bool {
     let validators: Vec<Validator> = match snapshot.parents.first() {
         Some(parent) => parent
@@ -1010,16 +1012,22 @@ fn is_lag_recovery_leader(
         return true;
     }
 
-    select_lag_recovery_leader(validators, |validator| {
-        snapshot
-            .dag
-            .latest_message(validator)
-            .ok()
-            .flatten()
-            .map(|meta| meta.block_number)
-            .unwrap_or(0)
-    })
-    .is_none_or(|leader| leader == validator_identity.public_key.bytes)
+    let validator_latest_heights = validators
+        .into_iter()
+        .map(|validator| {
+            let latest_height = snapshot
+                .dag
+                .latest_message(&validator)
+                .ok()
+                .flatten()
+                .map(|meta| meta.block_number)
+                .unwrap_or(0);
+            (validator, latest_height)
+        })
+        .collect();
+
+    select_lag_recovery_leader(validator_latest_heights, last_finalized_block_number)
+        .is_none_or(|leader| leader == validator_identity.public_key.bytes)
 }
 
 fn effective_frontier_chase_cap(
@@ -1038,15 +1046,19 @@ fn effective_frontier_chase_cap(
 }
 
 fn select_lag_recovery_leader(
-    mut validators: Vec<Validator>,
-    latest_height: impl Fn(&Validator) -> i64,
+    validator_latest_heights: Vec<(Validator, i64)>,
+    last_finalized_block_number: i64,
 ) -> Option<Validator> {
-    validators.sort_by(|a, b| {
-        latest_height(b)
-            .cmp(&latest_height(a))
-            .then_with(|| a.cmp(b))
-    });
-    validators.into_iter().next()
+    let mut active: Vec<(Validator, i64)> = validator_latest_heights
+        .iter()
+        .filter(|(_, height)| *height > last_finalized_block_number)
+        .cloned()
+        .collect();
+    if active.is_empty() {
+        active = validator_latest_heights;
+    }
+    active.sort_by(|(a, a_height), (b, b_height)| b_height.cmp(a_height).then_with(|| a.cmp(b)));
+    active.into_iter().next().map(|(validator, _)| validator)
 }
 
 /// Unit tests for HeartbeatProposer configuration validation.
@@ -1081,12 +1093,7 @@ mod tests {
         let tied = Validator::from(vec![3]);
 
         let leader =
-            select_lag_recovery_leader(vec![paused.clone(), tied, advanced.clone()], |validator| {
-                match validator.as_ref() {
-                    [1] => 2,
-                    _ => 9,
-                }
-            });
+            select_lag_recovery_leader(vec![(paused, 2), (tied, 9), (advanced.clone(), 9)], 1);
 
         assert_eq!(leader, Some(advanced));
     }
