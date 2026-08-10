@@ -6,11 +6,12 @@
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
 **Report date** 2026-07-29, revised through 2026-08-10
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@0c5e297a` (sparse relational-row reuse in the
+**Living closure head** `f1r3node-rust-mettail@2fdea426` (sparse relational-row reuse in the
 production spatial-matcher PDA, complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
-and prior matcher/PathMap closure)
-**Companion decision head** `mettail-rust@b6095533` (admission-free relational-row equivalence,
+prior matcher/PathMap closure, and D-E4 evidence reconciliation)
+**Companion decision head** `mettail-rust@2a626e50` (D-E5 slotted-state and indexed-channel
+implementation, exact communication-accounting witness, admission-free relational-row equivalence,
 recursive-carrier lifecycle verification, and operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -161,6 +162,14 @@ amplification:
 workload. An incremental monotone target-category lattice reduces that exact workload from 248.42 s
 to 10.83 s while the positive path retains the exhaustive cycle-safe walk. §5.22 records the
 admission-free equivalence proof, independent oracle, complete regressions, and AMD uProf result.
+`mettail-rust@c63c6ca8` subsequently closes D-E5. Dense first-occurrence slots quotient
+alpha-equivalent matcher states while entry-local boundary maps restore exact substitution names;
+repeated-variable partitions and structurally deeper binders remain distinct. One iterative
+`SubjectLocationIndex` gives the production automaton, ruleset, spread, and benchmark reference
+driver exact collision-free fixed-width position identities instead of repeatedly materializing
+absolute prefixes. The production spread scales approximately linearly through depth 1,024 and
+passes depth 20,000 on a 256 KiB worker stack; §5.23 records the independent nominal oracle,
+zero-admission Rocq theorems, exact state/channel counters, runtime trace, and profiler evidence.
 `f1r3node-rust-mettail@c1feaf36` then closes a separate ingress-envelope defect: configured gRPC
 limits now bound complete protobuf messages rather than individual HTTP/2 frames. §5.13.8 records
 the black-box rejection and containment evidence. This is a byte-work boundary before the first
@@ -276,6 +285,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G43** | this checkpoint; pgmcp #5192 | mettail | vendored Ascent disjunction/macro/token lifecycle and analysis, plus testkit constructor emission and historical-corpus migration $`\rightarrow`$ typed work/value PDAs | input-shaped recursion and macro-expansion depth ceiling $`\rightarrow O(1)`$ native stack; nested constructor string copying $`\Theta(d^2) \rightarrow \Theta(W)`$ direct output for $`W`$ bytes; **20,000** levels on **256 KiB** | **yes**; bounded recursive Ascent/constructor oracles, complete mode/error matrix, promoted corpus, and admission-free generic worklist-fold theorem | [5.20](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13) |
 | **SS-G44** | `mettail-rust@4fa08387` | mettail | generated generalized-parser GSS ancestry queries and k-best election prefixes $`\rightarrow`$ compact per-node prefix summaries, persistent decision vectors, and borrowed immutable shared packed parse forest (SPPF) families | native stack remains $`O(1)`$; ancestry probes $`\Theta(d^2) \rightarrow \Theta(d)`$; copied decision payload $`\Theta(d^2) \rightarrow`$ structurally shared prefixes with $`O(\log d)`$ update; unary depth **20,000**: **8,286,196 $`\rightarrow`$ 188,924 KiB RSS** | heap/work refinement; **3,654** library tests plus **31/31** deep traversal cases preserve results | [5.21](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44) |
 | **SS-G45** | `mettail-rust@adc76524` | mettail | canonical-GLL cross-category boundary reachability: repeated exhaustive caller-ancestry DFS $`\rightarrow`$ incremental target-category lattice with exact positive fallback | native stack remains $`O(1)`$; 1,000-binder boundary visits **336,387,001 $`\rightarrow`$ 0**; exact workload **248.42 $`\rightarrow`$ 10.83 s** (**22.94×**); peak RSS **609,152 $`\rightarrow`$ 605,132 KiB** | heap/work refinement; admission-free path and multi-caller equivalence, 1,000-case independent oracle, **3,654** library tests, every integration target, **21** doc tests, and **31/31** deep cases preserve results | [5.22](#522-canonical-gll-boundary-summary-closure-ss-g45) |
+| **SS-G46** | `mettail-rust@c63c6ca8`; evidence `2a626e50` | mettail | D-E5 matcher identity and location ABI: nominal binder names $`\rightarrow`$ dense slot interfaces; repeated absolute channel prefixes $`\rightarrow`$ one shared indexed subject arena | native stack remains $`O(1)`$; channel construction $`\Theta(d^2) \rightarrow \Theta(d)`$ on a unary depth-$`d`$ subject; alpha-pair state count **6 $`\rightarrow`$ 2**; production depth **20,000** passes on **256 KiB** at **248,892 KiB** peak RSS | yes; independent nominal oracle, exact specificity and state laws, runtime differentials, **11** admission-free slot audits, indexed-channel injectivity proof, and complete capped gates | [5.23](#523-slotted-state-and-indexed-channel-closure-ss-g46) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -420,6 +430,7 @@ register rows (SS-C5…SS-C13, SS-Y6) and the stack-safety consequences.
   - [5.20 Semantic-SCC, constructor, and PathMap-streaming closure [SS-G43, SS-C13]](#520-semantic-scc-constructor-and-pathmap-streaming-closure-ss-g43-ss-c13)
   - [5.21 Generated-parser ancestry and election-prefix closure [SS-G44]](#521-generated-parser-ancestry-and-election-prefix-closure-ss-g44)
   - [5.22 Canonical-GLL boundary-summary closure [SS-G45]](#522-canonical-gll-boundary-summary-closure-ss-g45)
+  - [5.23 Slotted-state and indexed-channel closure [SS-G46]](#523-slotted-state-and-indexed-channel-closure-ss-g46)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -6026,6 +6037,164 @@ zipper/algebra/lattice result.
 
 ---
 
+### 5.23 Slotted-state and indexed-channel closure [SS-G46]
+
+#### 5.23.1 The defect
+
+D-E5 exposed two independent representations of derivation history in the generated in-Rho
+matcher. First, nominal variable names participated in the structural state graph even though an
+entry's binder spelling is irrelevant to matching. Alpha-renamed patterns could therefore allocate
+duplicate variable and application states. Second, a descendant channel copied its complete
+`/constructor.index` ancestry. A unary subject of depth $`d`$ has only $`d`$ edges, but retaining a
+prefix of length $`i`$ at every depth retained the triangular sum
+$`\sum_{i=1}^{d} i = \Theta(d^2)`$ bytes.
+
+Both implementations were stack-safe, so a larger stack could not repair either problem. The old
+20,000-level schedule witness completed on a 256 KiB stack yet peaked at 1,010,408 KiB process RSS.
+That row and the 248,892 KiB successor production-spread row exercise different harness subjects;
+they identify the retired and successor mechanisms but are deliberately **not** presented as a
+paired wall-clock or RSS experiment.
+
+#### 5.23.2 Architecture and rationale
+
+A canonical automaton state now owns a dense variable interface. `SlotId(0)` denotes the first
+distinct variable encountered, `SlotId(1)` the second, and so on. `StateInvocation` carries the
+child-local-to-parent-local slot map; the common identity map has a length-only representation.
+`PatternEntry` alone retains source names in slot order. Thus state identity contains constructor
+shape, arity, child state identities, and repeated-variable partition, but not source spelling or a
+uniform de Bruijn shift.
+
+For a pattern trace $`t`$, let $`S(t)`$ be its constructor skeleton and $`Q(t)`$ the
+first-occurrence slot sequence of its variables. The shared key is
+
+```math
+K(t) = (S(t), Q(t)).
+```
+
+An injective alpha-renaming $`\alpha`$ preserves equality and inequality of names, hence
+$`Q(\alpha(t)) = Q(t)`$ and $`K(\alpha(t)) = K(t)`$. Conversely, a linear pair has slot sequence
+`[0,1]`, whereas a diagonal pair has `[0,0]`; the quotient cannot merge their different matching
+specificity. Entry-local slot-to-name restoration returns the original substitution vocabulary at
+the API boundary.
+
+Subject locations use a separate exact representation. `SubjectLocationIndex` performs one
+iterative preorder construction, retaining each node reference and parent-to-child edge once. A
+channel encodes the tuple `(family, language fingerprint, byte-length-prefixed root site,
+fixed-width position)`. Equality is exact and collision-free; it is not probabilistic hashing.
+`u64::MAX` is reserved for a dead matcher continuation and is never assigned to a live position.
+Associative-commutative collections remain leaves because their contents travel through the native
+collection carrier rather than positional descent.
+
+The same index instance is the numbering authority for automaton generation, ruleset redex-site
+collection, subject spreading, and the benchmark-only persistent matcher. This shared authority is
+what proves rendezvous by construction; independently rebuilding a path map or materializing a
+second key/value index would reintroduce both work and disagreement risk. No EPathMap operation and
+no PathMap crate source is involved in this repair.
+
+#### 5.23.3 Implementation
+
+The implementation is the following literate worklist algorithm; `pending` is the explicit
+continuation and therefore does not consume native stack with input depth.
+
+```text
+index(root):
+    nodes := [root]
+    pending := [position 0]
+    while pending is not empty:
+        parent := pending.pop()
+        if parent is a positional application:
+            append each child once as a consecutive arena entry
+            record (first_child, child_count) in parent
+            push child positions in reverse preorder
+    return nodes
+
+channel(family, fingerprint, site, position):
+    return scope(family, fingerprint,
+                 "@i2:" + fixed_hex(byte_length(site)) +
+                 ":" + site + ":" + fixed_hex(position))
+```
+
+The Dovetail set automaton interns `StateKey::Var` and
+`StateKey::App { op, invocations }`. A child invocation composes slot interfaces without cloning a
+subtree or re-matching it. The production Rho-network lowering consumes the same slotted view and
+indexed positions. The R3 benchmark reference now uses a finite pattern-derived route PDA; it no
+longer repeatedly re-spreads a growing absolute path or relies on the stale channel ABI.
+
+#### 5.23.4 Results
+
+**MEASURED (f)**, the production spread ladder is approximately linear:
+
+| depth | protobuf bytes | allocations | allocated bytes | elapsed |
+|---:|---:|---:|---:|---:|
+| 128 | 68,628 | 18,044 | 3,328,640 | 12.53 ms |
+| 256 | 136,852 | 35,968 | 6,645,248 | 23.91 ms |
+| 512 | 273,300 | 71,812 | 13,278,464 | 45.00 ms |
+| 1,024 | 546,196 | 143,496 | 26,544,896 | 89.22 ms |
+
+The depth-20,000 production spread passes on a 256 KiB worker stack in 2.01 s test time, with
+248,892 KiB peak process RSS and zero swap. The full-language size gate reports 77 entries / 77
+states for Rholang (209 raw uninterned states) and 70 entries / 69 states for Calculator (188 raw).
+The diagonal ladder satisfies the exact law $`\text{states}(n)=n+2`$ through 128 entries. In the
+frozen alpha-pair control, the independent nominal name-bearing model has six states and the slot
+quotient has two; adding a repeated-variable diagonal produces a third state rather than merging it.
+
+The exact runtime accounting witness installs 13 `Send` and seven `Receive` prefixes. D3 therefore
+records 20 `BillableKind::Comm` prefix events, while the independent RSpace trace records seven
+committed rendezvous and returns outputs `A,A`. These are intentionally different counters: D3
+charges evaluated communication prefixes, not matched RSpace rendezvous. The repaired benchmark R3
+trace records matching/firing/substitution/respread counts 8/2/6/6, with zero joins of arity greater
+than one; the historical trace was 14 matching, seven respread, and two such joins.
+
+The focused D-E5 matrix passes 16/16, complete code generation passes 397 tests plus integrations,
+runtime equivalence passes 34 production tests and 12 benchmark/reference tests, and Dovetail passes
+120/120 including the independent nominal recursive oracle. AMD uProf 5.3 sampled the spread
+construction for 0.208 CPU seconds; allocator and protobuf child/lifecycle functions dominate, and
+the retired absolute-path helper is absent from the ten hottest functions.
+
+#### 5.23.5 Cost and retained state
+
+For $`n`$ positional subject nodes, the arena stores $`n`$ borrowed term references and one
+`(first_child, child_count)` pair per node. Construction and traversal are $`\Theta(n)`$ time and
+$`O(n)`$ heap; native-stack use is $`O(1)`$ in subject depth. Each materialized positional channel
+contains the root-site bytes plus a fixed-width position field, so a unary chain performs
+$`\Theta(d)`$ positional-channel work rather than retaining every ancestral prefix.
+
+Slot maps are proportional to canonical state interfaces, not source-name count across every alpha
+variant. Identity maps retain only their length; non-identity maps retain one dense `SlotId` per
+child-local slot. Entry boundary maps necessarily retain each entry's exact names because those
+names are observable in returned substitutions.
+
+#### 5.23.6 Residual recursion and limits
+
+No host-recursive production traversal is introduced. Index construction, index walking, pattern
+route construction, and R3 matching use explicit work/value storage with no traversal-depth cap,
+`RUST_MIN_STACK`, `stacker`, or alternate stack. The recursive nominal state compiler and matcher
+are test-only oracles. EPathMap remains specialized as `PathMap<()>` for set mode and `PathMap<Par>`
+for map mode, with neutral `Empty` preserved until mode is known; neither representation is
+converted to `Vec<Par>`, a hash map, or a side index here. PathMap itself is untouched.
+
+#### 5.23.7 Formal equivalence and anti-vacuity
+
+`SlottedStateIdentity.v` proves alpha/shift invariance, quotient soundness and completeness,
+specificity, slot-map composition, exact entry-name restoration, cross-language isolation, and
+termination/size. Eleven `Print Assumptions` audits report **Closed under the global context**.
+`IndexedSubjectChannels.v` proves exact wire-field injectivity, language/family isolation, live/dead
+separation, and position-independent field width, without admissions.
+
+Executable anti-vacuity is three-sided: the alpha control must shrink six states to two; the
+diagonal control must remain a distinct third state; and the runtime witness must simultaneously
+observe 20 D3 prefix events, seven actual RSpace rendezvous, and outputs `A,A`. The 20,000-level gate
+exercises the indexed production path on the required small stack. The durable evidence is
+[`measurements/slotted-state-indexed-channels-2026-08-10.tsv`](measurements/slotted-state-indexed-channels-2026-08-10.tsv).
+
+SS-G46 intentionally changes the generated matcher process, positional channel ABI, protobuf and
+bincode encodings of that installed `Par`, its persistent continuation identity, and D3 prefix-event
+count. It does not change source acceptance, matching verdicts, returned substitutions, EPathMap
+mode, EPM1 bytes, PathMap topology, or zipper/algebra/lattice behavior. The consensus consequences
+are classified separately as CBR-L23 in the living consensus register.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -6805,6 +6974,7 @@ done
 | [`measurements/generated-parser-prefix-closure-2026-08-09.tsv`](measurements/generated-parser-prefix-closure-2026-08-09.tsv) | SS-G44 predecessor/successor deep-parser runtime, RSS, heap, and AMD uProf hotspot rows (§5.21) |
 | [`measurements/canonical-gll-boundary-summary-2026-08-09.tsv`](measurements/canonical-gll-boundary-summary-2026-08-09.tsv) | SS-G45 exact 1,000-binder predecessor/successor counters, runtime, RSS, complete gates, formal proof, and AMD uProf rows (§5.22) |
 | [`measurements/relational-ac-edge-reuse-2026-08-10.tsv`](measurements/relational-ac-edge-reuse-2026-08-10.tsv) | D-E4/SS-A10 nominal and sparse-relation production counters, zero-variance decision rule, focused/full capped gates, and Rocq closure (§5.16.6) |
+| [`measurements/slotted-state-indexed-channels-2026-08-10.tsv`](measurements/slotted-state-indexed-channels-2026-08-10.tsv) | D-E5/SS-G46 state quotient, indexed-channel ladder, 20,000-level small-stack gate, runtime accounting distinction, complete regressions, formal closure, and profiler row (§5.23) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

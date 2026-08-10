@@ -35,7 +35,9 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **EPM1** | *EPathMap format, version 1* — the versioned homogeneous PathMap trie snapshot used by both codecs. | **CBR-044** |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
-| **COMM** | the produce/consume synchronisation event — the token model's consensus cost unit. | [§2.2](#22-language-and-runtime-vocabulary) |
+| **COMM** | the Rho-calculus synchronisation of a produce with a consume; realized by a committed RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
+| **D3 `BillableKind::Comm`** | one billable event emitted for each evaluated `Send` or `Receive` prefix; the token model's consensus cost unit. Despite the enum name, it is not a count of matched COMM/RSpace rendezvous. | [§2.2](#22-language-and-runtime-vocabulary) |
+| **RSpace rendezvous** | one committed matching of resting or incoming produces and consumes in the tuplespace; the runtime realization of semantic COMM and a counter tracked independently from D3 prefix events. | [§2.2](#22-language-and-runtime-vocabulary) |
 | **FFI** | *foreign function interface* | §6.3 |
 | **CI** | *continuous integration* | §6.3 |
 | **FIPS** | *Foreign-language Interoperability Problem Statement* — the design-document series governing MeTTaIL's foreign-language terms (⚠ not the U.S. Federal Information Processing Standards). | **CBR-L07** authority |
@@ -88,15 +90,15 @@ their recursive counterparts definitely are not. Each qualifying change is class
 independent axes: computed value, verdict, serialized bytes (per lane), post-state hash, accepted
 programs, and metering under the token cost model.
 
-**Result: 21 entries** — 14 on the F1r3node node, 7 on MeTTaIL's Rholang; **20 landed, 1 in
+**Result: 22 entries** — 14 on the F1r3node node, 8 on MeTTaIL's Rholang; **21 landed, 1 in
 flight**. The core is the EPathMap data-model lineage (CBR-011/012/013 — the trie ruling's stages —
 and CBR-041/042/043 culminating in **CBR-044**, the EPM1 wire transition, on which six of the seven
 axes move), one wire-schema addition (CBR-014), four ruled semantic/acceptance changes (CBR-002,
 CBR-027 with its genesis partner CBR-030, CBR-037), the additive method surface (CBR-024/025), and
-the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15) and binder-shift fusion
-(L20). **The metering axis was re-derived
-under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
-**CBR-L20 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
+the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15), binder-shift fusion
+(L20), and slotted/indexed matcher-network transition (L23). **The metering axis was re-derived
+under the D3 token model** (consensus cost = evaluated `Send`/`Receive` prefix events; per-op prices
+are diagnostics): **CBR-L20 and CBR-L23 move that prefix-event schedule**; the
 register's one historical `UNVERIFIED` cell resolved in the same derivation. **54 further changes
 were examined and retired** with typed reasons — 40 bug fixes, 5
 measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
@@ -140,7 +142,7 @@ with typed reasons so the account stays checkable.
    the metering axis defined under the current token cost model.
 2. An explicit account of the **two wire formats** a `Par` crosses (§2.5), including the field-order
    asymmetry that produced a measured, round-trip-invisible defect class.
-3. A **derived** register (§3, §4): 21 entries, each with all six axes answered, a stated blast
+3. A **derived** register (§3, §4): 22 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
 4. The **negative results**: 53 retired entries with typed reasons (Appendix B.1) and 21 commit-level
@@ -195,15 +197,17 @@ by explicit ruling.
   bound at it. Its final contents become the continuation's environment.
 - **Token cost (D3)** — the consensus unit of computational cost. Under the token model
   (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`, DR-9/OD-3; merged at
-  `eec6e323`), **consensus consumed cost is the count of committed COMM events, exactly one token
-  each** — `reconcile_lane` tallies 1 per committed `BillableKind::Comm` and 0 for every other kind
+  `eec6e323`), **consensus consumed cost is the count of evaluated communication prefixes, exactly
+  one token for each `Send` or `Receive`** — `reconcile_lane` tallies 1 per reconciled
+  `BillableKind::Comm` and 0 for every other kind
   (`rholang/src/rust/interpreter/accounting/mod.rs`, the `reconcile_lane` comment block). Per-op
   weights (`Primitive`/`Reduction`/`Substitution`) survive only as **diagnostics** in the event
   log/digest; `phlo_limit`/`phlo_price` are deleted from the wire; funding is the per-signature
   token supply via the acceptance gate; accepted user deploys run unmetered-for-liveness (OD-1).
   "Phlogiston" survives only as the historical name of the renewable resource. **Metering** in
-  this register means the token-model surface: the committed COMM count and the
-  funding/settlement machinery.
+  this register means the token-model surface: the D3 communication-prefix count and the
+  funding/settlement machinery. This counter is deliberately distinct from committed RSpace
+  rendezvous: §5.23 of the stack-safety report contains an exact 20-prefix/seven-rendezvous witness.
 - **PathMap / `EPathMap`** — a trie-shaped Rholang collection; `EPathMap` is its `ExprInstance` arm.
   **`EZipper`** is a cursor into one.
 
@@ -274,12 +278,12 @@ Two consequences a reviewer should hold onto.
 | 3 | **Serialized bytes** | What bytes represent this term — on Lane B, and on Lane P? | Event hashes differ; a block encodes differently; the signed preimage moves. |
 | 4 | **Post-state hash** | What root is committed? | Replay's $`h_{\mathrm{post}}`$ differs from the block's $`\Rightarrow`$ **safety fork**. |
 | 5 | **Accepted programs** | Is this deploy admitted at all? | A *decidable* refusal $`\Rightarrow`$ a failed deploy; a *process abort* $`\Rightarrow`$ a liveness split. |
-| 6 | **Metering** | Does the committed COMM count, or the funding/settlement surface, move? | A token-budget boundary fires on one node and not another — which would turn into an Axis-2 divergence. |
+| 6 | **Metering** | Does the D3 `Send`/`Receive` prefix-event count, or the funding/settlement surface, move? | A token-budget boundary fires on one node and not another — which would turn into an Axis-2 divergence. |
 
 ⚠ **Axis 6 under the token model — the attribution rule, defined here so no entry re-derives it.**
-M records a movement of the *committed COMM count for executions whose verdict trace is otherwise
+M records a movement of the *reconciled D3 communication-prefix count for executions whose verdict trace is otherwise
 unchanged*, or of the funding/settlement surface. A divergence that flows through a changed value
-or verdict (a deploy that now fails fires different COMMs) is filed on axes 1–2, never double-
+or verdict (a deploy that now fails evaluates different prefixes) is filed on axes 1–2, never double-
 counted on M. Per-op prices are diagnostics and cannot move M. Budgets belong to F1r3node
 (`wallet.txt`); no entry introduces a metering surface. ⚠ Under OD-1 accepted user deploys run
 unmetered-for-liveness, so the metering-to-verdict composition edge below is **latent**: it can fire
@@ -439,7 +443,7 @@ discharging it. The partition is exact and is reproduced in [Appendix B](#append
 
 **Step 6 — sweep the companion surface.** `mettail-rust`'s campaign window holds **236** commits, of
 which **149** touch `languages/src`, `rholang-runtime/src`, `macros/src` or `ast/src`. ⚠ **This sweep is
-a targeted selection, not an exact partition**: the eleven Surface-L entries were found by semantic
+a targeted selection, not an exact partition**: the twelve Surface-L entries were found by semantic
 keyword search and by reading the campaign ledger, and the remaining 133 commits are neither entries nor
 explicit exemptions. This asymmetry is a stated limitation — see §6.5 — and closing it is the first
 extension §7's gate should be given.
@@ -524,7 +528,7 @@ The original commit-level partition (steps 1–5) additionally admits, on the en
 | 3 · bytes | **DERIVED** from which codec the change sits in (§2.5), then **CITED** from the golden or differential test the commit names. |
 | 4 · post-state hash | **DERIVED**: an Axis-1 or Axis-2 move on a path reaching `produce`/`consume` implies an Axis-4 move. |
 | 5 · acceptance | **DERIVED** from the refusal or ceiling introduced or removed. |
-| 6 · metering | **DERIVED under the token model (§2.2)**: does the change alter the committed COMM count for an execution whose verdict trace is otherwise unchanged, or touch the funding/settlement surface? Per-op `reserve_*` sites are diagnostics and do not move this axis. Every kept entry's M cell was re-derived under this rule on 2026-08-03. |
+| 6 · metering | **DERIVED under the token model (§2.2)**: does the change alter the evaluated `Send`/`Receive` prefix count for an execution whose verdict trace is otherwise unchanged, or touch the funding/settlement surface? Per-op `reserve_*` sites and RSpace-rendezvous counters are separate diagnostics and do not define this axis. Every kept entry's M cell was re-derived under this rule on 2026-08-03 and the terminology was corrected on 2026-08-10. |
 
 ### 3.4 ★ False-negative risk of this method — the classes this sweep would miss
 
@@ -594,14 +598,15 @@ is a *future* fork, not a present one).
 | [CBR-L11](#cbr-l11) | L | The `UInt32` acceptor is narrowed to canonical spellings (the cluster's deliberate acceptance decision; its round-trip bug fixes are retired) | `4aa64cb6` | · | ○ | ○ | ○ | ○ | ● | · | REGRESSIVE | **W** |
 | [CBR-L14](#cbr-l14) | L | `Bytes` becomes a real byte sequence with a real surface — `![Vec<u8>]` plus the `b"deadbeef"` literal | `713e0364`, `5a9efa00`, `93155150`, `3aea562f` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **L** |
 | [CBR-L15](#cbr-l15) | L | One generic method-call constructor replaces 47 grammar-owned method names; reducer dispatch becomes the only method semantics | `438e3a3d` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-L20](#cbr-l20) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and COMM metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-L20](#cbr-l20) | L | Binder-depth shift chains fuse into one fixed-size native-PDA call; the result is equivalent but emitted bytes and D3 prefix metering move | `c95d9e73` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
+| [CBR-L23](#cbr-l23) | L | Alpha-equivalent matcher states share dense slot interfaces and positional channels use one exact indexed arena | `c63c6ca8` | ○ | ○ | ● | ● | ● | ○ | ● | CORRECTIVE | **W** |
 
-**Totals — 21 entries**: **14 on Surface N, 7 on Surface L**; **20 landed, 1 in flight**
-(**CBR-L08**); zero open hazards. By evidence grade: **19 WITNESSED**, 1 MECHANISM-ONLY
-(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **13 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
+**Totals — 22 entries**: **14 on Surface N, 8 on Surface L**; **21 landed, 1 in flight**
+(**CBR-L08**); zero open hazards. By evidence grade: **20 WITNESSED**, 1 MECHANISM-ONLY
+(**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **14 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
 resolved under the token model (§3.3). The 53 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 21 + 53 = 74 historical identifiers, none reused.
+[Appendix B.1](#b1-retired-register-entries); 22 + 53 = 75 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -1061,7 +1066,7 @@ Rholang had no way to name the last element of a sequence. `last` is added to th
 | 3 · bytes (Lane P) | N/A |
 | 4 · post-state hash | N/A |
 | 5 · accepted programs | **MOVES** — `xs.last()` previously raised "method not found" and now evaluates. |
-| 6 · metering | N/A — under the token model (§2.2) a method call is a diagnostic `Primitive` event contributing zero consensus cost; no committed COMM count and no funding surface moves. Re-derived 2026-08-03. |
+| 6 · metering | N/A — under the token model (§2.2) a method call is a diagnostic `Primitive` event contributing zero consensus cost; no D3 communication-prefix count and no funding surface moves. Re-derived 2026-08-03. |
 
 **The disagreement.** `[1,2,3].last()` fails on an old node, evaluates to `3` on a new one. Because the
 old behaviour is a deterministic error, this is a slashable-fault class rather than a silent fork.
@@ -1193,7 +1198,7 @@ conformance test already records. **CITED**.
 | 3 · bytes (Lane P) | **MOVES** — same. |
 | 4 · post-state hash | **MOVES** |
 | 5 · accepted programs | NO — normalization is unchanged; the *reduction* fails. |
-| 6 · metering | NO — per-op arithmetic costs are diagnostic under the token model (§2.2), and no funding/settlement surface moves; the COMM-count consequence of the new failure path is the axis-1/2 divergence already recorded, not a metering change. |
+| 6 · metering | NO — per-op arithmetic costs are diagnostic under the token model (§2.2), and no funding/settlement surface moves; the D3 prefix-count consequence of the new failure path is the axis-1/2 divergence already recorded, not a metering change. |
 
 **The disagreement.** `@"out"!(9223372036854775807 + 1)` sends `-9223372036854775808` on an old node and
 **fails the deploy** on a new one. Since the failure is deterministic across validators, this is a
@@ -2108,7 +2113,7 @@ must participate in identity.
 | Bytes (P) | **MOVES** | Protobuf writes the same EPM1 array at field 9. Fields 1 and 8 remain legacy-read inputs and are not emitted. |
 | Post-state | **MOVES** | Event hashes and cold-store leaves are functions of bincode. |
 | Acceptance | **MOVES** | Valid depth-4,096 values and unknown-group shapes decode iteratively; mixed set/map storage is rejected; neutral empty selects a mode only on typed insertion. |
-| Metering | **NO** | Re-derived 2026-08-03 under the token model (§2.2): `encoded_len` is not a consensus-cost input — consensus cost is the committed COMM count, which this representation change does not alter for any fixed verdict trace; no funding/settlement surface moves. |
+| Metering | **NO** | Re-derived 2026-08-03 under the token model (§2.2): `encoded_len` is not a consensus-cost input — consensus cost is the evaluated `Send`/`Receive` prefix count, which this representation change does not alter for any fixed verdict trace; no funding/settlement surface moves. |
 
 The blast radius is every block, signature, event, or cold-store record containing an EPathMap, plus
 deep protobuf input formerly stopped by the recursive read guard. This is a coordinated wire transition
@@ -2271,13 +2276,13 @@ production.
 
 The accounting evidence was corrected at the same boundary. The removed
 `epathmap_charge_trace_spec.rs` pinned primitive/substitution weights from the superseded
-per-operation model even though CBR-044's Metering row is COMM-only. Its nonduplicated coverage now
+per-operation model even though CBR-044's Metering row is D3-prefix-only. Its nonduplicated coverage now
 lives in `epathmap_fusion_equivalence_spec.rs`: exact semantic results and errors, budgets 0–4 with
-consumption 0/1/2/3/3, committed-COMM equality, and dynamic fused-vs-fallback diagnostic equivalence.
+consumption 0/1/2/3/3, D3 communication-prefix equality, and dynamic fused-vs-fallback diagnostic equivalence.
 The focused suite passes **3/3** without the feature and **6/6** with
 `epathmap-fusion-differential`. This cleanup changes no consensus axis: diagnostic event weights and
-their digest were already removed from consensus; `EvaluateResult::cost` remains exactly the committed
-COMM count.
+their digest were already removed from consensus; `EvaluateResult::cost` remains exactly the
+evaluated `Send`/`Receive` prefix count.
 
 #### Authority and residuals
 
@@ -2663,7 +2668,7 @@ unobservable through the four language ordered relations.
 | 3 · bytes (Lane P, protobuf) | **MOVES downstream** when an affected folded value is lowered: the fixed-point `unscaled` and `scale` fields now carry the upstream result. F1r3node's existing protobuf definition and reducer are unchanged; this is second-implementation convergence. |
 | 4 · post-state hash | **MOVES downstream of Lane P** for a hypothetical pre-convergence MeTTaIL-produced result entering state; after convergence, both implementations supply the same fixed-point payload. Surface L is not a consensus participant today. |
 | 5 · accepted programs | **MOVES — NARROWS toward the floor.** Parsing is unchanged, but unequal-scale binary fixed-point programs leave the successful reduction domain and produce the language error/refusal. Explicit `fixed(value, places)` rescaling is the migration path. |
-| 6 · metering | **NO.** No F1r3node accounting function, token rule, or COMM path changed: the node already had these semantics. MeTTaIL has no node token meter, and the fixed operator trace does not introduce or remove a committed COMM. |
+| 6 · metering | **NO.** No F1r3node accounting function, token rule, or D3 communication-prefix path changed: the node already had these semantics. MeTTaIL has no node token meter, and the fixed operator trace does not introduce or remove an evaluated `Send` or `Receive`. |
 
 **MEASURED** at `mettail-rust@51d84ae3`, under the bounded-RSS harness: `runtime` 261 unit rows
 plus its integration and doctest suites; Calculator fixed-point identity/refusal 9/9; Rholang
@@ -2810,8 +2815,8 @@ high-water control, and a 9 GiB hard limit.
 ### CBR-L20
 
 **Binder-depth shift chains fuse into one fixed-size native-PDA call. The reflected result and
-refusal domain are equivalent, while emitted program bytes, the installed carrier body, and
-committed-COMM metering move.**
+refusal domain are equivalent, while emitted program bytes, the installed carrier body, and D3
+communication-prefix metering move.**
 
 | | |
 |---|---|
@@ -2852,11 +2857,11 @@ id is `[0xF3, 0] ++ fingerprint`; its deterministic checked `body_ref` occupies 
 | 3 · bytes (Lane P, prost) | **MOVES** — the same generated carrier `Par` changes on Lane P; the measured replacement call itself is 85 protobuf bytes at every tested binder depth. No protobuf schema changes. |
 | 4 · post-state hash | **MOVES** — the installed persistent carrier continuation contains the changed body. Although a completed shift returns the same value and system-process definitions are outside ordinary hot-store changes, the generated carrier continuation is state and its serialized body participates in its identity. |
 | 5 · accepted programs | **NO** — no source syntax changes, and the native definition reconstructs the generated receiver's exact language-specific subject domain. |
-| 6 · metering | **MOVES** — under D3, committed COMM count is the consensus cost. A depth-$`k`$ generated shift cascade becomes one cost-accounted system-process dispatch COMM. |
+| 6 · metering | **MOVES** — under D3, evaluated `Send`/`Receive` prefixes are the consensus cost. A depth-$`k`$ generated shift cascade becomes one fixed generated system-process dispatch rather than a depth-proportional prefix schedule. |
 
 **The disagreement.** Two MeTTaIL revisions compile the same binder-bearing rule to different
 carrier processes. If both are treated as the same protocol version, they install different
-persistent continuations and charge different committed-COMM totals when that arm fires, even
+persistent continuations and charge different D3 communication-prefix totals when that arm fires, even
 though both return the same reflected contractum. This is a future Surface-L fork exposure, not a
 present-chain fork: MeTTaIL has not produced consensus blocks.
 
@@ -2868,7 +2873,8 @@ native-shift system-process band, and metering expectation together.
 **Could live chain state have been produced under the old behaviour?** **NO.** Surface L has not
 produced live consensus state. If that ruling changes, scan installed continuation bodies for the
 old nested reflected `^shift` channel or the new `GPrivate` prefix `0xF3 0x00`, and replay every
-matching firing while comparing committed COMM count and resulting continuation roots.
+matching firing while comparing D3 communication-prefix count, RSpace rendezvous trace, and
+resulting continuation roots.
 
 #### (c) Why the change was necessary or correct
 
@@ -2921,26 +2927,148 @@ system-process ranges; pairwise registration collision checks remain mandatory.
 
 ---
 
+### CBR-L23
+
+**Alpha-equivalent matcher states share dense slot interfaces, and positional channels use one
+exact indexed subject arena. Matching results are equivalent, while the generated installed
+process, both serialized lanes, continuation identity, and D3 prefix schedule move.**
+
+| | |
+|---|---|
+| Commit(s) | `c63c6ca8` (`mettail-rust`); accounting evidence `2a626e50` |
+| Status | LANDED |
+| Direction | CORRECTIVE |
+| Evidence grade | WITNESSED |
+| Files | `mettail-rust/dovetail/src/set_automaton.rs`, `rholang-codegen/src/rho_net_location.rs`, `rho_net_automaton.rs`, `rho_net_ruleset.rs`, `rho_net_lower.rs`, `rho_net_naive_kt.rs`, and `rholang-runtime/tests/rho_net_naive_equivalence.rs` |
+
+#### (a) The issue
+
+The generated in-Rho matcher encoded two kinds of derivation history that are not part of the
+matching relation. Nominal variable names prevented alpha-renamed patterns from sharing structural
+states; the production network could then reject a shared nested operator with
+`NonLinearSharedOp` and route it through the persistent reference driver. Independently, every
+descendant location channel copied its complete absolute `/constructor.index` prefix. A unary
+depth-$`d`$ subject therefore retained $`\Theta(d^2)`$ path bytes although its topology has only
+$`d`$ edges.
+
+The repair gives each canonical state a first-occurrence `SlotId` interface and keeps exact source
+names only in each entry's boundary map. Linear alpha variants share; repeated-variable partitions
+remain distinct. A single iterative `SubjectLocationIndex` assigns every subject node one exact
+fixed-width position, and the automaton, ruleset, spread, and persistent reference driver consume
+that same numbering authority. The channel tuple is `(family, language fingerprint,
+length-prefixed root site, position)`; no digest or independently reconstructed path participates
+in rendezvous identity.
+
+#### (b) How it (potentially) breaks consensus
+
+| Axis | Verdict |
+|---|---|
+| 1 · computed value | **NO** — independent nominal equations and production/reference differentials return the same ordered substitutions and output values. Entry-local boundary maps restore each pattern's exact source names. |
+| 2 · verdict | **NO** — alpha variants coalesce, but constructor shape, arity, binder depth, language fingerprint, and repeated-variable partition remain specific. The diagonal `[0,0]` control remains distinct from the linear `[0,1]` state. |
+| 3 · bytes (Lane B, bincode) | **MOVES** — generated matcher channels and, for formerly deferred nested sharing, the process topology change inside the installed `Par`; serializing that `Par` on Lane B therefore changes. No bincode schema changes. |
+| 3 · bytes (Lane P, protobuf) | **MOVES** — the same generated `Par` changes on Lane P. The exact current alpha-shared witness is 2,318 protobuf bytes. No protobuf schema changes. |
+| 4 · post-state hash | **MOVES** — installed persistent matcher continuations contain the changed channels and process bodies, so their serialized identity and resulting state root move. |
+| 5 · accepted programs | **NO** — source grammar and validation do not change; the former production deferral selected another installed matcher implementation rather than accepting or refusing a different source program. |
+| 6 · metering | **MOVES** — D3 counts evaluated `Send`/`Receive` prefixes. The repaired routing topology changes that prefix schedule even though its match verdict and outputs are equivalent. In the exact successor witness, 13 sends plus seven receives produce cost 20; the independent runtime trace records seven committed RSpace rendezvous, demonstrating that the two counters must not be conflated. |
+
+**The disagreement.** Compile the concrete two-entry alpha-renamed matcher with the predecessor and
+successor generators. The predecessor retains nominally distinct state/process routes and absolute
+channel strings; the successor installs one slotted state network with `@i2` indexed positions.
+Nodes treating both as one protocol version serialize different persistent continuations and can
+record different D3 prefix totals when the matcher executes, even though both return `A,A` in the
+exact runtime witness. This is a future Surface-L fork exposure, not a present-chain fork:
+MeTTaIL has not produced consensus blocks.
+
+**Blast radius.** Every generated matcher uses the positional channel ABI. State-count reduction is
+concentrated in languages containing alpha-equivalent or repeated structural pattern shapes;
+formerly deferred nested shared operators also change installed routing topology. Pure host-side
+Dovetail evaluation does not create node state by itself, but its shared state identity determines
+the generated network.
+
+**Could live chain state have been produced under the old behaviour?** **NO** under the standing
+pre-production ruling. If that ruling changes, scan installed continuation bodies for the old
+absolute `loc:`/`cap:` path form and the successor `@i2:` form, then replay every matching firing
+while comparing serialized continuation roots, D3 prefix-event totals, RSpace rendezvous traces,
+ordered substitutions, and outputs.
+
+#### (c) Why the change was necessary or correct
+
+Nominal names are boundary labels, not automaton-state identity. For a trace $`t`$, the canonical
+key retains the constructor skeleton and the first-occurrence slot partition. An injective alpha
+renaming preserves that partition; a nonlinear equality constraint changes it. This is the exact
+quotient needed for state sharing—neither a list/set approximation nor a broader merge. Child
+invocations carry dense slot maps, and identity maps retain only their length.
+
+Absolute paths likewise encode the route used to derive a location rather than the location's
+identity. The indexed arena retains each node and edge once, produces an injective wire tuple, and
+reserves `u64::MAX` for absent matcher continuations. Sharing the arena across every producer and
+consumer removes a second-numbering disagreement class. A depth cap, larger native stack,
+`RUST_MIN_STACK`, or `stacker` would not remove either heap/work defect.
+
+This change does not alter EPathMap's homogeneous `PathMap<()>` set mode, `PathMap<Par>` map mode,
+neutral empty mode, EPM1 serialization, trie topology, zipper API, algebra, or lattice operations.
+It does not modify the PathMap crate.
+
+**Authority.** Owner authorization requires the final matcher to take full advantage of its native
+automaton/trie-like representation, replace all depth-risk traversals with explicit PDAs, eliminate
+quadratic path construction at the root cause, preserve hashes/results where semantics do not move,
+and use ordinary stacks without workaround crates or environment-sized stacks.
+
+**★ Sibling enumeration, ON THE STATE/LOCATION-IDENTITY AXES.** State identity has two relevant
+implementations: the test-only nominal recursive oracle and the production slotted interner.
+Location identity has one production authority, `SubjectLocationIndex`; automaton, ruleset, spread,
+and benchmark reference are consumers, not four competing indexes. The predecessor absolute-path
+form remains only in historical evidence.
+
+**★ If the entry claims something needed no change, name the GUARD.** Value and verdict neutrality
+are guarded by the independent nominal matcher, exact entry-name restoration, alpha/capture/depth
+and nonlinear controls, 34 production runtime-equivalence tests, and 12 benchmark-reference tests.
+Channel specificity is guarded by exact tuple injectivity and language/family isolation proofs.
+The 20-versus-seven accounting assertion prevents a test from passing by treating D3 prefix events
+as RSpace rendezvous.
+
+#### Evidence
+
+**MEASURED** — the frozen alpha pair has six nominal states and two slotted states; adding the
+diagonal specificity control yields exactly three. The production spread's depth 128/256/512/1,024
+ladder has protobuf sizes 68,628/136,852/273,300/546,196 bytes and allocation counts
+18,044/35,968/71,812/143,496. Depth 20,000 passes on a 256 KiB worker stack in 2.01 s test time,
+peaking at 248,892 KiB process RSS with zero swap. The exact successor accounting witness has 13
+`Send` plus seven `Receive` nodes, D3 total cost 20, seven committed RSpace rendezvous, and outputs
+`A,A`. Complete code generation, Dovetail, production-runtime, and benchmark/reference suites pass.
+
+**DERIVED** — `SlottedStateIdentity.v` proves quotient soundness/completeness, alpha and uniform-
+shift invariance, specificity, slot-map composition, name restoration, language isolation, and
+termination; all 11 assumption audits close under the global context. `IndexedSubjectChannels.v`
+proves exact injectivity, family/fingerprint isolation, live/dead separation, and fixed-width
+position encoding without admissions. The durable raw rows are in
+[`stack-safety/measurements/slotted-state-indexed-channels-2026-08-10.tsv`](../design/stack-safety/measurements/slotted-state-indexed-channels-2026-08-10.tsv),
+and stack-safety report §5.23 carries the architecture, complexity, anti-vacuity, and profiler record.
+
+---
+
 ## 5. Risk analysis
 
 ### 5.1 Aggregate axis exposure
 
-Projected from the 21 rows of §4.1 (each column counts `●` cells):
+Projected from the 22 rows of §4.1 (each column counts `●` cells):
 
-| Axis | entries that move it | share of the 21 |
+| Axis | entries that move it | share of the 22 |
 |---|---:|---:|
-| computed value (V) | **8** | 38 % |
-| verdict (T) | **13** | 62 % |
-| bytes, Lane B (B) | **12** | 57 % |
-| bytes, Lane P (P) | **10** | 48 % |
-| post-state hash (H) | **14** | 67 % |
-| accepted programs (A) | **10** | 48 % |
-| metering (M) | **1** | 5 % |
+| computed value (V) | **8** | 36 % |
+| verdict (T) | **13** | 59 % |
+| bytes, Lane B (B) | **13** | 59 % |
+| bytes, Lane P (P) | **11** | 50 % |
+| post-state hash (H) | **15** | 68 % |
+| accepted programs (A) | **10** | 45 % |
+| metering (M) | **2** | 9 % |
 
 The metering row is a **result of the 2026-08-03 re-derivation**, falsifiable per entry: each kept
-entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L20 is the first
-kept entry that moves the committed COMM count: its result is equivalent, but a depth-proportional
-shift cascade becomes one system-process dispatch.
+entry's M cell carries its one-line derivation against the token model (§2.2). CBR-L20 changes a
+depth-proportional shift-prefix cascade into one fixed dispatch; CBR-L23 changes the generated
+matcher route. Both preserve their stated semantic result while moving evaluated
+`Send`/`Receive` prefixes. Neither M cell is derived from the separately measured count of committed
+RSpace rendezvous.
 
 ### 5.2 The highest-risk entries
 
@@ -2953,18 +3081,21 @@ shift cascade becomes one system-process dispatch.
    CBR-027 also carries the register's sharpest chain-history question (§5.4).
 3. **CBR-L08** — the one in-flight entry, and REGRESSIVE: source that parses today will be refused.
    It ships only inside the same coordinated bump.
-4. **CBR-L20** — the only kept entry that moves token metering: the native PDA is semantically
-   equivalent, but its single committed COMM and changed persistent carrier body require coordinated
-   code-generation/runtime activation.
+4. **CBR-L20** — the native PDA is semantically equivalent, but its changed D3 prefix schedule and
+   persistent carrier body require coordinated code-generation/runtime activation.
+5. **CBR-L23** — slotted state identity and indexed channels preserve matching results but change
+   the installed matcher bytes, persistent identity, and D3 prefix schedule across every generated
+   positional network.
 
 ### 5.3 Direction profile
 
-Projected from §4.1: **13 CORRECTIVE** (the data-model lineage, schema additions, the
+Projected from §4.1: **14 CORRECTIVE** (the data-model lineage, schema additions, the
 single-registry method repair, corrective in
-the sense that the representation now matches the ruling, and the shift-fusion repair, while all
+the sense that the representation now matches the ruling, the shift-fusion repair, and the slotted
+matcher-network repair, while all
 remain deliberate transitions),
 **4 PERMISSIVE** (CBR-024, CBR-025, CBR-037, CBR-L07), **4 REGRESSIVE** (CBR-002, CBR-027, CBR-L08,
-CBR-L11). Total 21.
+CBR-L11). Total 22.
 
 ### 5.4 The chain-history questions
 
@@ -2981,7 +3112,7 @@ are retained because the ruling, not the evidence, is what discharges them.
 
 ### 5.5 The conjunction risk
 
-No activation-height machinery exists: `Validate::version` is exact equality, so the 21 entries ship
+No activation-height machinery exists: `Validate::version` is exact equality, so the 22 entries ship
 as one coordinated protocol-version bump. The reviewer's object of study is therefore the
 **conjunction**: if entry $`i`$ carries residual risk $`r_i`$, the bump carries
 $`1 - \prod_i (1 - r_i)`$, and the CBR-027/CBR-030 pair is the register's concrete demonstration
@@ -3142,8 +3273,8 @@ above is the maintenance mechanism.
 
 ## 8. Conclusions
 
-1. The register holds **21** may-change-consensus entries derived from the campaign record: **14**
-   on the F1r3node node, **7** on MeTTaIL's Rholang; **20 landed, 1 in flight**. **50** examined
+1. The register holds **22** may-change-consensus entries derived from the campaign record: **14**
+   on the F1r3node node, **8** on MeTTaIL's Rholang; **21 landed, 1 in flight**. **50** examined
    changes are retired with typed reasons and **21** commit-level exemptions are retained — the
    negative results that make the criterion checkable.
 2. **The axes are genuinely independent and must be reviewed separately.** CBR-014 moves four bytes
@@ -3156,11 +3287,13 @@ above is the maintenance mechanism.
    report.
 4. **Four entries are REGRESSIVE** (§5.3) and are named plainly; one of them (CBR-L08, in flight)
    refuses source that parses today.
-5. **The metering axis moves in exactly one kept entry, CBR-L20.** Under the token model, consensus
-   cost is the committed COMM count; fusing the binder-shift cascade changes that count even though
-   Rocq and executable differentials preserve the result. Historical per-op "charge site" claims
-   remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the same derivation.
-6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 21 ship as
+5. **The metering axis moves in two kept entries, CBR-L20 and CBR-L23.** Under the token model,
+   consensus cost is the evaluated `Send`/`Receive` prefix count; shift fusion and matcher-route
+   indexing change that count even though formal and executable differentials preserve their stated
+   results. The count is not the number of committed RSpace rendezvous. Historical per-op "charge
+   site" claims remain diagnostic-weight claims, and the one `UNVERIFIED` cell dissolved in the
+   same derivation.
+6. **The rollout is a conjunction** (§5.5): exact-equality version validation means the 22 ship as
    one coordinated bump, and the CBR-027/CBR-030 pair is the in-register proof that entries
    interact.
 
@@ -3324,7 +3457,7 @@ material now lives.
 | `CBR-048` | `dd11241d` | Replay COMM choice stops inheriting `Counter` / `HashMap` iteration order | `BUG_FIX_RULED_NONCONSENSUS` | `rspace++/tests/replay_comm_order.rs` checks all 720 insertion orders under adversarial hash collisions, total-order laws, both ingress sites, and multiplicity preservation; existing replay 24/24 and guarded play/replay 15/15 suites pass |
 | `CBR-049` | `5d511a10` | Default test genesis stops inheriting process-random validator and funded-vault fixture keys | `BUG_FIX_RULED_NONCONSENSUS` | the shared deterministic keyspace reaches both Genesis cohorts; post-state golden `28ca4bcf…925ca` passes in 4/4 independent processes at 14.58–14.82 s each under the capped harness |
 | `CBR-050` | `b30a1568`; measurement harness `mettail-rust@bb98055b`, metadata guard `9dccb346` | Reducer-identity EPathMaps preserve their native trie root, and shared clone-family teardown releases one root without copy-on-write cloning every `Par` | `OPTIMIZATION_MEASURED_NEUTRAL` | target evaluator/root and recursive-oracle differentials pass; treatment values, COMM schedule, attempts, successes, and D3 token count are unchanged by `b30a1568`; all 45 stack subjects remain flat. Pgmcp experiment 171 accepted 18.730472 ms treatment vs 32.280954 ms control with 51 samples/arm; allocations 4,119,482 $`\rightarrow`$ 278,527. PathMap report §5.4.1; stack-safety report §5.17 |
-| `CBR-051` | `c1feaf36` | Configured gRPC receive bounds apply to complete protobuf messages rather than individual HTTP/2 frames | `BUG_FIX_RULED_NONCONSENSUS` | This enforces the existing operator byte policy before prost decode; it changes no normalized term, Rholang value, protobuf encoding, block byte, post-state hash, COMM count, token settlement, EPathMap mode, or PathMap operation. Black-box API and peer tests prove an under-limit request dispatches and an over-limit request returns `OutOfRange` without entering the handler; threat model TM-CA-167 records the pre-COMM boundary. |
+| `CBR-051` | `c1feaf36` | Configured gRPC receive bounds apply to complete protobuf messages rather than individual HTTP/2 frames | `BUG_FIX_RULED_NONCONSENSUS` | This enforces the existing operator byte policy before protobuf decode; it changes no normalized term, Rholang value, protobuf encoding, block byte, post-state hash, D3 communication-prefix count, token settlement, EPathMap mode, or PathMap operation. Black-box API and peer tests prove an under-limit request dispatches and an over-limit request returns `OutOfRange` without entering the handler; threat model TM-CA-167 records the pre-runtime boundary. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -3498,7 +3631,7 @@ descriptor metadata for generated `Ord` and `Debug`, removes an empty generated 
 Prost derive is stripped, derives the same neutral-`Empty` EPathMap default, and removes needless
 borrows/iterations. Models pass 113/113, RSpace passes 41/41, the reducer differential passes 9/9,
 and production `clippy -D warnings` is clean. Neither checkpoint changes a computed Rholang value,
-error selection, protobuf or bincode byte, post-state hash, accepted program, COMM count, charge,
+error selection, protobuf or bincode byte, post-state hash, accepted program, D3 communication-prefix count, charge,
 EPathMap mode, EPM1 snapshot, PathMap topology, or PathMap operation. They extend CBR-023's
 `EQUIVALENCE_PROVEN` evidence and create no active may-change-consensus entry; stack-safety report
 §5.2.1 records the algorithm, complexity, and measured resource result.

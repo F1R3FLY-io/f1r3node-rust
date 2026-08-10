@@ -1,0 +1,24 @@
+# D-E5 / SS-G46 slotted-state and indexed-channel closure evidence. All executable gates used the ordinary Rust stack; capped runs used MemorySwapMax=0. Rows with different subjects are mechanism witnesses, not a paired wall/RSS experiment.
+kind	implementation	subject	scale	encoded_bytes	allocations	allocated_bytes	wall_s	process_peak_rss_kib	d3_prefix_events	rspace_rendezvous	result	notes
+construction	D-E5-production-spread	unary-ground-subject	128	68628	18044	3328640	0.012534387	NA	NA	NA	pass	shared SubjectLocationIndex; fixed-width positional channels
+construction	D-E5-production-spread	unary-ground-subject	256	136852	35968	6645248	0.023907262	NA	NA	NA	pass	approximately linear bytes and allocation work
+construction	D-E5-production-spread	unary-ground-subject	512	273300	71812	13278464	0.045003724	NA	NA	NA	pass	approximately linear bytes and allocation work
+construction	D-E5-production-spread	unary-ground-subject	1024	546196	143496	26544896	0.089224003	NA	NA	NA	pass	approximately linear bytes and allocation work
+deep-gate	D-E5-production-spread	unary-ground-subject	20000	NA	NA	NA	2.01	248892	NA	NA	pass	256-KiB worker stack; full command 2.23 s; default stack unchanged
+predecessor-mechanism	pre-D-E5-schedule	unary-absolute-channel-schedule	20000	NA	NA	NA	0.82	1010408	NA	NA	pass	256-KiB worker stack; 3.72-s complete run; growing absolute-path materialization; not a paired RSS arm for production spread
+state-quotient	pre-D-E5-nominal-oracle	alpha-renamed-pair	2-patterns	NA	NA	NA	NA	NA	NA	NA	6-states	four name-bearing Var states plus two App states
+state-quotient	D-E5-slot-quotient	alpha-renamed-pair	2-patterns	NA	NA	NA	NA	NA	NA	NA	2-states	one universal Var interface plus one pair state
+state-quotient	D-E5-slot-quotient	alpha-pair-plus-diagonal	3-patterns	NA	NA	NA	NA	NA	NA	NA	3-states	alpha pair shares; repeated-variable specificity remains distinct
+language-size	D-E5-slot-quotient	Rholang	77-entries	NA	NA	NA	NA	NA	NA	NA	77-states	raw uninterned count 209; former pin 130
+language-size	D-E5-slot-quotient	Calculator	70-entries	NA	NA	NA	NA	NA	NA	NA	69-states	raw uninterned count 188; former pin 78
+language-size	D-E5-slot-quotient	diagonal-pattern-ladder	1..128	NA	NA	NA	NA	NA	NA	NA	pass	exact state law n+2 at every point
+runtime-accounting	D-E5-production-driver	alpha-shared-two-output-witness	13-send+7-receive	2318	NA	NA	NA	NA	20	7	pass	D3 counts evaluated Send/Receive prefixes; RSpace counters independently record 7 committed rendezvous; outputs are A,A
+runtime-trace	D-E5-benchmark-R3	current-exact-trace	2-entries	NA	NA	NA	NA	NA	NA	NA	pass	matching=8; firing=2; substitution=6; respread=6; other=2; join-arity-greater-than-1=0
+runtime-trace	pre-D-E5-benchmark-R3	historical-exact-trace	2-entries	NA	NA	NA	NA	NA	NA	NA	pass	matching=14; respread=7; join-arity-greater-than-1=2
+gate	mettail-rust-c63c6ca8	d-e5-focused	16-tests	NA	NA	NA	NA	NA	NA	NA	pass	slot sharing, indexed channels, deep stack, linear construction, exact controls
+gate	mettail-rust-c63c6ca8	codegen-complete	397-tests-plus-integrations	NA	NA	NA	NA	NA	NA	NA	pass	all code-generation targets
+gate	mettail-rust-2a626e50	runtime-equivalence	34-plus-12-tests	NA	NA	NA	NA	103300	20	7	pass	34 production equivalence tests and 12 benchmark-naive differential tests; accounting gate process peak 103.3 MiB
+gate	mettail-rust-c63c6ca8	dovetail-complete	120-tests	NA	NA	NA	NA	NA	NA	NA	pass	includes independent nominal recursive oracle and 20,000-level 256-KiB case
+formal	mettail-rust-c63c6ca8	SlottedStateIdentity.v	11-audits	NA	NA	NA	NA	391400	NA	NA	pass	all Print Assumptions results closed under the global context
+formal	mettail-rust-c63c6ca8	IndexedSubjectChannels.v	zero-admission	NA	NA	NA	NA	13200	NA	NA	pass	exact injectivity, isolation, dead/live separation, fixed-width position field
+profile	mettail-rust-c63c6ca8	AMD-uProf-spread-construction	1-ms-sampling	NA	NA	NA	0.754	NA	NA	NA	pass	0.208 CPU seconds sampled; allocator and protobuf child/lifecycle functions dominate; retired absolute-path helper absent from top ten
