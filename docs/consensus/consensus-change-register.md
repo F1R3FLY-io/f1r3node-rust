@@ -93,9 +93,9 @@ the Surface-L acceptance set (L07, L08 in flight, L10, L11, L14, L15) and binder
 (L20). **The metering axis was re-derived
 under the D3 token model** (consensus cost = committed COMM count; per-op prices are diagnostics):
 **CBR-L20 moves it from a depth-proportional shift cascade to one committed dispatch COMM**; the
-register's one historical `UNVERIFIED` cell resolved in the same derivation. **50 further changes
-were examined and retired** with typed reasons — 37 bug fixes, 4
-measured-neutral optimizations, 5 equivalence-proven conversions, 2 dormant additions, and the
+register's one historical `UNVERIFIED` cell resolved in the same derivation. **53 further changes
+were examined and retired** with typed reasons — 40 bug fixes, 4
+measured-neutral optimizations, 5 equivalence-proven conversions, 3 dormant additions or removals, and the
 formerly-open wire-asymmetry hazard, closed against CBR-044 — each a one-line row in
 [Appendix B.1](#b1-retired-register-entries) whose full historical body remains in git history.
 21 commit-level exemptions from the original sweep are retained in
@@ -139,7 +139,7 @@ with typed reasons so the account stays checkable.
 3. A **derived** register (§3, §4): 21 entries, each with all six axes answered, a stated blast
    radius, a direction, an evidence grade, and — where one exists — the owner ruling that authorised
    it, quoted verbatim with its date.
-4. The **negative results**: 50 retired entries with typed reasons (Appendix B.1) and 21 commit-level
+4. The **negative results**: 53 retired entries with typed reasons (Appendix B.1) and 21 commit-level
    exemptions (Appendix B.2), which are what make the inclusion criterion checkable rather than
    merely asserted.
 
@@ -596,8 +596,8 @@ is a *future* fork, not a present one).
 (**CBR-L08**); zero open hazards. By evidence grade: **19 WITNESSED**, 1 MECHANISM-ONLY
 (**CBR-013**), 1 LATENT (**CBR-L14**). By direction: **13 CORRECTIVE, 4 PERMISSIVE, 4 REGRESSIVE**.
 Axis cells reading `UNVERIFIED`: **0** — the register's one historical `?` cell (CBR-L07 metering)
-resolved under the token model (§3.3). The 50 retired entries are
-[Appendix B.1](#b1-retired-register-entries); 21 + 50 = 71 historical identifiers, none reused.
+resolved under the token model (§3.3). The 53 retired entries are
+[Appendix B.1](#b1-retired-register-entries); 21 + 53 = 74 historical identifiers, none reused.
 
 ### 4.2 Entry template
 
@@ -3275,7 +3275,7 @@ Quote actual numbers. The RED, the measurement, the acceptance matrix. Tag each 
 
 ### B.1 Retired register entries
 
-The 50 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
+The 53 entries retired under the 2026-08-03 inclusion criterion (§3.2). Each keeps its **former
 identifier forever** — identifiers are never reused, and a historical citation of any `CBR-*` below
 resolves to this table. Full bodies remain in git history at the pre-refactor revision of this file.
 Reasons are the closed retirement enum of §3.2; the evidence column points at where the discharging
@@ -3335,6 +3335,7 @@ material now lives.
 | `CBR-L18` | `mettail-rust@e3f2812f` | KAT equivalence stops treating exhaustion of a 100-pair work budget as proof | `BUG_FIX_RULED_NONCONSENSUS` | exact canonical Antimirov partial-derivative subsets; the former one-step false-positive reproducer is rejected; 144-pair independent guarded-string differential, 80-atom no-word-ceiling gate, 20,000-depth / 256 KiB stack gate, and the rejected non-canonical attempt are recorded in stack-safety report §5.18.8 |
 | `CBR-L19` | `mettail-rust@250f0929` | A sigma slot literally named `__t` remains the carrier value when a generated reduct shifts it through two or more template binders | `BUG_FIX_RULED_NONCONSENSUS` | the former recursive builder resolved `value_name` only after pushing its private `__t`, so the implementation detail shadowed a legal source identifier and shifted the fresh return channel instead of the matched value. The PDA captures the caller's de Bruijn index before introducing private frames. A targeted two-shift byte witness pins the correct binding; ordinary-name recursive-byte differentials, 20,000-level / 256 KiB gates, and the complete 359/359 codegen suite pass. The rest of `250f0929` is byte/hash neutral under CBR-023; stack-safety report §5.18.31 |
 | `CBR-L21` | this checkpoint; pgmcp #5192 | Finite acyclic Ascent macro chains are no longer rejected by an artificial 100-link traversal budget | `BUG_FIX_RULED_NONCONSENSUS` | an active-definition set rejects actual cycles with the existing recursive-macro error and accepts a 150-link witness plus 20,000 head/body links on a 256 KiB stack; all formerly accepted shallow expansions retain exact rule/source order. This is compile-time Ascent tooling and changes no installed Rholang runtime value, byte, hash, COMM, or charge; stack-safety report §5.20 |
+| `CBR-L22` | `mettail-rust@a824df39`; pgmcp #4128/#95 | The generator stops emitting an uncalled per-language freshness method and retires its stale artifacts | `DORMANT` | the generator classifier and workspace caller census establish that the emitted `is_fresh` surface had no runtime consumer; its removal changes generated source size and compile work only. The default-feature `languages --all-targets` gate, including every bundled grammar and the full width-1,000 binder/scaling controls, passes under a 12 GiB zero-swap cgroup; the 540-test macro gate and focused binder/parse suites also pass. No installed term, accepted program, value, protobuf or bincode byte, hash, COMM, charge, EPathMap mode, or PathMap operation changes. |
 
 **CBR-023 living-set continuation (2026-08-06).** `mettail-rust@d3ff8dcb` adds SS-G32 to the
 retired conversion programme. Test-only recursive differentials preserve every closed-ground
@@ -3656,7 +3657,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; the later CBR-050 measured-neutral optimization, CBR-051 ingress repair, and CBR-L17 / CBR-L18 ruled bug fixes bring
-the living appendix to 50. The re-scope also removed
+to B.1; subsequent classified findings through CBR-L22 bring the living appendix to 53. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*
