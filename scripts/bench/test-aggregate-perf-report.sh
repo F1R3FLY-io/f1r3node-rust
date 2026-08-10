@@ -38,6 +38,7 @@ jq -e '
   .verdict == "regress"
   and .bootstrap == true
   and (.failures | any(test("1 passive soak iteration\\(s\\) failed")))
+  and .run.shard_up_seconds == null
 ' "$TMP/failed-report/verdict.json" >/dev/null
 
 mkdir -p "$TMP/checkpoint-report"
@@ -49,12 +50,14 @@ jq -e '.verdict == "in_progress" and .failures == []' \
 	"$TMP/checkpoint-report/verdict.json" >/dev/null
 
 mkdir -p "$TMP/passing" "$TMP/passing-report"
-jq '.failures = 0 | .failure_rate = 0 | .providers.docker.failures = 0' \
+jq '.failures = 0 | .failure_rate = 0 | .providers.docker.failures = 0
+	| .shard_up_seconds = 90' \
 	"$TMP/failed/summary.json" >"$TMP/passing/summary.json"
 SOAK_DIR="$TMP/passing" OUT_DIR="$TMP/passing-report" RUN_ID=2 RUN_ATTEMPT=1 \
 	SOAK_KIND=daily DURATION_SECONDS=1800 WINDOW_SECONDS=79200 RETRY_ATTEMPT=0 \
 	"$ROOT/scripts/bench/aggregate-perf-report.sh"
-jq -e '.verdict == "pass" and .bootstrap == true and .failures == []' \
+jq -e '.verdict == "pass" and .bootstrap == true and .failures == []
+	and .run.shard_up_seconds == 90' \
 	"$TMP/passing-report/verdict.json" >/dev/null
 
 mkdir -p "$TMP/segments/bench-segment-00001/bench" "$TMP/segments-report"

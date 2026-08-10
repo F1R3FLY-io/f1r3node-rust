@@ -573,6 +573,143 @@ const GENESIS_VAULT_BALANCE: i64 = 9_000_000;
 /// one deterministic merge rejection.
 const TRANSFER_AMOUNT: i64 = 4_000_000;
 
+pub(super) struct D3VaultConflictFixture {
+    pub(super) nodes: Vec<TestNode>,
+    pub(super) shard_id: String,
+    pub(super) winning_block: BlockMessage,
+    pub(super) rejected_sig: Bytes,
+    pub(super) surviving_sigs: [Bytes; 2],
+    siblings: Vec<BlockMessage>,
+}
+
+pub(super) async fn build_d3_vault_conflict_siblings(
+    genesis: &GenesisContext,
+) -> D3VaultConflictFixture {
+    assert!(2 * TRANSFER_AMOUNT <= GENESIS_VAULT_BALANCE);
+    assert!(3 * TRANSFER_AMOUNT > GENESIS_VAULT_BALANCE);
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let from_addr = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB)
+        .expect("DEFAULT_PUB vault address")
+        .to_base58();
+    let to_addr = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB2)
+        .expect("DEFAULT_PUB2 vault address")
+        .to_base58();
+    assert_ne!(from_addr, to_addr);
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+    for node in &mut nodes {
+        node.allow_empty_blocks = true;
+    }
+
+    let mut deploys = Vec::with_capacity(3);
+    for _ in 0..3 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        deploys.push(
+            construct_deploy::source_deploy_now_full(
+                transfer_rho(&from_addr, &to_addr, TRANSFER_AMOUNT),
+                None,
+                None,
+                Some(construct_deploy::DEFAULT_SEC.clone()),
+                None,
+                Some(shard_id.clone()),
+            )
+            .expect("build transfer deploy"),
+        );
+    }
+
+    deploys.sort_by(|a, b| a.sig.cmp(&b.sig));
+    let deploy_v0 = deploys[2].clone();
+    let deploy_v1 = deploys[1].clone();
+    let deploy_v2 = deploys[0].clone();
+    let rejected_sig = deploy_v0.sig.clone();
+    let surviving_sigs = [deploy_v1.sig.clone(), deploy_v2.sig.clone()];
+    assert!(rejected_sig > surviving_sigs[0] && surviving_sigs[0] > surviving_sigs[1]);
+
+    let winning_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v0))
+        .await
+        .expect("validator 0 proposes lex-largest transfer");
+    let block_1 = nodes[1]
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v1))
+        .await
+        .expect("validator 1 proposes transfer");
+    let block_2 = nodes[2]
+        .add_block_from_deploys(std::slice::from_ref(&deploy_v2))
+        .await
+        .expect("validator 2 proposes transfer");
+    let siblings = vec![winning_block.clone(), block_1, block_2];
+
+    for (source, block) in siblings.iter().enumerate() {
+        for (target, node) in nodes.iter_mut().enumerate() {
+            if source != target {
+                node.process_block(block.clone())
+                    .await
+                    .expect("process sibling");
+            }
+        }
+    }
+    for node in &nodes {
+        for block in &siblings {
+            assert!(node.contains(&block.block_hash));
+        }
+    }
+
+    D3VaultConflictFixture {
+        nodes,
+        shard_id,
+        winning_block,
+        rejected_sig,
+        surviving_sigs,
+        siblings,
+    }
+}
+
+pub(super) async fn propose_d3_vault_rejecting_merge(
+    fixture: &mut D3VaultConflictFixture,
+    nonce: i32,
+) -> BlockMessage {
+    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    let marker = construct_deploy::basic_deploy_data(
+        nonce,
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(fixture.shard_id.clone()),
+    )
+    .expect("build merge marker");
+    let merge_block = fixture.nodes[1]
+        .add_block_from_deploys(&[marker])
+        .await
+        .expect("validator 1 proposes merge over vault-conflict siblings");
+
+    for block in &fixture.siblings {
+        assert!(merge_block
+            .header
+            .parents_hash_list
+            .contains(&block.block_hash));
+    }
+
+    let candidate_sigs = [
+        &fixture.rejected_sig,
+        &fixture.surviving_sigs[0],
+        &fixture.surviving_sigs[1],
+    ];
+    let rejected_transfers: Vec<Bytes> = candidate_sigs
+        .into_iter()
+        .filter(|sig| {
+            merge_block
+                .body
+                .rejected_deploys
+                .iter()
+                .any(|rejected| rejected.sig == **sig)
+        })
+        .map(|sig| sig.clone())
+        .collect();
+    assert_eq!(rejected_transfers, vec![fixture.rejected_sig.clone()]);
+
+    merge_block
+}
+
 /// D3 (DR-9) end-to-end: vault-draining REV transfers reject at merge and recover.
 ///
 /// This is the D3-compatible successor to the precharge-era recovery test that
@@ -625,166 +762,15 @@ const TRANSFER_AMOUNT: i64 = 4_000_000;
 #[serial]
 async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     let ctx = TestContext::new().await;
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
-
-    // Caller's own funded genesis vault (source, 9_000_000 REV) and a distinct
-    // existing genesis vault (target). The transfers sign with DEFAULT_SEC, whose
-    // deployer id derives the DEFAULT_PUB vault address that the transfer authKey
-    // (`deployerAuthKey`) authorizes — so `from` MUST be DEFAULT_PUB's address.
-    let from_addr = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB)
-        .expect("DEFAULT_PUB vault address")
-        .to_base58();
-    let to_addr = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB2)
-        .expect("DEFAULT_PUB2 vault address")
-        .to_base58();
-    assert_ne!(
-        from_addr, to_addr,
-        "source and target vaults must differ so the transfer actually drains the source"
-    );
-
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
-        .await
-        .expect("create_network(3)");
-
-    // Three same-payer REV transfers (DEFAULT_SEC). Distinct timestamps
-    // (enforced by the sleeps) keep the signatures distinct.
-    let mut deploys = Vec::with_capacity(3);
-    for _ in 0..3 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        deploys.push(
-            construct_deploy::source_deploy_now_full(
-                transfer_rho(&from_addr, &to_addr, TRANSFER_AMOUNT),
-                Some(PHLO_LIMIT),
-                Some(PHLO_PRICE),
-                Some(construct_deploy::DEFAULT_SEC.clone()),
-                None,
-                Some(shard_id.clone()),
-            )
-            .expect("build transfer deploy"),
-        );
-    }
-
-    // Sort by signature ascending, then route the lex-LARGEST sig to validator 0's
-    // block so validator 0's own prior block contains the deploy the merge engine
-    // will reject (and later recover).
-    deploys.sort_by(|a, b| a.sig.cmp(&b.sig));
-    let deploy_v0 = deploys[2].clone(); // lex-largest → merge-rejected → recovered
-    let deploy_v1 = deploys[1].clone();
-    let deploy_v2 = deploys[0].clone();
-    let rejected_sig: Bytes = deploy_v0.sig.clone();
-    let surviving_sig_1: Bytes = deploy_v1.sig.clone();
-    let surviving_sig_2: Bytes = deploy_v2.sig.clone();
-    assert!(
-        rejected_sig > surviving_sig_1 && surviving_sig_1 > surviving_sig_2,
-        "the three transfer sigs must be strictly ordered so the negative-balance \
-         merge rejection deterministically picks validator 0's (lex-largest) deploy"
-    );
-
-    // Sibling blocks: one transfer each, played independently against the genesis
-    // post-state (each sees the untouched 9_000_000 REV source vault).
-    let block_0 = nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_v0))
-        .await
-        .expect("validator 0 proposes block_0 (lex-largest transfer)");
-    let block_1 = nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_v1))
-        .await
-        .expect("validator 1 proposes block_1");
-    let block_2 = nodes[2]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_v2))
-        .await
-        .expect("validator 2 proposes block_2");
-    let siblings = vec![block_0.clone(), block_1.clone(), block_2.clone()];
-
-    // Distribute every sibling to every other validator so the merge proposer
-    // (validator 1) sees all three branches.
-    for (source, block) in siblings.iter().enumerate() {
-        for (target, node) in nodes.iter_mut().enumerate() {
-            if source != target {
-                node.process_block(block.clone())
-                    .await
-                    .expect("process sibling");
-            }
-        }
-    }
-    for node in &nodes {
-        for block in &siblings {
-            assert!(
-                node.contains(&block.block_hash),
-                "every validator must observe every sibling before the merge"
-            );
-        }
-    }
-
-    // Validator 1 (NOT validator 0) proposes the merge over the three siblings.
-    // The marker uses a DIFFERENT payer (DEFAULT_SEC2) so create_block has fresh
-    // content (no NoNewDeploys short-circuit) while the DEFAULT_SEC source-vault
-    // arithmetic stays driven solely by the three transfers.
-    let marker = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(
-            1,
-            Some(construct_deploy::DEFAULT_SEC2.clone()),
-            Some(shard_id.clone()),
-        )
-        .expect("build merge marker")
-    };
-    let merge_block = nodes[1]
-        .add_block_from_deploys(&[marker])
-        .await
-        .expect("validator 1 proposes merge_block over the three siblings");
-
-    for block in &siblings {
-        assert!(
-            merge_block
-                .header
-                .parents_hash_list
-                .contains(&block.block_hash),
-            "merge_block must merge sibling {}",
-            hex::encode(&block.block_hash)
-        );
-    }
-
-    // D3-correct NON-ZERO merge rejection: the cumulative transfer over-drain
-    // (`3 × TRANSFER_AMOUNT > GENESIS_VAULT_BALANCE`) drives the shared source-vault
-    // IntegerAdd channel below zero, and `conflict_set_merger::fold_rejection`'s
-    // `current.checked_add(diff) >= 0` check rejects exactly the lex-largest-sig
-    // transfer (folded last). This is a genuine vault-balance conflict — precisely
-    // the D3 follow-on the top-of-file note describes — NOT a precharge artifact.
-    let rejected_sigs: Vec<Bytes> = merge_block
-        .body
-        .rejected_deploys
-        .iter()
-        .map(|rd| rd.sig.clone())
-        .collect();
-    let rejected_transfers: Vec<Bytes> = [&rejected_sig, &surviving_sig_1, &surviving_sig_2]
-        .into_iter()
-        .filter(|s| rejected_sigs.iter().any(|r| r == *s))
-        .cloned()
-        .collect();
-    assert_eq!(
-        rejected_transfers.len(),
-        1,
-        "exactly one of the three same-payer transfers must be merge-rejected \
-         (2 × {amt} = {two} ≤ {bal} fit; 3 × {amt} = {three} > {bal} over-drains the \
-         shared source vault); got rejected transfer sigs = {got:?}",
-        amt = TRANSFER_AMOUNT,
-        two = 2 * TRANSFER_AMOUNT,
-        three = 3 * TRANSFER_AMOUNT,
-        bal = GENESIS_VAULT_BALANCE,
-        got = rejected_transfers
-            .iter()
-            .map(hex::encode)
-            .collect::<Vec<_>>(),
-    );
-    assert_eq!(
-        rejected_transfers[0],
+    let mut fixture = build_d3_vault_conflict_siblings(&ctx.genesis).await;
+    let merge_block = propose_d3_vault_rejecting_merge(&mut fixture, 1).await;
+    let D3VaultConflictFixture {
+        mut nodes,
+        shard_id,
         rejected_sig,
-        "the rejected transfer must be the lex-largest sig {} (the branch \
-         `fold_rejection` folds last once the vault is exhausted); got {}",
-        hex::encode(&rejected_sig),
-        hex::encode(&rejected_transfers[0])
-    );
+        surviving_sigs: [surviving_sig_1, surviving_sig_2],
+        ..
+    } = fixture;
 
     // Validator 0 validates merge_block → its own KeyValueRejectedDeployBuffer is
     // populated with the rejected sig (Pending finalization state ⇒ admitted).

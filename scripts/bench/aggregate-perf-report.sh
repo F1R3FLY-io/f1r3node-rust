@@ -157,7 +157,12 @@ jq -n \
         protection_breach: $protection_breach,
         # Seconds actually soaked so far, against the run
         # budget — lets the dashboard show progress on a checkpoint.
-        elapsed_seconds: ($passive.elapsed_seconds // null)
+        elapsed_seconds: ($passive.elapsed_seconds // null),
+        # Shard uptime (summed wall-clock of iterations that completed their
+        # full cycle; see write-soak-summary.sh). Optional by construction:
+        # runs that predate the field carry null and the dashboard uptime
+        # bar collapses rather than rendering a bar with no data.
+        shard_up_seconds: ($passive.shard_up_seconds // null)
       },
       passive: (if $passive == null then null else {
         iterations: $passive.iterations,
