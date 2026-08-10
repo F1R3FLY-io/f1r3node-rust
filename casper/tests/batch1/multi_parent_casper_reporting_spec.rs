@@ -56,7 +56,6 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_store,
         &node.block_dag_storage,
         ExternalServices::noop(),
     );

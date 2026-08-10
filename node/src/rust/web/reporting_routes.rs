@@ -93,6 +93,8 @@ pub async fn trace_handler(
             let status = match &e {
                 BlockReportError::BlockNotFound(_) => StatusCode::NOT_FOUND,
                 BlockReportError::ReadOnlyRequired => StatusCode::BAD_REQUEST,
+                BlockReportError::StateUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                BlockReportError::Busy => StatusCode::SERVICE_UNAVAILABLE,
                 BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::BlockInfoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
