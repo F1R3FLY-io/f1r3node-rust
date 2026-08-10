@@ -80,7 +80,15 @@ env:
   # 16693MB, over the old ceiling), so 14336 was below the workload, not a
   # regression guard. SOAK_HOST_FREE_FLOOR_MB remains the host-thrash guard.
   SOAK_RSS_CEILING_MB: "20480"
-  SOAK_HOST_FREE_FLOOR_MB: "12288"
+  # 2026-08-10 (PR #217 review): lowered 12288 -> 8192 alongside the ceiling
+  # raise. On the 32GB soak host, 20480 + 12288 = 32768 meant available RAM
+  # crossed the floor before total RSS could reach the ceiling, so on
+  # floor-enforced (subprocess-provider) iterations the less-attributable
+  # floor kill would fire below the measured 16.7-19.3GB workload envelope.
+  # 8192 keeps ~3GB of real swap-thrash margin at that envelope (19.3GB
+  # nodes + ~4GB OS/harness overhead -> ~9.5GB free) while letting the
+  # workload reach the RSS ceiling that names the component it kills.
+  SOAK_HOST_FREE_FLOOR_MB: "8192"
   # THIRD pin site. The other two — .github/oci-validation.env and
   # _integration-pipeline.yml — are held identical by build_base's drift check;
   # this one is outside that check and rotted unnoticed as a result. It sat at
