@@ -22,14 +22,14 @@ use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData, DeleteJoins};
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_action::InsertAction::{InsertContinuations, InsertData, InsertJoins};
-use crate::rspace::metrics_constants::{
-    HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC, HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC,
-    HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC, HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC,
-    HISTORY_RSPACE_METRICS_SOURCE,
-};
 use crate::rspace::hot_store_trie_action::{
     HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
     TrieInsertAction, TrieInsertConsume, TrieInsertJoins, TrieInsertProduce,
+};
+use crate::rspace::metrics_constants::{
+    HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+    HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
+    HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -53,7 +53,9 @@ const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 // `std::sync::Mutex`es serialize concurrent PRECHARGE/REFUND system-deploy
 // execution the way the now-removed LmdbKeyValueStore mutex used to
 // serialize history reads).
-fn lock_current_history(m: &Mutex<Box<dyn History>>) -> std::sync::MutexGuard<'_, Box<dyn History>> {
+fn lock_current_history(
+    m: &Mutex<Box<dyn History>>,
+) -> std::sync::MutexGuard<'_, Box<dyn History>> {
     let start = Instant::now();
     let guard = m
         .lock()

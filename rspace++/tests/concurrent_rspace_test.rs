@@ -239,20 +239,21 @@ async fn soft_checkpoint_cost_does_not_scale_with_accumulated_store_size() {
     );
 }
 
-// Diagnostic for the issue-43 CPU-inversion residual: node/src/main.rs builds its
-// main runtime with `Builder::new_multi_thread().enable_all()` and no explicit
-// `worker_threads()`, so the worker count defaults to `available_parallelism()` --
-// which on a cgroup-limited container reads the CPU *quota*, not the amount of
-// work actually available. Issue f1r3node-rust#43 documents block-replay getting
-// *slower* as CPU quota (and therefore Tokio worker count) grows, for a block of
-// only a handful of trivial deploys -- the opposite of what more CPU should buy.
+// Diagnostic for the issue-43 CPU-inversion residual: node/src/main.rs builds
+// its main runtime with `Builder::new_multi_thread().enable_all()` and no
+// explicit `worker_threads()`, so the worker count defaults to
+// `available_parallelism()` -- which on a cgroup-limited container reads the
+// CPU *quota*, not the amount of work actually available. Issue
+// f1r3node-rust#43 documents block-replay getting *slower* as CPU quota (and
+// therefore Tokio worker count) grows, for a block of only a handful of trivial
+// deploys -- the opposite of what more CPU should buy.
 //
 // This reproduces the same shape of workload locally: a fixed, small number of
-// independent produce/consume chains standing in for deploys, run under runtimes
-// built with different worker_threads counts. If wall time grows with thread
-// count here, that's a local, cluster-free confirmation that Tokio scheduling
-// overhead (not rspace++ locking, already ruled out in #43 by sub-ms lock-acquire
-// metrics) is a plausible driver of the residual inversion.
+// independent produce/consume chains standing in for deploys, run under
+// runtimes built with different worker_threads counts. If wall time grows with
+// thread count here, that's a local, cluster-free confirmation that Tokio
+// scheduling overhead (not rspace++ locking, already ruled out in #43 by sub-ms
+// lock-acquire metrics) is a plausible driver of the residual inversion.
 // Run explicitly with: cargo test -p rspace_plus_plus worker_threads_scaling --
 // --ignored --nocapture
 #[ignore = "timing-sensitive: run in isolation, not as part of the full suite"]
@@ -302,19 +303,19 @@ fn small_workload_does_not_slow_down_with_more_worker_threads() {
     let slowdown = max_threads_ms / min_threads_ms.max(0.001);
 
     eprintln!(
-        "worker_threads_scaling: {min_threads} thread(s)={min_threads_ms:.3}ms  \
-         {max_threads} thread(s)={max_threads_ms:.3}ms  slowdown={slowdown:.2}x"
+        "worker_threads_scaling: {min_threads} thread(s)={min_threads_ms:.3}ms  {max_threads} \
+         thread(s)={max_threads_ms:.3}ms  slowdown={slowdown:.2}x"
     );
 
     assert!(
         slowdown < 3.0,
         "small fixed workload ({DEPLOYS} deploys) got {slowdown:.2}x slower going from \
-         {min_threads} to {max_threads} tokio worker_threads (expected <3x). If this \
-         reproduces on a CI/production-like host, node/src/main.rs's \
-         Builder::new_multi_thread().enable_all() (no explicit worker_threads(), so it \
-         defaults to available_parallelism()/cgroup CPU quota) is a live suspect for the \
-         issue-43 CPU-inversion residual -- more worker threads contending over the same \
-         small set of locks/channels can cost more in scheduling overhead than it buys in \
-         parallelism for trivial per-block workloads.",
+         {min_threads} to {max_threads} tokio worker_threads (expected <3x). If this reproduces \
+         on a CI/production-like host, node/src/main.rs's \
+         Builder::new_multi_thread().enable_all() (no explicit worker_threads(), so it defaults \
+         to available_parallelism()/cgroup CPU quota) is a live suspect for the issue-43 \
+         CPU-inversion residual -- more worker threads contending over the same small set of \
+         locks/channels can cost more in scheduling overhead than it buys in parallelism for \
+         trivial per-block workloads.",
     );
 }

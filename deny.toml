@@ -37,6 +37,7 @@ ignore = [
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+    "RUSTSEC-2026-0247", # bitmaps unmaintained (transitive via imbl -> block-storage/casper/rspace_plus_plus); no safe upgrade available
 
     # Feature-gated transitive deps, present only under --all-features (as CI runs
     # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
