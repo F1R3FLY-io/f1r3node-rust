@@ -179,14 +179,14 @@ impl ConnectionsCell {
 /// irreversible and strands the node if no other peers are known.
 ///
 /// Returns tuple of (number of failed peers, list of failed peers).
-pub async fn clear_connections<T: TransportLayer>(
+pub async fn clear_connections<T>(
     connections_cell: &ConnectionsCell,
     conf: &RPConf,
     transport: &T,
     node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
 ) -> Result<(usize, Vec<PeerNode>), CommError>
 where
-    T: Sync,
+    T: TransportLayer + Sync,
 {
     let mut failure_streaks = HashMap::new();
     clear_connections_with_failure_streaks(
@@ -200,7 +200,7 @@ where
     .await
 }
 
-pub async fn clear_connections_with_failure_streaks<T: TransportLayer>(
+pub async fn clear_connections_with_failure_streaks<T>(
     connections_cell: &ConnectionsCell,
     conf: &RPConf,
     transport: &T,
@@ -209,7 +209,7 @@ pub async fn clear_connections_with_failure_streaks<T: TransportLayer>(
     failure_threshold: usize,
 ) -> Result<(usize, Vec<PeerNode>), CommError>
 where
-    T: Sync,
+    T: TransportLayer + Sync,
 {
     let connections = connections_cell.read()?;
     let num_to_ping = conf.clear_connections.num_of_connections_pinged;
