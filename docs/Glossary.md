@@ -212,6 +212,130 @@ fixed point computed over it.
 *Avoid*: "evidence graph" unqualified (the report action mutates which
 edges are *active*; the neglect graph is the specific active-edge structure).
 
+### Block proposal
+
+Block proposal is the end-to-end process of selecting parents and deploys,
+executing them, assembling and signing a candidate block, and self-validating
+it before publication. The process consumes a [consensus snapshot](#consensus-snapshot),
+applies [deploy admission](#deploy-admission), and finishes with
+[block validation](#block-validation).
+
+**Preferred usage.** Use for the end-to-end process of selecting parents and
+deploys, executing them, assembling a block, and self-validating it; use
+[Block creator](#block-creator) for the Rust module implementing that process.
+*Distinguish from* [Block creator](#block-creator): the proposal is the process;
+the creator is the Rust module implementing it.
+*Avoid*: "proposer pipeline" and "create-block flow".
+
+### Block creator
+
+The block creator is the Rust module centered in
+`casper/src/rust/blocks/proposer/block_creator.rs` that implements
+[block proposal](#block-proposal), including [deploy admission](#deploy-admission),
+state computation, assembly, and packaging.
+
+**Preferred usage.** Use for the Rust module that implements
+[Block proposal](#block-proposal); use "block proposal" for the process and
+"validator" for the protocol participant.
+*Distinguish from* [Block proposal](#block-proposal): the creator is a module;
+the proposal is the process hidden behind its interface.
+*Avoid*: "proposer" when referring specifically to the Rust module.
+
+### Deploy admission
+
+Deploy admission is the deterministic decision process that applies
+eligibility, recovery, ordering, count limits, and byte limits before user
+deploys enter a [block proposal](#block-proposal). It includes selection from
+the [rejected deploy buffer](#rejected-deploy-buffer) but excludes Rholang
+execution.
+
+**Preferred usage.** Use for deterministic eligibility, recovery, ordering,
+count limits, and byte limits applied before user deploys enter a proposed
+block; use "execution" for running admitted deploys in Rholang.
+*Distinguish from* [Block proposal](#block-proposal): admission decides which
+user deploys may enter; proposal also selects parents, executes deploys,
+assembles, signs, and self-validates.
+*Distinguish from execution*: admission selects deploys; execution runs the
+selected deploys and computes state effects.
+*Avoid*: "deploy filtering" when recovery, ordering, or capacity policy is
+also involved.
+
+### Block validation
+
+Block validation is the ordered classification of a received or self-created
+block through structural, cryptographic, state-replay, equivocation, and
+deploy checks. It consumes a [consensus snapshot](#consensus-snapshot) and
+returns a valid, invalid, or exceptional outcome.
+
+**Preferred usage.** Use for the ordered rules that classify a received or
+self-created block; name the specific rule when discussing signature checks,
+checkpoint replay, equivocation, or deploy constraints.
+*Distinguish from* [Block proposal](#block-proposal): validation classifies a
+block; proposal constructs one and invokes self-validation as its final step.
+*Avoid*: "validation pipeline" when referring to one rule rather than the
+whole ordered classification.
+
+### Consensus snapshot
+
+A consensus snapshot is the captured view of DAG metadata, selected parents,
+justifications, deploy visibility, validator state, and shard configuration
+used by [block proposal](#block-proposal) and [block validation](#block-validation).
+It is treated as stable for the duration of either process.
+
+**Preferred usage.** Use for the captured DAG and on-chain state consumed by
+[Block proposal](#block-proposal) and [Block validation](#block-validation);
+use "DAG" or "on-chain state" only for those constituent views.
+*Distinguish from DAG*: the snapshot includes a DAG view plus parents,
+justifications, deploy visibility, validator state, and configuration.
+*Avoid*: "state" unqualified when the full captured view is intended.
+
+### Test node
+
+A test node is the in-process fixture that composes production-shaped Casper,
+storage, runtime, and transport modules to drive integration scenarios. It
+exercises [block proposal](#block-proposal) and [block validation](#block-validation)
+without launching the production node runtime.
+
+**Preferred usage.** Use for the in-process node fixture that drives Casper
+integration scenarios; use "node" for the production runtime and "test
+adapter" for a narrower dependency substitute.
+*Distinguish from node/test adapter*: a test node composes production-shaped
+modules into an in-process fixture; a test adapter substitutes one dependency
+at a seam.
+*Avoid*: "mock node" because the fixture contains substantial production
+implementations.
+
+### Rejected deploy buffer
+
+The rejected deploy buffer is the persistent storage module holding
+merge-rejected deploys that remain eligible for later
+[deploy admission](#deploy-admission). Its contents survive beyond the block
+whose [merge scope](#merge-scope) produced a rejection.
+
+**Preferred usage.** Use for persistent storage of merge-rejected deploys that
+may be admitted again; use "rejected deploys" for entries recorded in a block
+body rather than the storage module.
+*Distinguish from rejected deploys*: the buffer persists retryable work across
+blocks; rejected deploys are block-body records of a particular merge result.
+*Avoid*: "rejection cache" because persistence and retry eligibility are
+load-bearing properties.
+
+### Merge scope
+
+Merge scope is the bounded ancestry whose state effects participate in
+multi-parent merging for a [consensus snapshot](#consensus-snapshot). A merge
+can place eligible work in the [rejected deploy buffer](#rejected-deploy-buffer)
+when competing effects cannot all be retained.
+
+**Preferred usage.** Use for the bounded ancestry whose state effects
+participate in multi-parent merging; use "ancestor set" only for an
+unconstrained graph traversal.
+*Distinguish from ancestor set*: merge scope is bounded and semantically
+selected for state merging; an ancestor set may be an unconstrained graph
+traversal.
+*Avoid*: "merge window" unless referring specifically to a numeric depth or
+time parameter.
+
 ## Architecture Stack Mapping
 
 - **Formal-verification stack** = Rocq mechanization (`formal/rocq/`), TLA+

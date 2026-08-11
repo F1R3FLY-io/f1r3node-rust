@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.0"
-last_updated: 2026-08-05
+last_updated: 2026-08-11
 mr_status:
   ready: false
   target_branch: master
@@ -875,6 +875,53 @@ tasks:
 - Included: metrics emission, resource sampling, compare+gate, Pages dashboard, ONS email
 - Excluded: PR #72 residual par-serialization benchmarking (separate concern)
 - Excluded: HTML email formatting (ONS is plain-text; detail lives on the dashboard)
+
+---
+
+### EPIC-012: Casper Test Infrastructure Congruence
+
+```yaml
+---
+epic_id: EPIC-012
+title: "Casper Test Infrastructure Congruence"
+status: pending
+priority: p2
+user_story: null
+blocked_by: []
+created_at: 2026-08-11
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-012-1
+    title: "Deepen the Casper test node"
+    status: pending
+    priority: p2
+    discovered_in: docs/discoveries/architecture-review-2026-08-11T02-59-57Z.md
+    glossary_terms:
+      - docs/Glossary.md#test-node
+      - docs/Glossary.md#block-proposal
+      - docs/Glossary.md#block-validation
+    dependency_category: local-substitutable
+    accepted_design: common-caller
+    tdd_plan: docs/tdd-plans/casper-test-node-2026-08-11T02-59-57Z.md
+    acceptance:
+      - "Standalone and network scenarios exercise production-shaped behavior through the test node interface documented at docs/Glossary.md#test-node"
+      - "The common caller can create a standalone test node or a configured test network without learning storage, runtime, transport, or consensus-construction details"
+      - "The test network interface exercises block proposal, publication, propagation, synchronization, and block validation while preserving existing observable outcomes"
+      - "Empty-block behavior, bootstrap selection, parent limits, synchrony settings, and read-only nodes remain expressible as explicit configuration with behavior tests"
+      - "Focused inspection required by tests crosses named test node accessors; tests do not initialize or copy fields of the consensus implementation"
+      - "Local storage, runtime, and transport stand-ins remain at internal seams; tests do not mock internal collaborators"
+      - "Old duplicate fixture tests are replaced rather than layered, and removing the duplicate helper tree does not move construction complexity into callers"
+      - "Each TDD cycle covers one behavior at a time, and test names cite docs/Glossary.md#test-node plus any applicable block-proposal or block-validation anchor"
+---
+```
+
+**Context:** Candidate C1 from the Casper architecture regression diagnosis was accepted with the common-caller design. Two independently evolving helper trees currently expose overlapping test-node behavior, while integration tests retain direct access to consensus implementation fields.
+
+**Scope:**
+
+- Included: one canonical test-node module, standalone and configured-network entry points, network scenario operations, focused inspection accessors, caller migration, and duplicate-tree removal
+- Excluded: changing consensus semantics, reopening settled slashing decisions, introducing remote ports, or implementing deploy-admission and block-validation candidates C2 and C3
 
 ---
 
