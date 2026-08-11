@@ -69,10 +69,34 @@
 //! their digest, and every one of the 11 at IDENTICAL length.** A one-contract guard would have
 //! announced 1 of 11 consensus-visible moves and stayed green on the other 10.
 //!
-//! The one row whose *length* also moved across `084c93b5^` → `HEAD` is `REGISTRY`
-//! (28068 → 28455), and that is the control: `7c0cfd0a` edited `Registry.rho` itself. A source edit
-//! moves the length; a field-value change inside the encoder cannot. The two kinds of change are
-//! therefore distinguishable in the table below without consulting anything else.
+//! The one row whose *length* also moved across `084c93b5^` → the `a48879e9` attribution checkpoint
+//! is `REGISTRY` (28068 → 28455), and that is the control: `7c0cfd0a` edited `Registry.rho` itself.
+//! A source edit can move the normalized length; the fixed-width binder-value change at `084c93b5`
+//! cannot. That discriminator is local to this experiment, not a universal rule about length.
+//!
+//! ## The second normalized-term transition — CBR-041 and CBR-044, attributed and closed
+//!
+//! The `a48879e9` table predates two deliberate, registered EPathMap wire transitions. CBR-041
+//! (`1b576c90`) deleted the protobuf tag-1 flattened-entry writer and emitted the trie byte stream at
+//! field 8 for every map. CBR-044 (`26876b65`) then specialized the carrier as
+//! `Empty | Set(PathMap<()>) | Map(PathMap<Par>)` and replaced that intermediate encoding with the
+//! versioned EPM1 field-9 snapshot: PathMap's prefix-compressed ACTree03 arena plus the generated-PDA
+//! value table. Both register entries explicitly classify protobuf bytes as moving; CBR-044 also
+//! pins three independent Par-typed cold-store golden movements.
+//!
+//! The normalized blessed-term table was not advanced with those transitions. The evidence that
+//! closes that omission is two-sided:
+//!
+//! - the raw-source gate stays green for all ten stale rows, excluding a resource edit;
+//! - the current encoder/EPM1 matrix passes 41/41: 13 recursive-oracle protobuf differentials,
+//!   6 deep/unbounded `Message` gates, 15 EPM1 mode/snapshot/round-trip gates, and 7 serializer byte
+//!   goldens.
+//!
+//! The resulting length reductions are expected representation movement, not evidence of a source
+//! edit and not an encoder mismatch. The prior failure diagnostic generalized the historical
+//! Registry control too far; it is corrected below. Constant length can identify a fixed-width
+//! value change, but a moving normalized length does not identify its cause without the independent
+//! raw-source pin and the owning normalizer/model/codec evidence.
 //!
 //! # The genesis post-state instability — measured, attributed, and closed
 //!
@@ -131,9 +155,9 @@ const EMBEDDED_RHO_SOURCE: &str =
 struct NormalizedPin {
     /// `blake2b256` of `Compiler::source_to_adt(source).encode_to_vec()`, hex.
     digest: &'static str,
-    /// That encoding's length. It is the coordinate that **discriminates the kind of change**: a
-    /// source edit moves the length (see `REGISTRY` at `7c0cfd0a`, 28068 → 28455), whereas a
-    /// field-level value change inside the encoder cannot (see all eleven rows at `084c93b5`).
+    /// That encoding's length: an independent coordinate that separates fixed-width value movement
+    /// (all eleven rows at `084c93b5`) from representation-size movement (CBR-041/CBR-044). It does
+    /// not identify source versus encoder changes by itself; the raw-source pin supplies that axis.
     length: usize,
 }
 
@@ -174,8 +198,8 @@ fn pins() -> Vec<Pin> {
             digest: "5e9660ca03b041d20b4a6b33e15c89f6885cce5ffbefeb6bfa73d3c2dd0f7726",
             length: 27707,
             normalized: Some(NormalizedPin {
-                digest: "6117f1e344275d7047e1c32cf32621136edd949c71f4b69efafa3595f40d88bb",
-                length: 28455,
+                digest: "6e2d07f013ff28c8f3ea1ab981be6e3ef966364ec93a353a9d588d1339840dc8",
+                length: 25184,
             }),
         },
         Pin {
@@ -185,8 +209,8 @@ fn pins() -> Vec<Pin> {
             digest: "ed72b1408de9a48491b3eac532466d5a1ddca8b2103fc71158c41be86fbe9571",
             length: 16922,
             normalized: Some(NormalizedPin {
-                digest: "7a4b5c1352b437101c69e282e2c936c31130c6f12fb9a74ba9e52fb160dfd334",
-                length: 18349,
+                digest: "e26c861f777adfbc94c9f179fc858a67b1e9794bdc499633f350d3fa242a04ac",
+                length: 17035,
             }),
         },
         Pin {
@@ -196,8 +220,8 @@ fn pins() -> Vec<Pin> {
             digest: "c3883297da1b71bbb48f086cea518f915c1b08eb01144e115fc5bfb86cf5a151",
             length: 12034,
             normalized: Some(NormalizedPin {
-                digest: "9f8ba7518d578d0558063e2c6a4288f4b9a49b80f299a2a38be2efb2c0b0e248",
-                length: 11048,
+                digest: "b66d40b3b073e9835558380dc3e26d006d7298aea8f503079fa9e6fdd3e78067",
+                length: 10376,
             }),
         },
         Pin {
@@ -207,8 +231,8 @@ fn pins() -> Vec<Pin> {
             digest: "1df954a04ce64b6a350338653ea1f147dbe5100b95a63831a23a77e4bc33c862",
             length: 4567,
             normalized: Some(NormalizedPin {
-                digest: "eb17e6a37e7e3ccb54e0a142c05aaab638a0bb6cdc37f263d72722acb2889a92",
-                length: 2652,
+                digest: "811172430ae697b233e1f1d99207acbbdeace3c2b5cee0ce10e22fe6de6385ed",
+                length: 2384,
             }),
         },
         Pin {
@@ -229,8 +253,8 @@ fn pins() -> Vec<Pin> {
             digest: "155f6db44ae9a2aa98c66227d5b3ae79508797e88ef497fe1eaadb838bbbf565",
             length: 4439,
             normalized: Some(NormalizedPin {
-                digest: "5a0f1bcfb601ac2b2a7d56d6e0a20d965a034ad1fc601f0bd1535550882dcbc6",
-                length: 1200,
+                digest: "a8214686e5e9243ba44d24754af9acb187228494bf83fc87a9da55dc8525b539",
+                length: 1102,
             }),
         },
         Pin {
@@ -240,8 +264,8 @@ fn pins() -> Vec<Pin> {
             digest: "5767bf0cb35a70c4e776ae0554a42fc17ff219612c91e08fba47bec30c2ece3b",
             length: 15023,
             normalized: Some(NormalizedPin {
-                digest: "7bb242be6a4c95a8467898a4abe1947c200b6cd6b834c604a4ed25eec33951a7",
-                length: 13102,
+                digest: "13ff8e0936ada4c477142a1ba4e767dacbfd2803a1399a211f12fcd14009e754",
+                length: 11636,
             }),
         },
         Pin {
@@ -251,8 +275,8 @@ fn pins() -> Vec<Pin> {
             digest: "f114b243acd7524f21eed93fe0046943763f1a88dabb6da4613a2dd5f86a8b1b",
             length: 14594,
             normalized: Some(NormalizedPin {
-                digest: "660e9fe12788d10e8712c38af0b94df1c5bb75471980c07c913c507df58785b8",
-                length: 14299,
+                digest: "021a14cbb98b415a7eeaf63bf461e4926b374627b1afbf0c196bc1fe8aece533",
+                length: 12569,
             }),
         },
         Pin {
@@ -262,8 +286,8 @@ fn pins() -> Vec<Pin> {
             digest: "1840b1204bd1e06393c5db659ee79fa0802d5839cc5ec591254347960f4d2649",
             length: 3866,
             normalized: Some(NormalizedPin {
-                digest: "a99f1355d6961509f9d97d78b977c66863b7f5e5174166ec82dbd06be0e6ae2a",
-                length: 3686,
+                digest: "cc9ae9acb1b4d8c90607a14428e5bb570d28ec757bdbcfe2fd5390c74f6011b4",
+                length: 3333,
             }),
         },
         Pin {
@@ -295,8 +319,8 @@ fn pins() -> Vec<Pin> {
             digest: "1577390b7abb4e61afc8558683da5efa230e30f41a5439167a4471e3bfbdab69",
             length: 9769,
             normalized: Some(NormalizedPin {
-                digest: "9d7a65b8e0bc93f1d917fd508ff692da3acd50de92ccf15196b305403b68f3bf",
-                length: 6246,
+                digest: "48926050c97f42d7a875647c411629436019892ce78ec20990fd46263cf3f813",
+                length: 5715,
             }),
         },
         Pin {
@@ -306,8 +330,8 @@ fn pins() -> Vec<Pin> {
             digest: "d367e84f3c7b46b3d8c373ca9370a8344bec1332b99e4b345ae8d44b47b10a53",
             length: 5423,
             normalized: Some(NormalizedPin {
-                digest: "c1e843a86fa8f9b49641bdfc6fa4a39609b967c84c1da0c0db4f4900b72e335a",
-                length: 521,
+                digest: "0cefb2d4889051d94efffc1e5337fe6d13f0eae5594e45819e51174abb9436e7",
+                length: 499,
             }),
         },
     ]
@@ -531,8 +555,9 @@ fn every_blessed_contract_source_is_pinned() {
 /// | a comment added to `Either.rho` | RED (the text is signed) | green (comments do not survive normalization) |
 /// | `filter_and_adjust_bitset` fixed (`084c93b5`) | green (no file touched) | **RED for 11 of 11** |
 /// | `Registry.rho`'s updater fixed (`7c0cfd0a`) | RED | RED, *and the length moves too* |
+/// | EPathMap moves from flattened entries to EPM1 (CBR-041/CBR-044) | green | **RED, and lengths may move** |
 ///
-/// ⚠ **The third row is the one that motivated this cell.** `084c93b5` moved eleven blessed
+/// ⚠ **The second row is the one that motivated this cell.** `084c93b5` moved eleven blessed
 /// contracts' normalized terms at identical length while every source pin stayed green, and the only
 /// instrument that noticed was a single hand-written cell for `NonNegativeNumber.rho`. Ten
 /// consensus-visible moves went unannounced. The set is derived here from the same `pins()` table
@@ -612,11 +637,12 @@ fn every_blessed_normalized_term_is_pinned() {
         "★★ {} blessed contract(s) NORMALIZED TERM changed, so the genesis post-state changed. \
          That is the strongest consensus signal there is, and it owes a \
          `docs/consensus/consensus-change-register.md` entry.\n\
-         ⚠ Read the LENGTH before concluding anything: a length that moved with the digest means a \
-         SOURCE edit (cross-check `every_blessed_contract_source_is_pinned`, which must then be red \
-         too); a digest that moved at CONSTANT length with every source pin green means the \
-         normalizer or the encoder changed, and the change reaches every contract of that shape \
-         rather than the one row someone happened to look at.\n\
+         ⚠ Diagnose against the independent source pin before interpreting LENGTH: if \
+         `every_blessed_contract_source_is_pinned` is red, source text moved; if it is green, the \
+         normalizer, model, or encoder moved regardless of whether normalized length also moved. \
+         Constant length narrows the mechanism to a fixed-width value/order change; moving length \
+         proves representation size changed, not which layer caused it. Derive the owning commit \
+         and the full affected shape instead of blessing the row first observed.\n\
          Paste the printed block into the matching row IN THE SAME COMMIT.\n\n{}",
         drifted.len(),
         drifted.join("\n"),
