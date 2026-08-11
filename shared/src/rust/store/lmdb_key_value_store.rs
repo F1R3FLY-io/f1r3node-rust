@@ -22,6 +22,8 @@ pub struct LmdbKeyValueStore {
 }
 
 impl KeyValueStore for LmdbKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         let reader = self.env.read_txn()?;
         let results = keys
@@ -120,6 +122,55 @@ impl KeyValueStore for LmdbKeyValueStore {
         };
         drop(reader);
         Ok(has_first)
+    }
+}
+
+/// Writes to multiple stores in a single LMDB write transaction when they
+/// are all `LmdbKeyValueStore`s backed by the same `Env` — LMDB serialises
+/// all writers on one environment-wide lock (see the module comment above),
+/// so combining N separate `put()` calls (N lock acquisitions) into one
+/// transaction (one lock acquisition) directly reduces contention on that
+/// lock under concurrent block processing. Falls back to independent
+/// `put()` calls — preserving prior behavior exactly — when any store isn't
+/// an `LmdbKeyValueStore` (e.g. an in-memory test double) or the stores
+/// don't all share one `Env`.
+pub fn batched_put(
+    writes: Vec<(&dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>)>,
+) -> Result<(), KvStoreError> {
+    let lmdb_stores: Option<Vec<(&LmdbKeyValueStore, &Vec<(ByteBuffer, ByteBuffer)>)>> = writes
+        .iter()
+        .map(|(store, kv_pairs)| {
+            store
+                .as_any()
+                .downcast_ref::<LmdbKeyValueStore>()
+                .map(|s| (s, kv_pairs))
+        })
+        .collect();
+
+    let batchable = match &lmdb_stores {
+        Some(stores) => stores
+            .windows(2)
+            .all(|w| Arc::ptr_eq(&w[0].0.env, &w[1].0.env)),
+        None => false,
+    };
+
+    if batchable {
+        let stores = lmdb_stores.expect("batchable implies Some, checked above");
+        if let Some((first, _)) = stores.first() {
+            let mut wtxn = first.env.write_txn()?;
+            for (store, kv_pairs) in &stores {
+                for (key, value) in kv_pairs.iter() {
+                    store.db.put(&mut wtxn, key, value)?;
+                }
+            }
+            wtxn.commit()?;
+        }
+        Ok(())
+    } else {
+        for (store, kv_pairs) in writes {
+            store.put(kv_pairs)?;
+        }
+        Ok(())
     }
 }
 

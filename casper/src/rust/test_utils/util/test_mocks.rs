@@ -46,6 +46,8 @@ impl MockKeyValueStore {
 }
 
 impl KeyValueStore for MockKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         let data = self.data.lock().unwrap();
         let results: Vec<Option<Vec<u8>>> = keys.iter().map(|key| data.get(key).cloned()).collect();
@@ -132,6 +134,8 @@ impl KeyValueStore for MockKeyValueStore {
 pub struct EmptyKeyValueStore;
 
 impl KeyValueStore for EmptyKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         Ok(vec![None; keys.len()])
     }

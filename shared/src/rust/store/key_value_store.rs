@@ -4,7 +4,14 @@ use std::fmt::Debug;
 use crate::rust::ByteBuffer;
 
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
-pub trait KeyValueStore: Send + Sync {
+pub trait KeyValueStore: Send + Sync + 'static {
+    /// Enables downcasting to a concrete store type (e.g. `LmdbKeyValueStore`)
+    /// so callers holding a store behind `Arc<dyn KeyValueStore>` can detect
+    /// and batch same-environment LMDB writes — see
+    /// `lmdb_key_value_store::batched_put`. Default implementation is
+    /// sufficient for every implementor; no override needed.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;

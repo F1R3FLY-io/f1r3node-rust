@@ -32,6 +32,11 @@ where
         }
     }
 
+    /// Exposes the underlying untyped store so callers can batch writes
+    /// across multiple typed stores that share one LMDB environment — see
+    /// `key_value_store::lmdb_key_value_store::batched_put`.
+    pub fn raw_store(&self) -> &Arc<dyn KeyValueStore> { &self.store }
+
     pub fn encode_key(&self, key: &K) -> Result<BitVector, KvStoreError> {
         Ok(bincode::serialize(key)?)
     }

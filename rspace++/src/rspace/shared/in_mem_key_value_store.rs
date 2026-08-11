@@ -13,6 +13,8 @@ pub struct InMemoryKeyValueStore {
 }
 
 impl KeyValueStore for InMemoryKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         let result = keys
             .iter()
