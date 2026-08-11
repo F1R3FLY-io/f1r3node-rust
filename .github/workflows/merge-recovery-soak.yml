@@ -1593,9 +1593,7 @@ jobs:
                    latest-report-daily.md \
                    badge-soak.json badge-soak-daily.json \
                    badge-stability.json badge-stability-daily.json \
-                   badge-perf.json badge-perf-daily.json \
-                   failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
-                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -1607,17 +1605,59 @@ jobs:
                 ;;
             esac
           done
-          # Heatmap SVGs get the same 200-is-not-proof treatment as the JSON
-          # files: they are normally re-rendered below, but when rendering
-          # skips or fails these carried copies ARE the published charts, and
-          # a cached error page must not become one.
-          for f in failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
-                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
-            [ -e "site/data/${f}" ] || continue
-            head -c 1024 "site/data/${f}" | grep -q '<svg' || {
-              echo "::error::published ${f} is not an SVG; refusing to republish it"
+          # Chart SVGs ride the renderer's manifest instead of a hardcoded
+          # list: charts-manifest-<series>.json names exactly the SVGs the
+          # last render produced, so a chart added or suppressed in
+          # scripts/soak-charts changes what publishers preserve without any
+          # workflow edit. Normally the render step below overwrites all of
+          # this; when rendering skips or fails, these carried copies ARE the
+          # published charts. Manifest entries are remote content — only bare
+          # <name>.svg tokens are accepted, so a poisoned manifest cannot
+          # traverse paths, and every fetched body must look like an SVG (a
+          # CDN error page served with 200 must not become a chart).
+          for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${m}" "${DASHBOARD_URL}data/${m}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${m}"; continue ;;
+              *)
+                echo "::error::could not read published ${m} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+            jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
+              echo "::error::published ${m} is not an array of strings; refusing to republish it"
               exit 1
             }
+            while IFS= read -r f; do
+              case "$f" in
+                ''|.*|*[!A-Za-z0-9._-]*)
+                  echo "::error::${m} lists a suspicious filename; refusing to republish it"
+                  exit 1
+                  ;;
+                *.svg) ;;
+                *)
+                  echo "::error::${m} lists non-SVG ${f}; refusing to republish it"
+                  exit 1
+                  ;;
+              esac
+              code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+                -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+              case "$code" in
+                200)
+                  head -c 1024 "site/data/${f}" | grep -q '<svg' || {
+                    echo "::error::published ${f} is not an SVG; refusing to republish it"
+                    exit 1
+                  }
+                  ;;
+                404) rm -f "site/data/${f}" ;;
+                *)
+                  echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
+                  exit 1
+                  ;;
+              esac
+            done < <(jq -r '.[]' "site/data/${m}")
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too, and republishing one would corrupt the
@@ -1724,7 +1764,7 @@ jobs:
             [ -s "site/data/history$1.json" ] || return 0
             ci-control/scripts/soak-charts/target/release/soak-charts \
               --history "site/data/history$1.json" \
-              --out-dir site/data --basename "failure-heatmap-$2"
+              --out-dir site/data --series "$2"
           }
           render "" weekend
           render "-daily" daily

@@ -223,9 +223,8 @@ jobs:
       - name: cargo-deny check (soak-charts)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          # --config is a `check` option (not global), so it rides in the
-          # command string; the path is cwd-relative — the repo's own policy.
-          command: check --config deny.toml advisories bans licenses sources
+          command: check
+          command-arguments: --config deny.toml advisories bans licenses sources
           manifest-path: scripts/soak-charts/Cargo.toml
           arguments: --all-features
 

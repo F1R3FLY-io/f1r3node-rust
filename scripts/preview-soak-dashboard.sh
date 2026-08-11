@@ -101,9 +101,7 @@ case "$MODE" in
     # first soak publishes.
     for f in history.json latest-summary.json latest-verdict.json latest-report.md \
              history-daily.json latest-summary-daily.json latest-verdict-daily.json \
-             latest-report-daily.md \
-             failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
-             failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
+             latest-report-daily.md; do
       code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
         -o "$SITE_DIR/data/$f" "${DASHBOARD_URL}data/${f}?cb=$$" 2>/dev/null)" || code=000
       if [ "$code" = "200" ]; then
@@ -112,6 +110,36 @@ case "$MODE" in
         rm -f "$SITE_DIR/data/$f"
         printf '  %-28s absent (HTTP %s)\n' "$f" "$code"
       fi
+    done
+    # Published chart SVGs, discovered through the renderer's manifest (the
+    # same indirection the publishers use). Best-effort like everything else
+    # here, but manifest entries are remote content even in a preview — only
+    # bare <name>.svg tokens are fetched.
+    for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+      code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+        -o "$SITE_DIR/data/$m" "${DASHBOARD_URL}data/${m}?cb=$$" 2>/dev/null)" || code=000
+      if [ "$code" != "200" ]; then
+        rm -f "$SITE_DIR/data/$m"
+        printf '  %-28s absent (HTTP %s)\n' "$m" "$code"
+        continue
+      fi
+      printf '  %-28s ok\n' "$m"
+      command -v jq >/dev/null 2>&1 || { printf '  (jq not found — skipping published chart SVGs)\n'; continue; }
+      while IFS= read -r f; do
+        case "$f" in
+          ''|.*|*[!A-Za-z0-9._-]*) printf '  skipping suspicious manifest entry\n'; continue ;;
+          *.svg) ;;
+          *) continue ;;
+        esac
+        code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+          -o "$SITE_DIR/data/$f" "${DASHBOARD_URL}data/${f}?cb=$$" 2>/dev/null)" || code=000
+        if [ "$code" = "200" ]; then
+          printf '  %-28s ok\n' "$f"
+        else
+          rm -f "$SITE_DIR/data/$f"
+          printf '  %-28s absent (HTTP %s)\n' "$f" "$code"
+        fi
+      done < <(jq -r 'if type == "array" then .[] | select(type == "string") else empty end' "$SITE_DIR/data/$m" 2>/dev/null)
     done
     ;;
 esac
@@ -134,14 +162,14 @@ if command -v cargo >/dev/null 2>&1; then
       [ -s "$h" ] || continue
       "$REPO_ROOT/scripts/soak-charts/target/release/soak-charts" \
         --history "$h" --out-dir "$SITE_DIR/data" \
-        --basename "failure-heatmap-${spec#*:}" \
-        || printf 'soak-charts render failed — heatmap absent for %s\n' "${spec#*:}"
+        --series "${spec#*:}" \
+        || printf 'soak-charts render failed — charts absent for %s\n' "${spec#*:}"
     done
   else
-    printf 'soak-charts build failed — skipping heatmap SVGs\n'
+    printf 'soak-charts build failed — skipping chart SVGs\n'
   fi
 else
-  printf 'cargo not found — skipping heatmap SVGs (the figure hides itself)\n'
+  printf 'cargo not found — skipping chart SVGs (the figures hide themselves)\n'
 fi
 
 if [ "$SERVE" != "true" ]; then

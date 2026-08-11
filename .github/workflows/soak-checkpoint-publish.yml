@@ -158,9 +158,7 @@ jobs:
                    latest-report-daily.md \
                    badge-soak.json badge-soak-daily.json \
                    badge-stability.json badge-stability-daily.json \
-                   badge-perf.json badge-perf-daily.json \
-                   failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
-                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
+                   badge-perf.json badge-perf-daily.json; do
             code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
               -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
@@ -172,17 +170,55 @@ jobs:
                 ;;
             esac
           done
-          # A checkpoint never appends to history, so the heatmaps cannot
-          # change here — carried forward only, with the same 200-is-not-proof
-          # check as the JSON files so a cached error page is never published
-          # as a chart.
-          for f in failure-heatmap-weekend-light.svg failure-heatmap-weekend-dark.svg \
-                   failure-heatmap-daily-light.svg failure-heatmap-daily-dark.svg; do
-            [ -e "site/data/${f}" ] || continue
-            head -c 1024 "site/data/${f}" | grep -q '<svg' || {
-              echo "::error::published ${f} is not an SVG; refusing to republish it"
+          # A checkpoint never appends to history, so the charts cannot change
+          # here — carried forward only, driven by the renderer's manifest
+          # (charts-manifest-<series>.json names exactly what the last render
+          # produced). Manifest entries are remote content — only bare
+          # <name>.svg tokens are accepted, and every fetched body must look
+          # like an SVG so a cached error page is never published as a chart.
+          for m in charts-manifest-weekend.json charts-manifest-daily.json; do
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${m}" "${DASHBOARD_URL}data/${m}?cb=${cb}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${m}"; continue ;;
+              *)
+                echo "::error::could not read published ${m} (HTTP ${code}); aborting so no published series is lost"
+                exit 1
+                ;;
+            esac
+            jq -e 'type == "array" and all(.[]; type == "string")' "site/data/${m}" >/dev/null 2>&1 || {
+              echo "::error::published ${m} is not an array of strings; refusing to republish it"
               exit 1
             }
+            while IFS= read -r f; do
+              case "$f" in
+                ''|.*|*[!A-Za-z0-9._-]*)
+                  echo "::error::${m} lists a suspicious filename; refusing to republish it"
+                  exit 1
+                  ;;
+                *.svg) ;;
+                *)
+                  echo "::error::${m} lists non-SVG ${f}; refusing to republish it"
+                  exit 1
+                  ;;
+              esac
+              code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+                -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
+              case "$code" in
+                200)
+                  head -c 1024 "site/data/${f}" | grep -q '<svg' || {
+                    echo "::error::published ${f} is not an SVG; refusing to republish it"
+                    exit 1
+                  }
+                  ;;
+                404) rm -f "site/data/${f}" ;;
+                *)
+                  echo "::error::could not read published ${f} (HTTP ${code}); aborting so no published series is lost"
+                  exit 1
+                  ;;
+              esac
+            done < <(jq -r '.[]' "site/data/${m}")
           done
           for f in history.json history-daily.json; do
             [ -e "site/data/${f}" ] || continue

@@ -12,6 +12,7 @@
 # Environment variables:
 #   SKIP_TESTS=1         - Skip all cargo tests
 #   SKIP_CLIPPY=1        - Skip clippy (already runs on commit, but double-checked here)
+#   SKIP_DENY=1          - Skip soak-charts dependency policy checks
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
 #   TEST_TIMEOUT=600     - Overall test timeout in seconds (default: 600)
@@ -40,10 +41,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 # Configuration from environment
 SKIP_TESTS="${SKIP_TESTS:-0}"
 SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
+SKIP_DENY="${SKIP_DENY:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
 TEST_CRATES="${TEST_CRATES:-}"
+SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
 
 # Skip in CI environments (tests run separately in pipeline)
 if [ -n "${CI:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
@@ -149,6 +152,73 @@ echo "================================"
 ) &
 pid_clippy=$!
 
+# --- Dashboard renderer checks (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+
+    run_dashboard_check() {
+        local label="$1"
+        shift
+        local check_out="$RESULTS_DIR/dashboard-${label}.out"
+        total=$((total + 1))
+        echo -e "  ${CYAN}[dashboard]${NC} ${label}..." >&3
+        if timeout "$TEST_TIMEOUT" "$@" > "$check_out" 2>&1; then
+            echo -e "  ${CYAN}[dashboard]${NC} ${label} ${GREEN}PASS${NC}" >&3
+            passed=$((passed + 1))
+        else
+            local rc=$?
+            if [[ $rc -eq 124 ]]; then
+                echo -e "  ${CYAN}[dashboard]${NC} ${label} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+            else
+                echo -e "  ${CYAN}[dashboard]${NC} ${label} ${RED}FAIL${NC}" >&3
+            fi
+            failed=$((failed + 1))
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: soak-charts ${label}"
+                echo "--- Output (last 80 lines) ---"
+                tail -80 "$check_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/dashboard-failures.out"
+        fi
+        rm -f "$check_out"
+    }
+
+    run_dashboard_check fmt cargo fmt --manifest-path "$SOAK_CHARTS_MANIFEST" -- --check
+
+    if [[ "$SKIP_CLIPPY" == "1" ]]; then
+        echo -e "  ${CYAN}[dashboard]${NC} clippy ${YELLOW}SKIP${NC} (SKIP_CLIPPY=1)" >&3
+        skipped=$((skipped + 1))
+    else
+        run_dashboard_check clippy cargo clippy --locked --manifest-path "$SOAK_CHARTS_MANIFEST" --all-targets -- -D warnings
+    fi
+
+    if [[ "$SKIP_DENY" == "1" ]]; then
+        echo -e "  ${CYAN}[dashboard]${NC} deny ${YELLOW}SKIP${NC} (SKIP_DENY=1)" >&3
+        skipped=$((skipped + 1))
+    elif ! command -v cargo-deny >/dev/null 2>&1; then
+        echo -e "  ${CYAN}[dashboard]${NC} deny ${YELLOW}SKIP${NC} (cargo-deny not installed)" >&3
+        skipped=$((skipped + 1))
+    else
+        run_dashboard_check deny cargo deny --manifest-path "$SOAK_CHARTS_MANIFEST" --all-features check --config deny.toml advisories bans licenses sources
+    fi
+
+    if [[ "$SKIP_TESTS" == "1" ]]; then
+        echo -e "  ${CYAN}[dashboard]${NC} test ${YELLOW}SKIP${NC} (SKIP_TESTS=1)" >&3
+        skipped=$((skipped + 1))
+    else
+        dashboard_test_cmd=(cargo test --locked --manifest-path "$SOAK_CHARTS_MANIFEST")
+        if [[ "$QUICK" != "1" ]]; then
+            dashboard_test_cmd+=(--release)
+        fi
+        run_dashboard_check test "${dashboard_test_cmd[@]}"
+    fi
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/dashboard.counts"
+) &
+pid_dashboard=$!
+
 # --- Cargo test (background) ---
 (
     total=0; passed=0; failed=0; skipped=0; has_failure=0
@@ -209,15 +279,15 @@ pid_clippy=$!
 ) &
 pid_test=$!
 
-# Wait for both suites
-wait "$pid_clippy" "$pid_test" 2>/dev/null || true
+# Wait for all suites
+wait "$pid_clippy" "$pid_dashboard" "$pid_test" 2>/dev/null || true
 
 # Close saved fd
 exec 3>&-
 
 # Show failure details and aggregate results
 TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0
-for suite in clippy test; do
+for suite in clippy dashboard test; do
     if [[ -f "$RESULTS_DIR/${suite}-failures.out" ]]; then
         echo ""
         echo -e "${CYAN}${suite^} Failure Details:${NC}"
@@ -270,6 +340,7 @@ else
     echo "  QUICK=1 git push             - Debug-mode tests (faster compile)"
     echo "  SKIP_TESTS=1 git push        - Skip test suite"
     echo "  SKIP_CLIPPY=1 git push       - Skip clippy"
+    echo "  SKIP_DENY=1 git push         - Skip soak-charts dependency checks"
     echo "  VERBOSE=1 git push           - Show detailed output"
     echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
     echo "  TEST_TIMEOUT=300 git push    - Adjust timeout (default: 600s)"

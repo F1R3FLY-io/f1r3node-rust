@@ -194,26 +194,24 @@
      zero cells use --heat-zero, matching the SVG's baked-in neutral. */
   .swatch-cell { height: 12px; border-radius: 3px; }
   .heat-ramp { background: linear-gradient(90deg, #fff5f0, #fb6a4a, #67000d); }
-  /* The SVG pair bakes theme colors at render time; show the variant matching
-     the active theme with the same three-state logic as the CSS vars above. */
-  .heat { display: block; width: 100%; height: auto; }
-  .heat-dark { display: none; }
+  /* Every chart is a pre-rendered SVG pair from scripts/soak-charts with theme
+     colors baked in; show the variant matching the active theme with the same
+     three-state logic as the CSS vars above. */
+  .chart-svg { display: block; width: 100%; height: auto; }
+  .chart-dark { display: none; }
   @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) .heat-light { display: none; }
-    :root:where(:not([data-theme="light"])) .heat-dark { display: block; }
+    :root:where(:not([data-theme="light"])) .chart-light { display: none; }
+    :root:where(:not([data-theme="light"])) .chart-dark { display: block; }
   }
-  :root[data-theme="dark"] .heat-light { display: none; }
-  :root[data-theme="dark"] .heat-dark { display: block; }
-  svg { display: block; width: 100%; height: auto; }
-  .gridline { stroke: var(--grid); stroke-width: 1; }
-  .axis-label { fill: var(--text-muted); font-size: 11px; }
-  .crosshair { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  :root[data-theme="dark"] .chart-light { display: none; }
+  :root[data-theme="dark"] .chart-dark { display: block; }
+  /* The all-zero counter panel: the metric holds at its target, so it earns a
+     number, not an empty chart. */
+  .kpi-zero { margin: 1rem 0 0; font-size: 2.4rem; font-weight: 650;
+              display: flex; align-items: baseline; gap: .6rem; }
+  .kpi-zero .unit { font-size: .85rem; font-weight: 400; }
   .latest { color: var(--text-secondary); font-weight: 400; font-size: .85em;
             font-variant-numeric: tabular-nums; }
-  .tooltip { position: fixed; pointer-events: none; background: var(--surface-1);
-             border: 1px solid var(--grid); border-radius: 6px; padding: .4rem .6rem;
-             font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 10; }
-  .tooltip b { display: block; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
   th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
@@ -272,12 +270,10 @@
   <p class="sub" id="links-daily"></p>
 </div>
 
-<div class="tooltip" id="tooltip"></div>
 <script>
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
   const COMMIT_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/commit/";
-  const tooltip = document.getElementById("tooltip");
 
   const SERIES = [
     { key: "weekend", history: "data/history.json", verdict: "data/latest-verdict.json",
@@ -289,36 +285,53 @@
   ];
 
   const S = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
-  const CHARTS = [
-    { title: "Throughput", unit: "iterations / hour", fmt: v => v.toFixed(2),
+  // Metric panels are pre-rendered SVG pairs from scripts/soak-charts, one per
+  // theme, swapped like the heatmap. Mark shape (layered line+points vs
+  // value-labelled bars) is the renderer's call, made from data density; the
+  // page only frames the images — caption with unit (plus the latest value
+  // for single-series panels), a legend when several series share a panel,
+  // and the all-zero KPI special case. Exact per-run values live in the
+  // table, which is also where hover-tooltip readings went when the charts
+  // became static images.
+  const PANELS = [
+    { slug: "throughput", title: "Throughput", unit: "iterations / hour",
+      fmt: v => v.toFixed(2),
       series: [
         { name: "total", path: ["passive", "iterations_per_hour"], c: 0 },
       ] },
-    { title: "Peak node RSS", unit: "MB", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "peak-rss", title: "Peak node RSS",
+      unit: "MB · Resident Set Size (footprint)",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "rss_peak_mb"], c: 0 },
         { name: "bench segments", path: ["active", "rss_peak_mb"], c: 2 },
       ] },
-    { title: "Peak node CPU", unit: "%", fmt: v => v.toFixed(1),
+    { slug: "peak-cpu", title: "Peak node CPU",
+      unit: "% of one core · readings above 100% mean several cores were busy",
+      fmt: v => v.toFixed(1),
       series: [
         { name: "soak load", path: ["passive", "cpu_peak_pct"], c: 0 },
       ] },
-    { title: "Finalization latency p95", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "finality-p95", title: "Finalization latency p95", unit: "ms",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "soak load", path: ["passive", "finalization_p95_ms"], c: 0 },
         { name: "bench segments", path: ["active", "p95_ms"], c: 2 },
       ] },
-    { title: "Finalization latency percentiles", unit: "ms", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "finality-percentiles", title: "Finalization latency percentiles", unit: "ms",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "p50", path: ["passive", "finalization_p50_ms"], c: 0 },
         { name: "p95", path: ["passive", "finalization_p95_ms"], c: 1 },
         { name: "p99", path: ["passive", "finalization_p99_ms"], c: 2 },
       ] },
-    { title: "Too-far-ahead errors", unit: "rejections / run", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "too-far-ahead", title: "Too-far-ahead errors", unit: "rejections / run",
+      fmt: v => Math.round(v).toLocaleString(), zeroBadge: true,
       series: [
         { name: "total", path: ["passive", "too_far_ahead_errors"], c: 0 },
       ] },
-    { title: "LFB convergence spread", unit: "blocks", fmt: v => Math.round(v).toLocaleString(),
+    { slug: "lfb-spread", title: "LFB convergence spread", unit: "blocks",
+      fmt: v => Math.round(v).toLocaleString(),
       series: [
         { name: "p95", path: ["passive", "tracked_metrics", "lfb_spread", "p95"], c: 1 },
         { name: "max", path: ["passive", "tracked_metrics", "lfb_spread", "max"], c: 2 },
@@ -498,119 +511,62 @@
       `<div class="legend"><span><i class="swatch swatch-cell" style="background:var(--heat-zero)"></i>0%</span>` +
       `<span><i class="swatch swatch-cell heat-ramp"></i>${esc(range)}</span>` +
       `<span class="unit">blank = did not run</span></div>` +
-      `<img class="heat heat-light" alt="Failure heatmap: rate by category and date" ` +
+      `<img class="chart-svg chart-light" alt="Failure heatmap: rate by category and date" ` +
       `src="data/failure-heatmap-${esc(seriesKey)}-light.svg" ` +
       `onerror="this.closest('figure').style.display='none'">` +
-      `<img class="heat heat-dark" alt="Failure heatmap: rate by category and date" ` +
+      `<img class="chart-svg chart-dark" alt="Failure heatmap: rate by category and date" ` +
       `src="data/failure-heatmap-${esc(seriesKey)}-dark.svg" ` +
       `onerror="this.closest('figure').style.display='none'">`;
     container.appendChild(fig);
   }
 
-  function renderCharts(container, history) {
-    const dates = history.map(h => ((h.run || {}).date || "").slice(0, 10));
-    const W = 360, H = 180, PX = 44, PY = 18;
-
-    for (const def of CHARTS) {
+  function renderPanels(container, seriesKey, history) {
+    for (const def of PANELS) {
       const seriesData = def.series.map(s => ({
         name: s.name, c: s.c,
         values: history.map(h => {
-          const v = s.deriv ? s.deriv(g(h, s.path)) : g(h, s.path);
+          const v = g(h, s.path);
           return typeof v === "number" && isFinite(v) ? v : null;
         }),
       })).filter(s => s.values.some(v => v !== null));
       const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
+      // No data → no panel, mirroring the renderer, which emits no SVG then.
       if (all.length === 0) continue;
-      // Nice ticks: step the axis at 1/2/5 × 10^n so gridline labels land on
-      // round values instead of thirds of an arbitrary maximum, and let the
-      // top gridline BE the axis maximum so the scale is self-labelling.
-      const rawMax = Math.max(...all) || 1;
-      const rough = rawMax / 3;
-      const pow = Math.pow(10, Math.floor(Math.log10(rough)));
-      const step = [1, 2, 5, 10].map(m => m * pow).find(s => s >= rough);
-      const max = Math.ceil(rawMax / step) * step;
-
-      const x = i => history.length === 1 ? W / 2 : PX + (i * (W - PX - 8)) / (history.length - 1);
-      const y = v => H - PY - (v / max) * (H - 2 * PY);
-
-      let svg = "";
-      for (let v = 0; v <= max + step / 2; v += step) {
-        const yy = y(v);
-        svg += `<line class="gridline" x1="${PX}" y1="${yy}" x2="${W - 8}" y2="${yy}"/>` +
-               `<text class="axis-label" x="${PX - 5}" y="${yy + 3}" text-anchor="end">${def.fmt(v)}</text>`;
-      }
-      // Crosshair for the hover layer; positioned by the pointer handler and
-      // hidden until then.
-      svg += `<line class="crosshair" x1="-10" y1="${PY}" x2="-10" y2="${H - PY}" visibility="hidden"/>`;
-      for (const s of seriesData) {
-        const pts = s.values.map((v, i) => v === null ? null : [x(i), y(v)]).filter(Boolean);
-        if (pts.length > 1) {
-          svg += `<polyline fill="none" stroke="${S[s.c]}" stroke-width="2" stroke-linejoin="round" ` +
-                 `points="${pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ")}"/>`;
-        }
-        for (const [px, py] of pts) {
-          svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4" fill="${S[s.c]}" ` +
-                 `stroke="var(--surface-2)" stroke-width="2"/>`;
-        }
-      }
-      // Tick labels are centred on their point, so the first and last would
-      // overflow the viewBox and render clipped. Anchor the edges inward.
-      dates.forEach((d, i) => {
-        if (history.length <= 6 || i % Math.ceil(history.length / 6) === 0 || i === history.length - 1) {
-          const anchor = i === 0 ? "start" : (i === history.length - 1 ? "end" : "middle");
-          svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="${anchor}">${esc(d.slice(5))}</text>`;
-        }
-      });
 
       const fig = document.createElement("figure");
+      // All-zero counters are suppressed at the renderer, so a flat zero line
+      // never poses as information; the number still deserves a surface,
+      // because "no rejections, and we are watching" is the good news.
+      if (def.zeroBadge && all.every(v => v === 0)) {
+        fig.innerHTML =
+          `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
+          `<p class="kpi-zero">0<span class="unit">across ${all.length} run${all.length > 1 ? "s" : ""} · target 0</span></p>`;
+        container.appendChild(fig);
+        continue;
+      }
+
       const legend = seriesData.length > 1
         ? '<div class="legend">' + seriesData.map(s =>
             `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
         : "";
       // Selective direct label: single-series charts get the latest value in
-      // the caption, so the current state reads without hovering. Multi-series
-      // charts leave it to the legend and tooltip — one number per caption
+      // the caption, so the current state reads at a glance. Multi-series
+      // charts leave it to the legend and the table — one number per caption
       // would misattribute; one per series is clutter.
       const latest = seriesData.length === 1
         ? seriesData[0].values.reduce((acc, v) => v !== null ? v : acc, null)
         : null;
       const latestHtml = latest !== null
         ? ` <span class="latest">· latest ${def.fmt(latest)}</span>` : "";
-      fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span>${latestHtml}</figcaption>` +
-        legend + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.title} over time"></svg>`;
-      fig.querySelector("svg").innerHTML = svg;
-
-      const svgEl = fig.querySelector("svg");
-      const cross = svgEl.querySelector(".crosshair");
-      // Pointer events rather than mouse events: the same handler then serves
-      // touch (tap shows the reading) and pen. The tooltip is clamped to the
-      // viewport — following the finger off the right edge of a phone screen
-      // otherwise parks the reading where it cannot be seen.
-      const showReading = ev => {
-        const rect = svgEl.getBoundingClientRect();
-        const mx = ((ev.clientX - rect.left) / rect.width) * W;
-        let best = 0, bestD = Infinity;
-        for (let i = 0; i < history.length; i++) {
-          const d = Math.abs(x(i) - mx);
-          if (d < bestD) { bestD = d; best = i; }
-        }
-        cross.setAttribute("x1", x(best).toFixed(1));
-        cross.setAttribute("x2", x(best).toFixed(1));
-        cross.setAttribute("visibility", "visible");
-        const rows = seriesData.map(s => s.values[best] === null ? "" :
-          `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
-        tooltip.innerHTML = `<b>${esc(dates[best])}</b>${rows}`;
-        tooltip.style.display = "block";
-        const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-        tooltip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tw - 8) + "px";
-        tooltip.style.top = Math.min(ev.clientY + 14, window.innerHeight - th - 8) + "px";
-      };
-      svgEl.addEventListener("pointermove", showReading);
-      svgEl.addEventListener("pointerdown", showReading);
-      svgEl.addEventListener("pointerleave", () => {
-        tooltip.style.display = "none";
-        cross.setAttribute("visibility", "hidden");
-      });
+      fig.innerHTML =
+        `<figcaption>${def.title} <span class="unit">${def.unit}</span>${latestHtml}</figcaption>` +
+        legend +
+        `<img class="chart-svg chart-light" alt="${def.title} chart" ` +
+        `src="data/chart-${def.slug}-${esc(seriesKey)}-light.svg" ` +
+        `onerror="this.closest('figure').style.display='none'">` +
+        `<img class="chart-svg chart-dark" alt="${def.title} chart" ` +
+        `src="data/chart-${def.slug}-${esc(seriesKey)}-dark.svg" ` +
+        `onerror="this.closest('figure').style.display='none'">`;
       container.appendChild(fig);
     }
   }
@@ -669,7 +625,7 @@
       continue;
     }
     renderHeatmap(document.getElementById("charts-" + def.key), def.key, history);
-    renderCharts(document.getElementById("charts-" + def.key), history);
+    renderPanels(document.getElementById("charts-" + def.key), def.key, history);
     renderTable(document.getElementById("table-" + def.key), history);
   }
 })();
