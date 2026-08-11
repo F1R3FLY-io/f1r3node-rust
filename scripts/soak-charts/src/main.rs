@@ -882,6 +882,10 @@ fn render_cpu_grid(grid: &CpuGrid, theme: &Theme, out: &str) -> Result<(), Box<d
     if pct.is_empty() {
         return Err("cpu grid had no finite readings".into());
     }
+    // Clamped values feed the COLOR channel only. The saturation labels
+    // below are built from the untouched `pct` vector in a separate dataset,
+    // so a 263% cell renders max-red AND prints 263 — the clamp never
+    // reaches the printed value.
     let clamped: Vec<f64> = pct.iter().map(|v| v.min(100.0)).collect();
 
     let ds = Dataset::new()

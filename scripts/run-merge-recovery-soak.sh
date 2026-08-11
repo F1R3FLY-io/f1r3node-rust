@@ -217,34 +217,49 @@ iteration_rss_peak_mb() {
 # iteration_rss_peak_mb — reuses the copy that function already left in
 # iteration_dir rather than re-finding and re-copying it. Must run after
 # iteration_rss_peak_mb. Empty output when absent.
+#
+# Deliberately NOT the max of the per-node peaks below: this sums cpu_percent
+# ACROSS nodes at each timestamp and peaks that total — "how hot did the whole
+# shard run at once" — so its value can exceed every individual node's peak
+# (two nodes at 10% and 20% in the same sample yield 30). The per-node
+# extractor answers the different question "how hot did each node get".
+#
+# LC_ALL=C on every awk that prints "%.1f": a comma-decimal LC_NUMERIC locale
+# would emit "30,0", which downstream jq rejects — and because these values
+# ride --argjson into metrics.json, that would silently cost the iteration its
+# entire metrics file, not just this field.
 iteration_cpu_peak_percent() {
 	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
 	[ -s "$ts_csv" ] || return 0
-	awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
                  if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
 }
 
 # The same CSV split back out per node: each node's own peak cpu_percent over
-# the iteration, as a JSON object {node: pct}. This is what feeds the
-# dashboard's node × core CPU grid — at node granularity, because the harness
-# monitor samples cpu_percent per container (all cores combined); per-core
-# sampling is a harness-side follow-up. The harness prefixes container names
-# with "rnode.<network>." — stripped here so grid columns read "validator1",
-# not a Docker network id. '{}' when absent, and the caller validates the
-# output is JSON before trusting it (fail-soft like every metric here).
+# the iteration, as a JSON object {node: pct}. This is the dashboard CPU
+# grid's AGGREGATE fallback — one "all cores combined" value per node — used
+# by the summary rollup for nodes the per-core extractor below has no data
+# for (pre-emission harness, provider without the per-core hook). The harness
+# prefixes container names with "rnode.<network>." — stripped here so grid
+# columns read "validator1", not a Docker network id. Node names are then
+# sanitized to a safe character class ([-A-Za-z0-9._], anything else becomes
+# "_") so a hostile or malformed name can neither break the hand-built JSON
+# nor silently collide with another name the way character DELETION could.
+# '{}' when absent, and the caller validates the output is JSON before
+# trusting it (fail-soft like every metric here).
 iteration_cpu_peak_per_node_percent() {
 	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
 	[ -s "$ts_csv" ] || {
 		printf '{}'
 		return 0
 	}
-	awk -F, 'NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
 	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
 	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
 	         END { printf "{"; sep = ""
 	               for (n in peak) {
-	                 k = n; gsub(/[\\"]/, "", k)
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
 	                 printf "%s\"%s\":%.1f", sep, k, peak[n]; sep = "," }
 	               printf "}" }' "$ts_csv" 2>/dev/null || printf '{}'
 }
@@ -263,21 +278,27 @@ iteration_cpu_peak_per_node_core_percent() {
 		printf '{}'
 		return 0
 	}
-	awk -F, 'NR > 1 && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	# Same row discipline as the per-node extractor: __system__ is host
+	# state, not a node, and must never become a grid column (a node with
+	# per-core rows drops its "all" fallback, so a phantom node here would
+	# distort the grid, not just add noise). Core ids are bare CPU indices
+	# per the telemetry contract — anything non-numeric is a malformed row,
+	# rejected rather than sanitized into a phantom core.
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
+	           $4 ~ /^[0-9]+([.][0-9]+)?$/ {
 	           n = $2; sub(/^rnode\.[^.]*\./, "", n)
 	           cell = n SUBSEP $3
 	           if (!(cell in peak) || $4 + 0 > peak[cell]) peak[cell] = $4 + 0 }
 	         END { printf "{"; nsep = ""
 	               for (cell in peak) { split(cell, parts, SUBSEP); nodes[parts[1]] = 1 }
 	               for (n in nodes) {
-	                 k = n; gsub(/[\\"]/, "", k)
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
 	                 printf "%s\"%s\":{", nsep, k; nsep = ","
 	                 csep = ""
 	                 for (cell in peak) {
 	                   split(cell, parts, SUBSEP)
 	                   if (parts[1] != n) continue
-	                   c = parts[2]; gsub(/[\\"]/, "", c)
-	                   printf "%s\"%s\":%.1f", csep, c, peak[cell]; csep = ","
+	                   printf "%s\"%s\":%.1f", csep, parts[2], peak[cell]; csep = ","
 	                 }
 	                 printf "}"
 	               }

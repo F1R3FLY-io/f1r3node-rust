@@ -25,11 +25,16 @@ elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb
 1.0,rnode.test.validator2,512.0,20.0,0
 CSV
 # Per-core telemetry for validator1 only: validator2 must keep its "all"
-# fallback row in the summary grid (mixed real/fallback rendering).
+# fallback row in the summary grid (mixed real/fallback rendering). The
+# __system__ row is host state and must not become a grid node, and the
+# non-numeric core id is a malformed row that must be rejected — the grid
+# assertion below proves both filters.
 cat >"$FAKE_ARCHIVE_DIR/session/resource-percore-timeseries.csv" <<'CSV'
 elapsed_s,node,core,cpu_percent
 1.0,rnode.test.validator1,0,7.5
 1.0,rnode.test.validator1,1,42.0
+1.0,__system__,0,93.0
+1.0,rnode.test.validator1,not-a-core,88.0
 CSV
 cat >"$FAKE_DATA_DIR/session/node-metrics-timeseries.csv" <<'CSV'
 elapsed_s,node,metric,value
