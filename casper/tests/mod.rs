@@ -14,6 +14,7 @@ mod multi_node;
 mod repeat_deploy;
 mod slashing;
 mod sync;
+mod test_node_fixture;
 mod util;
 
 pub fn init_logger() { shared::rust::tracing_init::init_for_tests(); }

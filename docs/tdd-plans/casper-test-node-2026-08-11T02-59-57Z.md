@@ -24,8 +24,38 @@ behaviors:
     statement: "A standalone test node can perform block proposal and block validation for a valid deploy."
     priority: must
     deep_module: true
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - attempted_at: 2026-08-11T04:17:14Z
+        tracer: true
+        status: blocked
+        phase: RED
+        test: standalone_test_node_proposes_and_validates_a_valid_deploy
+        files_changed:
+          - casper/tests/mod.rs
+          - casper/tests/test_node_fixture.rs
+        observation: "The canonical test-utils TestNode already proposed and validated the deploy successfully; the new behavior test passed on its first run."
+        blocker: "B1 describes existing behavior and therefore cannot produce a behavior-level RED failure without changing the accepted interface or introducing an artificial failure."
+      - completed_at: 2026-08-11T05:48:32Z
+        tracer: true
+        status: passed
+        phase: GREEN
+        red_exception: characterization_baseline_ratified
+        test: standalone_test_node_proposes_and_validates_a_valid_deploy
+        files_changed:
+          - casper/src/rust/test_utils/helper/test_node.rs
+          - casper/src/rust/test_utils/util/comm/transport_layer_test_impl.rs
+          - casper/src/rust/test_utils/util/genesis_builder.rs
+          - casper/src/rust/test_utils/util/rholang/resources.rs
+          - casper/tests/engine/block_approver_protocol_test.rs
+          - casper/tests/helper/test_node.rs
+          - casper/tests/mod.rs
+          - casper/tests/test_node_fixture.rs
+          - casper/tests/util/comm/mod.rs
+          - casper/tests/util/comm/transport_layer_test_impl.rs
+          - casper/tests/util/genesis_builder.rs
+          - casper/tests/util/rholang/resources.rs
+        observation: "The user ratified B1 as a characterization baseline. Duplicate integration-test fixture implementations now delegate to the canonical test-utils modules while proposal, validation, propagation, merge, recovery, and storage behavior remain green."
   - id: B2
     statement: "A default test network creates the requested number of participating nodes and lets peers validate a published block."
     priority: must
@@ -112,7 +142,7 @@ Casper consensus modules, the Rholang runtime, block/DAG/deploy storage, the [`R
 
 Each behavior is a capability statement. Must behaviors run before should and consider behaviors.
 
-- [ ] **B1** -- A standalone [`Test node`](../Glossary.md#test-node) can perform [`Block proposal`](../Glossary.md#block-proposal) and [`Block validation`](../Glossary.md#block-validation) for a valid deploy. -- priority: `must` -- deep_module: `true`
+- [x] **B1** -- A standalone [`Test node`](../Glossary.md#test-node) can perform [`Block proposal`](../Glossary.md#block-proposal) and [`Block validation`](../Glossary.md#block-validation) for a valid deploy. -- priority: `must` -- deep_module: `true`
 - [ ] **B2** -- A default test network creates the requested number of participating nodes and lets peers validate a published block. -- priority: `must` -- deep_module: `true`
 - [ ] **B3** -- Empty-block configuration determines whether a [`Test node`](../Glossary.md#test-node) can advance without user deploys. -- priority: `must` -- deep_module: `false`
 - [ ] **B8** -- Targeted propagation makes a block known to the selected peer without implicitly updating unrelated peers. -- priority: `must` -- deep_module: `true`
@@ -125,7 +155,14 @@ Each behavior is a capability statement. Must behaviors run before should and co
 
 ## Cycle Log
 
-No cycles have run. The first `/tdd` invocation against this plan selects B1 as the tracer bullet and writes exactly one new behavior test before the minimal GREEN implementation.
+### B1 -- characterization baseline GREEN
+
+- **Attempted RED:** 2026-08-11T04:17:14Z
+- **Ratified:** 2026-08-11T05:48:32Z
+- **Test:** `standalone_test_node_proposes_and_validates_a_valid_deploy`
+- **RED exception:** The test passed on its first run because B1 characterizes existing public behavior. The user ratified it as the baseline rather than authorizing an artificial failure.
+- **GREEN:** Consolidated the duplicate integration-test node, transport, genesis, and Rholang resource implementations behind `casper::rust::test_utils` and retained thin compatibility re-exports.
+- **Verification:** The characterization test, all 15 multi-parent add-block tests, and the previously failing atomic-admit, minority-fork, merge, communication, finalized-rejection, and recovery tests pass.
 
 ## Glossary Anchors Used
 

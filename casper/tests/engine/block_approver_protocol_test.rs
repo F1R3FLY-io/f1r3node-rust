@@ -5,6 +5,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
+use casper::rust::test_utils::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
@@ -13,7 +14,6 @@ use models::rust::casper::protocol::casper_message::{
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
-use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
 use crate::util::genesis_builder::GenesisBuilder;
 
 const SHARD_ID: &str = "root";

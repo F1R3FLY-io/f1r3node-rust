@@ -23,7 +23,7 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
+    Db, LmdbDirStoreManager, LmdbEnvConfig, GB, MB,
 };
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tempfile::{Builder, TempDir};
@@ -58,6 +58,7 @@ lazy_static! {
         let path = temp_dir.path().to_path_buf();
         (path, temp_dir)
     };
+    pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -139,7 +140,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
 ) -> impl KeyValueStoreManager {
-    let limit_size = 500 * MB;
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -219,7 +220,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     rspace_scope: String,
 ) -> impl KeyValueStoreManager {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    let limit_size = 100 * MB;
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -444,6 +445,33 @@ pub async fn key_value_deploy_storage_from_dyn(
     })
 }
 
+pub async fn key_value_rejected_deploy_buffer_from_dyn(
+    kvm: &mut dyn KeyValueStoreManager,
+) -> Result<
+    block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    shared::rust::store::key_value_store::KvStoreError,
+> {
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use shared::rust::ByteString;
+
+    let buffer_kv_store = kvm
+        .store("rejected_deploy_buffer".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get rejected_deploy_buffer store: {:?}",
+                e
+            ))
+        })?;
+    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
+        KeyValueTypedStoreImpl::new(buffer_kv_store);
+
+    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+}
+
 pub async fn casper_buffer_storage_from_dyn(
     kvm: &mut dyn KeyValueStoreManager,
 ) -> Result<
@@ -594,7 +622,7 @@ fn copy_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dest: Q) -> io::Result<()> {
     Ok(())
 }
 
-fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
+pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
     let block_metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
 
     KeyValueDagRepresentation {
