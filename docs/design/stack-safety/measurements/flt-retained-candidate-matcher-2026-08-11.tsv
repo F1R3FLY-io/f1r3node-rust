@@ -1,0 +1,33 @@
+# SS-G49 retained FLT candidate-matcher measurements.
+# Missing cells are NA. Timing bounds are Criterion confidence intervals; speedups are spatial median / retained median.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 cores, SMT disabled; rustc 1.99.0-nightly (87e5904f5 2026-07-20).
+# Criterion: 20 samples, 1 s warm-up, 2 s requested measurement time, --noplot.
+date	commit	run	kind	arm	scale	lower	median	upper	unit	retained_states	independent_state_upper	memory_max_mib	memory_high_mib	peak_memory_mib	peak_swap_mib	result	notes
+2026-08-11	1fa828bd	primary	match	retained	depth=1	1.3946	1.3952	1.3959	us	NA	NA	10240	9216	~7885	0	pass	cold release build included in cgroup peak
+2026-08-11	1fa828bd	primary	match	spatial_oracle	depth=1	11.504	11.510	11.516	us	NA	NA	10240	9216	~7885	0	pass	exact result equality asserted before timing
+2026-08-11	1fa828bd	primary	match	retained	depth=8	4.5782	4.5801	4.5819	us	NA	NA	10240	9216	~7885	0	pass	cold release build included in cgroup peak
+2026-08-11	1fa828bd	primary	match	spatial_oracle	depth=8	31.741	31.759	31.782	us	NA	NA	10240	9216	~7885	0	pass	exact result equality asserted before timing
+2026-08-11	1fa828bd	primary	match	retained	depth=64	30.620	30.638	30.655	us	NA	NA	10240	9216	~7885	0	pass	cold release build included in cgroup peak
+2026-08-11	1fa828bd	primary	match	spatial_oracle	depth=64	204.12	204.23	204.38	us	NA	NA	10240	9216	~7885	0	pass	exact result equality asserted before timing
+2026-08-11	1fa828bd	primary	match	retained	depth=512	238.81	239.14	239.48	us	NA	NA	10240	9216	~7885	0	pass	cold release build included in cgroup peak
+2026-08-11	1fa828bd	primary	match	spatial_oracle	depth=512	1.5672	1.5794	1.5925	ms	NA	NA	10240	9216	~7885	0	pass	exact result equality asserted before timing
+2026-08-11	1fa828bd	replicate	match	retained	depth=1	1.3805	1.3811	1.3816	us	NA	NA	4096	3072	186.9	0	pass	warm-cache paired replicate
+2026-08-11	1fa828bd	replicate	match	spatial_oracle	depth=1	11.457	11.461	11.465	us	NA	NA	4096	3072	186.9	0	pass	8.30x median ratio
+2026-08-11	1fa828bd	replicate	match	retained	depth=8	4.5820	4.5861	4.5893	us	NA	NA	4096	3072	186.9	0	pass	warm-cache paired replicate
+2026-08-11	1fa828bd	replicate	match	spatial_oracle	depth=8	31.490	31.518	31.552	us	NA	NA	4096	3072	186.9	0	pass	6.87x median ratio
+2026-08-11	1fa828bd	replicate	match	retained	depth=64	30.599	30.641	30.680	us	NA	NA	4096	3072	186.9	0	pass	warm-cache paired replicate
+2026-08-11	1fa828bd	replicate	match	spatial_oracle	depth=64	205.35	205.55	205.71	us	NA	NA	4096	3072	186.9	0	pass	6.71x median ratio
+2026-08-11	1fa828bd	replicate	match	retained	depth=512	241.13	241.29	241.47	us	NA	NA	4096	3072	186.9	0	pass	warm-cache paired replicate
+2026-08-11	1fa828bd	replicate	match	spatial_oracle	depth=512	1.5436	1.5592	1.5823	ms	NA	NA	4096	3072	186.9	0	pass	6.46x median ratio
+2026-08-11	1fa828bd	primary	prepare	retained	patterns=1	15.303	15.321	15.342	us	11	11	10240	9216	~7885	0	pass	one shared eight-level suffix
+2026-08-11	1fa828bd	primary	prepare	retained	patterns=8	124.71	124.83	124.98	us	18	88	10240	9216	~7885	0	pass	one shared eight-level suffix
+2026-08-11	1fa828bd	primary	prepare	retained	patterns=64	1.0546	1.0575	1.0610	ms	74	704	10240	9216	~7885	0	pass	one shared eight-level suffix
+2026-08-11	1fa828bd	primary	prepare	retained	patterns=256	7.6375	8.0150	8.2864	ms	266	2816	10240	9216	~7885	0	pass	90.6 percent fewer states than independent upper bound
+2026-08-11	1fa828bd	replicate	prepare	retained	patterns=1	15.328	15.352	15.374	us	11	11	4096	3072	186.9	0	pass	warm-cache replicate
+2026-08-11	1fa828bd	replicate	prepare	retained	patterns=8	124.65	124.78	124.96	us	18	88	4096	3072	186.9	0	pass	warm-cache replicate
+2026-08-11	1fa828bd	replicate	prepare	retained	patterns=64	1.0481	1.0496	1.0508	ms	74	704	4096	3072	186.9	0	pass	warm-cache replicate
+2026-08-11	1fa828bd	replicate	prepare	retained	patterns=256	6.2655	6.5323	6.7926	ms	266	2816	4096	3072	186.9	0	pass	90.6 percent fewer states; warm-cache replicate
+2026-08-11	1fa828bd	verification	external_suite	spatial_differential	5 tests	NA	1.64	NA	s	NA	NA	6144	NA	NA	0	pass	128 generated cases plus 20000-level 256 KiB-stack construction, match, oracle, and teardown
+2026-08-11	1fa828bd	verification	dovetail	set_automaton	25 unit + 1 property	NA	26	NA	tests	NA	NA	4096	3072	957.6	0	pass	recursive positional oracle included
+2026-08-11	1fa828bd	verification	formal	Rocq rho bridge	all	NA	NA	NA	NA	NA	NA	4096	3072	17.6	0	pass	FltRetainedSetAutomaton.v compiled
+2026-08-11	1fa828bd	verification	formal	zero admission	228 sources	NA	228	NA	sources	NA	NA	4096	3072	15.8	0	pass	registered and critical source audit

@@ -4,16 +4,16 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-10
+**Report date** 2026-07-29, revised through 2026-08-11
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
-**Living closure head** `f1r3node-rust-mettail@2fdea426` (sparse relational-row reuse in the
-production spatial-matcher PDA, complete-message protobuf ingress bounds, `InterpreterError`
+**Living closure head** `f1r3node-rust-mettail@40650664` (sparse relational-row reuse in the
+production spatial-matcher pushdown automaton (PDA), complete-message protobuf ingress bounds, `InterpreterError`
 lifecycle machine, reducer method-replay machine, exact recursion census, production lint gate,
-prior matcher/PathMap closure, and D-E4 evidence reconciliation)
-**Companion decision head** `mettail-rust@57239207` (certified persistent-root R3 production
+prior matcher/PathMap closure, D-E4 evidence reconciliation, and positional AC-remainder repair)
+**Companion decision head** `mettail-rust@1fa828bd` (certified persistent-root R3 production
 specialization, exact contraction metadata, closed recursive/general-driver equivalence, D-E5
 slotted-state and indexed-channel implementation, exact communication-accounting witness,
-admission-free relational-row equivalence,
+admission-free relational-row equivalence, retained FLT candidate matching,
 recursive-carrier lifecycle verification, and operational,
 Rholang, abstract-syntax-tree (AST) grammar, token-codec, observation-surface, linear-temporal-logic
 (LTL) parser, reflected-metadata, Dovetail metapattern, Dovetail set-automaton, runtime observation,
@@ -209,7 +209,7 @@ Where a number could **not** be obtained it is written **NOT MEASURED**, with th
 
 **Conventions.** $`B_0 \rightarrow B_1`$ is bytes of native stack per nesting level before and after, release profile unless the row says otherwise. **0** means *measured flat at both ends of a 4 $`\rightarrow`$ 4,096 ladder in both profiles*. "—" means the axis does not apply; **⌀** means **no measurement exists** (every ⌀ is itemised in [§5.9](#59-measurements-that-could-not-be-obtained)).
 
-Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), WPDA (weighted pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
+Abbreviations used throughout are ABI (application binary interface), CBR (consensus behavior register), EPM1 (EPathMap version 1), PDA (pushdown automaton), WPDA (weighted pushdown automaton), SMT (satisfiability modulo theories), TLA (Temporal Logic of Actions), LRU (least-recently-used), SHA (Secure Hash Algorithm), RHOLANG (reflective higher-order language), MSO (monadic second-order logic), KAT (Kleene algebra with tests), LTL (linear temporal logic), REPL (read-evaluate-print loop), Ir (instruction references), Dr (data reads), Dw (data writes), and TSV (tab-separated values).
 
 ★★ **`SS-Y…` is a family added by this revision, and it exists because the register had no way to spell the thing it most needed to say.** The prior families — `SS-A…` core traversals, `SS-B…` evaluator/async, `SS-C…` codecs, `SS-D…` deploy path, `SS-E…` instrument, `SS-F…`/`SS-G…` `mettail-rust`, `SS-X…` rejected — could record a *fix*, a *partial* fix, or a *rejected candidate*, but **not a live unrepaired defect introduced by a fix in this very register**. A register that can only hold good news is a register that reports coverage it does not have. **`SS-Y…` rows are allocated while defects are open**, they are never "class change: yes", and a row is discharged only by a commit that repairs it — never by deletion. Repaired rows remain in the register with their repair SHA and status, preserving the defect history. The allocation rule is added to [Appendix F](#appendix-f--the-per-fix-template-fill-this-in-do-not-invent-a-shape) with the others.
 
@@ -298,6 +298,7 @@ Abbreviations used throughout are CBR (consensus behavior register), EPM1 (EPath
 | **SS-G46** | `mettail-rust@c63c6ca8`; evidence `2a626e50` | mettail | D-E5 matcher identity and location ABI: nominal binder names $`\rightarrow`$ dense slot interfaces; repeated absolute channel prefixes $`\rightarrow`$ one shared indexed subject arena | native stack remains $`O(1)`$; channel construction $`\Theta(d^2) \rightarrow \Theta(d)`$ on a unary depth-$`d`$ subject; alpha-pair state count **6 $`\rightarrow`$ 2**; production depth **20,000** passes on **256 KiB** at **248,892 KiB** peak RSS | yes; independent nominal oracle, exact specificity and state laws, runtime differentials, **11** admission-free slot audits, indexed-channel injectivity proof, and complete capped gates | [5.23](#523-slotted-state-and-indexed-channel-closure-ss-g46) |
 | **SS-G47** | `mettail-rust@57239207`; experiment 174 | mettail | generated Lambda root-identity-beta driver: general whole-term quiescence network $`\rightarrow`$ statically certified finite-route persistent R3 PDA, with general fallback outside the proof envelope | native stack $`O(1)`$; exact contraction rank, no traversal cap; certificate depth **20,000** on **256 KiB**; live runtime **9/9**, **59,760 KiB** peak RSS; R3/SA wall ratio **0.7354 $`\rightarrow`$ 0.1866** across depths 2–64 | yes for the certified result; complete observation-set differential, bounded recursive oracle, deterministic counted semantics, and **3** admission-free Rocq audits; generated bytes/COMM intentionally move under CBR-L24 | [5.24](#524-certified-persistent-root-production-driver-closure-ss-g47) |
 | **SS-G48** | this checkpoint; pgmcp #5300 | cross-repository | associative-commutative remainder reconstruction: structural value-membership $`\rightarrow`$ exact target-position identity in both the production spatial-matcher PDA and its compatibility equation | native stack remains $`O(1)`$; reconstruction $`\Theta(nr)`$ worst-case $`\rightarrow \Theta(n+r)`$ for $`n`$ targets and $`r`$ remainder assignments; one selected duplicate no longer expands to every equal target; generated float worklists recover strict descent | **yes for the corrected semantics**; direct multiplicity witness, complete legacy matcher suite, recursive-oracle/PDA corpus, live Ambient and nine-cell co-install gates, and an admission-free Rocq deletion theorem; retired as bug-fix CBR-052 | [5.25](#525-positional-ac-remainder-reconstruction-and-co-install-progress-closure-ss-g48) |
+| **SS-G49** | `mettail-rust@1fa828bd`; pgmcp #5298 | cross-repository | repeated FLT candidate matching through the spatial oracle $`\rightarrow`$ one matcher-owned retained Dovetail set automaton plus an append-only flat PDA; unsupported shapes still delegate verbatim | native stack remains $`O(1)`$; **20,000** reflected levels on **256 KiB**; retained matching is **6.46–8.30×** faster in two paired runs; 256 shared-suffix patterns occupy **266** states versus an independent upper bound of **2,816** | **yes**; exact f1r3node `Matcher` differential, 128-case property corpus, five fallback classes, deterministic state/layout gates, and admission-free Rocq correspondence; retired under CBR-023 | [5.26](#526-retained-flt-candidate-matcher-integration-ss-g49) |
 | **SS-Y7** | exposed by `mettail-rust@250f0929`; repaired by `c95d9e73`; pgmcp task 5101 | mettail | the stack-safe generated $`k`$-shift continuation repeated growing byte-per-index `locally_free` prefixes | **before:** depth 20,000 fit 256 KiB but peaked at **1,395,560 KiB RSS / 2.04 s**, $`\Theta(k^2)`$ metadata; **after:** **85 B / 17 allocations / 4,164 allocated B**, depth-independent, direct-test process **15,380 KiB RSS** | ✅ **repaired by SS-G41**; no cap, enlarged stack, stack switch, or repeated-COMM substitution | [5.18.43](#51843-one-pass-native-shift-fusion-and-constant-size-carrier-closure-ss-g41-ss-y7) |
 | **SS-G6** | `3276c1ee`; closed by `26876b65` | cross-repository | **#174's hash-keyed collection cost, ATTRIBUTED then converted** — `par_hash` / `par_hashmap` isolated `models`' `impl Hash for Par`; the schema-generated trait PDA removed the mechanism | 625 / 113 recorded historically with ceilings $`\rightarrow`$ **0**; the two ceilings are deleted | **yes**, by SS-Y2; the mettail integration gate now requires zero slope too | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
 | **SS-Y2** | named `3276c1ee`; repaired `26876b65` | f1r3node | The hand-written host-recursive `impl Hash for Par` / `impl PartialEq for Par` defect named by SS-G6 on a consensus-adjacent canonical-sort path | 625 debug / 113 release B/level $`\rightarrow`$ **0** | ★ **repaired** by schema-generated Eq/Hash PDAs and independent PathMap set/map hash gates | [5.6.6](#566--174-attributed-to-models-impl-hash-for-par-3276c1ee) |
@@ -6417,6 +6418,157 @@ integration stage and are not claimed by SS-G48.
 
 ---
 
+### 5.26 Retained FLT candidate-matcher integration [SS-G49]
+
+#### 5.26.1 Defect boundary and rejected receiver design
+
+Before Track B, every eligible foreign-language-term (FLT) candidate was evaluated through the
+general f1r3node spatial matcher. That oracle was already stack-safe; the defect was repeated
+construction and interpretation work, not native-stack recursion. The integration also lacked a
+retained representation in which structurally equal FLT subpatterns could share canonical states
+across receives and across later injections.
+
+An earlier design proposed persistent `sa:{state_id}` inspection receivers. That design is invalid
+at the RSpace matching boundary: a spread subject is linear data, and competing persistent
+inspectors could consume it or disturb the atomicity of a rejected receive. SS-G49 therefore adds
+no receiver, channel, message, or retry protocol. The existing `Match::get` call is the ownership
+seam, and the matcher answers there using ordinary Rust data that it alone retains.
+
+#### 5.26.2 Architecture and eligibility partition
+
+`SubstrateGuardMatcher` owns a Dovetail `SetAutomaton<ReflectedOp>` and a flat serialized PDA.
+`build_runtime_with_definitions` gives RSpace and the injection driver handles to that same matcher;
+there is no shadow index. Before an already-normalized program is injected,
+`prepare_flt_patterns` uses the canonical stack-safe `Par` visitor, sorts eligible patterns by exact
+model ordering, removes duplicates, and registers the resulting batch. A defensive lazy path
+performs the same conversion when source evaluation keeps its normalized `Par` internal to
+f1r3node.
+
+The fast path accepts exactly one reflected positional `EList` message with an exact private-name
+constructor tag, fixed ordered arity, wildcards, and single-occurrence free-variable levels.
+Remainders, polyadic patterns, associative-commutative or native collections, malformed or mixed
+FLT fingerprints, and ordinary Rholang structures return `Declined`; `Declined` invokes the
+original f1r3node `Matcher::get(pattern, data)` verbatim. It is not a negative match. Thus the
+accelerator cannot narrow the language accepted by the spatial oracle.
+
+The retained interner assigns dense, prefix-stable state identifiers. Batch preparation appends
+only new structural states. Serialization begins at the prior program length and reads the new
+state-id suffix, so an extension neither renumbers nor reserializes the old prefix. The diagnostic
+layout fingerprint covers instruction order, slot renamings, and entry boundaries but is not
+computed by the matching hot path and is not placed on any consensus wire.
+
+#### 5.26.3 Flat PDA and complexity
+
+The executor uses one continuation vector and one flat slot arena. An application continuation is
+four machine words: the state identifier, the target-child slice, the next-child index, and the
+slot-base index. No visited node is hashed, reference-counted, protobuf-encoded, bincode-encoded, or
+projected into an intermediate `Par` collection. Only the final successful captures are cloned.
+
+**Algorithm 26 (RETAINED-FLT-CANDIDATE-MATCH).** *Execute the retained state program with explicit
+continuations and borrowed captures.*
+
+```pseudocode
+Algorithm RetainedFltCandidateMatch(program, entry, target)
+  Enter the entry root with target.
+  While work remains:
+    For a variable state, reject an open target or return its borrowed capture.
+    For an application state, compare the exact operator and arity.
+    Reserve its dense slot interface and push one four-word continuation.
+    Visit children in order and copy captures through each invocation's slot renaming.
+    Reject inconsistent repeated assignments; otherwise release the child slot suffix.
+  Reorder root slots by Rholang free-variable level.
+  Clone only the final captures and preserve the candidate random state.
+```
+
+For $`v`$ visited reflected nodes and $`b`$ returned bindings, matching is $`O(v+b)`$ time.
+For target depth $`d`$ and $`s`$ simultaneously live slot-interface cells, auxiliary heap is
+$`O(d+s+b)`$ and native-stack use is $`O(1)`$. Registration sorts and deduplicates the extracted
+batch, then performs work proportional to the automaton states and transitions not already
+retained. The syntax-based complexity heuristic that labels each nested loop quadratic or cubic is
+not applicable: the nested loops consume disjoint serialized slices whose total length is the
+program or active-slot size, rather than revisiting every element for every outer iteration.
+
+#### 5.26.4 Executable and formal equivalence
+
+The external `flt_automaton_matcher` suite compares successful bindings, misses, wildcards,
+repeated captures, candidate random state, and each decline result against f1r3node's independent
+spatial `Matcher`. Its five tests include 128 generated unary pattern/target pairs and a 20,000-level
+prepare, match, oracle comparison, and teardown on a 256 KiB Rust worker stack. All five pass; the
+deep test body completes in 1.64 s. The fallback test exercises five unsupported classes and
+requires the matcher counter to record exactly five spatial delegations, which prevents a fast-path
+success from making the fallback assertion vacuous.
+
+The focused Dovetail target passes 25 unit tests plus its positional recursive-oracle property.
+Minimal-feature and all-feature `rholang-runtime` library checks pass, as does the complete
+Rho-native documentation validator. `FltRetainedSetAutomaton.v` proves recursive-specification/PDA
+capture equality, the eligibility/delegation partition, append-only serialized-prefix preservation,
+and absence of a persistent receiver. The complete Rho-bridge target succeeds, and the critical
+zero-admission audit covers **228** registered sources with no admission, new axiom, or
+uninstantiated parameter.
+
+#### 5.26.5 Time, sharing, and resource results
+
+The Criterion harness refuses to measure until the retained and spatial arms return exactly equal
+results. Both paired runs used 20 samples, a one-second warm-up, and a two-second requested
+measurement interval on an AMD Ryzen Threadripper PRO 5975WX with Rust
+`1.99.0-nightly (87e5904f5 2026-07-20)`. The host was not isolated or frequency-pinned, so exact
+equivalence and deterministic state counts are the primary evidence; wall time is secondary.
+
+| reflected depth | retained median, run 1 | spatial median, run 1 | retained median, replicate | spatial median, replicate | replicate speedup |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1.3952 µs | 11.510 µs | 1.3811 µs | 11.461 µs | **8.30×** |
+| 8 | 4.5801 µs | 31.759 µs | 4.5861 µs | 31.518 µs | **6.87×** |
+| 64 | 30.638 µs | 204.23 µs | 30.641 µs | 205.55 µs | **6.71×** |
+| 512 | 239.14 µs | 1.5794 ms | 241.29 µs | 1.5592 ms | **6.46×** |
+
+The warm-cache replicate ran under `MemoryMax=4G`, `MemoryHigh=3G`, and
+`MemorySwapMax=0`; the complete benchmark cgroup peaked at **186.9 MiB** with zero swap. The first
+run included a cold release build and peaked at approximately **7.7 GiB** under a 10 GiB hard cap;
+that compiler-inclusive peak is not attributed to the matcher itself.
+
+The shared-suffix construction family has exactly $`n+10`$ retained states:
+
+| patterns | retained states | independent-state upper bound | replicate preparation median |
+|---:|---:|---:|---:|
+| 1 | 11 | 11 | 15.352 µs |
+| 8 | 18 | 88 | 124.78 µs |
+| 64 | 74 | 704 | 1.0496 ms |
+| 256 | 266 | 2,816 | 6.5323 ms |
+
+The 256-pattern case stores **90.6% fewer states** than independent automata. Exact confidence
+intervals, both timing runs, state counts, resource envelopes, and proof/test gates are retained in
+[`measurements/flt-retained-candidate-matcher-2026-08-11.tsv`](measurements/flt-retained-candidate-matcher-2026-08-11.tsv).
+
+#### 5.26.6 Residual recursion and integration boundary
+
+The 883-line production matcher contains zero direct-recursion findings and zero mutual-recursion
+clusters in pgmcp's fresh classic source analysis. Its continuation and slot arenas are heap-backed;
+the 20,000-level small-stack witness covers construction, execution, oracle comparison, and
+teardown. No `RUST_MIN_STACK` increase, `stacker` dependency, alternate stack, traversal cap, or
+recursive fallback is present.
+
+SS-G49 does not modify the PathMap crate or use a PathMap projection. EPathMap remains the
+independent homogeneous representation `Empty | Set(PathMap<()>) | Map(PathMap<Par>)`; EPM1,
+protobuf, bincode, zipper, algebraic, lattice, Merkle, and `contains_par` behavior do not participate
+in this matcher. The retained FLT automaton shares structural pattern states in Dovetail rather than
+misrepresenting either EPathMap mode as a vector, set, or hash map.
+
+#### 5.26.7 Consensus classification and anti-vacuity
+
+The exact spatial differential covers every accepted fast-path result and every decline class;
+canonical preparation order, prefix-stable state identifiers, suffix-only serialization, and the
+layout fingerprint separately prevent an order-dependent or rebuild-only implementation from
+passing. The deep witness fails independently if native recursion returns. The recursive
+specification and executable oracle remain bounded/test-only and cannot become a production
+fallback.
+
+Candidate enumeration, candidate order, matching priority, normalized `Par`, protobuf and bincode
+bytes, block and event hashes, COMM choice, D3 communication-prefix accounting, charge, settlement,
+EPathMap mode, EPM1 snapshot, and every PathMap operation remain unchanged. SS-G49 therefore extends
+retired **CBR-023** as `EQUIVALENCE_PROVEN`; it creates no active may-change-consensus entry.
+
+---
+
 ## 6. Discussion
 
 ### 6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces
@@ -7198,6 +7350,7 @@ done
 | [`measurements/relational-ac-edge-reuse-2026-08-10.tsv`](measurements/relational-ac-edge-reuse-2026-08-10.tsv) | D-E4/SS-A10 nominal and sparse-relation production counters, zero-variance decision rule, focused/full capped gates, and Rocq closure (§5.16.6) |
 | [`measurements/slotted-state-indexed-channels-2026-08-10.tsv`](measurements/slotted-state-indexed-channels-2026-08-10.tsv) | D-E5/SS-G46 state quotient, indexed-channel ladder, 20,000-level small-stack gate, runtime accounting distinction, complete regressions, formal closure, and profiler row (§5.23) |
 | `mettail-rust/docs/benchmarks/data/sa-vs-naive/2026-08-10-post-d-e5-r3-r2/` | SS-G47/experiment-174 authenticated SA-versus-persistent-R3 samples, corrected derived decision, exact resource protocol, and production-promotion evidence (§5.24) |
+| [`measurements/flt-retained-candidate-matcher-2026-08-11.tsv`](measurements/flt-retained-candidate-matcher-2026-08-11.tsv) | SS-G49 paired retained-versus-spatial timings, shared-state counts, bounded-stack differential, capped resource envelopes, and formal gates (§5.26) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
