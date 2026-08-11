@@ -140,6 +140,12 @@ jq -n \
         kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        # How the run was triggered and how late it started relative to its
+        # intended slot (oci-resource-scheduler | cron-fallback | manual).
+        # Optional by construction like version below: runs predating the
+        # field carry the defaults and the dashboard must tolerate that.
+        trigger_source: ($passive.trigger_source // "unknown"),
+        slot_delay_seconds: ($passive.slot_delay_seconds // null),
         # Optional by construction: soaks that ran before the soak script began
         # emitting it, and any run where the node checkout was unreadable, have
         # no version. History entries are never backfilled, so the dashboard

@@ -12,7 +12,11 @@
     background: var(--surface-1); color: var(--text-primary);
     --surface-1: #fcfcfb; --surface-2: #f1f0ee;
     --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a887f;
-    --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #e87ba4;
+    /* series-3 was #e87ba4, which sat at 2.36:1 against the light chart
+       surface — under the 3:1 mark-contrast floor. #d5588e is the nearest
+       darker step that passes all six palette checks (validated: CVD worst
+       adjacent ΔE 14.8, contrast ≥ 3:1 on #f1f0ee). */
+    --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #d5588e;
     --good: #008300; --serious: #c81e1e; --serious-bg: #fdeaea;
     /* Sheet tint strength: the same perceptual whisper needs a stronger mix
        on a dark surface than a light one. */
@@ -127,6 +131,20 @@
   @media (prefers-reduced-motion: reduce) {
     .tabbar label { transition: none; }
   }
+  /* Phone layout. The two tabs share the row as equal halves instead of
+     keeping the 11rem desktop floor — wrapping the second tab below the
+     first breaks the attached-tab seam, which is the one thing the tab
+     design must preserve. Paddings tighten one step; the charts already
+     stack single-column via the grid breakpoints. */
+  @media (max-width: 640px) {
+    body { padding: .75rem; }
+    .tabbar label { flex: 1 1 0; min-width: 0; padding: .6rem .7rem; }
+    .tab-hint, .tab-provenance { font-size: .74rem; }
+    #tab-weekend:checked ~ #panel-weekend,
+    #tab-daily:checked ~ #panel-daily { padding: .85rem; }
+    figure { padding: .7rem; }
+    th, td { padding: .35rem .45rem; }
+  }
   .panel { display: none; }
   #tab-weekend:checked ~ #panel-weekend,
   #tab-daily:checked ~ #panel-daily {
@@ -168,6 +186,9 @@
   svg { display: block; width: 100%; height: auto; }
   .gridline { stroke: var(--grid); stroke-width: 1; }
   .axis-label { fill: var(--text-muted); font-size: 11px; }
+  .crosshair { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .latest { color: var(--text-secondary); font-weight: 400; font-size: .85em;
+            font-variant-numeric: tabular-nums; }
   .tooltip { position: fixed; pointer-events: none; background: var(--surface-1);
              border: 1px solid var(--grid); border-radius: 6px; padding: .4rem .6rem;
              font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 10; }
@@ -373,6 +394,18 @@
   // before the soak emitted a version carry "unknown" — shown as absent rather
   // than as a version literally named unknown. The element collapses when empty
   // (`.tab-provenance:empty`), so a button never shows a dangling separator.
+  // Trigger provenance, compact: "oci" (the scheduler hit its slot), "cron
+  // +95m" (the fallback carried the night, that late), or "manual". The delay
+  // rides along whenever it is over a minute — an on-time oci dispatch stays
+  // a bare "oci". Runs predating the field render nothing.
+  function triggerLabel(run) {
+    const src = { "oci-resource-scheduler": "oci", "cron-fallback": "cron", "manual": "manual" }[run.trigger_source] || null;
+    if (!src) return null;
+    const d = run.slot_delay_seconds;
+    const late = (typeof d === "number" && d >= 60) ? ` +${Math.round(d / 60)}m` : "";
+    return src + late;
+  }
+
   function provenanceParts(run) {
     const known = v => v && v !== "unknown" ? String(v) : null;
     const ref = known(run.target_ref), sha = known(run.target_sha);
@@ -381,6 +414,8 @@
     if (ref || sha) parts.push([ref, sha ? sha.slice(0, 8) : null].filter(Boolean).join(" @ "));
     if (ver) parts.push("version " + ver);
     if (day) parts.push(day);
+    const trig = triggerLabel(run);
+    if (trig) parts.push(trig);
     return parts;
   }
 
@@ -433,17 +468,27 @@
       })).filter(s => s.values.some(v => v !== null));
       const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
       if (all.length === 0) continue;
-      const max = Math.max(...all) * 1.1 || 1;
+      // Nice ticks: step the axis at 1/2/5 × 10^n so gridline labels land on
+      // round values instead of thirds of an arbitrary maximum, and let the
+      // top gridline BE the axis maximum so the scale is self-labelling.
+      const rawMax = Math.max(...all) || 1;
+      const rough = rawMax / 3;
+      const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+      const step = [1, 2, 5, 10].map(m => m * pow).find(s => s >= rough);
+      const max = Math.ceil(rawMax / step) * step;
 
       const x = i => history.length === 1 ? W / 2 : PX + (i * (W - PX - 8)) / (history.length - 1);
       const y = v => H - PY - (v / max) * (H - 2 * PY);
 
       let svg = "";
-      for (let t = 0; t <= 2; t++) {
-        const v = (max * t) / 2, yy = y(v);
+      for (let v = 0; v <= max + step / 2; v += step) {
+        const yy = y(v);
         svg += `<line class="gridline" x1="${PX}" y1="${yy}" x2="${W - 8}" y2="${yy}"/>` +
                `<text class="axis-label" x="${PX - 5}" y="${yy + 3}" text-anchor="end">${def.fmt(v)}</text>`;
       }
+      // Crosshair for the hover layer; positioned by the pointer handler and
+      // hidden until then.
+      svg += `<line class="crosshair" x1="-10" y1="${PY}" x2="-10" y2="${H - PY}" visibility="hidden"/>`;
       for (const s of seriesData) {
         const pts = s.values.map((v, i) => v === null ? null : [x(i), y(v)]).filter(Boolean);
         if (pts.length > 1) {
@@ -451,7 +496,7 @@
                  `points="${pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ")}"/>`;
         }
         for (const [px, py] of pts) {
-          svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.5" fill="${S[s.c]}" ` +
+          svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4" fill="${S[s.c]}" ` +
                  `stroke="var(--surface-2)" stroke-width="2"/>`;
         }
       }
@@ -469,12 +514,26 @@
         ? '<div class="legend">' + seriesData.map(s =>
             `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
         : "";
-      fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
+      // Selective direct label: single-series charts get the latest value in
+      // the caption, so the current state reads without hovering. Multi-series
+      // charts leave it to the legend and tooltip — one number per caption
+      // would misattribute; one per series is clutter.
+      const latest = seriesData.length === 1
+        ? seriesData[0].values.reduce((acc, v) => v !== null ? v : acc, null)
+        : null;
+      const latestHtml = latest !== null
+        ? ` <span class="latest">· latest ${def.fmt(latest)}</span>` : "";
+      fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span>${latestHtml}</figcaption>` +
         legend + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.title} over time"></svg>`;
       fig.querySelector("svg").innerHTML = svg;
 
       const svgEl = fig.querySelector("svg");
-      svgEl.addEventListener("mousemove", ev => {
+      const cross = svgEl.querySelector(".crosshair");
+      // Pointer events rather than mouse events: the same handler then serves
+      // touch (tap shows the reading) and pen. The tooltip is clamped to the
+      // viewport — following the finger off the right edge of a phone screen
+      // otherwise parks the reading where it cannot be seen.
+      const showReading = ev => {
         const rect = svgEl.getBoundingClientRect();
         const mx = ((ev.clientX - rect.left) / rect.width) * W;
         let best = 0, bestD = Infinity;
@@ -482,14 +541,23 @@
           const d = Math.abs(x(i) - mx);
           if (d < bestD) { bestD = d; best = i; }
         }
+        cross.setAttribute("x1", x(best).toFixed(1));
+        cross.setAttribute("x2", x(best).toFixed(1));
+        cross.setAttribute("visibility", "visible");
         const rows = seriesData.map(s => s.values[best] === null ? "" :
           `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
         tooltip.innerHTML = `<b>${esc(dates[best])}</b>${rows}`;
         tooltip.style.display = "block";
-        tooltip.style.left = (ev.clientX + 14) + "px";
-        tooltip.style.top = (ev.clientY + 14) + "px";
+        const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+        tooltip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tw - 8) + "px";
+        tooltip.style.top = Math.min(ev.clientY + 14, window.innerHeight - th - 8) + "px";
+      };
+      svgEl.addEventListener("pointermove", showReading);
+      svgEl.addEventListener("pointerdown", showReading);
+      svgEl.addEventListener("pointerleave", () => {
+        tooltip.style.display = "none";
+        cross.setAttribute("visibility", "hidden");
       });
-      svgEl.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
       container.appendChild(fig);
     }
   }
@@ -506,14 +574,18 @@
       // "unknown" is what pre-version runs carry; show a dash so the column
       // reads as "not recorded" rather than as a version by that name.
       const ver = r.version && r.version !== "unknown" ? `<code>${esc(r.version)}</code>` : "-";
+      // Same optional-by-construction stance as version: rows predating
+      // trigger emission show a dash, not a value pretending to be recorded.
+      const trig = triggerLabel(r);
       return `<tr><td>${esc((r.date || "").slice(0, 10))}</td><td>${ver}</td><td>${shaCell(r.target_sha)}</td>` +
+        `<td>${trig ? esc(trig) : "-"}</td>` +
         `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
         `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
         `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +
         `<td>${runLink}</td></tr>`;
     }).join("");
     el.innerHTML =
-      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th class="num">iters</th>` +
+      `<table><thead><tr><th>date</th><th>version</th><th>sha</th><th>trigger</th><th class="num">iters</th>` +
       `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
       `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>`;

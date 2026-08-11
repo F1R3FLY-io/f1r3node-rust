@@ -181,6 +181,13 @@ jobs:
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
+      # How this run was triggered (oci-resource-scheduler | cron-fallback |
+      # manual) and how late it started relative to its intended slot. Carried
+      # into the published history so a scheduler outage is visible on the
+      # dashboard instead of being silently masked by the cron fallback — the
+      # 2026-08-04..11 outage went unnoticed for a week exactly this way.
+      trigger_source: ${{ steps.resolve.outputs.trigger_source }}
+      slot_delay_seconds: ${{ steps.resolve.outputs.slot_delay_seconds }}
       # weekend | daily. Selects which published series this run appends to;
       # the two are kept in separate files so the week-over-week regression
       # gate never compares a 22h daily against a 60h weekend baseline.
@@ -248,6 +255,8 @@ jobs:
               exit 1
             fi
             echo "source=oci-resource-scheduler slot=$(date -u -d "@$slot_epoch" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday trigger_delay=${trigger_delay}s"
+            trigger_source=oci-resource-scheduler
+            slot_delay_seconds="$trigger_delay"
             should_run=true
             idle_skip=false
             duplicate_skip=false
@@ -294,6 +303,8 @@ jobs:
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
+            trigger_source=manual
+            slot_delay_seconds=0
             # A manual run has no cron slot, so it starts now. The checkpoint
             # computation below needs a start instant either way, and without
             # this the step dies on an unbound variable under `set -u` — a
@@ -363,6 +374,8 @@ jobs:
             pacific_hm="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%H%M)"
             pacific_weekday="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%u)"
             echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
+            trigger_source=cron-fallback
+            slot_delay_seconds=$((now_epoch - slot_epoch))
             target_ref=dev
             should_run=false
             idle_skip=false
@@ -594,6 +607,8 @@ jobs:
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
+            echo "trigger_source=${trigger_source:-manual}"
+            echo "slot_delay_seconds=${slot_delay_seconds:-0}"
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
@@ -1206,6 +1221,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1230,6 +1247,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1254,6 +1273,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1278,6 +1299,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1302,6 +1325,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
@@ -1338,6 +1363,8 @@ jobs:
           duration_seconds: ${{ needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
+          trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
+          slot_delay_seconds: ${{ needs.schedule_gate.outputs.slot_delay_seconds }}
           run_benchmarks: ${{ needs.schedule_gate.outputs.run_benchmarks }}
           # Daily: after 8h, stop once the branch under test advances — the run
           # is pinned to one image, so past that point it is testing history.
