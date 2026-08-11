@@ -153,7 +153,14 @@ env:
   # for) plus the RUNNER_MEM_GB_OVERRIDE launch knob. Verified by content
   # at the SHA: state.env AMD64_MEM_GB=48, override present in
   # launch-runner.sh.
-  SYSTEM_INTEGRATION_REF: a0c6fba626e4db8310180d0a90a213314424dd92
+  #
+  # 2026-08-11: bumped to the SI PR #103 merge — the harness monitor's
+  # per-core CPU sampling (resource-percore-timeseries.csv), which the
+  # driver's per-core extractor folds into the dashboard CPU grid. Verified
+  # by ancestry (a0c6fba6 is an ancestor, so the 48GB default and
+  # RUNNER_LABELS override carry forward) and by content at the SHA
+  # (state.env AMD64_MEM_GB=48; resource_monitor.py emits the per-core CSV).
+  SYSTEM_INTEGRATION_REF: 755301662e4f86ffb55f51077b88f32212a1f3ed
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
